@@ -34,6 +34,8 @@ import {
   ADAPTER_TYPE,
   CREATE_CANCEL_GRACE_MS,
   resolveCreateRequestTimeoutMs,
+  GATEWAY_CONNECT_RETRY_INTERVAL_MS,
+  resolveGatewayReadyTimeoutMs,
   DEFAULT_EVENT_RECONNECT_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TIMEOUT_SEC,
@@ -2720,7 +2722,17 @@ function connectErrorCode(err: unknown): string | null {
   const outer = err instanceof Error ? (err as { cause?: unknown }).cause : null;
   const inner = outer instanceof Error ? (outer as { cause?: unknown }).cause : null;
   const code = inner && typeof inner === "object" ? (inner as { code?: unknown }).code : null;
-  return typeof code === "string" ? code : null;
+  if (typeof code === "string") return code;
+  const outerCode = outer && typeof outer === "object" ? (outer as { code?: unknown }).code : null;
+  if (typeof outerCode === "string") return outerCode;
+  const errCode = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
+  if (typeof errCode === "string") return errCode;
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  if (msg.includes("EAI_AGAIN")) return "EAI_AGAIN";
+  if (msg.includes("ECONNREFUSED")) return "ECONNREFUSED";
+  if (msg.includes("ENOTFOUND")) return "ENOTFOUND";
+  if (msg.includes("EHOSTUNREACH")) return "EHOSTUNREACH";
+  return null;
 }
 
 // myrmidon(G4): network failures that unambiguously never reached Hermes at
@@ -3180,12 +3192,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // remote create request is its dispatch boundary. Report it before the
     // request can block so continuation gates may release their issue lock.
     ctx.onDispatch?.();
-    const created = await fetchJson(createRunUrl, {
-      method: "POST",
-      headers: runHeaders,
-      body: JSON.stringify(body.body),
-      signal: createSignal,
-    });
+  // myrmidon(OPE-11677): when waking stopped containers, wait for gateway readiness
+  // (DNS resolution and TCP listen) before failing the run. EAI_AGAIN and ECONNREFUSED
+  // are unambiguous pre-send connect errors that can resolve once the container is ready.
+  const gatewayReadyTimeoutMs = resolveGatewayReadyTimeoutMs(ctx.config.gatewayReadyTimeoutMs);
+  const createStartMs = Date.now();
+  let created: unknown;
+  while (true) {
+    try {
+      created = await fetchJson(createRunUrl, {
+        method: "POST",
+        headers: runHeaders,
+        body: JSON.stringify(body.body),
+        signal: createSignal,
+      });
+      break;
+    } catch (err) {
+      const code = connectErrorCode(err);
+      const isRetryableConnect = code === "EAI_AGAIN" || code === "ECONNREFUSED";
+      const elapsed = Date.now() - createStartMs;
+      if (
+        isRetryableConnect &&
+        !ctx.signal?.aborted &&
+        !createTimedOut &&
+        elapsed + GATEWAY_CONNECT_RETRY_INTERVAL_MS < gatewayReadyTimeoutMs
+      ) {
+        await ctx.onLog("stdout", `[hermes-gateway] waiting for gateway readiness (${code}, elapsed ${elapsed}ms / timeout ${gatewayReadyTimeoutMs}ms)...\\n`);
+        await new Promise((resolve) => setTimeout(resolve, GATEWAY_CONNECT_RETRY_INTERVAL_MS));
+        continue;
+      }
+      throw err;
+    }
+  }
     runId = extractRunId(created);
     replayed = asRecord(created)?.replayed === true; // myrmidon(G4)
     if (!runId) {

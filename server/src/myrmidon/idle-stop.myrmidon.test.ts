@@ -688,9 +688,9 @@ describe('IdleStopService', () => {
         startResolve = resolve;
       });
 
-      vi.mocked(mockDriver.status)
-        .mockResolvedValueOnce({ botKey, state: 'stopped', idleStopped: true })
-        .mockResolvedValue({ botKey, state: 'running', idleStopped: false });
+      vi.mocked(mockDriver.status).mockImplementation(async (key: string) => {
+        return { botKey: key, state: 'stopped', idleStopped: true };
+      });
 
       vi.mocked(mockDriver.start).mockImplementation(async () => {
         await startPromise;
@@ -706,6 +706,32 @@ describe('IdleStopService', () => {
       await Promise.all([call1, call2, call3]);
 
       expect(mockDriver.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('mass waking N>=5 stopped bots concurrently starts all of them without unhandled errors', async () => {
+      const bots = ['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
+      const started = new Set<string>();
+
+      vi.mocked(mockDriver.status).mockImplementation(async (botKey: string) => {
+        if (started.has(botKey)) {
+          return { botKey, state: 'running', idleStopped: false };
+        }
+        return { botKey, state: 'stopped', idleStopped: true };
+      });
+
+      vi.mocked(mockDriver.start).mockImplementation(async (botKey: string) => {
+        await new Promise((r) => setTimeout(r, 10));
+        started.add(botKey);
+      });
+
+      // Concurrently wake 6 distinct stopped bots
+      await Promise.all(bots.map((b) => idleStopService.ensureStartedAndHealthy(b)));
+
+      for (const b of bots) {
+        expect(mockDriver.start).toHaveBeenCalledWith(b);
+        expect(started.has(b)).toBe(true);
+      }
+      expect(mockDriver.start).toHaveBeenCalledTimes(6);
     });
   });
 

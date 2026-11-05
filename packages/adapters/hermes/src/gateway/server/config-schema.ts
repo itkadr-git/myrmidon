@@ -62,6 +62,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "How long POST /v1/runs may take to be accepted (5-300). Empty uses the instance default.",
       },
       {
+        // myrmidon(OPE-11677): readiness retry timeout for waking idle-stopped containers
+        key: "gatewayReadyTimeoutMs",
+        label: "Gateway readiness timeout ms",
+        type: "number",
+        hint: "How long to wait and retry pre-send connection errors (EAI_AGAIN, ECONNREFUSED) when waking a container. Default 15000ms.",
+      },
+      {
         key: "eventReconnectMs",
         label: "Event reconnect ms",
         type: "number",

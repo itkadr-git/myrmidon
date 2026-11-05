@@ -1121,7 +1121,40 @@ describe("execute", () => {
     expect(result.errorMessage).toContain("host.docker.internal");
   });
 
-  it("handles EAI_AGAIN DNS failures as hermes_gateway_connect_failed", async () => {
+  it("retries EAI_AGAIN or ECONNREFUSED until gateway becomes ready", async () => {
+    const eaiCause = Object.assign(new Error("getaddrinfo EAI_AGAIN myrmidon-bot-test"), { code: "EAI_AGAIN" });
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/runs")) {
+        attempts++;
+        if (attempts < 3) {
+          throw Object.assign(new Error("fetch failed"), { cause: eaiCause });
+        }
+        return new Response(JSON.stringify({ run_id: "run-ready-1", status: "started" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://myrmidon-bot-test:8642",
+      apiKey: ***
+      dangerouslyAllowInsecureRemoteHttp: true,
+      gatewayReadyTimeoutMs: 5000,
+      timeoutSec: 5,
+    }));
+
+    expect(attempts).toBe(3);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("handles EAI_AGAIN DNS failures as hermes_gateway_connect_failed after retry timeout expires", async () => {
     const cause = Object.assign(new Error("getaddrinfo EAI_AGAIN myrmidon-bot-test"), { code: "EAI_AGAIN" });
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw Object.assign(new Error("fetch failed"), { cause });
@@ -1129,8 +1162,9 @@ describe("execute", () => {
 
     const result = await execute(makeCtx({
       apiBaseUrl: "http://myrmidon-bot-test:8642",
-      apiKey: "secret-key",
+      apiKey: ***
       dangerouslyAllowInsecureRemoteHttp: true,
+      gatewayReadyTimeoutMs: 0,
     }));
 
     expect(result.exitCode).toBe(1);
