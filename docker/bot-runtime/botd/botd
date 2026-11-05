@@ -323,8 +323,11 @@ async function main() {
   // before archiving, so a foreign-owned directory defers in milliseconds instead of
   // re-creating the same archive every pass.
   const probeRemoval = (probeRoots) => (p) => {
+    const abs = path.resolve(p);
     try {
-      fs.accessSync(path.resolve(p), fs.constants.W_OK | fs.constants.X_OK);
+      const st = fs.lstatSync(abs);
+      fs.accessSync(path.dirname(abs), fs.constants.W_OK | fs.constants.X_OK);
+      if (st.isDirectory()) fs.accessSync(abs, fs.constants.W_OK | fs.constants.X_OK);
     } catch (err) {
       if (err && (err.code === "EACCES" || err.code === "EPERM")) {
         signalForeignUid(p, { reason: `${err.code} foreign-uid`, uid: null });
