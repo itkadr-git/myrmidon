@@ -20231,8 +20231,59 @@ export function heartbeatService(
     void cleanup.finally(() => activeRunExecutionPromises.delete(cleanup));
   }
 
-  // myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe remote gateway run liveness,
-  // resolving secrets in adapterConfig (e.g. secret_ref apiKey) via resolveExecutionRunAdapterConfig.
+  // myrmidon(HERMES-RUN-REATTACH): resolve the persisted adapter config before
+  // issuing a board-owned stop. Gateway credentials are commonly secret_ref
+  // values; reading apiKey directly would silently leak the remote slot.
+  async function stopRemoteGatewayRun(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    adapterConfig: Record<string, unknown> | null;
+    gatewayRunId: string;
+    cancellation: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    };
+  }): Promise<{ stopped: boolean }> {
+    const adapter = getServerAdapter("hermes_gateway");
+    if (!adapter?.stopGatewayRunForBoard) return { stopped: false };
+    let resolvedConfig = input.adapterConfig ?? {};
+    try {
+      resolvedConfig = (
+        await resolveExecutionRunAdapterConfig({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          adapterType: "hermes_gateway",
+          heartbeatRunId: input.runId,
+          executionRunConfig: resolvedConfig,
+          projectEnv: null,
+          secretsSvc,
+        })
+      ).resolvedConfig;
+    } catch (err) {
+      logger.warn(
+        { err, runId: input.runId, agentId: input.agentId },
+        "stopRemoteGatewayRun: failed to resolve adapterConfig secrets",
+      );
+    }
+    const baseUrl =
+      readNonEmptyString(resolvedConfig.apiBaseUrl) ??
+      readNonEmptyString(resolvedConfig.baseUrl) ??
+      readNonEmptyString(resolvedConfig.url);
+    const apiKey =
+      readNonEmptyString(resolvedConfig.apiKey) ??
+      readNonEmptyString(resolvedConfig.token);
+    if (!baseUrl || !apiKey) return { stopped: false };
+    return adapter.stopGatewayRunForBoard({
+      baseUrl,
+      apiKey,
+      gatewayRunId: input.gatewayRunId,
+      cancellation: input.cancellation,
+    });
+  }
+
+  // myrmidon(HERMES-RUN-REATTACH, OPE-11779): probe remote gateway run liveness,
   async function probeRemoteGatewayRun(input: {
     companyId?: string;
     agentId?: string | null;
@@ -33622,29 +33673,22 @@ export function heartbeatService(
     // and logged, a failed stop never blocks the board-side cancellation.
     if (!control && !running && run.externalRunId && agent?.adapterType === "hermes_gateway") {
       try {
-        const adapterConfig = parseObject(agent.adapterConfig);
-        const baseUrl = readNonEmptyString(adapterConfig.apiBaseUrl) ?? readNonEmptyString(adapterConfig.baseUrl);
-        const apiKey = readNonEmptyString(adapterConfig.apiKey) ?? readNonEmptyString(adapterConfig.token);
-        if (baseUrl && apiKey) {
-          const stopGatewayRunForBoard = requireServerAdapter("hermes_gateway")
-            .stopGatewayRunForBoard;
-          if (stopGatewayRunForBoard) {
-            const stopped = await stopGatewayRunForBoard({
-              baseUrl,
-              apiKey,
-              gatewayRunId: run.externalRunId,
-              cancellation: { correlationId, source: cancellationSource, reason },
-            });
-            logger.info(
-              { runId: run.id, externalRunId: run.externalRunId, stopped: stopped.stopped },
-              "gateway run stop requested from the board cancellation path",
-            );
-          }
-        }
+        const stopped = await stopRemoteGatewayRun({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          runId: run.id,
+          adapterConfig: parseObject(agent.adapterConfig),
+          gatewayRunId: run.externalRunId,
+          cancellation: { correlationId, source: cancellationSource, reason },
+        });
+        logger.info(
+          { runId: run.id, externalRunId: run.externalRunId, stopped: stopped.stopped },
+          "hermes_gateway board-side stop requested",
+        );
       } catch (err) {
         logger.warn(
           { err, runId: run.id, externalRunId: run.externalRunId },
-          "gateway run board-side stop failed; continuing with the cancellation",
+          "hermes_gateway board-side stop failed; continuing cancellation",
         );
       }
     }
