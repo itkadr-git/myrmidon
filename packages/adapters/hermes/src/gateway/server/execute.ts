@@ -434,7 +434,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   const issueId = issueIdFromContext(ctx);
   const sessionKeyStrategy = resolveEffectiveSessionKeyStrategy({
     configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
-    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession,
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
     issueId,
   });
   const resumedSession =
