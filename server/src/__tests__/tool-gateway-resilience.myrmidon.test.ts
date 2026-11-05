@@ -12,6 +12,7 @@ import {
   companySecretVersions,
   companyMemberships,
   companies,
+  authUsers,
   connectionGrantMembers,
   connectionGrantDelegations,
   connectionGrants,
@@ -81,12 +82,23 @@ async function createCompany(db: Db) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  const now = new Date();
+  await db
+    .insert(authUsers)
+    .values({
+      id: "board-user",
+      name: "Board User",
+      email: "board-user@example.com",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
   await db.insert(companyMemberships).values({
     companyId: company.id,
     principalType: "user",
     principalId: "board-user",
-    status: "active",
     membershipRole: "owner",
+    status: "active",
   });
   return company;
 }
@@ -610,6 +622,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     await db.delete(projects);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });

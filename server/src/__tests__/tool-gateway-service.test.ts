@@ -29,6 +29,7 @@ import {
   toolGatewaySessions,
   toolInvocations,
   toolPolicies,
+  authUsers,
 } from "@myrmidon/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
@@ -63,18 +64,48 @@ function createTestToolGatewayService(db: ReturnType<typeof createDb>, options: 
   });
 }
 
-async function createRunFixture(db: ReturnType<typeof createDb>, options: { ownerUserId?: string } = {}) {
-  const ownerUserId = options.ownerUserId ?? "board-user";
+async function createRunFixture(
+  db: ReturnType<typeof createDb>,
+  options: { ownerUserId?: string } = {},
+) {
   const company = await db.insert(companies).values({
     name: `Gateway ${randomUUID()}`,
     issuePrefix: `TG${randomUUID().slice(0, 6).toUpperCase()}`,
   }).returning().then((rows) => rows[0]!);
+  const ownerUserId = options.ownerUserId ?? "board-user";
+  const now = new Date();
+  await db
+    .insert(authUsers)
+    .values([
+      {
+        id: "board-user",
+        name: "Board User",
+        email: "board-user@example.com",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "reviewer",
+        name: "Reviewer User",
+        email: "reviewer@example.com",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "second-reviewer",
+        name: "Second Reviewer",
+        email: "second-reviewer@example.com",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ])
+    .onConflictDoNothing();
   await db.insert(companyMemberships).values({
     companyId: company.id,
     principalType: "user",
     principalId: ownerUserId,
-    status: "active",
     membershipRole: "owner",
+    status: "active",
   });
   const agent = await db.insert(agents).values({
     companyId: company.id,
@@ -201,11 +232,12 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(companySecrets);
-    await db.delete(companyMemberships);
     await db.delete(toolPolicies);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
+    await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
