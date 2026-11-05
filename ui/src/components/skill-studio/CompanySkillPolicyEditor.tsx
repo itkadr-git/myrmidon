@@ -116,8 +116,8 @@ export function CompanySkillPolicyEditor({ companyId }: { companyId: string }) {
           <div className="space-y-2 border-t border-border pt-3">
             <p className="text-sm font-medium">{t(key("previewTitle"))}</p>
             <p className="text-xs text-muted-foreground">{t(key("previewHint"))}</p>
-            <label className="block text-sm">{t(key("agentId"))}<input className="mt-1 w-full rounded-md border border-border bg-background p-2" value={previewAgent} onChange={(event) => setPreviewAgent(event.target.value)} /></label>
-            <label className="block text-sm">{t(key("action"))}<select className="ml-2 rounded-md border border-border bg-background p-2" value={previewAction} onChange={(event) => setPreviewAction(event.target.value as EvaluateSkillPolicy["action"])}>
+            <label className="block text-sm">{t(key("agentId"))}<input className="mt-1 w-full rounded-md border border-border bg-background p-2" value={previewAgent} onChange={(event) => { setPreviewAgent(event.target.value); setPreviewResult(""); }} /></label>
+            <label className="block text-sm">{t(key("action"))}<select className="ml-2 rounded-md border border-border bg-background p-2" value={previewAction} onChange={(event) => { setPreviewAction(event.target.value as EvaluateSkillPolicy["action"]); setPreviewResult(""); }}>
               {(["skills.create", "skills.import", "skills.install", "skills.edit", "skills.update", "skills.test", "skills.reset", "skills.remove"] as const).map((action) => <option key={action} value={action}>{action}</option>)}
             </select></label>
             <Button type="button" variant="outline" disabled={!canEdit || preview.isPending || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(previewAgent.trim()) || dirty} onClick={() => preview.mutate({ action: previewAction, principal: { agentId: previewAgent.trim() }, resource: {} })}>{t(key("preview"))}</Button>

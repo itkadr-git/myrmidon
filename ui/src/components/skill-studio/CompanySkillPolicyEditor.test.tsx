@@ -102,6 +102,32 @@ describe("CompanySkillPolicyEditor", () => {
     expect(replacePolicy).not.toHaveBeenCalled();
   });
 
+  it("clears a stale preview when the principal or action changes", async () => {
+    await render();
+    const principal = container.querySelector("input")!;
+    await change(principal, agentId);
+    await act(async () => button("Preview decision").click());
+    await waitFor(() => expect(container.querySelector("pre")?.textContent).toContain("policy_default"));
+
+    await change(principal, "33333333-3333-4333-8333-333333333333");
+    expect(container.querySelector("pre")).toBeNull();
+    await act(async () => button("Preview decision").click());
+    await waitFor(() => expect(container.querySelector("pre")?.textContent).toContain("policy_default"));
+
+    const action = container.querySelector("select")!;
+    await act(async () => {
+      action.value = "skills.remove";
+      action.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector("pre")).toBeNull();
+    await act(async () => button("Preview decision").click());
+    await waitFor(() => expect(previewPolicy).toHaveBeenLastCalledWith(companyId, {
+      action: "skills.remove",
+      principal: { agentId: "33333333-3333-4333-8333-333333333333" },
+      resource: {},
+    }));
+  });
+
   it("surfaces server authorization rejection without changing the draft", async () => {
     replacePolicy.mockRejectedValue(new ApiError("denied", 403, {}));
     await render();
