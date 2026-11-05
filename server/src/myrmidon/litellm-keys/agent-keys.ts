@@ -370,6 +370,23 @@ export async function listAgentGatewayKeys(
     }
   }
 
+  const windowStart = new Date(Date.now() - 24 * 3_600_000);
+  const weeklyStart = new Date(windowStart.getTime() - 6 * 24 * 3_600_000);
+  const spendRows = await deps.db
+    .select({
+      agentId: litellmCostEvents.agentId,
+      dailyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}) filter (where ${litellmCostEvents.occurredAt} >= ${windowStart}), 0)`,
+      weeklyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}), 0)`,
+      zeroCostEvents: sql<number>`count(*) filter (where ${litellmCostEvents.costCents} = 0)`,
+    })
+    .from(litellmCostEvents)
+    .where(and(
+      eq(litellmCostEvents.companyId, companyId),
+      gte(litellmCostEvents.occurredAt, weeklyStart),
+    ))
+    .groupBy(litellmCostEvents.agentId);
+  const spendByAgent = new Map(spendRows.map((spent) => [spent.agentId, spent]));
+
   const views: AgentGatewayKeyView[] = [];
   for (const row of rows) {
     const secretName = agentKeySecretName({ agentId: row.id, agentSlug: row.name });
@@ -406,20 +423,7 @@ export async function listAgentGatewayKeys(
       }
     }
     if (value) {
-      const windowStart = new Date(Date.now() - 24 * 3_600_000);
-      const weeklyStart = new Date(windowStart.getTime() - 6 * 24 * 3_600_000);
-      const [spent] = await deps.db
-        .select({
-          dailyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}) filter (where ${litellmCostEvents.occurredAt} >= ${windowStart}), 0)`,
-          weeklyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}), 0)`,
-          zeroCostEvents: sql<number>`count(*) filter (where ${litellmCostEvents.costCents} = 0)`,
-        })
-        .from(litellmCostEvents)
-        .where(and(
-          eq(litellmCostEvents.companyId, companyId),
-          eq(litellmCostEvents.agentId, row.id),
-          gte(litellmCostEvents.occurredAt, weeklyStart),
-        ));
+      const spent = spendByAgent.get(row.id);
       usage = keyBudgetUsage(Number(spent?.dailyCents ?? 0), maxBudgetUsd ?? 0, windowStart, {
         capSpentCents: gatewaySpendUsd == null ? undefined : gatewaySpendUsd * 100,
         weeklySpentCents: Number(spent?.weeklyCents ?? 0),
