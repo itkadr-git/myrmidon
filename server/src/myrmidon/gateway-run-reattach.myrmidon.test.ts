@@ -491,6 +491,47 @@ describeEmbeddedPostgres("myrmidon(HERMES-RUN-REATTACH) gateway run reattach swe
     expect(after?.controllerBootId).not.toBe(legacyControllerBootId);
   });
 
+  it("resolves a secret reference before stopping an orphaned gateway run", async () => {
+    const company = await createCompany(db);
+    const secret = await secretService(db).create(company.id, {
+      name: "Gateway stop token",
+      provider: "local_encrypted",
+      value: "resolved-stop-key-xyz",
+    });
+    const agent = await createAgent(db, company.id, "hermes_gateway", {
+      apiBaseUrl: "http://127.0.0.1:9999",
+      apiKey: { type: "secret_ref", secretId: secret.id },
+    });
+    await secretService(db).createBinding({
+      companyId: company.id,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agent.id,
+      configPath: "apiKey",
+    });
+    const run = await createRun(db, agent, { externalRunId: "gw-stop-secret-ref" });
+    const originalAdapter = getServerAdapter("hermes_gateway");
+    const stops: Array<{ apiKey: string | null | undefined; gatewayRunId: string }> = [];
+    registerServerAdapter({
+      ...originalAdapter,
+      stopGatewayRunForBoard: async (input) => {
+        stops.push({ apiKey: input.apiKey, gatewayRunId: input.gatewayRunId });
+        return { stopped: true };
+      },
+    });
+    try {
+      await heartbeatService(db).cancelRun(run.id, "Operator cancelled gateway run");
+      expect(stops).toEqual([{
+        apiKey: "resolved-stop-key-xyz",
+        gatewayRunId: "gw-stop-secret-ref",
+      }]);
+      const [cancelled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(cancelled?.status).toBe("cancelled");
+    } finally {
+      registerServerAdapter(originalAdapter);
+    }
+  });
+
   it("resolves secret reference apiKey when probing gateway run", async () => {
     const company = await createCompany(db);
     const secret = await secretService(db).create(company.id, {

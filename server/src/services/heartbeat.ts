@@ -20263,9 +20263,10 @@ export function heartbeatService(
       ).resolvedConfig;
     } catch (err) {
       logger.warn(
-        { err, runId: input.runId, agentId: input.agentId },
+        { runId: input.runId, agentId: input.agentId, errorType: err instanceof Error ? err.name : "unknown" },
         "stopRemoteGatewayRun: failed to resolve adapterConfig secrets",
       );
+      return { stopped: false };
     }
     const baseUrl =
       readNonEmptyString(resolvedConfig.apiBaseUrl) ??
