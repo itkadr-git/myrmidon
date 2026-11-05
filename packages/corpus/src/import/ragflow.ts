@@ -600,13 +600,13 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
 
   progress.phase = "complete";
   if (progress.datasets !== sourceDatasetCount) {
-    throw new RagflowApiError(`RAGFlow dataset count mismatch: source listed ${sourceDatasetCount}, imported ${progress.datasets}`);
+    throw new RagflowDatasetReadError(`RAGFlow dataset count mismatch: source listed ${sourceDatasetCount}, imported ${progress.datasets}`);
   }
   if (progress.documents + progress.notParsed!.length !== sourceDocumentCount) {
-    throw new RagflowApiError(`RAGFlow document count mismatch: source listed ${sourceDocumentCount}, imported ${progress.documents}`);
+    throw new RagflowDatasetReadError(`RAGFlow document count mismatch: source listed ${sourceDocumentCount}, imported ${progress.documents}`);
   }
   if (sourceChunkCount > 0 && progress.notParsed!.length === 0 && partialDocuments.length === 0 && (progress.chunks < sourceMinimumChunks || progress.chunks > sourceMaximumChunks)) {
-    throw new RagflowApiError(`RAGFlow corpus chunk count mismatch: source lists ${sourceChunkCount} ±${tolerance * 100}%, imported ${progress.chunks}`);
+    throw new RagflowDatasetReadError(`RAGFlow corpus chunk count mismatch: source lists ${sourceChunkCount} ±${tolerance * 100}%, imported ${progress.chunks}`);
   }
   report();
   return { datasets: progress.datasets, documents: progress.documents, chunks: progress.chunks, embedded: progress.embedded, reused: progress.reused, partial: partialDocuments.length > 0 ? partialDocuments : undefined, notParsed: progress.notParsed ?? [], durationMs: Date.now() - startedAt };
