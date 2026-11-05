@@ -764,7 +764,7 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("does not route agent attention for a human-only interaction", async () => {
+  it("wakes the explicit agent addressee even for a human-only interaction", async () => {
     mockInteractionService.create.mockResolvedValueOnce({
       id: "interaction-human-attention",
       companyId: "company-1",
@@ -806,7 +806,10 @@ describe.sequential("issue thread interaction routes", () => {
       });
 
     expect(res.status).toBe(201);
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "interaction_pending" }),
+    );
   });
 
   it("returns 400 for agent-addressed tool-action confirmations", async () => {
