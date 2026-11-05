@@ -753,7 +753,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         kind: "request_confirmation",
         status: "pending",
         continuationPolicy: "wake_assignee",
-        payload: { prompt: "Confirm closure" } as never,
+        payload: { version: 1, prompt: "Confirm closure" } as never,
       },
     ]);
 

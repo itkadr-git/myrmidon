@@ -1,3 +1,6 @@
+-- One-time backfill after deploying the terminal-issue expiry hook.
+-- Run with: psql -v ON_ERROR_STOP=1 --single-transaction -f scripts/myrmidon/migrations/close-pending-interactions-on-terminal-issues.sql
+-- Safe to re-run: only pending rows are changed; activity is written for changed rows.
 WITH closed AS (
   UPDATE "issue_thread_interactions" AS interaction
   SET
