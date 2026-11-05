@@ -1,28 +1,60 @@
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index 9b18a3d..4f4f5ae 100644
+index 9b18a3d..ac927a9 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
-@@ -1347,6 +1347,18 @@ def _apply_agent_section(agent, _agent_cfg):
-     agent.budget_warning_ratio = normalize_budget_warning_ratio(
-         _agent_section.get("budget_warning_ratio")
-     )
+@@ -1358,6 +1358,22 @@ def _apply_agent_section(agent, _agent_cfg):
+             _agent_section.get("run_budget_seconds")
+         )
+ 
++    # myrmidon(G1): model.max_tokens / model.max_output_tokens from config.yaml
++    _model_section = _agent_cfg.get("model") if isinstance(_agent_cfg.get("model"), dict) else {}
++    _cfg_max_tokens = (
++        _model_section.get("max_tokens")
++        or _model_section.get("max_output_tokens")
++        or _agent_cfg.get("max_tokens")
++        or _agent_cfg.get("max_output_tokens")
++    )
++    if _cfg_max_tokens is not None:
++        try:
++            _val = int(_cfg_max_tokens)
++            if _val > 0 and getattr(agent, "max_tokens", None) is None:
++                agent.max_tokens = _val
++        except (ValueError, TypeError):
++            pass
 +
-+    # myrmidon(G1): max output token limit from config
-+    if getattr(agent, "max_tokens", None) is None:
-+        _model_section = _cfg_dict(_agent_cfg, "model")
-+        _cfg_max = _model_section.get("max_tokens")
-+        if _cfg_max is None:
-+            _cfg_max = _model_section.get("max_output_tokens")
-+        if _cfg_max is None:
-+            _cfg_max = _agent_section.get("max_tokens")
-+        if _cfg_max is not None:
-+            with suppress(Exception):
-+                agent.max_tokens = int(_cfg_max)
-     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
-     # of each other (gates in agent/system_prompt.py).
-     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+     # Empty-response guard: a malformed section falls back to schema defaults (on, $0.25).
+     from agent.empty_response_guard import resolve_guard_settings
+     (
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+index 9a1f83e..75251ef 100644
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -1435,8 +1435,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
+     # providers with profiles used to bypass it).
+     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
+         tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
+-        max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
+-        max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
++        max_tokens=getattr(agent, "max_tokens", None), ephemeral_max_output_tokens=_ephemeral_out,
++        max_tokens_param_fn=getattr(agent, "_max_tokens_param", None), reasoning_config=reasoning_config,
+         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
+         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
+         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
+diff --git a/agent/transports/chat_completions.py b/agent/transports/chat_completions.py
+index 8f3ae66..76782c8 100644
+--- a/agent/transports/chat_completions.py
++++ b/agent/transports/chat_completions.py
+@@ -330,7 +330,7 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
+ 
+ def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
+     """Preserve internal task/recovery budgets and provider protocol exceptions."""
+-    max_tokens_fn = params.get("max_tokens_param_fn")
++    max_tokens_fn = params.get("max_tokens_param_fn") or (lambda val: {"max_tokens": val})
+     for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
+         if candidate is not None and max_tokens_fn:
+             api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, candidate)))
 diff --git a/agent/turn_iteration_prep.py b/agent/turn_iteration_prep.py
-index 8786dc7..40861fa 100644
+index 8786dc7..a424617 100644
 --- a/agent/turn_iteration_prep.py
 +++ b/agent/turn_iteration_prep.py
 @@ -529,14 +529,14 @@ def apply_retry_restarts(
@@ -33,10 +65,11 @@ index 8786dc7..40861fa 100644
 -        # _ephemeral_max_output_tokens. Keep a larger original provider/model
 -        # default as the floor so retries never downshift.
 -        _boost = (agent.max_tokens or 4096) * (2 ** length_continue_retries)
+-        _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
 +        # Boost output budget per retry: 2×, 4×, 8×, 16× base via _ephemeral_max_output_tokens.
 +        # Keep a larger original provider/model default as the floor so retries never downshift.
 +        _base = agent.max_tokens or 4096
-         _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
++        _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs) if hasattr(agent, "_requested_output_cap_from_api_kwargs") else None
          if _requested_cap is not None:
 -            _boost = max(_boost, _requested_cap)
 -        _boost_cap = max(32768, _requested_cap or 0)
@@ -47,7 +80,7 @@ index 8786dc7..40861fa 100644
          return _verdict("continue")
  
 diff --git a/agent/turn_tool_round.py b/agent/turn_tool_round.py
-index 10211a8..3634cdc 100644
+index 10211a8..0636001 100644
 --- a/agent/turn_tool_round.py
 +++ b/agent/turn_tool_round.py
 @@ -40,6 +40,7 @@ class ToolRoundVerdict:
@@ -66,26 +99,17 @@ index 10211a8..3634cdc 100644
  ) -> ToolRoundVerdict:
      """Execute one tool round in the exact original order. Persist-before-execute is a
      durability invariant: resume must see the executed block if a destructive tool restarts
-@@ -62,7 +64,8 @@ def run_tool_round(
+@@ -62,7 +64,7 @@ def run_tool_round(
              active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
              final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
              truncated_tool_call_retries=truncated_tool_call_retries,
 -            current_turn_user_idx=current_turn_user_idx, result=result,
-+            current_turn_user_idx=current_turn_user_idx,
-+            length_continue_retries=length_continue_retries, result=result,
++            current_turn_user_idx=current_turn_user_idx, length_continue_retries=0, result=result,
          )
  
      if not agent.quiet_mode:
-@@ -179,6 +182,7 @@ def run_tool_round(
- 
-     # Reset per-turn retry counters so one truncation can't poison the turn.
-     truncated_tool_call_retries = 0
-+    length_continue_retries = 0
-     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
-     # text arrives, so tool iterations don't stack blank lines.
-     agent._stream_needs_break = True
 diff --git a/agent/turn_truncation.py b/agent/turn_truncation.py
-index 4ed96d7..871fd8c 100644
+index 4ed96d7..471a50f 100644
 --- a/agent/turn_truncation.py
 +++ b/agent/turn_truncation.py
 @@ -253,6 +253,12 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
@@ -106,8 +130,9 @@ index 4ed96d7..871fd8c 100644
          else:
              agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
 -        _tc_boost = (agent.max_tokens if agent.max_tokens else 4096) * (2 ** n)
+-        _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
 +        _tc_base = (agent.max_tokens if agent.max_tokens else 4096)
-         _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
++        _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs) if hasattr(agent, "_requested_output_cap_from_api_kwargs") else None
          if _tc_requested_cap is not None:
 -            _tc_boost = max(_tc_boost, _tc_requested_cap)
 -        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
@@ -117,12 +142,3 @@ index 4ed96d7..871fd8c 100644
          return st.done("continue")  # don't append the broken response
      agent._flush_status_buffer()
      if st.is_stub:
-@@ -570,7 +577,7 @@ def continue_codex_incomplete(
-             usage = getattr(response, "usage", None)
-             observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
-             base = agent.max_tokens or int(observed or 0) or 4096
--            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(32768, base))
-+            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(65536, base * 4))
-         if not agent.quiet_mode:
-             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)", diagnostic=True)
-         # Spinner/heartbeat notice: these retries can take minutes and otherwise look
