@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useOptionalCompany } from "@/context/CompanyContext";
+import { agentsApi } from "@/api/agents";
 import {
   promptBudgetApi,
   promptBudgetSettingsQueryKey,
@@ -36,6 +37,12 @@ export function PromptBudgetSettingsPanel() {
   const [warnDraft, setWarnDraft] = useState<string>("");
   const [critDraft, setCritDraft] = useState<string>("");
   const [fallbackDraft, setFallbackDraft] = useState<string>("");
+  const [optimizerAgentId, setOptimizerAgentId] = useState<string>("");
+  const { data: agents = [], isPending: agentsPending, isError: agentsError } = useQuery({
+    queryKey: ["agents", companyId],
+    queryFn: () => agentsApi.list(companyId),
+    enabled: companyId.length > 0,
+  });
   const [enabled, setEnabled] = useState<boolean>(true);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +52,7 @@ export function PromptBudgetSettingsPanel() {
       setWarnDraft(numberToText(stored.warnPct));
       setCritDraft(numberToText(stored.critPct));
       setFallbackDraft(numberToText(stored.fallbackWindowTokens));
+      setOptimizerAgentId(stored.optimizerAgentId ?? "");
       setEnabled(stored.enabled);
       setLoaded(true);
     }
@@ -80,12 +88,16 @@ export function PromptBudgetSettingsPanel() {
       setError(t("area.costs-budgets-2.prompt-budget-settings-panel.fallbackInvalid", { message: fallback.message }));
       return;
     }
+    if (agentsPending || agentsError || (optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId))) {
+      setError(t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerInvalid"));
+      return;
+    }
     save.mutate({
       warnPct: warn.value,
       critPct: crit.value,
       enabled,
       fallbackWindowTokens: fallback.value,
-      optimizerAgentId: stored.optimizerAgentId,
+      optimizerAgentId: optimizerAgentId || null,
     });
   };
 
@@ -160,6 +172,24 @@ export function PromptBudgetSettingsPanel() {
           }}
           data-testid="prompt-budget-fallback-input"
         />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="prompt-budget-optimizer">{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerLabel")}</Label>
+        <select
+          id="prompt-budget-optimizer"
+          className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+          disabled={agentsPending || agentsError}
+          value={optimizerAgentId}
+          onChange={(event) => { setOptimizerAgentId(event.target.value); setError(null); }}
+          data-testid="prompt-budget-optimizer-input"
+        >
+          <option value="">{t("area.costs-budgets-2.prompt-budget-settings-panel.noOptimizer")}</option>
+          {optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId) && (
+            <option value={optimizerAgentId} disabled>{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerUnavailable")}</option>
+          )}
+          {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
       </div>
 
       <div className="flex items-center gap-2">

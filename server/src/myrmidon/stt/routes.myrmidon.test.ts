@@ -93,10 +93,14 @@ describe("voice-stt settings endpoint", () => {
       enabled: true,
       backend: "dashscope",
       baseUrl: "http://gateway.example.com",
+      keySecretConfigured: true,
+      deepgramKeySecretConfigured: false,
       model: "stt-model",
       problem: null,
     });
-    // The key secret NAME may travel; the value never exists in the response.
+    expect(res.body).not.toHaveProperty("keySecret");
+    expect(res.body).not.toHaveProperty("deepgramKeySecret");
+    // Secret references and values must not travel in the GET response.
     expect(JSON.stringify(res.body)).not.toContain("company-key-value");
   });
 

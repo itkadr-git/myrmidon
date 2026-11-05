@@ -578,6 +578,12 @@
     "diarization": "Разделение говорящих (diarization)",
     "maxDuration": "Лимит длительности, секунд",
     "maxDurationHint": "Более длинные записи отклоняются с audio_too_long.",
+    "baseUrl": "Адрес операторского STT endpoint",
+    "baseUrlHint": "Только операторский HTTP(S) endpoint; пустое поле наследует настройку экземпляра.",
+    "keySecret": "Ключ DashScope (секрет компании)",
+    "deepgramKeySecret": "Ключ Deepgram (секрет компании)",
+    "keepSecret": "Оставить текущий выбор секрета",
+    "noSecret": "Секрет не выбран",
     "save": "Сохранить настройки",
     "saving": "Сохранение..."
   },

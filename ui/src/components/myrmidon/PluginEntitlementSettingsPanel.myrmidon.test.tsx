@@ -140,6 +140,20 @@ describe("PluginEntitlementSettingsPanel", () => {
     expect(accept).not.toHaveBeenCalled();
   });
 
+  it("shows signed expiry preview when key is pasted", async () => {
+    vi.spyOn(apiModule.pluginEntitlementApi, "list").mockResolvedValue([]);
+    const container = renderPanel();
+    await waitFor(() => Boolean(container.querySelector('[data-testid="plugin-entitlement-empty"]')));
+    const keyInput = container.querySelector<HTMLInputElement>('[data-testid="plugin-entitlement-key-input"]')!;
+    // Craft a token with payload {"exp": 1750000000} -> base64url eyJleHAiOjE3NTAwMDAwMDB9
+    const dummyToken = "PEK1." + btoa(JSON.stringify({ exp: 1750000000 })).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_") + ".dummy-sig";
+    await act(async () => {
+      setInputValue(keyInput, dummyToken);
+    });
+    await waitFor(() => Boolean(container.querySelector('[data-testid="plugin-entitlement-signed-expiry-preview"]')));
+    expect(container.querySelector('[data-testid="plugin-entitlement-signed-expiry-preview"]')!.textContent).toContain("2025");
+  });
+
   it("removes a key through the API", async () => {
     const remove = vi.fn().mockResolvedValue([]);
     vi.spyOn(apiModule.pluginEntitlementApi, "list").mockResolvedValue(keys as never);
