@@ -2609,7 +2609,7 @@ describe.sequential("agent permission routes", () => {
     const selfAgentApp = createApp({
       type: "agent",
       agentId,
-      companyIds: [companyId],
+      companyId,
     });
     const resSelf = await requestApp(selfAgentApp, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
@@ -2625,7 +2625,7 @@ describe.sequential("agent permission routes", () => {
     const otherAgentApp = createApp({
       type: "agent",
       agentId: "other-agent-id",
-      companyIds: [companyId],
+      companyId,
     });
     const resOther = await requestApp(otherAgentApp, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
