@@ -2736,6 +2736,65 @@ export function agentRoutes(
     if (changedProtectedKey) assertInstanceAdmin(req);
   }
 
+  function assertLocalAdapterConfigConstraints(
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    if (adapterType !== "claude_local" && adapterType !== "codex_local") return;
+
+    const enumValue = (key: string, allowed: readonly string[]) => {
+      const value = adapterConfig[key];
+      if (value !== undefined && (typeof value !== "string" || !allowed.includes(value))) {
+        throw unprocessable(`Invalid ${adapterType} adapterConfig: ${key} must be one of ${allowed.join(", ")}`);
+      }
+    };
+    const stringList = (key: string) => {
+      const value = adapterConfig[key];
+      if (value === undefined) return [];
+      const values = Array.isArray(value)
+        ? value
+        : typeof value === "string" ? value.split(",").map((item) => item.trim()).filter(Boolean) : null;
+      if (!values || values.some((item) => typeof item !== "string" || !item.trim())) {
+        throw unprocessable(`Invalid ${adapterType} adapterConfig: ${key} must be an array of strings`);
+      }
+      return values as string[];
+    };
+
+    enumValue("filesystemScope", ["workspace"]);
+    enumValue("networkScope", ["deny", "allowlist"]);
+    enumValue("approvalMode", ["default", "deny", "bypass"]);
+    const extraPaths = stringList("filesystemExtraPaths");
+    if (extraPaths.some((item) => !path.isAbsolute(item))) {
+      throw unprocessable(`Invalid ${adapterType} adapterConfig: filesystemExtraPaths must contain absolute paths`);
+    }
+    const allowlist = stringList("networkAllowlist");
+    if (adapterConfig.networkScope === "allowlist" && allowlist.length === 0) {
+      throw unprocessable(`Invalid ${adapterType} adapterConfig: networkAllowlist is required when networkScope is allowlist`);
+    }
+    if (adapterConfig.networkScope === "deny" && allowlist.length > 0) {
+      throw unprocessable(`Invalid ${adapterType} adapterConfig: networkAllowlist must be empty when networkScope is deny`);
+    }
+    for (const key of ["probe", "dangerouslySkipPermissions", "dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox"]) {
+      if (adapterConfig[key] !== undefined && typeof adapterConfig[key] !== "boolean") {
+        throw unprocessable(`Invalid ${adapterType} adapterConfig: ${key} must be boolean`);
+      }
+    }
+    for (const key of ["timeoutSec", "graceSec"]) {
+      const value = adapterConfig[key];
+      if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 86_400)) {
+        throw unprocessable(`Invalid ${adapterType} adapterConfig: ${key} must be an integer from 0 to 86400`);
+      }
+    }
+    if (typeof adapterConfig.timeoutSec === "number" && typeof adapterConfig.graceSec === "number" &&
+      adapterConfig.graceSec > adapterConfig.timeoutSec) {
+      throw unprocessable(`Invalid ${adapterType} adapterConfig: graceSec must not exceed timeoutSec`);
+    }
+    if (typeof adapterConfig.filesystemSandboxCommand !== "undefined" &&
+      (typeof adapterConfig.filesystemSandboxCommand !== "string" || !adapterConfig.filesystemSandboxCommand.trim())) {
+      throw unprocessable(`Invalid ${adapterType} adapterConfig: filesystemSandboxCommand must be a non-empty string`);
+    }
+  }
+
   async function assertAdapterConfigConstraints(
     companyId: string,
     adapterType: string | null | undefined,
@@ -2744,6 +2803,7 @@ export function agentRoutes(
     // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
     const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
+    assertLocalAdapterConfigConstraints(adapterType, adapterConfig);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;

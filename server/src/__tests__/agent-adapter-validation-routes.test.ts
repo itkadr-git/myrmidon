@@ -172,7 +172,7 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
-async function createApp() {
+async function createApp(isInstanceAdmin = true) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -184,8 +184,8 @@ async function createApp() {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
+      source: "session",
+      isInstanceAdmin,
     };
     next();
   });
@@ -384,6 +384,66 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.adapterType).toBe("external_test");
+  });
+
+  it.each(["claude_local", "codex_local"])("validates %s sandbox config on create and edit", async (adapterType) => {
+    const app = await createApp(true);
+    const valid = {
+      filesystemScope: "workspace",
+      filesystemExtraPaths: ["/workspace/shared"],
+      networkScope: "allowlist",
+      networkAllowlist: ["example.com"],
+      timeoutSec: 120,
+      graceSec: 10,
+      approvalMode: "deny",
+      probe: true,
+    };
+    const create = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({ name: "Local agent", adapterType, adapterConfig: valid }));
+    expect(create.status, JSON.stringify(create.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledOnce();
+
+    const invalid = [
+      { filesystemScope: "unrestricted" },
+      { filesystemExtraPaths: ["relative/path"] },
+      { filesystemExtraPaths: [42] },
+      { networkScope: "all" },
+      { networkScope: "allowlist", networkAllowlist: [] },
+      { networkScope: "deny", networkAllowlist: ["example.com"] },
+      { networkAllowlist: [false] },
+      { approvalMode: "anything" },
+      { timeoutSec: -1 },
+      { timeoutSec: 2.5 },
+      { timeoutSec: 5, graceSec: 6 },
+      { dangerouslySkipPermissions: "true" },
+    ];
+    for (const adapterConfig of invalid) {
+      const created = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({ name: "Invalid local agent", adapterType, adapterConfig }));
+      expect(created.status, JSON.stringify({ adapterType, adapterConfig, body: created.body })).toBe(422);
+      const edited = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType, adapterConfig }));
+      expect(edited.status, JSON.stringify({ adapterType, adapterConfig, body: edited.body })).toBe(422);
+    }
+    expect(mockAgentService.create).toHaveBeenCalledOnce();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["claude_local", "codex_local"])("requires instance admin for %s sandbox changes", async (adapterType) => {
+    const app = await createApp(false);
+    const create = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({ name: "Local agent", adapterType, adapterConfig: { networkScope: "deny" } }));
+    expect(create.status).toBe(403);
+    const edited = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType, adapterConfig: { approvalMode: "bypass" } }));
+    expect(edited.status).toBe(403);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 
   it("does not inject CODEX_HOME or OPENAI_API_KEY when creating a keyless codex_local agent", async () => {
