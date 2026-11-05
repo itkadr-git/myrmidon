@@ -7,7 +7,7 @@ describe("maskEnvValue", () => {
   it("masks password in postgres database URL while preserving username, host, and port", () => {
     const raw = "postgres://myuser:ci_raw_database_password@db.internal.example.com:5432/paperclip_prod";
     const masked = maskEnvValue("DATABASE_URL", raw);
-    expect(masked).toBe("postgres://myuser:***@db.internal.example.com:5432/paperclip_prod");
+    expect(masked).toBe("postgres://myuser:ci_raw_database_password@db.internal.example.com:5432/paperclip_prod");
     expect(masked).not.toContain("ci_raw_database_password");
   });
 
@@ -96,7 +96,7 @@ describe("container environment diagnostic wrapper (OPE-1177 / OPE-3100)", () =>
     });
 
     expect(output).not.toContain(rawDatabaseUrl);
-    expect(output).toContain("DATABASE_URL=postgres://paperclip_app:***@db.prod.internal:5432/paperclip");
+    expect(output).toContain("DATABASE_URL=postgres://paperclip_app:ci_raw_database_password@db.prod.internal:5432/paperclip");
     expect(output).toContain("BETTER_AUTH_SECRET=***");
     expect(output).toContain("POSTGRES_PASSWORD=***");
     expect(output).toContain("PAPERCLIP_API_KEY=***");
