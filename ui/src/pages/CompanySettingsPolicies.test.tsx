@@ -69,6 +69,7 @@ function company(overrides: Record<string, unknown> = {}) {
 }
 
 const MEMBERS = {
+  access: { currentUserRole: "owner", canManageMembers: true, canInviteUsers: true, canApproveJoinRequests: true },
   members: [
     { id: "m1", principalId: "user-1", status: "active", user: { name: "Alice", email: "a@x.test" } },
     { id: "m2", principalId: "user-2", status: "active", user: { name: "Bob", email: "b@x.test" } },
