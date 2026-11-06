@@ -280,7 +280,7 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                           {row.usage?.utilizationPercent != null
                             ? t("area.costs-budgets-2.gateway-keys-tab.usage.gatewaySpendOfCap", {
                               value: formatCents(row.gatewaySpendUsd * 100, locale),
-                              percent: row.usage.utilizationPercent.toFixed(1),
+                              percent: (row.usage?.utilizationPercent ?? 0).toFixed(1),
                             })
                             : t("area.costs-budgets-2.gateway-keys-tab.usage.gatewaySpend", {
                               value: formatCents(row.gatewaySpendUsd * 100, locale),
