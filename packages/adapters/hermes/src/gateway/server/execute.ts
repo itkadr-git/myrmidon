@@ -1721,7 +1721,23 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
+// myrmidon(OPE-11947): Hermes' own give-up notice. When the model pool is out of
+// quota (or the model never answers) Hermes retries, then ends the turn with
+// "⚠️ No reply: <model> didn't produce a reply this time, even after retries.
+// Send `continue` to try again, or switch models with /model." as the final
+// response. The turn "completes", so the board recorded a succeeded run whose
+// comment was that notice and re-woke the agent every few minutes (1709 of 5998
+// runs in 24 h). The notice is anchored at the start and bounded in length so a
+// long agent report that merely quotes it is never reclassified.
+export const HERMES_NO_REPLY_SENTINEL_RE =
+  /^\u26A0\uFE0F?\s*No reply:.{0,300}didn['\u2019]t produce a reply.{0,300}$/i;
+
+export function isHermesNoReplySentinel(response: string): boolean {
+  return HERMES_NO_REPLY_SENTINEL_RE.test(response.trim().replace(/\s+/g, " "));
+}
+
 export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  HERMES_NO_REPLY_SENTINEL_RE,
   // myrmidon(OPE-10494): provider maintenance / resource-exhaustion replies.
   // The upstream proxy answers with a bilingual Vietnamese/English notice
   // ("Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to
@@ -2163,8 +2179,14 @@ export function mapFinalResultForTest(input: {
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
   const hasToolCalls = Array.isArray(payload.tool_calls) && payload.tool_calls.length > 0;
+  // myrmidon(OPE-11947): Hermes' "No reply" give-up notice is the gateway's own
+  // text, never a tool result, so it is a provider failure even when the turn
+  // made tool calls earlier. Without tool calls nothing was acted on and the
+  // run is safe to replay (see executionRecovery below).
+  const hermesNoReply = input.terminal.status === "completed" && isHermesNoReplySentinel(output);
   const providerErrorAsContent = Boolean(
-    input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output),
+    hermesNoReply ||
+      (input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output)),
   );
   const mapped = providerErrorAsContent
     ? { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" }
@@ -2265,6 +2287,11 @@ export function mapFinalResultForTest(input: {
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
+    // myrmidon(OPE-11947): the model returned nothing and no tool ran, so the
+    // retry scheduler may replay the run (absent evidence never authorizes it).
+    ...(hermesNoReply && !hasToolCalls
+      ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } as const }
+      : {}),
     failedBeforeModel,
     retryNotBefore,
     ...(usage ? { usage } : {}),
@@ -2330,6 +2357,9 @@ export function mapFinalResultForTest(input: {
         return traces.length > 0 ? { llmCallTraces: { version: 1, calls: traces } } : {};
       })(),
       ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
+      // myrmidon(OPE-11947): the board defers the retry of a model-unavailable
+      // run by 30 min and up instead of the 30 s transient pair.
+      ...(hermesNoReply ? { model_unavailable: true } : {}),
     },
   };
 }

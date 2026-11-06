@@ -8,7 +8,7 @@ import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
 } from "@myrmidon/adapter-utils/github-launcher";
-import { execute, errorResult, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveEffectiveSessionKeyStrategy, resolveSessionKey } from "./execute.js";
+import { execute, errorResult, isHermesNoReplySentinel, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveEffectiveSessionKeyStrategy, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
   CREATE_CANCEL_GRACE_MS,
@@ -697,6 +697,38 @@ describe("execute", () => {
     expect(result.resultJson?.result).toBe("");
     expect(result.resultJson?.output).toBe("");
     expect(result.resultJson?.provider_error_as_content).toBe(true);
+  });
+
+  // myrmidon(OPE-11947): the gateway's "No reply" give-up notice arrives as a
+  // completed turn; it must end as a failed, comment-free, model-unavailable run
+  // (after the configured fallback was tried).
+  it("ends a Hermes 'No reply' notice as a failed model-unavailable run after trying the fallback", async () => {
+    const notice =
+      "⚠️ No reply: chatgpt-pool/gpt-6-luna didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.";
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: notice })}`, ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }));
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ result: "", output: "", provider_error_as_content: true, model_unavailable: true });
   });
 
   // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue
@@ -1876,6 +1908,95 @@ describe("mapFinalResultForTest", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.errorFamily).toBeUndefined();
+  });
+
+  // myrmidon(OPE-11947): Hermes ends a turn whose model never answered with its
+  // own "No reply" notice. It arrives as a *completed* turn; the board used to
+  // record a succeeded run, post the notice as the agent's comment and count
+  // the run as progress (1709 of 5998 runs in 24 h, re-woken every few minutes).
+  describe("Hermes 'No reply' give-up notice (OPE-11947)", () => {
+    const NO_REPLY =
+      "⚠️ No reply: chatgpt-pool/gpt-6-luna didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.";
+
+    function mapCompleted(output: string, payloadExtra: Record<string, unknown> = {}) {
+      return mapFinalResultForTest({
+        terminal: {
+          runId: "run-no-reply",
+          status: "completed",
+          output,
+          payload: { status: "completed", output, usage: null, ...payloadExtra },
+        },
+        outputChunks: [],
+        sessionKey: null,
+        strategy: "issue",
+        configuredModel: "gpt-6-luna",
+      });
+    }
+
+    it("recognizes the notice for any model name and apostrophe, and nothing else", () => {
+      for (const text of [
+        NO_REPLY,
+        "⚠️ No reply: antigravity/gemini-3.8-flash-medium didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.",
+        "⚠ No reply: m didn\u2019t produce a reply this time, even after retries.",
+        `  ${NO_REPLY}\n`,
+      ]) {
+        expect(isHermesNoReplySentinel(text)).toBe(true);
+        expect(isProviderErrorAsContent(text)).toBe(true);
+      }
+      for (const text of [
+        "No reply: m didn't produce a reply",
+        "⚠️ Warning: the build did not produce a reply",
+        `The agent printed this notice earlier: ${NO_REPLY}`,
+        `${NO_REPLY} ${"x".repeat(400)}`,
+        "Done. I replied to the thread and there was no reply from QA.",
+      ]) {
+        expect(isHermesNoReplySentinel(text)).toBe(false);
+      }
+    });
+
+    it("turns the completed notice into a failed, retryable, comment-free run", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const result = mapCompleted(NO_REPLY);
+      warn.mockRestore();
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("hermes_gateway_run_failed");
+      expect(result.errorFamily).toBe("transient_upstream");
+      // Nothing for the board to post as a comment or to read as progress.
+      expect(result.summary).toBeUndefined();
+      expect(result.resultJson).toMatchObject({
+        result: "",
+        output: "",
+        usage: null,
+        provider_error_as_content: true,
+        model_unavailable: true,
+      });
+      expect(JSON.stringify(result)).not.toContain("No reply");
+      // No reply and no tool call: the retry scheduler may replay the run.
+      expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+    });
+
+    it("still fails the run when the turn made tool calls, but offers no replay evidence", () => {
+      const result = mapCompleted(NO_REPLY, { tool_calls: [{ name: "lookup", result: "ok" }] });
+      expect(result.exitCode).toBe(1);
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.summary).toBeUndefined();
+      expect(result.resultJson).toMatchObject({ result: "", output: "", model_unavailable: true });
+      expect(result.executionRecovery).toBeUndefined();
+    });
+
+    it("leaves ordinary output untouched", () => {
+      const answer = "Updated the config and opened PR #12. No reply from QA yet, will check again.";
+      const result = mapCompleted(answer);
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode).toBeUndefined();
+      expect(result.errorFamily).toBeUndefined();
+      expect(result.summary).toBe(answer);
+      expect(result.resultJson).toMatchObject({ result: answer, output: answer });
+      expect(result.resultJson).not.toHaveProperty("model_unavailable");
+      expect(result.resultJson).not.toHaveProperty("provider_error_as_content");
+      expect(result.executionRecovery).toBeUndefined();
+    });
   });
 
   it("keeps a failure without the key-permission signature a plain provider failure", () => {
