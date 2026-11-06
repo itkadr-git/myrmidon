@@ -55,10 +55,8 @@ async function queryAgentSpendWindows(db: Db, now: Date): Promise<AgentSpendWind
   // the driver refuses it (the same shape other services in this repo use).
   const dayStartIso = new Date(now.getTime() - AGENT_SPEND_WINDOW_MS).toISOString();
   const weekStart = new Date(now.getTime() - AGENT_SPEND_WEEK_MS);
-  return db.transaction(async (rawTx: unknown) => {
-    const tx = rawTx as unknown as Db;
-    await tx.execute(sql`select set_config('statement_timeout', '10000', true)`);
-    const rows = await tx
+  const aggregate = async (handle: Db): Promise<AgentSpendWindow[]> => {
+    const rows = await handle
       .select({
         companyId: litellmCostEvents.companyId,
         agentId: litellmCostEvents.agentId,
@@ -76,6 +74,15 @@ async function queryAgentSpendWindows(db: Db, now: Date): Promise<AgentSpendWind
       weeklyCents: Number(row.weeklyCents ?? 0),
       zeroCostEvents: Number(row.zeroCostEvents ?? 0),
     }));
+  };
+  // A real handle bounds the statement inside a transaction (set_config with
+  // is_local = true: gone at commit). A minimal handle without transaction
+  // support — a test double — just runs the aggregate under the role default.
+  if (typeof (db as { transaction?: unknown }).transaction !== "function") return aggregate(db);
+  return db.transaction(async (rawTx: unknown) => {
+    const tx = rawTx as unknown as Db;
+    await tx.execute(sql`select set_config('statement_timeout', '10000', true)`);
+    return aggregate(tx);
   });
 }
 

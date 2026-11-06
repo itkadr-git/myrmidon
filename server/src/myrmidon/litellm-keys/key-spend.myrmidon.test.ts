@@ -57,6 +57,15 @@ describe("myrmidon(OPE-11776) ledger spend read", () => {
     expect(statements()).toBe(1);
   });
 
+  it("runs the aggregate directly on a minimal handle without transaction support", async () => {
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ groupBy: async () => [ROW] }) }) }),
+    } as never;
+    await expect(readAgentSpendWindows(db)).resolves.toEqual([
+      { companyId: "company-a", agentId: "agent-a", dailyCents: 1299, weeklyCents: 1699, zeroCostEvents: 2 },
+    ]);
+  });
+
   it("reuses one read inside the TTL and joins concurrent callers", async () => {
     const { db, reads } = stubDb([[ROW], [ROW]]);
     const [first, second] = await Promise.all([readAgentSpendWindows(db), readAgentSpendWindows(db)]);

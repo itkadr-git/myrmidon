@@ -60,6 +60,7 @@ function clientOf(rows: GatewayKeyBudgetRow[] | Error): LitellmGatewayClient {
   return {
     listSpendLogs: async () => [],
     listModels: async () => [],
+    listAvailableModels: async () => [],
     listKeyBudgets: async () => {
       if (rows instanceof Error) throw rows;
       return rows;
