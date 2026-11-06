@@ -34,7 +34,7 @@ import {
 } from "@myrmidon/db";
 // myrmidon(N2): pending-card expiry is unconditional for terminal issues;
 // delivery receipts do not keep a closed issue actionable.
-import { resolveAgentHeadId } from "./responsible-head.js";
+import { resolveAgentHeadId, resolveAgentManagerChainIds } from "./responsible-head.js";
 import { resolveOwnerDecisionRecipient } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 import {
   trackInteractionCreated,
@@ -3408,7 +3408,65 @@ export function issueThreadInteractionService(
         );
       }
 
-      if (normalizedData.kind !== "ask_user_questions" && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
+      const [issueContextRow] = await db
+        .select({
+          id: issues.id,
+          originKind: issues.originKind,
+          projectId: issues.projectId,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          responsibleAgentId: issues.responsibleAgentId,
+          responsibleUserId: issues.responsibleUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          conversationUserId: issues.conversationUserId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+          ),
+        );
+
+      const isChatChannelIssue =
+        issueContextRow?.originKind === "chat_channel" ||
+        Boolean(
+          await db
+            .select({ id: chatConversations.id })
+            .from(chatConversations)
+            .where(
+              and(
+                eq(chatConversations.companyId, issue.companyId),
+                eq(chatConversations.issueId, issue.id),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0]),
+        );
+
+      // OPE-11751: an operational question from an agent goes to its own manager
+      // (reportsTo) and climbs the same chain on timeout; it is never routed to
+      // the owner and never to the company head instead of the manager. An agent
+      // with no invokable manager keeps the pre-existing routing (issue head,
+      // then the operator queue) so that a question is never rejected for lack
+      // of a manager. Questions reserved for humans (human_only) keep the
+      // owner-delivery path.
+      const managerChain: string[] =
+        actor.agentId
+        && normalizedData.kind === "ask_user_questions"
+        && policy.effectiveResolverPolicy !== "human_only"
+        // A question asked inside a chat conversation is answered by the person
+        // in that chat, not by a manager.
+        && !isChatChannelIssue
+        && !normalizedData.addresseeAgentId
+        && !normalizedData.addresseeUserId
+        && !(normalizedData as any).addresseeQueue
+          ? await resolveAgentManagerChainIds(db, issue.companyId, actor.agentId)
+          : [];
+      const routeViaManagerChain = managerChain.length > 0;
+
+      if (!routeViaManagerChain && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
         const cannotTargetAgent =
           normalizedData.kind === "request_confirmation" &&
           (normalizedData.payload.toolAction !== undefined ||
@@ -3530,43 +3588,6 @@ export function issueThreadInteractionService(
         }
       }
 
-      const [issueContextRow] = await db
-        .select({
-          id: issues.id,
-          originKind: issues.originKind,
-          projectId: issues.projectId,
-          assigneeAgentId: issues.assigneeAgentId,
-          assigneeUserId: issues.assigneeUserId,
-          responsibleAgentId: issues.responsibleAgentId,
-          responsibleUserId: issues.responsibleUserId,
-          createdByAgentId: issues.createdByAgentId,
-          createdByUserId: issues.createdByUserId,
-          conversationUserId: issues.conversationUserId,
-        })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.id, issue.id),
-            eq(issues.companyId, issue.companyId),
-          ),
-        );
-
-      const isChatChannelIssue =
-        issueContextRow?.originKind === "chat_channel" ||
-        Boolean(
-          await db
-            .select({ id: chatConversations.id })
-            .from(chatConversations)
-            .where(
-              and(
-                eq(chatConversations.companyId, issue.companyId),
-                eq(chatConversations.issueId, issue.id),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0]),
-        );
-
       let projectRoles: InteractionProjectRoles | null = null;
       if (issueContextRow?.projectId) {
         const [projectRow] = await db
@@ -3597,35 +3618,6 @@ export function issueThreadInteractionService(
         : actor.userId
           ? { userId: actor.userId }
           : { serviceQueue: "system" };
-      const isAgentQuestion = Boolean(
-        actor.agentId
-        && normalizedData.kind === "ask_user_questions"
-        // Human-only questions are owner decisions and must retain the
-        // configured owner delivery path. Manager routing is for operational
-        // agent questions, not for interactions explicitly reserved for humans.
-        && policy.effectiveResolverPolicy !== "human_only",
-      );
-      const managerChain: string[] = [];
-      if (isAgentQuestion && actor.agentId) {
-        let currentId: string = actor.agentId;
-        const seen = new Set<string>([currentId]);
-        while (true) {
-          const [current] = await db.select({ reportsTo: agents.reportsTo })
-            .from(agents)
-            .where(and(eq(agents.id, currentId), eq(agents.companyId, issue.companyId)))
-            .limit(1);
-          const parentId = current?.reportsTo;
-          if (!parentId || seen.has(parentId)) break;
-          const [parent] = await db.select({ status: agents.status })
-            .from(agents)
-            .where(and(eq(agents.id, parentId), eq(agents.companyId, issue.companyId)))
-            .limit(1);
-          if (!parent || !isAgentStatusInvokable(parent.status)) break;
-          managerChain.push(parentId);
-          seen.add(parentId);
-          currentId = parentId;
-        }
-      }
 
       let recipientCandidate: InteractionRecipient | null = null;
       if (normalizedData.addresseeAgentId) {
@@ -3636,9 +3628,9 @@ export function issueThreadInteractionService(
         recipientCandidate = {
           serviceQueue: (normalizedData as any).addresseeQueue,
         };
-      } else if (!isAgentQuestion && isChatChannelIssue) {
+      } else if (!routeViaManagerChain && isChatChannelIssue) {
         recipientCandidate = { serviceQueue: "default" };
-      } else if (!isAgentQuestion) {
+      } else if (!routeViaManagerChain) {
         if (policy.effectiveResolverPolicy === "human_only") {
           if (actor.agentId) {
             const ownerRec = await resolveOwnerDecisionRecipient(db, {
@@ -3762,7 +3754,7 @@ export function issueThreadInteractionService(
       let routeType: InteractionRouteType;
       if (
         !recipientCandidate &&
-        !isAgentQuestion &&
+        !routeViaManagerChain &&
         (normalizedData.kind === "ask_user_questions" ||
           normalizedData.kind === "suggest_tasks")
       ) {
@@ -3990,8 +3982,7 @@ export function issueThreadInteractionService(
               addresseeQueue: finalAddresseeQueue,
               routeType,
               timeoutAt,
-              escalationChain: isAgentQuestion && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId
-                && managerChain.length > 0
+              escalationChain: routeViaManagerChain
                 ? managerChain.map((agentId, level) => ({
                     recipient: { agentId },
                     afterMinutes: level * DEFAULT_INTERACTION_TIMEOUT_MINUTES,
