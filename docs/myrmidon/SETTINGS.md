@@ -2537,3 +2537,13 @@ code against FLAGS.md / SETTINGS.md / the change fragments): entries restored fo
 code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
 subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
 `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.
+
+## 1.7 UI-2.0 ЯЗЫК: часовой пояс и форматы чисел и дат в общих настройках экземпляра (ia-v2 §2.3 п.11, §6.1 G10)
+
+В общие настройки экземпляра (`GET`/`PATCH /instance/settings/general`) добавлены поля:
+- `timeZone` (строка, по умолчанию `Asia/Irkutsk`): IANA-идентификатор часового пояса (например, `Europe/Moscow`, `Asia/Irkutsk`, `UTC`), валидируется через `Intl.DateTimeFormat`. Неизвестный или невалидный идентификатор возвращает HTTP 400.
+- `numberFormat` (`"en-US"` | `"ru-RU"`, по умолчанию `"en-US"`): формат чисел (`en-US` — 1,234.56, `ru-RU` — 1 234,56).
+- `dateFormat` (`"ymd"` | `"dmy"` | `"mdy"`, по умолчанию `"ymd"`): порядок компонентов даты.
+
+Настройки применяются без перезапуска сервера, не затирают другие поля `general` и вложенные блоки. Для существующих экземпляров без этих полей возвращаются значения по умолчанию. Валюта остаётся USD и не настраивается. Поля поддерживают переопределение операторских defaults через `MYRMIDON_SETTING_DEFAULTS`.
+

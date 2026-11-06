@@ -49,6 +49,10 @@ export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   boardProcessesSettingsSchema,
+  isValidIanaTimeZone,
+  instanceTimeZoneSchema,
+  instanceNumberFormatSchema,
+  instanceDateFormatSchema,
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -344,6 +348,7 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  agentVisibilityAuthorizationPolicySchema,
   assignmentAuthorizationPolicySchema,
   protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
@@ -351,6 +356,7 @@ export {
   sourceTrustMetadataSchema,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
+  type AgentVisibilityAuthorizationPolicyInput,
   type TrustAuthorizationPolicyInput,
   type SourceTrustMetadataInput,
 } from "./trust-policy.js";
@@ -1018,3 +1024,6 @@ export * from "./guardrails.js";
 export * from "./user-block.js";
 export * from "./audit.js";
 export * from "./server-onboarding.js";
+export * from "./server-onboard.js";
+export * from "./updates.js";
+export * from "./auto-update-settings.js";

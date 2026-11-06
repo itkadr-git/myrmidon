@@ -42,6 +42,27 @@ describe("parseSettingDefaults", () => {
     expect(() =>
       parseSettingDefaults('{"feedbackDataSharingPreference":"sometimes"}'),
     ).toThrow(/feedbackDataSharingPreference/);
+    expect(() =>
+      parseSettingDefaults('{"timeZone":"Mars/Base"}'),
+    ).toThrow(/timeZone/);
+    expect(() =>
+      parseSettingDefaults('{"numberFormat":"de-DE"}'),
+    ).toThrow(/numberFormat/);
+    expect(() =>
+      parseSettingDefaults('{"dateFormat":"invalid"}'),
+    ).toThrow(/dateFormat/);
+  });
+
+  it("parses timeZone, numberFormat, and dateFormat operator defaults", () => {
+    const { defaults, unknown } = parseSettingDefaults(
+      '{"timeZone":"Europe/Moscow","numberFormat":"ru-RU","dateFormat":"dmy"}',
+    );
+    expect(defaults).toEqual({
+      timeZone: "Europe/Moscow",
+      numberFormat: "ru-RU",
+      dateFormat: "dmy",
+    });
+    expect(unknown).toEqual([]);
   });
 
   it("keeps every registry entry a real general-settings field", () => {

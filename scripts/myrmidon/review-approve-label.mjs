@@ -32,16 +32,16 @@
 // and state is preserved. Once main turns green, merge resumes and backoff is reset.
 // Repeated runs are safe and idempotent.
 //
-// Usage (run it every few minutes from the operator host or devflow cron):
+// Usage (run it from CI or a Myrmidon worker; no host-installed scripts are needed):
 //   node scripts/myrmidon/review-approve-label.mjs --repo owner/name \
-//        --verdicts <file.json> | --psql-cmd '<command that runs psql -At and reads SQL on stdin>' \
 //        [--since-hours 48] [--reviewer-pattern '^adm-dev-review'] [--dry-run] [--json] \
 //        [--check-main] [--base-branch main] [--auto-merge] [--state-file <path>]
 //   node scripts/myrmidon/review-approve-label.mjs --print-sql [--since-hours 48]
 //
-// The verdict file is a JSON array of {id, issueId, createdAt, authorName, body}.
-// GitHub is reached with `gh api` and `gh pr merge` (GH_TOKEN must be allowed to edit labels and merge); the
-// token is never printed. Exit code: 0 ok, 1 a GitHub/board call failed, 2 usage.
+// Verdicts are fetched from the Myrmidon REST API using PAPERCLIP_API_URL,
+// PAPERCLIP_COMPANY_ID, and PAPERCLIP_API_KEY. PAPERCLIP_RUN_ID is forwarded
+// as X-Paperclip-Run-Id for board requests. Exit code: 0 ok, 1 a board/GitHub
+// call failed, 2 usage.
 
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -230,6 +230,8 @@ export function decideApproveLabel({
   mainGreen = true,
   isMainRed = false,
   baseBehind = false,
+  basePr = null,
+  cannotRetarget = false,
   migrationViolation = null,
   autoMerge = false,
 }) {
@@ -265,6 +267,28 @@ export function decideApproveLabel({
       return { action: "hold", disableAutoMerge: true, reason: "base-behind" };
     }
     return { action: "hold", reason: "base-behind" };
+  }
+
+  // Stacked PR base check (OPE-10815): if the PR's base is neither defaultBranch nor rel/*,
+  // check the PR of that base. If it's already merged or closed, the PR cannot be merged into
+  // the dead base branch.
+  const defaultBranch = pr.defaultBranch || "main";
+  const isBaseDelivering = !pr.baseRef || pr.baseRef === defaultBranch || pr.baseRef.startsWith("rel/");
+  if (!isBaseDelivering && basePr && (basePr.merged || basePr.state === "closed")) {
+    if (cannotRetarget) {
+      return {
+        action: "refuse",
+        reason: "cannot-retarget-base-to-main",
+        disableAutoMerge: Boolean(pr.autoMerge),
+        removeLabel: Boolean(pr.labels && pr.labels.includes(APPROVED_LABEL)),
+      };
+    }
+    return {
+      action: "hold",
+      reason: "base-retargeted-waiting-ci",
+      retargetBase: defaultBranch,
+      disableAutoMerge: Boolean(pr.autoMerge),
+    };
   }
 
   const alreadyLabeled = pr.labels.includes(APPROVED_LABEL);
@@ -360,9 +384,27 @@ export function createGitHubPort(repo, options = {}) {
         merged: Boolean(data.merged_at) || Boolean(data.merged),
         headSha: data.head?.sha ?? null,
         baseSha: data.base?.sha ?? null,
+        baseRef: data.base?.ref ?? null,
+        defaultBranch: data.base?.repo?.default_branch ?? "main",
         labels: (data.labels ?? []).map((label) => label.name),
         autoMerge: Boolean(data.auto_merge || data.autoMergeRequest),
       };
+    },
+    async updatePullRequestBase(number, base) {
+      await run(["-X", "PATCH", `repos/${repo}/pulls/${number}`, "-f", `base=${base}`]);
+    },
+    async findPullRequestByHead(headBranch) {
+      const owner = repo.split("/")[0];
+      const data = await run([`repos/${repo}/pulls?head=${encodeURIComponent(`${owner}:${headBranch}`)}&state=all`]);
+      if (Array.isArray(data) && data.length > 0) {
+        const item = data[0];
+        return {
+          number: item.number,
+          state: item.state,
+          merged: Boolean(item.merged_at || item.merged),
+        };
+      }
+      return null;
     },
     async pullRequestFiles(number) {
       const data = await run([`repos/${repo}/pulls/${number}/files?per_page=100`]);
@@ -645,6 +687,30 @@ export async function runOnce({
           continue;
         }
       }
+
+      // Stacked PR base check (OPE-10815): if base is non-main, non-rel/*, inspect base PR
+      let basePr = null;
+      let cannotRetarget = false;
+      const defaultBranch = pr.defaultBranch || "main";
+      const isBaseDelivering = !pr.baseRef || pr.baseRef === defaultBranch || pr.baseRef.startsWith("rel/");
+      if (pr.state === "open" && !pr.draft && !isBaseDelivering && typeof github.findPullRequestByHead === "function") {
+        try {
+          basePr = await github.findPullRequestByHead(pr.baseRef);
+          if (basePr && (basePr.merged || basePr.state === "closed")) {
+            if (!dryRun && typeof github.updatePullRequestBase === "function") {
+              try {
+                await github.updatePullRequestBase(prNumber, defaultBranch);
+              } catch (err) {
+                cannotRetarget = true;
+                log(`PR #${prNumber}: failed to retarget base to ${defaultBranch}: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+          }
+        } catch (err) {
+          log(`PR #${prNumber}: failed to inspect base PR for ${pr.baseRef}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       const decision = decideApproveLabel({
         verdict,
         pr,
@@ -654,6 +720,8 @@ export async function runOnce({
         mainGreen: mainGreen && mainMigrationListOk,
         isMainRed: holdAutoMerge,
         baseBehind,
+        basePr,
+        cannotRetarget,
         migrationViolation,
         autoMerge: autoMerge && !holdAutoMerge,
       });
@@ -761,21 +829,53 @@ export async function main(argv, io = {}) {
       return 0;
     }
     if (!args.repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repo)) throw new Error("--repo owner/name is required");
-    if (Boolean(args.verdicts) === Boolean(args.psqlCmd)) throw new Error("give exactly one of --verdicts <file> or --psql-cmd <command>");
+    if (!args.verdicts && !args.psqlCmd && !io.fetchImpl && (!process.env.PAPERCLIP_API_KEY || !process.env.PAPERCLIP_COMPANY_ID)) throw new Error("give exactly one of --verdicts <file> or --psql-cmd <command>");
     new RegExp(args.reviewerPattern);
   } catch (e) {
     err(e instanceof Error ? e.message : String(e));
     return 2;
   }
   let comments;
-  try {
-    comments = args.verdicts
-      ? JSON.parse(fs.readFileSync(args.verdicts, "utf8"))
-      : await (io.readFromPsql ?? readVerdictsFromPsql)(args.psqlCmd, boardVerdictSql(args.sinceHours));
-    if (!Array.isArray(comments)) throw new Error("the verdict source is not a JSON array");
-  } catch (e) {
-    err(`cannot read the verdicts: ${e instanceof Error ? e.message : String(e)}`);
-    return 1;
+  if (args.verdicts || args.psqlCmd) {
+    try {
+      comments = args.verdicts
+        ? JSON.parse(fs.readFileSync(args.verdicts, "utf8"))
+        : await (io.readFromPsql ?? readVerdictsFromPsql)(args.psqlCmd, boardVerdictSql(args.sinceHours));
+      if (!Array.isArray(comments)) throw new Error("the verdict source is not a JSON array");
+    } catch (e) {
+      err(`cannot read the verdicts: ${e instanceof Error ? e.message : String(e)}`);
+      return 1;
+    }
+  } else {
+    const apiUrl = process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100";
+    const apiKey = process.env.PAPERCLIP_API_KEY;
+    const companyId = process.env.PAPERCLIP_COMPANY_ID;
+    if (!apiKey || !companyId) {
+      err("PAPERCLIP_API_KEY and PAPERCLIP_COMPANY_ID are required");
+      return 1;
+    }
+    const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+    if (process.env.PAPERCLIP_RUN_ID) headers["X-Paperclip-Run-Id"] = process.env.PAPERCLIP_RUN_ID;
+    const get = async (path) => {
+      const response = await (io.fetchImpl ?? fetch)(`${apiUrl.replace(/\/$/, "")}${path}`, { headers });
+      if (!response.ok) throw new Error(`GET ${path} failed: ${response.status}`);
+      return response.json();
+    };
+    try {
+      const issues = await get(`/api/companies/${encodeURIComponent(companyId)}/issues?limit=200&view=compact`);
+      const cutoff = Date.now() - args.sinceHours * 60 * 60 * 1000;
+      comments = [];
+      for (const issue of issues) {
+        const issueComments = await get(`/api/issues/${encodeURIComponent(issue.id)}/comments`);
+        for (const comment of issueComments) {
+          if (new Date(comment.createdAt).getTime() < cutoff) continue;
+          comments.push({ ...comment, authorName: comment.authorName ?? comment.author?.name ?? "" });
+        }
+      }
+    } catch (e) {
+      err(`cannot read verdicts from Myrmidon API: ${e instanceof Error ? e.message : String(e)}`);
+      return 1;
+    }
   }
   const github = io.github ?? createGitHubPort(args.repo);
   const stateStore = io.stateStore ?? (args.stateFile ? createFileStateStore(args.stateFile) : null);

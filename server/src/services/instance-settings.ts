@@ -15,6 +15,9 @@ export type InstanceSettingsWriteDb = Pick<
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -64,6 +67,8 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/channel-connectors
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/channel-connectors/bridge/notify-settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
+// myrmidon(BOARD-JANITOR OPE-10750): keep board-janitor lastRunAt across vendor writes of `general`
+import { preserveBoardJanitorGeneralKey } from "../myrmidon/board-janitor/settings.js";
 // myrmidon(1.6.6 PROCS-J): keep the board's process counts across vendor writes of `general`
 import { preserveBoardProcessesGeneralKey } from "../myrmidon/board-processes/settings.js";
 import { preserveOwnerDeliveryGeneralKey } from "../myrmidon/owner-delivery/settings.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
@@ -103,6 +108,7 @@ import { preserveProviderUsageThresholdGeneralKey } from "../myrmidon/provider-u
 // myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
 import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
 import { preserveUsersAdminAGeneralKey } from "../myrmidon/users-admin-a/store.js"; // myrmidon(1.7 USERS-ADMIN-UI A)
+import { preserveUpdateSettingsGeneralKey } from "../routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -268,7 +274,7 @@ export async function resolveWorktreeRunExecutionActivationState(options: {
   }
 }
 
-function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
+export function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   const parsed = instanceGeneralSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
@@ -278,6 +284,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      timeZone: parsed.data.timeZone ?? DEFAULT_INSTANCE_TIME_ZONE,
+      numberFormat: parsed.data.numberFormat ?? DEFAULT_INSTANCE_NUMBER_FORMAT,
+      dateFormat: parsed.data.dateFormat ?? DEFAULT_INSTANCE_DATE_FORMAT,
       // Absent => unrestricted; only carry through an explicit policy.
       ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
       // myrmidon(WORKSPACE-HYGIENE): the stored workspace quotas survive every general write
@@ -333,6 +342,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // settings survives every general write (one atomic write carries the
       // settings and the journal entry together).
       ...(parsed.data.swarmClaimJournal ? { swarmClaimJournal: parsed.data.swarmClaimJournal } : {}),
+      ...(parsed.data.alertRecovery ? { alertRecovery: parsed.data.alertRecovery } : {}),
+      ...(parsed.data.alertRecoveryJournal ? { alertRecoveryJournal: parsed.data.alertRecoveryJournal } : {}),
       // myrmidon(REVIEW-REWORK): the stored review-return loop settings survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.reviewRework ? { reviewRework: parsed.data.reviewRework } : {}),
@@ -417,6 +428,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(DB-PERF-C-P4): the stored tool gateway policy cache TTL
       // survives every general write (it is edited on its own settings route).
       ...(parsed.data.toolPolicyCache ? { toolPolicyCache: parsed.data.toolPolicyCache } : {}),
+      // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): preserve instance-level
+      // model-facing tool output limit through general settings writes.
+      ...(parsed.data.toolOutputLimit ? { toolOutputLimit: parsed.data.toolOutputLimit } : {}),
+      ...(parsed.data.toolOutputChars !== undefined ? { toolOutputChars: parsed.data.toolOutputChars } : {}),
       // myrmidon(PERF-DIET-K): the session-generation thresholds are edited on the
       // general settings page. Without this line the normalizer drops the key, so a
       // PATCH would not roundtrip and the run dispatch would never read the row.
@@ -471,6 +486,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    timeZone: DEFAULT_INSTANCE_TIME_ZONE,
+    numberFormat: DEFAULT_INSTANCE_NUMBER_FORMAT,
+    dateFormat: DEFAULT_INSTANCE_DATE_FORMAT,
   };
 }
 
@@ -880,6 +898,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
               ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
               ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
+              ...preserveBoardJanitorGeneralKey(current.general), // myrmidon(BOARD-JANITOR OPE-10750)
               ...preserveGuardrailModesGeneralKey(current.general), // myrmidon(1.7-GRD-MODES)
               ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
               // The preserve line above restores the stored value: a patch that carries the key wins.
@@ -921,6 +940,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.myrmidonAuthBlockedUsers !== undefined
                 ? { myrmidonAuthBlockedUsers: patch.myrmidonAuthBlockedUsers }
                 : {}),
+              // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): a patch carrying
+              // the limit wins over the preserved instance value.
+              ...(patch.toolOutputLimit !== undefined ? { toolOutputLimit: nextGeneral.toolOutputLimit } : {}),
+              ...(patch.toolOutputChars !== undefined ? { toolOutputChars: nextGeneral.toolOutputChars } : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
               ...preserveProviderUsageThresholdGeneralKey(current.general), // myrmidon(OPE-7202)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
@@ -932,6 +955,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.ownerActiveChannel !== undefined
                 ? { ownerActiveChannel: nextGeneral.ownerActiveChannel }
                 : {}),
+              ...preserveUpdateSettingsGeneralKey(current.general), // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
             },
             updatedAt: now,
           })

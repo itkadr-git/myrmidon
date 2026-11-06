@@ -40,6 +40,7 @@ export interface ResolveInteractionRecipientInput {
   projectRoles?: InteractionProjectRoles | null;
   recipient?: InteractionRecipient | null;
   serviceQueue?: string | null;
+  allowLegacyAgentQueueFallback?: boolean;
 }
 
 export class InteractionRecipientUnresolvedError extends Error {
@@ -97,6 +98,28 @@ export function resolveInteractionRecipient(
   } else if (input.routeType === "human_input") {
     recipient = input.recipient && "userId" in input.recipient ? input.recipient : null;
     if (!recipient) throw new InteractionRecipientUnresolvedError("human_input requires a concrete user recipient");
+  } else if (
+    input.routeType === "approval" ||
+    input.routeType === "decision"
+  ) {
+    recipient = input.recipient ?? null;
+    if (!recipient) {
+      recipient = roleRecipient(
+        input.projectRoles,
+        input.projectId,
+        input.casteScope,
+        input.kind,
+        input.creator,
+      );
+    }
+    if (!recipient && input.allowLegacyAgentQueueFallback && "agentId" in input.creator) {
+      recipient = { serviceQueue: "default" };
+    }
+    if (!recipient) {
+      throw new InteractionRecipientUnresolvedError(
+        `${input.routeType} requires a typed recipient or matching project role`,
+      );
+    }
   } else if (input.recipient) {
     recipient = input.recipient;
   } else {

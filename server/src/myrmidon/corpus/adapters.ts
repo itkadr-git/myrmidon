@@ -11,6 +11,7 @@ import type { CorpusDocumentRecord, CorpusPorts, CorpusJobRecord, CorpusDatasetR
 import { secretService } from "../../services/secrets.js";
 import type { Config } from "../../config.js";
 import { CORPUS_EMBED_BATCH_SIZE, embedInBatches } from "./embed-batches.js";
+import { CorpusRequestError } from "./service.js";
 
 /** How long one embedding request may take before it is aborted. A document is sent as many requests. */
 const CORPUS_EMBED_REQUEST_TIMEOUT_MS = 120_000;
@@ -64,7 +65,33 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
   const store = new PostgresCorpusStore(db as never);
   const queue = new PostgresWorkQueue(db as never);
   const blobs = new LocalBlobStore(path.join(config.storageLocalDiskBaseDir, "corpus"));
+  const checkEmbedderConfigured = async (companyId: string, baseUrl: string | null): Promise<void> => {
+    if (baseUrl) return;
+    const secretRow = await db
+      .select()
+      .from(companySecrets)
+      .where(
+        and(
+          eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "company"),
+          eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"),
+          eq(companySecrets.status, "active"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!secretRow) {
+      throw new CorpusRequestError(
+        422,
+        "corpus_embedder_not_configured",
+        "the corpus embedder is not configured for this company: missing secret MYRMIDON_CORPUS_EMBEDDER_API_KEY",
+        {
+          hint: "Configure the active company secret MYRMIDON_CORPUS_EMBEDDER_API_KEY or set embedderBaseUrl.",
+        },
+      );
+    }
+  };
   const embedder = async (companyId: string, baseUrl: string | null, model: string, dimensions: number, input: string[]): Promise<number[][]> => {
+    await checkEmbedderConfigured(companyId, baseUrl);
     const secretRow = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"), eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"), eq(companySecrets.status, "active"))).then((rows) => rows[0] ?? null);
     const apiKey = secretRow ? await secretService(db).resolveSecretValue(companyId, secretRow.id, "latest", { accessContext: { consumerType: "system", consumerId: "myrmidon-corpus" } }) : undefined;
     const endpoint = baseUrl ?? context.env.MYRMIDON_LLM_GATEWAY_BASE_URL ?? "http://127.0.0.1:3000/v1";
@@ -81,6 +108,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
   };
   const searchIndex = createPostgresSearchIndex({ sql: createSqlExecutor(db) });
   const index = {
+    assertEmbedderConfigured: checkEmbedderConfigured,
     async indexDocument(input: { companyId: string; datasetId: string; documentId: string; chunks: Array<{ text: string; index: number; metadata?: Record<string, unknown> }>; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
       const vectors = await embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.chunks.map((c) => c.text));
       await store.replaceDocumentChunks({ companyId: input.companyId, documentId: input.documentId, chunks: input.chunks.map((c, i) => ({ chunkIndex: c.index, content: c.text, embedding: vectors[i]!, metadata: c.metadata })) });
@@ -217,7 +245,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     },
     parser: {
       async parse(input) {
-        const client = createHttpDocumentParser({ baseUrl: input.baseUrl, timeoutMs: input.timeoutMs });
+        const client = createHttpDocumentParser({ baseUrl: input.baseUrl, parserTimeoutMs: input.timeoutMs });
         const result = await client.parse({ sourceUri: null, content: input.bytes, contentType: input.mimeType, title: input.filename, parserVersion: "v1" });
         return { text: result.chunks.map((chunk) => chunk.content).join("\n"), chunks: result.chunks.map((chunk) => ({ text: chunk.content, index: chunk.chunkIndex, metadata: chunk.metadata })) };
       },

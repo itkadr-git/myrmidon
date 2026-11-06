@@ -170,4 +170,30 @@ describe("company corpus MCP endpoint", () => {
     const app = harness({ settings: () => ENABLED, port: () => corpus().port }, outsider);
     await request(app).post(URL).send({ id: 11, method: "tools/list" }).expect(403);
   });
+
+  it("authorizes corpus_search for company agent and refuses foreign company agent with 403", async () => {
+    const app = harness({ settings: () => ENABLED, port: () => corpus().port });
+    // Same-company call to tools/call corpus_search
+    const ok = await request(app)
+      .post(URL)
+      .send({
+        id: 12,
+        method: "tools/call",
+        params: { name: "corpus_search", arguments: { query: "guide" } },
+      })
+      .expect(200);
+    expect(ok.body.result).toBeDefined();
+
+    // Foreign agent call with different companyIds
+    const stranger = { ...member, userId: "agent-foreign", companyIds: ["other-company-id"] };
+    const strangerApp = harness({ settings: () => ENABLED, port: () => corpus().port }, stranger);
+    await request(strangerApp)
+      .post(URL)
+      .send({
+        id: 13,
+        method: "tools/call",
+        params: { name: "corpus_search", arguments: { query: "guide" } },
+      })
+      .expect(403);
+  });
 });

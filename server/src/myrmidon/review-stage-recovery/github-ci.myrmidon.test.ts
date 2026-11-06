@@ -16,7 +16,12 @@ function fakeFetch(routes: Record<string, unknown>, calls: Array<{ path: string;
     const path = url.replace("https://api.github.com", "");
     const headers = (init?.headers ?? {}) as Record<string, string>;
     calls.push({ path, headers });
-    if (!(path in routes)) return new Response("not found", { status: 404 });
+    if (!(path in routes)) {
+      if (path === "/repos/acme/app/contents/.github/workflows") {
+        return new Response(JSON.stringify([{ name: "ci.yml" }]), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }
     const route = routes[path];
     if (typeof route === "function") return (route as (headers: Record<string, string>) => Response)(headers);
     return new Response(JSON.stringify(route), {
@@ -31,6 +36,34 @@ function status(code: number, headers: Record<string, string> = {}) {
 }
 
 describe("resolvePullRequestHeadCi", () => {
+  it("recognizes a repository without workflows even if Checks is forbidden", async () => {
+    const calls: Array<{ path: string; headers: Record<string, string> }> = [];
+    const result = await resolvePullRequestHeadCi({
+      reference,
+      token: "token",
+      fetch: fakeFetch({
+        [PULL]: openPull,
+        "/repos/acme/app/contents/.github/workflows": status(404),
+        [CHECK_RUNS]: status(403),
+      }, calls),
+    });
+    expect(result).toEqual({ state: "not_configured", headSha: "abc123" });
+    expect(calls.map((call) => call.path)).not.toContain(CHECK_RUNS);
+  });
+
+  it("does not mistake inaccessible workflows and Checks for absent CI", async () => {
+    const result = await resolvePullRequestHeadCi({
+      reference,
+      token: "token",
+      fetch: fakeFetch({
+        [PULL]: openPull,
+        "/repos/acme/app/contents/.github/workflows": status(403),
+        [CHECK_RUNS]: status(403),
+      }),
+    });
+    expect(result.state).toBe("unknown");
+  });
+
   it("waits while the final CI result check does not exist yet, whatever else is running", async () => {
     // OPE-9673 (#1972): every check queued, none finished.
     const queued = await resolvePullRequestHeadCi({
@@ -128,7 +161,7 @@ describe("resolvePullRequestHeadCi", () => {
       token: "token",
       fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [] } }, calls),
     });
-    expect(calls.map((call) => call.path)).toEqual([PULL, CHECK_RUNS]);
+    expect(calls.map((call) => call.path)).toEqual([PULL, "/repos/acme/app/contents/.github/workflows", CHECK_RUNS]);
   });
 
   it("treats a merged or closed PR as having no CI to wait for", async () => {
@@ -236,7 +269,7 @@ describe("resolvePullRequestHeadCi", () => {
       ),
     });
     expect(result).toEqual({ state: "complete", headSha: "abc123" });
-    expect(calls.map((call) => Boolean(call.headers.authorization))).toEqual([true, true, false]);
+    expect(calls.map((call) => Boolean(call.headers.authorization))).toEqual([true, false, true, false]);
   });
 });
 

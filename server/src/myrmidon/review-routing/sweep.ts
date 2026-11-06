@@ -60,6 +60,7 @@ import {
   isReviewOverdue,
   issueAnchorAgentId,
   issueNeedsReviewer,
+  minutesSince,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
@@ -327,13 +328,54 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       companyId,
       pending.map((entry) => entry.row.id),
     );
-    const overdue = pending.filter((entry) => {
+    const overdue: typeof pending = [];
+    for (const entry of pending) {
       const routed = history.get(entry.row.id);
-      return (
-        routed !== undefined &&
-        isReviewOverdue({ since: routed.lastAt, now, afterHours: settings.reassignAfterHours })
-      );
-    });
+      let since: Date | null = routed !== undefined ? routed.lastAt : null;
+
+      if (deps.prResolver) {
+        try {
+          const prProduct = await deps.store.findPrWorkProduct(companyId, entry.row.id);
+          if (prProduct) {
+            const head = await deps.prResolver.resolve({
+              companyId,
+              repository: prProduct.repository,
+              number: prProduct.number,
+            });
+            if (head.fetchFailed || head.reviewDecision !== null) {
+              continue;
+            }
+            if (head.ci === "green") {
+              if (!since) {
+                since = entry.row.updatedAt ?? entry.row.createdAt;
+              }
+            } else {
+              if (routed === undefined) {
+                continue;
+              }
+            }
+          }
+        } catch (err) {
+          log.warn({ err, issueId: entry.row.id }, "failed to resolve PR head for in-review issue");
+          continue;
+        }
+      }
+
+      if (!since) {
+        continue;
+      }
+
+      const isOverdue = isReviewOverdue({
+        since,
+        now,
+        afterHours: settings.reassignAfterHours,
+        afterMinutes: settings.reassignAfterMinutes,
+      });
+
+      if (isOverdue) {
+        overdue.push(entry);
+      }
+    }
     const overloaded = pending.filter((entry) => {
       if (overdue.includes(entry)) return false;
       if (isEscalatedReviewStage(entry.row)) return false;
@@ -354,8 +396,10 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         id: agent.id,
         name: agent.name,
         role: agent.role,
+        status: agent.status,
         model: agent.model ?? null,
         metadata: agent.metadata,
+        swarmQueueEligible: agent.metadata?.["swarmQueueEligible"] !== false,
         invokable: agent.invokable ?? true,
         load: load.get(agent.id) ?? 0,
       }));
@@ -392,9 +436,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     };
     const poolForGroup = async (groupKey: string): Promise<ReviewerCandidate[]> => {
       const all = await pool();
-      if (!groupKey) return all;
-      const matching = all.filter((c) => resolveAgentGroupKey(c) === groupKey);
-      return matching.length > 0 ? matching : all;
+      if (!groupKey) return all.filter((c) => c.swarmQueueEligible !== false);
+      const matching = all.filter((c) => c.swarmQueueEligible !== false && resolveAgentGroupKey(c) === groupKey);
+      return matching.length > 0 ? matching : all.filter((c) => c.swarmQueueEligible !== false);
     };
     const bumpLoad = (agentId: string, delta: number) => {
       if (reviewerPool) {
@@ -453,7 +497,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     }
 
     for (const { row, review } of overdue) {
-      const routed = history.get(row.id)!;
+      const routed = history.get(row.id);
+      const sinceDate = routed?.lastAt ?? row.updatedAt ?? row.createdAt;
+      const hoursInReview = hoursSince(sinceDate, now);
       const signal: ReviewRoutingSignal = {
         kind: "review_overdue",
         issueId: row.id,
@@ -461,7 +507,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         identifier: row.identifier,
         title: row.title,
         since: now.toISOString(),
-        hoursInReview: hoursSince(routed.lastAt, now),
+        hoursInReview,
       };
       if (moves >= REVIEW_ROUTING_MAX_MOVES_PER_PASS) {
         signals.push(signal);
@@ -474,10 +520,11 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         const authorModel = row.createdByAgentId
           ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
           : null;
+        const alreadyRoutedReviewerIds = routed?.reviewerAgentIds ?? [];
         const picked = pickReviewer({
           candidates,
           excluded: excludedReviewerIds(row, [
-            ...routed.reviewerAgentIds,
+            ...alreadyRoutedReviewerIds,
             review.reviewerAgentId,
             ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
           ]),
@@ -489,7 +536,11 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           result.signaled += 1;
           continue;
         }
-        const state = await reassign(row, review.reviewerAgentId, picked, signal.hoursInReview ?? 0);
+        const state = await reassign(row, review.reviewerAgentId, picked, hoursInReview, undefined, {
+          sinceDate,
+          now,
+          reassignAfterMinutes: settings.reassignAfterMinutes,
+        });
         if (state) {
           moves += 1;
           result.reassigned += 1;
@@ -966,6 +1017,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     reviewer: ReviewerCandidate,
     hoursInReview: number,
     overload?: { reason: "queue"; currentLoad: number; threshold: number },
+    options?: { sinceDate?: Date; now?: Date; reassignAfterMinutes?: number },
   ) {
     const applied = await deps.store.applyPatch({
       issueId: row.id,
@@ -974,11 +1026,19 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       build: (fresh) => buildReviewRoutingReassignPatch({ issue: fresh, newReviewerAgentId: reviewer.id }),
     });
     if (!applied) return null;
+    const minutesInReview =
+      options?.sinceDate && options?.now
+        ? minutesSince(options.sinceDate, options.now)
+        : hoursInReview * 60;
+    const durationText =
+      options?.reassignAfterMinutes !== undefined
+        ? `${minutesInReview} min`
+        : `${hoursInReview} h`;
     await deps.addComment(
       row.id,
       overload
         ? `Automatic review routing: the reviewer's queue held ${overload.currentLoad} runs (threshold ${overload.threshold}), so the review was moved to the least-loaded pool member.`
-        : `Automatic review routing: this review had no verdict for ${hoursInReview} h, so it was moved to ` +
+        : `Automatic review routing: this review had no verdict for ${durationText}, so it was moved to ` +
             "another reviewer. An attention card was raised for the operator.",
       {
         presentation: { ...notice("Review reassigned"), tone: "warning" },
@@ -991,7 +1051,10 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
                 "Queue size": String(overload.currentLoad),
                 Threshold: String(overload.threshold),
               }
-            : { "Hours in review": String(hoursInReview) }),
+            : {
+                "Hours in review": String(hoursInReview),
+                "Minutes in review": String(minutesInReview),
+              }),
         }),
       },
     );
@@ -1005,6 +1068,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         reviewerAgentId: reviewer.id,
         previousReviewerAgentId: previousReviewerId,
         hoursInReview,
+        minutesInReview,
         ...(overload
           ? { reason: "reviewer-queue-overload", currentLoad: overload.currentLoad, threshold: overload.threshold }
           : {}),

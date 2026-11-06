@@ -144,7 +144,22 @@ export type PoolAccountState =
   | "banned"
   | "login_pending"
   | "login_expired"
-  | "not_logged_in";
+  | "not_logged_in"
+  | "disabled";
+
+/** Known subscription pool account plans (OPE-10810). */
+export const POOL_ACCOUNT_PLANS = ["plus", "pro", "k-12", "k12", "team", "free"] as const;
+export type PoolAccountPlan = (typeof POOL_ACCOUNT_PLANS)[number] | string;
+
+/**
+ * Returns true if the plan represents a K-12 tariff account.
+ * Under ADM 05.11 directive, 31 K-12 accounts are disabled / excluded from pool rotation.
+ */
+export function isK12Plan(plan?: string | null): boolean {
+  if (!plan) return false;
+  const p = plan.trim().toLowerCase();
+  return p === "k-12" || p === "k12";
+}
 
 /** A quota window on a subscription account (e.g. 5-hour rolling or weekly). */
 export interface PoolAccountLimitWindow {
@@ -168,7 +183,7 @@ export interface PoolAccountUsage {
   recentErrors?: Array<{ at: number; status: number; message: string }>;
 }
 
-/** One account in the provider's channel registry (OPE-7189 ч.A). */
+/** One account in the provider's channel registry (OPE-7189 ч.A / OPE-10810). */
 export interface PoolAccountChannelView {
   n: number;
   label: string;
@@ -186,6 +201,10 @@ export interface PoolAccountChannelView {
   usage?: PoolAccountUsage;
   isBanned: boolean;
   isExhausted: boolean;
+  isDisabled?: boolean;
+  isExcluded?: boolean;
+  oauthState?: PoolAccountOAuthState;
+  oauthExpiresAt?: number | null;
   error?: string | null;
 }
 
@@ -215,9 +234,53 @@ export interface ModelProviderChannelsView {
     live: number;
     exhausted: number;
     banned: number;
+    disabled?: number;
     nextResetAt: number | null;
   };
 }
+
+/** Known Codex / ChatGPT subscription pool account OAuth states (OPE-10810). */
+export const POOL_ACCOUNT_OAUTH_STATES = [
+  "idle",
+  "authorizing",
+  "active",
+  "expired",
+  "error",
+] as const;
+export type PoolAccountOAuthState = (typeof POOL_ACCOUNT_OAUTH_STATES)[number];
+
+export interface PoolAccountOAuthBeginResult {
+  accountNumber: number;
+  userCode: string;
+  verificationUri: string;
+  expiresInSec: number;
+  intervalSec: number;
+}
+
+export interface PoolAccountOAuthStatusResult {
+  accountNumber: number;
+  status: "pending" | "success" | "expired" | "failed";
+  error?: string | null;
+}
+
+export const poolAccountOAuthBeginSchema = z.object({
+  accountNumber: z.number().int().positive().optional(),
+  label: z.string().trim().max(160).optional(),
+  plan: z.string().trim().max(64).optional(),
+});
+export type PoolAccountOAuthBeginInput = z.infer<typeof poolAccountOAuthBeginSchema>;
+
+export const poolAccountOAuthCompleteSchema = z.object({
+  accountNumber: z.number().int().positive(),
+  code: z.string().optional(),
+  token: z.string().optional(),
+});
+export type PoolAccountOAuthCompleteInput = z.infer<typeof poolAccountOAuthCompleteSchema>;
+
+export const poolAccountOAuthRefreshSchema = z.object({
+  accountNumber: z.number().int().positive(),
+});
+export type PoolAccountOAuthRefreshInput = z.infer<typeof poolAccountOAuthRefreshSchema>;
 
 /**
  * The secret-store name that carries one provider's credential.
@@ -229,6 +292,14 @@ export interface ModelProviderChannelsView {
 export function modelProviderSecretName(providerId: string): string {
   const id = providerId.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return `${MODEL_PROVIDER_SECRET_PREFIX}${id}`;
+}
+
+/**
+ * The secret-store name that carries one pool account's OAuth credentials (OPE-10810).
+ * Secrets are strictly isolated and never exposed over plain API responses.
+ */
+export function modelProviderAccountSecretName(providerId: string, accountNumber: number): string {
+  return `${modelProviderSecretName(providerId)}/accounts/${accountNumber}`;
 }
 
 /** Whether a secret name is one this feature manages. */

@@ -1327,7 +1327,10 @@ async function startServerWithDatabaseTeardown(
 
   let startupListenerBound = false;
   try {
-  setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
+  // myrmidon(OPE-11755): runnerd is local; bind its URL to the actual listening socket.
+  if (processRoleProfile.role === "all") {
+    setupRunnerPrpWebSocketServer(server);
+  }
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
@@ -1477,6 +1480,8 @@ async function startServerWithDatabaseTeardown(
     const spec = processRoleProfile.loopbackListen;
     if (!spec) return null;
     const listener = createServer(app as unknown as Parameters<typeof createServer>[0]);
+    // myrmidon(OPE-11755): registrations live in this worker, not in the public api children.
+    setupRunnerPrpWebSocketServer(listener);
     await new Promise<void>((resolveLoopback, rejectLoopback) => {
       const onError = (err: Error) => {
         listener.off("error", onError);
@@ -2183,6 +2188,20 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "GitHub connection continuity sweep failed");
       }));
   };
+  const scheduleGitHubEventsWatchdog = () => {
+    if (heartbeatSchedulerStopped) return;
+    const sweep = githubConnectionEvents.sweepWatchdog;
+    if (typeof sweep !== "function") return;
+    trackHeartbeatSchedulerWork(sweep()
+      .then((result) => {
+        if (result.alarmsCreated > 0 || result.alarmsResolved > 0) {
+          logger.info(result, "GitHub events watchdog sweep completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "GitHub events watchdog sweep failed");
+      }));
+  };
 
   if (processRoleProfile.runsBackground) {
     await connectionDeliveries.sweepPending();
@@ -2198,6 +2217,7 @@ async function startServerWithDatabaseTeardown(
   }
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();
+  scheduleGitHubEventsWatchdog();
 
 
   // myrmidon(PROCS-1.2): the whole heartbeat/sweep block below is the worker
@@ -2265,6 +2285,9 @@ async function startServerWithDatabaseTeardown(
             result.skippedActiveRun
             + result.skippedNonTerminalTree
             + result.skippedUndelivered
+            + result.skippedInspectFailed
+            + result.skippedDirty
+            + result.skippedUnmerged
             + result.skippedRace
             + result.skippedCooldown;
           const nowMs = Date.now();
@@ -2721,6 +2744,7 @@ async function startServerWithDatabaseTeardown(
         scheduleMergedPullRequestConfirmationSweep();
         scheduleGitHubConnectionEventPoll();
         scheduleGitHubConnectionContinuitySweep();
+        scheduleGitHubEventsWatchdog();
         scheduleTerminalWorkspaceSweep();
         scheduleWorkspaceHygieneSweep(); // myrmidon(WORKSPACE-HYGIENE)
         scheduleBotDiskQuotaSweep(); // myrmidon(1.6.1-BOT-DISK-C)
@@ -2960,6 +2984,7 @@ async function startServerWithDatabaseTeardown(
       scheduleGuardReturnSweep(); // myrmidon(1.6.6 GUARD-RETURN)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
+      scheduleGitHubEventsWatchdog();
     });
   }
   } // end myrmidon(PROCS-1.2) runsBackground gate around the heartbeat/sweep block

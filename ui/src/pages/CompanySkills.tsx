@@ -50,6 +50,7 @@ import {
 } from "@/components/skill-studio/SkillPolicySurfaces";
 // myrmidon(1.6.5 BASE-SKILLS): the company base-skills panel of the Skills screen.
 import { CompanyBaseSkillsPanel } from "@/components/skill-studio/CompanyBaseSkillsPanel";
+import { CompanySkillPolicyEditor } from "@/components/skill-studio/CompanySkillPolicyEditor";
 import {
   Dialog,
   DialogContent,
@@ -6103,6 +6104,7 @@ export function CompanySkills() {
         {selectedCompanyId ? (
           <div className="px-4 pt-4">
             <CompanyBaseSkillsPanel companyId={selectedCompanyId} />
+            <div className="pt-4"><CompanySkillPolicyEditor key={selectedCompanyId} companyId={selectedCompanyId} /></div>
           </div>
         ) : null}
         <DiscoveryGrid

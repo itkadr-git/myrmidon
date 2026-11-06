@@ -34,11 +34,14 @@ import {
   createModelProviderSchema,
   listAvailableModelProviderTypes,
   patchModelProviderSchema,
+  poolAccountOAuthBeginSchema,
+  poolAccountOAuthCompleteSchema,
+  poolAccountOAuthRefreshSchema,
   setModelProviderModelsSchema,
 } from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest, HttpError } from "../../errors.js";
-import { assertCompanyAdmin } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import type {
   ModelProviderActivityEntry,
   ModelProviderModelView,
@@ -94,6 +97,8 @@ export interface ModelProviderRoutesWithSyncDeps {
   refreshAgentAllowlists?: (companyId: string) => Promise<unknown>;
   /** Writes the mutation into the company activity log. Optional: tests pass none. */
   recordActivity?: (entry: ModelProviderActivityEntry) => Promise<void>;
+  /** Optional change-log listing function. */
+  listChangeLog?: (companyId: string) => Promise<unknown[]>;
 }
 
 function bodyOf(req: Request): Record<string, unknown> {
@@ -121,6 +126,11 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   const router = Router();
   const activity = (entry: ModelProviderActivityEntry) =>
     deps.recordActivity ? deps.recordActivity(entry) : Promise.resolve();
+
+  const actorFor = (req: Request) => {
+    const info = getActorInfo(req);
+    return { type: info.actorType, id: info.actorId };
+  };
 
   const parse = <T>(schema: ZodType<T>, body: unknown): T => {
     const result = schema.safeParse(body);
@@ -157,7 +167,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     const provider = await deps.service.createProvider({
       companyId,
       body,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.status(201).json(provider);
   });
@@ -165,9 +175,11 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAdmin(req, companyId);
+    const changeLog = deps.listChangeLog ? await deps.listChangeLog(companyId) : [];
     res.json({
       providers: await deps.service.listProviders(companyId),
       availableTypes: deps.service.listAvailableTypes ? deps.service.listAvailableTypes() : listAvailableModelProviderTypes(),
+      changeLog,
     });
   });
 
@@ -177,19 +189,33 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     assertCompanyAdmin(req, companyId);
     const body = parse(patchModelProviderSchema, bodyOf(req));
     if (body.key !== undefined) {
+      const snapshot = deps.service.captureKeyRotationSnapshot
+        ? await deps.service.captureKeyRotationSnapshot(companyId, providerId)
+        : null;
       const view = await deps.service.rotateProviderKey({
         companyId,
         providerId,
         key: body.key,
-        activity: (entry) => activity(entry),
+        activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
       });
       // The credential name the gateway reads is unchanged (part A rotates
       // the store under the same name); re-register the enabled models so the
       // gateway reloads the value, then re-apply the agent allowlists.
-      await propagate(companyId, async (sync) => {
-        await sync.handleProviderCredentialRotation(companyId, providerId);
-        if (deps.refreshAgentAllowlists) await deps.refreshAgentAllowlists(companyId);
-      });
+      try {
+        await propagate(companyId, async (sync) => {
+          await sync.handleProviderCredentialRotation(companyId, providerId);
+          if (deps.refreshAgentAllowlists) await deps.refreshAgentAllowlists(companyId);
+        });
+      } catch (err) {
+        if (snapshot && deps.service.rollbackProviderKey) {
+          try {
+            await deps.service.rollbackProviderKey(companyId, providerId, snapshot);
+          } catch (rollbackErr) {
+            // Rollback failure is secondary to original sync failure
+          }
+        }
+        throw err;
+      }
       res.json(view);
       return;
     }
@@ -197,7 +223,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
       companyId,
       providerId,
       body,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.json(view);
   });
@@ -212,7 +238,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     await deps.service.removeProvider({
       companyId,
       providerId,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     const enabledNames = models.filter((m) => m.enabled).map((m) => m.litellmModelName);
     if (enabledNames.length > 0) {
@@ -242,6 +268,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
       companyId,
       providerId,
       models: body.models,
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
 
     const toggled = body.models.filter((m) => m.enabled !== undefined);
@@ -341,6 +368,53 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     });
     res.json({ ok: true, signal });
   });
+
+  const oauthBeginHandler = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(poolAccountOAuthBeginSchema, bodyOf(req));
+    const result = await deps.service.oauthBegin(companyId, id, body);
+    res.status(200).json(result);
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/begin", oauthBeginHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/begin", oauthBeginHandler);
+
+  const oauthStatusHandler = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const accountNumber = Number(req.query.accountNumber);
+    if (!Number.isInteger(accountNumber) || accountNumber <= 0) {
+      throw badRequest("accountNumber query parameter must be a positive integer");
+    }
+    const result = await deps.service.oauthStatus(companyId, id, accountNumber);
+    res.status(200).json(result);
+  };
+  router.get("/myrmidon/companies/:companyId/model-providers/:id/oauth/status", oauthStatusHandler);
+  router.get("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/status", oauthStatusHandler);
+
+  const oauthCompleteHandler = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(poolAccountOAuthCompleteSchema, bodyOf(req));
+    const result = await deps.service.oauthComplete(companyId, id, body);
+    res.status(200).json(result);
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/complete", oauthCompleteHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/complete", oauthCompleteHandler);
+
+  const oauthRefreshHandler = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(poolAccountOAuthRefreshSchema, bodyOf(req));
+    const result = await deps.service.oauthRefresh(companyId, id, body);
+    res.status(200).json(result);
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/refresh", oauthRefreshHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/refresh", oauthRefreshHandler);
 
   return router;
 }

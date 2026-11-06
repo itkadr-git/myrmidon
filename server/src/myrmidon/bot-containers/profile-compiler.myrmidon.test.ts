@@ -365,12 +365,46 @@ describe("myrmidon(TOOL-DIET) compileHermesProfile — disabled tools", () => {
 });
 
 describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 mapping)", () => {
+  it("maps a card maxOutputTokens value to model.max_tokens in Hermes config", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/thinking", provider: "custom", maxOutputTokens: 16_000 } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 16000');
+  });
+
+  it("defaults to 32000 max_tokens for provider custom when unset", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/nghi-claude-fable-5.1", provider: "custom" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 32000');
+  });
+
+  it("maps models.maxOutputTokens from card models block", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/thinking", provider: "custom", models: { maxOutputTokens: 64_000 } } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 64000');
+  });
+
+  it("drops an out-of-range maxOutputTokens with a warning", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", maxOutputTokens: 999_999 } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("999999");
+    expect(yaml).toMatch(/^  max_tokens: 32000$/m);
+    expect(warnings.join("\n")).toContain("model.max_tokens");
+  });
+
   it("maps model, provider and a valid reasoning effort", () => {
     const profile = compileHermesProfile(
       baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", effort: "High" } }),
     );
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
-    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  provider: "anthropic"');
+    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  max_tokens: 32000\n  provider: "anthropic"');
     expect(yaml).toContain('agent:\n  reasoning_effort: "high"');
   });
 
@@ -1361,6 +1395,29 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
       const yaml = yamlOf(baseInput({ instanceDefaults: { compression: {} } }));
       expect(yaml).not.toContain("compression:");
       expect(yaml).not.toContain("threshold_tokens");
+    });
+  });
+
+  // myrmidon(REASONING-OUTPUT-LIMIT): explicit/default model output ceiling.
+  describe("myrmidon(REASONING-OUTPUT-LIMIT) model.max_tokens", () => {
+    it("compiles the card value, defaults to 32000, and warns on invalid overrides", () => {
+      const configured = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { models: { maxTokens: 64_000 } } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(configured).toContain("max_tokens: 64000");
+
+      const defaulted = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { model: "model-a" } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(defaulted).toContain("max_tokens: 32000");
+
+      const invalid = compileHermesProfileDetailed(
+        baseInput({ adapterConfig: { model: "model-a", models: { maxTokens: 1 } } }),
+      );
+      expect(fileByPath(invalid.profile.files, "hermes/config.yaml").content).toContain("max_tokens: 32000");
+      expect(invalid.warnings.some((warning) => warning.includes("model.max_tokens") && warning.includes("outside the supported range"))).toBe(true);
     });
   });
 

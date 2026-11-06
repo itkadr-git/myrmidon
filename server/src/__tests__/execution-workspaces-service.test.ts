@@ -474,6 +474,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .then((rows) => rows[0]);
 
     expect(sweep.archived).toBe(1);
+    expect(sweep.skippedInspectFailed).toBe(0);
+    expect(sweep.skippedDirty).toBe(0);
+    expect(sweep.skippedUnmerged).toBe(0);
+    expect(sweep.skippedInspectFailedSamples).toEqual([]);
+    expect(sweep.skippedDirtySamples).toEqual([]);
+    expect(sweep.skippedUnmergedSamples).toEqual([]);
     expect(archived).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);

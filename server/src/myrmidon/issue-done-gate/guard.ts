@@ -46,6 +46,28 @@ function noAccess(product: GateProduct, url?: string | null): never {
   });
 }
 
+function blockUnreachable(
+  product: GateProduct,
+  url?: string | null,
+  baseRef?: string | null,
+  defaultBranch?: string | null,
+): never {
+  const link = url ?? product.url ?? "the linked pull request";
+  const def = defaultBranch ?? "main";
+  throw conflict(
+    `Cannot mark this task done: PR ${link} was merged into ${baseRef ?? "a non-main branch"}, but its merge commit is not reachable from ${def} or rel/*. Код не дошёл до основной ветки.`,
+    {
+      code: ISSUE_DONE_PULL_REQUEST_GATE,
+      reason: "merge_commit_unreachable",
+      workProductId: product.id,
+      pullRequestUrl: url ?? product.url,
+      baseRef: baseRef ?? null,
+      defaultBranch: def,
+      retryable: true,
+    },
+  );
+}
+
 function block(product: GateProduct, url?: string | null): never {
   const link = url ?? product.url ?? "the linked pull request";
   throw conflict(`Cannot mark this task done until ${link} is merged. If the PR was closed without merging, link a verified replacement and retry.`, {
@@ -118,11 +140,23 @@ export async function inspectIssueDonePullRequests(
       const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
         ? product.metadata as Record<string, unknown>
         : {};
+      const baseRef = details.baseRef ?? null;
+      const defaultBranch = details.defaultBranch ?? "main";
+      const isDelivering = !baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/");
+      const mergeCommitReachable = isDelivering ? true : (details.mergeCommitReachable ?? false);
       if (state === "merged" || state === "closed") {
         try {
           await db.update(issueWorkProducts).set({
             status: state,
-            metadata: { ...metadata, state, draft: false },
+            metadata: {
+              ...metadata,
+              state,
+              draft: false,
+              ...(details.baseRef !== undefined ? { baseRef: details.baseRef } : {}),
+              ...(details.defaultBranch !== undefined ? { defaultBranch: details.defaultBranch } : {}),
+              ...(details.mergeCommitSha !== undefined ? { mergeCommitSha: details.mergeCommitSha } : {}),
+              ...(details.mergeCommitReachable !== undefined ? { mergeCommitReachable: details.mergeCommitReachable } : {}),
+            },
           }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
         } catch (err) {
           logger.warn(
@@ -134,12 +168,24 @@ export async function inspectIssueDonePullRequests(
       const refreshedProduct = {
         ...product,
         status: state,
-        metadata: { ...metadata, state, draft: false },
+        metadata: {
+          ...metadata,
+          state,
+          draft: false,
+          ...(details.baseRef !== undefined ? { baseRef: details.baseRef } : {}),
+          ...(details.defaultBranch !== undefined ? { defaultBranch: details.defaultBranch } : {}),
+          ...(details.mergeCommitSha !== undefined ? { mergeCommitSha: details.mergeCommitSha } : {}),
+          ...(details.mergeCommitReachable !== undefined ? { mergeCommitReachable: details.mergeCommitReachable } : {}),
+        },
       };
       return {
         product: refreshedProduct,
         state,
         url: refreshedProduct.url,
+        baseRef,
+        defaultBranch,
+        mergeCommitSha: details.mergeCommitSha ?? null,
+        mergeCommitReachable,
         ...(details.access === "denied" ? { accessDenied: true as const } : {}),
       };
     } catch (err) {
@@ -164,7 +210,13 @@ export async function assertIssueCanBeDone(db: Db, companyId: string, issueId: s
 
 export function assertIssueDonePullRequestsSettled(states: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>) {
   for (const entry of states) {
-    if (entry.state === "superseded" || entry.state === "merged") continue;
+    if (entry.state === "superseded") continue;
+    if (entry.state === "merged") {
+      if ("mergeCommitReachable" in entry && entry.mergeCommitReachable === false) {
+        blockUnreachable(entry.product, entry.url, entry.baseRef, entry.defaultBranch);
+      }
+      continue;
+    }
     if ("accessDenied" in entry && entry.accessDenied && entry.state === "unknown") noAccess(entry.product, entry.url);
     block(entry.product, entry.url);
   }
@@ -174,7 +226,22 @@ export function assertStoredIssueDonePullRequestsSettled(products: GateProduct[]
   const pullRequests = products.filter((product) => product.type === "pull_request");
   const hasMerged = pullRequests.some((product) => product.status === "merged");
   for (const product of pullRequests) {
-    if (product.status === "archived" || product.status === "merged") continue;
+    if (product.status === "archived") continue;
+    if (product.status === "merged") {
+      const meta = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+        ? product.metadata as Record<string, unknown>
+        : {};
+      const baseRef = typeof meta.baseRef === "string" ? meta.baseRef : null;
+      const defaultBranch = typeof meta.defaultBranch === "string" ? meta.defaultBranch : "main";
+      const isDelivering = !baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/");
+      const mergeCommitReachable = meta.mergeCommitReachable !== undefined
+        ? meta.mergeCommitReachable === true
+        : isDelivering;
+      if (!mergeCommitReachable) {
+        blockUnreachable(product, product.url, baseRef, defaultBranch);
+      }
+      continue;
+    }
     // A closed PR is settled when another linked PR is already merged; an
     // open/draft product must still block completion in that mixed set.
     if (hasMerged && product.status === "closed") continue;

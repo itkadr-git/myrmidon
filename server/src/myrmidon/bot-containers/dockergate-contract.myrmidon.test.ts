@@ -179,9 +179,9 @@ describe("board driver <-> dockergate route table", () => {
   it("covers every route of the table the driver uses", () => {
     const used = new Set(calls.flatMap((c) => callAllowedBy(c)));
     // A1 image labels, A2 inspect, A3 marker, A13 report, A4 create, A5 upload, A6 start,
-    // A7 wait, A8 logs, A9 delete, A10 stop, A11 restart, A12 rename, A16 skills read.
+    // A7 wait, A8 logs, A9 delete, A10 stop, A11 restart, A12 rename, A16 skills read, A20 config update.
     expect([...used].sort()).toEqual(
-      ["A1", "A10", "A11", "A12", "A13", "A16", "A17", "A18", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"].sort(),
+      ["A1", "A10", "A11", "A12", "A13", "A16", "A17", "A18", "A2", "A20", "A3", "A4", "A5", "A6", "A7", "A8", "A9"].sort(),
     );
   });
 
@@ -198,5 +198,40 @@ describe("board driver <-> dockergate route table", () => {
 
   it("the table carries the API prefix the driver sends", () => {
     expect(table.apiPrefix).toBe(`/${/const DOCKER_API_VERSION = "([^"]+)"/.exec(driverSource)![1]}`);
+  });
+
+  it("driver updateResources satisfies route A20 contract (dockergate runtime limits update)", () => {
+    const a20Route = table.routes.find((r) => r.id === "A20");
+    expect(a20Route).toBeDefined();
+    expect(a20Route?.method).toBe("PUT");
+    expect(a20Route?.template).toBe("containers/{name}/config/update");
+
+    // Verify driver call site for A20
+    const a20Call = calls.find((c) => c.method === "PUT" && c.expression.includes("/config/update"));
+    expect(a20Call).toBeDefined();
+    expect(callAllowedBy(a20Call!)).toContain("A20");
+
+    // Verify driver serializes expected fields in request body
+    expect(driverSource).toMatch(/path:\s*`\/containers\/\$\{nameSegment\(containerNameFor\(spec\.botKey\)\)\}\/config\/update`/);
+    expect(driverSource).toMatch(/botKey:\s*spec\.botKey/);
+    expect(driverSource).toMatch(/memoryMb:\s*spec\.memoryMb/);
+    expect(driverSource).toMatch(/cpus:\s*spec\.cpus/);
+    expect(driverSource).toMatch(/pidsLimit:\s*spec\.pidsLimit/);
+  });
+
+  it("driver updateResources satisfies route A18 contract (live container resource apply)", () => {
+    const a18Route = table.routes.find((r) => r.id === "A18");
+    expect(a18Route).toBeDefined();
+    expect(a18Route?.method).toBe("POST");
+    expect(a18Route?.template).toBe("containers/{name}/update");
+
+    const a18Call = calls.find((c) => c.method === "POST" && c.expression.endsWith("/update"));
+    expect(a18Call).toBeDefined();
+    expect(callAllowedBy(a18Call!)).toContain("A18");
+
+    // Verify driver sends Memory, MemorySwap, and PidsLimit per A18 specification
+    expect(driverSource).toMatch(/Memory:\s*Math\.round\(spec\.memoryMb/);
+    expect(driverSource).toMatch(/MemorySwap:\s*Math\.round\(spec\.memoryMb \* 2/);
+    expect(driverSource).toMatch(/PidsLimit:\s*spec\.pidsLimit/);
   });
 });

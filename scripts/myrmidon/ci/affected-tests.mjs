@@ -218,22 +218,43 @@ function finish() {
 // ---------------------------------------------------------------- commands
 
 function planCommand(args) {
-  const opts = { base: null, head: "HEAD", forceFull: false, releaseFast: false, prLight: false, out: null };
+  const opts = { base: null, head: "HEAD", forceFull: false, releaseFast: false, prLight: false, out: null, tierOverride: null };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--base") opts.base = args[++i];
     else if (args[i] === "--head") opts.head = args[++i];
     else if (args[i] === "--force-full") opts.forceFull = true;
     else if (args[i] === "--release-fast") opts.releaseFast = true;
+    else if (args[i] === "--tier") opts.tierOverride = args[++i];
     else if (args[i] === "--pr-light") opts.prLight = true;
     else if (args[i] === "--out") opts.out = args[++i];
     else throw new Error(`unknown argument ${args[i]}`);
   }
   let plan;
-  if (!opts.base) {
+  if (opts.tierOverride) {
+    plan = { tier: opts.tierOverride, reasons: [`explicit tier override: ${opts.tierOverride}`] };
+  } else if (!opts.base) {
     plan = { tier: "full", reasons: ["no base commit (push or manual run)"] };
   } else {
     const changed = git(["diff", "--name-only", "--no-renames", `${opts.base}...${opts.head}`]).split("\n").filter(Boolean);
-    plan = { ...classifyChanges(changed, { forceFull: opts.forceFull }), changed };
+    const diffText = git(["diff", "-U1", `${opts.base}...${opts.head}`]);
+    const packages = workspacePackages();
+    const tests = repoTestFiles(packages);
+    const rootModules = [];
+    for (const rootFile of ["server/src/index.ts", "server/src/app.ts"]) {
+      try {
+        rootModules.push({ file: rootFile, source: fs.readFileSync(path.join(ROOT, rootFile), "utf8") });
+      } catch {}
+    }
+    plan = {
+      ...classifyChanges(changed, {
+        forceFull: opts.forceFull,
+        diffText,
+        packages,
+        testFiles: tests,
+        rootModules,
+      }),
+      changed,
+    };
     // Release branches (rel/*): a full-classified plan is lowered to fast so a
     // release PR runs only the tests its change touches. The fast mode applies
     // only while every package's selection stays within
@@ -251,9 +272,7 @@ function planCommand(args) {
     // never get the flag.
     let selection = null;
     let directSelection = null;
-    if (plan.tier === "fast" || (opts.releaseFast && !opts.forceFull && plan.tier === "full")) {
-      const packages = workspacePackages();
-      const tests = repoTestFiles(packages);
+    if (plan.tier === "fast" || (opts.releaseFast && !opts.forceFull && plan.tier === "full" && !plan.keepFull)) {
       selection = selectTests(changed, packages, tests);
       if (opts.prLight && !opts.forceFull) directSelection = selectDirectTests(changed, packages, tests);
     }

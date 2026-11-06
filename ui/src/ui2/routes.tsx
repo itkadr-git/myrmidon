@@ -10,6 +10,8 @@
 import type { ReactNode } from "react";
 import { Route } from "@/lib/router";
 import { Ui2PlaceholderScreen } from "./screens/Ui2PlaceholderScreen";
+
+export { Ui2PlaceholderScreen };
 import { Ui2I18nProvider } from "./i18n/Ui2I18n";
 import { Ui2Decisions } from "./screens/decisions/Ui2Decisions";
 import { Ui2Costs } from "./screens/costs/Ui2Costs";

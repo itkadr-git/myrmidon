@@ -244,6 +244,17 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
     }
   });
 
+  it("allows REQUEST CHANGES without hosted CI after local checks on the PR head", async () => {
+    const s = await seed({ status: "in_review", pullRequestStatus: "open" });
+    const res = await request(createApp(reviewerActor(s), async () => ({
+      state: "not_configured", pullRequestUrl: PR_URL, headSha: "test-head",
+    })))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ status: "in_progress", comment: "REQUEST CHANGES: local pytest and ruff on test-head; fix lint errors." });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await readIssue(s.issueId)).status).toBe("in_progress");
+  });
+
   it("records an approval given before the PR is merged and keeps the task in review", async () => {
     const s = await seed({ status: "in_review", pullRequestStatus: "open" });
 

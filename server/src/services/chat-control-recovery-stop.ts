@@ -272,7 +272,20 @@ export async function readChatControlRecoveryStop(
             wake.reason ?? "",
           ));
       if (!automatic) return { kind: "clear" };
-      if (!id(run.retryOfRunId)) return { kind: "unresolved" };
+      if (!id(run.retryOfRunId)) {
+        const [hasChat] = await db
+          .select({ id: chatConversations.id })
+          .from(chatConversations)
+          .where(
+            and(
+              eq(chatConversations.companyId, scope.companyId),
+              eq(chatConversations.issueId, scope.issueId),
+            ),
+          )
+          .limit(1);
+        if (!hasChat) return { kind: "clear" };
+        return { kind: "unresolved" };
+      }
       runId = run.retryOfRunId;
       continue;
     }

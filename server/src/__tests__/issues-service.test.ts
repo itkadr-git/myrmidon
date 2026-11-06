@@ -18,12 +18,14 @@ import {
   issueComments,
   issueInboxArchives,
   issueDocuments,
+  issueLabels,
   issuePlanDecompositions,
   issueReadStates,
   issueRelations,
   issueThreadInteractions,
   issueWorkProducts,
   issues,
+  labels,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -3054,6 +3056,40 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("inherits development execution policy only for opted-in projects", async () => {
+    const companyId = randomUUID();
+    const developmentProjectId = randomUUID();
+    const regularProjectId = randomUUID();
+    const developmentPolicy = {
+      mode: "normal" as const,
+      commentRequired: true,
+      stages: [{ type: "review" as const, participants: [{ type: "agent" as const, agentId: randomUUID() }] }],
+    };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values([
+      {
+        id: developmentProjectId,
+        companyId,
+        name: "Development project",
+        status: "in_progress",
+        developmentProcess: { enabled: true, executionPolicy: developmentPolicy, pipelineId: null },
+      },
+      { id: regularProjectId, companyId, name: "Regular project", status: "in_progress" },
+    ]);
+
+    const developmentIssue = await svc.create(companyId, { projectId: developmentProjectId, title: "Development task" });
+    const regularIssue = await svc.create(companyId, { projectId: regularProjectId, title: "Regular task" });
+
+    expect(developmentIssue.executionPolicy).toMatchObject(developmentPolicy);
+    expect(regularIssue.executionPolicy).toBeNull();
   });
 
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
@@ -7365,5 +7401,83 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .from(issueComments)
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
+  });
+
+  it("createChild inherits release label from parent and defaults unassigned backlog to todo", async () => {
+    const [releaseLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.6.7",
+        color: "#112233",
+      })
+      .returning();
+
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent release task",
+      status: "in_progress",
+      issueNumber: 991,
+      identifier: "PAP-991",
+    });
+
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId: parentIssueId,
+      labelId: releaseLabel.id,
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Child subtask",
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.status).toBe("todo");
+    expect(child.labels?.map((l: any) => l.name)).toContain("1.6.7");
+  });
+
+  it("createChild does not overwrite explicit release label on child", async () => {
+    const [parentLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.6.6",
+        color: "#112233",
+      })
+      .returning();
+
+    const [childLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.7.0",
+        color: "#445566",
+      })
+      .returning();
+
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent release task 2",
+      status: "in_progress",
+      issueNumber: 992,
+      identifier: "PAP-992",
+    });
+
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId: parentIssueId,
+      labelId: parentLabel.id,
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Child with explicit release label",
+      labelIds: [childLabel.id],
+    });
+
+    expect(child.labels?.map((l: any) => l.name)).toEqual(["1.7.0"]);
   });
 });

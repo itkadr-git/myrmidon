@@ -5,6 +5,9 @@ import {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
@@ -124,6 +127,9 @@ import { storedFallbackSignalSettingsSchema } from "../myrmidon-fallback-signal.
 // myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache, stored in
 // the same general settings row.
 import { toolPolicyCacheSettingsSchema } from "../myrmidon-tool-policy-cache.js";
+// myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): tool output limit for model-facing results
+import { toolOutputLimitSettingsSchema } from "../myrmidon-tool-output-limit.js";
+
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -163,9 +169,31 @@ export const boardProcessesSettingsSchema = z
     leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
     liveEventsBus: z.enum(["local", "pg"]).default("local"),
     admissionStore: z.enum(["memory", "db"]).default("memory"),
-    singletonProxy: z.boolean().default(true),
-  })
-  .passthrough();
+  singletonProxy: z.boolean().default(true),
+})
+.passthrough();
+
+export function isValidIanaTimeZone(timeZone: string): boolean {
+  if (typeof timeZone !== "string" || !timeZone.trim()) {
+    return false;
+  }
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: timeZone.trim() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const instanceTimeZoneSchema = z
+  .string()
+  .refine(isValidIanaTimeZone, {
+    message: "Invalid IANA time zone identifier",
+  });
+
+export const instanceNumberFormatSchema = z.enum(["en-US", "ru-RU"]);
+
+export const instanceDateFormatSchema = z.enum(["ymd", "dmy", "mdy"]);
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
@@ -174,6 +202,9 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  timeZone: instanceTimeZoneSchema.default(DEFAULT_INSTANCE_TIME_ZONE),
+  numberFormat: instanceNumberFormatSchema.default(DEFAULT_INSTANCE_NUMBER_FORMAT),
+  dateFormat: instanceDateFormatSchema.default(DEFAULT_INSTANCE_DATE_FORMAT),
   // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
   // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
   executionMode: z.enum(["kubernetes", "any"]).optional(),
@@ -441,6 +472,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // GET/PATCH /api/myrmidon/tool-policy-cache; absent means the default (30 s)
   // and `0` switches the cache off (every read is a fresh query).
   toolPolicyCache: toolPolicyCacheSettingsSchema.optional(),
+  // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): model-facing tool output limit
+  toolOutputLimit: toolOutputLimitSettingsSchema.optional(),
+  toolOutputChars: z.number().int().min(0).optional(),
+
   // myrmidon(1.6.3-FORAGING-IDLE-GATE): whether foraging runs only when the
   // role is idle (empty queue + a free agent), changed from
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,

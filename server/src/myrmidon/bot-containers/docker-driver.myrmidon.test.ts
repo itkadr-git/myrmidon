@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -706,12 +707,13 @@ interface FakeContainer {
     Entrypoint?: string[];
     Cmd?: string[];
     Labels?: Record<string, string>;
-    HostConfig: { Binds: string[]; ReadonlyRootfs?: boolean; Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string };
+    HostConfig: { Binds: string[]; ReadonlyRootfs?: boolean; Memory?: number; MemorySwap?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string };
   };
   state: "created" | "running" | "exited" | "dead";
   health?: "starting" | "healthy" | "unhealthy";
   exitCode: number;
   logs: string;
+  enrolledLimits?: { memoryMb: number; cpus?: number; pidsLimit?: number };
 }
 
 interface RecordedRequest {
@@ -969,6 +971,23 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
       // here rather than only in production.
       return send(403, { message: "dockergate: denied (route_not_allowed)" });
     }
+    if ((m = route.match(/^\/containers\/([^/]+)\/config\/update$/))) {
+      const name = decodeURIComponent(m[1]);
+      const container = containers.get(name);
+      if (!container) return send(404, { message: `No such container: ${name}` });
+      if (method !== "PUT") return send(405, { message: "method not allowed" });
+      const update = JSON.parse(raw.toString("utf8"));
+      const CEILING_MB = 3072;
+      if (update.memoryMb && update.memoryMb > CEILING_MB) {
+        return send(400, { message: "dockergate: denied (limit_exceeds_ceiling)" });
+      }
+      container.enrolledLimits = {
+        memoryMb: update.memoryMb,
+        cpus: update.cpus,
+        pidsLimit: update.pidsLimit,
+      };
+      return send(200, { ok: true, botKey: update.botKey, ...container.enrolledLimits });
+    }
     if (!(m = route.match(/^\/containers\/([^/]+)(?:\/([a-z]+))?$/))) return send(404, { message: "no such route" });
     const name = decodeURIComponent(m[1]);
     const action = m[2];
@@ -1016,6 +1035,17 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
       container.name = query.name;
       containers.set(query.name, container);
       return send(204);
+    }
+    if (action === "update" && method === "POST") {
+      const body = JSON.parse(raw.toString("utf8"));
+      const enrolledMem = container.enrolledLimits?.memoryMb ?? Math.round((container.body.HostConfig.Memory ?? 1024 * 1024 * 1024) / (1024 * 1024));
+      if (body.Memory && body.Memory > enrolledMem * 1024 * 1024) {
+        return send(403, { message: "dockergate: denied (json_value)" });
+      }
+      if (body.Memory) container.body.HostConfig.Memory = body.Memory;
+      if (body.MemorySwap) container.body.HostConfig.MemorySwap = body.MemorySwap;
+      if (body.PidsLimit) container.body.HostConfig.PidsLimit = body.PidsLimit;
+      return send(200, { Warnings: null });
     }
     if (action === "logs" && method === "GET") {
       const payload = Buffer.from(container.logs, "utf8");
@@ -1575,6 +1605,79 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       expect(bot()?.state).toBe("running");
     });
 
+    it("does not restart on health timeout while holding an active startup progress lease", async () => {
+      let elapsed = 0;
+      let wallClock = 1_000_000;
+      daemon.options.healthOnStart = "starting";
+      const botsRoot = path.join(tmp, "bots");
+      const boundedDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: botsRoot },
+        {
+          startHealthTimeoutMs: 12_000,
+          healthPollIntervalMs: 5_000,
+          clock: () => wallClock,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            wallClock += ms;
+            if (elapsed < 25_000) {
+              const leaseDir = path.join(botsRoot, "agent-a", "hermes", "state");
+              await mkdir(leaseDir, { recursive: true });
+              await writeFile(
+                path.join(leaseDir, "startup-progress-lease.json"),
+                JSON.stringify({
+                  phase: "state_db_unclean_integrity_check",
+                  renewed_at: wallClock / 1000,
+                  expected_s: 900,
+                }),
+              );
+            } else {
+              const leaseFile = path.join(botsRoot, "agent-a", "hermes", "state", "startup-progress-lease.json");
+              await unlink(leaseFile).catch(() => {});
+              daemon.options.healthOnStart = "healthy";
+              const c = bot();
+              if (c) c.health = "healthy";
+            }
+          },
+        },
+      );
+      await boundedDriver.create(spec());
+      await boundedDriver.writeProfile("agent-a", testProfile());
+      await boundedDriver.start("agent-a");
+      expect(elapsed).toBeGreaterThanOrEqual(25_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("limits concurrent container starts with host semaphore", async () => {
+      let concurrentStarts = 0;
+      let maxConcurrent = 0;
+      const boundedDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          maxConcurrentStarts: 2,
+          sleep: async () => {
+            concurrentStarts++;
+            maxConcurrent = Math.max(maxConcurrent, concurrentStarts);
+            await new Promise((r) => setTimeout(r, 10));
+            concurrentStarts--;
+          },
+        },
+      );
+      await boundedDriver.create(spec({ botKey: "agent-a" }));
+      await boundedDriver.writeProfile("agent-a", testProfile({ botKey: "agent-a" }));
+      await boundedDriver.create(spec({ botKey: "agent-b" }));
+      await boundedDriver.writeProfile("agent-b", testProfile({ botKey: "agent-b" }));
+      await boundedDriver.create(spec({ botKey: "agent-c" }));
+      await boundedDriver.writeProfile("agent-c", testProfile({ botKey: "agent-c" }));
+
+      await Promise.all([
+        boundedDriver.start("agent-a"),
+        boundedDriver.start("agent-b"),
+        boundedDriver.start("agent-c"),
+      ]);
+      expect(maxConcurrent).toBeLessThanOrEqual(2);
+    });
+
     it("reports Docker's health verdict", async () => {
       await driver.create(spec());
       await driver.writeProfile("agent-a", testProfile());
@@ -2079,6 +2182,38 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await slowDriver.writeProfile("agent-a", testProfile());
       await slowDriver.start("agent-a");
       expect(waits).toEqual([3_000, 3_000]);
+    });
+
+    it("updates live container resources (1024 MB -> 2048 MB) after updating dockergate ceilings without restart (OPE-10565)", async () => {
+      await driver.create(spec({ memoryMb: 1024, cpus: 1, pidsLimit: 512 }));
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+
+      const before = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(before.state).toBe("running");
+      expect(before.body.HostConfig.Memory).toBe(1024 * 1024 * 1024);
+
+      // Live update from card: 1024 MB -> 2048 MB (2 GB)
+      await driver.updateResources!(spec({ memoryMb: 2048, cpus: 1, pidsLimit: 512 }));
+
+      const after = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(after.state).toBe("running");
+      expect(after.body.HostConfig.Memory).toBe(2048 * 1024 * 1024);
+      expect(after.enrolledLimits?.memoryMb).toBe(2048);
+    });
+
+    it("refuses live resource update when limits exceed dockergate platform ceiling with a clear error (OPE-10565)", async () => {
+      await driver.create(spec({ memoryMb: 1024, cpus: 1, pidsLimit: 512 }));
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+
+      // Platform ceiling in fake daemon is 3072 MB. Requesting 4096 MB must be refused with clear error.
+      await expect(
+        driver.updateResources!(spec({ memoryMb: 4096, cpus: 1, pidsLimit: 512 })),
+      ).rejects.toThrow(/requested resource limits exceed platform ceiling/);
+
+      const after = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(after.body.HostConfig.Memory).toBe(1024 * 1024 * 1024);
     });
   });
 });

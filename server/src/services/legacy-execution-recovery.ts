@@ -40,6 +40,12 @@ export function legacyExecutionNeedsReconciliation(
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
+  if (
+    run.errorCode === "hermes_gateway_connect_failed" ||
+    run.scheduledRetryReason === "connect_failed_transient_retry"
+  ) {
+    return false;
+  }
   // myrmidon(OPE-2587): a run woken for a pending interaction addressee killed by process_lost
   // is eligible for bounded retry, not operator reconciliation hold, while attempts remain.
   if (

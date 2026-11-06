@@ -224,7 +224,7 @@ const CONVERTED: {
     symbols: ["forcedBridgeLocale"],
   },
   {
-    file: "app.ts",
+    file: "myrmidon/app-plugin.ts",
     legacy: "myrmidon/telegram-voice-stt-intake/wiring.js",
     seam: "channel-connectors/bridge/voice-stt.js",
     symbols: ["createTelegramVoiceSttWiring"],
@@ -375,13 +375,13 @@ const CONVERTED: {
     symbols: ["bindTelegramRichAttachment"],
   },
   {
-    file: "app.ts",
+    file: "myrmidon/app-plugin.ts",
     legacy: "myrmidon/telegram-notify/index.js",
     seam: "channel-connectors/bridge/notify.js",
     symbols: ["myrmidonTelegramNotifyRoutes"],
   },
   {
-    file: "app.ts",
+    file: "myrmidon/app-plugin.ts",
     legacy: "myrmidon/telegram-notify/sweep.js",
     seam: "channel-connectors/bridge/notify-sweep.js",
     symbols: ["sweepTelegramNotifyProactivity"],
@@ -430,7 +430,7 @@ const SRC_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "
 /** The named bindings of every `import { … } from "…"` statement of a source. */
 function importPairs(source: string): { names: string[]; specifier: string }[] {
   const pairs: { names: string[]; specifier: string }[] = [];
-  const pattern = /import\s+(?:type\s+)?\{([\s\S]*?)\}\s*from\s*"([^"]+)"/g;
+  const pattern = /(?:import|export)\s+(?:type\s+)?\{([\s\S]*?)\}\s*from\s*"([^"]+)"/g;
   for (const match of source.matchAll(pattern)) {
     const names = match[1]
       .replace(/\/\*[\s\S]*?\*\//g, "")

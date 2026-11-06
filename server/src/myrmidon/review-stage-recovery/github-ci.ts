@@ -19,7 +19,9 @@
 import { and, eq } from "drizzle-orm";
 import { issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
+import { recordGitHubRequest } from "../../services/github-rate-limit.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
+import { repositoryHasHostedCi } from "../../services/github-hosted-ci.js";
 import { defaultTokenProvider as resolveGitHubReadToken } from "../../services/github-external-object-provider.js";
 import {
   extractGitHubPullRequestReferences,
@@ -85,11 +87,13 @@ async function readJson(fetchImpl: FetchLike, url: string, token: string | null)
   let response: Response;
   try {
     response = await fetchImpl(url, { headers: headers(token), signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+    recordGitHubRequest("review-recovery", response);
   } catch {
     return { ok: false, code: "network_error", status: null };
   }
   if (!response.ok) {
-    const rateLimited = response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0";
+    const rateLimited = response.status === 429 ||
+      (response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.statusText?.toLowerCase().includes("rate limit")));
     return {
       ok: false,
       code: `http_${response.status}${rateLimited ? "_rate_limited" : ""}`,
@@ -142,7 +146,7 @@ export async function resolvePullRequestHeadCi(input: {
   token: string | null;
   fetch?: FetchLike;
 }): Promise<{
-  state: "pending" | "complete" | "unknown" | "no_pull_request";
+  state: "pending" | "complete" | "unknown" | "not_configured" | "no_pull_request";
   headSha: string | null;
   /** Only for "unknown": a short code of what failed, never a token. */
   reason?: string;
@@ -168,6 +172,8 @@ export async function resolvePullRequestHeadCi(input: {
   // A merged or closed pull request has no CI to wait for; the PR sync owns it.
   if (pullRecord.state !== "open") return { state: "no_pull_request", headSha };
   if (!headSha) return { state: "unknown", headSha: null, reason: "pull:no_head_sha" };
+  const hostedCi = await repositoryHasHostedCi({ ...input.reference, token: input.token, fetch: fetchImpl });
+  if (hostedCi === false) return { state: "not_configured", headSha };
   // Only the final check is asked for; `filter=all` keeps the check runs of earlier workflow
   // runs of the same head too, which the policy then discards when they were cancelled/skipped.
   const checkRunsUrl =

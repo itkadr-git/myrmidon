@@ -331,6 +331,7 @@ function sandbox({
     `SYSTEMD_UNIT_DIR=${path.join(dir, "systemd")}`,
     `BOARD_API_URL=http://127.0.0.1:3100/api`,
     `BOARD_COMPANY_ID=${COMPANY}`,
+    "MYRMIDON_DEPLOY_POSTCHECK_RUNS=0",
     ...(fleetdHealthUrl ? ["MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health"] : []),
     ...(dgHealthUrl ? [`MYR_DOCKERGATE_HEALTH_URL='${dgHealthUrl}'`] : []),
     `DOCKERGATE_LOGS_COMMAND=''`,
@@ -358,6 +359,7 @@ function sandbox({
   // its own tests (predeploy-board-check.test.mjs, deploy.test.mjs); this file is
   // about the preflight, the images and the rollback, so it is switched off here.
   lines.push("MYRMIDON_PREDEPLOY_CHECK=0");
+  lines.push("MYRMIDON_DEPLOY_MIN_FREE_GB=0");
   lines.push("MYRMIDON_DEPLOY_SMOKE=0", ...extraConfig, "");
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(config, lines.join("\n"));

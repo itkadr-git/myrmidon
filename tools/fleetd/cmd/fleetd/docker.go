@@ -70,15 +70,7 @@ func (d *dockerClient) request(ctx context.Context, method, path string, body an
 }
 func (d *dockerClient) name(bot string) string { return "fleet-" + bot }
 func (d *dockerClient) allowedImage(image string) bool {
-	if len(d.images) == 0 {
-		return false
-	}
-	for _, v := range d.images {
-		if v == image {
-			return true
-		}
-	}
-	return false
+	return isImageAllowed(image, d.images)
 }
 
 // create makes the container. binds is the already validated list from

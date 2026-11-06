@@ -223,6 +223,16 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
   }
 
   /**
+   * Invalidates LiteLLM's in-process response/router cache after a credential
+   * mutation. Deployments are updated in place above, but LiteLLM can retain a
+   * resolved credential or routing snapshot until this endpoint is called.
+   * Keep this optional so older gateway versions and test ports remain usable.
+   */
+  async function invalidateGatewayCache() {
+    await deps.litellm.invalidateCache?.();
+  }
+
+  /**
    * Handle credential rotation for a provider.
    * Updates the credential for all models of the provider in LiteLLM.
    */
@@ -295,6 +305,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       }
       await trigger?.onModelRegistered?.(model.litellmModelName);
     }
+    await invalidateGatewayCache();
   }
 
   /**

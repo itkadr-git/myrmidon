@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 // myrmidon(1.6.6-HERMES-SKILLS-A): moduleDir for the skills-source resolver.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,6 +115,11 @@ type ExecutionState = {
    * args, not anything from the completion event. See
    * formatCompactToolCompletedLine. */
   toolPreviews: Map<string, string[]>;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * (chars and estimated tokens) observed from tool.started previews during
+   * the run. Used to populate toolResultsChars/toolResultsTokens in the trace. */
+  toolResultCharsAccum: number;
+  toolResultTokensAccum: number;
   /** myrmidon(G4): Date.now() of the last throttled onRuntimeProgress call
    * (message.delta only — see RUNTIME_PROGRESS_DELTA_THROTTLE_MS), or null
    * before the first one. */
@@ -656,7 +662,15 @@ function buildRunBody(
   // payloadTemplate — same rule as github_broker (set after the spread;
   // `undefined` deletes a forged value and is dropped by JSON serialization).
   paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined,
-): { body: Record<string, unknown>; promptBreakdown: PromptBreakdown } {
+): {
+  body: Record<string, unknown>;
+  promptBreakdown: PromptBreakdown;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section,
+   * computed from the raw strings before measureSections applies its chars/4
+   * token heuristic. Needed because the trace schema stores both tokens and
+   * chars per section. */
+  sectionChars: Record<string, number>;
+} {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
@@ -732,23 +746,32 @@ function buildRunBody(
   // broker field too; section estimates cover only their own text, so the
   // parts need not sum exactly to `total` (unlike the joined-less contract,
   // where total is the exact parts sum).
-  const promptBreakdown = measureSections(
-    {
-      instructionsBundle: agentInstructionsBundle,
-      cardInstructions,
-      ...(configuredInput && ctx.context.conversationMode === true
-        ? // conversation mode appends the assembled input after the configured
-          // input, so both are on the wire and both are measured.
-          { ...builtInput.sections, configuredInput }
-        : configuredInput
-          ? // a configured input replaces the assembled input text: measuring
-            // both would double-count a prompt only one of which was sent.
-            { configuredInput }
-          : builtInput.sections),
-    },
-    { joined: JSON.stringify(body) },
-  );
-  return { body, promptBreakdown };
+  const sectionsForMeasurement: Record<string, string | null | undefined> = {
+    instructionsBundle: agentInstructionsBundle,
+    cardInstructions,
+    ...(configuredInput && ctx.context.conversationMode === true
+      ? // conversation mode appends the assembled input after the configured
+        // input, so both are on the wire and both are measured.
+        { ...builtInput.sections, configuredInput }
+      : configuredInput
+        ? // a configured input replaces the assembled input text: measuring
+          // both would double-count a prompt only one of which was sent.
+          { configuredInput }
+        : builtInput.sections),
+  };
+  const promptBreakdown = measureSections(sectionsForMeasurement, {
+    joined: JSON.stringify(body),
+  });
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section.
+  // Computed from the raw strings so the trace can store both tokens (from
+  // measureSections' chars/4 heuristic) and actual chars per section.
+  const sectionChars: Record<string, number> = {};
+  for (const [name, value] of Object.entries(sectionsForMeasurement)) {
+    if (typeof value === "string" && value.length > 0) {
+      sectionChars[name] = value.length;
+    }
+  }
+  return { body, promptBreakdown, sectionChars };
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
@@ -872,6 +895,8 @@ function createExecutionState(runId: string): ExecutionState {
     terminalPromise,
     deltaLineBuffer: "",
     toolPreviews: new Map(),
+    toolResultCharsAccum: 0,
+    toolResultTokensAccum: 0,
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
     modelResponseStarted: false,
@@ -1119,11 +1144,23 @@ async function logCompactEvent(input: {
     const name = toolNameFromEvent(record);
     const preview = truncateForLog(toolPreviewFromEvent(record, redactText), COMPACT_TOOL_PREVIEW_MAX_CHARS);
     pushToolPreview(state, name, preview);
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulate tool result sizes
+    // from the preview content. The preview is the tool arguments/result
+    // snippet captured at tool.started time.
+    state.toolResultCharsAccum += preview.length;
+    state.toolResultTokensAccum += Math.ceil(preview.length / 4);
     await ctx.onLog("stdout", formatCompactToolStartedLine(name, preview));
   } else if (eventName === "tool.completed") {
     const name = toolNameFromEvent(record);
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): also accumulate from the
+    // completed event's error/output fields if present.
+    const outputStr = String(record?.output ?? record?.result ?? record?.stdout ?? "").trim();
+    if (outputStr) {
+      state.toolResultCharsAccum += outputStr.length;
+      state.toolResultTokensAccum += Math.ceil(outputStr.length / 4);
+    }
 
     // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
     if (toolHasError(record)) {
@@ -1857,6 +1894,215 @@ function parseRetryAfterToIso(value: string | null | undefined): string | null {
   return null;
 }
 
+/**
+ * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): build per-call trace entries for
+ * the server to persist into llm_call_traces. Content-free — only section
+ * sizes (chars/tokens), provider usage, cost, and the tools revision hash.
+ *
+ * A single gateway run may make multiple model calls (multi-turn loop).
+ * When the gateway payload carries a `model_calls` array with per-call usage,
+ * we emit one trace per call. Otherwise we fall back to aggregate usage per
+ * run (callIndex=0) because the per-call breakdown is only available inside
+ * the gateway runtime. When the payload carries explicit call ids
+ * (litellmRequestIds / gatewayCallIds) we attach the first id so the server
+ * can reconcile against litellm_cost_events.
+ */
+function buildLlmCallTraces(input: {
+  promptBreakdown?: PromptBreakdown;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section
+   * from buildRunBody, parallel to promptBreakdown.parts (which holds token
+   * estimates). Keyed by the same section names. */
+  sectionChars?: Record<string, number>;
+  usage: UsageSummary | undefined;
+  costUsd: number | null;
+  payload: Record<string, unknown>;
+  toolsRev: string | null;
+  toolCount: number | null;
+  modelAttemptId?: string | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): estimated tool schema sizes
+   * derived from the paperclip_skills field sent to the gateway. The gateway
+   * builds actual JSON schemas from these skills; we estimate the size from
+   * the skill metadata to give the server a rough sense of tool schema bloat. */
+  toolSchemaChars?: number | null;
+  toolSchemaTokens?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * observed from tool.started/tool.completed events during the run. */
+  toolResultChars?: number | null;
+  toolResultTokens?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): session compaction info from
+   * the server-side session rotation evaluation. Set by the server when
+   * persisting the trace; the adapter leaves this false. */
+  compacted?: boolean;
+  preCompactChars?: number | null;
+  postCompactChars?: number | null;
+}): Array<Record<string, unknown>> {
+  const sections = (input.promptBreakdown?.parts ?? {}) as Record<string, unknown>;
+  const chars = input.sectionChars ?? {};
+  const breakdownTotal = (input.promptBreakdown?.total ?? 0) as number;
+  const breakdownChars = Object.values(chars).reduce((sum, n) => sum + n, 0);
+
+  // Extract per-call ids from the payload when available.
+  // parseGatewayCallIds reads both payload-level and usage-level id arrays, so
+  // we reuse it here instead of only looking at payload.litellm_request_ids.
+  const litellmIds = parseGatewayCallIds(input.payload).litellmRequestIds;
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call usage from gateway
+  // payload. When the gateway emits a `model_calls` array with per-call
+  // usage objects, we build one trace per call. Each element should have:
+  //   - usage: { input_tokens, output_tokens, cached_input_tokens? }
+  //   - litellm_request_id?: string
+  //   - section_chars?: Record<string, number>  (per-call section sizes)
+  //   - model?: string
+  const modelCalls = Array.isArray(input.payload.model_calls)
+    ? (input.payload.model_calls as Array<Record<string, unknown>>)
+    : null;
+
+  const hasAnyData =
+    (input.usage?.inputTokens ?? 0) > 0 ||
+    (input.usage?.outputTokens ?? 0) > 0 ||
+    breakdownTotal > 0 ||
+    breakdownChars > 0;
+
+  if (!hasAnyData && !modelCalls) return [];
+
+  // Section mapping: the adapter's prompt assembly produces these sections:
+  //   instructionsBundle + cardInstructions  → system instructions
+  //   identityContract + wakePrompt + wakePayloadJson  → wake data
+  //   sessionHandoff + taskMarkdown  → history/context
+  // Tool schemas and tool results are NOT available at the adapter level —
+  // they live inside the gateway's LLM request/response, not in the adapter's
+  // prompt assembly. The trace schema allows null for these fields.
+  const systemTokens = (typeof sections.instructionsBundle === "number" ? sections.instructionsBundle : 0)
+    + (typeof sections.cardInstructions === "number" ? sections.cardInstructions : 0);
+  const systemChars = (chars.instructionsBundle ?? 0) + (chars.cardInstructions ?? 0);
+  const wakeTokens = (typeof sections.identityContract === "number" ? sections.identityContract : 0)
+    + (typeof sections.wakePrompt === "number" ? sections.wakePrompt : 0)
+    + (typeof sections.wakePayloadJson === "number" ? sections.wakePayloadJson : 0);
+  const wakeChars = (chars.identityContract ?? 0) + (chars.wakePrompt ?? 0) + (chars.wakePayloadJson ?? 0);
+  const historyTokens = (typeof sections.sessionHandoff === "number" ? sections.sessionHandoff : 0)
+    + (typeof sections.taskMarkdown === "number" ? sections.taskMarkdown : 0);
+  const historyChars = (chars.sessionHandoff ?? 0) + (chars.taskMarkdown ?? 0);
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call trace emission.
+  // When the gateway provides model_calls with per-call usage, emit one
+  // trace per call. This is the "трейс каждого LLM-вызова" requirement.
+  if (modelCalls && modelCalls.length > 0) {
+    return modelCalls.map((callData, idx) => {
+      const callUsage = asRecord(callData.usage) ?? {};
+      const callSections = asRecord(callData.section_chars) ?? {};
+      const callLitellmId = typeof callData.litellm_request_id === "string"
+        ? callData.litellm_request_id
+        : litellmIds[idx] ?? litellmIds[0] ?? null;
+      const callModel = typeof callData.model === "string"
+        ? callData.model
+        : typeof input.payload.model === "string" ? input.payload.model : null;
+
+      // Per-call section sizes: use gateway-provided if available, else adapter-computed
+      const callSystemChars = (typeof callSections.instructionsBundle === "number" ? callSections.instructionsBundle : 0)
+        + (typeof callSections.cardInstructions === "number" ? callSections.cardInstructions : 0)
+        || systemChars;
+      const callWakeChars = (typeof callSections.identityContract === "number" ? callSections.identityContract : 0)
+        + (typeof callSections.wakePrompt === "number" ? callSections.wakePrompt : 0)
+        + (typeof callSections.wakePayloadJson === "number" ? callSections.wakePayloadJson : 0)
+        || wakeChars;
+      const callHistoryChars = (typeof callSections.sessionHandoff === "number" ? callSections.sessionHandoff : 0)
+        + (typeof callSections.taskMarkdown === "number" ? callSections.taskMarkdown : 0)
+        || historyChars;
+
+      return {
+        version: 1,
+        callIndex: idx,
+        langfuseTraceId: null,
+        langfuseObservationId: null,
+        litellmRequestId: callLitellmId,
+        provider: typeof input.payload.provider === "string" ? input.payload.provider : null,
+        model: callModel,
+        toolsRev: input.toolsRev,
+        toolCount: input.toolCount,
+        sections: {
+          systemTokens: systemTokens > 0 ? systemTokens : undefined,
+          systemChars: callSystemChars > 0 ? callSystemChars : undefined,
+          toolsTokens: input.toolSchemaTokens ?? undefined,
+          toolsChars: input.toolSchemaChars ?? undefined,
+          wakeTokens: wakeTokens > 0 ? wakeTokens : undefined,
+          wakeChars: callWakeChars > 0 ? callWakeChars : undefined,
+          historyTokens: historyTokens > 0 ? historyTokens : undefined,
+          historyChars: callHistoryChars > 0 ? callHistoryChars : undefined,
+          toolResultsTokens: input.toolResultTokens ?? undefined,
+          toolResultsChars: input.toolResultChars ?? undefined,
+          totalTokens: breakdownTotal > 0 ? breakdownTotal : undefined,
+          totalChars: breakdownChars > 0 ? breakdownChars : undefined,
+        },
+        usage: {
+          promptTokens: asNumber(callUsage.input_tokens ?? callUsage.inputTokens, 0),
+          cachedPromptTokens: asNumber(callUsage.cached_input_tokens ?? callUsage.cachedInputTokens, 0),
+          completionTokens: asNumber(callUsage.output_tokens ?? callUsage.outputTokens, 0),
+          costMicroUsd: input.costUsd !== null ? Math.round(input.costUsd * 1_000_000) : undefined,
+        },
+        compacted: input.compacted ?? false,
+        preCompactChars: input.preCompactChars ?? undefined,
+        postCompactChars: input.postCompactChars ?? undefined,
+      };
+    });
+  }
+
+  // Fallback: single trace per run when gateway does not provide model_calls
+  const call: Record<string, unknown> = {
+    version: 1,
+    callIndex: 0,
+    langfuseTraceId: null,
+    langfuseObservationId: null,
+    litellmRequestId: litellmIds[0] ?? null,
+    provider: typeof input.payload.provider === "string" ? input.payload.provider : null,
+    model: typeof input.payload.model === "string" ? input.payload.model : null,
+    toolsRev: input.toolsRev,
+    toolCount: input.toolCount,
+    sections: {
+      systemTokens: systemTokens > 0 ? systemTokens : undefined,
+      systemChars: systemChars > 0 ? systemChars : undefined,
+      // Tool schemas: the exact paperclip_skills JSON payload sent to the
+      // gateway. The gateway builds actual JSON tool schemas from these;
+      // the transformed schema size is gateway-internal, not visible here.
+      toolsTokens: input.toolSchemaTokens ?? undefined,
+      toolsChars: input.toolSchemaChars ?? undefined,
+      wakeTokens: wakeTokens > 0 ? wakeTokens : undefined,
+      wakeChars: wakeChars > 0 ? wakeChars : undefined,
+      historyTokens: historyTokens > 0 ? historyTokens : undefined,
+      historyChars: historyChars > 0 ? historyChars : undefined,
+      // Tool results: accumulated from tool.started/tool.completed event
+      // previews observed during the run. The actual result content is
+      // embedded in the conversation history for subsequent provider calls
+      // within the same run; the gateway constructs those payloads and the
+      // per-call breakout is not visible to the adapter.
+      toolResultsTokens: input.toolResultTokens ?? undefined,
+      toolResultsChars: input.toolResultChars ?? undefined,
+      totalTokens: breakdownTotal > 0 ? breakdownTotal : undefined,
+      totalChars: breakdownChars > 0 ? breakdownChars : undefined,
+    },
+    usage: {
+      promptTokens: input.usage?.inputTokens ?? 0,
+      cachedPromptTokens: input.usage?.cachedInputTokens ?? 0,
+      completionTokens: input.usage?.outputTokens ?? 0,
+      costMicroUsd:
+        input.costUsd !== null ? Math.round(input.costUsd * 1_000_000) : undefined,
+    },
+    // Compaction is a server-side decision (session rotation in heartbeat.ts),
+    // not something the adapter can observe. The server sets this flag when
+    // persisting the trace based on sessionCompaction.rotate.
+    compacted: input.compacted ?? false,
+    preCompactChars: input.preCompactChars ?? undefined,
+    postCompactChars: input.postCompactChars ?? undefined,
+  };
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): when the gateway does not provide
+  // model_calls, we emit exactly one trace entry per run (callIndex=0) with
+  // the aggregate usage. This is the fallback for gateways that have not yet
+  // been updated to emit per-call data. The reconcile endpoint joins to
+  // litellm_cost_events on the server side, so per-call usage is recoverable
+  // from spend logs even when the gateway only reports aggregates.
+  return [call];
+}
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -1868,6 +2114,10 @@ export function mapFinalResultForTest(input: {
    * into heartbeat_runs.usageJson.promptBreakdown. Optional so existing test
    * callers that exercise only the result mapping keep their shape. */
   promptBreakdown?: PromptBreakdown;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section
+   * from buildRunBody, parallel to promptBreakdown.parts. Optional so existing
+   * test callers that exercise only the result mapping keep their shape. */
+  sectionChars?: Record<string, number>;
   /** myrmidon(F06-MODEL-TELEMETRY): the model the run was configured with
    * (ctx.config.model). Used only as the last resort when the terminal payload
    * names no model, so usageJson.model stops reading "unknown" for runs whose
@@ -1875,6 +2125,31 @@ export function mapFinalResultForTest(input: {
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
   modelResponseStarted?: boolean;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): hash of the tool-schema set
+   * the gateway will offer for this run. Computed from the sorted
+   * paperclip_skills paths (skills drive the tool catalogue) so the server
+   * can group calls by tools revision without seeing the schemas themselves.
+   * Optional — omitting it yields a null tools_rev in the trace. */
+  toolsRev?: string | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): number of distinct tool
+   * schemas the gateway registered for this run, when known. */
+  toolCount?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): tool schema sizes measured
+   * from the exact paperclip_skills JSON field sent to the gateway. The
+   * gateway transforms these into actual JSON tool schemas; the transformed
+   * size is gateway-internal. */
+  toolSchemaChars?: number | null;
+  toolSchemaTokens?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * observed from tool.started/tool.completed events during the run. */
+  toolResultChars?: number | null;
+  toolResultTokens?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): session compaction info from
+   * the server-side session rotation evaluation. Set by the server when
+   * persisting the trace; the adapter leaves this false. */
+  compacted?: boolean;
+  preCompactChars?: number | null;
+  postCompactChars?: number | null;
   /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
   modelAttemptId?: string | null;
 }): AdapterExecutionResult {
@@ -1977,6 +2252,14 @@ export function mapFinalResultForTest(input: {
     // see extractModel().
     model: extractModel(payload) ?? nonEmptyModel(input.configuredModel),
     ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+    ...(input.sectionChars ? { sectionChars: input.sectionChars } : {}),
+    ...(input.toolSchemaChars != null ? { toolSchemaChars: input.toolSchemaChars } : {}),
+    ...(input.toolSchemaTokens != null ? { toolSchemaTokens: input.toolSchemaTokens } : {}),
+    ...(input.toolResultChars != null ? { toolResultChars: input.toolResultChars } : {}),
+    ...(input.toolResultTokens != null ? { toolResultTokens: input.toolResultTokens } : {}),
+    ...(input.compacted != null ? { compacted: input.compacted } : {}),
+    ...(input.preCompactChars != null ? { preCompactChars: input.preCompactChars } : {}),
+    ...(input.postCompactChars != null ? { postCompactChars: input.postCompactChars } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
@@ -2021,6 +2304,29 @@ export function mapFinalResultForTest(input: {
       ...(isCooldown ? { cooldown: true } : {}),
       ...(retryNotBefore ? { retryNotBefore } : {}),
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+      // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call LLM trace emitted
+      // for the server to persist into llm_call_traces. Content-free — only
+      // sizes, hashes, usage. See server/src/myrmidon/tokens-trace/domain.ts.
+      ...((): Record<string, unknown> => {
+        const traces = buildLlmCallTraces({
+          promptBreakdown: input.promptBreakdown,
+          sectionChars: input.sectionChars,
+          usage,
+          costUsd,
+          payload,
+          toolsRev: input.toolsRev ?? null,
+          toolCount: input.toolCount ?? null,
+          modelAttemptId: input.modelAttemptId,
+          toolSchemaChars: input.toolSchemaChars ?? null,
+          toolSchemaTokens: input.toolSchemaTokens ?? null,
+          toolResultChars: input.toolResultChars ?? null,
+          toolResultTokens: input.toolResultTokens ?? null,
+          compacted: input.compacted ?? false,
+          preCompactChars: input.preCompactChars ?? null,
+          postCompactChars: input.postCompactChars ?? null,
+        });
+        return traces.length > 0 ? { llmCallTraces: { version: 1, calls: traces } } : {};
+      })(),
       ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
     },
   };
@@ -2711,6 +3017,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // history block below is appended, so `input` sections reflect the prompt
   // as assembled by buildInput — not the post-restore wake text.
   const promptBreakdown = body.promptBreakdown;
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section,
+  // parallel to promptBreakdown.parts. Passed through to buildLlmCallTraces.
+  const sectionChars = body.sectionChars;
   // myrmidon(MEMORY-CENTRAL-B): the read happens before the run body is
   // consumed — a store failure never blocks a run: the wake proceeds without
   // the restored block, the reason is logged.
@@ -3191,6 +3500,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): hash the sorted skill paths so
+  // the server can group calls by tools revision. Skills drive the gateway's
+  // tool catalogue; a change in the skill set (or order) changes the hash.
+  const toolsRev = paperclipSkillsField
+    ? createHash("sha256")
+        .update(
+          JSON.stringify(
+            [...paperclipSkillsField]
+              .map((s) => s.path)
+              .sort(),
+          ),
+        )
+        .digest("hex")
+    : null;
+  const toolCount = paperclipSkillsField?.length ?? null;
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): measure tool schema sizes from
+  // the exact paperclip_skills JSON field sent to the gateway. This IS the
+  // actual serialized payload the adapter puts on the wire — not an estimate.
+  // The gateway transforms these skills into JSON tool schemas for the
+  // provider; that transformed size is gateway-internal and not visible here.
+  let toolSchemaChars: number | null = null;
+  let toolSchemaTokens: number | null = null;
+  if (paperclipSkillsField && paperclipSkillsField.length > 0) {
+    const skillsJson = JSON.stringify(paperclipSkillsField);
+    toolSchemaChars = skillsJson.length;
+    // Token estimate: ~4 chars per token for JSON
+    toolSchemaTokens = Math.ceil(skillsJson.length / 4);
+  }
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulate tool result sizes from
+  // tool events observed during the run. We track the preview/detail content
+  // sizes from tool.started events (the tool.completed payload doesn't carry
+  // the result content).
+  const toolResultChars = state.toolResultCharsAccum ?? null;
+  const toolResultTokens = state.toolResultTokensAccum ?? null;
+
   const finalResult = mapFinalResultForTest({
     terminal: outcome,
     outputChunks: state.outputChunks,
@@ -3198,9 +3544,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
+    sectionChars,
     modelAttemptId: nonEmpty(ctx.config.modelAttemptId),
     configuredModel: nonEmpty(ctx.config.model),
     modelResponseStarted: state.modelResponseStarted,
+    toolsRev,
+    toolCount,
+    toolSchemaChars,
+    toolSchemaTokens,
+    toolResultChars,
+    toolResultTokens,
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's
