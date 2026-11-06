@@ -99,6 +99,59 @@ describe("decideQueuedRunStaleness: productive continuation recovery", () => {
   });
 });
 
+// myrmidon(OPE-11948): a queued automatic continuation dies when the issue was
+// parked or sent to review after the wake was created.
+describe("decideQueuedRunStaleness: automatic continuation wake (OPE-11948)", () => {
+  const continuation = (overrides: Partial<QueuedRunFacts> = {}) =>
+    facts({
+      issueAssigneeAgentId: "agent-b",
+      isAutomaticContinuationWake: true,
+      wakeReason: "issue_continuation_needed",
+      retryReason: "issue_continuation_needed",
+      ...overrides,
+    });
+
+  it.each(["blocked", "in_review"])("cancels the queued run when the issue is %s", (issueStatus) => {
+    expect(decideQueuedRunStaleness(continuation({ issueStatus }), NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_not_in_progress",
+    });
+  });
+
+  it.each(["todo", "in_progress"])("starts the run while the issue is %s", (issueStatus) => {
+    expect(decideQueuedRunStaleness(continuation({ issueStatus }), NOW)).toEqual({ stale: false });
+  });
+
+  it("keeps the other terminal and backlog codes", () => {
+    expect(decideQueuedRunStaleness(continuation({ issueStatus: "done" }), NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_terminal_status",
+    });
+    expect(decideQueuedRunStaleness(continuation({ issueStatus: "backlog" }), NOW)).toMatchObject({
+      stale: true,
+      errorCode: "queued_run_issue_not_startable",
+    });
+  });
+
+  it("does not touch a continuation that is not an automatic wake (explicit resume, comment)", () => {
+    expect(
+      decideQueuedRunStaleness(
+        continuation({ issueStatus: "blocked", isAutomaticContinuationWake: false, resumeIntent: true }),
+        NOW,
+      ),
+    ).toEqual({ stale: false });
+  });
+
+  it("does not touch other wake reasons on a blocked issue", () => {
+    expect(
+      decideQueuedRunStaleness(
+        facts({ issueAssigneeAgentId: "agent-b", issueStatus: "blocked", wakeReason: "issue_commented" }),
+        NOW,
+      ),
+    ).toEqual({ stale: false });
+  });
+});
+
 describe("looksLikePendingInteractionAddresseeWake", () => {
   const interactionId = "3f2b6a4e-1c7d-4e8f-9a0b-5c6d7e8f9a0b";
 

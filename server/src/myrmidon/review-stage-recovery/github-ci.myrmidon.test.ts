@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createReviewPullRequestCiResolver, resolvePullRequestHeadCi } from "./github-ci.js";
+import {
+  createReviewHeadFailedChecksResolver,
+  createReviewPullRequestCiResolver,
+  resolvePullRequestHeadCi,
+  resolvePullRequestHeadFailedChecks,
+} from "./github-ci.js";
 
 // myrmidon(OPE-10045, OPE-10063): the CI read of a PR head never touches the
 // network in tests. CI of the head is finished only by its final `CI result`
@@ -379,5 +384,175 @@ describe("createReviewPullRequestCiResolver", () => {
       pullRequestUrl: "https://github.com/acme/app/pull/7",
       headSha: "abc123",
     });
+  });
+});
+
+// myrmidon(OPE-11970): the names of the checks that failed on a head, for the
+// review-return guard. The latest run of every check name decides, so a check
+// that failed and was re-run green is not listed; a list the board cannot read
+// completely is "unknown".
+const LATEST_CHECK_RUNS = "/repos/acme/app/commits/abc123/check-runs?filter=latest&per_page=100";
+
+describe("resolvePullRequestHeadFailedChecks", () => {
+  const head = { reference, token: "token", headSha: "abc123" };
+
+  it("lists the checks that finished with a failing conclusion, once each", async () => {
+    const result = await resolvePullRequestHeadFailedChecks({
+      ...head,
+      fetch: fakeFetch({
+        [LATEST_CHECK_RUNS]: {
+          total_count: 8,
+          check_runs: [
+            { name: "typecheck + build", status: "completed", conclusion: "success" },
+            { name: "tests (affected)", status: "completed", conclusion: "failure" },
+            { name: "tests (affected)", status: "completed", conclusion: "failure" },
+            { name: "checks", status: "completed", conclusion: "timed_out" },
+            { name: "go tools (dockergate + fleetd)", status: "completed", conclusion: "cancelled" },
+            { name: "plugin readiness timing", status: "completed", conclusion: "skipped" },
+            { name: "plan", status: "in_progress", conclusion: null },
+            { name: "CI result", status: "completed", conclusion: "failure" },
+          ],
+        },
+      }),
+    });
+
+    expect(result).toEqual({ state: "ok", failed: ["tests (affected)", "checks", "CI result"] });
+  });
+
+  it("lists nothing when no check failed", async () => {
+    const result = await resolvePullRequestHeadFailedChecks({
+      ...head,
+      fetch: fakeFetch({
+        [LATEST_CHECK_RUNS]: {
+          total_count: 1,
+          check_runs: [{ name: "CI result", status: "completed", conclusion: "success" }],
+        },
+      }),
+    });
+
+    expect(result).toEqual({ state: "ok", failed: [] });
+  });
+
+  it("is unknown when the list does not fit one page: a partial list could hide a code failure", async () => {
+    const result = await resolvePullRequestHeadFailedChecks({
+      ...head,
+      fetch: fakeFetch({
+        [LATEST_CHECK_RUNS]: {
+          total_count: 140,
+          check_runs: [{ name: "CI result", status: "completed", conclusion: "failure" }],
+        },
+      }),
+    });
+
+    expect(result).toEqual({ state: "unknown", reason: "check_runs:more_than_one_page" });
+  });
+
+  it("is unknown with a reason when GitHub refuses the read", async () => {
+    const result = await resolvePullRequestHeadFailedChecks({
+      ...head,
+      fetch: fakeFetch({ [LATEST_CHECK_RUNS]: status(500) }),
+    });
+
+    expect(result).toEqual({ state: "unknown", reason: "check_runs:http_500" });
+  });
+
+  it("is unknown when the payload has no check run list", async () => {
+    const result = await resolvePullRequestHeadFailedChecks({
+      ...head,
+      fetch: fakeFetch({ [LATEST_CHECK_RUNS]: { total_count: 0 } }),
+    });
+
+    expect(result).toEqual({ state: "unknown", reason: "check_runs:unreadable_payload" });
+  });
+});
+
+describe("createReviewHeadFailedChecksResolver", () => {
+  function fakeDb(rows: unknown[]) {
+    return {
+      select: () => ({ from: () => ({ where: async () => rows }) }),
+    } as never;
+  }
+
+  const openProduct = {
+    id: "wp-1",
+    type: "pull_request",
+    status: "open",
+    url: "https://github.com/acme/app/pull/7",
+    metadata: null,
+    isPrimary: true,
+    updatedAt: new Date(),
+  };
+
+  it("is unknown, without a token request or a network call, when the issue has no open PR", async () => {
+    let tokenRequested = false;
+    const calls: Array<{ path: string; headers: Record<string, string> }> = [];
+    const resolver = createReviewHeadFailedChecksResolver({
+      db: fakeDb([{ ...openProduct, status: "merged" }]),
+      tokenProvider: async () => {
+        tokenRequested = true;
+        return "token";
+      },
+      fetch: fakeFetch({}, calls),
+    });
+
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1", headSha: "abc123" })).toEqual({
+      state: "unknown",
+      reason: "no_pull_request",
+    });
+    expect(tokenRequested).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("is unknown when the PR reference cannot be read", async () => {
+    const resolver = createReviewHeadFailedChecksResolver({
+      db: fakeDb([{ ...openProduct, url: "https://example.com/not-a-pull-request" }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({}),
+    });
+
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1", headSha: "abc123" })).toEqual({
+      state: "unknown",
+      reason: "pull_request_reference_unreadable",
+    });
+  });
+
+  it("reads the failed checks of the head the decision was made on", async () => {
+    const resolver = createReviewHeadFailedChecksResolver({
+      db: fakeDb([openProduct]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({
+        [LATEST_CHECK_RUNS]: {
+          total_count: 2,
+          check_runs: [
+            { name: "CI result", status: "completed", conclusion: "failure" },
+            { name: "main-green", status: "completed", conclusion: "success" },
+          ],
+        },
+      }),
+    });
+
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1", headSha: "abc123" })).toEqual({
+      state: "ok",
+      headSha: "abc123",
+      pullRequestUrl: "https://github.com/acme/app/pull/7",
+      failed: ["CI result"],
+    });
+  });
+
+  it("reads anonymously and still answers when the token provider fails", async () => {
+    const calls: Array<{ path: string; headers: Record<string, string> }> = [];
+    const resolver = createReviewHeadFailedChecksResolver({
+      db: fakeDb([openProduct]),
+      tokenProvider: async () => {
+        throw new Error("Several GitHub Apps allow this repository");
+      },
+      fetch: fakeFetch({ [LATEST_CHECK_RUNS]: { total_count: 0, check_runs: [] } }, calls),
+    });
+
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1", headSha: "abc123" })).toMatchObject({
+      state: "ok",
+      failed: [],
+    });
+    expect(calls.every((call) => call.headers.authorization === undefined)).toBe(true);
   });
 });

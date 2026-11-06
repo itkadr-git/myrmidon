@@ -626,6 +626,9 @@ export const issueExecutionStateSchema = z.object({
   escalationReason: z.literal("review_round_limit").nullable().optional().default(null),
   escalationFromParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
   escalationToParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  // myrmidon(OPE-11970): PR head the last changes-requested decision was made on;
+  // a repeat return on the same head does not wake the executor again.
+  lastChangesRequestedHeadSha: z.string().max(128).nullable().optional(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({

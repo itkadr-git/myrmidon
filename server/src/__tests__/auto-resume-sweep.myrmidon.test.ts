@@ -100,6 +100,57 @@ describeEmbeddedPostgres("auto-resume sweep (AUTO-RESUME)", () => {
     await db.update(agents).set({ status: "error", updatedAt }).where(eq(agents.id, agentId));
   }
 
+  // OPE-11947: an agent the module already gave up on (exhaustedAt = BASE + 1 min).
+  function exhaustedMetadata() {
+    return {
+      [AUTO_RESUME_METADATA_KEY]: {
+        failures: 3,
+        lastFailureAt: new Date(BASE).toISOString(),
+        nextAttemptAt: null,
+        exhaustedAt: new Date(BASE + MINUTE).toISOString(),
+        lastResumeAt: new Date(BASE).toISOString(),
+      },
+    };
+  }
+
+  /** One activity row about an agent, as `routes/agents.ts` (user) or the system writes it. */
+  async function logAgentAction(input: {
+    companyId: string;
+    entityAgentId: string;
+    action: string;
+    actorType: "user" | "system";
+    createdAt: Date;
+  }) {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: input.actorType,
+      actorId: input.actorType === "user" ? "board-user" : "heartbeat",
+      action: input.action,
+      entityType: "agent",
+      entityId: input.entityAgentId,
+      createdAt: input.createdAt,
+    });
+  }
+
+  async function seedRun(input: {
+    companyId: string;
+    agentId: string;
+    status: string;
+    createdAt: Date;
+    finishedAt?: Date | null;
+    resultJson?: Record<string, unknown> | null;
+  }) {
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: input.status,
+      createdAt: input.createdAt,
+      finishedAt: input.finishedAt ?? null,
+      resultJson: input.resultJson ?? null,
+    });
+  }
+
   function makeSweeper(deps: {
     resumeWake?: ReturnType<typeof vi.fn>;
     invokable?: boolean;
@@ -219,29 +270,194 @@ describeEmbeddedPostgres("auto-resume sweep (AUTO-RESUME)", () => {
     expect(card?.subject.metadata?.autoResumeExhausted).toBeUndefined();
   });
 
-  it("re-arms after an operator touches the agent following a give-up", async () => {
-    const { agentId } = await seedAgent({
+  it("re-arms after an operator resumes the agent following a give-up", async () => {
+    const { companyId, agentId } = await seedAgent({
       updatedAt: new Date(BASE),
-      metadata: {
-        [AUTO_RESUME_METADATA_KEY]: {
-          failures: 3,
-          lastFailureAt: new Date(BASE).toISOString(),
-          nextAttemptAt: null,
-          exhaustedAt: new Date(BASE + MINUTE).toISOString(),
-          lastResumeAt: new Date(BASE).toISOString(),
-        },
-      },
+      metadata: exhaustedMetadata(),
     });
     const { resumeWake, sweepAt } = makeSweeper();
 
-    // The record changed long after the give-up: a new episode, resume again.
+    // A user's resume after the give-up: a new episode, resume again.
     await failAgain(agentId, new Date(BASE + 60 * MINUTE));
+    await logAgentAction({
+      companyId,
+      entityAgentId: agentId,
+      action: "agent.resumed",
+      actorType: "user",
+      createdAt: new Date(BASE + 60 * MINUTE),
+    });
     const result = await sweepAt(61 * MINUTE);
     expect(result.resumed).toBe(1);
     expect(resumeWake).toHaveBeenCalledTimes(1);
     const row = await agentRow(agentId);
     expect(readAutoResumeState(row.metadata)?.failures).toBe(1);
     expect(readAutoResumeState(row.metadata)?.exhaustedAt).toBeNull();
+  });
+
+  it("does not re-arm a give-up when only agents.updated_at moved (OPE-11947)", async () => {
+    const { companyId, agentId } = await seedAgent({
+      updatedAt: new Date(BASE),
+      metadata: exhaustedMetadata(),
+    });
+    const otherAgent = await seedAgent({ status: "idle", updatedAt: new Date(BASE) });
+    const { resumeWake, sweepAt } = makeSweeper();
+
+    // Seen in production: given up, then back to attempt 1 three minutes later
+    // because a run moved updated_at. Runs, status changes and system updates
+    // are not operators.
+    await failAgain(agentId, new Date(BASE + 5 * MINUTE));
+    await logAgentAction({
+      companyId,
+      entityAgentId: agentId,
+      action: "agent.updated",
+      actorType: "system",
+      createdAt: new Date(BASE + 5 * MINUTE),
+    });
+    // A user's action before the give-up, and one on another agent, do not count either.
+    await logAgentAction({
+      companyId,
+      entityAgentId: agentId,
+      action: "agent.resumed",
+      actorType: "user",
+      createdAt: new Date(BASE),
+    });
+    await logAgentAction({
+      companyId: otherAgent.companyId,
+      entityAgentId: otherAgent.agentId,
+      action: "agent.resumed",
+      actorType: "user",
+      createdAt: new Date(BASE + 10 * MINUTE),
+    });
+
+    for (const offset of [6 * MINUTE, 20 * MINUTE, 60 * MINUTE]) {
+      const result = await sweepAt(offset);
+      expect(result.resumed).toBe(0);
+      expect(result.exhausted).toBe(0);
+    }
+    expect(resumeWake).not.toHaveBeenCalled();
+    const row = await agentRow(agentId);
+    expect(row.status).toBe("error");
+    expect(readAutoResumeState(row.metadata)?.exhaustedAt).toBe(new Date(BASE + MINUTE).toISOString());
+    expect(readAutoResumeState(row.metadata)?.failures).toBe(3);
+
+    // A user updating the agent after the give-up does re-arm it.
+    await logAgentAction({
+      companyId,
+      entityAgentId: agentId,
+      action: "agent.updated",
+      actorType: "user",
+      createdAt: new Date(BASE + 70 * MINUTE),
+    });
+    await failAgain(agentId, new Date(BASE + 70 * MINUTE));
+    const rearmed = await sweepAt(72 * MINUTE);
+    expect(rearmed.agentIds).toContain(agentId);
+    expect(readAutoResumeState((await agentRow(agentId)).metadata)?.exhaustedAt).toBeNull();
+  });
+
+  it("brings a model-unavailable agent back on the long schedule, outside the attempt cap (OPE-11947)", async () => {
+    const { companyId, agentId } = await seedAgent({ updatedAt: new Date(BASE) });
+    const { resumeWake, sweepAt } = makeSweeper();
+
+    // The model pool ran out of quota: the last finished run carries the marker.
+    await seedRun({
+      companyId,
+      agentId,
+      status: "failed",
+      createdAt: new Date(BASE - 5 * MINUTE),
+      finishedAt: new Date(BASE - 4 * MINUTE),
+      resultJson: { provider_error_as_content: true, model_unavailable: true },
+    });
+    // Its own retry waits in scheduled_retry (not finished): still the same verdict.
+    await seedRun({
+      companyId,
+      agentId,
+      status: "scheduled_retry",
+      createdAt: new Date(BASE - 3 * MINUTE),
+    });
+
+    // 30 min after that run ended (BASE + 26 min) is the first step; the 1/5/15 min backoff does not apply.
+    for (const offset of [10 * MINUTE, 25 * MINUTE]) {
+      const waiting = await sweepAt(offset);
+      expect(waiting.resumed).toBe(0);
+      expect(waiting.skipped).toBe(1);
+    }
+    expect(resumeWake).not.toHaveBeenCalled();
+    expect((await agentRow(agentId)).status).toBe("error");
+    expect(readAutoResumeState((await agentRow(agentId)).metadata)).toBeNull();
+
+    const first = await sweepAt(26 * MINUTE);
+    expect(first.agentIds).toEqual([agentId]);
+    expect(resumeWake).toHaveBeenCalledTimes(1);
+    let row = await agentRow(agentId);
+    expect(row.status).toBe("idle");
+    expect(readAutoResumeState(row.metadata)).toMatchObject({
+      failures: 0,
+      exhaustedAt: null,
+      modelUnavailableResumes: 1,
+    });
+    const issued = (await db.select().from(activityLog)).filter((entry) => entry.action === AUTO_RESUME_ACTIVITY_ACTION);
+    expect(issued).toHaveLength(1);
+    expect(issued[0]?.details).toMatchObject({ modelUnavailable: true, modelUnavailableResumes: 1 });
+
+    // The resumed agent fails on the same quota: the next step is one hour after that run ended.
+    await seedRun({
+      companyId,
+      agentId,
+      status: "failed",
+      createdAt: new Date(BASE + 27 * MINUTE),
+      finishedAt: new Date(BASE + 28 * MINUTE),
+      resultJson: { provider_error_as_content: true, model_unavailable: true },
+    });
+    await failAgain(agentId, new Date(BASE + 28 * MINUTE));
+    expect((await sweepAt(28 * MINUTE + 59 * MINUTE)).resumed).toBe(0);
+    expect((await sweepAt(28 * MINUTE + 60 * MINUTE)).agentIds).toEqual([agentId]);
+    row = await agentRow(agentId);
+    expect(readAutoResumeState(row.metadata)).toMatchObject({ failures: 0, modelUnavailableResumes: 2 });
+    expect(resumeWake).toHaveBeenCalledTimes(2);
+
+    // A later failure of another kind ends the series: the ordinary backoff and its cap apply again.
+    await seedRun({
+      companyId,
+      agentId,
+      status: "failed",
+      createdAt: new Date(BASE + 89 * MINUTE),
+      finishedAt: new Date(BASE + 90 * MINUTE),
+      resultJson: { errorFamily: "transient_upstream" },
+    });
+    await failAgain(agentId, new Date(BASE + 90 * MINUTE));
+    const ordinary = await sweepAt(91 * MINUTE);
+    expect(ordinary.agentIds).toEqual([agentId]);
+    const state = readAutoResumeState((await agentRow(agentId)).metadata);
+    expect(state?.failures).toBe(1);
+    expect(state?.modelUnavailableResumes).toBeUndefined();
+  });
+
+  it("does not leave a given-up agent in error once its last run is model-unavailable (OPE-11947)", async () => {
+    const { companyId, agentId } = await seedAgent({
+      updatedAt: new Date(BASE),
+      metadata: exhaustedMetadata(),
+    });
+    const { resumeWake, sweepAt } = makeSweeper();
+    await seedRun({
+      companyId,
+      agentId,
+      status: "failed",
+      createdAt: new Date(BASE - 5 * MINUTE),
+      finishedAt: new Date(BASE - 4 * MINUTE),
+      resultJson: { provider_error_as_content: true, model_unavailable: true },
+    });
+
+    // An earlier give-up does not hold the agent back from the long schedule.
+    expect((await sweepAt(25 * MINUTE)).resumed).toBe(0);
+    const resumed = await sweepAt(26 * MINUTE);
+    expect(resumed.exhausted).toBe(0);
+    expect(resumed.agentIds).toEqual([agentId]);
+    expect(resumeWake).toHaveBeenCalledTimes(1);
+    expect(readAutoResumeState((await agentRow(agentId)).metadata)).toMatchObject({
+      failures: 0,
+      exhaustedAt: null,
+      modelUnavailableResumes: 1,
+    });
   });
 
   it("does not resume a non-invokable agent or one under maintenance", async () => {

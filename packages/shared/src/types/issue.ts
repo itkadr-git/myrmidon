@@ -810,6 +810,12 @@ export interface IssueExecutionState {
   escalationReason?: "review_round_limit" | null;
   escalationFromParticipant?: IssueExecutionStagePrincipal | null;
   escalationToParticipant?: IssueExecutionStagePrincipal | null;
+  /**
+   * myrmidon(OPE-11970): head commit of the pull request at the last
+   * changes-requested decision. A repeat return on the same head (no new commit)
+   * does not wake the executor again.
+   */
+  lastChangesRequestedHeadSha?: string | null;
 }
 
 export interface IssueExecutionDecision {

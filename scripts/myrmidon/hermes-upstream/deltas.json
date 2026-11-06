@@ -272,7 +272,7 @@
         "agent/tool_result_classification.py",
         "toolsets.py"
       ],
-      "reason": "Every model call re-sends the whole session, and its two largest parts are one wake package per run (up to 78 piled up in one session) and tool results older than eight messages. The per-call request copy now carries every wake message but the newest as a short note (run, issue, wake reason) and every stale heavy tool result as a note with a ref; the new read_stale_tool_result tool returns the original for the ref. The transcript, state.db and compaction input are untouched; HERMES_KEEP_STALE_WAKES=1 and HERMES_KEEP_STALE_TOOL_RESULTS=1 switch the two parts off, each restoring the old request byte for byte.",
+      "reason": "Every model call re-sends the whole session; quotas are consumed by fresh (uncached) input and a provider cache hits only on a byte-identical prefix, so rewriting a message that was already sent turns the rest of the context into fresh input. The patch carries the logic and the settings (config.yaml `context_economy:` block) of the token economy: measure A (every wake message but the newest becomes a one-line note) and measure B (stale heavy tool results become notes with a ref; the new read_stale_tool_result tool returns the original) rewrite earlier rows of the request copy, so both are off by default and kept behind config keys; the wake detection recognises the adapter's current and pre-rename identity heads (it had gone dead at the rename) and skill_view and reads of skill files are never replaced. At a compaction, which breaks the cache anyway, wake packages are not quoted into the summarizer input and the summary's verbatim user messages. HERMES_KEEP_STALE_WAKES=1 and HERMES_KEEP_STALE_TOOL_RESULTS=1 force A and B off.",
       "dropCondition": "Upstream trims superseded task prompts and stale tool results of the replayed history on the send path, with a way to read the original back.",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
@@ -437,6 +437,57 @@
         "source": "hermes",
         "path": "agent/turn_tool_round.py",
         "upstreamMarker": "length_continue_retries = 0"
+      }
+    },
+    {
+      "id": "25-tool-result-head-tail",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/25-tool-result-head-tail.patch",
+      "files": [
+        "tools/tool_result_storage.py"
+      ],
+      "reason": "Upstream persists a tool result only above 100000 characters (50000 for mcp_ tools) and then shows a 1500-character preview, so a 20 KB command output rides every later request in full. A new result longer than context_economy.tool_result_max_chars (16000) is now stored and sent as its first 8000 and last 4000 characters plus a marker that names the spill file holding the whole text and how to read the middle. The result is shaped once, before any provider has seen it, so the provider cache is untouched. read_file stays pinned by upstream, skill_view is exempt, 0 gives the upstream limits back.",
+      "dropCondition": "Upstream bounds an oversized tool result by head and tail with a configurable threshold and a way to read the rest.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "tools/tool_result_storage.py",
+        "upstreamMarker": "head_chars|tail_chars|head_tail"
+      }
+    },
+    {
+      "id": "26-compaction-summary-cap",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/26-compaction-summary-cap.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "The compaction summary grew to about 37k characters (a token target of up to 10000 tokens plus a 4000-token session log, 24000 characters of verbatim user messages and a 7000-character anchor index) and was re-sent with every request; no max_tokens was sent, so LiteLLM's 4096-token default cut Anthropic-routed summaries and the compression failed on finish_reason=length. The summarizer is now asked for at most context_economy.compaction_summary_max_chars (8000) characters with a max_tokens guard, the text is held to the cap at a line end, a length-stopped summary is kept (cut at a line end and marked) instead of failing, the appended sections are bounded and board wake packages are not quoted into the summarizer input or the verbatim user messages.",
+      "dropCondition": "Upstream makes the summary size and the appended sections configurable and keeps a summary that stopped on the output limit.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "summary_max_chars|max_summary_chars|summary_max_tokens"
+      }
+    },
+    {
+      "id": "27-compaction-keep-prefix",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/27-compaction-keep-prefix.patch",
+      "files": [
+        "agent/conversation_compression.py"
+      ],
+      "reason": "A compaction rewrites the messages, but the tool schemas and the system prompt in front of them can stay byte-identical and keep their provider cache. The upstream rebuild at the compaction boundary invalidates the cached prompt, re-reads memory, re-renders plugin sections, re-lists skills and re-lists MCP tools, which changes those bytes whenever any of it moved during the session. With context_economy.compaction_keep_prefix (default on) the cached prompt and the tool array are kept.",
+      "dropCondition": "Upstream keeps the system prompt and the tool array byte-stable at a compaction unless something requires a rebuild.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/conversation_compression.py",
+        "upstreamMarker": "keep_prefix|keep_system_prompt"
       }
     }
   ]

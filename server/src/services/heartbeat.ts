@@ -56,6 +56,8 @@ import {
   detectInputOverflowRun,
   readInputOverflowMaxFailures,
 } from "../myrmidon/input-overflow-guard.js";
+// myrmidon(RUN-GUARD-LOOPS): a run the run guard stopped is not retried; its issue is blocked.
+import { buildRunGuardStopNotice, readRunGuardStopReason } from "../myrmidon/run-guard-stop.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 // myrmidon(B1c): short alias for template literals below.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -87,6 +89,15 @@ import {
 } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
 import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
+import {
+  CONTINUATION_CAP_COMMENT,
+  MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
+  buildContinuationCapBlockedPatch,
+  continuationStatusesFor,
+  isContinuationActionable,
+  readContinuationCap,
+  type ContinuationCapStop,
+} from "../myrmidon/continuation-cap.js"; // myrmidon(OPE-11948)
 import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
@@ -883,6 +894,7 @@ import {
   buildRunQueuedPayload,
   listAgentsWithQueuedRunsAndNoRunningRun,
   queuedResweepArmDecision,
+  resolveStaleQueuedRunIssueId,
   startQueuedResweepTimer,
   type RunQueuedBus,
 } from "../myrmidon/run-dispatch/index.js";
@@ -16433,6 +16445,54 @@ export function heartbeatService(
     return decision;
   }
 
+  // myrmidon(RUN-GUARD-LOOPS): the run guard stopped this run (model call limit,
+  // idle timeout, tool retry loop, read-only exploration, repeated read). The
+  // stop comes from what the agent did with the task, so another run with the
+  // same task and context repeats it: no automatic retry (see
+  // scheduleBoundedRetryForRun and the stranded-recovery enqueue). The assignee's
+  // todo / in_progress / in_review issue goes to `blocked` through the
+  // stranded-recovery escalation, with a comment that says why and that a new
+  // input is needed. Without it the issue would sit in its status with no run
+  // and no retry for the sweep to act on.
+  async function handleRunGuardStop(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    guardStats: { readOnlyStreak: number; modelCalls: number },
+  ) {
+    const reason = readRunGuardStopReason(run);
+    if (!reason) return null;
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    await appendRunEvent(run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Run stopped by the run guard (${reason}); it will not be retried automatically`,
+      payload: { runGuardStopReason: reason, runGuardStats: guardStats },
+    });
+    if (!issueId) return null;
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !issue ||
+      isConversation(issue) ||
+      issue.assigneeAgentId !== agent.id ||
+      (issue.status !== "todo" &&
+        issue.status !== "in_progress" &&
+        issue.status !== "in_review")
+    ) {
+      return null;
+    }
+    return recovery.escalateStrandedAssignedIssue({
+      issue,
+      previousStatus: issue.status,
+      latestRun: run,
+      notice: buildRunGuardStopNotice(run, guardStats),
+    });
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -16446,6 +16506,25 @@ export function heartbeatService(
     },
   ) {
     const now = opts?.now ?? new Date();
+    // myrmidon(RUN-GUARD-LOOPS): never retry a run the run guard stopped, whoever
+    // asks (recovery sweep, process-loss retry, quota monitor, continuation).
+    // Maintenance interruptions and transport failures are different error codes
+    // and keep their own retry paths.
+    if (readRunGuardStopReason(run)) {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Automatic retry suppressed because the run was stopped by the run guard",
+        payload: { runGuardStopReason: readRunGuardStopReason(run) },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: "Automatic retry suppressed because the run was stopped by the run guard",
+        errorCode: "run_guard_stopped" as const,
+        issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+      };
+    }
     const isGatewayConnectFailed =
       run.errorCode === "hermes_gateway_connect_failed" ||
       opts?.retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON ||
@@ -18306,6 +18385,15 @@ export function heartbeatService(
     }
 
     return null;
+  }
+
+  // myrmidon(OPE-11947): idle pickup asks for the cap verdict of one agent before it
+  // offers the agent any task, instead of letting every offer end as a `skipped`
+  // receipt row. It is the gate's own function over the agent's own policy.
+  async function getAgentDailyCapBlock(agent: { id: string; companyId: string }) {
+    const full = await getAgent(agent.id);
+    if (!full || full.companyId !== agent.companyId) return null;
+    return getHeartbeatDailyCapBlock(full, parseHeartbeatPolicy(full));
   }
 
   async function cancelQueuedRunForHeartbeatDailyCap(
@@ -20179,6 +20267,7 @@ export function heartbeatService(
   const idlePickupSweeper = createIdlePickupSweeper({
     db,
     budget: idleWakeBudget,
+    getDailyCapBlock: getAgentDailyCapBlock,
     pickupReviewForAgent,
     readLiveness: teamLivenessRead,
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
@@ -20599,8 +20688,60 @@ export function heartbeatService(
     void cleanup.finally(() => activeRunExecutionPromises.delete(cleanup));
   }
 
-  // myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe remote gateway run liveness,
-  // resolving secrets in adapterConfig (e.g. secret_ref apiKey) via resolveExecutionRunAdapterConfig.
+  // myrmidon(HERMES-RUN-REATTACH): resolve the persisted adapter config before
+  // issuing a board-owned stop. Gateway credentials are commonly secret_ref
+  // values; reading apiKey directly would silently leak the remote slot.
+  async function stopRemoteGatewayRun(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    adapterConfig: Record<string, unknown> | null;
+    gatewayRunId: string;
+    cancellation: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    };
+  }): Promise<{ stopped: boolean }> {
+    const adapter = getServerAdapter("hermes_gateway");
+    if (!adapter?.stopGatewayRunForBoard) return { stopped: false };
+    let resolvedConfig = input.adapterConfig ?? {};
+    try {
+      resolvedConfig = (
+        await resolveExecutionRunAdapterConfig({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          adapterType: "hermes_gateway",
+          heartbeatRunId: input.runId,
+          executionRunConfig: resolvedConfig,
+          projectEnv: null,
+          secretsSvc,
+        })
+      ).resolvedConfig;
+    } catch (err) {
+      logger.warn(
+        { runId: input.runId, agentId: input.agentId, errorType: err instanceof Error ? err.name : "unknown" },
+        "stopRemoteGatewayRun: failed to resolve adapterConfig secrets",
+      );
+      return { stopped: false };
+    }
+    const baseUrl =
+      readNonEmptyString(resolvedConfig.apiBaseUrl) ??
+      readNonEmptyString(resolvedConfig.baseUrl) ??
+      readNonEmptyString(resolvedConfig.url);
+    const apiKey =
+      readNonEmptyString(resolvedConfig.apiKey) ??
+      readNonEmptyString(resolvedConfig.token);
+    if (!baseUrl || !apiKey) return { stopped: false };
+    return adapter.stopGatewayRunForBoard({
+      baseUrl,
+      apiKey,
+      gatewayRunId: input.gatewayRunId,
+      cancellation: input.cancellation,
+    });
+  }
+
+  // myrmidon(HERMES-RUN-REATTACH, OPE-11779): probe remote gateway run liveness,
   async function probeRemoteGatewayRun(input: {
     companyId?: string;
     agentId?: string | null;
@@ -22107,6 +22248,7 @@ export function heartbeatService(
               // The same company-wide allowance as the periodic sweeper and the
               // release path, so no path bursts past the per-minute ceiling.
               budget: idleWakeBudget,
+              getDailyCapBlock: getAgentDailyCapBlock,
               enqueueWakeup: (id, opts) => enqueueWakeup(id, opts),
               logActivity: async (input) => {
                 await logActivity(db, {
@@ -22238,10 +22380,18 @@ export function heartbeatService(
     listQueuedAgents: async ({ cutoff }) => listAgentsWithQueuedRunsAndNoRunningRun(db, { cutoff }),
     startNextQueuedRunForAgent: (agentId, options) => startNextQueuedRunForAgent(agentId, options),
     listStaleQueuedRuns: async ({ executionCutoff, staleAfterMs }) => {
-      const staleRuns = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId, createdAt: heartbeatRuns.createdAt })
+      const staleRuns = await db.select({
+        id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId, createdAt: heartbeatRuns.createdAt,
+        // myrmidon(OPE-11947): the task the run stood on, so the wake after its
+        // cancellation can resume it.
+        contextSnapshot: heartbeatRuns.contextSnapshot, contextIssueId: heartbeatRuns.contextIssueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+      })
         .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, new Date(Date.now() - staleAfterMs)), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
         .orderBy(asc(heartbeatRuns.createdAt)).limit(200);
-      return staleRuns;
+      return staleRuns.map((row) => ({
+        id: row.id, agentId: row.agentId, companyId: row.companyId, createdAt: row.createdAt,
+        issueId: resolveStaleQueuedRunIssueId(row),
+      }));
     },
     createCancelStaleQueuedRun: async (run, staleAfterMs) => {
       const outcome = await runDispatch.cancelStaleQueuedRun({
@@ -22252,12 +22402,19 @@ export function heartbeatService(
       applyRunDispatchPostCommitEffects(outcome.postCommitEffects);
       return true;
     },
-    wakeAgent: async (agentId, companyId) => {
+    wakeAgent: async (agentId, companyId, { issueId }) => {
+      // myrmidon(OPE-11947): resume the task the cancelled run stood on. The
+      // former `taskId: "system:queued-run-stale-timeout"` placeholder is not
+      // a UUID, so `lockIdentityTask` (run-identity.ts) failed every such wake
+      // at setup (`setup_failed`, "Run task identity is invalid"). A cancelled
+      // run that stood on no task has nothing to resume, and an automatic wake
+      // without a task is not allowed (INV-10): no wake then.
+      if (!issueId) return;
       await enqueueWakeup(agentId, {
         source: "automation",
         reason: "queued_run_stale_timeout",
-        payload: { companyId },
-        contextSnapshot: { taskId: "system:queued-run-stale-timeout" },
+        payload: { companyId, issueId },
+        contextSnapshot: { issueId, taskKey: issueId },
       });
     },
     loadSettings: () => loadRunDispatchSettings(db),
@@ -28635,7 +28792,9 @@ export function heartbeatService(
                   ? parseObject(latestRun?.resultJson)
                   : {}),
                 ...parseObject(adapterResult.resultJson),
-                ...(runGuardStopReason ? { runGuardStopReason } : {}),
+                ...(runGuardStopReason
+                  ? { runGuardStopReason, runGuardStats: runGuard.stats() }
+                  : {}),
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
                   : {}),
@@ -28902,6 +29061,15 @@ export function heartbeatService(
               "stderr",
               `[myrmidon] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
+          }
+          // myrmidon(RUN-GUARD-LOOPS): block the issue of a guard-stopped run; no retry follows.
+          if (runGuardStopReason !== null) {
+            await handleRunGuardStop(livenessRun, agent, runGuard.stats()).catch((err) => {
+              logger.warn(
+                { err, runId: livenessRun.id },
+                "failed to apply run guard stop handling",
+              );
+            });
           }
           if (outcome === "failed") {
             await handleInputOverflowFailure(livenessRun, agent).catch((err) => {
@@ -29350,7 +29518,9 @@ export function heartbeatService(
             errorMessage: stopMessage,
             resultJson: {
               ...parseObject(stopSnapshot?.resultJson),
-              ...(stopReason ? { runGuardStopReason: stopReason } : {}),
+              ...(stopReason
+                ? { runGuardStopReason: stopReason, runGuardStats: runGuard.stats() }
+                : {}),
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
                 {}),
@@ -29422,6 +29592,15 @@ export function heartbeatService(
             !isConfigurationIncompleteFailedRun(livenessRun)
           ) {
             await finalizeIssueCommentPolicy(livenessRun, agent);
+          }
+          // myrmidon(RUN-GUARD-LOOPS): block the issue of a guard-stopped run; no retry follows.
+          if (runGuardStopReason !== null) {
+            await handleRunGuardStop(livenessRun, agent, runGuard.stats()).catch((err) => {
+              logger.warn(
+                { err, runId: livenessRun.id },
+                "failed to apply run guard stop handling",
+              );
+            });
           }
           const scheduled =
             await scheduleInteractionContinuationInfrastructureRetryIfEligible(
@@ -30138,6 +30317,7 @@ export function heartbeatService(
                 // company-wide allowance as the periodic sweeper, so a fleet of
                 // finishing runs cannot burst past the per-minute ceiling.
                 budget: idleWakeBudget,
+                getDailyCapBlock: getAgentDailyCapBlock,
                 enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
                 logActivity: async (input) => {
                   await logActivity(db, {
@@ -30217,6 +30397,55 @@ export function heartbeatService(
           );
         }
       }
+    }
+  }
+
+  // myrmidon(OPE-11948): parks an issue whose automatic continuation cap was
+  // reached. Runs after the wake admission committed, in its own transaction:
+  // a failure here must never fail the (already skipped) wake, and the issue is
+  // re-read under its lock so a concurrent status change or reassignment wins.
+  async function applyContinuationCapStop(stop: ContinuationCapStop) {
+    try {
+      await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
+          .for("update")
+          .limit(1);
+        if (!current || !isContinuationActionable(current, stop.agentId)) return;
+        await issuesSvc.update(
+          current.id,
+          buildContinuationCapBlockedPatch({
+            issueId: current.id,
+            assigneeAgentId: stop.agentId,
+            ownerUserId: current.createdByUserId ?? current.responsibleUserId ?? null,
+          }) as Partial<typeof issues.$inferInsert>,
+          tx,
+        );
+        await issuesSvc.addComment(current.id, CONTINUATION_CAP_COMMENT, {}, { authorType: "system" }, tx);
+        await logActivity(tx as unknown as Db, {
+          companyId: current.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: stop.agentId,
+          runId: null,
+          action: "issue.continuation_cap_reached",
+          entityType: "issue",
+          entityId: current.id,
+          details: {
+            identifier: current.identifier,
+            previousStatus: current.status,
+            consecutiveContinuations: stop.consecutiveContinuations,
+            maxContinuations: MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
+          },
+        });
+      });
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), issueId: stop.issueId, agentId: stop.agentId },
+        "continuation cap: could not park the issue as blocked",
+      );
     }
   }
 
@@ -31063,6 +31292,9 @@ export function heartbeatService(
       // admission cancelled under a bypassed hold. Applied only once the
       // transaction has committed; emptied if it is rolled back.
       const doomedWaitingRunEffects: PostCommitEffect[] = [];
+      // myrmidon(OPE-11948): issues whose continuation cap was reached inside
+      // this admission. Parked as blocked only after the transaction committed.
+      const continuationCapStops: ContinuationCapStop[] = [];
 
       const outcome = await db
         .transaction(async (tx) => {
@@ -32291,6 +32523,95 @@ export function heartbeatService(
             source === "automation" &&
             (opts.requestedByActorType === "system" || !opts.requestedByActorType)
           ) {
+            // myrmidon(OPE-11948): an automatic continuation is for an issue that
+            // can be worked on right now. A backlog / blocked / in_review / done
+            // issue, or one assigned to someone else, gets no continuation wake:
+            // the recovery sweep and the release tail read the issue before this
+            // lock, and an agent's own bookkeeping flips the status in between.
+            // A continuation that answers a resolved interaction card is a
+            // person's doing: it may also run in_review and is not counted.
+            const interactionContinuation = Boolean(
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+                readNonEmptyString(payload?.interactionId),
+            );
+            if (!isContinuationActionable(issue, agentId, { interaction: interactionContinuation })) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_state_guard_mismatch",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  continuationSkipped: "issue_not_actionable",
+                  heartbeatSkip: {
+                    reason:
+                      "An automatic continuation needs an actionable issue assigned to the woken agent.",
+                    issueId: issue.id,
+                    expectedStatuses: [...continuationStatusesFor(interactionContinuation)],
+                    actualStatus: issue.status,
+                    expectedAssigneeAgentId: agentId,
+                    actualAssigneeAgentId: issue.assigneeAgentId,
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              return { kind: "skipped" as const };
+            }
+
+            // myrmidon(OPE-11948): the real attempt counter. Succeeded
+            // continuation runs of this (agent, issue) with no external input
+            // between them; the agent's own comments and updates do not reset
+            // it. At the cap no further continuation is enqueued and the issue
+            // is parked as blocked once this transaction has committed.
+            const continuationCap = interactionContinuation
+              ? null
+              : await readContinuationCap(tx as unknown as Db, {
+                  companyId: agent.companyId,
+                  issueId: issue.id,
+                  agentId,
+                });
+            if (continuationCap?.capped) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_rewake_throttled",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  continuationSkipped: "continuation_cap_reached",
+                  heartbeatSkip: {
+                    reason: "continuation_cap_reached",
+                    requestedReason: reason,
+                    consecutiveContinuations: continuationCap.count,
+                    maxContinuations: continuationCap.max,
+                    issueId: issue.id,
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              continuationCapStops.push({
+                companyId: issue.companyId,
+                issueId: issue.id,
+                agentId,
+                consecutiveContinuations: continuationCap.count,
+              });
+              return { kind: "skipped" as const };
+            }
+
             const recoveryParentRunId =
               readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
               readNonEmptyString(payload?.retryOfRunId) ??
@@ -33214,10 +33535,15 @@ export function heartbeatService(
             // The transaction rolled back, and so did any waiting run it
             // cancelled: there is nothing to publish for it.
             doomedWaitingRunEffects.length = 0;
+            continuationCapStops.length = 0;
             return { kind: "deferred" as const };
           }
           throw error;
         });
+
+      for (const stop of continuationCapStops) {
+        await applyContinuationCapStop(stop);
+      }
 
       // Telemetry for the cancelled runs is best-effort background work.
       // Fire it here and never await it: none of the lifecycle work below,
@@ -33261,6 +33587,7 @@ export function heartbeatService(
                 {
                   db,
                   budget: idleWakeBudget,
+                  getDailyCapBlock: getAgentDailyCapBlock,
                   enqueueWakeup: (nextAgentId, wakeOptions) =>
                     enqueueWakeup(nextAgentId, wakeOptions),
                 },
@@ -34023,29 +34350,22 @@ export function heartbeatService(
     // and logged, a failed stop never blocks the board-side cancellation.
     if (!control && !running && run.externalRunId && agent?.adapterType === "hermes_gateway") {
       try {
-        const adapterConfig = parseObject(agent.adapterConfig);
-        const baseUrl = readNonEmptyString(adapterConfig.apiBaseUrl) ?? readNonEmptyString(adapterConfig.baseUrl);
-        const apiKey = readNonEmptyString(adapterConfig.apiKey) ?? readNonEmptyString(adapterConfig.token);
-        if (baseUrl && apiKey) {
-          const stopGatewayRunForBoard = requireServerAdapter("hermes_gateway")
-            .stopGatewayRunForBoard;
-          if (stopGatewayRunForBoard) {
-            const stopped = await stopGatewayRunForBoard({
-              baseUrl,
-              apiKey,
-              gatewayRunId: run.externalRunId,
-              cancellation: { correlationId, source: cancellationSource, reason },
-            });
-            logger.info(
-              { runId: run.id, externalRunId: run.externalRunId, stopped: stopped.stopped },
-              "gateway run stop requested from the board cancellation path",
-            );
-          }
-        }
+        const stopped = await stopRemoteGatewayRun({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          runId: run.id,
+          adapterConfig: parseObject(agent.adapterConfig),
+          gatewayRunId: run.externalRunId,
+          cancellation: { correlationId, source: cancellationSource, reason },
+        });
+        logger.info(
+          { runId: run.id, externalRunId: run.externalRunId, stopped: stopped.stopped },
+          "hermes_gateway board-side stop requested",
+        );
       } catch (err) {
         logger.warn(
           { err, runId: run.id, externalRunId: run.externalRunId },
-          "gateway run board-side stop failed; continuing with the cancellation",
+          "hermes_gateway board-side stop failed; continuing cancellation",
         );
       }
     }
@@ -34967,6 +35287,23 @@ export function heartbeatService(
       const agent = await getAgent(run.agentId);
       if (!agent) return { outcome: "missing_agent" as const };
       return scheduleBoundedRetryForRun(run, agent, opts);
+    },
+
+    // myrmidon(RUN-GUARD-LOOPS): the stop handling heartbeat applies when it ends
+    // a run the run guard stopped (block the assignee's issue, say why), for a
+    // stored run: tests, and repair of a stop whose handling was lost. Idempotent:
+    // an issue that is no longer todo / in_progress / in_review is left alone.
+    applyRunGuardStop: async (runId: string) => {
+      const run = await getRun(runId, { unsafeFullResultJson: true });
+      if (!run) return { outcome: "missing_run" as const };
+      const agent = await getAgent(run.agentId);
+      if (!agent) return { outcome: "missing_agent" as const };
+      const stored = parseObject(parseObject(run.resultJson).runGuardStats);
+      const issue = await handleRunGuardStop(run, agent, {
+        readOnlyStreak: Number(stored.readOnlyStreak) || 0,
+        modelCalls: Number(stored.modelCalls) || 0,
+      });
+      return { outcome: "handled" as const, issue };
     },
 
     reconcileStrandedAssignedIssues,

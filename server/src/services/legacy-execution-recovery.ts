@@ -1,3 +1,4 @@
+import { isRunGuardStopReason } from "@myrmidon/adapter-utils/run-guard";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
@@ -31,8 +32,8 @@ export function legacyExecutionNeedsReconciliation(
     return false;
   // Guard stops are terminal for the current run, but must NOT enter
   // reconciliation hold (no manual hold); normal next wake without auto-replay of the same revision.
-  if (["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(run.errorCode ?? "") ||
-      ["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(String(run.resultJson?.runGuardStopReason ?? ""))) {
+  // myrmidon(RUN-GUARD-LOOPS): the list of guard stop reasons now lives in adapter-utils.
+  if (isRunGuardStopReason(run.errorCode) || isRunGuardStopReason(run.resultJson?.runGuardStopReason)) {
     return false;
   }
   // Maintenance interruption explicitly means retry, including after the

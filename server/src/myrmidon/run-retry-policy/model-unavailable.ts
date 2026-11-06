@@ -1,8 +1,12 @@
 // A run that ends because the model pool could not answer (OPE-11947).
 //
 // Hermes ends such a turn with its own "No reply: <model> didn't produce a
-// reply ..." notice. The adapter reports it as a transient upstream failure and
-// marks `resultJson.model_unavailable`. The usual transient pair (30 s, 30 s)
+// reply ..." notice, or the provider answers with an overload / quota /
+// maintenance text as the turn's content. The adapter reports it as a transient
+// upstream failure and marks `resultJson.model_unavailable` (the marker follows
+// `provider_error_as_content`). Auto-resume also reads it and brings such an
+// agent back on the same 30 min .. 6 h schedule, outside its attempt cap
+// (myrmidon/auto-resume.ts). The usual transient pair (30 s, 30 s)
 // is wrong for it: the pool is out of quota or down for hours, and each retry
 // is a full-prompt run (~75k tokens) that spends the quota the moment it
 // resets. So the retry of a model-unavailable run waits a long, growing time,

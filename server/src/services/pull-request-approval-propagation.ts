@@ -9,6 +9,8 @@ import { issueWorkProducts, issues, type Db } from "@myrmidon/db";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { resolveGitHubAppCredential } from "../myrmidon/github-shared-identity/resolve.js";
+import { declaredReviewedHead } from "../myrmidon/review-routing/pr-policy.js";
+import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { gitHubApiBase } from "./github-fetch.js";
 import { logger } from "../middleware/logger.js";
@@ -72,12 +74,14 @@ export function headMatches(
   return a.startsWith(b) || b.startsWith(a);
 }
 
-/** Extracts head sha from text (e.g. `head 1234567`). */
+/**
+ * Extracts the reviewed head sha from a verdict: the explicit `head 1234567`
+ * spelling first, then (myrmidon(OPE-11767)) the first bare sha token — the
+ * reviewers write `APPROVE PR #N <sha>`, which the explicit spelling alone
+ * never matched (`missing_reviewed_head` on PR #2449 and #2467).
+ */
 export function parseReviewedHead(text: string | null | undefined): string | null {
-  if (!text) return null;
-  const match = HEAD_SHA_PATTERN.exec(text);
-  if (match?.[1]) return match[1];
-  return null;
+  return declaredReviewedHead(text);
 }
 
 /** Extracts PR coordinates (repository and PR number) from text. */
@@ -797,10 +801,24 @@ export async function propagateReviewApprovalToPullRequest(
   };
 }
 
-/** Convenience wrapper that uses default dependencies for immediate invocation. */
+/**
+ * Convenience wrapper that uses default dependencies for immediate invocation.
+ *
+ * myrmidon(OPE-11767): an approval is also the moment the board may merge the
+ * PR itself (CI can already be green). The merge trigger is told once the
+ * propagation settled — whatever it answered: the board's merge does not
+ * depend on the label/review the propagation writes on GitHub. A listener
+ * failure never reaches the caller.
+ */
 export async function triggerReviewApprovalPropagation(
   db: Db,
   input: PropagateReviewApprovalInput,
 ): Promise<PropagateReviewApprovalResult> {
-  return propagateReviewApprovalToPullRequest({ db }, input);
+  try {
+    return await propagateReviewApprovalToPullRequest({ db }, input);
+  } finally {
+    if (input.issueId && (input.decisionOutcome == null || isApprovalOutcome(input.decisionOutcome, input.verdictBody))) {
+      notifyBoardMergeTrigger({ companyId: input.companyId, issueId: input.issueId, source: "review_approved" });
+    }
+  }
 }

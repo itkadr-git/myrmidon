@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createRunStartDispatcher,
   queuedResweepArmDecision,
+  resolveStaleQueuedRunIssueId,
   startQueuedResweepTimer,
   type QueuedAgentWithoutRunningRun,
 } from "../myrmidon/run-dispatch/index.ts";
@@ -284,8 +285,46 @@ describe("queued resweep pass", () => {
 
     expect(listStaleQueuedRuns).toHaveBeenCalledWith({ executionCutoff: null, staleAfterMs: 120_000 });
     expect(createCancelStaleQueuedRun).toHaveBeenCalledWith(staleRun, 120_000);
-    expect(wakeAgent).toHaveBeenCalledWith("agent-stale", "company-1");
+    // The cancelled run stood on no task: the wake carries none either.
+    expect(wakeAgent).toHaveBeenCalledWith("agent-stale", "company-1", { issueId: null });
     expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
+  });
+
+  it("hands the cancelled run's task to the wake so the agent resumes it", async () => {
+    // myrmidon(OPE-11947): the wake used to carry a made-up `system:` task id.
+    const issueId = "5b3f8a52-6f0c-4f6b-9d21-0c1f5a3e7a10";
+    const staleRun = { id: "run-stale", agentId: "agent-stale", companyId: "company-1", createdAt: new Date(0), issueId };
+    const wakeAgent = vi.fn(async () => {});
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent: async () => [],
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 120 }),
+      listStaleQueuedRuns: async () => [staleRun],
+      createCancelStaleQueuedRun: async () => true,
+      wakeAgent,
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(wakeAgent).toHaveBeenCalledWith("agent-stale", "company-1", { issueId });
+  });
+
+  it("does not wake the agent when the stale cancellation lost the race", async () => {
+    const wakeAgent = vi.fn(async () => {});
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent: async () => [],
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 120 }),
+      listStaleQueuedRuns: async () => [
+        { id: "run-stale", agentId: "agent-stale", companyId: "company-1", createdAt: new Date(0), issueId: "5b3f8a52-6f0c-4f6b-9d21-0c1f5a3e7a10" },
+      ],
+      createCancelStaleQueuedRun: async () => false,
+      wakeAgent,
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(wakeAgent).not.toHaveBeenCalled();
   });
 
   it("continues cleanup after a stale cancellation fails", async () => {
@@ -311,7 +350,7 @@ describe("queued resweep pass", () => {
     await dispatcher.sweepQueuedWithoutRunning();
 
     expect(error).toHaveBeenCalledTimes(1);
-    expect(wakeAgent).toHaveBeenCalledWith("agent-2", "company-1");
+    expect(wakeAgent).toHaveBeenCalledWith("agent-2", "company-1", { issueId: null });
   });
 
   it("passes the worktree execution cutoff to the selection", async () => {
@@ -326,6 +365,30 @@ describe("queued resweep pass", () => {
     await dispatcher.sweepQueuedWithoutRunning();
 
     expect(listQueuedAgents).toHaveBeenCalledWith({ cutoff });
+  });
+});
+
+describe("stale queued run task resolution", () => {
+  const issueId = "5b3f8a52-6f0c-4f6b-9d21-0c1f5a3e7a10";
+
+  it("reads the cancelled run's task from its context, then the denormalized columns", () => {
+    const other = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: { issueId } })).toBe(issueId);
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: {}, contextIssueId: issueId })).toBe(issueId);
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: null, nativeIssueId: issueId })).toBe(issueId);
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: { taskId: issueId } })).toBe(issueId);
+    expect(
+      resolveStaleQueuedRunIssueId({ contextSnapshot: { issueId }, contextIssueId: other, nativeIssueId: other }),
+    ).toBe(issueId);
+  });
+
+  it("skips values that are not issue UUIDs", () => {
+    expect(resolveStaleQueuedRunIssueId({})).toBeNull();
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: { taskId: "system:queued-run-stale-timeout" } })).toBeNull();
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: { issueId: 42 }, contextIssueId: "OPE-1" })).toBeNull();
+    expect(
+      resolveStaleQueuedRunIssueId({ contextSnapshot: { issueId: "system:x" }, nativeIssueId: issueId }),
+    ).toBe(issueId);
   });
 });
 

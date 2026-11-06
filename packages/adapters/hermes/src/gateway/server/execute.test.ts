@@ -697,6 +697,8 @@ describe("execute", () => {
     expect(result.resultJson?.result).toBe("");
     expect(result.resultJson?.output).toBe("");
     expect(result.resultJson?.provider_error_as_content).toBe(true);
+    // myrmidon(OPE-11947): an overload text means the model pool did not answer.
+    expect(result.resultJson?.model_unavailable).toBe(true);
   });
 
   // myrmidon(OPE-11947): the gateway's "No reply" give-up notice arrives as a
@@ -1983,6 +1985,43 @@ describe("mapFinalResultForTest", () => {
       expect(result.summary).toBeUndefined();
       expect(result.resultJson).toMatchObject({ result: "", output: "", model_unavailable: true });
       expect(result.executionRecovery).toBeUndefined();
+    });
+
+    // The pools ran out of quota (26-62 h) and the providers answer with a quota or
+    // overload text as the turn's content. The run must take the long
+    // model-unavailable path, not the 30 s transient pair, and the agent must not
+    // be auto-resumed (server/src/myrmidon/auto-resume.ts reads the marker).
+    it.each([
+      "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+      "Quota exceeded, please try again.",
+      "Rate limit reached for this model. Please retry.",
+      "Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to resource exhaustion…",
+    ])("marks the provider quota/overload text %j as model-unavailable", (text) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const result = mapCompleted(text);
+      warn.mockRestore();
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.summary).toBeUndefined();
+      expect(result.resultJson).toMatchObject({
+        result: "",
+        output: "",
+        provider_error_as_content: true,
+        model_unavailable: true,
+      });
+      // Replay safety stays with the recovery evidence: a quota text offers none
+      // (only the "No reply" notice does), so the marker alone changes no replay rule.
+      expect(result.executionRecovery).toBeUndefined();
+    });
+
+    it("does not mark a quota text after tool calls as model-unavailable (it may be the agent's own output)", () => {
+      const result = mapCompleted("Quota exceeded, please try again.", {
+        tool_calls: [{ name: "lookup", result: "ok" }],
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.resultJson).not.toHaveProperty("model_unavailable");
+      expect(result.resultJson).not.toHaveProperty("provider_error_as_content");
     });
 
     it("leaves ordinary output untouched", () => {

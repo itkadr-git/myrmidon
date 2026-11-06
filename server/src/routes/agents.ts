@@ -125,6 +125,11 @@ import { resolveEnvironmentExecutionTarget } from "../services/environment-execu
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
+import {
+  hermesGatewayConfigProblem,
+  localAdapterConfigProblem,
+  localAdapterSecurityConfigChanged,
+} from "../myrmidon/agent-local-adapter-config.js"; // myrmidon(1.6.6 OPE-11239)
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
@@ -2709,6 +2714,22 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  // myrmidon(1.6.6 OPE-11239): sandbox and permission keys of the local CLI adapters are
+  // security settings; changing one needs an instance admin (rules: myrmidon/agent-local-adapter-config.ts).
+  function assertLocalAdapterSecurityChangeAllowed(
+    req: Request,
+    adapterType: string | null | undefined,
+    previousAdapterConfig: Record<string, unknown> | null | undefined,
+    nextAdapterConfig: Record<string, unknown> | null | undefined,
+  ) {
+    const adapterDefaults: Record<string, unknown> = adapterType === "claude_local"
+      ? { dangerouslySkipPermissions: true }
+      : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
+    if (localAdapterSecurityConfigChanged(adapterType, previousAdapterConfig, nextAdapterConfig, adapterDefaults)) {
+      assertInstanceAdmin(req);
+    }
+  }
+
   async function assertAdapterConfigConstraints(
     companyId: string,
     adapterType: string | null | undefined,
@@ -2717,6 +2738,10 @@ export function agentRoutes(
     // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
     const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
+    const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
+    if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
+    const gatewayProblem = hermesGatewayConfigProblem(adapterType, adapterConfig);
+    if (gatewayProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${gatewayProblem}`);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -4656,6 +4681,7 @@ function getActorIdentityPart(req: Request): string {
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertInheritProcessEnvChangeAllowed(req, { companyId, agentId: null, previousAdapterConfig: null, nextAdapterConfig: rawHireAdapterConfig }); // myrmidon(S4)
+    assertLocalAdapterSecurityChangeAllowed(req, hireInput.adapterType, null, rawHireAdapterConfig); // myrmidon(1.6.6 OPE-11239)
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
@@ -4969,6 +4995,7 @@ function getActorIdentityPart(req: Request): string {
         rawCreateAdapterConfig,
       ),
     );
+    assertLocalAdapterSecurityChangeAllowed(req, createInput.adapterType, null, rawCreateAdapterConfig);
     assertExternalInstructionsAdmin(req, {
       id: agentId,
       companyId,
@@ -5792,6 +5819,12 @@ function getActorIdentityPart(req: Request): string {
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      assertLocalAdapterSecurityChangeAllowed(
+        req,
+        requestedAdapterType,
+        asRecord(existing.adapterConfig),
+        normalizedEffectiveAdapterConfig,
+      );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
