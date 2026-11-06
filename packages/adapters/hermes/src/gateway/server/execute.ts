@@ -466,7 +466,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     suppressIssueDescription: Boolean(taskMarkdown),
     // myrmidon(WAKE-HISTORY): how much task history the wake carries — the
     // card's wakeHistory, else by session strategy (run | none: summary only).
-    wakeHistory: resolvePaperclipWakeHistoryMode(ctx.config),
+    // The effective strategy decides, so a developer run forced to "run"
+    // (WAKE-9) gets the summary even when its card still says issue/agent.
+    wakeHistory: resolvePaperclipWakeHistoryMode({ ...ctx.config, sessionKeyStrategy }),
   });
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
     omitIssueDescription: Boolean(taskMarkdown),
