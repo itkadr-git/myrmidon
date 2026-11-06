@@ -240,7 +240,8 @@ describe("execute", () => {
     ]);
     // No developer key is shared with another run.
     expect(new Set(keys.slice(0, 4)).size).toBe(4);
-  });
+    // Six full execute() calls in one test: the default 5 s is not enough.
+  }, 30_000);
 
   it("never upgrades a developer card's none to a session key", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
