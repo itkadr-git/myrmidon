@@ -240,6 +240,7 @@ function createApp() {
 async function installActor(
   app: express.Express,
   actor?: Record<string, unknown>,
+  routeOptions?: Record<string, unknown>,
 ) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
@@ -255,7 +256,7 @@ async function installActor(
     };
     next();
   });
-  app.use("/api", issueRoutes(mockDb as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any, routeOptions as any));
   app.use(errorHandler);
   return app;
 }
@@ -4163,6 +4164,260 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       ),
     );
+  });
+
+  // myrmidon(OPE-11970, REVIEW-RETURN-GUARD): a return on the same pull request
+  // head as the previous one, or only on infrastructure checks, keeps the
+  // decision but does not wake the executor.
+  describe("review return guard", () => {
+    const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
+    const ENGINEER_ID = "22222222-2222-4222-8222-222222222222";
+    const REVIEWER_ID = "33333333-3333-4333-8333-333333333333";
+    const HEAD_A = "a".repeat(40);
+    const HEAD_B = "b".repeat(40);
+    const PR_URL = "https://github.com/acme/app/pull/7";
+
+    async function pendingReviewIssue(previousReturnHead: string | null) {
+      const policy = await normalizePolicy({
+        stages: [
+          {
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            type: "review",
+            participants: [{ type: "agent", agentId: REVIEWER_ID }],
+          },
+        ],
+      })!;
+      return {
+        ...makeIssue("todo"),
+        status: "in_review",
+        assigneeAgentId: REVIEWER_ID,
+        executionPolicy: policy,
+        executionState: {
+          status: "pending",
+          currentStageId: policy.stages[0].id,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: REVIEWER_ID },
+          returnAssignee: { type: "agent", agentId: ENGINEER_ID },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: previousReturnHead ? "changes_requested" : null,
+          ...(previousReturnHead ? { lastChangesRequestedHeadSha: previousReturnHead } : {}),
+        },
+      };
+    }
+
+    function routeOptions(input: { headSha: string; failedChecks?: string[] }) {
+      const resolveReviewHeadFailedChecks = vi.fn(async () => ({
+        state: "ok" as const,
+        headSha: input.headSha,
+        pullRequestUrl: PR_URL,
+        failed: input.failedChecks ?? [],
+      }));
+      return {
+        resolveReviewHeadFailedChecks,
+        options: {
+          resolveReviewPullRequestCi: async () => ({
+            state: "complete" as const,
+            pullRequestUrl: PR_URL,
+            headSha: input.headSha,
+          }),
+          resolveReviewHeadFailedChecks,
+        },
+      };
+    }
+
+    async function returnTask(
+      issue: Awaited<ReturnType<typeof pendingReviewIssue>>,
+      comment: string,
+      options: Record<string, unknown>,
+    ) {
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(
+        async (_id: string, patch: Record<string, unknown>) => ({
+          ...issue,
+          ...patch,
+          updatedAt: new Date(),
+        }),
+      );
+      return request(
+        await installActor(
+          createApp(),
+          { type: "agent", agentId: REVIEWER_ID, companyId: "company-1", runId: "run-2" },
+          options,
+        ),
+      )
+        .patch(`/api/issues/${ISSUE_ID}`)
+        .send({ status: "in_progress", comment });
+    }
+
+    function recordedExecutionState() {
+      const patch = mockIssueService.update.mock.calls
+        .map((call) => call[1] as Record<string, unknown>)
+        .find((candidate) => candidate?.executionState);
+      return patch?.executionState as Record<string, unknown> | undefined;
+    }
+
+    /** The wake work runs detached from the response; let it finish before a "never woken" assertion. */
+    const settleDetachedWork = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+    const executorWoken = () =>
+      (mockHeartbeatService.wakeup.mock.calls as unknown as Array<[string, { reason?: string } | undefined]>).some(
+        ([agentId, wake]) => agentId === ENGINEER_ID && wake?.reason === "execution_changes_requested",
+      );
+
+    it("records the pull request head of the first return and wakes the executor", async () => {
+      const { options } = routeOptions({ headSha: HEAD_A });
+
+      const res = await returnTask(
+        await pendingReviewIssue(null),
+        "Guard the null case in the handler before it reads the payload",
+        options,
+      );
+
+      expect(res.status).toBe(200);
+      expect(recordedExecutionState()).toMatchObject({
+        status: "changes_requested",
+        lastChangesRequestedHeadSha: HEAD_A,
+      });
+      await waitForWakeup(() => expect(executorWoken()).toBe(true));
+    });
+
+    it("does not wake the executor for a second return on the same head", async () => {
+      const { options } = routeOptions({ headSha: HEAD_A });
+
+      const res = await returnTask(
+        await pendingReviewIssue(HEAD_A),
+        "Exact-head CI is still failing, do not resubmit",
+        options,
+      );
+
+      expect(res.status).toBe(200);
+      // The decision is recorded exactly as before.
+      expect(recordedExecutionState()).toMatchObject({
+        status: "changes_requested",
+        lastDecisionOutcome: "changes_requested",
+        lastChangesRequestedHeadSha: HEAD_A,
+      });
+      await waitForWakeup(() =>
+        expect(mockIssueService.addComment).toHaveBeenCalledWith(
+          ISSUE_ID,
+          expect.stringContaining("Повторный возврат на той же голове"),
+          { runId: null },
+          { authorType: "system" },
+        ),
+      );
+      await settleDetachedWork();
+      expect(executorWoken()).toBe(false);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(ENGINEER_ID, expect.anything());
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.review_return_wake_suppressed",
+          entityId: ISSUE_ID,
+          details: expect.objectContaining({ reason: "repeat_same_head", headSha: HEAD_A }),
+        }),
+      );
+    });
+
+    it("wakes the executor when a new commit changed the head since the previous return", async () => {
+      const { options, resolveReviewHeadFailedChecks } = routeOptions({ headSha: HEAD_B });
+
+      const res = await returnTask(
+        await pendingReviewIssue(HEAD_A),
+        "The new retry loop never gives up on a closed socket",
+        options,
+      );
+
+      expect(res.status).toBe(200);
+      expect(recordedExecutionState()).toMatchObject({
+        status: "changes_requested",
+        lastChangesRequestedHeadSha: HEAD_B,
+      });
+      await waitForWakeup(() => expect(executorWoken()).toBe(true));
+      expect(resolveReviewHeadFailedChecks).not.toHaveBeenCalled();
+    });
+
+    it("does not wake the executor when only infrastructure checks failed and the comment reports only CI", async () => {
+      const { options } = routeOptions({ headSha: HEAD_A, failedChecks: ["CI result", "main-green"] });
+
+      const res = await returnTask(
+        await pendingReviewIssue(null),
+        "REQUEST CHANGES: CI result and main-green failed on this head",
+        options,
+      );
+
+      expect(res.status).toBe(200);
+      await waitForWakeup(() =>
+        expect(mockLogActivity).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            action: "issue.ci_infra_retry_needed",
+            entityId: ISSUE_ID,
+            details: expect.objectContaining({
+              headSha: HEAD_A,
+              failedChecks: ["CI result", "main-green"],
+              pullRequestUrl: PR_URL,
+            }),
+          }),
+        ),
+      );
+      await settleDetachedWork();
+      expect(executorWoken()).toBe(false);
+    });
+
+    it("wakes the executor when a test lane failed besides the infrastructure checks", async () => {
+      const { options } = routeOptions({ headSha: HEAD_A, failedChecks: ["tests (affected)", "CI result"] });
+
+      const res = await returnTask(
+        await pendingReviewIssue(null),
+        "REQUEST CHANGES: tests (affected) and CI result failed on this head",
+        options,
+      );
+
+      expect(res.status).toBe(200);
+      await waitForWakeup(() => expect(executorWoken()).toBe(true));
+      expect(mockLogActivity).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: "issue.ci_infra_retry_needed" }),
+      );
+    });
+
+    it("wakes the executor when the comment cites code even though only infrastructure checks failed", async () => {
+      const { options, resolveReviewHeadFailedChecks } = routeOptions({
+        headSha: HEAD_A,
+        failedChecks: ["CI result"],
+      });
+
+      const res = await returnTask(
+        await pendingReviewIssue(null),
+        "CI result failed, and server/src/services/heartbeat.ts:120 drops the retry counter",
+        options,
+      );
+
+      expect(res.status).toBe(200);
+      await waitForWakeup(() => expect(executorWoken()).toBe(true));
+      expect(resolveReviewHeadFailedChecks).not.toHaveBeenCalled();
+    });
+
+    it("wakes the executor again when the guard is switched off", async () => {
+      const { options } = routeOptions({ headSha: HEAD_A });
+      const previous = process.env.MYRMIDON_REVIEW_RETURN_GUARD_ENABLED;
+      process.env.MYRMIDON_REVIEW_RETURN_GUARD_ENABLED = "off";
+      try {
+        const res = await returnTask(
+          await pendingReviewIssue(HEAD_A),
+          "Exact-head CI is still failing, do not resubmit",
+          options,
+        );
+
+        expect(res.status).toBe(200);
+        await waitForWakeup(() => expect(executorWoken()).toBe(true));
+      } finally {
+        if (previous === undefined) delete process.env.MYRMIDON_REVIEW_RETURN_GUARD_ENABLED;
+        else process.env.MYRMIDON_REVIEW_RETURN_GUARD_ENABLED = previous;
+      }
+    });
   });
 
   it("returns changes_requested on a blocked issue to the executor in_progress and wakes them", async () => {
