@@ -718,6 +718,72 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await expect(db.select().from(toolOauthStates).where(eq(toolOauthStates.state, oauthState))).resolves.toEqual([]);
   });
 
+  it("expires pending ask_user_questions and request_confirmation interactions on terminal transition", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Close me with pending interaction cards",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+    const questionId = randomUUID();
+    const confirmationId = randomUUID();
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: questionId,
+        companyId,
+        issueId: issue.id,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Pick one",
+            selectionMode: "single",
+            options: [{ id: "a", label: "A" }],
+          }],
+        } as never,
+      },
+      {
+        id: confirmationId,
+        companyId,
+        issueId: issue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Confirm closure" } as never,
+      },
+    ]);
+
+    const updated = await svc.update(issue.id, {
+      status: "cancelled",
+      actorUserId: "local-board",
+    });
+    expect(updated?.status).toBe("cancelled");
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issue.id));
+    expect(interactions).toHaveLength(2);
+    expect(interactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: questionId,
+          status: "expired",
+          result: expect.objectContaining({ outcome: "issue_closed" }),
+        }),
+        expect.objectContaining({
+          id: confirmationId,
+          status: "expired",
+          result: expect.objectContaining({ outcome: "issue_closed" }),
+        }),
+      ]),
+    );
+    expect(interactions.filter((row) => row.status === "pending")).toHaveLength(0);
+  });
   it("expires pending thread interactions on any service-level terminal transition", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issue = await svc.create(companyId, {

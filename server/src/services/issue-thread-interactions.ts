@@ -5056,27 +5056,13 @@ export function issueThreadInteractionService(
         );
       if (rows.length === 0) return [];
 
-      // myrmidon(N2): a card addressed to an agent whose addressee wake never
-      // became a run is not expired by the task's status flip. The parked
-      // receipt keeps its one delivery (the sweep re-admits it), so the
-      // addressee answers the card instead of the card dying unanswered
-      // because the task touched `done` for a minute on its way to a reopen.
-      // Cards with no receipt at all (or a delivered one) keep the vendor
-      // behaviour: a card on a closed task is expired.
-      const agentAddressedIds = rows
-        .filter((row) => row.addresseeAgentId !== null)
-        .map((row) => row.id);
-      const undeliveredAddresseeWakes = agentAddressedIds.length > 0
-        ? await findUndeliveredAddresseeWakeInteractionIds(db, {
-            companyId: issue.companyId,
-            interactionIds: agentAddressedIds,
-          })
-        : new Set<string>();
-
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const row of rows) {
-        if (undeliveredAddresseeWakes.has(row.id)) continue;
+        // Terminal issues close every pending interaction, including cards whose
+        // addressee wake was not delivered. Leaving those cards pending makes
+        // them appear actionable even though every resolver is rejected.
+        // Reopening is a separate status transition and creates a new card.
         // Same ordering as withdrawal: revoke the linked tool action before
         // resolving the card, inside one transaction. A concurrent gateway
         // claim (approved -> executing) blocks on the revocation's row lock
