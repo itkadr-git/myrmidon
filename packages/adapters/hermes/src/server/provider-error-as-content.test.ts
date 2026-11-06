@@ -136,6 +136,8 @@ describe("provider error responses disguised as content", () => {
     expect(result.summary).toBeUndefined();
     expect(result.resultJson?.result).toBe("");
     expect(result.resultJson?.provider_error_as_content).toBe(true);
+    // myrmidon(OPE-11947): an overload/quota text means the model pool did not answer.
+    expect(result.resultJson?.model_unavailable).toBe(true);
     expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("provider_error_as_content model=gpt-4o"));
   });
 
