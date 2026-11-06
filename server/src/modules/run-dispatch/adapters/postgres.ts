@@ -35,6 +35,8 @@ import {
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
+// myrmidon(OPE-11947): the age of a queued run counts from when it began to wait
+import { queuedRunWaitingSince } from "../domain/queued-run-age.js";
 // myrmidon(P2): pending interaction addressee wake
 import { isOwnerExplainWake, isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
 import type {
@@ -1061,7 +1063,9 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<CancelStaleQueuedRunOutcome> {
     const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
-      const staleAgeMs = input.now.getTime() - run.createdAt.getTime();
+      // myrmidon(OPE-11947): a promoted scheduled retry waits since its due time,
+      // not since it was created (same measure as the sweep's selection).
+      const staleAgeMs = input.now.getTime() - queuedRunWaitingSince(run, input.now).getTime();
       if (
         input.expectedStatus === "queued" &&
         input.staleAfterMs !== undefined &&

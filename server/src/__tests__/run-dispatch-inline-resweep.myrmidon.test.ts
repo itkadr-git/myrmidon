@@ -6,6 +6,7 @@ import {
   startQueuedResweepTimer,
   type QueuedAgentWithoutRunningRun,
 } from "../myrmidon/run-dispatch/index.ts";
+import { queuedRunWaitingSince } from "../modules/run-dispatch/domain/queued-run-age.ts";
 import {
   DEFAULT_QUEUED_RESWEEP_SEC,
   DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
@@ -82,6 +83,50 @@ describe("run dispatch settings", () => {
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: 99_999 } })).toMatchObject({
       queuedResweepSec: 3600,
     });
+  });
+});
+
+// myrmidon(OPE-11947): the age of a queued run for the stale-queued sweep. A
+// scheduled retry is created at the failure and promoted to `queued` when its
+// `scheduled_retry_at` falls due, so it waits since that time, not since
+// `created_at`. The database twin (the sweep's SQL selection and the guard in
+// cancelStaleQueuedRun) is covered in modules/run-dispatch/adapters/postgres.myrmidon.test.ts.
+describe("queued run waiting-since (OPE-11947)", () => {
+  const now = new Date("2026-11-06T15:00:00.000Z");
+  const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+  const staleAfterMs = 30 * 60_000;
+  const isStale = (run: { createdAt: Date; scheduledRetryAt?: Date | string | null }) =>
+    now.getTime() - queuedRunWaitingSince(run, now).getTime() >= staleAfterMs;
+
+  it("counts an ordinary queued run from created_at: 40 minutes old is stale", () => {
+    const run = { createdAt: minutesAgo(40), scheduledRetryAt: null };
+    expect(queuedRunWaitingSince(run, now)).toEqual(run.createdAt);
+    expect(isStale(run)).toBe(true);
+    expect(isStale({ createdAt: minutesAgo(40) })).toBe(true);
+  });
+
+  it("counts a promoted scheduled retry from its due time: created 40 minutes ago, due 1 minute ago is fresh", () => {
+    const run = { createdAt: minutesAgo(40), scheduledRetryAt: minutesAgo(1) };
+    expect(queuedRunWaitingSince(run, now)).toEqual(run.scheduledRetryAt);
+    expect(isStale(run)).toBe(false);
+  });
+
+  it("keeps a long-delay retry (created 6 h ago) fresh right after it fell due", () => {
+    expect(isStale({ createdAt: minutesAgo(6 * 60 + 1), scheduledRetryAt: minutesAgo(1) })).toBe(false);
+  });
+
+  it("declares a promoted retry stale once it stood in the queue past the threshold since it fell due", () => {
+    expect(isStale({ createdAt: minutesAgo(90), scheduledRetryAt: minutesAgo(31) })).toBe(true);
+    expect(isStale({ createdAt: minutesAgo(90), scheduledRetryAt: minutesAgo(29) })).toBe(false);
+  });
+
+  it("accepts the due time as an ISO string", () => {
+    expect(isStale({ createdAt: minutesAgo(40), scheduledRetryAt: minutesAgo(1).toISOString() })).toBe(false);
+  });
+
+  it("ignores a due time that is still in the future and an unreadable one: created_at decides", () => {
+    expect(isStale({ createdAt: minutesAgo(40), scheduledRetryAt: new Date(now.getTime() + 5 * 60_000) })).toBe(true);
+    expect(isStale({ createdAt: minutesAgo(40), scheduledRetryAt: "not a date" })).toBe(true);
   });
 });
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -16,6 +16,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
+import { queuedRunWaitedAtLeastSql } from "./queued-run-age.js";
 
 // P2: the wake of a pending interaction's addressee survives an assignee that is someone else.
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -93,7 +94,15 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     return { companyId, assigneeId, reviewerId, issueId, interactionId };
   }
 
-  async function seedRun(input: { companyId: string; agentId: string; contextSnapshot: Record<string, unknown>; invocationSource?: "automation" | "on_demand" }) {
+  async function seedRun(input: {
+    companyId: string;
+    agentId: string;
+    contextSnapshot: Record<string, unknown>;
+    invocationSource?: "automation" | "on_demand";
+    createdAt?: Date;
+    scheduledRetryAt?: Date | null;
+    scheduledRetryAttempt?: number;
+  }) {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -102,6 +111,9 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
       invocationSource: input.invocationSource ?? "automation",
       status: "queued",
       contextSnapshot: input.contextSnapshot,
+      createdAt: input.createdAt,
+      scheduledRetryAt: input.scheduledRetryAt ?? null,
+      scheduledRetryAttempt: input.scheduledRetryAttempt,
     });
     return runId;
   }
@@ -242,6 +254,91 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     expect(rows[0]).toMatchObject({ action: "heartbeat_run.cancelled", entityId: runId });
     const [issue] = await db.select({ executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId));
     expect(issue?.executionRunId).toBeNull();
+  });
+
+  // myrmidon(OPE-11947): a scheduled retry is created at the failure and enters
+  // the queue when `scheduled_retry_at` falls due (30 min, 1 h, 2 h, 4 h, 6 h for
+  // a model-unavailable wait). Its age as a queued run counts from that moment,
+  // not from `created_at`; otherwise every promoted retry was cancelled on
+  // arrival and the chain restarted from attempt 0.
+  describe("stale age of a promoted scheduled retry (OPE-11947)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+
+    async function seedAgedRun(input: { createdMinAgo: number; dueMinAgo: number | null }) {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId,
+        agentId: assigneeId,
+        contextSnapshot: { issueId },
+        createdAt: new Date(now.getTime() - input.createdMinAgo * MIN),
+        scheduledRetryAt: input.dueMinAgo === null ? null : new Date(now.getTime() - input.dueMinAgo * MIN),
+        scheduledRetryAttempt: input.dueMinAgo === null ? undefined : 1,
+      });
+      return { companyId, runId, now };
+    }
+
+    async function listedAsStale(runId: string, now: Date) {
+      const rows = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued"), queuedRunWaitedAtLeastSql(now, staleAfterMs)));
+      return rows.length === 1;
+    }
+
+    it("keeps a retry that became queued a minute ago although it was created 40 minutes ago", async () => {
+      const { companyId, runId, now } = await seedAgedRun({ createdMinAgo: 40, dueMinAgo: 1 });
+
+      expect(await listedAsStale(runId, now)).toBe(false);
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+      expect(outcome.outcome).toBe("not_stale");
+      expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+    });
+
+    it("keeps a retry with a long delay that was created hours ago and fell due a minute ago", async () => {
+      const { companyId, runId, now } = await seedAgedRun({ createdMinAgo: 6 * 60 + 1, dueMinAgo: 1 });
+
+      expect(await listedAsStale(runId, now)).toBe(false);
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+      expect(outcome.outcome).toBe("not_stale");
+    });
+
+    it("still cancels an ordinary queued run (no scheduled_retry_at) created 40 minutes ago", async () => {
+      const { companyId, runId, now } = await seedAgedRun({ createdMinAgo: 40, dueMinAgo: null });
+
+      expect(await listedAsStale(runId, now)).toBe(true);
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+      expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+      expect(await runStatus(runId)).toMatchObject({ status: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("cancels a retry that has stood in the queue longer than the threshold since it fell due", async () => {
+      const { companyId, runId, now } = await seedAgedRun({ createdMinAgo: 90, dueMinAgo: 31 });
+
+      expect(await listedAsStale(runId, now)).toBe(true);
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+      expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+      expect(await runStatus(runId)).toMatchObject({ status: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("counts a not-yet-due scheduled_retry_at as no due time: the age falls back to created_at", async () => {
+      const { companyId, runId, now } = await seedAgedRun({ createdMinAgo: 40, dueMinAgo: -5 });
+
+      expect(await listedAsStale(runId, now)).toBe(true);
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+      expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
   });
 
   it("does not let another agent borrow the addressee wake context", async () => {
