@@ -116,7 +116,12 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
+function classifyRetryReasonKind(
+  retryReason: string | null,
+  contextSnapshot?: Record<string, unknown> | null,
+): RetryReasonKind {
+  // myrmidon(OPE-11947): the scheduler marks the retry of a model-unavailable run.
+  if (contextSnapshot?.modelUnavailableRetry === true) return "model_unavailable_wait";
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if (retryReason === "ai_connection_busy") return "ai_connection_wait";
@@ -263,7 +268,7 @@ export function createPostgresRunDispatchAdapter(
       input.scheduledRetryReason ??
       null;
     const issueId = readNonEmptyString(input.contextSnapshot.issueId);
-    const retryReasonKind = classifyRetryReasonKind(retryReason);
+    const retryReasonKind = classifyRetryReasonKind(retryReason, input.contextSnapshot);
 
     // Facts fill in through the same rule order `decideScheduledRetryGate`
     // evaluates. A field still awaiting its own read keeps a value that
@@ -798,7 +803,8 @@ export function createPostgresRunDispatchAdapter(
         !gate.allowed &&
         gate.errorCode === "issue_not_found" &&
         factsResult.facts.retryReasonKind !== "max_turn_continuation" &&
-        factsResult.facts.retryReasonKind !== "native_safe_replacement";
+        factsResult.facts.retryReasonKind !== "native_safe_replacement" &&
+        factsResult.facts.retryReasonKind !== "model_unavailable_wait";
 
       if (!gate.allowed && !isLegacyMissingIssueException) {
         const cancelled = await cancelSuppressedRetryInTx(tx as unknown as Db, {

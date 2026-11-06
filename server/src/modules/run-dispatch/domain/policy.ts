@@ -11,6 +11,9 @@ export type RetryReasonKind =
   | "disposition_repair"
   | "native_safe_replacement"
   | "ai_connection_wait"
+  // myrmidon(OPE-11947): retry of a run that ended because the model pool did
+  // not answer; it only runs while the issue is still todo or in_progress.
+  | "model_unavailable_wait"
   | "other";
 
 export type BudgetBlockFacts = {
@@ -405,6 +408,23 @@ export function decideScheduledRetryGate(
           : "issue_terminal_status",
       issueId: facts.issueId,
       details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
+    };
+  }
+  if (
+    facts.retryReasonKind === "model_unavailable_wait" &&
+    facts.issueStatus !== "todo" &&
+    facts.issueStatus !== "in_progress"
+  ) {
+    return {
+      allowed: false,
+      reason: `Scheduled model-unavailable retry suppressed because issue is not todo or in_progress (current status: ${facts.issueStatus})`,
+      errorCode: "issue_not_in_progress",
+      issueId: facts.issueId,
+      details: {
+        issueId: facts.issueId,
+        currentStatus: facts.issueStatus,
+        requiredStatuses: ["todo", "in_progress"],
+      },
     };
   }
   if (statusOutcome === "not_in_progress") {
