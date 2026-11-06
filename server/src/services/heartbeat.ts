@@ -112,9 +112,15 @@ import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import {
   aiConnectionBindingSchema,
+  applyDeveloperRunIsolation,
   buildContinuationKey,
+  buildReviewerInputFixture,
+  isDeveloperRole,
+  renderReviewerInputSection,
   type AiConnectionBinding,
   type IssueBlockerMetadata,
+  type ReviewerInputFixture,
+  type ReviewerPullRequestRef,
 } from "@myrmidon/shared";
 import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-dedupe.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
@@ -7948,18 +7954,25 @@ export async function buildPaperclipWakePayload(input: {
   // Experimental: agents write user-interaction content in ASD-STE100
   // Simplified Technical English (rendered as a prompt directive downstream).
   simplifiedEnglishInteractions?: boolean;
+  // Owner 05.11: a developer reviewer wakes with an isolated input. The payload
+  // then carries no continuation summary and none of the engineer's session
+  // messages, liveness continuation or source-run link.
+  isolateReviewerWake?: boolean;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
+  const isolatedReviewerWake =
+    input.isolateReviewerWake === true && executionStage.wakeRole === "reviewer";
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(
     input.contextSnapshot.annotationCommentId,
   );
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const conversationMode = input.contextSnapshot.conversationMode === true;
-  const continuationSummary = conversationMode ? null : input.continuationSummary ?? null;
-  const agentMessage = parseObject(
-    input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY],
-  );
+  const continuationSummary =
+    conversationMode || isolatedReviewerWake ? null : input.continuationSummary ?? null;
+  const agentMessage: Record<string, unknown> = isolatedReviewerWake
+    ? {}
+    : parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
   const agentMessageText = sanitizeAgentSessionMessageText(agentMessage.text);
   const issueSummary =
     input.issueSummary ??
@@ -8430,14 +8443,15 @@ export async function buildPaperclipWakePayload(input: {
     childIssueSummaryTruncated:
       input.contextSnapshot.childIssueSummaryTruncated === true,
     livenessContinuation:
-      readNonEmptyString(input.contextSnapshot.livenessContinuationState) ||
+      !isolatedReviewerWake &&
+      (readNonEmptyString(input.contextSnapshot.livenessContinuationState) ||
       readNonEmptyString(
         input.contextSnapshot.livenessContinuationInstruction,
       ) ||
       readNonEmptyString(
         input.contextSnapshot.livenessContinuationSourceRunId,
       ) ||
-      typeof input.contextSnapshot.livenessContinuationAttempt === "number"
+      typeof input.contextSnapshot.livenessContinuationAttempt === "number")
         ? {
             attempt: input.contextSnapshot.livenessContinuationAttempt,
             maxAttempts: input.contextSnapshot.livenessContinuationMaxAttempts,
@@ -8458,7 +8472,9 @@ export async function buildPaperclipWakePayload(input: {
     interactionKind,
     interactionStatus,
     interactionId,
-    sourceRunId: readNonEmptyString(input.contextSnapshot.sourceRunId),
+    sourceRunId: isolatedReviewerWake
+      ? null
+      : readNonEmptyString(input.contextSnapshot.sourceRunId),
     externalChatQuestionResponse: externalChatProvider
       ? (input.contextSnapshot[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY] ?? null)
       : null,
@@ -8538,6 +8554,119 @@ export async function buildPaperclipWakePayload(input: {
         payload,
       )
     : payload;
+}
+
+/**
+ * The isolated input of a developer reviewer: the task text plus a pull request
+ * reference. It holds no diff (the reviewer reads it itself with its own tools),
+ * and nothing the engineer produced (session, transcript, comments,
+ * continuation) is copied into it.
+ */
+export function buildReviewerInputFromTaskData(input: {
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    description: string | null;
+  };
+  pullRequest: ReviewerPullRequestRef;
+}): ReviewerInputFixture {
+  return buildReviewerInputFixture({
+    issue: {
+      id: input.issue.id,
+      identifier: input.issue.identifier ?? input.issue.id,
+      title: input.issue.title,
+      description: input.issue.description,
+    },
+    pr: input.pullRequest,
+  });
+}
+
+/**
+ * Picks the pull request under review from data the board already stores: the
+ * issue's CI records (repository, number, head SHA, head ref) and its pull
+ * request work products (repository, number, base and head refs). Pure: no
+ * GitHub or other network call.
+ */
+export function selectReviewerPullRequestRef(input: {
+  pullRequestsCi: ReadonlyArray<
+    Pick<PullRequestCiResult, "repository" | "pullNumber" | "headSha" | "headRef">
+  >;
+  workProductMetadata: ReadonlyArray<unknown>;
+}): ReviewerPullRequestRef | null {
+  const metadataRecords = input.workProductMetadata.map((metadata) => parseObject(metadata));
+  const metadataFor = (repository: string, number: number) =>
+    metadataRecords.find(
+      (record) =>
+        typeof record.repo === "string" &&
+        record.repo.toLowerCase() === repository.toLowerCase() &&
+        Number(record.number) === number,
+    ) ?? null;
+
+  const ci = input.pullRequestsCi.find(
+    (candidate) => Boolean(candidate.repository) && candidate.pullNumber > 0,
+  );
+  if (ci) {
+    const metadata = metadataFor(ci.repository, ci.pullNumber);
+    return {
+      number: ci.pullNumber,
+      repository: ci.repository,
+      baseBranch: readNonEmptyString(metadata?.baseRef),
+      headBranch: ci.headRef ?? readNonEmptyString(metadata?.headRef),
+      headSha: ci.headSha ?? null,
+    };
+  }
+  // No CI record (for example the CI lookup was denied): the work product alone
+  // still names the pull request.
+  for (const metadata of metadataRecords) {
+    const repository = readNonEmptyString(metadata.repo);
+    const number = Number(metadata.number);
+    if (repository && Number.isInteger(number) && number > 0) {
+      return {
+        number,
+        repository,
+        baseBranch: readNonEmptyString(metadata.baseRef),
+        headBranch: readNonEmptyString(metadata.headRef),
+        headSha: null,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Builds the isolated reviewer input for one wake. Database reads only: the
+ * board makes no GitHub request here (the GitHub App rate limit is shared by the
+ * whole fleet), the reviewer fetches the diff itself.
+ */
+async function resolveReviewerInput(input: {
+  db: Db;
+  companyId: string;
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    description: string | null;
+  };
+  pullRequestsCi: ReadonlyArray<PullRequestCiResult>;
+}): Promise<ReviewerInputFixture | null> {
+  const workProducts = await input.db
+    .select({ metadata: issueWorkProducts.metadata })
+    .from(issueWorkProducts)
+    .where(
+      and(
+        eq(issueWorkProducts.companyId, input.companyId),
+        eq(issueWorkProducts.issueId, input.issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.provider, "github"),
+      ),
+    );
+  const pullRequest = selectReviewerPullRequestRef({
+    pullRequestsCi: input.pullRequestsCi,
+    workProductMetadata: workProducts.map((row) => row.metadata),
+  });
+  if (!pullRequest) return null;
+  return buildReviewerInputFromTaskData({ issue: input.issue, pullRequest });
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
@@ -8887,6 +9016,7 @@ export function buildPaperclipTaskMarkdown(input: {
     revisionId?: string | null;
     revisionNumber?: number | null;
   } | null;
+  reviewerInput?: ReviewerInputFixture | null;
   acceptedPlanContinuation?: boolean;
   taskPlan?: {
     documentId: string;
@@ -9094,6 +9224,11 @@ export function buildPaperclipTaskMarkdown(input: {
         "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
         fenceTaskText(input.taskPlan.body.trim()),
       );
+    }
+    if (input.reviewerInput) {
+      // Developer reviewer: the task text above plus the pull request reference
+      // and the instruction to read the diff itself. The board attaches no diff.
+      lines.push("", ...renderReviewerInputSection(input.reviewerInput));
     }
     const wakePayload = input.wakePayload;
     const prsCi = (
@@ -12999,7 +13134,11 @@ export function heartbeatService(
     if (!resumeRun) return null;
 
     const resumeContext = parseObject(resumeRun.contextSnapshot);
-    const resumeTaskKey = deriveTaskKey(resumeContext, null) ?? taskKey;
+    const recordedResumeTaskKey = deriveTaskKey(resumeContext, null);
+    // A developer's explicit resume requires a recorded, matching task;
+    // missing provenance must not be inferred from the new wake.
+    if (isDeveloperRole(agent) && taskKey && recordedResumeTaskKey !== taskKey) return null;
+    const resumeTaskKey = recordedResumeTaskKey ?? taskKey;
     const resumeTaskSession = resumeTaskKey
       ? await getTaskSession(
           agent.companyId,
@@ -24064,7 +24203,13 @@ export function heartbeatService(
               issueContext.executionWorkspacePreference,
           }
         : null;
-      const continuationSummary = issueRef && !isConversation(issueContext)
+      // Owner 05.11: a developer reviewer gets an isolated input (task text and
+      // a pull request reference); the engineer's continuation summary,
+      // continuation messages and session messages are not delivered to it.
+      const isolatedReviewerRun =
+        isDeveloperRole(agent) &&
+        parseObject(context.executionStage).wakeRole === "reviewer";
+      const continuationSummary = issueRef && !isConversation(issueContext) && !isolatedReviewerRun
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
       const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
@@ -24104,7 +24249,7 @@ export function heartbeatService(
         delete context.paperclipSkillTest;
       }
       const executionContinuation =
-        issueRef && !isConversation(issueContext) && issueContext?.assigneeAgentId === agent.id
+        issueRef && !isConversation(issueContext) && !isolatedReviewerRun && issueContext?.assigneeAgentId === agent.id
           ? await buildExecutionContinuation({
               db,
               companyId: agent.companyId,
@@ -24164,7 +24309,23 @@ export function heartbeatService(
         simplifiedEnglishInteractions:
           experimentalInstanceSettings.enableSimplifiedEnglishInteractions ===
           true,
+        isolateReviewerWake: isolatedReviewerRun,
       });
+      // Database reads only; the reviewer fetches the diff itself.
+      const reviewerInput =
+        isolatedReviewerRun && issueRef
+          ? await resolveReviewerInput({
+              db,
+              companyId: agent.companyId,
+              issue: {
+                id: issueRef.id,
+                identifier: issueRef.identifier,
+                title: issueRef.title,
+                description: issueContext?.description ?? null,
+              },
+              pullRequestsCi: paperclipWakePayload?.pullRequestsCi ?? [],
+            }).catch(() => null)
+          : null;
       if (paperclipWakePayload) {
         context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
       } else {
@@ -24231,6 +24392,7 @@ export function heartbeatService(
         externalChatProvider: paperclipWakePayload?.externalChatProvider,
         nativeRunner: agent.adapterType === "paperclip_runner",
         wakePayload: paperclipWakePayload,
+        reviewerInput,
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),
@@ -24838,6 +25000,13 @@ export function heartbeatService(
       // Always replace this runtime-only field; caller wake data cannot supply skills.
       context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
       let runtimeConfig: Record<string, unknown> = connectorDelivery.config;
+      // Owner 05.11/06.11: developers do not load previous runs. The flag is
+      // derived from the agent and always replaces whatever the card holds, so a
+      // non-developer cannot opt in; for a developer the effective session key
+      // strategy is "run" (a fresh session per run), never "issue" or "agent".
+      // A card that already says "run" or "none" is kept as is.
+      const developerRun = isDeveloperRole(agent);
+      runtimeConfig = applyDeveloperRunIsolation(runtimeConfig, agent);
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,
         agent.id,
@@ -24937,7 +25106,10 @@ export function heartbeatService(
         preserveLegacySessionWithoutConfigMetadata:
           acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
       });
+      // Owner 06.11: a developer run never resumes a saved session, so it loads
+      // nothing of its previous runs.
       const resetTaskSession =
+        developerRun ||
         shouldResetTaskSessionForWake(context) ||
         sessionConfigFreshness.reset ||
         (longTaskContext?.plan.reset ?? false);

@@ -286,6 +286,27 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
+/**
+ * The session key strategy a run actually uses.
+ *
+ * Owner decisions: 05.11 isolation applies only to developers, 06.11 developers
+ * do not load previous runs at all. The board sets `developerOnlyTaskSession`
+ * (derived from the agent, never from the card) for developer runs; those get a
+ * fresh Hermes session per run (`run`), never `issue` (a task session that
+ * carries earlier runs' history) or `agent`. A card that already says `run` or
+ * `none` is never upgraded. Every other agent keeps its configured strategy.
+ *
+ * Kept in step with `resolveDeveloperSessionKeyStrategy` in @myrmidon/shared,
+ * which this package deliberately does not import.
+ */
+export function resolveEffectiveSessionKeyStrategy(input: {
+  configuredStrategy: SessionKeyStrategy;
+  developerOnlyTaskSession?: boolean;
+}): SessionKeyStrategy {
+  if (input.developerOnlyTaskSession !== true) return input.configuredStrategy;
+  return input.configuredStrategy === "none" ? "none" : "run";
+}
+
 export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
@@ -428,7 +449,12 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   // conversation across runs; a stored session id from a prior run means that
   // conversation already received the task brief, so pick the compact
   // task-context variant under the shared resume rules.
-  const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const sessionKeyStrategy = resolveEffectiveSessionKeyStrategy({
+    configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
+  });
+  // A developer run (effective strategy "run") never resumes: it gets the full
+  // task brief, whatever session id the board still has stored.
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
     Boolean(nonEmpty(ctx.runtime?.sessionId));
@@ -440,7 +466,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     suppressIssueDescription: Boolean(taskMarkdown),
     // myrmidon(WAKE-HISTORY): how much task history the wake carries — the
     // card's wakeHistory, else by session strategy (run | none: summary only).
-    wakeHistory: resolvePaperclipWakeHistoryMode(ctx.config),
+    // The effective strategy decides, so a developer run forced to "run"
+    // (WAKE-9) gets the summary even when its card still says issue/agent.
+    wakeHistory: resolvePaperclipWakeHistoryMode({ ...ctx.config, sessionKeyStrategy }),
   });
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
     omitIssueDescription: Boolean(taskMarkdown),
@@ -2869,7 +2897,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
-  const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const strategy = resolveEffectiveSessionKeyStrategy({
+    configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
+  });
   // myrmidon(G4): raw debug JSON is opt-in; see handleEvent/logCompactEvent.
   const debugEvents = ctx.config.debugEvents === true;
   // myrmidon(G4): the Idempotency-Key, the "run" session-key strategy, and
