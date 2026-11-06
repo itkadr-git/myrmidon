@@ -1,6 +1,8 @@
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 // myrmidon(B1): product name in the notice bodies below; see product.ts.
 import { productSaid } from "../../myrmidon/product.js";
+// myrmidon(RUN-GUARD-LOOPS): runs stopped by the run guard are never retried.
+import { buildRunGuardStopNotice, readRunGuardStopReason } from "../../myrmidon/run-guard-stop.js";
 // myrmidon(1.6.6 RUN-RETRY-POLICY): transient/permanent classification, the
 // exponential backoff and the attempt ceiling of a failed run's retry.
 import {
@@ -2220,6 +2222,11 @@ export function recoveryService(
         // Failure recovery shares the durable incident budget and delay. It
         // cannot fall through into the productive-work continuation queue.
         if (predecessor.runtimeMode === "native") return null;
+        // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard is never
+        // retried or continued automatically: the same task and context repeat
+        // the behaviour that tripped the guard. The issue is blocked for a new
+        // input when the run is stopped (heartbeat) or when the sweep reaches it.
+        if (readRunGuardStopReason(predecessor)) return null;
         // myrmidon(WAKE-2): recovery through the stranded-issue sweep should not
         // be blocked by the bounded transient retry scheduler. The scheduler is
         // designed for failure retries (transient errors) and has many checks
@@ -7278,7 +7285,9 @@ export function recoveryService(
             issue,
             previousStatus: "in_progress",
             latestRun,
-            notice: {
+            // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard says why
+            // and what is needed instead of the generic non-retryable wording.
+            notice: buildRunGuardStopNotice(latestRun) ?? {
               body:
                 productSaid("detected a non-retryable failure on this issue's continuation run ") +
                 `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +

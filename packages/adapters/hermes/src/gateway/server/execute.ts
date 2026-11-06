@@ -1038,7 +1038,13 @@ async function observeRunGuardEvent(input: {
     const name = toolNameFromEvent(record);
     const args = record?.input ?? record?.arguments ?? record?.preview;
     if (args !== undefined) pushGuardToolArguments(state, name, args);
-    guard.event();
+    // myrmidon(RUN-GUARD-LOOPS): the call is classified (read-only or not) and
+    // counted; a long read-only streak or a thrice-repeated read stops the run.
+    // The wire event carries only the tool name and a short preview of the
+    // primary argument, which is all the guard hashes or inspects.
+    const alreadyStopped = guard.stopped;
+    const decision = guard.toolStarted(name, args);
+    if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
     return;
   }
   if (eventName === "tool.completed") {
