@@ -302,7 +302,10 @@ export class RunGuard {
       return this.event();
     }
     this.readOnlyStreak += 1;
-    if (this.repeatedToolCallLimit > 0) {
+    // A call with no argument text (the gateway sometimes sends an empty preview)
+    // says nothing about what was read, so it never counts as a repeat; it still
+    // counts toward the read-only streak above. The tool name is part of the hash.
+    if (this.repeatedToolCallLimit > 0 && !isEmptyCallArgument(args)) {
       const signature = toolFailureSignature(name, args);
       if (this.readCallCounts.size >= MAX_TRACKED_CALL_SIGNATURES && !this.readCallCounts.has(signature)) {
         this.readCallCounts.clear();
@@ -338,6 +341,11 @@ export class RunGuard {
       ? this.stop("tool_retry_loop")
       : { stop: false };
   }
+}
+
+/** No argument at all, or text that is empty or only whitespace. */
+function isEmptyCallArgument(args: unknown): boolean {
+  return args === undefined || args === null || (typeof args === "string" && args.trim().length === 0);
 }
 
 export function toolFailureSignature(name: string, args: unknown): string {

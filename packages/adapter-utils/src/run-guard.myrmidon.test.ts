@@ -69,6 +69,47 @@ describe("RunGuard repeated tool call stop", () => {
     expect(DEFAULT_REPEATED_TOOL_CALL_LIMIT).toBe(3);
   });
 
+  it("stops on three identical read_file previews with a line range", () => {
+    const guard = new RunGuard();
+    expect(guard.toolStarted("read_file", "settings.ts L80-199").stop).toBe(false);
+    expect(guard.toolStarted("read_file", "settings.ts L80-199").stop).toBe(false);
+    expect(guard.toolStarted("read_file", "settings.ts L80-199")).toEqual({ stop: true, reason: "repeated_tool_call" });
+    // Another line range of the same file is a different call.
+    const other = new RunGuard();
+    for (const range of ["L1-79", "L80-199", "L200-299", "L300-399"]) {
+      expect(other.toolStarted("read_file", `settings.ts ${range}`).stop).toBe(false);
+    }
+  });
+
+  it("never counts a call with an empty or whitespace preview as a repeat, but still as read-only progress", () => {
+    for (const empty of ["", "   ", "\n\t", undefined, null]) {
+      const guard = new RunGuard();
+      for (let call = 0; call < 10; call += 1) expect(guard.toolStarted("read_file", empty).stop).toBe(false);
+      expect(guard.stopped).toBe(false);
+      expect(guard.stats().readOnlyStreak).toBe(10);
+    }
+    // Empty previews still count toward the no-progress streak.
+    const streak = new RunGuard({ noProgressLimit: 4 });
+    for (let call = 0; call < 3; call += 1) expect(streak.toolStarted("read_file", "").stop).toBe(false);
+    expect(streak.toolStarted("read_file", "")).toEqual({ stop: true, reason: "no_progress_exploration" });
+    // An empty preview does not hide a real repeat next to it.
+    const mixed = new RunGuard();
+    expect(mixed.toolStarted("read_file", "").stop).toBe(false);
+    expect(mixed.toolStarted("read_file", "a.ts L1-9").stop).toBe(false);
+    expect(mixed.toolStarted("read_file", "").stop).toBe(false);
+    expect(mixed.toolStarted("read_file", "a.ts L1-9").stop).toBe(false);
+    expect(mixed.toolStarted("read_file", "a.ts L1-9")).toEqual({ stop: true, reason: "repeated_tool_call" });
+  });
+
+  it("keeps the tool name in the hash: the same preview under another tool is another call", () => {
+    const guard = new RunGuard();
+    for (let call = 0; call < 2; call += 1) {
+      expect(guard.toolStarted("read_file", "settings.ts").stop).toBe(false);
+      expect(guard.toolStarted("search_files", "settings.ts").stop).toBe(false);
+    }
+    expect(guard.stopped).toBe(false);
+  });
+
   it("treats the same argument under another tool, or another argument, as a different call", () => {
     const guard = new RunGuard();
     for (let round = 0; round < 2; round += 1) {

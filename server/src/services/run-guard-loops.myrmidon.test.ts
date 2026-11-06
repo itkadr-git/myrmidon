@@ -105,6 +105,23 @@ describe("hermes gateway feeds tool events to the run guard (read-only loops)", 
     expect(onRunGuardStop).toHaveBeenCalledWith("repeated_tool_call");
   });
 
+  it("stops on three identical read_file previews with a line range, but not on three empty previews", async () => {
+    const stopping = new RunGuard();
+    const first = await runFrames(
+      withCompletions([read("settings.ts L80-199"), read("settings.ts L80-199"), read("settings.ts L80-199")]),
+      stopping,
+    );
+    expect(stopping.stopReason).toBe("repeated_tool_call");
+    expect(first.onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(first.onRunGuardStop).toHaveBeenCalledWith("repeated_tool_call");
+
+    const quiet = new RunGuard();
+    const second = await runFrames(withCompletions([read(""), read(""), read(""), read("")]), quiet);
+    expect(quiet.stopped).toBe(false);
+    expect(quiet.stats().readOnlyStreak).toBe(4);
+    expect(second.onRunGuardStop).not.toHaveBeenCalled();
+  });
+
   it("honours limits resolved from the agent card", async () => {
     const guard = new RunGuard({ noProgressLimit: 5, repeatedToolCallLimit: 0 });
     const { onRunGuardStop } = await runFrames(withCompletions(files(8).map(read)), guard);
