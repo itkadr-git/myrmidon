@@ -108,6 +108,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
         queueThreshold: 8,
         reassignAfterHours: DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
         prWatch: PR_WATCH_DEFAULTS,
+        boardMerge: BOARD_MERGE_DEFAULTS,
       });
     }
   });
