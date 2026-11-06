@@ -695,6 +695,7 @@ import {
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
   createCancelStaleQueuedRun,
+  queuedRunWaitedAtLeastSql,
   type RunDispatch,
   type PostCommitEffect,
 } from "../modules/run-dispatch/index.js";
@@ -22386,7 +22387,10 @@ export function heartbeatService(
         // cancellation can resume it.
         contextSnapshot: heartbeatRuns.contextSnapshot, contextIssueId: heartbeatRuns.contextIssueId, nativeIssueId: heartbeatRuns.nativeIssueId,
       })
-        .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, new Date(Date.now() - staleAfterMs)), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
+        // myrmidon(OPE-11947): a promoted scheduled retry is stale counted from its
+        // due time (`scheduled_retry_at`), not from `created_at`: it is created at
+        // the failure and queued hours later, and must not be cancelled on arrival.
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), queuedRunWaitedAtLeastSql(new Date(), staleAfterMs), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
         .orderBy(asc(heartbeatRuns.createdAt)).limit(200);
       return staleRuns.map((row) => ({
         id: row.id, agentId: row.agentId, companyId: row.companyId, createdAt: row.createdAt,
