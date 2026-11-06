@@ -92,6 +92,13 @@ describe("notify hooks", () => {
     expect(forAgent.mock.calls).toEqual([["agent-1"]]);
   });
 
+  it("forwards release guards to forAgent", async () => {
+    const forAgent = vi.fn(async () => null);
+    setSwarmEventSink({ forIssue: vi.fn(async () => null), forAgent });
+    notifySwarmAgentEvent("agent-1", { pickupAllowed: false, excludeIssueId: "issue-1" });
+    await flush();
+    expect(forAgent.mock.calls).toEqual([["agent-1", { pickupAllowed: false, excludeIssueId: "issue-1" }]]);
+  });
   it("a matcher that throws or rejects never reaches the caller", async () => {
     setSwarmEventSink({
       forIssue: () => {

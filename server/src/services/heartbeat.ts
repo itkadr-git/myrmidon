@@ -457,6 +457,8 @@ import {
   classifyEmptyRun,
   evaluateCompletionGate,
   checkAndHandleEmptyRunEscalation,
+  recordEmptyRunEvent,
+  recordIdleRepickThresholdEvent,
 } from "./empty-run.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
@@ -14348,6 +14350,22 @@ export function heartbeatService(
     });
 
     if (issue && (emptyClassification.isEmpty || !gateResult.passed)) {
+      if (emptyClassification.isEmpty) {
+        await recordEmptyRunEvent(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          agentId: run.agentId,
+          runId: run.id,
+          classification: emptyClassification,
+          gateResult,
+        });
+        await recordIdleRepickThresholdEvent(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          agentId: run.agentId,
+          runId: run.id,
+        });
+      }
       const escalation = await checkAndHandleEmptyRunEscalation(db, {
         companyId: issue.companyId,
         issueId: issue.id,
@@ -19911,7 +19929,8 @@ export function heartbeatService(
   });
   setSwarmEventSink({
     forIssue: async (issueId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forIssue(issueId) ?? null,
-    forAgent: async (agentId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forAgent(agentId) ?? null,
+    forAgent: async (agentId, opts) =>
+      (await buildSwarmMatcher(swarmMatcherPorts()))?.forAgent(agentId, opts) ?? null,
   });
 
   async function sweepPendingCleanupLeases(opts?: {
@@ -34538,8 +34557,17 @@ export function heartbeatService(
       const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
       // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
       // — the board matcher gives it its own ready task, else a ready task of
-      // its caste (design §3.5). Fire-and-forget: it never fails the resume.
-      notifySwarmAgentEvent(agentId);
+      // its caste (design §3.5). Respect the same instance/card switch as idle
+      // pickup so this event path cannot bypass the operator's setting.
+      const liveness = await teamLivenessRead();
+      const agent = await getAgent(agentId).catch(() => null);
+      const pickupAllowed =
+        liveness.settings.idlePickupEnabled &&
+        resolveAgentTeamLiveness(
+          readAgentCard(agent?.adapterConfig),
+          liveness.settings,
+        ).idlePickupEnabled;
+      notifySwarmAgentEvent(agentId, { pickupAllowed });
       return resumed;
     },
 
