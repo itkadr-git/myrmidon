@@ -28,6 +28,7 @@ import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -373,6 +374,13 @@ export function githubConnectionEventService(
         },
         updatedAt: currentTime,
       }).where(eq(issueWorkProducts.id, product.id));
+    }
+
+    // myrmidon(OPE-11767): a successful CI run may be the moment an approved
+    // pull request becomes mergeable; the board's merge re-reads the required
+    // checks itself, so this only announces where to look.
+    if (!active && conclusion === "success") {
+      notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" });
     }
 
     if (!options.assignmentWakeup || !conclusion || active) return;
