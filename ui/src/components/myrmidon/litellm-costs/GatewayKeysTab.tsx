@@ -83,6 +83,7 @@ export function cycleLines(report: GatewayFallbackReport | undefined): string[] 
 
 function GatewayKeysCard({ companyId }: { companyId: string }) {
   const { t } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   const queryClient = useQueryClient();
 
   const { data, isLoading, error } = useQuery({
@@ -254,18 +255,52 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                     </div>
                   )}
 
-                  {row.usage && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
-                      <span>LiteLLM cap: {row.maxBudgetUsd == null ? "unavailable" : `$${row.maxBudgetUsd.toFixed(2)}`}</span>
-                      {row.gatewaySpendUsd != null && <span>Gateway total: ${row.gatewaySpendUsd.toFixed(2)}</span>}
-                      <span data-testid={`key-usage-${row.agentId}`} className={row.usage.status === "exhausted" ? "text-destructive" : row.usage.status === "near_cap" ? "text-amber-600" : "text-foreground"}>
-                        24h {formatCents(row.usage.spentCents)}{row.usage.utilizationPercent == null ? "" : ` (cap ${row.usage.utilizationPercent.toFixed(1)}%)`}
+                  {row.present && (row.usage || row.maxBudgetUsd != null || row.gatewaySpendUsd != null) && (
+                    <div
+                      data-testid={`key-usage-${row.agentId}`}
+                      className="mt-2 flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground"
+                    >
+                      <span>
+                        {row.maxBudgetUsd != null
+                          ? t("area.costs-budgets-2.gateway-keys-tab.usage.cap", { value: formatCents(row.maxBudgetUsd * 100, locale) })
+                          : row.gatewaySpendUsd != null
+                            ? t("area.costs-budgets-2.gateway-keys-tab.usage.capNone")
+                            : t("area.costs-budgets-2.gateway-keys-tab.usage.capUnavailable")}
                       </span>
-                      <span>7d {formatCents(row.usage.weeklySpentCents)}</span>
-                      {row.usage.zeroCostEvents > 0 && <span className="text-amber-600">{row.usage.zeroCostEvents} zero-cost events: check model pricing</span>}
+                      {row.gatewaySpendUsd != null && (
+                        <span
+                          className={
+                            row.usage?.status === "exhausted"
+                              ? "font-medium text-destructive"
+                              : row.usage?.status === "near_cap"
+                                ? "font-medium text-amber-600"
+                                : "text-foreground"
+                          }
+                        >
+                          {row.usage?.utilizationPercent != null
+                            ? t("area.costs-budgets-2.gateway-keys-tab.usage.gatewaySpendOfCap", {
+                              value: formatCents(row.gatewaySpendUsd * 100, locale),
+                              percent: row.usage.utilizationPercent.toFixed(1),
+                            })
+                            : t("area.costs-budgets-2.gateway-keys-tab.usage.gatewaySpend", {
+                              value: formatCents(row.gatewaySpendUsd * 100, locale),
+                            })}
+                        </span>
+                      )}
+                      {row.usage && (
+                        <>
+                          <span>{t("area.costs-budgets-2.gateway-keys-tab.usage.day", { value: formatCents(row.usage.spentCents, locale) })}</span>
+                          <span>{t("area.costs-budgets-2.gateway-keys-tab.usage.week", { value: formatCents(row.usage.weeklySpentCents, locale) })}</span>
+                          {row.usage.zeroCostEvents > 0 && (
+                            <span className="text-amber-600">
+                              {t("area.costs-budgets-2.gateway-keys-tab.usage.zeroCost", { n: row.usage.zeroCostEvents })}
+                            </span>
+                          )}
+                        </>
+                      )}
                     </div>
                   )}
-                  {row.budget && (
+                {row.budget && (
                   <div
                     data-testid={`key-budget-${row.agentId}`}
                     className="mt-2 flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground"
@@ -285,7 +320,7 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                 )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-1.5 shrink-0 pt-2 md:pt-0">
+                <div className="flex flex-wrap items-center gap-1.5 shrink-0 pt-2 md:pt-0">
 
                   {!row.present ? (
                     <Button

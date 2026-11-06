@@ -85,6 +85,18 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_llm_key_spend_cents gauge");
   });
 
+  it("renders the LiteLLM key cap utilization, one sample per capped key", () => {
+    const text = renderMetricsText(snapshot({ llmKeyBudgetPercent: [
+      { companyId: "co-a", agentId: "agent-a", percent: 84.2137 },
+      { companyId: "co-a", agentId: "agent-b", percent: 100 },
+    ] }));
+    expect(text).toContain("# TYPE myrmidon_llm_key_budget_utilization_percent gauge");
+    expect(text).toContain('myrmidon_llm_key_budget_utilization_percent{role="all",company_id="co-a",agent_id="agent-a"} 84.2');
+    expect(text).toContain('myrmidon_llm_key_budget_utilization_percent{role="all",company_id="co-a",agent_id="agent-b"} 100');
+    // No evaluation yet: the family is declared and carries no sample.
+    expect(renderMetricsText(snapshot())).not.toContain("myrmidon_llm_key_budget_utilization_percent{");
+  });
+
   it("renders the created and deduped continuation counters after port calls", () => {
     continuationDedupeMetrics.reset();
     try {

@@ -245,6 +245,65 @@ describe("myrmidon(M2-B) agent gateway keys", () => {
     expect(betaKey.present).toBe(false);
   });
 
+  /** The listing's db stub (one agent) and a gateway that answers a 10 USD cap with 8.5 USD spent. */
+  function listingDeps(readSpendWindows: AgentGatewayKeyDeps["readSpendWindows"]) {
+    const agentA = { id: "agent-a", name: "alpha" };
+    const base = makeDeps({ "gateway-admin": "admin-value" });
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [agentA],
+            then: (
+              onfulfilled?: ((value: Array<typeof agentA>) => unknown) | null,
+              onrejected?: ((reason: unknown) => unknown) | null,
+            ) => Promise.resolve([agentA]).then(onfulfilled, onrejected),
+          }),
+        }),
+      }),
+    };
+    const deps: AgentGatewayKeyDeps = {
+      ...base.deps,
+      db: db as never,
+      gateway: () => ({
+        ...base.gateway,
+        getKeyInfo: async () => ({ models: ["openai/gpt-4o"], maxBudgetUsd: 10, spendUsd: 8.5 }),
+      }),
+      ...(readSpendWindows ? { readSpendWindows } : {}),
+    };
+    return { agentA, deps };
+  }
+
+  it("shows the cap, gateway spend and ledger usage of a key", async () => {
+    const { agentA, deps } = listingDeps(async () => [
+      { companyId: "company-a", agentId: "agent-a", dailyCents: 300, weeklyCents: 600, zeroCostEvents: 2 },
+      // Another company's ledger row for a same-named agent id must not leak in.
+      { companyId: "company-b", agentId: "agent-a", dailyCents: 999_999, weeklyCents: 999_999, zeroCostEvents: 9 },
+    ]);
+    const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agentA.id });
+
+    const [view] = await listAgentGatewayKeys(deps, "company-a");
+    expect(view?.maxBudgetUsd).toBe(10);
+    expect(view?.gatewaySpendUsd).toBe(8.5);
+    expect(view?.usage).toMatchObject({ spentCents: 300, weeklySpentCents: 600, zeroCostEvents: 2, status: "near_cap" });
+    expect(view?.usage?.utilizationPercent).toBeCloseTo(85);
+    // Cap and spend only: the key value never rides along.
+    expect(JSON.stringify(view)).not.toContain(created.value);
+  });
+
+  it("still lists the keys, with the cap but without ledger numbers, when the ledger read fails", async () => {
+    const { agentA, deps } = listingDeps(async () => {
+      throw new Error("canceling statement due to statement timeout");
+    });
+    await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agentA.id });
+
+    const [view] = await listAgentGatewayKeys(deps, "company-a");
+    expect(view?.present).toBe(true);
+    expect(view?.maxBudgetUsd).toBe(10);
+    expect(view?.gatewaySpendUsd).toBe(8.5);
+    expect(view?.usage).toBeNull();
+  });
+
   it("revokes an agent gateway key, deleting from gateway and store", async () => {
     const agent = { id: "agent-a", name: "alpha" };
     const { deps, store, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
@@ -465,21 +524,23 @@ describe("myrmidon(M2-B) gateway key transport", () => {
     expect(seen[0]!.body).toEqual({ key_aliases: ["llm-gateway-key-alpha-agent-a"] });
   });
 
-  it("getKeyInfo calls /key/info with key_alias and returns parsed models and cap", async () => {
-    const seen: Array<{ path: string; body: Record<string, unknown> }> = [];
+  it("getKeyInfo reads the key by alias with GET /key/list (the gateway's /key/info is GET-only) and returns models, cap and spend", async () => {
+    const seen: Array<{ method: string; path: string; authorization: string }> = [];
     server = createServer((req, res) => {
-      let raw = "";
-      req.on("data", (chunk) => {
-        raw += chunk;
+      seen.push({
+        method: req.method ?? "",
+        path: req.url ?? "",
+        authorization: String(req.headers.authorization ?? ""),
       });
-      req.on("end", () => {
-        seen.push({
-          path: req.url ?? "",
-          body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {},
-        });
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ info: { key_alias: "my-key", models: ["model-1", "model-2"], max_budget: 10, spend: 8 } }));
-      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          keys: [{ key_alias: "my-key", models: ["model-1", "model-2"], max_budget: 10, spend: 8 }],
+          total_count: 1,
+          current_page: 1,
+          total_pages: 1,
+        }),
+      );
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
     const address = server!.address();
@@ -487,9 +548,28 @@ describe("myrmidon(M2-B) gateway key transport", () => {
     const admin = createGatewayKeyAdminPort(`http://127.0.0.1:${port}`, "admin-value");
 
     const info = await admin.getKeyInfo!({ alias: "my-key" });
-    expect(seen[0]!.path).toBe("/key/info");
-    expect(seen[0]!.body).toEqual({ key_alias: "my-key" });
+    expect(seen[0]!.method).toBe("GET");
+    expect(seen[0]!.path).toBe("/key/list?key_alias=my-key&return_full_object=true&size=1");
+    expect(seen[0]!.authorization).toBe("Bearer admin-value");
     expect(info).toEqual({ models: ["model-1", "model-2"], maxBudgetUsd: 10, spendUsd: 8 });
+  });
+
+  it("getKeyInfo answers null when the alias is not among the listed keys, and no cap for an uncapped key", async () => {
+    let answer: unknown = { keys: [], total_count: 0, current_page: 1, total_pages: 1 };
+    server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(answer));
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
+    const address = server!.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const admin = createGatewayKeyAdminPort(`http://127.0.0.1:${port}`, "admin-value");
+
+    expect(await admin.getKeyInfo!({ alias: "my-key" })).toBeNull();
+    answer = { keys: [{ key_alias: "other-key", max_budget: 5, spend: 1 }], total_pages: 1 };
+    expect(await admin.getKeyInfo!({ alias: "my-key" })).toBeNull();
+    answer = { keys: [{ key_alias: "my-key", models: [], max_budget: null, spend: 0.5 }], total_pages: 1 };
+    expect(await admin.getKeyInfo!({ alias: "my-key" })).toEqual({ models: [], maxBudgetUsd: null, spendUsd: 0.5 });
   });
 
   it("maps a gateway error to a 422 instead of a silent success", async () => {

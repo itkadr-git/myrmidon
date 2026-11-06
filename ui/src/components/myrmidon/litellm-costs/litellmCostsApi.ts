@@ -26,6 +26,30 @@ export interface LitellmModelView {
   seenAt: string;
 }
 
+/** One bot key's cap and spend (OPE-11776). Aliases and amounts only — never a key value. */
+export interface LitellmKeyUsageRow {
+  agentId: string;
+  agentName: string | null;
+  /** The key's cap in USD; null when it has none, or the gateway could not be read. */
+  capUsd: number | null;
+  /** Gateway spend in USD since the key's last budget reset. */
+  gatewaySpendUsd: number | null;
+  utilizationPercent: number | null;
+  status: "ok" | "near_cap" | "exhausted" | "unknown";
+  /** Ledger spend over 24 h / 7 days in cents; null when the ledger could not be read. */
+  dailyCents: number | null;
+  weeklyCents: number | null;
+  /** Ledger events of the last 7 days that cost $0: a route without a price. */
+  zeroCostEvents: number | null;
+}
+
+export interface LitellmKeyUsageReport {
+  generatedAt: string;
+  gatewayAvailable: boolean;
+  ledgerAvailable: boolean;
+  rows: LitellmKeyUsageRow[];
+}
+
 /** 503 body while the instance switch is off: the UI shows "not enabled". */
 export function isNotEnabledError(err: unknown): boolean {
   return err instanceof Error && /not enabled/i.test(err.message);
@@ -45,6 +69,7 @@ export const litellmCostsApi = {
   costs: (companyId: string, from?: string, to?: string) =>
     api.get<LitellmCostRow[]>(`${base(companyId)}/costs${rangeParams(from, to)}`),
   models: (companyId: string) => api.get<LitellmModelView[]>(`${base(companyId)}/models`),
+  keyUsage: (companyId: string) => api.get<LitellmKeyUsageReport>(`${base(companyId)}/key-usage`),
 };
 
 /** USD per token -> "$0.0000011" style, or "-" when the gateway gave no price. */
@@ -66,3 +91,4 @@ export function formatPerMillion(rate: number | null): string {
 export const litellmCostsKey = (companyId: string, from?: string, to?: string) =>
   ["myrmidon", "litellm", "costs", companyId, from ?? null, to ?? null] as const;
 export const litellmModelsKey = (companyId: string) => ["myrmidon", "litellm", "models", companyId] as const;
+export const litellmKeyUsageKey = (companyId: string) => ["myrmidon", "litellm", "key-usage", companyId] as const;

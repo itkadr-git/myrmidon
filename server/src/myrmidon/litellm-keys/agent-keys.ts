@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { and, eq, gte, sql } from "drizzle-orm";
-import { agents, litellmCostEvents, type Db } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
+import { agents, type Db } from "@myrmidon/db";
 import {
   AGENT_KEY_SECRET_PREFIX,
   agentKeySecretName,
@@ -10,12 +10,8 @@ import {
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
 import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
-import {
-  litellmBudgetSignalsForKey,
-  recordLitellmBudgetSignals,
-  type LitellmBudgetAttentionSignal,
-} from "../litellm-costs/attention.js";
 import { keyBudgetUsage, type KeyBudgetLimitView, type KeyBudgetUsageView } from "./key-budget-adapter.js";
+import { AGENT_SPEND_WINDOW_MS, readAgentSpendWindows, type AgentSpendWindow } from "./key-spend.js";
 
 /**
  * myrmidon(M2-B): one LLM gateway virtual key per agent, held in the company
@@ -65,6 +61,11 @@ export interface AgentGatewayKeyDeps {
   deleteSecret?(secretId: string): Promise<void>;
   /** The key-management port of the gateway, built from the admin key. */
   gateway(input: { baseUrl: string; adminKey: string }): GatewayKeyAdminPort;
+  /**
+   * Ledger spend per agent over the last 24 h / 7 days (OPE-11776). Absent: the
+   * shared, cached, time-bounded read of litellm_cost_events (key-spend.ts).
+   */
+  readSpendWindows?(): Promise<AgentSpendWindow[]>;
   env?: NodeJS.ProcessEnv;
   log?: { info(fields: object, message: string): void; warn(fields: object, message: string): void };
 }
@@ -375,25 +376,22 @@ export async function listAgentGatewayKeys(
     }
   }
 
-  const windowStart = new Date(Date.now() - 24 * 3_600_000);
-  const weeklyStart = new Date(windowStart.getTime() - 6 * 24 * 3_600_000);
-  const spendRows = await deps.db
-    .select({
-      agentId: litellmCostEvents.agentId,
-      dailyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}) filter (where ${litellmCostEvents.occurredAt} >= ${windowStart}), 0)`,
-      weeklyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}), 0)`,
-      zeroCostEvents: sql<number>`count(*) filter (where ${litellmCostEvents.costCents} = 0)`,
-    })
-    .from(litellmCostEvents)
-    .where(and(
-      eq(litellmCostEvents.companyId, companyId),
-      gte(litellmCostEvents.occurredAt, weeklyStart),
-    ))
-    .groupBy(litellmCostEvents.agentId);
-  const spendByAgent = new Map(spendRows.map((spent) => [spent.agentId, spent]));
+  // Ledger spend (OPE-11776). The read is shared with the key-usage report,
+  // cached and time-bounded (key-spend.ts); the key list must still answer when
+  // it fails — key management does not depend on the ledger. The attention
+  // signals are not raised from here: key-budgets.ts raises them for the bot
+  // keys, on the sweep's cadence.
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - AGENT_SPEND_WINDOW_MS);
+  let spendByAgent: Map<string, AgentSpendWindow> | null = null;
+  try {
+    const windows = await (deps.readSpendWindows ? deps.readSpendWindows() : readAgentSpendWindows(deps.db, now));
+    spendByAgent = new Map(windows.filter((spent) => spent.companyId === companyId).map((spent) => [spent.agentId, spent]));
+  } catch (err) {
+    deps.log?.warn({ err, companyId }, "LiteLLM ledger spend read failed; key usage is unavailable");
+  }
 
   const views: AgentGatewayKeyView[] = [];
-  const budgetSignals: LitellmBudgetAttentionSignal[] = [];
   for (const row of rows) {
     const secretName = agentKeySecretName({ agentId: row.id, agentSlug: row.name });
     const value = await deps.readSecretValue(companyId, secretName);
@@ -428,24 +426,13 @@ export async function listAgentGatewayKeys(
         };
       }
     }
-    if (value) {
+    // No ledger read, no ledger numbers: zeros here would read as "spent nothing".
+    if (value && spendByAgent) {
       const spent = spendByAgent.get(row.id);
-      const dailySpendCents = Number(spent?.dailyCents ?? 0);
-      const weeklySpendCents = Number(spent?.weeklyCents ?? 0);
-      budgetSignals.push(...litellmBudgetSignalsForKey({
-        companyId,
-        agentId: row.id,
-        agentName: row.name,
-        capCents: maxBudgetUsd == null ? null : maxBudgetUsd * 100,
-        gatewaySpendCents: gatewaySpendUsd == null ? null : gatewaySpendUsd * 100,
-        dailySpendCents,
-        weeklySpendCents,
-        activityAt: new Date().toISOString(),
-      }));
-      usage = keyBudgetUsage(dailySpendCents, maxBudgetUsd ?? 0, windowStart, {
+      usage = keyBudgetUsage(spent?.dailyCents ?? 0, maxBudgetUsd ?? 0, windowStart, {
         capSpentCents: gatewaySpendUsd == null ? undefined : gatewaySpendUsd * 100,
-        weeklySpentCents: weeklySpendCents,
-        zeroCostEvents: Number(spent?.zeroCostEvents ?? 0),
+        weeklySpentCents: spent?.weeklyCents ?? 0,
+        zeroCostEvents: spent?.zeroCostEvents ?? 0,
       });
     }
     views.push({
@@ -463,7 +450,6 @@ export async function listAgentGatewayKeys(
       usage,
     });
   }
-  recordLitellmBudgetSignals(companyId, budgetSignals);
   return views;
 }
 
@@ -625,6 +611,27 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     return { status: response.status, body: parsed };
   }
 
+  async function get(path: string): Promise<{ status: number; body: unknown }> {
+    const response = await fetch(url(path), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${adminKey}` },
+    });
+    const text = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    if (!response.ok) {
+      throw unprocessable(`LLM gateway ${path.split("?")[0]} answered ${response.status}`, {
+        code: "gateway_key_request_failed",
+        status: response.status,
+      });
+    }
+    return { status: response.status, body: parsed };
+  }
+
   return {
     async createKey({ alias, value, models }) {
       await post("/key/generate", {
@@ -652,13 +659,26 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
       return response.status !== 404;
     },
     async getKeyInfo({ alias }) {
-      const response = await post("/key/info", { key_alias: alias }, { okStatuses: [200, 404] });
-      if (response.status === 404 || !response.body) return null;
-      const body = response.body as { info?: { models?: string[]; max_budget?: number | null; spend?: number | null }; models?: string[]; max_budget?: number | null; spend?: number | null };
-      const rawBudget = body.info?.max_budget ?? body.max_budget;
-      const rawSpend = body.info?.spend ?? body.spend;
+      // The gateway has no lookup by alias on /key/info (it is GET-only, by key
+      // value or hash: a POST answers 405). /key/list filters by alias, exact
+      // match, and with return_full_object answers the key objects.
+      const response = await get(
+        `/key/list?key_alias=${encodeURIComponent(alias)}&return_full_object=true&size=1`,
+      );
+      const keys = (response.body as { keys?: unknown } | null)?.keys;
+      const found = Array.isArray(keys)
+        ? keys.find(
+            (entry): entry is { key_alias?: unknown; models?: unknown; max_budget?: unknown; spend?: unknown } =>
+              typeof entry === "object" && entry !== null && (entry as { key_alias?: unknown }).key_alias === alias,
+          )
+        : undefined;
+      if (!found) return null;
+      const rawBudget = found.max_budget;
+      const rawSpend = found.spend;
       return {
-        models: body.info?.models ?? body.models ?? [],
+        models: Array.isArray(found.models)
+          ? found.models.filter((model): model is string => typeof model === "string")
+          : [],
         maxBudgetUsd: typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget > 0
           ? rawBudget : null,
         spendUsd: typeof rawSpend === "number" && Number.isFinite(rawSpend) && rawSpend >= 0

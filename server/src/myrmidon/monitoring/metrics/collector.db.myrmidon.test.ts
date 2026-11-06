@@ -29,6 +29,7 @@ import type { IssueRecoveryActionKind, RecoveryFactoryMetrics as RecoveryFactory
 import { recordSwarmClaimSignal, resetSwarmClaimSignals } from "./swarm-signals.js";
 import { resetStaleBlockSignals, recordStaleBlockSignal } from "../../stale-block/attention.js";
 import { resetTracingHealthSignals } from "../../tracing-health/attention.js";
+import { resetAgentSpendWindowsCache } from "../../litellm-keys/key-spend.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -49,6 +50,8 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetSwarmClaimSignals();
     resetStaleBlockSignals();
     resetTracingHealthSignals();
+    // The per-agent spend read is cached per database handle; every case seeds its own rows.
+    resetAgentSpendWindowsCache();
     await db.delete(litellmCostEvents);
     await db.delete(issueClaims);
     await db.delete(issueRecoveryActions);

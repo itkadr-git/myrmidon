@@ -6,6 +6,8 @@ import {
   EMPTY_CATALOG_ATTENTION_TITLE,
   litellmBudgetSignalsForKey,
   readEmptyCatalogSignal,
+  readLitellmBudgetSignals,
+  recordLitellmBudgetSignals,
   recordEmptyCatalogSweep,
   resetEmptyCatalogSignals,
 } from "./attention.js";
@@ -14,6 +16,8 @@ import {
   type LitellmCostsDeps,
   type LitellmGatewayClient,
 } from "./litellm-costs.js";
+
+// Neutral ids only: company-a, example.com, no real keys or hosts.
 
 const COMPANY = "company-a";
 const NOW = new Date("2026-10-08T12:00:00.000Z");
@@ -46,6 +50,10 @@ function gatewayClient(models: Array<{ modelName: string }>): LitellmGatewayClie
   };
 }
 
+// A minimal drizzle-shaped stub: the sweep touches three queries before and
+// around the catalog refresh — the lookback select, the run-window select and
+// the model upsert (only when the catalog is non-empty). Every chain resolves
+// to an empty result; nothing is asserted about the writes themselves.
 function sweepDbStub() {
   const chain: Record<string, unknown> = {};
   const self = () => chain;
@@ -169,6 +177,32 @@ describe("LiteLLM key budget attention classification", () => {
     expect(signals.map((signal) => signal.kind)).toEqual(["near_cap", "daily_anomaly"]);
   });
 
+  it("does not call a brand-new key an anomaly: no earlier spend, no baseline", () => {
+    // All of the week's spend is inside the last 24 h.
+    const signals = litellmBudgetSignalsForKey({
+      ...input, capCents: null, gatewaySpendCents: null, dailySpendCents: 500, weeklySpendCents: 500,
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it("ignores a jump below the daily floor", () => {
+    // 60 cents is 3x the 20 cents baseline, but under a dollar a day is noise.
+    const signals = litellmBudgetSignalsForKey({
+      ...input, capCents: null, gatewaySpendCents: null, dailySpendCents: 60, weeklySpendCents: 180,
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it("compares the last 24 h with the average of the six days before them", () => {
+    // Baseline (700 - 200) / 6 = 83 cents a day; 200 is 2.4x.
+    const [signal] = litellmBudgetSignalsForKey({
+      ...input, capCents: null, gatewaySpendCents: null, dailySpendCents: 200, weeklySpendCents: 700,
+    });
+    expect(signal?.kind).toBe("daily_anomaly");
+    expect(signal?.whyNow).toContain("200 cents");
+    expect(signal?.whyNow).toContain("83 cents per day");
+  });
+
   it("does not emit cap or anomaly signals without usable observations", () => {
     expect(litellmBudgetSignalsForKey({
       ...input,
@@ -176,5 +210,41 @@ describe("LiteLLM key budget attention classification", () => {
       gatewaySpendCents: null,
       weeklySpendCents: 0,
     })).toEqual([]);
+  });
+});
+
+describe("LiteLLM key budget signal registry", () => {
+  const signalFor = (activityAt: string) => litellmBudgetSignalsForKey({
+    companyId: COMPANY,
+    agentId: "agent-a",
+    capCents: 1_000,
+    gatewaySpendCents: 900,
+    dailySpendCents: 0,
+    weeklySpendCents: 0,
+    activityAt,
+  });
+
+  it("keeps the first activityAt of a card that is still raised", () => {
+    resetEmptyCatalogSignals();
+    recordLitellmBudgetSignals(COMPANY, signalFor("2026-10-08T12:00:00.000Z"));
+    recordLitellmBudgetSignals(COMPANY, signalFor("2026-10-08T12:15:00.000Z"));
+    const [signal] = readLitellmBudgetSignals(COMPANY);
+    expect(readLitellmBudgetSignals(COMPANY)).toHaveLength(1);
+    expect(signal?.activityAt).toBe("2026-10-08T12:00:00.000Z");
+  });
+
+  it("drops the card once the key is back under the threshold and clears on reset", () => {
+    resetEmptyCatalogSignals();
+    recordLitellmBudgetSignals(COMPANY, signalFor("2026-10-08T12:00:00.000Z"));
+    recordLitellmBudgetSignals(COMPANY, []);
+    expect(readLitellmBudgetSignals(COMPANY)).toEqual([]);
+    recordLitellmBudgetSignals(COMPANY, signalFor("2026-10-08T12:30:00.000Z"));
+    resetEmptyCatalogSignals();
+    expect(readLitellmBudgetSignals(COMPANY)).toEqual([]);
+  });
+
+  it("scopes the card id to the company and the agent", () => {
+    const [signal] = signalFor("2026-10-08T12:00:00.000Z");
+    expect(signal?.dedupKey).toBe(`litellm_budget:near_cap:${COMPANY}:agent-a`);
   });
 });

@@ -3860,24 +3860,27 @@ async function buildAttentionFeedSnapshot(
         add(createItem({
           companyId,
           sourceKind: "litellm_budget",
+          // The subject id is the stable dedupKey (kind + company + agent), not
+          // the bare agent id: one agent can hold several cards at once and the
+          // triage / queue rows are keyed by (sourceKind, subject id).
           subject: {
             kind: "agent",
-            id: budgetSignal.agentId,
+            id: budgetSignal.dedupKey,
             companyId,
             title: budgetSignal.title,
             identifier: budgetSignal.agentId,
             status: null,
-            href: `/${prefix}/agents/${budgetSignal.agentId}`,
-            metadata: { litellmBudgetSignal: budgetSignal.kind },
+            href: `/${prefix}/costs`,
+            metadata: { litellmBudgetSignal: budgetSignal.kind, agentId: budgetSignal.agentId },
           },
           whyNow: budgetSignal.whyNow,
           decisionVerbs: decisionVerbs(
-            { id: "inspect", label: "Inspect", description: "Open the agent's LLM gateway key." },
+            { id: "inspect", label: "Inspect", description: "Open the Costs page: its Gateway tab lists the cap and spend of every bot key." },
             { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
           ),
           inlineResolvable: true,
-          entryRule: "the LiteLLM key projection crosses its configured budget threshold.",
-          exitRule: "the next key projection no longer reports this threshold.",
+          entryRule: "a bot's LiteLLM key reaches 80% of its cap, exhausts it, or its 24 h spend is an outlier against the previous six days.",
+          exitRule: "the next evaluation (every 15 minutes) no longer reports this condition.",
           dedupKey: budgetSignal.dedupKey,
           severity: budgetSignal.severity,
           activityAt: budgetSignal.activityAt,
