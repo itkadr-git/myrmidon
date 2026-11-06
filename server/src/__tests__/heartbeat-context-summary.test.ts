@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
   buildReviewerInputFromTaskData,
   mergeCoalescedContextSnapshot,
+  selectReviewerPullRequestRef,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
@@ -647,47 +648,126 @@ describe("summarizeHeartbeatRunListResultJson", () => {
   });
 });
 
-describe("buildReviewerInputFromTaskData", () => {
-  it("builds an isolated reviewer fixture from only task data and the PR diff", () => {
-    const reviewerInput = buildReviewerInputFromTaskData({
-      issue: {
-        id: "issue-1",
-        identifier: "OPE-10333",
-        title: "Task-scoped reviewer isolation",
-        description: "Only the task specification and diff belong in reviewer context.",
-      },
-      executionState: {
-        reviewRequest: {
-          acceptanceCriteria: ["Reviewer receives no coder session history."],
-          instructions: "Check the diff against the acceptance criteria.",
-        },
-        coderSessionHistory: "must-not-appear",
-        foreignTaskContext: "must-not-appear",
-      },
-      pullRequest: {
-        number: 2469,
-        repository: "itkadr-git/myrmidon",
-        baseBranch: "main",
-        headBranch: "bot/OPE-10333",
-        headSha: "503bb749b79f2083b6436235e621510ddc856353",
-        authorLogin: "adm-dev-eng-18",
-      },
-      diff: "diff --git a/file.ts b/file.ts\n+reviewer-visible change",
-    });
+describe("developer reviewer isolated input", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const issue = {
+    id: "issue-1",
+    identifier: "OPE-10333",
+    title: "Task-scoped reviewer isolation",
+    description:
+      "Only the task specification belongs in reviewer context.\n\nAcceptance criteria:\n- Reviewer receives no coder session history.",
+  };
+  const pullRequest = {
+    number: 2469,
+    repository: "itkadr-git/myrmidon",
+    baseBranch: "main",
+    headBranch: "bot/OPE-10333",
+    headSha: "503bb749b79f2083b6436235e621510ddc856353",
+  };
+
+  it("builds the input from task text and a PR reference, without a diff or engineer content", () => {
+    const reviewerInput = buildReviewerInputFromTaskData({ issue, pullRequest });
 
     expect(reviewerInput).toMatchObject({
       taskIdentifier: "OPE-10333",
       taskTitle: "Task-scoped reviewer isolation",
-      diff: "diff --git a/file.ts b/file.ts\n+reviewer-visible change",
-      prMetadata: {
-        number: 2469,
-        repository: "itkadr-git/myrmidon",
-        headSha: "503bb749b79f2083b6436235e621510ddc856353",
-      },
+      acceptanceCriteria: ["Reviewer receives no coder session history."],
+      prMetadata: pullRequest,
+      diffCommand: "gh pr diff 2469 -R itkadr-git/myrmidon",
       forbiddenDataExcluded: true,
     });
+    expect(reviewerInput).not.toHaveProperty("diff");
     expect(reviewerInput).not.toHaveProperty("coderSessionHistory");
-    expect(reviewerInput).not.toHaveProperty("foreignTaskContext");
-    expect(JSON.stringify(reviewerInput)).not.toContain("must-not-appear");
+    expect(reviewerInput).not.toHaveProperty("comments");
+    expect(reviewerInput.prMetadata).not.toHaveProperty("authorLogin");
+  });
+
+  it("makes no network call while building the input", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    buildReviewerInputFromTaskData({ issue, pullRequest });
+    selectReviewerPullRequestRef({
+      pullRequestsCi: [
+        { repository: "itkadr-git/myrmidon", pullNumber: 2469, headSha: "sha-1", headRef: "bot/OPE-10333" },
+      ],
+      workProductMetadata: [{ repo: "itkadr-git/myrmidon", number: 2469, baseRef: "main" }],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("takes the PR reference from the CI record and the work-product metadata the board already stores", () => {
+    expect(
+      selectReviewerPullRequestRef({
+        pullRequestsCi: [
+          { repository: "itkadr-git/myrmidon", pullNumber: 2469, headSha: "sha-1", headRef: "bot/OPE-10333" },
+        ],
+        workProductMetadata: [
+          { repo: "itkadr-git/other", number: 2469, baseRef: "wrong", headRef: "wrong" },
+          { repo: "ItKadr-Git/Myrmidon", number: 2469, baseRef: "main", headRef: "stale-metadata-ref" },
+        ],
+      }),
+    ).toEqual({
+      number: 2469,
+      repository: "itkadr-git/myrmidon",
+      baseBranch: "main",
+      // The live CI record wins over the work-product metadata for the head.
+      headBranch: "bot/OPE-10333",
+      headSha: "sha-1",
+    });
+    // Without matching metadata the CI record still names head ref and SHA.
+    expect(
+      selectReviewerPullRequestRef({
+        pullRequestsCi: [{ repository: "itkadr-git/myrmidon", pullNumber: 7, headSha: null, headRef: "ci-head" }],
+        workProductMetadata: [],
+      }),
+    ).toEqual({
+      number: 7,
+      repository: "itkadr-git/myrmidon",
+      baseBranch: null,
+      headBranch: "ci-head",
+      headSha: null,
+    });
+  });
+
+  it("falls back to the work product alone and returns null when the board holds no PR", () => {
+    expect(
+      selectReviewerPullRequestRef({
+        pullRequestsCi: [],
+        workProductMetadata: [null, { repo: "itkadr-git/myrmidon", number: "12", baseRef: "main", headRef: "bot/x" }],
+      }),
+    ).toEqual({
+      number: 12,
+      repository: "itkadr-git/myrmidon",
+      baseBranch: "main",
+      headBranch: "bot/x",
+      headSha: null,
+    });
+    expect(selectReviewerPullRequestRef({ pullRequestsCi: [], workProductMetadata: [] })).toBeNull();
+    expect(
+      selectReviewerPullRequestRef({
+        pullRequestsCi: [],
+        workProductMetadata: [{ repo: "itkadr-git/myrmidon" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("renders the PR reference and the read-it-yourself diff instruction into the task markdown", () => {
+    const reviewerInput = buildReviewerInputFromTaskData({ issue, pullRequest });
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { ...issue, status: "in_review", workMode: "standard" },
+      reviewerInput,
+    });
+    expect(markdown).toContain("Reviewer input (isolated");
+    expect(markdown).toContain("#2469 itkadr-git/myrmidon");
+    expect(markdown).toContain("base=main head=bot/OPE-10333 sha=503bb749b79f2083b6436235e621510ddc856353");
+    expect(markdown).toContain("`gh pr diff 2469 -R itkadr-git/myrmidon`");
+    expect(markdown).toContain("- Reviewer receives no coder session history.");
+    expect(markdown).not.toContain("diff --git");
+    // Without the isolated input (every non-developer reviewer) the task markdown is unchanged.
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, status: "in_review", workMode: "standard" } }))
+      .not.toContain("Reviewer input (isolated");
   });
 });

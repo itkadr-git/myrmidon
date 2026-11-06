@@ -141,10 +141,19 @@ afterEach(() => {
 });
 
 describe("resolveSessionKey", () => {
-  it("forces developer task sessions to issue scope while preserving other strategies", () => {
-    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "agent", developerOnlyTaskSession: true, issueId: "issue-1" })).toBe("issue");
-    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "agent", developerOnlyTaskSession: false, issueId: "issue-1" })).toBe("agent");
-    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "run", developerOnlyTaskSession: true, issueId: null })).toBe("run");
+  it("gives developers a fresh session per run and never upgrades a card's run or none", () => {
+    for (const configuredStrategy of ["issue", "agent", "run"] as const) {
+      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy, developerOnlyTaskSession: true })).toBe("run");
+    }
+    // "none" is kept: the card asked for no session key at all.
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "none", developerOnlyTaskSession: true })).toBe("none");
+  });
+
+  it("keeps every configured strategy for non-developers", () => {
+    for (const configuredStrategy of ["issue", "agent", "run", "none"] as const) {
+      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy })).toBe(configuredStrategy);
+      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy, developerOnlyTaskSession: false })).toBe(configuredStrategy);
+    }
   });
 
   it("derives issue-scoped session keys by default", () => {
@@ -187,7 +196,7 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
-  it("isolates developer tasks A/B while retaining non-developer agent context", async () => {
+  it("gives a developer a fresh session on every run while a non-developer keeps its configured session", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
         ? { run_id: "run-hermes-1", status: "started" }
@@ -195,27 +204,62 @@ describe("execute", () => {
     ), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const config = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, sessionKeyStrategy: "agent" };
-    for (const issueId of ["task-A", "task-B"]) {
-      const developer = makeCtx({ ...config, developerOnlyTaskSession: true });
-      developer.context = { ...developer.context, issueId };
-      expect((await execute(developer)).exitCode).toBe(0);
-    }
-    for (const issueId of ["task-A", "task-B"]) {
-      const otherBot = makeCtx(config);
-      otherBot.context = { ...otherBot.context, issueId };
-      expect((await execute(otherBot)).exitCode).toBe(0);
-    }
+    const base = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
+    const runWith = async (
+      config: Record<string, unknown>,
+      runId: string,
+      issueId: string,
+    ) => {
+      const ctx = makeCtx({ ...base, ...config });
+      ctx.runId = runId;
+      ctx.context = { ...ctx.context, issueId };
+      expect((await execute(ctx)).exitCode).toBe(0);
+    };
+    // Developer cards on "issue" and "agent" (not yet switched to "run"): the
+    // board flag still gives every run its own session, across runs of one task
+    // and across tasks.
+    await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-1", "task-A");
+    await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-2", "task-A");
+    await runWith({ sessionKeyStrategy: "agent", developerOnlyTaskSession: true }, "run-3", "task-B");
+    // A card already on "run" stays on "run".
+    await runWith({ sessionKeyStrategy: "run", developerOnlyTaskSession: true }, "run-4", "task-A");
+    // Non-developers keep their configured strategy.
+    await runWith({ sessionKeyStrategy: "issue" }, "run-5", "task-A");
+    await runWith({ sessionKeyStrategy: "agent" }, "run-6", "task-B");
 
-    const keys = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
-      .filter(([input]) => String(input).endsWith("/v1/runs"))
-      .map(([, init]) => (init?.headers as Record<string, string>)["X-Hermes-Session-Key"]);
+    const runCalls = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .filter(([input]) => String(input).endsWith("/v1/runs"));
+    const keys = runCalls.map(([, init]) => (init?.headers as Record<string, string>)["X-Hermes-Session-Key"]);
     expect(keys).toEqual([
+      "paperclip:run:run-1",
+      "paperclip:run:run-2",
+      "paperclip:run:run-3",
+      "paperclip:run:run-4",
       "paperclip:company:company-1:agent:agent-1:issue:task-A",
-      "paperclip:company:company-1:agent:agent-1:issue:task-B",
-      "paperclip:company:company-1:agent:agent-1",
       "paperclip:company:company-1:agent:agent-1",
     ]);
+    // No developer key is shared with another run.
+    expect(new Set(keys.slice(0, 4)).size).toBe(4);
+  });
+
+  it("never upgrades a developer card's none to a session key", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
+      String(input).endsWith("/v1/runs")
+        ? { run_id: "run-hermes-1", status: "started" }
+        : { status: "completed", output: "done" },
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      sessionKeyStrategy: "none",
+      developerOnlyTaskSession: true,
+    });
+    expect((await execute(ctx)).exitCode).toBe(0);
+    const createCall = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .find(([input]) => String(input).endsWith("/v1/runs"));
+    expect((createCall?.[1]?.headers as Record<string, string>)["X-Hermes-Session-Key"]).toBeUndefined();
   });
 
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
@@ -918,7 +962,7 @@ describe("execute", () => {
     expect(runBodies[1]!.input).not.toContain(description);
   });
 
-  it("does not compact a developer's new task using a prior agent session", async () => {
+  it("sends a developer the full brief and no previous-run content even when the board still holds a stored session", async () => {
     const description = "Task B must not inherit Task A context.";
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
@@ -926,32 +970,48 @@ describe("execute", () => {
         : { status: "completed", output: "done" },
     ), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({
-      apiBaseUrl: "http://127.0.0.1:8642",
-      apiKey: "secret-key",
-      timeoutSec: 5,
-      sessionKeyStrategy: "agent",
-      developerOnlyTaskSession: true,
-    });
-    ctx.context = {
-      ...ctx.context,
-      issueId: "task-B",
-      paperclipTaskMarkdown: description,
-      paperclipTaskMarkdownCompact: "Task B (compact)",
+
+    const buildCtx = (config: Record<string, unknown>, storedSessionId: string) => {
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, ...config });
+      ctx.context = {
+        ...ctx.context,
+        issueId: "task-B",
+        paperclipTaskMarkdown: description,
+        paperclipTaskMarkdownCompact: "Task B (compact)",
+      };
+      // The board still stores the session of an earlier run of this task.
+      ctx.runtime = { ...ctx.runtime, sessionId: storedSessionId };
+      return ctx;
     };
-    ctx.runtime = {
-      ...ctx.runtime,
-      sessionId: "paperclip:company:company-1:agent:agent-1",
-    };
-    expect((await execute(ctx)).exitCode).toBe(0);
-    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
-    const createCall = calls.find(([url]) => String(url).endsWith("/v1/runs"));
-    const body = JSON.parse(String(createCall?.[1]?.body)) as { input: string; session_id: string };
-    expect(body.input).toContain(description);
-    expect(body.input).not.toContain("Task B (compact)");
-    expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
-    expect((createCall?.[1]?.headers as Record<string, string>)["X-Hermes-Session-Key"])
-      .toBe(body.session_id);
+
+    // Developer on a card that still says "issue": the stored session is not resumed.
+    expect((await execute(buildCtx(
+      { sessionKeyStrategy: "issue", developerOnlyTaskSession: true },
+      "paperclip:company:company-1:agent:agent-1:issue:task-B",
+    ))).exitCode).toBe(0);
+    // Developer on a card already switched to "run".
+    expect((await execute(buildCtx(
+      { sessionKeyStrategy: "run", developerOnlyTaskSession: true },
+      "paperclip:run:earlier-run",
+    ))).exitCode).toBe(0);
+    // Non-developer on "issue": its own stored session is resumed and the compact brief is used.
+    expect((await execute(buildCtx(
+      { sessionKeyStrategy: "issue" },
+      "paperclip:company:company-1:agent:agent-1:issue:task-B",
+    ))).exitCode).toBe(0);
+
+    const bodies = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .filter(([url]) => String(url).endsWith("/v1/runs"))
+      .map(([, init]) => JSON.parse(String(init?.body)) as { input: string; session_id: string });
+    expect(bodies).toHaveLength(3);
+    for (const body of bodies.slice(0, 2)) {
+      expect(body.input).toContain(description);
+      expect(body.input).not.toContain("Task B (compact)");
+      expect(body.session_id).toBe("paperclip:run:pc-run-1");
+    }
+    expect(bodies[2]!.input).toContain("Task B (compact)");
+    expect(bodies[2]!.input).not.toContain(description);
+    expect(bodies[2]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
   });
 
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {

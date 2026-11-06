@@ -285,14 +285,25 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
+/**
+ * The session key strategy a run actually uses.
+ *
+ * Owner decisions: 05.11 isolation applies only to developers, 06.11 developers
+ * do not load previous runs at all. The board sets `developerOnlyTaskSession`
+ * (derived from the agent, never from the card) for developer runs; those get a
+ * fresh Hermes session per run (`run`), never `issue` (a task session that
+ * carries earlier runs' history) or `agent`. A card that already says `run` or
+ * `none` is never upgraded. Every other agent keeps its configured strategy.
+ *
+ * Kept in step with `resolveDeveloperSessionKeyStrategy` in @myrmidon/shared,
+ * which this package deliberately does not import.
+ */
 export function resolveEffectiveSessionKeyStrategy(input: {
   configuredStrategy: SessionKeyStrategy;
   developerOnlyTaskSession?: boolean;
-  issueId: string | null;
 }): SessionKeyStrategy {
-  return input.developerOnlyTaskSession === true && input.issueId
-    ? "issue"
-    : input.configuredStrategy;
+  if (input.developerOnlyTaskSession !== true) return input.configuredStrategy;
+  return input.configuredStrategy === "none" ? "none" : "run";
 }
 
 export function resolveSessionKey(input: {
@@ -437,24 +448,15 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   // conversation across runs; a stored session id from a prior run means that
   // conversation already received the task brief, so pick the compact
   // task-context variant under the shared resume rules.
-  const issueId = issueIdFromContext(ctx);
   const sessionKeyStrategy = resolveEffectiveSessionKeyStrategy({
     configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
     developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
-    issueId,
   });
+  // A developer run (effective strategy "run") never resumes: it gets the full
+  // task brief, whatever session id the board still has stored.
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
-    Boolean(nonEmpty(ctx.runtime?.sessionId)) &&
-    (ctx.config.developerOnlyTaskSession !== true ||
-      nonEmpty(ctx.runtime?.sessionId) === resolveSessionKey({
-        strategy: "issue",
-        companyId: ctx.agent.companyId,
-        agentId: ctx.agent.id,
-        runId: idempotencyRunId,
-        issueId,
-        generation: readSessionGeneration(ctx.config.sessionGeneration),
-      }));
+    Boolean(nonEmpty(ctx.runtime?.sessionId));
   const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
     conversationMode: ctx.context.conversationMode === true,
@@ -2844,11 +2846,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
-  const configuredStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const strategy = resolveEffectiveSessionKeyStrategy({
-    configuredStrategy,
+    configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
     developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
-    issueId: issueIdFromContext(ctx),
   });
   // myrmidon(G4): raw debug JSON is opt-in; see handleEvent/logCompactEvent.
   const debugEvents = ctx.config.debugEvents === true;
@@ -2874,7 +2874,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const idempotencyKey = nonEmpty(ctx.config.modelAttemptId) ?? ctx.runId;
   // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
   // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
-  const issueId = issueIdFromContext(ctx);
   const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
   const sessionKey = resolveSessionKey({
     strategy,
