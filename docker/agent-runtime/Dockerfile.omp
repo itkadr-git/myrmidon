@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.6
-FROM oven/bun:1.4.3-alpine
+# pi-natives ships glibc binaries only (no musl): alpine fails with "Cannot find module pi_natives.linux-x64*.node" (OPE-7762)
+FROM oven/bun:1.4.3-slim
 
 ARG OMP_VERSION=18.9.2
 ENV HOME=/home/paperclip \
