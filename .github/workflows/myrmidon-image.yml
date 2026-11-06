@@ -112,7 +112,8 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=sha,prefix=sha-,format=short
+            type=sha,prefix=sha-,format=short,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=sha,prefix=main-sha-,format=short,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=${{ steps.version.outputs.image_tag }},enable=${{ startsWith(github.ref, 'refs/tags/') }}
           labels: |
@@ -207,6 +208,21 @@ jobs:
           done < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
           docker buildx imagetools create "${args[@]}" "$IMAGE@$DIGEST"
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
+
+      - name: Verify release tags refer to the tested image
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA:0:7}"
+          release_digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | jq -r .)"
+          sha_digest="$(docker buildx imagetools inspect "$IMAGE:sha-$short_sha" --format '{{json .Manifest.Digest}}' | jq -r .)"
+          if [ "$release_digest" != "$DIGEST" ] || [ "$sha_digest" != "$release_digest" ]; then
+            echo "::error::release $VERSION ($release_digest), sha-$short_sha ($sha_digest), tested image ($DIGEST) differ"
+            exit 1
+          fi
 
       - name: Summary
         if: ${{ github.event_name != 'pull_request' }}

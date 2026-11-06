@@ -12,6 +12,14 @@ import {
   REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import { isPendingCiForOpenPr } from "../myrmidon/stranded-autopolicy.js";
+// myrmidon(PR-WAIT-MONITOR, OPE-11949): a due monitor that waits for a pull request is
+// evaluated by the board; the agent is woken only when that state changed.
+import {
+  ciPendingEvidenceContext,
+  evaluatePrWaitMonitor,
+  type PrWaitObservedChange,
+} from "../myrmidon/pr-wait-monitor/policy.js";
+import { readAgentLastLookAt } from "../myrmidon/pr-wait-monitor/store.js";
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
@@ -22,8 +30,13 @@ import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued
 // readRunRetryPolicySnapshot (see docs/myrmidon/SETTINGS.md).
 import {
   DEFAULT_RUN_RETRY_MAX_ATTEMPTS,
+  MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS,
+  computeModelUnavailableRetryDelayMs,
+  decideModelUnavailableRetryIssue,
   describeRunRetrySchedule,
+  isModelUnavailableRun,
   isPermanentAgentFailure,
+  isReplayableModelUnavailableRun,
   isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
@@ -74,6 +87,15 @@ import {
 } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
 import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
+import {
+  CONTINUATION_CAP_COMMENT,
+  MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
+  buildContinuationCapBlockedPatch,
+  continuationStatusesFor,
+  isContinuationActionable,
+  readContinuationCap,
+  type ContinuationCapStop,
+} from "../myrmidon/continuation-cap.js"; // myrmidon(OPE-11948)
 import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
@@ -457,6 +479,8 @@ import {
   classifyEmptyRun,
   evaluateCompletionGate,
   checkAndHandleEmptyRunEscalation,
+  recordEmptyRunEvent,
+  recordIdleRepickThresholdEvent,
 } from "./empty-run.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
@@ -2354,6 +2378,8 @@ export function computeTransientRetryDelayMs(params: {
   now?: Date;
   transientRetryNotBeforeHint?: Date | null;
   isCooldownOrQuota?: boolean;
+  /** myrmidon(OPE-11947): the model pool did not answer; wait 30 min and up, not seconds. */
+  modelUnavailable?: boolean;
   runFinishedAt?: Date | null;
   runStartedAt?: Date | null;
 }): number | null {
@@ -2362,9 +2388,14 @@ export function computeTransientRetryDelayMs(params: {
     now = new Date(),
     transientRetryNotBeforeHint,
     isCooldownOrQuota = false,
+    modelUnavailable = false,
     runFinishedAt,
     runStartedAt,
   } = params;
+
+  if (modelUnavailable) {
+    return computeModelUnavailableRetryDelayMs(nextAttempt);
+  }
 
   const hintDate =
     typeof transientRetryNotBeforeHint === "string" || typeof transientRetryNotBeforeHint === "number"
@@ -10164,6 +10195,8 @@ export function heartbeatService(
       shouldQueueFollowupForRunningIssueWake,
     },
     recovery: {
+      deferReviewParticipantReleaseForCi: (input) =>
+        recovery.deferReviewParticipantReleaseForCi(input),
       escalateStrandedAssignedIssue: async (input) => {
         const rows = await loadStrandedEscalationRows(input);
         if (!rows) return;
@@ -12221,6 +12254,58 @@ export function heartbeatService(
             eq(issueWorkProducts.provider, "github"),
           ));
 
+        // myrmidon(PR-WAIT-MONITOR, OPE-11949): a monitor that waits for a pull request
+        // does not start a model run to look at it. The board reads the stored state of
+        // the pull request itself (no GitHub call) and wakes the agent only for news.
+        let prWaitChange: PrWaitObservedChange | null = null;
+        if (!isReviewRecoveryMonitor && input.activitySource === "scheduled" && prProducts.length > 0) {
+          const prWaitMonitor = {
+            kind: monitor?.kind ?? null,
+            serviceName: monitor?.serviceName ?? null,
+            notes: claimed.monitorNotes ?? monitor?.notes ?? null,
+            timeoutAt: monitor?.timeoutAt ?? null,
+          };
+          const prWait = evaluatePrWaitMonitor({
+            now: input.now,
+            monitor: prWaitMonitor,
+            products: prProducts,
+            agentLastLookAt: await readAgentLastLookAt(db, {
+              companyId: claimed.companyId,
+              agentId: targetAgentId,
+              issueId: claimed.id,
+              now: input.now,
+            }),
+          });
+          if (prWait.action === "defer") {
+            await db.update(issues).set({
+              monitorNextCheckAt: prWait.nextCheckAt,
+              monitorAttemptCount: nextAttemptCount,
+              monitorWakeRequestedAt: null,
+              updatedAt: input.now,
+            }).where(eq(issues.id, claimed.id));
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_deferred",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: {
+                identifier: claimed.identifier,
+                reason: "pr_wait_unchanged",
+                ciState: prWait.ciState,
+                nextCheckAt: prWait.nextCheckAt.toISOString(),
+                attemptCount: nextAttemptCount,
+                source: input.activitySource,
+              },
+            });
+            return { outcome: "skipped" as const, reason: "pr_wait_unchanged" };
+          }
+          if (prWait.action === "wake") prWaitChange = prWait.change;
+        }
+
         let activeCiRecord: Record<string, unknown> | null = null;
         for (const pr of prProducts) {
           const metadata = pr.metadata && typeof pr.metadata === "object" ? pr.metadata as Record<string, unknown> : null;
@@ -12231,7 +12316,8 @@ export function heartbeatService(
           }
         }
 
-        if (activeCiRecord) {
+        // myrmidon(PR-WAIT-MONITOR, OPE-11949): news for the agent outranks a stale "CI is running" mark.
+        if (activeCiRecord && !prWaitChange) {
           const attempt = claimed.monitorAttemptCount ?? 0;
           const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(attempt, 4)));
           const nextCheckAt = new Date(input.now.getTime() + backoffMs);
@@ -12277,6 +12363,7 @@ export function heartbeatService(
             monitorNotes: claimed.monitorNotes ?? null,
             ...monitorMetadata,
             ...reviewRecoveryContext,
+            ...(prWaitChange ? { observedChange: prWaitChange, observedChangeSummary: prWaitChange.summary } : {}),
             source: input.activitySource,
           },
           requestedByActorType: input.actorType,
@@ -12292,6 +12379,7 @@ export function heartbeatService(
             monitorNotes: claimed.monitorNotes ?? null,
             ...monitorMetadata,
             ...reviewRecoveryContext,
+            ...(prWaitChange ? { observedChange: prWaitChange, observedChangeSummary: prWaitChange.summary } : {}),
             manualTrigger: input.activitySource === "manual",
           },
         });
@@ -12470,7 +12558,83 @@ export function heartbeatService(
     });
   }
 
+  // myrmidon(PR-WAIT-MONITOR, OPE-11949): a due monitor on a task that is no longer
+  // an active agent task (backlog/todo/done/cancelled, or handed to a person) has
+  // no one to wake. Clear it instead of leaving it armed; a later return to an
+  // active status restores an invalid_status clear (MON-RESTORE).
+  async function dropInactiveDueIssueMonitors(now: Date) {
+    const stale = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(
+        and(
+          eq(companies.status, "active"),
+          sql`${issues.monitorNextCheckAt} is not null`,
+          lte(issues.monitorNextCheckAt, now),
+          or(
+            sql`${issues.assigneeAgentId} is null`,
+            sql`${issues.assigneeUserId} is not null`,
+            notInArray(issues.status, ["in_progress", "in_review", "blocked"]),
+          ),
+        ),
+      )
+      .orderBy(asc(issues.monitorNextCheckAt))
+      .limit(50);
+
+    let dropped = 0;
+    for (const row of stale) {
+      if (!row.monitorNextCheckAt) continue;
+      const clearReason: IssueExecutionMonitorClearReason =
+        row.status === "done"
+          ? "done"
+          : row.status === "cancelled"
+            ? "cancelled"
+            : !row.assigneeAgentId || row.assigneeUserId
+              ? "invalid_assignee"
+              : "invalid_status";
+      try {
+        await db
+          .update(issues)
+          .set({
+            ...buildIssueMonitorClearedPatch({
+              issue: row,
+              policy: normalizeIssueExecutionPolicy(row.executionPolicy ?? null),
+              clearReason,
+              clearedAt: now,
+            }),
+            updatedAt: now,
+          })
+          .where(and(eq(issues.id, row.id), sql`${issues.monitorNextCheckAt} is not null`));
+        await logActivity(db, {
+          companyId: row.companyId,
+          actorType: "system",
+          actorId: "heartbeat_scheduler",
+          agentId: null,
+          runId: null,
+          action: "issue.monitor_cleared",
+          entityType: "issue",
+          entityId: row.id,
+          details: {
+            identifier: row.identifier,
+            previousNextCheckAt: row.monitorNextCheckAt.toISOString(),
+            reason: clearReason,
+            notes: row.monitorNotes ?? null,
+            source: "scheduled",
+          },
+        });
+        dropped += 1;
+      } catch (err) {
+        logger.error({ err, issueId: row.id }, "failed to drop inactive issue monitor");
+      }
+    }
+    return dropped;
+  }
+
   async function tickDueIssueMonitors(now = new Date()) {
+    await dropInactiveDueIssueMonitors(now).catch((err) => {
+      logger.error({ err }, "dropping inactive issue monitors failed");
+    });
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     const dueMonitors = await db
       .select(issueMonitorDispatchColumns)
@@ -14056,7 +14220,9 @@ export function heartbeatService(
         const hasPendingCi = isPendingCiForOpenPr({
           openPr,
           lastComment,
-          contextSnapshot: run.contextSnapshot,
+          // myrmidon(PR-WAIT-MONITOR, OPE-11949): the context of a monitor-woken run
+          // holds the monitor's own "CI pending" note; it is not evidence of pending CI.
+          contextSnapshot: ciPendingEvidenceContext(run.contextSnapshot),
           externalPrObject,
         });
         if (hasPendingCi) {
@@ -14346,6 +14512,22 @@ export function heartbeatService(
     });
 
     if (issue && (emptyClassification.isEmpty || !gateResult.passed)) {
+      if (emptyClassification.isEmpty) {
+        await recordEmptyRunEvent(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          agentId: run.agentId,
+          runId: run.id,
+          classification: emptyClassification,
+          gateResult,
+        });
+        await recordIdleRepickThresholdEvent(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          agentId: run.agentId,
+          runId: run.id,
+        });
+      }
       const escalation = await checkAndHandleEmptyRunEscalation(db, {
         companyId: issue.companyId,
         issueId: issue.id,
@@ -16156,15 +16338,24 @@ export function heartbeatService(
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
         ? readTransientRetryNotBeforeFromRun(run)
         : null;
+    // myrmidon(OPE-11947): a run that ended because the model pool did not
+    // answer waits 30 min, 1 h, 2 h ... (cap 6 h) instead of the 30 s pair, and
+    // only while its issue still wants this agent (checked below and again when
+    // the retry falls due, see decideScheduledRetryGate).
+    const isModelUnavailable =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
+      isModelUnavailableRun(run);
     const maxAttempts = Math.max(
       0,
       Math.floor(
         opts?.maxAttempts ??
           (isGatewayConnectFailed
             ? CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS
-            : transientRetryNotBeforeHint
-              ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
-              : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+            : isModelUnavailable
+              ? MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS
+              : transientRetryNotBeforeHint
+                ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
+                : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const nextAttempt =
@@ -16188,6 +16379,7 @@ export function heartbeatService(
       now,
       transientRetryNotBeforeHint,
       isCooldownOrQuota,
+      modelUnavailable: isModelUnavailable,
       runFinishedAt: run.finishedAt,
       runStartedAt: run.startedAt,
     });
@@ -16300,6 +16492,10 @@ export function heartbeatService(
       retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON &&
       retryReason !== CONNECT_FAILED_TRANSIENT_RETRY_REASON &&
       !isGatewayConnectFailed &&
+      // myrmidon(OPE-11947): no reply and no tool call, so replaying is safe;
+      // the deferred model-unavailable budget (not the "two failures" rule of
+      // the reconciliation check) bounds the retries.
+      !(isModelUnavailable && isReplayableModelUnavailableRun(run)) &&
       legacyExecutionNeedsReconciliation(run)
     ) {
       return {
@@ -16333,6 +16529,44 @@ export function heartbeatService(
           reason:
             "Scheduled retry suppressed because the agent is not invokable",
           errorCode: "agent_not_invokable" as const,
+          issueId,
+        };
+      }
+    }
+
+    if (isModelUnavailable && issueId) {
+      const targetIssue = await db
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(
+          and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
+        )
+        .then((rows) => rows[0] ?? null);
+      const issueDecision = decideModelUnavailableRetryIssue({
+        issueId,
+        runAgentId: run.agentId,
+        issue: targetIssue,
+      });
+      if (!issueDecision.allowed) {
+        await appendRunEvent(run, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: issueDecision.reason,
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            maxAttempts,
+            ...issueDecision.details,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: issueDecision.reason,
+          errorCode: issueDecision.errorCode,
           issueId,
         };
       }
@@ -16455,6 +16689,9 @@ export function heartbeatService(
         ...(transientRecovery
           ? { errorFamily: transientRecovery.errorFamily }
           : {}),
+        // myrmidon(OPE-11947): read back by the due-retry gate, which drops
+        // the retry when the issue is no longer todo/in_progress.
+        ...(isModelUnavailable ? { modelUnavailableRetry: true } : {}),
         scheduledRetryAttempt: schedule.attempt,
         scheduledRetryAt: schedule.dueAt.toISOString(),
         // myrmidon(1.6.6 RUN-RETRY-POLICY): what the schedule decided about the
@@ -19909,7 +20146,8 @@ export function heartbeatService(
   });
   setSwarmEventSink({
     forIssue: async (issueId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forIssue(issueId) ?? null,
-    forAgent: async (agentId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forAgent(agentId) ?? null,
+    forAgent: async (agentId, opts) =>
+      (await buildSwarmMatcher(swarmMatcherPorts()))?.forAgent(agentId, opts) ?? null,
   });
 
   async function sweepPendingCleanupLeases(opts?: {
@@ -20231,8 +20469,60 @@ export function heartbeatService(
     void cleanup.finally(() => activeRunExecutionPromises.delete(cleanup));
   }
 
-  // myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe remote gateway run liveness,
-  // resolving secrets in adapterConfig (e.g. secret_ref apiKey) via resolveExecutionRunAdapterConfig.
+  // myrmidon(HERMES-RUN-REATTACH): resolve the persisted adapter config before
+  // issuing a board-owned stop. Gateway credentials are commonly secret_ref
+  // values; reading apiKey directly would silently leak the remote slot.
+  async function stopRemoteGatewayRun(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    adapterConfig: Record<string, unknown> | null;
+    gatewayRunId: string;
+    cancellation: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    };
+  }): Promise<{ stopped: boolean }> {
+    const adapter = getServerAdapter("hermes_gateway");
+    if (!adapter?.stopGatewayRunForBoard) return { stopped: false };
+    let resolvedConfig = input.adapterConfig ?? {};
+    try {
+      resolvedConfig = (
+        await resolveExecutionRunAdapterConfig({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          adapterType: "hermes_gateway",
+          heartbeatRunId: input.runId,
+          executionRunConfig: resolvedConfig,
+          projectEnv: null,
+          secretsSvc,
+        })
+      ).resolvedConfig;
+    } catch (err) {
+      logger.warn(
+        { runId: input.runId, agentId: input.agentId, errorType: err instanceof Error ? err.name : "unknown" },
+        "stopRemoteGatewayRun: failed to resolve adapterConfig secrets",
+      );
+      return { stopped: false };
+    }
+    const baseUrl =
+      readNonEmptyString(resolvedConfig.apiBaseUrl) ??
+      readNonEmptyString(resolvedConfig.baseUrl) ??
+      readNonEmptyString(resolvedConfig.url);
+    const apiKey =
+      readNonEmptyString(resolvedConfig.apiKey) ??
+      readNonEmptyString(resolvedConfig.token);
+    if (!baseUrl || !apiKey) return { stopped: false };
+    return adapter.stopGatewayRunForBoard({
+      baseUrl,
+      apiKey,
+      gatewayRunId: input.gatewayRunId,
+      cancellation: input.cancellation,
+    });
+  }
+
+  // myrmidon(HERMES-RUN-REATTACH, OPE-11779): probe remote gateway run liveness,
   async function probeRemoteGatewayRun(input: {
     companyId?: string;
     agentId?: string | null;
@@ -29819,6 +30109,55 @@ export function heartbeatService(
     }
   }
 
+  // myrmidon(OPE-11948): parks an issue whose automatic continuation cap was
+  // reached. Runs after the wake admission committed, in its own transaction:
+  // a failure here must never fail the (already skipped) wake, and the issue is
+  // re-read under its lock so a concurrent status change or reassignment wins.
+  async function applyContinuationCapStop(stop: ContinuationCapStop) {
+    try {
+      await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
+          .for("update")
+          .limit(1);
+        if (!current || !isContinuationActionable(current, stop.agentId)) return;
+        await issuesSvc.update(
+          current.id,
+          buildContinuationCapBlockedPatch({
+            issueId: current.id,
+            assigneeAgentId: stop.agentId,
+            ownerUserId: current.createdByUserId ?? current.responsibleUserId ?? null,
+          }) as Partial<typeof issues.$inferInsert>,
+          tx,
+        );
+        await issuesSvc.addComment(current.id, CONTINUATION_CAP_COMMENT, {}, { authorType: "system" }, tx);
+        await logActivity(tx as unknown as Db, {
+          companyId: current.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: stop.agentId,
+          runId: null,
+          action: "issue.continuation_cap_reached",
+          entityType: "issue",
+          entityId: current.id,
+          details: {
+            identifier: current.identifier,
+            previousStatus: current.status,
+            consecutiveContinuations: stop.consecutiveContinuations,
+            maxContinuations: MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
+          },
+        });
+      });
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), issueId: stop.issueId, agentId: stop.agentId },
+        "continuation cap: could not park the issue as blocked",
+      );
+    }
+  }
+
   const wakeStormGuard = new WakeStormGuard();
 
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
@@ -30662,6 +31001,9 @@ export function heartbeatService(
       // admission cancelled under a bypassed hold. Applied only once the
       // transaction has committed; emptied if it is rolled back.
       const doomedWaitingRunEffects: PostCommitEffect[] = [];
+      // myrmidon(OPE-11948): issues whose continuation cap was reached inside
+      // this admission. Parked as blocked only after the transaction committed.
+      const continuationCapStops: ContinuationCapStop[] = [];
 
       const outcome = await db
         .transaction(async (tx) => {
@@ -31890,6 +32232,95 @@ export function heartbeatService(
             source === "automation" &&
             (opts.requestedByActorType === "system" || !opts.requestedByActorType)
           ) {
+            // myrmidon(OPE-11948): an automatic continuation is for an issue that
+            // can be worked on right now. A backlog / blocked / in_review / done
+            // issue, or one assigned to someone else, gets no continuation wake:
+            // the recovery sweep and the release tail read the issue before this
+            // lock, and an agent's own bookkeeping flips the status in between.
+            // A continuation that answers a resolved interaction card is a
+            // person's doing: it may also run in_review and is not counted.
+            const interactionContinuation = Boolean(
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+                readNonEmptyString(payload?.interactionId),
+            );
+            if (!isContinuationActionable(issue, agentId, { interaction: interactionContinuation })) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_state_guard_mismatch",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  continuationSkipped: "issue_not_actionable",
+                  heartbeatSkip: {
+                    reason:
+                      "An automatic continuation needs an actionable issue assigned to the woken agent.",
+                    issueId: issue.id,
+                    expectedStatuses: [...continuationStatusesFor(interactionContinuation)],
+                    actualStatus: issue.status,
+                    expectedAssigneeAgentId: agentId,
+                    actualAssigneeAgentId: issue.assigneeAgentId,
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              return { kind: "skipped" as const };
+            }
+
+            // myrmidon(OPE-11948): the real attempt counter. Succeeded
+            // continuation runs of this (agent, issue) with no external input
+            // between them; the agent's own comments and updates do not reset
+            // it. At the cap no further continuation is enqueued and the issue
+            // is parked as blocked once this transaction has committed.
+            const continuationCap = interactionContinuation
+              ? null
+              : await readContinuationCap(tx as unknown as Db, {
+                  companyId: agent.companyId,
+                  issueId: issue.id,
+                  agentId,
+                });
+            if (continuationCap?.capped) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_rewake_throttled",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  continuationSkipped: "continuation_cap_reached",
+                  heartbeatSkip: {
+                    reason: "continuation_cap_reached",
+                    requestedReason: reason,
+                    consecutiveContinuations: continuationCap.count,
+                    maxContinuations: continuationCap.max,
+                    issueId: issue.id,
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              continuationCapStops.push({
+                companyId: issue.companyId,
+                issueId: issue.id,
+                agentId,
+                consecutiveContinuations: continuationCap.count,
+              });
+              return { kind: "skipped" as const };
+            }
+
             const recoveryParentRunId =
               readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
               readNonEmptyString(payload?.retryOfRunId) ??
@@ -32813,10 +33244,15 @@ export function heartbeatService(
             // The transaction rolled back, and so did any waiting run it
             // cancelled: there is nothing to publish for it.
             doomedWaitingRunEffects.length = 0;
+            continuationCapStops.length = 0;
             return { kind: "deferred" as const };
           }
           throw error;
         });
+
+      for (const stop of continuationCapStops) {
+        await applyContinuationCapStop(stop);
+      }
 
       // Telemetry for the cancelled runs is best-effort background work.
       // Fire it here and never await it: none of the lifecycle work below,
@@ -33622,29 +34058,22 @@ export function heartbeatService(
     // and logged, a failed stop never blocks the board-side cancellation.
     if (!control && !running && run.externalRunId && agent?.adapterType === "hermes_gateway") {
       try {
-        const adapterConfig = parseObject(agent.adapterConfig);
-        const baseUrl = readNonEmptyString(adapterConfig.apiBaseUrl) ?? readNonEmptyString(adapterConfig.baseUrl);
-        const apiKey = readNonEmptyString(adapterConfig.apiKey) ?? readNonEmptyString(adapterConfig.token);
-        if (baseUrl && apiKey) {
-          const stopGatewayRunForBoard = requireServerAdapter("hermes_gateway")
-            .stopGatewayRunForBoard;
-          if (stopGatewayRunForBoard) {
-            const stopped = await stopGatewayRunForBoard({
-              baseUrl,
-              apiKey,
-              gatewayRunId: run.externalRunId,
-              cancellation: { correlationId, source: cancellationSource, reason },
-            });
-            logger.info(
-              { runId: run.id, externalRunId: run.externalRunId, stopped: stopped.stopped },
-              "gateway run stop requested from the board cancellation path",
-            );
-          }
-        }
+        const stopped = await stopRemoteGatewayRun({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          runId: run.id,
+          adapterConfig: parseObject(agent.adapterConfig),
+          gatewayRunId: run.externalRunId,
+          cancellation: { correlationId, source: cancellationSource, reason },
+        });
+        logger.info(
+          { runId: run.id, externalRunId: run.externalRunId, stopped: stopped.stopped },
+          "hermes_gateway board-side stop requested",
+        );
       } catch (err) {
         logger.warn(
           { err, runId: run.id, externalRunId: run.externalRunId },
-          "gateway run board-side stop failed; continuing with the cancellation",
+          "hermes_gateway board-side stop failed; continuing cancellation",
         );
       }
     }
@@ -34536,8 +34965,17 @@ export function heartbeatService(
       const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
       // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
       // — the board matcher gives it its own ready task, else a ready task of
-      // its caste (design §3.5). Fire-and-forget: it never fails the resume.
-      notifySwarmAgentEvent(agentId);
+      // its caste (design §3.5). Respect the same instance/card switch as idle
+      // pickup so this event path cannot bypass the operator's setting.
+      const liveness = await teamLivenessRead();
+      const agent = await getAgent(agentId).catch(() => null);
+      const pickupAllowed =
+        liveness.settings.idlePickupEnabled &&
+        resolveAgentTeamLiveness(
+          readAgentCard(agent?.adapterConfig),
+          liveness.settings,
+        ).idlePickupEnabled;
+      notifySwarmAgentEvent(agentId, { pickupAllowed });
       return resumed;
     },
 

@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { pluginEntitlementApi, pluginEntitlementPublicKeyQueryKey, pluginEntitlementQueryKey } from "./pluginEntitlementApi";
-import type { PluginEntitlementKeyView } from "@myrmidon/shared";
+import { parsePluginEntitlementToken, type PluginEntitlementKeyView } from "@myrmidon/shared";
 import { useTranslation } from "@/i18n";
 
 function formatExpiry(value: PluginEntitlementKeyView["expiresAt"]): string | null {
@@ -25,6 +25,7 @@ export function PluginEntitlementSettings() {
   const queryClient = useQueryClient();
   const [pluginId, setPluginId] = useState("");
   const [keyValue, setKeyValue] = useState("");
+  const signedExpiry = keyValue ? parsePluginEntitlementToken(keyValue)?.payload.expiresAt ?? null : null;
   const [error, setError] = useState<string | null>(null);
   const [publicKeyValue, setPublicKeyValue] = useState("");
   const [publicKeyError, setPublicKeyError] = useState<string | null>(null);
@@ -179,6 +180,11 @@ export function PluginEntitlementSettings() {
           }}
           data-testid="plugin-entitlement-key-input"
         />
+        {signedExpiry && (
+          <p className="text-xs text-muted-foreground" data-testid="plugin-entitlement-signed-expiry-preview">
+            {t("pluginEntitlement.signedExpiryPreview", { date: formatExpiry(signedExpiry) })}
+          </p>
+        )}
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={submit} disabled={accept.isPending || !pluginId.trim() || !keyValue.trim()} data-testid="plugin-entitlement-add">
             {t("pluginEntitlement.addKeyButton")}

@@ -275,6 +275,7 @@
         "off": "Off",
         "optimizerLabel": "Deep analysis agent",
         "optimizerNone": "None",
+        "noOptimizer": "None",
         "optimizerUnavailable": "Saved agent unavailable",
         "saveFailed": "Could not save the thresholds. Try again.",
         "saved": "Saved",

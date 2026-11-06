@@ -274,4 +274,81 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
 
     expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
   });
+
+  // myrmidon(OPE-11948): a queued automatic continuation dies when the issue was
+  // parked or sent to review after the wake was created.
+  describe("automatic continuation wake (OPE-11948)", () => {
+    function continuationContext(issueId: string, extra: Record<string, unknown> = {}) {
+      return {
+        issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.continuation_recovery",
+        ...extra,
+      };
+    }
+
+    it.each(["blocked", "in_review"])("cancels the queued run when the issue is %s", async (status) => {
+      const { companyId, assigneeId, issueId } = await seed();
+      await db.update(issues).set({ status }).where(eq(issues.id, issueId));
+      const runId = await seedRun({ companyId, agentId: assigneeId, contextSnapshot: continuationContext(issueId) });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      });
+
+      expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_not_in_progress" });
+      expect((await runStatus(runId))?.status).toBe("cancelled");
+    });
+
+    it.each(["todo", "in_progress"])("keeps the queued run while the issue is %s", async (status) => {
+      const { companyId, assigneeId, issueId } = await seed();
+      await db.update(issues).set({ status }).where(eq(issues.id, issueId));
+      const runId = await seedRun({ companyId, agentId: assigneeId, contextSnapshot: continuationContext(issueId) });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      });
+
+      expect(outcome.outcome).toBe("not_stale");
+      expect(await runStatus(runId)).toEqual({ status: "queued", errorCode: null });
+    });
+
+    it("keeps a continuation that answers a resolved interaction card queued while the issue waits in review", async () => {
+      const { companyId, assigneeId, issueId, interactionId } = await seed({ interactionStatus: "accepted", addressee: "assignee" });
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+      const runId = await seedRun({
+        companyId,
+        agentId: assigneeId,
+        contextSnapshot: continuationContext(issueId, {
+          mutation: "interaction",
+          interactionId,
+          interactionStatus: "accepted",
+          interactionResolvedAt: new Date().toISOString(),
+        }),
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      });
+
+      expect(outcome.outcome).toBe("not_stale");
+    });
+
+    it("keeps an explicit resume of a blocked issue queued", async () => {
+      const { companyId, assigneeId, issueId } = await seed();
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+      const runId = await seedRun({
+        companyId,
+        agentId: assigneeId,
+        contextSnapshot: continuationContext(issueId, { resumeIntent: true }),
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      });
+
+      expect(outcome.outcome).toBe("not_stale");
+    });
+  });
 });

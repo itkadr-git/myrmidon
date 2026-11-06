@@ -40,6 +40,7 @@ describe("myrmidon(FLEETD-VMEXEC) placement — effective settings per host", ()
       ...HOST,
       hindsightUrl: "http://hindsight.internal:8890",
       llmBaseUrl: "http://llm.internal:4000",
+      boardAddress: "board.internal:3100",
       volumeRoot: "/srv/bots",
       network: "bots-net",
       imageAllowlist: ["ghcr.io/example/other@sha256:*"],
@@ -48,6 +49,7 @@ describe("myrmidon(FLEETD-VMEXEC) placement — effective settings per host", ()
     expect(effectiveBotSettings(INSTANCE, host)).toEqual({
       hindsightUrl: "http://hindsight.internal:8890",
       llmBaseUrl: "http://llm.internal:4000",
+      boardAddress: "board.internal:3100",
       volumeRoot: "/srv/bots",
       network: "bots-net",
       imageAllowlist: ["ghcr.io/example/other@sha256:*"],
