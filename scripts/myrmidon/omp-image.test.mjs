@@ -8,7 +8,8 @@ const workflow = fs.readFileSync(".github/workflows/agent-runtime-images.yml", "
 
 describe("omp runtime image contract", () => {
   it("pins Bun and the published omp package and runs as uid 1000", () => {
-    assert.match(dockerfile, /^FROM oven\/bun:1\.4\.3-alpine$/m);
+    // glibc base: pi-natives ships no musl binaries (OPE-7762)
+    assert.match(dockerfile, /^FROM oven\/bun:1\.4\.3-slim$/m);
     assert.match(dockerfile, /@oh-my-pi\/pi-coding-agent@\$\{OMP_VERSION\}/);
     assert.match(dockerfile, /^ARG OMP_VERSION=18\.9\.2$/m);
     assert.match(dockerfile, /^USER 1000:1000$/m);

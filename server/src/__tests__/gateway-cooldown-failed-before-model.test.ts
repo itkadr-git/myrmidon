@@ -281,6 +281,31 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       expect(delay2).toBe(120_000);
     });
 
+    // myrmidon(OPE-11947): a run that ended because the model pool did not
+    // answer must not come back in seconds or minutes; it waits 30 min and up.
+    it("defers the retry of a model-unavailable run by at least 30 minutes, growing to a 6 hour cap", () => {
+      const now = new Date("2026-11-06T10:00:00.000Z");
+      const minutes = [1, 2, 3, 4, 5, 6].map(
+        (nextAttempt) =>
+          computeTransientRetryDelayMs({ nextAttempt, now, modelUnavailable: true })! / 60_000,
+      );
+      expect(minutes).toEqual([30, 60, 120, 240, 360, 360]);
+      // The 30 s pair of an ordinary transient failure is unchanged.
+      expect(computeTransientRetryDelayMs({ nextAttempt: 1, now })).toBeNull();
+    });
+
+    it("ignores a short cooldown hint for a model-unavailable run", () => {
+      const now = new Date("2026-11-06T10:00:00.000Z");
+      const delay = computeTransientRetryDelayMs({
+        nextAttempt: 1,
+        now,
+        transientRetryNotBeforeHint: new Date(now.getTime() + 60_000),
+        isCooldownOrQuota: true,
+        modelUnavailable: true,
+      });
+      expect(delay).toBe(30 * 60_000);
+    });
+
     it("recognizes cooldown marker in terminal adapter resultJson for heartbeat retry scheduling", () => {
       const now = new Date("2026-10-30T10:00:00.000Z");
       const retryNotBefore = "2026-10-30T10:02:00.000Z";

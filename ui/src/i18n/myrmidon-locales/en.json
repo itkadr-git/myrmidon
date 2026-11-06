@@ -1015,6 +1015,7 @@
     "keyPlaceholder": "PEK1.<payload>.<signature>",
     "expiresAtLabel": "Expires",
     "expirySignedHint": "Expiry is signed into the entitlement key by the issuer. To change it, obtain a replacement key; it cannot be edited here.",
+    "signedExpiryPreview": "Signed expiry in pasted key: {{date}} (verified by server on acceptance)",
     "noKeysMessage": "No plugin entitlement keys registered yet",
     "statusActive": "Active",
     "statusExpired": "Expired",

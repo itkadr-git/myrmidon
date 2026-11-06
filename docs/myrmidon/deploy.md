@@ -34,12 +34,17 @@ settings file of an installation lives in a private deploy repository and never 
 
 ## Where to get the digest
 
-In the summary of the `image` job of the **Myrmidon image** workflow (Actions → the run on the
-commit or tag): the `Digest` line. Or:
+For a release, use the `Digest` line in the `image` job summary of the **Myrmidon image**
+workflow for the `myr-vX.Y.Z[-rc.N]` tag, or resolve the version tag directly:
 
 ```sh
 docker buildx imagetools inspect ghcr.io/itkadr-git/myrmidon:1.0.0 --format '{{json .Manifest.Digest}}'
 ```
+
+Do not resolve a release digest from `sha-<short>` or `main`: those tags are not the
+release selector. CI publishes `sha-<short>` only for tagged releases and checks that
+it and the version tag point to the tested digest; untagged main builds use
+`main-sha-<short>` instead. Always pass the resulting digest, not the tag, to deploy.
 
 `--digest` accepts `sha256:<64 hex>` or the full reference
 `ghcr.io/itkadr-git/myrmidon@sha256:<64 hex>`. The script does not take a tag (`1.0.0`, `main`,
