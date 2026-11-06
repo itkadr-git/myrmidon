@@ -18178,6 +18178,15 @@ export function heartbeatService(
     return null;
   }
 
+  // myrmidon(OPE-11947): idle pickup asks for the cap verdict of one agent before it
+  // offers the agent any task, instead of letting every offer end as a `skipped`
+  // receipt row. It is the gate's own function over the agent's own policy.
+  async function getAgentDailyCapBlock(agent: { id: string; companyId: string }) {
+    const full = await getAgent(agent.id);
+    if (!full || full.companyId !== agent.companyId) return null;
+    return getHeartbeatDailyCapBlock(full, parseHeartbeatPolicy(full));
+  }
+
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
     dailyCapBlock: NonNullable<
@@ -20049,6 +20058,7 @@ export function heartbeatService(
   const idlePickupSweeper = createIdlePickupSweeper({
     db,
     budget: idleWakeBudget,
+    getDailyCapBlock: getAgentDailyCapBlock,
     pickupReviewForAgent,
     readLiveness: teamLivenessRead,
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
@@ -22029,6 +22039,7 @@ export function heartbeatService(
               // The same company-wide allowance as the periodic sweeper and the
               // release path, so no path bursts past the per-minute ceiling.
               budget: idleWakeBudget,
+              getDailyCapBlock: getAgentDailyCapBlock,
               enqueueWakeup: (id, opts) => enqueueWakeup(id, opts),
               logActivity: async (input) => {
                 await logActivity(db, {
@@ -30027,6 +30038,7 @@ export function heartbeatService(
                 // company-wide allowance as the periodic sweeper, so a fleet of
                 // finishing runs cannot burst past the per-minute ceiling.
                 budget: idleWakeBudget,
+                getDailyCapBlock: getAgentDailyCapBlock,
                 enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
                 logActivity: async (input) => {
                   await logActivity(db, {
@@ -33296,6 +33308,7 @@ export function heartbeatService(
                 {
                   db,
                   budget: idleWakeBudget,
+                  getDailyCapBlock: getAgentDailyCapBlock,
                   enqueueWakeup: (nextAgentId, wakeOptions) =>
                     enqueueWakeup(nextAgentId, wakeOptions),
                 },
