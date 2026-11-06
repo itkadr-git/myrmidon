@@ -12,6 +12,14 @@ import {
   REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import { isPendingCiForOpenPr } from "../myrmidon/stranded-autopolicy.js";
+// myrmidon(PR-WAIT-MONITOR, OPE-11949): a due monitor that waits for a pull request is
+// evaluated by the board; the agent is woken only when that state changed.
+import {
+  ciPendingEvidenceContext,
+  evaluatePrWaitMonitor,
+  type PrWaitObservedChange,
+} from "../myrmidon/pr-wait-monitor/policy.js";
+import { readAgentLastLookAt } from "../myrmidon/pr-wait-monitor/store.js";
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
@@ -22,8 +30,13 @@ import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued
 // readRunRetryPolicySnapshot (see docs/myrmidon/SETTINGS.md).
 import {
   DEFAULT_RUN_RETRY_MAX_ATTEMPTS,
+  MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS,
+  computeModelUnavailableRetryDelayMs,
+  decideModelUnavailableRetryIssue,
   describeRunRetrySchedule,
+  isModelUnavailableRun,
   isPermanentAgentFailure,
+  isReplayableModelUnavailableRun,
   isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
@@ -2356,6 +2369,8 @@ export function computeTransientRetryDelayMs(params: {
   now?: Date;
   transientRetryNotBeforeHint?: Date | null;
   isCooldownOrQuota?: boolean;
+  /** myrmidon(OPE-11947): the model pool did not answer; wait 30 min and up, not seconds. */
+  modelUnavailable?: boolean;
   runFinishedAt?: Date | null;
   runStartedAt?: Date | null;
 }): number | null {
@@ -2364,9 +2379,14 @@ export function computeTransientRetryDelayMs(params: {
     now = new Date(),
     transientRetryNotBeforeHint,
     isCooldownOrQuota = false,
+    modelUnavailable = false,
     runFinishedAt,
     runStartedAt,
   } = params;
+
+  if (modelUnavailable) {
+    return computeModelUnavailableRetryDelayMs(nextAttempt);
+  }
 
   const hintDate =
     typeof transientRetryNotBeforeHint === "string" || typeof transientRetryNotBeforeHint === "number"
@@ -12225,6 +12245,58 @@ export function heartbeatService(
             eq(issueWorkProducts.provider, "github"),
           ));
 
+        // myrmidon(PR-WAIT-MONITOR, OPE-11949): a monitor that waits for a pull request
+        // does not start a model run to look at it. The board reads the stored state of
+        // the pull request itself (no GitHub call) and wakes the agent only for news.
+        let prWaitChange: PrWaitObservedChange | null = null;
+        if (!isReviewRecoveryMonitor && input.activitySource === "scheduled" && prProducts.length > 0) {
+          const prWaitMonitor = {
+            kind: monitor?.kind ?? null,
+            serviceName: monitor?.serviceName ?? null,
+            notes: claimed.monitorNotes ?? monitor?.notes ?? null,
+            timeoutAt: monitor?.timeoutAt ?? null,
+          };
+          const prWait = evaluatePrWaitMonitor({
+            now: input.now,
+            monitor: prWaitMonitor,
+            products: prProducts,
+            agentLastLookAt: await readAgentLastLookAt(db, {
+              companyId: claimed.companyId,
+              agentId: targetAgentId,
+              issueId: claimed.id,
+              now: input.now,
+            }),
+          });
+          if (prWait.action === "defer") {
+            await db.update(issues).set({
+              monitorNextCheckAt: prWait.nextCheckAt,
+              monitorAttemptCount: nextAttemptCount,
+              monitorWakeRequestedAt: null,
+              updatedAt: input.now,
+            }).where(eq(issues.id, claimed.id));
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_deferred",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: {
+                identifier: claimed.identifier,
+                reason: "pr_wait_unchanged",
+                ciState: prWait.ciState,
+                nextCheckAt: prWait.nextCheckAt.toISOString(),
+                attemptCount: nextAttemptCount,
+                source: input.activitySource,
+              },
+            });
+            return { outcome: "skipped" as const, reason: "pr_wait_unchanged" };
+          }
+          if (prWait.action === "wake") prWaitChange = prWait.change;
+        }
+
         let activeCiRecord: Record<string, unknown> | null = null;
         for (const pr of prProducts) {
           const metadata = pr.metadata && typeof pr.metadata === "object" ? pr.metadata as Record<string, unknown> : null;
@@ -12235,7 +12307,8 @@ export function heartbeatService(
           }
         }
 
-        if (activeCiRecord) {
+        // myrmidon(PR-WAIT-MONITOR, OPE-11949): news for the agent outranks a stale "CI is running" mark.
+        if (activeCiRecord && !prWaitChange) {
           const attempt = claimed.monitorAttemptCount ?? 0;
           const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(attempt, 4)));
           const nextCheckAt = new Date(input.now.getTime() + backoffMs);
@@ -12281,6 +12354,7 @@ export function heartbeatService(
             monitorNotes: claimed.monitorNotes ?? null,
             ...monitorMetadata,
             ...reviewRecoveryContext,
+            ...(prWaitChange ? { observedChange: prWaitChange, observedChangeSummary: prWaitChange.summary } : {}),
             source: input.activitySource,
           },
           requestedByActorType: input.actorType,
@@ -12296,6 +12370,7 @@ export function heartbeatService(
             monitorNotes: claimed.monitorNotes ?? null,
             ...monitorMetadata,
             ...reviewRecoveryContext,
+            ...(prWaitChange ? { observedChange: prWaitChange, observedChangeSummary: prWaitChange.summary } : {}),
             manualTrigger: input.activitySource === "manual",
           },
         });
@@ -12474,7 +12549,83 @@ export function heartbeatService(
     });
   }
 
+  // myrmidon(PR-WAIT-MONITOR, OPE-11949): a due monitor on a task that is no longer
+  // an active agent task (backlog/todo/done/cancelled, or handed to a person) has
+  // no one to wake. Clear it instead of leaving it armed; a later return to an
+  // active status restores an invalid_status clear (MON-RESTORE).
+  async function dropInactiveDueIssueMonitors(now: Date) {
+    const stale = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(
+        and(
+          eq(companies.status, "active"),
+          sql`${issues.monitorNextCheckAt} is not null`,
+          lte(issues.monitorNextCheckAt, now),
+          or(
+            sql`${issues.assigneeAgentId} is null`,
+            sql`${issues.assigneeUserId} is not null`,
+            notInArray(issues.status, ["in_progress", "in_review", "blocked"]),
+          ),
+        ),
+      )
+      .orderBy(asc(issues.monitorNextCheckAt))
+      .limit(50);
+
+    let dropped = 0;
+    for (const row of stale) {
+      if (!row.monitorNextCheckAt) continue;
+      const clearReason: IssueExecutionMonitorClearReason =
+        row.status === "done"
+          ? "done"
+          : row.status === "cancelled"
+            ? "cancelled"
+            : !row.assigneeAgentId || row.assigneeUserId
+              ? "invalid_assignee"
+              : "invalid_status";
+      try {
+        await db
+          .update(issues)
+          .set({
+            ...buildIssueMonitorClearedPatch({
+              issue: row,
+              policy: normalizeIssueExecutionPolicy(row.executionPolicy ?? null),
+              clearReason,
+              clearedAt: now,
+            }),
+            updatedAt: now,
+          })
+          .where(and(eq(issues.id, row.id), sql`${issues.monitorNextCheckAt} is not null`));
+        await logActivity(db, {
+          companyId: row.companyId,
+          actorType: "system",
+          actorId: "heartbeat_scheduler",
+          agentId: null,
+          runId: null,
+          action: "issue.monitor_cleared",
+          entityType: "issue",
+          entityId: row.id,
+          details: {
+            identifier: row.identifier,
+            previousNextCheckAt: row.monitorNextCheckAt.toISOString(),
+            reason: clearReason,
+            notes: row.monitorNotes ?? null,
+            source: "scheduled",
+          },
+        });
+        dropped += 1;
+      } catch (err) {
+        logger.error({ err, issueId: row.id }, "failed to drop inactive issue monitor");
+      }
+    }
+    return dropped;
+  }
+
   async function tickDueIssueMonitors(now = new Date()) {
+    await dropInactiveDueIssueMonitors(now).catch((err) => {
+      logger.error({ err }, "dropping inactive issue monitors failed");
+    });
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     const dueMonitors = await db
       .select(issueMonitorDispatchColumns)
@@ -14060,7 +14211,9 @@ export function heartbeatService(
         const hasPendingCi = isPendingCiForOpenPr({
           openPr,
           lastComment,
-          contextSnapshot: run.contextSnapshot,
+          // myrmidon(PR-WAIT-MONITOR, OPE-11949): the context of a monitor-woken run
+          // holds the monitor's own "CI pending" note; it is not evidence of pending CI.
+          contextSnapshot: ciPendingEvidenceContext(run.contextSnapshot),
           externalPrObject,
         });
         if (hasPendingCi) {
@@ -16176,15 +16329,24 @@ export function heartbeatService(
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
         ? readTransientRetryNotBeforeFromRun(run)
         : null;
+    // myrmidon(OPE-11947): a run that ended because the model pool did not
+    // answer waits 30 min, 1 h, 2 h ... (cap 6 h) instead of the 30 s pair, and
+    // only while its issue still wants this agent (checked below and again when
+    // the retry falls due, see decideScheduledRetryGate).
+    const isModelUnavailable =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
+      isModelUnavailableRun(run);
     const maxAttempts = Math.max(
       0,
       Math.floor(
         opts?.maxAttempts ??
           (isGatewayConnectFailed
             ? CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS
-            : transientRetryNotBeforeHint
-              ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
-              : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+            : isModelUnavailable
+              ? MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS
+              : transientRetryNotBeforeHint
+                ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
+                : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const nextAttempt =
@@ -16208,6 +16370,7 @@ export function heartbeatService(
       now,
       transientRetryNotBeforeHint,
       isCooldownOrQuota,
+      modelUnavailable: isModelUnavailable,
       runFinishedAt: run.finishedAt,
       runStartedAt: run.startedAt,
     });
@@ -16320,6 +16483,10 @@ export function heartbeatService(
       retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON &&
       retryReason !== CONNECT_FAILED_TRANSIENT_RETRY_REASON &&
       !isGatewayConnectFailed &&
+      // myrmidon(OPE-11947): no reply and no tool call, so replaying is safe;
+      // the deferred model-unavailable budget (not the "two failures" rule of
+      // the reconciliation check) bounds the retries.
+      !(isModelUnavailable && isReplayableModelUnavailableRun(run)) &&
       legacyExecutionNeedsReconciliation(run)
     ) {
       return {
@@ -16353,6 +16520,44 @@ export function heartbeatService(
           reason:
             "Scheduled retry suppressed because the agent is not invokable",
           errorCode: "agent_not_invokable" as const,
+          issueId,
+        };
+      }
+    }
+
+    if (isModelUnavailable && issueId) {
+      const targetIssue = await db
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(
+          and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
+        )
+        .then((rows) => rows[0] ?? null);
+      const issueDecision = decideModelUnavailableRetryIssue({
+        issueId,
+        runAgentId: run.agentId,
+        issue: targetIssue,
+      });
+      if (!issueDecision.allowed) {
+        await appendRunEvent(run, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: issueDecision.reason,
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            maxAttempts,
+            ...issueDecision.details,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: issueDecision.reason,
+          errorCode: issueDecision.errorCode,
           issueId,
         };
       }
@@ -16475,6 +16680,9 @@ export function heartbeatService(
         ...(transientRecovery
           ? { errorFamily: transientRecovery.errorFamily }
           : {}),
+        // myrmidon(OPE-11947): read back by the due-retry gate, which drops
+        // the retry when the issue is no longer todo/in_progress.
+        ...(isModelUnavailable ? { modelUnavailableRetry: true } : {}),
         scheduledRetryAttempt: schedule.attempt,
         scheduledRetryAt: schedule.dueAt.toISOString(),
         // myrmidon(1.6.6 RUN-RETRY-POLICY): what the schedule decided about the
