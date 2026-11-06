@@ -42,14 +42,8 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
     if (v.codexAcpStateDir) ac.stateDir = v.codexAcpStateDir;
     ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
   }
-  ac.timeoutSec =
-    typeof v.adapterSchemaValues?.timeoutSec === "number" && v.adapterSchemaValues.timeoutSec > 0
-      ? v.adapterSchemaValues.timeoutSec
-      : 0;
-  ac.graceSec =
-    typeof v.adapterSchemaValues?.graceSec === "number" && v.adapterSchemaValues.graceSec >= 0
-      ? v.adapterSchemaValues.graceSec
-      : 15;
+  ac.timeoutSec = 0;
+  ac.graceSec = 15;
   const env = buildAdapterEnvConfig(v.envBindings, v.envVars);
   if (Object.keys(env).length > 0) ac.env = env;
   ac.search = v.search;
@@ -72,13 +66,19 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
-  if (v.adapterSchemaValues?.filesystemScope) ac.filesystemScope = v.adapterSchemaValues.filesystemScope;
-  if (v.adapterSchemaValues?.filesystemExtraPaths) ac.filesystemExtraPaths = v.adapterSchemaValues.filesystemExtraPaths;
-  if (v.adapterSchemaValues?.filesystemSandboxCommand) ac.filesystemSandboxCommand = v.adapterSchemaValues.filesystemSandboxCommand;
-  if (v.adapterSchemaValues?.networkScope) ac.networkScope = v.adapterSchemaValues.networkScope;
-  if (v.adapterSchemaValues?.networkAllowlist) ac.networkAllowlist = v.adapterSchemaValues.networkAllowlist;
-  if (typeof v.adapterSchemaValues?.probe === "boolean") ac.probe = v.adapterSchemaValues.probe;
-  if (typeof v.adapterSchemaValues?.approvalMode === "string") ac.approvalMode = v.adapterSchemaValues.approvalMode;
+  // myrmidon(1.6.6 OPE-11239): sandbox and timeout settings from the Agent Settings form.
+  const form = v.adapterSchemaValues ?? {};
+  if (form.filesystemScope === "workspace") ac.filesystemScope = "workspace";
+  if (Array.isArray(form.filesystemExtraPaths) && form.filesystemExtraPaths.length > 0) {
+    ac.filesystemExtraPaths = form.filesystemExtraPaths;
+  }
+  if (form.networkScope === "deny" || form.networkScope === "allowlist") ac.networkScope = form.networkScope;
+  if (Array.isArray(form.networkAllowlist) && form.networkAllowlist.length > 0) {
+    ac.networkAllowlist = form.networkAllowlist;
+  }
+  if (typeof form.outputInactivityTimeoutMs === "number" && form.outputInactivityTimeoutMs > 0) {
+    ac.outputInactivityTimeoutMs = form.outputInactivityTimeoutMs;
+  }
   return ac;
 }
 
@@ -100,6 +100,11 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "fastMode",
     "command",
     "extraArgs",
+    "filesystemScope",
+    "filesystemExtraPaths",
+    "networkScope",
+    "networkAllowlist",
+    "outputInactivityTimeoutMs",
   ]) {
     delete config[unsupportedKey];
     delete schemaValues[unsupportedKey];

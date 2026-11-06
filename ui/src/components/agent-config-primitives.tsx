@@ -116,7 +116,6 @@ export function ToggleField({
   checked: boolean;
   onChange: (v: boolean) => void;
   toggleTestId?: string;
-  configSection?: import("../adapters/types").AdapterConfigSection;
 }) {
   return (
     <div className="flex items-center justify-between">

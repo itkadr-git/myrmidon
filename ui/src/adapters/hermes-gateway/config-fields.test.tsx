@@ -74,7 +74,8 @@ describe("HermesGatewayConfigFields", () => {
     expect(text).toContain("Central session history");
     expect(text).toContain("Keep active runs alive");
     expect(text).toContain("Log raw redacted gateway events");
-    expect(text).not.toContain("Dangerously allow remote HTTP");
+    expect(text).toContain("Dangerously allow remote HTTP");
+    expect(text).toContain("Poll interval");
     expect(text).toContain("Extra headers");
     expect(text).toContain("Instructions");
 

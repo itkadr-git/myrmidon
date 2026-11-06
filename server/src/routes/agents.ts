@@ -125,6 +125,11 @@ import { resolveEnvironmentExecutionTarget } from "../services/environment-execu
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
+import {
+  hermesGatewayConfigProblem,
+  localAdapterConfigProblem,
+  localAdapterSecurityConfigChanged,
+} from "../myrmidon/agent-local-adapter-config.js"; // myrmidon(1.6.6 OPE-11239)
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
@@ -2709,89 +2714,19 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  // myrmidon(1.6.6 OPE-11239): sandbox and permission keys of the local CLI adapters are
+  // security settings; changing one needs an instance admin (rules: myrmidon/agent-local-adapter-config.ts).
   function assertLocalAdapterSecurityChangeAllowed(
     req: Request,
     adapterType: string | null | undefined,
     previousAdapterConfig: Record<string, unknown> | null | undefined,
     nextAdapterConfig: Record<string, unknown> | null | undefined,
   ) {
-    if (adapterType !== "claude_local" && adapterType !== "codex_local") return;
-    const previous = previousAdapterConfig ?? {};
-    const next = nextAdapterConfig ?? {};
-    const protectedKeys = [
-      "filesystemScope",
-      "filesystemExtraPaths",
-      "filesystemSandboxCommand",
-      "networkScope",
-      "networkAllowlist",
-      "approvalMode",
-      "dangerouslySkipPermissions",
-      "dangerouslyBypassApprovalsAndSandbox",
-      "dangerouslyBypassSandbox",
-    ];
-    const changedProtectedKey = protectedKeys.some((key) =>
-      Object.prototype.hasOwnProperty.call(next, key)
-      && JSON.stringify(previous[key]) !== JSON.stringify(next[key]),
-    );
-    if (changedProtectedKey) assertInstanceAdmin(req);
-  }
-
-  function assertLocalAdapterConfigConstraints(
-    adapterType: string | null | undefined,
-    adapterConfig: Record<string, unknown>,
-  ) {
-    if (adapterType !== "claude_local" && adapterType !== "codex_local") return;
-
-    const enumValue = (key: string, allowed: readonly string[]) => {
-      const value = adapterConfig[key];
-      if (value !== undefined && (typeof value !== "string" || !allowed.includes(value))) {
-        throw unprocessable(`Invalid ${adapterType} adapterConfig: ${key} must be one of ${allowed.join(", ")}`);
-      }
-    };
-    const stringList = (key: string) => {
-      const value = adapterConfig[key];
-      if (value === undefined) return [];
-      const values = Array.isArray(value)
-        ? value
-        : typeof value === "string" ? value.split(",").map((item) => item.trim()).filter(Boolean) : null;
-      if (!values || values.some((item) => typeof item !== "string" || !item.trim())) {
-        throw unprocessable(`Invalid ${adapterType} adapterConfig: ${key} must be an array of strings`);
-      }
-      return values as string[];
-    };
-
-    enumValue("filesystemScope", ["workspace"]);
-    enumValue("networkScope", ["deny", "allowlist"]);
-    enumValue("approvalMode", ["default", "deny", "bypass"]);
-    const extraPaths = stringList("filesystemExtraPaths");
-    if (extraPaths.some((item) => !path.isAbsolute(item))) {
-      throw unprocessable(`Invalid ${adapterType} adapterConfig: filesystemExtraPaths must contain absolute paths`);
-    }
-    const allowlist = stringList("networkAllowlist");
-    if (adapterConfig.networkScope === "allowlist" && allowlist.length === 0) {
-      throw unprocessable(`Invalid ${adapterType} adapterConfig: networkAllowlist is required when networkScope is allowlist`);
-    }
-    if (adapterConfig.networkScope === "deny" && allowlist.length > 0) {
-      throw unprocessable(`Invalid ${adapterType} adapterConfig: networkAllowlist must be empty when networkScope is deny`);
-    }
-    for (const key of ["probe", "dangerouslySkipPermissions", "dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox"]) {
-      if (adapterConfig[key] !== undefined && typeof adapterConfig[key] !== "boolean") {
-        throw unprocessable(`Invalid ${adapterType} adapterConfig: ${key} must be boolean`);
-      }
-    }
-    for (const key of ["timeoutSec", "graceSec"]) {
-      const value = adapterConfig[key];
-      if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 86_400)) {
-        throw unprocessable(`Invalid ${adapterType} adapterConfig: ${key} must be an integer from 0 to 86400`);
-      }
-    }
-    if (typeof adapterConfig.timeoutSec === "number" && typeof adapterConfig.graceSec === "number" &&
-      adapterConfig.graceSec > adapterConfig.timeoutSec) {
-      throw unprocessable(`Invalid ${adapterType} adapterConfig: graceSec must not exceed timeoutSec`);
-    }
-    if (typeof adapterConfig.filesystemSandboxCommand !== "undefined" &&
-      (typeof adapterConfig.filesystemSandboxCommand !== "string" || !adapterConfig.filesystemSandboxCommand.trim())) {
-      throw unprocessable(`Invalid ${adapterType} adapterConfig: filesystemSandboxCommand must be a non-empty string`);
+    const adapterDefaults: Record<string, unknown> = adapterType === "claude_local"
+      ? { dangerouslySkipPermissions: true }
+      : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
+    if (localAdapterSecurityConfigChanged(adapterType, previousAdapterConfig, nextAdapterConfig, adapterDefaults)) {
+      assertInstanceAdmin(req);
     }
   }
 
@@ -2803,7 +2738,10 @@ export function agentRoutes(
     // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
     const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
-    assertLocalAdapterConfigConstraints(adapterType, adapterConfig);
+    const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
+    if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
+    const gatewayProblem = hermesGatewayConfigProblem(adapterType, adapterConfig);
+    if (gatewayProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${gatewayProblem}`);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -4743,6 +4681,7 @@ function getActorIdentityPart(req: Request): string {
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertInheritProcessEnvChangeAllowed(req, { companyId, agentId: null, previousAdapterConfig: null, nextAdapterConfig: rawHireAdapterConfig }); // myrmidon(S4)
+    assertLocalAdapterSecurityChangeAllowed(req, hireInput.adapterType, null, rawHireAdapterConfig); // myrmidon(1.6.6 OPE-11239)
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,

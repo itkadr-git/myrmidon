@@ -17,6 +17,7 @@ const inputClass =
 const DEFAULT_SESSION_KEY_STRATEGY = "issue";
 const DEFAULT_TIMEOUT_SEC = 600;
 const DEFAULT_EVENT_RECONNECT_MS = 2000;
+const DEFAULT_POLL_INTERVAL_MS = 1000;
 
 type SecretRef = {
   type: "secret_ref";
@@ -137,6 +138,8 @@ export function HermesGatewayConfigFields({
   const sessionKeyStrategy = String(readValue("sessionKeyStrategy", DEFAULT_SESSION_KEY_STRATEGY) ?? DEFAULT_SESSION_KEY_STRATEGY);
   const timeoutSec = Number(readValue("timeoutSec", DEFAULT_TIMEOUT_SEC) ?? DEFAULT_TIMEOUT_SEC);
   const eventReconnectMs = Number(readValue("eventReconnectMs", DEFAULT_EVENT_RECONNECT_MS) ?? DEFAULT_EVENT_RECONNECT_MS);
+  const allowInsecureRemoteHttp = Boolean(readValue("dangerouslyAllowInsecureRemoteHttp", false));
+  const pollIntervalMs = Number(readValue("pollIntervalMs", DEFAULT_POLL_INTERVAL_MS) ?? DEFAULT_POLL_INTERVAL_MS);
   const instructions = String(readValue("instructions", "") ?? "");
   const flag = readValue("centralHistory", false);
   const centralHistory = flag === true || flag === "1" || flag === "true";
@@ -223,8 +226,27 @@ export function HermesGatewayConfigFields({
         />
       </Field>
 
+      <Field
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.pollIntervalLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.pollIntervalHint")}
+      >
+        <DraftNumberInput
+          value={Number.isFinite(pollIntervalMs) ? pollIntervalMs : DEFAULT_POLL_INTERVAL_MS}
+          onCommit={(v) => writeValue("pollIntervalMs", v > 0 ? v : undefined)}
+          immediate
+          className={inputClass}
+        />
+      </Field>
+
+      <ToggleField
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.allowRemoteHttpLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.allowRemoteHttpHint")}
+        checked={allowInsecureRemoteHttp}
+        onChange={(v) => writeValue("dangerouslyAllowInsecureRemoteHttp", v)}
+      />
+
       <Field configSection="runPolicy" label={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutHint")}>
-        <DraftNumberInput value={createRequestTimeoutSec} onCommit={(v) => writeValue("createRequestTimeoutSec", v)} immediate className={inputClass} />
+        <DraftNumberInput value={createRequestTimeoutSec} onCommit={(v) => writeValue("createRequestTimeoutSec", v > 0 ? v : undefined)} immediate className={inputClass} />
       </Field>
       <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.livenessEventsLabel")} checked={livenessEvents} onChange={(v) => writeValue("livenessEvents", v)} />
       <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.debugEventsLabel")} checked={debugEvents} onChange={(v) => writeValue("debugEvents", v)} />
@@ -241,7 +263,7 @@ export function HermesGatewayConfigFields({
           <DraftInput value={String(readValue("centralHistoryBankId", "") ?? "")} onCommit={(v) => writeValue("centralHistoryBankId", v || undefined)} immediate className={inputClass} />
         </Field>
         <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryMaxTurnsLabel")}>
-          <DraftNumberInput value={centralHistoryMaxTurns} onCommit={(v) => writeValue("centralHistoryMaxTurns", v)} immediate className={inputClass} />
+          <DraftNumberInput value={centralHistoryMaxTurns} onCommit={(v) => writeValue("centralHistoryMaxTurns", v > 0 ? v : undefined)} immediate className={inputClass} />
         </Field>
       </>}
 

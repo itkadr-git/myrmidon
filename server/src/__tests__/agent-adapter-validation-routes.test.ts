@@ -390,13 +390,12 @@ describe("agent routes adapter validation", () => {
     const app = await createApp(true);
     const valid = {
       filesystemScope: "workspace",
-      filesystemExtraPaths: ["/workspace/shared"],
+      filesystemExtraPaths: ["/workspace/shared", { path: "/workspace/data", access: "rw" }],
       networkScope: "allowlist",
       networkAllowlist: ["example.com"],
       timeoutSec: 120,
       graceSec: 10,
-      approvalMode: "deny",
-      probe: true,
+      helloProbeTimeoutSec: 60,
     };
     const create = await requestApp(app, (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
@@ -415,15 +414,14 @@ describe("agent routes adapter validation", () => {
       { filesystemScope: "unrestricted" },
       { filesystemExtraPaths: ["relative/path"] },
       { filesystemExtraPaths: [42] },
+      { filesystemExtraPaths: [{ path: "/workspace/data", access: "write" }] },
       { networkScope: "all" },
-      { networkScope: "allowlist", networkAllowlist: [] },
-      { networkScope: "deny", networkAllowlist: ["example.com"] },
       { networkAllowlist: [false] },
-      { approvalMode: "anything" },
+      { networkAllowlist: ["*.example.com"] },
+      { filesystemSandboxCommand: " " },
       { timeoutSec: -1 },
-      { timeoutSec: 2.5 },
-      { timeoutSec: 5, graceSec: 6 },
-      { dangerouslySkipPermissions: "true" },
+      { graceSec: "15" },
+      { helloProbeTimeoutSec: -5 },
     ];
     for (const adapterConfig of invalid) {
       const created = await requestApp(app, (baseUrl) => request(baseUrl)
@@ -439,15 +437,45 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update.mock.calls.length).toBe(updatesAfterValidSaves);
   });
 
+  it.each(["claude_local", "codex_local"])("keeps the default %s form config valid (grace may exceed an unlimited timeout)", async (adapterType) => {
+    // The create form always submits timeoutSec 0 (no limit), graceSec 15 and the
+    // permission default, and edit saves send the whole merged config back.
+    const app = await createApp(false);
+    const defaults = {
+      timeoutSec: 0,
+      graceSec: 15,
+      ...(adapterType === "claude_local"
+        ? { dangerouslySkipPermissions: true }
+        : { dangerouslyBypassApprovalsAndSandbox: true }),
+    };
+    const create = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({ name: "Local agent", adapterType, adapterConfig: defaults }));
+    expect(create.status, JSON.stringify(create.body)).toBe(201);
+    const edited = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType, adapterConfig: defaults }));
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+  });
+
   it.each(["claude_local", "codex_local"])("requires instance admin for %s sandbox changes", async (adapterType) => {
     const app = await createApp(false);
     const create = await requestApp(app, (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({ name: "Local agent", adapterType, adapterConfig: { networkScope: "deny" } }));
     expect(create.status).toBe(403);
+    const hire = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agent-hires")
+      .send({ name: "Local agent", adapterType, adapterConfig: { filesystemExtraPaths: ["/workspace/shared"] } }));
+    expect(hire.status).toBe(403);
     const edited = await requestApp(app, (baseUrl) => request(baseUrl)
       .patch("/api/agents/11111111-1111-4111-8111-111111111111")
-      .send({ adapterType, adapterConfig: { approvalMode: "bypass" } }));
+      .send({
+        adapterType,
+        adapterConfig: adapterType === "claude_local"
+          ? { dangerouslySkipPermissions: false }
+          : { dangerouslyBypassApprovalsAndSandbox: false },
+      }));
     expect(edited.status).toBe(403);
     expect(mockAgentService.create).not.toHaveBeenCalled();
     expect(mockAgentService.update).not.toHaveBeenCalled();

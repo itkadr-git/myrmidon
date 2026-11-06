@@ -78,24 +78,54 @@ describe("buildClaudeLocalConfig", () => {
     });
   });
 
-  it("persists filesystem and network sandbox fields along with probe from adapterSchemaValues", () => {
+  it("persists the sandbox and timeout fields the settings form writes", () => {
     const config = buildClaudeLocalConfig(
       makeValues({
         adapterSchemaValues: {
           filesystemScope: "workspace",
-          filesystemExtraPaths: ["/tmp/extra"],
+          filesystemExtraPaths: ["/tmp/extra", { path: "/tmp/data", access: "rw" }],
           networkScope: "allowlist",
           networkAllowlist: ["api.anthropic.com"],
-          probe: true,
+          helloProbeTimeoutSec: 90,
+          terminalResultCleanupGraceMs: 8000,
         },
       }),
     );
     expect(config).toMatchObject({
       filesystemScope: "workspace",
-      filesystemExtraPaths: ["/tmp/extra"],
+      filesystemExtraPaths: ["/tmp/extra", { path: "/tmp/data", access: "rw" }],
       networkScope: "allowlist",
       networkAllowlist: ["api.anthropic.com"],
-      probe: true,
+      helloProbeTimeoutSec: 90,
+      terminalResultCleanupGraceMs: 8000,
     });
+  });
+
+  it("leaves unset sandbox fields out and ignores keys no adapter reads", () => {
+    const config = buildClaudeLocalConfig(
+      makeValues({
+        adapterSchemaValues: {
+          filesystemExtraPaths: [],
+          networkAllowlist: [],
+          helloProbeTimeoutSec: 0,
+          probe: true,
+          approvalMode: "bypass",
+          timeoutSec: 99,
+        },
+      }),
+    );
+    for (const key of [
+      "filesystemScope",
+      "filesystemExtraPaths",
+      "networkScope",
+      "networkAllowlist",
+      "helloProbeTimeoutSec",
+      "probe",
+      "approvalMode",
+    ]) {
+      expect(config).not.toHaveProperty(key);
+    }
+    expect(config.timeoutSec).toBe(0);
+    expect(config.graceSec).toBe(15);
   });
 });
