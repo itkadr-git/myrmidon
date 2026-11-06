@@ -2,6 +2,10 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const STANDBY_DIR = path.dirname(fileURLToPath(import.meta.url));
+export const DEFAULT_COMPOSE_FILE = path.join(STANDBY_DIR, "docker-compose.standby.yml");
 
 /**
  * standby-ctl.mjs
@@ -49,6 +53,24 @@ export const DEFAULT_CONFIG = {
   pgRunner: process.env.STANDBY_PG_RUNNER || "docker", // "docker" | "host"
   pgImage: process.env.STANDBY_PG_IMAGE || "pgvector/pgvector:pg18",
   pgContainer: process.env.STANDBY_PG_CONTAINER || "myrmidon-pg-standby",
+  // OPE-7656 review fix: in docker-runner mode pg_ctl / pg_basebackup run INSIDE the
+  // standby container, where PGDATA is the compose volume target. The host path
+  // (dataDir) does not exist there, so the tools must be given THIS path.
+  containerDataDir: "/var/lib/postgresql/data",
+  // Default in-container drill location (uid 999 writable, never a host path).
+  containerDrillDir: "/var/lib/postgresql/drill-cluster",
+  // uid/gid of the postgres user inside pgvector/pgvector:pg18; files the tool writes
+  // into the bind-mounted data directory must be owned by it (.pgpass is 0600).
+  containerPgUid: 999,
+  containerPgGid: 999,
+  // Where the staged replication passfile is mounted into one-shot containers.
+  containerSetupPassfilePath: "/run/standby/pgpass",
+  composeFile: DEFAULT_COMPOSE_FILE,
+  composeService: "myrmidon-pg-standby",
+  drillBoardService: "myrmidon-board",
+  drillBoardUrl: "http://127.0.0.1:3101/healthz",
+  appBoardService: "myrmidon-board",
+  healthCheckUrl: "http://127.0.0.1:3100/healthz",
 };
 
 export function resolvePrimaryPort(options = {}, target = "board") {
@@ -83,8 +105,12 @@ export function resolvePrimaryEndpoint(options = {}, target = "board", deps = {}
     ? options.boardDbName || DEFAULT_CONFIG.boardDbName
     : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
 
-  if (options.primaryHost) return { host: options.primaryHost, port: resolvePrimaryPort(options, target), source: "explicit" };
-  if (process.env.PRIMARY_PG_HOST) return { host: process.env.PRIMARY_PG_HOST, port: resolvePrimaryPort(options, target), source: "env" };
+  // portExplicit: the port was actually given (flag/env/conninfo) rather than defaulted to 5432.
+  // The live primary sits behind a relay on another port, so a defaulted port must not be trusted
+  // by safety checks (a probe of the wrong port reads as "unreachable").
+  const portExplicit = Boolean(options.primaryPort || process.env.PRIMARY_PG_PORT);
+  if (options.primaryHost) return { host: options.primaryHost, port: resolvePrimaryPort(options, target), source: "explicit", portExplicit };
+  if (process.env.PRIMARY_PG_HOST) return { host: process.env.PRIMARY_PG_HOST, port: resolvePrimaryPort(options, target), source: "env", portExplicit };
 
   const res = queryPostgres(
     "SHOW primary_conninfo;",
@@ -99,12 +125,14 @@ export function resolvePrimaryEndpoint(options = {}, target = "board", deps = {}
       host: hostMatch[1],
       port: portMatch ? Number(portMatch[1]) : 5432,
       source: "conninfo",
+      portExplicit: true,
     };
   }
   return {
     host: DEFAULT_CONFIG.primaryHost,
     port: resolvePrimaryPort(options, target),
     source: "default",
+    portExplicit,
   };
 }
 
@@ -127,7 +155,17 @@ export const defaultFsOps = {
   rmSync: fs.rmSync,
   readdirSync: fs.readdirSync,
   chmodSync: fs.chmodSync,
+  chownSync: fs.chownSync,
 };
+
+/**
+ * One ~/.pgpass line. libpq requires ':' and '\\' inside a field to be backslash-escaped;
+ * an unescaped ':' in a password silently shifts the fields and authentication fails.
+ */
+export function pgpassLine(host, port, user, password, db = "*") {
+  const esc = (v) => String(v).replace(/\\/g, "\\\\").replace(/:/g, "\\:");
+  return `${esc(host)}:${esc(port)}:${esc(db)}:${esc(user)}:${esc(password)}\n`;
+}
 
 /**
  * Build the docker CLI prefix that executes a PostgreSQL binary inside the
@@ -220,14 +258,116 @@ export function wrapPgForDocker(cmd, args, config = DEFAULT_CONFIG) {
  */
 export function createPgRunner(baseRunner, options = {}, config = DEFAULT_CONFIG) {
   const mode = options.pgRunner || config.pgRunner || DEFAULT_CONFIG.pgRunner;
+  // OPE-7656 review fix: honour a custom --standby-port / container when remapping the
+  // host-published standby port to the container-internal 5432 (previously the remap
+  // always compared against the compile-time default 5433).
+  const effective = {
+    ...config,
+    ...(options.standbyPort ? { standbyPort: options.standbyPort } : {}),
+    ...(options.pgContainer ? { pgContainer: options.pgContainer } : {}),
+  };
   return (cmd, args, runnerOptions = {}) => {
     if (cmd === "psql" || cmd === "pg_basebackup" || cmd === "pg_ctl" || cmd === "pg_isready") {
       if (mode === "docker") {
-        const wrapped = wrapPgForDocker(cmd, args, config);
+        const wrapped = wrapPgForDocker(cmd, args, effective);
         return baseRunner(wrapped.cmd, wrapped.args, runnerOptions);
       }
     }
     return baseRunner(cmd, args, runnerOptions);
+  };
+}
+
+/** "docker" (default) or "host": where the PostgreSQL client binaries run. */
+export function pgRunnerMode(options = {}) {
+  return options.pgRunner || DEFAULT_CONFIG.pgRunner || "docker";
+}
+
+export function isDockerMode(options = {}) {
+  return pgRunnerMode(options) === "docker";
+}
+
+/**
+ * Run an arbitrary (non-PG) command inside the standby container via docker exec,
+ * as the postgres user. Used for drill cleanup (rm -rf) and existence checks so that
+ * in-container paths are never handed to host filesystem calls.
+ */
+export function runInStandbyContainer(baseRunner, options, cmd, args = [], runnerOptions = {}) {
+  const prefix = dockerPgPrefix({
+    ...DEFAULT_CONFIG,
+    pgContainer: options.pgContainer || DEFAULT_CONFIG.pgContainer,
+  });
+  return baseRunner("docker", [...prefix, cmd, ...args], runnerOptions);
+}
+
+/**
+ * Parse a PostgreSQL boolean as printed by psql. Real servers print "true"/"false" for
+ * `::text`, "t"/"f" for a bare boolean column and "1"/"0" for `::int`. The tool always
+ * selects `::int`; this accepts all three so a driver/format change cannot silently
+ * invert a safety decision. Returns true, false or null (unparseable).
+ */
+export function parsePgBool(raw) {
+  if (raw === null || raw === undefined) return null;
+  const v = String(raw).trim().toLowerCase();
+  if (v === "1" || v === "t" || v === "true") return true;
+  if (v === "0" || v === "f" || v === "false") return false;
+  return null;
+}
+
+/** The single SQL used everywhere to read the recovery state (stable "1"/"0" output). */
+export const SQL_IN_RECOVERY = "SELECT pg_is_in_recovery()::int;";
+
+/** First `|`-separated field of the first output line of `psql -t -A`. */
+export function firstField(stdout) {
+  return (stdout || "").trim().split("\n")[0].split("|")[0].trim();
+}
+
+function describePsqlError(res) {
+  const text = ((res && (res.stderr || res.stdout)) || "").trim();
+  return text.split("\n")[0].slice(0, 300) || `exit ${res ? res.exitCode : "?"}`;
+}
+
+const SQL_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export function isSqlIdent(value) {
+  return typeof value === "string" && SQL_IDENT_RE.test(value);
+}
+
+/**
+ * Classify a failed psql call.
+ *  - "error": the server (or docker) ANSWERED with a refusal/error: authentication or
+ *    permission failure, FATAL/ERROR text, container not running... We cannot prove the
+ *    primary is down, so callers must treat this as BLOCKING, never as "primary down".
+ *  - "unreachable": no usable answer from the network: refused, timed out, DNS failure,
+ *    no route, or a relay that accepted TCP and dropped it.
+ */
+export function classifyPsqlFailure(res) {
+  const text = `${(res && res.stderr) || ""}\n${(res && res.stdout) || ""}`;
+  // Server-originated severities are upper-case ("FATAL:  password authentication failed");
+  // psql's own prefix is lower-case ("psql: error: connection to server ... refused"), so
+  // this first test is deliberately case-sensitive.
+  if (/\b(FATAL|ERROR):/.test(text)) return "error";
+  const serverAnswered =
+    /authentication|no password supplied|pg_hba|permission denied|does not exist|SSL error|certificate|starting up|shutting down|Error response from daemon|OCI runtime|No such container|is not running/i;
+  if (serverAnswered.test(text)) return "error";
+  const unreachable =
+    /connection refused|connection timed out|timeout expired|could not translate host name|name or service not known|temporary failure in name resolution|no route to host|network is unreachable|could not connect to server|server closed the connection unexpectedly|connection reset by peer|EOF detected|could not receive data from server/i;
+  if (unreachable.test(text)) return "unreachable";
+  return "error";
+}
+
+/**
+ * Normalise a spawnSync result. A child killed by a signal or by the timeout has
+ * `status === null`: that is a FAILURE (never exit 0) and the reason must reach stderr
+ * (spawnSync returns an empty-string stderr, so `??` alone would have dropped it).
+ */
+export function spawnResultToRunnerResult(res) {
+  const killed = res.status === null || res.status === undefined;
+  const notes = [];
+  if (res.error) notes.push(String(res.error));
+  if (res.signal) notes.push(`killed by signal ${res.signal}`);
+  return {
+    exitCode: killed ? 1 : res.status,
+    stdout: res.stdout ?? "",
+    stderr: [res.stderr || "", ...notes].filter(Boolean).join("\n"),
   };
 }
 
@@ -237,11 +377,7 @@ export function defaultRunner(cmd, args = [], options = {}) {
     timeout: options.timeoutMs ?? 30000,
     env: { ...process.env, ...options.env },
   });
-  return {
-    exitCode: res.status ?? (res.error ? 1 : 0),
-    stdout: res.stdout ?? "",
-    stderr: res.stderr ?? (res.error ? String(res.error) : ""),
-  };
+  return spawnResultToRunnerResult(res);
 }
 
 /**
@@ -375,7 +511,9 @@ export function parseReplicationStatus(sqlOutput) {
     };
   }
 
-  const inRecovery = parts[0] === "t" || parts[0] === "true";
+  // The standby query selects pg_is_in_recovery()::int ("1"/"0"); parsePgBool also
+  // accepts psql's native "t"/"f" and "true"/"false" so a changed query cannot flip the role.
+  const inRecovery = parsePgBool(parts[0]) === true;
   const receiveLsn = parts[1] && parts[1] !== "" ? parts[1] : null;
   const replayLsn = parts[2] && parts[2] !== "" ? parts[2] : null;
   const lastXactReplayTimestamp = parts[3] && parts[3] !== "" ? parts[3] : null;
@@ -468,49 +606,129 @@ export function generateBasebackupCommand(target = "board", overrides = {}) {
   };
 }
 
-export function planFailover(target = "board", overrides = {}) {
+/**
+ * Common per-target operation context: host vs in-container paths, db/role names,
+ * standby endpoint and compose coordinates. One place so every command resolves the
+ * docker-mode (in-container) and host-mode (host) data directory the same way.
+ */
+export function resolveOpContext(target = "board", options = {}) {
   const isBoard = target === "board";
-  const port = resolveStandbyPort(overrides, target);
-  const user = isBoard
-    ? overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser
-    : overrides.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
-  const db = isBoard
-    ? overrides.boardDbName || DEFAULT_CONFIG.boardDbName
-    : overrides.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
-  const dataDir = overrides.dataDir || (isBoard
-    ? overrides.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
+  const mode = pgRunnerMode(options);
+  const hostDataDir =
+    options.dataDir ||
+    (isBoard
+      ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
+      : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
+  return {
+    target,
+    isBoard,
+    mode,
+    docker: mode === "docker",
+    hostDataDir,
+    // Directory handed to pg_ctl / pg_basebackup -D. In docker mode that is the
+    // in-container PGDATA; the host path does not exist inside the container.
+    pgDataDir: mode === "docker" ? options.containerDataDir || DEFAULT_CONFIG.containerDataDir : hostDataDir,
+    dbUser: isBoard
+      ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
+      : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser,
+    dbName: isBoard
+      ? options.boardDbName || DEFAULT_CONFIG.boardDbName
+      : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName,
+    replUser: isBoard
+      ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
+      : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser,
+    replSlot: isBoard
+      ? options.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
+      : options.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot,
+    standbyHost: options.standbyHost || DEFAULT_CONFIG.standbyHost,
+    standbyPort: resolveStandbyPort(options, target),
+    composeFile: options.composeFile || DEFAULT_CONFIG.composeFile,
+    composeService: DEFAULT_CONFIG.composeService,
+    container: options.pgContainer || DEFAULT_CONFIG.pgContainer,
+  };
+}
+
+export function planFailover(target = "board", overrides = {}) {
+  const ctx = resolveOpContext(target, overrides);
+  const appCompose = overrides.appComposeFile || "<app-compose-file>";
+  const appService = overrides.appService || DEFAULT_CONFIG.appBoardService;
 
   return {
     target,
+    runner: ctx.mode,
+    step0_fence:
+      "Fence the OLD primary first (power off the vm-core VM at the hypervisor, or otherwise make sure it cannot accept writes) and re-run with --fenced when it is unreachable",
+    step0_guard:
+      `probe the primary over the replication protocol as ${ctx.replUser} (endpoint from --primary-host/--primary-port, env, or the standby's primary_conninfo): ` +
+      "writable -> refuse; auth/other error -> refuse; in recovery -> allow; unreachable -> refuse unless --fenced",
     promoteSql: "SELECT pg_promote();",
-    promoteCli: `pg_ctl promote -D ${dataDir}`,
-    verifySql: "SELECT pg_is_in_recovery();",
-    appEndpoint: `127.0.0.1:${port}`,
-    connectionString: `postgresql://${user}:***@127.0.0.1:${port}/${db}`,
-    appRestartCmd: "docker compose up -d --force-recreate myrmidon-board",
-    healthCheckUrl: "http://127.0.0.1:3100/healthz",
+    promoteCli: `pg_ctl promote -D ${ctx.pgDataDir}`,
+    promoteRunsIn: ctx.docker ? `container ${ctx.container}` : "host",
+    verifySql: SQL_IN_RECOVERY,
+    appEndpoint: `127.0.0.1:${ctx.standbyPort}`,
+    connectionString: `postgresql://${ctx.dbUser}:***@127.0.0.1:${ctx.standbyPort}/${ctx.dbName}`,
+    appRestartCmd: `docker compose -f ${appCompose} up -d --force-recreate ${appService}`,
+    healthCheckUrl: overrides.healthUrl || DEFAULT_CONFIG.healthCheckUrl,
   };
 }
 
 export function planSwitchback(target = "board", overrides = {}) {
-  const basebackup = generateBasebackupCommand(target, overrides);
+  const ctx = resolveOpContext(target, overrides);
+  const basebackup = generateBasebackupCommand(target, { ...overrides, dataDir: ctx.pgDataDir });
   const config = generateStandbyConfig(target, overrides);
-  const isBoard = target === "board";
-  const dataDir = overrides.dataDir || (isBoard
-    ? overrides.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
 
   return {
     target,
-    step1_verifyPrimary: "SELECT pg_is_in_recovery(); -- ensure original primary is active primary",
-    step2_stopStandby: "docker compose stop myrmidon-pg-standby",
-    step3_resync: basebackup.commandString,
-    step4_standbySignal: `touch ${dataDir}/standby.signal`,
-    step5_config: config,
-    step6_startStandby: "docker compose up -d myrmidon-pg-standby",
-    step7_verifyRecovery: "SELECT pg_is_in_recovery(); -- must return true",
+    step1_verifyPrimary: `replication-protocol probe as ${ctx.replUser}: ${SQL_IN_RECOVERY} -- original primary must answer 0 (active writer)`,
+    step2_preflight:
+      "credentials present, max_slot_wal_keep_size finite, physical slot exists; refuse to wipe a promoted standby without --discard-promoted-standby (timeline/LSN comparison is reported)",
+    step3_stopStandby: `docker compose -f ${ctx.composeFile} stop ${ctx.composeService}`,
+    step4_wipe: `empty ${ctx.hostDataDir} (only after steps 1-3 passed)`,
+    step5_resync: ctx.docker
+      ? `docker compose run --rm --no-deps -u postgres (one-shot, in-container -D ${ctx.pgDataDir}): ${basebackup.commandString}`
+      : basebackup.commandString,
+    step6_standbySignal: `standby.signal in ${ctx.hostDataDir}`,
+    step7_config: config,
+    step8_startStandby: `docker compose -f ${ctx.composeFile} up -d ${ctx.composeService}`,
+    step9_verifyRecovery: `${SQL_IN_RECOVERY} -- must return 1, and a streaming WAL receiver must be present`,
   };
+}
+
+/**
+ * Reject drill directories that could make `rm -rf` destroy real data. The drill dir is
+ * removed by the tool (in the container in docker mode), so it must be an absolute,
+ * clearly drill-named path that is neither PGDATA nor an ancestor of any data/archive path.
+ */
+export function validateDrillDir(drillDir, options = {}) {
+  if (typeof drillDir !== "string" || !path.posix.isAbsolute(drillDir)) {
+    return `Drill directory must be an absolute path (got ${JSON.stringify(drillDir)})`;
+  }
+  const norm = path.posix.normalize(drillDir).replace(/\/+$/, "");
+  const parts = norm.split("/").filter(Boolean);
+  if (parts.length < 3) {
+    return `Refusing drill directory '${drillDir}': too shallow to delete safely (need at least 3 path segments)`;
+  }
+  if (!/drill/i.test(parts[parts.length - 1])) {
+    return `Refusing drill directory '${drillDir}': the last path segment must contain 'drill' so the tool never deletes a real data path`;
+  }
+  const protectedPaths = [
+    // Docker mode: these are compose bind-mount points inside the container; rm -rf of a
+    // mount point fails with EBUSY, so a drill there could never be cleaned up.
+    ...(isDockerMode(options) ? ["/srv/standby/drill-cluster", "/srv/backups/wal"] : []),
+    options.containerDataDir || DEFAULT_CONFIG.containerDataDir,
+    options.dataDir || options.boardDataDir || DEFAULT_CONFIG.boardDataDir,
+    options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir,
+    options.boardWalArchiveDir || DEFAULT_CONFIG.boardWalArchiveDir,
+    options.hindsightWalArchiveDir || DEFAULT_CONFIG.hindsightWalArchiveDir,
+  ];
+  for (const raw of protectedPaths) {
+    if (!raw) continue;
+    const p = path.posix.normalize(raw).replace(/\/+$/, "");
+    if (norm === p || norm.startsWith(`${p}/`) || p.startsWith(`${norm}/`)) {
+      return `Refusing drill directory '${drillDir}': it overlaps the live data/archive path '${p}'`;
+    }
+  }
+  return null;
 }
 
 export function planRehearsal(target = "board", overrides = {}) {
@@ -519,7 +737,10 @@ export function planRehearsal(target = "board", overrides = {}) {
   // ADM rehearsal feedback (04.11): pg_basebackup runs INSIDE the standby container
   // (docker exec), so the drill dir must be a path writable by uid 999 in the
   // container — /var/lib/postgresql/drill-cluster — not a host path.
-  const drillDir = overrides.drillDir || (process.env && process.env.STANDBY_DRILL_DIR) || `/var/lib/postgresql/drill-cluster`;
+  const drillDir =
+    overrides.drillDir ||
+    (process.env && process.env.STANDBY_DRILL_DIR) ||
+    DEFAULT_CONFIG.containerDrillDir;
   const standbyPort = resolveStandbyPort(overrides, target);
   const boardUser = overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser;
   const boardDb = overrides.boardDbName || DEFAULT_CONFIG.boardDbName;
@@ -528,18 +749,23 @@ export function planRehearsal(target = "board", overrides = {}) {
   const replUser = isBoard
     ? overrides.boardReplUser || DEFAULT_CONFIG.boardReplUser
     : overrides.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
+  const docker = isDockerMode(overrides);
+  const listen = overrides.keepDrill ? "'*'" : "127.0.0.1";
 
   return {
     target,
     drillDir,
     drillPort,
+    runner: pgRunnerMode(overrides),
     step1_snapshot: `pg_basebackup -h 127.0.0.1 -p ${standbyPort} -U ${replUser} -D ${drillDir} -Fp -Xs -R`,
-    step2_startEphemeral: `pg_ctl start -D ${drillDir} -o "-p ${drillPort} -c listen_addresses=127.0.0.1 -c max_connections=200 -c max_worker_processes=16"`,
+    step2_startEphemeral: `pg_ctl start -D ${drillDir} -l ${drillDir}/pg_ctl.log -o "-p ${drillPort} -c listen_addresses=${listen} -c max_connections=200 -c max_worker_processes=16"`,
     step3_promote: `pg_ctl promote -D ${drillDir}`,
-    step4_verify: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -t -A -c "SELECT pg_is_in_recovery();"`,
+    step4_verify: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -t -A -c "${SQL_IN_RECOVERY}"`,
     step5_smokeTest: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -c "SELECT 1;" && psql -h 127.0.0.1 -p ${drillPort} -U ${hindsightUser} -d ${hindsightDb} -c "SELECT 1;"`,
     step6_stopClean: `pg_ctl stop -D ${drillDir} -m immediate`,
-    step7_cleanup: `rm -rf ${drillDir}`,
+    step7_cleanup: docker
+      ? `docker exec -u postgres ${overrides.pgContainer || DEFAULT_CONFIG.pgContainer} rm -rf ${drillDir}  # always, in finally, inside the container`
+      : `rm -rf ${drillDir}  # always, in finally`,
     targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
   };
 }
@@ -559,6 +785,35 @@ export function queryPostgres(sql, { host, port, user, db, timeoutMs = 10000 }, 
   return runner("psql", args, { timeoutMs });
 }
 
+/** libpq connection string that opens a database-mode walsender (replication protocol + SQL). */
+export function replicationConninfo(dbName = "paperclip", connectTimeoutSec) {
+  return `replication=database dbname=${dbName}${connectTimeoutSec ? ` connect_timeout=${connectTimeoutSec}` : ""}`;
+}
+
+function replicationPsqlArgs(sql, { host, port, user, dbName = "paperclip", connectTimeoutSec = 5 }) {
+  return [
+    "-h", String(host),
+    "-p", String(port),
+    "-U", String(user),
+    "-d", replicationConninfo(dbName, connectTimeoutSec),
+    "-t", "-A",
+    "-c", sql,
+  ];
+}
+
+/**
+ * Run SQL on the PRIMARY over a database-mode replication connection as the replicator.
+ *
+ * OPE-7656 review fix: the container passfile only holds `myr_replicator` credentials for
+ * the primary endpoint, so connecting as the application role (`paperclip`) fails
+ * authentication. A `replication=database` walsender accepts the replication commands AND
+ * plain SQL (PostgreSQL protocol docs, "Streaming Replication Protocol"), and
+ * pg_create_physical_replication_slot() needs only the REPLICATION attribute.
+ */
+export function queryPrimaryViaReplication(sql, endpoint, runner = defaultRunner, timeoutMs = 20000) {
+  return runner("psql", replicationPsqlArgs(sql, endpoint), { timeoutMs });
+}
+
 /**
  * Fetch the primary's current WAL LSN via the replication protocol.
  *
@@ -570,12 +825,15 @@ export function queryPostgres(sql, { host, port, user, db, timeoutMs = 10000 }, 
  * Uses psql with replication=database, which speaks the PostgreSQL replication
  * protocol.  IDENTIFY_SYSTEM returns: system_identifier | timeline | xlogpos | dbname
  */
-export function queryPrimaryLsn({ host, port, user = "myr_replicator", timeoutMs = 10000 }, runner = defaultRunner) {
+export function queryPrimaryLsn(
+  { host, port, user = "myr_replicator", dbName = "paperclip", connectTimeoutSec, timeoutMs = 10000 },
+  runner = defaultRunner
+) {
   const args = [
     "-h", String(host),
     "-p", String(port),
     "-U", String(user),
-    "-d", "replication=database dbname=paperclip",
+    "-d", replicationConninfo(dbName, connectTimeoutSec),
     "-t", "-A",
     "-c", "IDENTIFY_SYSTEM;",
   ];
@@ -590,96 +848,200 @@ export function queryPrimaryLsn({ host, port, user = "myr_replicator", timeoutMs
   if (!xlogpos || !xlogpos.includes("/")) {
     return { ok: false, lsn: null, error: `Unexpected IDENTIFY_SYSTEM output: ${line}` };
   }
-  return { ok: true, lsn: xlogpos, raw: line };
+  const timeline = Number.parseInt(parts[1] || "", 10);
+  return {
+    ok: true,
+    lsn: xlogpos,
+    timeline: Number.isFinite(timeline) ? timeline : null,
+    systemId: parts[0] || null,
+    raw: line,
+  };
 }
 
 /**
- * Setup warm standby replication for cluster / target DB.
+ * Read the primary's role over the replication protocol.
+ *  state: "writable"   - reachable and NOT in recovery (accepts writes)
+ *         "in_recovery"- reachable, in recovery (not a writer)
+ *         "unreachable"- no network answer (refused / timeout / DNS / relay drop)
+ *         "error"      - the server or docker answered with an error (auth, permission,
+ *                        container down, unparseable): the primary may well be alive.
  */
-export function setupStandby(target = "board", options = {}, deps = {}) {
-  const rawRunner = deps.runner || defaultRunner;
-  const fsOps = deps.fsOps || defaultFsOps;
-  const runner = createPgRunner(rawRunner, options);
-  const isBoard = target === "board";
-
-  const dataDir = options.dataDir || (isBoard
-    ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
-
-  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = resolvePrimaryPort(options, target);
-  const replUser = isBoard
-    ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
-    : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
-  const standbyPort = resolveStandbyPort(options, target);
-  const dbUser = isBoard
-    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
-    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
-  const dbName = isBoard
-    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
-    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
-
-  const composeService = "myrmidon-pg-standby";
-  const composeFile = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    "docker-compose.standby.yml"
+export function probePrimary(target, options, runner, endpoint) {
+  const ctx = resolveOpContext(target, options);
+  const res = queryPrimaryViaReplication(
+    SQL_IN_RECOVERY,
+    { host: endpoint.host, port: endpoint.port, user: ctx.replUser, dbName: ctx.dbName },
+    runner
   );
+  if (res.exitCode === 0) {
+    const value = parsePgBool(firstField(res.stdout));
+    if (value === true) return { state: "in_recovery", endpoint };
+    if (value === false) return { state: "writable", endpoint };
+    return { state: "error", endpoint, error: `unparseable pg_is_in_recovery() answer: ${JSON.stringify((res.stdout || "").trim())}` };
+  }
+  return { state: classifyPsqlFailure(res), endpoint, error: describePsqlError(res) };
+}
 
-  const basebackup = generateBasebackupCommand(target, options);
-  const standbyConfig = generateStandbyConfig(target, options);
-
-  if (options.dryRun) {
+/**
+ * Split-brain guard for failover (OPE-7656 review finding 2).
+ *
+ * Fail-CLOSED: promotion proceeds only when
+ *   - the primary answered and is in recovery (not a writer), or
+ *   - the primary is unreachable AND the operator confirmed fencing with --fenced, or
+ *   - the operator bypassed the guard with --accept-split-brain.
+ * A reachable writable primary, ANY non-network error (auth, permission, docker, parse),
+ * or an unresolvable endpoint blocks promotion.
+ */
+export function evaluateFailoverGuard(target, options, runner) {
+  if (options.acceptSplitBrain) {
     return {
-      success: true,
-      dryRun: true,
-      target,
-      dataDir,
-      basebackupCommand: basebackup.commandString,
-      configContent: standbyConfig,
-      signalFile: path.join(dataDir, "standby.signal"),
+      proceed: true,
+      state: "override",
+      note: "--accept-split-brain: guard bypassed by the operator; the old primary may hold writes the standby lacks",
     };
   }
-
-  // 1. Check data directory: fail-closed if directory exists and is not empty without --force
-  const dirExists = fsOps.existsSync(dataDir);
-  let dirEntries = [];
-  if (dirExists && fsOps.readdirSync) {
-    try {
-      dirEntries = fsOps.readdirSync(dataDir);
-    } catch {
-      dirEntries = [];
-    }
-  }
-  const isNonEmpty = dirExists && dirEntries.length > 0;
-
-  if (isNonEmpty && !options.force) {
+  const endpoint = resolvePrimaryEndpoint(options, target, { runner });
+  if (endpoint.source === "default") {
     return {
-      success: false,
-      target,
-      error: `Directory '${dataDir}' exists but is not empty. Specify --force to clean and resynchronize standby.`,
+      proceed: false,
+      state: "endpoint_unknown",
+      endpoint,
+      error:
+        "Refusing failover: cannot determine where the original primary is (no --primary-host, no PRIMARY_PG_HOST, " +
+        "and the standby's primary_conninfo could not be read), so split-brain cannot be ruled out. " +
+        "Pass --primary-host/--primary-port (live relay) and re-run, or --accept-split-brain after fencing manually.",
     };
   }
-
-  if (isNonEmpty && options.force) {
-    // Stop standby container before wiping dataDir
-    runner("docker", ["compose", "-f", composeFile, "stop", composeService]);
-    try {
-      fsOps.rmSync(dataDir, { recursive: true, force: true });
-    } catch {}
-    fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  } else {
-    try {
-      fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    } catch (err) {
+  if (!endpoint.portExplicit) {
+    return {
+      proceed: false,
+      state: "endpoint_incomplete",
+      endpoint,
+      error:
+        `Refusing failover: --primary-host/PRIMARY_PG_HOST=${endpoint.host} was given without a port, so the probe would use the default ${endpoint.port}. ` +
+        "The live primary is behind a relay on another port; probing the wrong port reads as 'unreachable' and defeats the split-brain guard. " +
+        "Pass --primary-port (or PRIMARY_PG_PORT) explicitly, even if it is 5432.",
+    };
+  }
+  const where = `${endpoint.host}:${endpoint.port}`;
+  const probe = probePrimary(target, options, runner, endpoint);
+  switch (probe.state) {
+    case "writable":
       return {
-        success: false,
-        target,
-        error: `Failed to create data directory ${dataDir}: ${err.message}`,
+        proceed: false,
+        state: "writable",
+        endpoint,
+        error:
+          `Refusing failover: original primary at ${where} is reachable and accepts writes (pg_is_in_recovery=0). ` +
+          "Failover must only run when the primary is down or in recovery; fence/stop it first. " +
+          "Pass --accept-split-brain only after verifying with the runbook.",
       };
+    case "in_recovery":
+      return { proceed: true, state: "in_recovery", endpoint };
+    case "unreachable":
+      if (options.fenced) {
+        return {
+          proceed: true,
+          state: "unreachable_fenced",
+          endpoint,
+          fencing: typeof options.fenced === "string" ? options.fenced : "operator_confirmed",
+          detail: probe.error,
+        };
+      }
+      return {
+        proceed: false,
+        state: "unreachable_unfenced",
+        endpoint,
+        error:
+          `Refusing failover: original primary at ${where} is unreachable (${probe.error || "no answer"}). ` +
+          "An unreachable primary may still be alive behind a network partition and keep accepting writes (split-brain). " +
+          "Fence it first (power off the vm-core VM at the hypervisor; runbook section 5 step 0), then re-run with --fenced.",
+      };
+    default:
+      return {
+        proceed: false,
+        state: "probe_error",
+        endpoint,
+        error:
+          `Refusing failover: could not determine the state of the original primary at ${where}: ${probe.error || "unknown error"}. ` +
+          "The primary answered with an error (authentication/permission/other) or the probe itself failed, which does NOT prove it is down. " +
+          "Fix the probe (replication credentials/endpoint) or fence the primary and pass --accept-split-brain.",
+      };
+  }
+}
+
+function safeExists(fsOps, p) {
+  try {
+    return Boolean(fsOps.existsSync(p));
+  } catch {
+    return false;
+  }
+}
+
+function safeReaddir(fsOps, p) {
+  if (typeof fsOps.readdirSync !== "function") return [];
+  try {
+    return fsOps.readdirSync(p) || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Remove everything inside `dir` (keeping `dir` itself and its ownership/mode). */
+function emptyDirectory(dir, fsOps) {
+  const errors = [];
+  for (const entry of safeReaddir(fsOps, dir)) {
+    try {
+      fsOps.rmSync(path.join(dir, entry), { recursive: true, force: true });
+    } catch (err) {
+      errors.push(`${entry}: ${err.message}`);
     }
   }
+  const remaining = safeReaddir(fsOps, dir);
+  return { ok: remaining.length === 0, remaining, errors };
+}
 
-  // 2. Prepare host-side replication credentials / passfile before basebackup
+/**
+ * Give a file/dir to the in-container postgres user (uid 999) in docker mode. The
+ * bind-mounted data directory is read by PostgreSQL as uid 999, and libpq refuses to
+ * read a passfile it cannot open, so a root-owned `.pgpass` silently breaks streaming.
+ * Returns null on success or when not applicable, else an error string.
+ */
+function chownToContainerPg(fsOps, p, options) {
+  if (!isDockerMode(options)) return null;
+  const uid = options.containerPgUid ?? DEFAULT_CONFIG.containerPgUid;
+  const gid = options.containerPgGid ?? DEFAULT_CONFIG.containerPgGid;
+  if (typeof fsOps.chownSync !== "function") return "chownSync is not available";
+  try {
+    fsOps.chownSync(p, uid, gid);
+    return null;
+  } catch (err) {
+    return err.message;
+  }
+}
+
+/**
+ * `--data-dir` ends up in rm -rf: it must be deep enough and look like a PostgreSQL data
+ * directory (PG_VERSION) before anything inside it is deleted.
+ */
+export function validateStandbyDataDir(dir, entries = []) {
+  const parts = String(dir).split("/").filter(Boolean);
+  if (!path.posix.isAbsolute(String(dir)) || parts.length < 3) {
+    return `Refusing to empty '${dir}': the data directory must be an absolute path with at least 3 segments`;
+  }
+  if (!entries.includes("PG_VERSION")) {
+    return `Refusing to empty '${dir}': it is not empty but has no PG_VERSION, so it does not look like a PostgreSQL data directory (wrong --data-dir?). Nothing was stopped or wiped.`;
+  }
+  return null;
+}
+
+/**
+ * Resolve and stage replication credentials BEFORE anything destructive happens.
+ * Host passfile: PG_REPLICATOR_PASSWORD line or an existing --credentials file.
+ * Docker mode additionally stages a copy next to the data directory owned by uid 999,
+ * which is bind-mounted read-only into the one-shot basebackup container.
+ */
+function prepareReplicationCredentials({ options, fsOps, dataDir, primaryHost, primaryPort, replUser }) {
   const replPassword =
     options.replicatorPassword !== undefined
       ? options.replicatorPassword
@@ -689,80 +1051,421 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     options.passfilePath ||
     DEFAULT_CONFIG.credentialPath ||
     DEFAULT_CONFIG.passfilePath;
+  const defaultStaged = path.join(path.dirname(dataDir), ".pgpass");
+  const hostPassfilePath = credentialPath || defaultStaged;
 
-  let hostPassfilePath = credentialPath;
-  if (!hostPassfilePath) {
-    hostPassfilePath = path.join(path.dirname(dataDir), ".pgpass");
-  }
-
+  let content = null;
   if (replPassword) {
+    content = pgpassLine(primaryHost, primaryPort, replUser, replPassword);
     try {
       const passDir = path.dirname(hostPassfilePath);
       if (!fsOps.existsSync(passDir)) {
         fsOps.mkdirSync(passDir, { recursive: true, mode: 0o700 });
       }
-      fsOps.writeFileSync(
-        hostPassfilePath,
-        `${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`,
-        { mode: 0o600 }
-      );
-      if (fsOps.chmodSync) {
-        fsOps.chmodSync(hostPassfilePath, 0o600);
-      }
+      fsOps.writeFileSync(hostPassfilePath, content, { mode: 0o600 });
+      if (fsOps.chmodSync) fsOps.chmodSync(hostPassfilePath, 0o600);
     } catch (err) {
-      return {
-        success: false,
-        target,
-        error: `Failed to create host passfile at ${hostPassfilePath}: ${err.message}`,
-      };
+      return { ok: false, error: `Failed to create host passfile at ${hostPassfilePath}: ${err.message}` };
     }
   } else if (!fsOps.existsSync(hostPassfilePath)) {
     return {
-      success: false,
-      target,
+      ok: false,
       error: `Replication credentials missing: passfile not found at '${hostPassfilePath}' and no replication password provided (set PG_REPLICATOR_PASSWORD or pass credentialPath)`,
+    };
+  } else {
+    try {
+      content = fsOps.readFileSync(hostPassfilePath, "utf8");
+    } catch (err) {
+      return { ok: false, error: `Failed to read passfile ${hostPassfilePath}: ${err.message}` };
+    }
+  }
+
+  let stagedPassfilePath = null;
+  if (isDockerMode(options)) {
+    stagedPassfilePath = defaultStaged;
+    try {
+      if (stagedPassfilePath !== hostPassfilePath) {
+        fsOps.writeFileSync(stagedPassfilePath, content, { mode: 0o600 });
+      }
+      if (fsOps.chmodSync) fsOps.chmodSync(stagedPassfilePath, 0o600);
+    } catch (err) {
+      return { ok: false, error: `Failed to stage passfile at ${stagedPassfilePath}: ${err.message}` };
+    }
+    const chownErr = chownToContainerPg(fsOps, stagedPassfilePath, options);
+    if (chownErr) {
+      return {
+        ok: false,
+        error:
+          `Cannot give the staged passfile ${stagedPassfilePath} to uid ${options.containerPgUid ?? DEFAULT_CONFIG.containerPgUid} ` +
+          `(${chownErr}). Run as root (standby-ctl.sh does) or chown it yourself; nothing was stopped or wiped.`,
+      };
+    }
+  }
+  return { ok: true, hostPassfilePath, stagedPassfilePath, content };
+}
+
+/**
+ * `docker compose run` arguments for a one-shot PG client process in a throw-away
+ * container built from the standby service definition (same image, same bind-mounted
+ * data directory, in-container paths). Works while the standby container is stopped
+ * - which it must be while its data directory is being re-created.
+ */
+export function dockerOneShotArgs({ composeFile, service, hostPassfile, containerPassfile }, cmd, args = []) {
+  return [
+    "compose", "-f", composeFile,
+    "run", "--rm", "--no-deps", "-T",
+    "-u", "postgres",
+    "-e", `PGPASSFILE=${containerPassfile}`,
+    "-v", `${hostPassfile}:${containerPassfile}:ro`,
+    "--entrypoint", mapPgBinaryForDocker(cmd),
+    service,
+    ...args,
+  ];
+}
+
+/** Highest timeline recorded by the history files in a (stopped) data directory. */
+function localTimelineFromFiles(dataDir, fsOps) {
+  const entries = safeReaddir(fsOps, path.join(dataDir, "pg_wal"));
+  if (entries.length === 0) return null;
+  let timeline = 1;
+  for (const name of entries) {
+    const m = String(name).match(/^([0-9A-Fa-f]{8})\.history$/);
+    if (m) timeline = Math.max(timeline, Number.parseInt(m[1], 16));
+  }
+  return timeline;
+}
+
+/**
+ * Compare the standby's position with the primary's: a higher timeline (or a higher LSN
+ * on the same timeline) on the standby means it holds history the primary does not have,
+ * i.e. re-cloning it would destroy writes. Pure function.
+ */
+export function compareTimelines({ primary = {}, standby = {} } = {}) {
+  const pTl = primary.timeline ?? null;
+  const sTl = standby.timeline ?? null;
+  const pSys = primary.systemId ?? null;
+  const sSys = standby.systemId ?? null;
+  let verdict = "unknown";
+  if (pSys !== null && sSys !== null && pSys !== sSys) {
+    // Different database system identifiers: the "primary" is not the cluster this standby came from.
+    verdict = "different_cluster";
+  } else if (pTl !== null && sTl !== null) {
+    if (sTl > pTl) verdict = "standby_ahead";
+    else if (sTl < pTl) verdict = "primary_ahead";
+    else {
+      const pl = parseLsn(primary.lsn);
+      const sl = parseLsn(standby.lsn);
+      if (pl !== null && sl !== null) {
+        verdict = sl > pl ? "standby_ahead" : sl === pl ? "equal" : "primary_ahead";
+      }
+    }
+  }
+  return {
+    verdict,
+    primaryTimeline: pTl,
+    standbyTimeline: sTl,
+    primaryLsn: primary.lsn ?? null,
+    standbyLsn: standby.lsn ?? null,
+    primarySystemId: pSys,
+    standbySystemId: sSys,
+  };
+}
+
+/**
+ * Decide whether the local standby data directory may be wiped (OPE-7656 review finding 4).
+ * A standby that is NOT in recovery (or whose data directory lost standby.signal while the
+ * container is down) is a promoted writer: wiping it destroys every write accepted after
+ * failover. That requires the explicit --discard-promoted-standby, and the timeline/LSN
+ * comparison against the primary is reported either way.
+ */
+export function assessWipeSafety(ctx, options, { runner, fsOps }, primary) {
+  const st = queryPostgres(
+    SQL_IN_RECOVERY,
+    { host: ctx.standbyHost, port: ctx.standbyPort, user: ctx.dbUser, db: ctx.dbName },
+    runner
+  );
+  const parsed = st.exitCode === 0 ? parsePgBool(firstField(st.stdout)) : null;
+  let role;
+  let roleSource;
+  if (parsed !== null) {
+    role = parsed ? "standby" : "promoted";
+    roleSource = "sql";
+  } else {
+    // Container down / unreachable: fall back to the data directory itself. A promoted
+    // server deletes standby.signal; a non-empty directory without it is not a standby.
+    role = safeExists(fsOps, path.join(ctx.hostDataDir, "standby.signal")) ? "standby" : "promoted";
+    roleSource = "files";
+  }
+
+  const pId = queryPrimaryLsn(
+    { host: primary.host, port: primary.port, user: ctx.replUser, dbName: ctx.dbName, connectTimeoutSec: 5 },
+    runner
+  );
+  const sId = queryPrimaryLsn(
+    { host: ctx.standbyHost, port: ctx.standbyPort, user: ctx.replUser, dbName: ctx.dbName, connectTimeoutSec: 5 },
+    runner
+  );
+  const standbyPos = sId.ok
+    ? { timeline: sId.timeline, lsn: sId.lsn, systemId: sId.systemId }
+    : { timeline: localTimelineFromFiles(ctx.hostDataDir, fsOps), lsn: null };
+  const comparison = compareTimelines({
+    primary: pId.ok ? { timeline: pId.timeline, lsn: pId.lsn, systemId: pId.systemId } : {},
+    standby: standbyPos,
+  });
+
+  const base = { role, roleSource, comparison };
+  if (role !== "promoted") return { safe: true, ...base };
+  if (!options.discardPromotedStandby) {
+    return {
+      safe: false,
+      ...base,
+      error:
+        `Refusing to wipe '${ctx.hostDataDir}': the standby is NOT a standby any more ` +
+        `(${roleSource === "sql" ? "pg_is_in_recovery=0" : "no standby.signal in the data directory"}); it is a promoted writer. ` +
+        `Timeline/LSN comparison: ${comparison.verdict} (primary tl=${comparison.primaryTimeline ?? "?"} lsn=${comparison.primaryLsn ?? "?"}, ` +
+        `standby tl=${comparison.standbyTimeline ?? "?"} lsn=${comparison.standbyLsn ?? "?"}). ` +
+        "Re-cloning it would discard every write accepted after failover. Follow runbook section 6 (re-sync the OLD primary from the promoted standby) " +
+        "or pass --discard-promoted-standby to explicitly accept the data loss. Nothing was stopped or wiped.",
+    };
+  }
+  // The comparison is not advisory: a standby that is AHEAD of the primary (higher timeline /
+  // LSN) or belongs to a different cluster holds writes that exist nowhere else. --discard-promoted-standby
+  // alone is the generic acknowledgement; this case needs the explicit --accept-data-loss as well.
+  if ((comparison.verdict === "standby_ahead" || comparison.verdict === "different_cluster") && !options.acceptDataLoss) {
+    return {
+      safe: false,
+      ...base,
+      error:
+        `Refusing to wipe '${ctx.hostDataDir}' even with --discard-promoted-standby: the comparison says '${comparison.verdict}' ` +
+        `(primary tl=${comparison.primaryTimeline ?? "?"} lsn=${comparison.primaryLsn ?? "?"} sys=${comparison.primarySystemId ?? "?"}, ` +
+        `standby tl=${comparison.standbyTimeline ?? "?"} lsn=${comparison.standbyLsn ?? "?"} sys=${comparison.standbySystemId ?? "?"}). ` +
+        "The standby holds writes the primary does not have - most likely vm-core was never re-synced from the promoted standby (runbook section 6 steps 2-3). " +
+        "Re-sync vm-core first, or pass --accept-data-loss to discard those writes knowingly. Nothing was stopped or wiped.",
+    };
+  }
+  return { safe: true, ...base, discardAcknowledged: true };
+}
+
+const SQL_WAL_POLICY =
+  "SELECT (current_setting('max_slot_wal_keep_size', true) IS NOT NULL AND current_setting('max_slot_wal_keep_size', true) <> '-1')::int;";
+
+function slotEnsureSql(slot) {
+  return (
+    "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = '" + slot + "') THEN 1 " +
+    "WHEN pg_create_physical_replication_slot('" + slot + "', true) IS NOT NULL THEN 1 ELSE 0 END;"
+  );
+}
+
+const SQL_STANDBY_STATUS =
+  "SELECT pg_is_in_recovery()::int, count(*)::int FROM pg_stat_wal_receiver WHERE status = 'streaming';";
+
+/**
+ * Setup warm standby replication for cluster / target DB.
+ *
+ * Order (OPE-7656 review finding 4): every check runs FIRST with the standby container
+ * still up - data directory state, credentials, primary WAL policy, replication slot, and
+ * the promoted-standby / timeline guard. Only when all of them pass is the container
+ * stopped, the data directory emptied, and the base backup taken.
+ */
+export function setupStandby(target = "board", options = {}, deps = {}) {
+  const rawRunner = deps.runner || defaultRunner;
+  const fsOps = deps.fsOps || defaultFsOps;
+  const runner = createPgRunner(rawRunner, options);
+  const ctx = resolveOpContext(target, options);
+  const { docker, hostDataDir: dataDir, pgDataDir, dbName, replUser, replSlot, standbyPort, composeFile, composeService } = ctx;
+
+  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
+  const primaryPort = resolvePrimaryPort(options, target);
+
+  const basebackup = generateBasebackupCommand(target, { ...options, dataDir: pgDataDir });
+  const standbyConfig = generateStandbyConfig(target, options);
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      dryRun: true,
+      target,
+      dataDir,
+      pgDataDir,
+      runner: ctx.mode,
+      basebackupCommand: basebackup.commandString,
+      configContent: standbyConfig,
+      signalFile: path.join(dataDir, "standby.signal"),
     };
   }
 
-  // 2. Validate bounded WAL retention and ensure the physical replication slot exists
-  // before pg_basebackup --slot. An unbounded slot can fill the primary filesystem
-  // while the standby or tunnel is down.
-  const walPolicyRes = queryPostgres(
-    "SELECT (current_setting('max_slot_wal_keep_size', true) IS NOT NULL AND current_setting('max_slot_wal_keep_size', true) <> '-1')::text;",
-    { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
-    runner
-  );
-  const walPolicyOk = (walPolicyRes.stdout || "").trim().split("|")[0] === "t";
-  if (walPolicyRes.exitCode !== 0 || !walPolicyOk) {
+  if (!isSqlIdent(replSlot) || !isSqlIdent(dbName) || !isSqlIdent(replUser)) {
+    return { success: false, target, error: `Invalid replication slot/database/role name (slot=${replSlot}, db=${dbName}, role=${replUser})` };
+  }
+
+  // ── Phase 1: checks. Nothing below this line stops, wipes or creates anything on the standby. ──
+
+  // 1a. Data directory state: fail-closed if it exists and is not empty without --force.
+  const dirEntries = safeReaddir(fsOps, dataDir);
+  const isNonEmpty = safeExists(fsOps, dataDir) && dirEntries.length > 0;
+  if (isNonEmpty && !options.force) {
+    return {
+      success: false,
+      target,
+      error: `Directory '${dataDir}' exists but is not empty. Specify --force to clean and resynchronize standby.`,
+    };
+  }
+
+  if (isNonEmpty) {
+    const dirProblem = validateStandbyDataDir(dataDir, dirEntries);
+    if (dirProblem) return { success: false, target, error: dirProblem };
+  }
+
+  // 1b. Replication credentials (previously checked only AFTER the wipe).
+  const cred = prepareReplicationCredentials({ options, fsOps, dataDir, primaryHost, primaryPort, replUser });
+  if (!cred.ok) {
+    return { success: false, target, error: cred.error };
+  }
+  const containerPassfile = options.containerSetupPassfilePath || DEFAULT_CONFIG.containerSetupPassfilePath;
+
+  // Primary-side queries use the REPLICATOR over a replication-protocol connection, with the SAME
+  // credentials the base backup will use (the staged passfile in a one-shot container in docker mode,
+  // the host passfile in host mode) - so wrong credentials are caught here, before anything is wiped,
+  // and so the checks also work when the standby container does not exist yet (first setup).
+  const primaryPsql = (sql) => {
+    const args = replicationPsqlArgs(sql, { host: primaryHost, port: primaryPort, user: replUser, dbName });
+    if (docker) {
+      return rawRunner(
+        "docker",
+        dockerOneShotArgs(
+          { composeFile, service: composeService, hostPassfile: cred.stagedPassfilePath, containerPassfile },
+          "psql",
+          args
+        ),
+        { timeoutMs: 120000 }
+      );
+    }
+    return runner("psql", args, { timeoutMs: 20000, env: { ...process.env, PGPASSFILE: cred.hostPassfilePath } });
+  };
+
+  // 1c. Bounded WAL retention: an unbounded slot can fill the primary filesystem.
+  const walPolicyRes = primaryPsql(SQL_WAL_POLICY);
+  if (walPolicyRes.exitCode !== 0) {
+    return {
+      success: false,
+      target,
+      error: `Cannot verify primary max_slot_wal_keep_size (query as ${replUser} on ${primaryHost}:${primaryPort} failed: ${describePsqlError(walPolicyRes)})`,
+    };
+  }
+  if (parsePgBool(firstField(walPolicyRes.stdout)) !== true) {
     return {
       success: false,
       target,
       error: "Primary max_slot_wal_keep_size must be configured to a finite non-negative value before enabling standby replication",
     };
   }
-  const slotRes = queryPostgres(
-    "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = '" + (isBoard ? DEFAULT_CONFIG.boardReplSlot : DEFAULT_CONFIG.hindsightReplSlot) + "') THEN 't' WHEN pg_create_physical_replication_slot('" + (isBoard ? DEFAULT_CONFIG.boardReplSlot : DEFAULT_CONFIG.hindsightReplSlot) + "', true) IS NOT NULL THEN 't' ELSE 'f' END;",
-    { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
-    runner
-  );
-  if (slotRes.exitCode !== 0 || (slotRes.stdout || "").trim().split("|")[0] !== "t") {
+
+  // 1d. Physical replication slot must exist before pg_basebackup --slot.
+  const slotRes = primaryPsql(slotEnsureSql(replSlot));
+  if (slotRes.exitCode !== 0 || parsePgBool(firstField(slotRes.stdout)) !== true) {
     return {
       success: false,
       target,
-      error: `Failed to create or verify physical replication slot '${isBoard ? DEFAULT_CONFIG.boardReplSlot : DEFAULT_CONFIG.hindsightReplSlot}' on primary: ${slotRes.stderr || slotRes.stdout}`,
+      error: `Failed to create or verify physical replication slot '${replSlot}' on primary: ${describePsqlError(slotRes) || slotRes.stdout}`,
     };
   }
 
-  // 3. Run pg_basebackup with PGPASSFILE in environment
-  // D1: configurable timeout — 45 GB cluster at ~100 MB/s needs ~8 min; default 3600s (1 h).
-  const setupBasebackupTimeoutMs = options.basebackupTimeoutMs || 5400000; // 90 min for 45GB at ~10MB/s
-  const baseRes = runner(basebackup.executable, basebackup.args, {
-    timeoutMs: setupBasebackupTimeoutMs,
-    env: {
-      ...process.env,
-      PGPASSFILE: hostPassfilePath,
-    },
-  });
+  // 1e. Never wipe a promoted standby without an explicit acknowledgement + comparison.
+  let wipeAssessment = null;
+  if (isNonEmpty) {
+    wipeAssessment = assessWipeSafety(ctx, options, { runner, fsOps }, { host: primaryHost, port: primaryPort });
+    if (!wipeAssessment.safe) {
+      return {
+        success: false,
+        target,
+        standbyRole: wipeAssessment.role,
+        comparison: wipeAssessment.comparison,
+        error: wipeAssessment.error,
+      };
+    }
+  }
+
+  // ── Phase 2: destructive. Only reached when every check above passed. ──
+
+  if (isNonEmpty) {
+    const stopRes = runner("docker", ["compose", "-f", composeFile, "stop", composeService]);
+    if (stopRes.exitCode !== 0) {
+      return {
+        success: false,
+        target,
+        error: `Failed to stop standby container '${composeService}' (data directory left untouched): ${stopRes.stderr || stopRes.stdout}`,
+      };
+    }
+    // `compose stop` exits 0 even when it matched no container (e.g. another compose project name),
+    // so success is not proof: ask docker, and fall back to stopping the container by name.
+    const stillRunning = () => {
+      const r = rawRunner("docker", ["inspect", "-f", "{{.State.Running}}", ctx.container]);
+      return r.exitCode === 0 && (r.stdout || "").trim() === "true";
+    };
+    if (stillRunning()) {
+      rawRunner("docker", ["stop", ctx.container], { timeoutMs: 120000 });
+      if (stillRunning()) {
+        return {
+          success: false,
+          target,
+          error: `Standby container '${ctx.container}' is still running after compose stop and docker stop (data directory left untouched)`,
+        };
+      }
+    }
+    const wipe = emptyDirectory(dataDir, fsOps);
+    if (!wipe.ok) {
+      return {
+        success: false,
+        target,
+        error: `Could not empty '${dataDir}' (${wipe.errors.join("; ") || `${wipe.remaining.length} entries remain`}); run as root or fix ownership. The standby container is stopped.`,
+      };
+    }
+  }
+
+  try {
+    fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  } catch (err) {
+    return {
+      success: false,
+      target,
+      error: `Failed to create data directory ${dataDir}: ${err.message}`,
+    };
+  }
+  if (docker) {
+    // The base backup runs as uid 999 inside the container: it must own an empty 0700 directory.
+    const dirChown = chownToContainerPg(fsOps, dataDir, options);
+    if (dirChown) {
+      return { success: false, target, error: `Cannot give '${dataDir}' to the container postgres user: ${dirChown}` };
+    }
+    try {
+      if (fsOps.chmodSync) fsOps.chmodSync(dataDir, 0o700);
+    } catch {}
+  }
+
+  // 3. Run pg_basebackup. D1: configurable timeout — 45 GB cluster at ~10 MB/s needs ~90 min.
+  const setupBasebackupTimeoutMs = options.basebackupTimeoutMs || 5400000;
+  let baseRes;
+  if (docker) {
+    // Inside a one-shot container built from the standby service: in-container -D path,
+    // the staged passfile mounted read-only, no dependency on the stopped main container.
+    baseRes = rawRunner(
+      "docker",
+      dockerOneShotArgs(
+        { composeFile, service: composeService, hostPassfile: cred.stagedPassfilePath, containerPassfile },
+        basebackup.executable,
+        basebackup.args
+      ),
+      { timeoutMs: setupBasebackupTimeoutMs }
+    );
+  } else {
+    baseRes = runner(basebackup.executable, basebackup.args, {
+      timeoutMs: setupBasebackupTimeoutMs,
+      env: {
+        ...process.env,
+        PGPASSFILE: cred.hostPassfilePath,
+      },
+    });
+  }
   if (baseRes.exitCode !== 0) {
     return {
       success: false,
@@ -772,24 +1475,24 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 4. Write container passfile (.pgpass) inside dataDir and configuration
+  // 4. Write the container passfile (.pgpass) inside dataDir (owned by uid 999, 0600) and config.
   const containerPassfileHost = path.join(dataDir, ".pgpass");
   try {
-    let pgpassContent = "";
-    if (fsOps.existsSync(hostPassfilePath)) {
-      pgpassContent = fsOps.readFileSync(hostPassfilePath, "utf8");
-    } else if (replPassword) {
-      pgpassContent = `${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`;
-    }
-    fsOps.writeFileSync(containerPassfileHost, pgpassContent);
-    if (fsOps.chmodSync) {
-      fsOps.chmodSync(containerPassfileHost, 0o600);
-    }
+    fsOps.writeFileSync(containerPassfileHost, cred.content, { mode: 0o600 });
+    if (fsOps.chmodSync) fsOps.chmodSync(containerPassfileHost, 0o600);
   } catch (err) {
     return {
       success: false,
       target,
       error: `Failed to write container passfile at ${containerPassfileHost}: ${err.message}`,
+    };
+  }
+  const passChown = chownToContainerPg(fsOps, containerPassfileHost, options);
+  if (passChown) {
+    return {
+      success: false,
+      target,
+      error: `Container passfile ${containerPassfileHost} must be owned by uid ${options.containerPgUid ?? DEFAULT_CONFIG.containerPgUid} (postgres) or streaming cannot authenticate: ${passChown}`,
     };
   }
 
@@ -803,14 +1506,17 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
       error: `Failed to write standby configuration files: ${err.message}`,
     };
   }
+  // Best effort: keep the rewritten files owned by the postgres user as well.
+  chownToContainerPg(fsOps, path.join(dataDir, "standby.signal"), options);
+  chownToContainerPg(fsOps, path.join(dataDir, "postgresql.auto.conf"), options);
 
-  // 3. Start standby container
+  // 5. Start standby container
   const startRes = runner("docker", ["compose", "-f", composeFile, "up", "-d", composeService]);
   if (startRes.exitCode !== 0) {
     return { success: false, target, error: `Failed to start standby container: ${startRes.stderr || startRes.stdout}` };
   }
 
-  // 4. Wait for PostgreSQL readiness before checking replication. A large base
+  // 6. Wait for PostgreSQL readiness before checking replication. A large base
   // backup can leave the container alive but not accepting connections yet.
   // D4: configurable attempts + sleep between attempts; under role `paperclip`
   // pg_stat_wal_receiver can return NULL rows, which must not be treated as
@@ -821,13 +1527,13 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
   let lastReadinessErr = null;
   for (let attempt = 0; attempt < readinessAttempts; attempt++) {
     verifyRes = queryPostgres(
-      "SELECT pg_is_in_recovery()::text, count(*)::text FROM pg_stat_wal_receiver WHERE status = 'streaming';",
-      { host: DEFAULT_CONFIG.standbyHost, port: standbyPort, user: dbUser, db: dbName },
+      SQL_STANDBY_STATUS,
+      { host: DEFAULT_CONFIG.standbyHost, port: standbyPort, user: ctx.dbUser, db: dbName },
       runner
     );
     if (verifyRes.exitCode === 0 && verifyRes.stdout?.trim()) {
       const parts = verifyRes.stdout.trim().split("\n")[0].split("|");
-      const rec = parts[0] === "t" || parts[0] === "true";
+      const rec = parsePgBool(parts[0]) === true;
       const wr = parseInt(parts[1] || "0", 10);
       if (rec && wr > 0) break;
       lastReadinessErr = `in_recovery=${rec} wal_receivers=${wr}`;
@@ -835,14 +1541,14 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
       lastReadinessErr = verifyRes.stderr || verifyRes.stdout || "no response";
     }
     if (attempt < readinessAttempts - 1) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, readinessDelayMs);
+      sleepMs(readinessDelayMs);
     }
   }
 
-  // 5. Verify standby recovery and streaming receiver
+  // 7. Verify standby recovery and streaming receiver
   const statusParts = (verifyRes.stdout || "").trim().split("\n")[0].split("|");
-  const inRecovery = statusParts[0] === "t" || statusParts[0] === "true";
-  const walReceivers = parseInt(statusParts[1] || "0", 10);
+  const inRecovery = parsePgBool(statusParts[0]) === true;
+  const walReceivers = parseInt(statusParts[1] || "0", 10) || 0;
   const streamingActive = inRecovery && walReceivers > 0;
 
   if (!inRecovery) {
@@ -853,7 +1559,7 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
       inRecovery: false,
       walReceivers,
       streamingActive: false,
-      error: `Standby node failed to enter recovery mode (pg_is_in_recovery returned false or query failed: ${verifyRes.stderr || verifyRes.stdout})`,
+      error: `Standby node failed to enter recovery mode (pg_is_in_recovery returned 0 or query failed: ${verifyRes.stderr || verifyRes.stdout})`,
     };
   }
 
@@ -876,7 +1582,20 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     inRecovery: true,
     streamingActive: true,
     walReceivers,
+    ...(wipeAssessment
+      ? {
+          wiped: true,
+          previousStandbyRole: wipeAssessment.role,
+          comparison: wipeAssessment.comparison,
+          ...(wipeAssessment.discardAcknowledged ? { promotedStandbyDiscarded: true } : {}),
+        }
+      : {}),
   };
+}
+
+function sleepMs(ms) {
+  if (!ms || ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**
@@ -929,7 +1648,7 @@ export function checkLag(target = "all", options = {}, deps = {}) {
   let standbyOutput = options.rawSqlOutput;
   if (!standbyOutput) {
     const res = queryPostgres(
-      "SELECT pg_is_in_recovery()::text, COALESCE(pg_last_wal_receive_lsn()::text, ''), COALESCE(pg_last_wal_replay_lsn()::text, ''), COALESCE(pg_last_xact_replay_timestamp()::text, '');",
+      "SELECT pg_is_in_recovery()::int, COALESCE(pg_last_wal_receive_lsn()::text, ''), COALESCE(pg_last_wal_replay_lsn()::text, ''), COALESCE(pg_last_xact_replay_timestamp()::text, '');",
       { host: standbyHost, port: standbyPort, user: dbUser, db: dbName },
       runner
     );
@@ -1015,11 +1734,22 @@ export function checkLag(target = "all", options = {}, deps = {}) {
     const replSlot = isBoard
       ? options.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
       : options.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
-    const slotRes = queryPostgres(
-      `SELECT COALESCE(s.wal_status, 'missing'), COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), s.restart_lsn)::bigint::text, ''), COALESCE(current_setting('max_slot_wal_keep_size'), '-1') FROM pg_replication_slots s WHERE s.slot_name = '${replSlot}';`,
-      { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
-      runner
-    );
+    // max_slot_wal_keep_size is read from pg_settings (always MB). current_setting()
+    // returns a unit-formatted string such as '6GB', which parseInt would read as 6 MB.
+    const slotRes = isSqlIdent(replSlot)
+      ? queryPrimaryViaReplication(
+          `SELECT COALESCE(s.wal_status, 'missing'), COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), s.restart_lsn)::bigint::text, ''), COALESCE((SELECT setting FROM pg_settings WHERE name = 'max_slot_wal_keep_size'), '-1') FROM (SELECT 1) d LEFT JOIN pg_replication_slots s ON s.slot_name = '${replSlot}';`,
+          {
+            host: primaryHost,
+            port: primaryPort,
+            user: isBoard
+              ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
+              : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser,
+            dbName,
+          },
+          runner
+        )
+      : { exitCode: 1, stdout: "", stderr: `invalid slot name ${replSlot}` };
     if (slotRes.exitCode === 0 && (slotRes.stdout || "").trim()) {
       const parts = slotRes.stdout.trim().split("\n")[0].split("|");
       const slotWalStatus = (parts[0] || "").trim();
@@ -1093,11 +1823,18 @@ export function checkLag(target = "all", options = {}, deps = {}) {
 
 /**
  * Execute promotion and application switchover.
+ *
+ * OPE-7656 review fixes:
+ *  - finding 1: the role is always read as `pg_is_in_recovery()::int` through one helper.
+ *  - finding 2: fail-closed split-brain guard (see evaluateFailoverGuard); an unreachable
+ *    primary additionally needs --fenced.
+ *  - finding 3: docker mode promotes with the IN-CONTAINER data directory; `appSwitched`
+ *    and `healthOk` are `null` unless that step was requested and actually ran.
  */
 export function executeFailover(target = "board", options = {}, deps = {}) {
   const rawRunner = deps.runner || defaultRunner;
   const runner = createPgRunner(rawRunner, options);
-  const isBoard = target === "board";
+  const ctx = resolveOpContext(target, options);
   const plan = planFailover(target, options);
 
   if (options.dryRun) {
@@ -1110,72 +1847,62 @@ export function executeFailover(target = "board", options = {}, deps = {}) {
   }
 
   const startTime = Date.now();
-  const standbyPort = resolveStandbyPort(options, target);
-  const dbUser = isBoard
-    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
-    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
-  const dbName = isBoard
-    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
-    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+  const { standbyPort, dbUser, dbName } = ctx;
 
-  // 0. Fail-closed: refuse promotion while the original primary still accepts writes
-  // (prevents accidental split-brain). Bypass only with explicit --accept-split-brain.
-  if (!options.acceptSplitBrain) {
-    const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-    const primaryPort = resolvePrimaryPort(options, target);
-    const priRes = queryPostgres(
-      "SELECT pg_is_in_recovery()::text;",
-      { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
-      runner
-    );
-    const primaryReachable = priRes.exitCode === 0;
-    const primaryInRecovery = primaryReachable && (priRes.stdout || "").trim() === "t";
-    if (primaryReachable && !primaryInRecovery) {
+  // 0. Fail-closed split-brain guard.
+  const guard = evaluateFailoverGuard(target, options, runner);
+  const guardSummary = {
+    state: guard.state,
+    ...(guard.endpoint ? { primary: `${guard.endpoint.host}:${guard.endpoint.port}`, primarySource: guard.endpoint.source } : {}),
+    ...(guard.fencing ? { fencing: guard.fencing } : {}),
+    ...(guard.note ? { note: guard.note } : {}),
+  };
+  if (!guard.proceed) {
+    return {
+      success: false,
+      target,
+      promoted: false,
+      guard: guardSummary,
+      error: guard.error,
+    };
+  }
+
+  // 1. Promote standby (D3: pg_ctl promote — paperclip role lacks pg_promote() privilege)
+  // pg_ctl runs as the OS user that owns the data directory (postgres), bypassing the SQL
+  // privilege requirement. In docker mode the tool runs inside the container, so -D must be
+  // the IN-CONTAINER PGDATA (ctx.pgDataDir), never the host path.
+  const promoteTimeoutMs = options.promoteTimeoutMs || 120000;
+  let promoteMethod = "pg_ctl";
+  const ctlRes = runner("pg_ctl", ["promote", "-D", ctx.pgDataDir], { timeoutMs: promoteTimeoutMs });
+  if (ctlRes.exitCode !== 0) {
+    // Fall back to SQL pg_promote() (needs superuser/EXECUTE); report both failures if it fails too.
+    const sqlRes = queryPostgres(plan.promoteSql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
+    if (sqlRes.exitCode !== 0) {
       return {
         success: false,
         target,
         promoted: false,
+        guard: guardSummary,
         error:
-          `Refusing failover: original primary at ${primaryHost}:${primaryPort} is reachable and accepts writes ` +
-          "(pg_is_in_recovery=f). Failover must only run when the primary is down or in recovery; " +
-          "pass --accept-split-brain to override after verifying with the runbook.",
+          `Promotion failed: pg_ctl promote -D ${ctx.pgDataDir} (${ctx.docker ? `in container ${ctx.container}` : "on host"}): ${describePsqlError(ctlRes)}; ` +
+          `pg_promote() fallback: ${describePsqlError(sqlRes)}`,
       };
     }
+    promoteMethod = "pg_promote";
   }
 
-  // 1. Promote standby (D3: use pg_ctl promote — paperclip role lacks pg_promote() privilege)
-  // pg_ctl runs as the OS user that owns the data directory (typically postgres), bypassing
-  // the SQL privilege requirement entirely.
-  const promoteTimeoutMs = options.promoteTimeoutMs || 120000;
-  const dataDir = options.dataDir || (isBoard
-    ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
-  let promoteRes = runner("pg_ctl", ["promote", "-D", dataDir], { timeoutMs: promoteTimeoutMs });
-  // Fall back to SQL pg_promote() only if pg_ctl binary is unavailable or returns ENOENT.
-  if (promoteRes.exitCode !== 0 && (promoteRes.stderr || "").includes("ENOENT")) {
-    promoteRes = queryPostgres(plan.promoteSql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
-  }
-  if (promoteRes.exitCode !== 0) {
-    return {
-      success: false,
-      target,
-      error: `Promotion failed: ${promoteRes.stderr || promoteRes.stdout}`,
-    };
-  }
-
-  // 2. Poll until pg_is_in_recovery() returns false (D4: bounded delay between attempts)
+  // 2. Poll until pg_is_in_recovery() reports 0 (D4: bounded delay between attempts)
   let promoted = false;
   const maxAttempts = options.maxVerifyAttempts ?? 10;
   const verifyDelayMs = options.verifyDelayMs ?? 2000;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const vRes = queryPostgres(plan.verifySql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
-    const val = (vRes.stdout || "").trim();
-    if (val === "f" || val === "false") {
+    const vRes = queryPostgres(SQL_IN_RECOVERY, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
+    if (vRes.exitCode === 0 && parsePgBool(firstField(vRes.stdout)) === false) {
       promoted = true;
       break;
     }
     if (attempt < maxAttempts - 1) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, verifyDelayMs);
+      sleepMs(verifyDelayMs);
     }
   }
 
@@ -1183,70 +1910,77 @@ export function executeFailover(target = "board", options = {}, deps = {}) {
     return {
       success: false,
       target,
+      promoted: false,
+      guard: guardSummary,
       error: "Standby promotion timed out; database remains in recovery",
     };
   }
 
-  // 3. Reroute / restart application if requested
-  let appSwitched = false;
+  // 3. Reroute / restart application ONLY if requested. Never reported as done otherwise.
+  let appSwitched = null;
+  let appSwitchNote = "not requested: switch the application manually (runbook section 5 step 3) or pass --restart-app --app-compose-file";
   if (options.restartApp) {
-    const restartRes = runner("docker", ["compose", "up", "-d", "--force-recreate", "myrmidon-board"]);
-    appSwitched = restartRes.exitCode === 0;
-  } else {
-    appSwitched = true;
+    const appCompose = options.appComposeFile || process.env.STANDBY_APP_COMPOSE_FILE;
+    if (!appCompose) {
+      appSwitched = false;
+      appSwitchNote = "--restart-app needs --app-compose-file <production compose file> (or STANDBY_APP_COMPOSE_FILE); the drill compose file is never used for this";
+    } else {
+      const appService = options.appService || DEFAULT_CONFIG.appBoardService;
+      const restartRes = runner("docker", ["compose", "-f", appCompose, "up", "-d", "--force-recreate", appService], {
+        timeoutMs: options.appRestartTimeoutMs || 300000,
+      });
+      appSwitched = restartRes.exitCode === 0;
+      appSwitchNote = appSwitched
+        ? `recreated '${appService}' from ${appCompose} (that compose file must already point DATABASE_URL at the promoted standby; this does not verify it)`
+        : `docker compose up failed: ${describePsqlError(restartRes)}`;
+    }
   }
 
-  // 4. Verify application readiness
-  let healthOk = false;
+  // 4. Verify application readiness ONLY if requested.
+  let healthOk = null;
+  let healthNote = "not checked (pass --check-health [--health-url <url>])";
   if (options.checkHealth) {
-    const healthRes = runner("curl", ["-sf", plan.healthCheckUrl]);
+    const healthUrl = options.healthUrl || plan.healthCheckUrl;
+    const healthRes = runner("curl", ["-sf", "--max-time", "10", healthUrl], { timeoutMs: 30000 });
     healthOk = healthRes.exitCode === 0;
-  } else {
-    healthOk = true;
+    healthNote = healthOk ? `GET ${healthUrl} ok` : `GET ${healthUrl} failed: ${describePsqlError(healthRes)}`;
   }
 
   const durationMs = Date.now() - startTime;
   const durationSeconds = Math.round(durationMs / 1000);
   const rtoOk = durationSeconds <= DEFAULT_CONFIG.rtoTargetSeconds;
+  const stepsOk = appSwitched !== false && healthOk !== false;
 
   return {
-    success: true,
+    success: stepsOk,
     target,
     promoted: true,
     inRecovery: false,
+    promoteMethod,
+    guard: guardSummary,
     appSwitched,
+    appSwitchNote,
     healthOk,
+    healthNote,
     durationSeconds,
     rtoOk,
+    ...(stepsOk ? {} : { error: "Standby WAS promoted, but a requested follow-up step failed (see appSwitchNote/healthNote)" }),
   };
 }
 
 /**
  * Execute switchback: restore standby replica from primary.
+ *
+ * OPE-7656 review fixes: the role checks use the same `::int` helper and the replicator over
+ * the replication protocol; every check (credentials, WAL policy, slot, promoted-standby /
+ * timeline guard) runs inside setupStandby BEFORE the container is stopped or the data
+ * directory is emptied.
  */
 export function executeSwitchback(target = "board", options = {}, deps = {}) {
   const rawRunner = deps.runner || defaultRunner;
   const runner = createPgRunner(rawRunner, options);
   const fsOps = deps.fsOps || defaultFsOps;
-  const isBoard = target === "board";
-  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = resolvePrimaryPort(options, target);
-  const dbUser = isBoard
-    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
-    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
-  const dbName = isBoard
-    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
-    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
-  const dataDir = options.dataDir || (isBoard
-    ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
-
-  const composeService = "myrmidon-pg-standby";
-  const composeFile = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    "docker-compose.standby.yml"
-  );
-
+  const ctx = resolveOpContext(target, options);
   const plan = planSwitchback(target, options);
 
   if (options.dryRun) {
@@ -1258,71 +1992,55 @@ export function executeSwitchback(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 1. Verify original primary is active primary
-  const pRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: primaryHost, port: primaryPort, user: dbUser, db: dbName }, runner);
-  if (pRes.exitCode !== 0 || (pRes.stdout || "").trim() !== "f") {
-    return {
-      success: false,
-      target,
-      error: "Original primary is not an active primary (in recovery or unreachable)",
-    };
-  }
-
-  // 1b. Verify standby is still in recovery. After a failover the standby is the
-  // ACTIVE WRITER; re-cloning it from the recovered-but-stale primary would
-  // silently discard every write accepted after promotion (split brain data loss).
-  // Only --discard-promoted-standby explicitly acknowledges that loss.
-  const standbyHost = options.standbyHost || DEFAULT_CONFIG.standbyHost;
-  const standbyPort = resolveStandbyPort(options, target);
-  const sRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: standbyHost, port: standbyPort, user: dbUser, db: dbName }, runner);
-  const standbyInRecovery = sRes.exitCode === 0 && (sRes.stdout || "").trim() === "t";
-  if (!standbyInRecovery && !options.discardPromotedStandby) {
-    return {
-      success: false,
-      target,
-      error:
-        `Refusing switchback: standby at ${standbyHost}:${standbyPort} is NOT in recovery ` +
-        `(pg_is_in_recovery=${(sRes.stdout || "").trim() || "unreachable"}). ` +
-        "It is likely the promoted active writer; re-cloning from the recovered primary would discard all writes accepted after failover. " +
-        "Follow runbook §6 order (rewind/re-clone the OLD primary, not the promoted standby) or pass --discard-promoted-standby to explicitly accept the data loss.",
-    };
-  }
-
-  // 2. Fail-closed without explicit force flag before destructive container stop / data removal
+  // 0. Fail-closed without explicit force flag before anything else.
   if (!options.force) {
     return {
       success: false,
       target,
-      error: `Switchback requires explicit --force to stop standby container, remove data directory '${dataDir}', and resynchronize`,
+      error: `Switchback requires explicit --force to stop standby container, empty data directory '${ctx.hostDataDir}', and resynchronize`,
     };
   }
 
-  // 3. Stop standby container before resync
-  const stopRes = runner("docker", ["compose", "-f", composeFile, "stop", composeService]);
-  if (stopRes.exitCode !== 0) {
+  // 1. Verify the original primary is the active primary (reachable and NOT in recovery).
+  const endpoint = resolvePrimaryEndpoint(options, target, { runner });
+  if (endpoint.source === "default") {
     return {
       success: false,
       target,
-      error: `Failed to stop standby container '${composeService}': ${stopRes.stderr || stopRes.stdout}`,
+      error:
+        "Cannot determine the original primary endpoint (no --primary-host, no PRIMARY_PG_HOST, standby primary_conninfo unreadable); " +
+        "refusing to re-clone from a guessed host. Pass --primary-host/--primary-port.",
+    };
+  }
+  const probe = probePrimary(target, options, runner, endpoint);
+  if (probe.state !== "writable") {
+    return {
+      success: false,
+      target,
+      error:
+        `Original primary is not an active primary (in recovery or unreachable): ${endpoint.host}:${endpoint.port} -> ${probe.state}` +
+        (probe.error ? ` (${probe.error})` : ""),
     };
   }
 
-  // 3. Clean stale standby data directory under explicit force flag
-  if (fsOps.existsSync(dataDir)) {
-    try {
-      fsOps.rmSync(dataDir, { recursive: true, force: true });
-    } catch {}
-    fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  }
-
-  // 4. Perform basebackup & reconfigure standby with force: true
-  const setupRes = setupStandby(target, { ...options, force: true }, { runner, fsOps });
+  // 2. Re-sync. setupStandby runs ALL remaining checks (credentials, WAL policy, slot, promoted
+  // standby guard with timeline/LSN comparison) and only then stops the container, empties the
+  // data directory and takes the base backup. Pass the verified endpoint so the regenerated
+  // primary_conninfo keeps the live relay instead of the compile-time default.
+  const setupRes = setupStandby(
+    target,
+    { ...options, force: true, primaryHost: endpoint.host, primaryPort: endpoint.port },
+    { runner: rawRunner, fsOps }
+  );
   return {
     success: setupRes.success,
     target,
     resynchronized: setupRes.success,
     inRecovery: setupRes.inRecovery,
     streamingActive: setupRes.streamingActive,
+    ...(setupRes.comparison ? { comparison: setupRes.comparison } : {}),
+    ...(setupRes.promotedStandbyDiscarded ? { promotedStandbyDiscarded: true } : {}),
+    ...(setupRes.standbyRole ? { standbyRole: setupRes.standbyRole } : {}),
     error: setupRes.error,
   };
 }
@@ -1330,12 +2048,19 @@ export function executeSwitchback(target = "board", options = {}, deps = {}) {
 /**
  * Safe, isolated rehearsal drill on ephemeral port/directory.
  * Verifies recovery promotion and smoke tests BOTH databases (paperclip, myrmidon_hindsight) in one replica.
+ *
+ * OPE-7656 review finding 5: in docker mode the drill directory is an IN-CONTAINER path, so
+ * existence checks and cleanup (`rm -rf`) run through docker exec, never through the host
+ * filesystem; cleanup runs in `finally` for every outcome except a fully successful
+ * --keep-drill. The drill board is started from --compose-file when --keep-drill is set.
  */
 export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const rawRunner = deps.runner || defaultRunner;
   const runner = createPgRunner(rawRunner, options);
   const fsOps = deps.fsOps || defaultFsOps;
-  const isBoard = target === "board";
+  const env = deps.env || process.env;
+  const ctx = resolveOpContext(target, options);
+  const docker = ctx.docker;
   const plan = planRehearsal(target, options);
 
   if (options.dryRun) {
@@ -1347,183 +2072,332 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
     };
   }
 
-  const startTime = Date.now();
   const drillDir = plan.drillDir;
   const drillPort = plan.drillPort;
-  const standbyPort = resolveStandbyPort(options, target);
+  const standbyPort = ctx.standbyPort;
   const boardUser = options.boardDbUser || DEFAULT_CONFIG.boardDbUser;
   const boardDb = options.boardDbName || DEFAULT_CONFIG.boardDbName;
   const hindsightUser = options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
   const hindsightDb = options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
-  const replUser = isBoard
-    ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
-    : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
+  const replUser = ctx.replUser;
+  const composeFile = options.composeFile || DEFAULT_CONFIG.composeFile;
+  const boardService = DEFAULT_CONFIG.drillBoardService;
+  const pgCtlTimeoutMs = options.pgCtlTimeoutMs || 120000;
+  const keepDrill = options.keepDrill === true;
 
-  try {
-    fsOps.mkdirSync(drillDir, { recursive: true, mode: 0o700 });
-  } catch (err) {
-    return { success: false, target, error: `Failed to create drill dir: ${err.message}` };
+  const dirErr = validateDrillDir(drillDir, options);
+  if (dirErr) {
+    return { success: false, target, error: dirErr };
   }
 
-  // Resolve credentials for drill snapshot (D5): same resolution as setupStandby.
-  const replPassword =
-    options.replicatorPassword !== undefined
-      ? options.replicatorPassword
-      : DEFAULT_CONFIG.replicatorPassword;
-  const credentialPath =
-    options.credentialPath ||
-    options.passfilePath ||
-    DEFAULT_CONFIG.credentialPath ||
-    DEFAULT_CONFIG.passfilePath;
-  let drillPassfilePath = credentialPath;
-  if (!drillPassfilePath) {
-    drillPassfilePath = path.join(path.dirname(drillDir), ".pgpass");
+  const inContainer = (cmd, args, runnerOptions) => runInStandbyContainer(rawRunner, options, cmd, args, runnerOptions);
+
+  // "absent" | "present" | "unknown" — in the container in docker mode, on the host otherwise.
+  const drillDirState = () => {
+    if (docker) {
+      const r = inContainer("test", ["-e", drillDir], { timeoutMs: 30000 });
+      if (r.exitCode === 0) return "present";
+      // `test -e` prints nothing; docker's own failures ("No such container", "is not running")
+      // also exit 1 but write to stderr.
+      if (r.exitCode === 1 && !(r.stderr || "").trim()) return "absent";
+      return "unknown";
+    }
+    return safeReaddir(fsOps, drillDir).length > 0 ? "present" : "absent";
+  };
+
+  // Stop the drill instance and delete the drill directory. Docker mode deletes INSIDE the
+  // container (the path does not exist on the host); the result is verified, not assumed.
+  const cleanupDrillDir = () => {
+    const stopRes = runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"], { timeoutMs: pgCtlTimeoutMs });
+    let rmRes;
+    if (docker) {
+      rmRes = inContainer("rm", ["-rf", drillDir], { timeoutMs: 600000 });
+    } else {
+      try {
+        fsOps.rmSync(drillDir, { recursive: true, force: true });
+        rmRes = { exitCode: 0 };
+      } catch (err) {
+        rmRes = { exitCode: 1, stderr: err.message };
+      }
+    }
+    const state = drillDirState();
+    const removed = rmRes.exitCode === 0 && state === "absent";
+    return {
+      stopped: stopRes.exitCode === 0,
+      removed,
+      ...(removed ? {} : { error: `rm -rf ${drillDir} left state=${state}: ${describePsqlError(rmRes)}` }),
+    };
+  };
+
+  // Teardown of a drill kept with --keep-drill.
+  if (options.cleanupDrill) {
+    const boardRes = runner("docker", ["compose", "-f", composeFile, "--profile", "drill", "rm", "-sf", boardService], {
+      timeoutMs: 120000,
+    });
+    const cleanup = cleanupDrillDir();
+    const ok = boardRes.exitCode === 0 && cleanup.removed;
+    return {
+      success: ok,
+      target,
+      cleanupDrill: true,
+      drillDir,
+      boardRemoved: boardRes.exitCode === 0,
+      cleanup,
+      ...(ok ? {} : { error: [boardRes.exitCode === 0 ? "" : `drill board removal failed: ${describePsqlError(boardRes)}`, cleanup.error].filter(Boolean).join("; ") }),
+    };
   }
-  if (replPassword) {
-    try {
-      const passDir = path.dirname(drillPassfilePath);
-      if (!fsOps.existsSync(passDir)) {
-        fsOps.mkdirSync(passDir, { recursive: true, mode: 0o700 });
-      }
-      const endpoint = resolvePrimaryEndpoint(options, target, { runner });
-      const primaryHost = endpoint.host;
-      const primaryPort = endpoint.port;
-      fsOps.writeFileSync(
-        drillPassfilePath,
-        `127.0.0.1:${standbyPort}:*:${replUser}:${replPassword}\n${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`,
-        { mode: 0o600 }
-      );
-      if (fsOps.chmodSync) {
-        fsOps.chmodSync(drillPassfilePath, 0o600);
-      }
-    } catch (err) {
-      return { success: false, target, error: `Failed to create drill passfile at ${drillPassfilePath}: ${err.message}` };
+
+  // The drill board needs real secrets from the environment; check BEFORE the long snapshot.
+  if (keepDrill) {
+    const missing = ["BETTER_AUTH_SECRET", "PAPERCLIP_DB_PASSWORD"].filter((k) => !env[k]);
+    if (missing.length > 0) {
+      return {
+        success: false,
+        target,
+        error:
+          `--keep-drill starts the drill board and requires ${missing.join(" and ")} in the environment ` +
+          "(no defaults are used: the compose file deliberately ships none). Nothing was started.",
+      };
     }
   }
 
-  // 1. Snapshot from standby (D1: configurable timeout for large clusters; D5: PGPASSFILE)
-  const basebackupTimeoutMs = options.basebackupTimeoutMs || 5400000; // 90 min default for 45GB at ~10MB/s
-  const snapshotArgs = [
-    "-h", "127.0.0.1",
-    "-p", String(standbyPort),
-    "-U", replUser,
-    "-D", drillDir,
-    "-Fp",
-    "-Xs",
-    "-R",
-  ];
-  // ADM rehearsal feedback (03.11): default --max-rate to 100M for drill snapshots
-  // (49 GB on shared disk with CI runners). Explicit --max-rate overrides.
-  const effectiveMaxRate = options.maxRate || "100M";
-  if (effectiveMaxRate) {
-    snapshotArgs.push(`--max-rate=${effectiveMaxRate}`);
-  }
-  const snapRes = runner("pg_basebackup", snapshotArgs, {
-    timeoutMs: basebackupTimeoutMs,
-    env: {
-      ...process.env,
-      PGPASSFILE: drillPassfilePath,
-    },
-  });
-  if (snapRes.exitCode !== 0) {
-    try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
-    return { success: false, target, error: `Drill snapshot failed: ${snapRes.stderr || snapRes.stdout}` };
+  // A leftover drill directory (failed run, or a kept drill that is still running) is never
+  // reused or silently deleted.
+  const preState = drillDirState();
+  if (preState !== "absent") {
+    return {
+      success: false,
+      target,
+      error:
+        preState === "present"
+          ? `Drill directory '${drillDir}' already exists (leftover or --keep-drill still running). Run 'rehearse --cleanup-drill' first.`
+          : `Cannot determine whether drill directory '${drillDir}' exists (is the standby container '${ctx.container}' running?)`,
+    };
   }
 
-  // 2-7. Run the drill. Cleanup MUST run even when a step throws —
-  // ADM rehearsal feedback (04.11): the 49GB drill dir was left on disk because
-  // cleanup only ran on the happy path; wrap steps 2+ in try/finally.
-  const keepDrill = options.keepDrill === true;
-  let startRes, promoteRes, verifyRes, boardSmokeRes, hindsightSmokeRes;
-  try {
-    // 2. Start ephemeral postgres instance on drillPort
-    const pgCtlTimeoutMs = options.pgCtlTimeoutMs || 120000;
-    startRes = runner("pg_ctl", [
+  const startTime = Date.now();
+
+  if (!docker) {
+    try {
+      fsOps.mkdirSync(drillDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      return { success: false, target, error: `Failed to create drill dir: ${err.message}` };
+    }
+  }
+
+  // Host mode only: credentials for the drill snapshot (D5). In docker mode pg_basebackup runs
+  // inside the container with the container's own passfile, so nothing is written on the host.
+  let drillPassfilePath = null;
+  if (!docker) {
+    const replPassword =
+      options.replicatorPassword !== undefined
+        ? options.replicatorPassword
+        : DEFAULT_CONFIG.replicatorPassword;
+    const credentialPath =
+      options.credentialPath ||
+      options.passfilePath ||
+      DEFAULT_CONFIG.credentialPath ||
+      DEFAULT_CONFIG.passfilePath;
+    drillPassfilePath = credentialPath || path.join(path.dirname(drillDir), ".pgpass");
+    if (replPassword) {
+      try {
+        const passDir = path.dirname(drillPassfilePath);
+        if (!fsOps.existsSync(passDir)) {
+          fsOps.mkdirSync(passDir, { recursive: true, mode: 0o700 });
+        }
+        const endpoint = resolvePrimaryEndpoint(options, target, { runner });
+        fsOps.writeFileSync(
+          drillPassfilePath,
+          pgpassLine("127.0.0.1", standbyPort, replUser, replPassword) +
+            pgpassLine(endpoint.host, endpoint.port, replUser, replPassword),
+          { mode: 0o600 }
+        );
+        if (fsOps.chmodSync) {
+          fsOps.chmodSync(drillPassfilePath, 0o600);
+        }
+      } catch (err) {
+        try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
+        return { success: false, target, error: `Failed to create drill passfile at ${drillPassfilePath}: ${err.message}` };
+      }
+    }
+  }
+
+  let drillOk = false;
+  let drillResult;
+
+  const runDrill = () => {
+    // 1. Snapshot from standby (D1: configurable timeout for large clusters; D5: PGPASSFILE)
+    const basebackupTimeoutMs = options.basebackupTimeoutMs || 5400000; // 90 min default for 45GB at ~10MB/s
+    const snapshotArgs = [
+      "-h", "127.0.0.1",
+      "-p", String(standbyPort),
+      "-U", replUser,
+      "-D", drillDir,
+      "-Fp",
+      "-Xs",
+      "-R",
+    ];
+    // ADM rehearsal feedback (03.11): default --max-rate to 100M for drill snapshots
+    // (49 GB on shared disk with CI runners). Explicit --max-rate overrides.
+    const effectiveMaxRate = options.maxRate || "100M";
+    if (effectiveMaxRate) {
+      snapshotArgs.push(`--max-rate=${effectiveMaxRate}`);
+    }
+    const snapRes = runner("pg_basebackup", snapshotArgs, {
+      timeoutMs: basebackupTimeoutMs,
+      ...(docker ? {} : { env: { ...process.env, PGPASSFILE: drillPassfilePath } }),
+    });
+    if (snapRes.exitCode !== 0) {
+      return { success: false, target, error: `Drill snapshot failed: ${snapRes.stderr || snapRes.stdout}` };
+    }
+
+    // 2. Start ephemeral postgres instance on drillPort. With --keep-drill the drill board runs in
+    // ANOTHER container of the same compose network, so the instance must listen beyond loopback
+    // (port 5533 is not published to the host; only the compose network can reach it).
+    const listen = keepDrill ? "'*'" : "127.0.0.1";
+    const startRes = runner("pg_ctl", [
       "start",
       "-D", drillDir,
+      "-l", `${drillDir}/pg_ctl.log`,
       "-o",
-      `-p ${drillPort} -c listen_addresses=127.0.0.1 -c max_connections=200 -c max_worker_processes=16`,
+      `-p ${drillPort} -c listen_addresses=${listen} -c max_connections=200 -c max_worker_processes=16`,
     ], { timeoutMs: pgCtlTimeoutMs });
     if (startRes.exitCode !== 0) {
       return { success: false, target, error: `Drill pg_ctl start failed: ${startRes.stderr || startRes.stdout}` };
     }
 
     // 3. Promote drill instance (D3: pg_ctl promote — paperclip role lacks pg_promote() privilege)
-    promoteRes = runner("pg_ctl", ["promote", "-D", drillDir], { timeoutMs: pgCtlTimeoutMs });
+    const promoteRes = runner("pg_ctl", ["promote", "-D", drillDir], { timeoutMs: pgCtlTimeoutMs });
     if (promoteRes.exitCode !== 0) {
       return { success: false, target, error: `Drill promotion failed: ${promoteRes.stderr || promoteRes.stdout}` };
     }
 
-    // 4. Verify drill recovery false.
-    // ADM rehearsal feedback (04.11): psql may render the boolean as 'f' or 'false'
-    // depending on server/psql version and flags. Query as int to get a stable '0'/'1'.
-    verifyRes = queryPostgres("SELECT pg_is_in_recovery()::int;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
+    // 4. Verify drill recovery is over. The role is read as ::int ("0"/"1") via the shared helper.
+    const verifyRes = queryPostgres(SQL_IN_RECOVERY, { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
 
     // 5. Smoke test BOTH databases in the single replica
-    boardSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
-    hindsightSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: hindsightUser, db: hindsightDb }, runner);
-  } finally {
-    // 6/7. ALWAYS clean stop and remove the drill dir, even on failure —
-    // unless --keep-drill is explicitly set (D6).
-    const pgCtlTimeoutMs = options.pgCtlTimeoutMs || 120000;
-    if (!keepDrill) {
-      runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"], { timeoutMs: pgCtlTimeoutMs });
-      try {
-        fsOps.rmSync(drillDir, { recursive: true, force: true });
-      } catch {}
-    } else if (options.composeFile) {
-      // D6: with --keep-drill also start the drill-only board service so the
-      // release-component image and fleet visibility can be verified manually.
-      runner("docker", ["compose", "-f", options.composeFile, "up", "-d", "myrmidon-board"]);
-    }
-  }
+    const boardSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
+    const hindsightSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: hindsightUser, db: hindsightDb }, runner);
 
-  const durationMs = Date.now() - startTime;
-  const durationSeconds = Math.round(durationMs / 1000);
-  const rtoOk = durationSeconds <= DEFAULT_CONFIG.rtoTargetSeconds;
-  const boardSmokeOk = (boardSmokeRes.stdout || "").trim() === "1";
-  const hindsightSmokeOk = (hindsightSmokeRes.stdout || "").trim() === "1";
-  const smokeTestPassed = boardSmokeOk && hindsightSmokeOk;
-  const promoted = (verifyRes.stdout || "").trim() === "0";
+    const durationSeconds = Math.round((Date.now() - startTime) / 1000);
+    const rtoOk = durationSeconds <= DEFAULT_CONFIG.rtoTargetSeconds;
+    const boardSmokeOk = (boardSmokeRes.stdout || "").trim() === "1";
+    const hindsightSmokeOk = (hindsightSmokeRes.stdout || "").trim() === "1";
+    const smokeTestPassed = boardSmokeOk && hindsightSmokeOk;
+    const promoted = verifyRes.exitCode === 0 && parsePgBool(firstField(verifyRes.stdout)) === false;
 
-  const success = promoted && smokeTestPassed && rtoOk;
-
-  const errors = [];
-  if (!promoted) {
-    errors.push(
-      `Promotion verification failed: in_recovery is '${(verifyRes.stdout || "").trim()}', expected '0' (pg_is_in_recovery()::int)`
-    );
-  }
-  if (!smokeTestPassed) {
-    if (!boardSmokeOk) {
+    const errors = [];
+    if (!promoted) {
       errors.push(
-        `Smoke test failed for database '${boardDb}' (exit: ${boardSmokeRes.exitCode}, out: ${(boardSmokeRes.stdout || boardSmokeRes.stderr || "").trim()})`
+        `Promotion verification failed: in_recovery is '${(verifyRes.stdout || "").trim()}', expected '0' (pg_is_in_recovery()::int)`
       );
     }
-    if (!hindsightSmokeOk) {
+    if (!smokeTestPassed) {
+      if (!boardSmokeOk) {
+        errors.push(
+          `Smoke test failed for database '${boardDb}' (exit: ${boardSmokeRes.exitCode}, out: ${(boardSmokeRes.stdout || boardSmokeRes.stderr || "").trim()})`
+        );
+      }
+      if (!hindsightSmokeOk) {
+        errors.push(
+          `Smoke test failed for database '${hindsightDb}' (exit: ${hindsightSmokeRes.exitCode}, out: ${(hindsightSmokeRes.stdout || hindsightSmokeRes.stderr || "").trim()})`
+        );
+      }
+    }
+    if (!rtoOk) {
       errors.push(
-        `Smoke test failed for database '${hindsightDb}' (exit: ${hindsightSmokeRes.exitCode}, out: ${(hindsightSmokeRes.stdout || hindsightSmokeRes.stderr || "").trim()})`
+        `RTO target exceeded (${durationSeconds}s > ${DEFAULT_CONFIG.rtoTargetSeconds}s)`
       );
     }
-  }
-  if (!rtoOk) {
-    errors.push(
-      `RTO target exceeded (${durationSeconds}s > ${DEFAULT_CONFIG.rtoTargetSeconds}s)`
-    );
-  }
 
-  return {
-    success,
-    target,
-    promoted,
-    smokeTestPassed,
-    verifiedDatabases: [boardDb, hindsightDb],
-    durationSeconds,
-    targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
-    rtoOk,
-    ...(keepDrill ? { keepDrill: true, drillDir, drillPort } : {}),
-    ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
+    // 6. --keep-drill: really start the drill board from the compose file (finding 5).
+    let boardInfo = {};
+    if (keepDrill && errors.length === 0) {
+      const boardRes = runner(
+        "docker",
+        ["compose", "-f", composeFile, "--profile", "drill", "up", "-d", "--no-deps", boardService],
+        { timeoutMs: 300000 }
+      );
+      const boardStarted = boardRes.exitCode === 0;
+      boardInfo = { boardStarted, boardUrl: DEFAULT_CONFIG.drillBoardUrl };
+      if (!boardStarted) {
+        errors.push(`Drill board failed to start from ${composeFile}: ${describePsqlError(boardRes)}`);
+      }
+    }
+
+    drillOk = errors.length === 0;
+    return {
+      success: promoted && smokeTestPassed && rtoOk && errors.length === 0,
+      target,
+      promoted,
+      smokeTestPassed,
+      verifiedDatabases: [boardDb, hindsightDb],
+      durationSeconds,
+      targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
+      rtoOk,
+      ...boardInfo,
+      ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
+    };
   };
+
+  // 2-7. Run the drill. Cleanup MUST run even when a step fails or throws —
+  // ADM rehearsal feedback (04.11): the 49GB drill dir was left on disk because cleanup only
+  // ran on the happy path. The ONLY case that keeps the drill is a fully successful --keep-drill.
+  let cleanup = null;
+  try {
+    drillResult = runDrill();
+  } catch (err) {
+    drillResult = { success: false, target, error: `Rehearsal aborted by an unexpected error: ${err.message}` };
+  } finally {
+    if (!(keepDrill && drillOk)) {
+      cleanup = cleanupDrillDir();
+    }
+  }
+
+  const result = { ...drillResult };
+  if (cleanup) {
+    result.cleanup = cleanup;
+    if (!cleanup.removed) {
+      result.success = false;
+      result.error = [result.error, `Drill cleanup FAILED: ${cleanup.error} (remove it manually: docker exec -u postgres ${ctx.container} rm -rf ${drillDir})`]
+        .filter(Boolean)
+        .join("; ");
+    }
+  }
+  if (keepDrill && drillOk) {
+    result.keepDrill = true;
+    result.drillDir = drillDir;
+    result.drillPort = drillPort;
+    result.teardown = "standby-ctl.sh rehearse --cleanup-drill";
+  }
+  return result;
+}
+
+/**
+ * Flags that never take a value. Without this list `failover --fenced board` would parse
+ * `board` as the VALUE of --fenced and silently switch the target.
+ */
+const BOOLEAN_FLAGS = new Set([
+  "force",
+  "dry-run",
+  "offline",
+  "json",
+  "keep-drill",
+  "cleanup-drill",
+  "discard-promoted-standby",
+  "accept-data-loss",
+  "drop-standby-diverged",
+  "accept-split-brain",
+  "fenced",
+  "restart-app",
+  "check-health",
+  "help",
+]);
+
+function flagOn(value) {
+  if (value === undefined || value === false) return false;
+  if (typeof value === "string" && /^(false|0|no|off)$/i.test(value)) return false;
+  return true;
 }
 
 /**
@@ -1542,7 +2416,7 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
       } else {
         const key = arg.slice(2);
         const next = argv[i + 1];
-        if (next && !next.startsWith("-")) {
+        if (!BOOLEAN_FLAGS.has(key) && next && !next.startsWith("-")) {
           flags[key] = next;
           i++;
         } else {
@@ -1554,9 +2428,13 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
     }
   }
 
-  const command = positional[0] || "help";
+  const command = flags.help ? "help" : positional[0] || "help";
   const target = positional[1] || flags.target || "all";
   const targets = target === "all" ? ["board", "hindsight"] : [target];
+  if (!["all", "board", "hindsight"].includes(target) && command !== "help") {
+    console.error(`Unknown target '${target}' (expected board, hindsight or all)`);
+    return 1;
+  }
 
   if (flags["rpo-max-seconds"] !== undefined) {
     flags.rpoMaxSeconds = Number(flags["rpo-max-seconds"]);
@@ -1565,16 +2443,20 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
     flags.rpoMaxSeconds = Number(flags.rpo);
   }
   if (flags.force !== undefined) {
-    flags.force = true;
+    flags.force = flagOn(flags.force);
   }
   if (flags["discard-promoted-standby"] !== undefined || flags["drop-standby-diverged"] !== undefined) {
-    flags.discardPromotedStandby = true;
+    flags.discardPromotedStandby =
+      flagOn(flags["discard-promoted-standby"]) || flagOn(flags["drop-standby-diverged"]);
+  }
+  if (flags["accept-data-loss"] !== undefined) {
+    flags.acceptDataLoss = flagOn(flags["accept-data-loss"]);
   }
   if (flags["dry-run"] !== undefined) {
-    flags.dryRun = true;
+    flags.dryRun = flagOn(flags["dry-run"]);
   }
   if (flags.offline !== undefined) {
-    flags.offline = true;
+    flags.offline = flagOn(flags.offline);
   }
   if (flags.json !== undefined) {
     flags.json = true;
@@ -1593,6 +2475,9 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
   }
   if (flags["primary-port"] !== undefined) {
     flags.primaryPort = Number(flags["primary-port"]);
+  }
+  if (flags["primary-host"] !== undefined) {
+    flags.primaryHost = flags["primary-host"];
   }
   if (flags.port !== undefined) {
     flags.standbyPort = Number(flags.port);
@@ -1613,16 +2498,53 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
     flags.pgImage = flags["pg-image"];
   }
   if (flags["keep-drill"] !== undefined) {
-    flags.keepDrill = true;
+    flags.keepDrill = flagOn(flags["keep-drill"]);
   }
+  if (flags["cleanup-drill"] !== undefined) {
+    flags.cleanupDrill = flagOn(flags["cleanup-drill"]);
+  }
+  // OPE-7656 review fixes: flags the failover/switchback/rehearse code reads but the CLI
+  // never mapped (so they could not be set at all).
+  if (flags["accept-split-brain"] !== undefined) {
+    flags.acceptSplitBrain = flagOn(flags["accept-split-brain"]);
+  }
+  if (flags.fenced !== undefined) {
+    // `--fenced` or `--fenced=<how it was fenced>`; a string is kept as audit evidence.
+    flags.fenced = flagOn(flags.fenced) ? flags.fenced : false;
+  }
+  if (flags["restart-app"] !== undefined) {
+    flags.restartApp = flagOn(flags["restart-app"]);
+  }
+  if (flags["check-health"] !== undefined) {
+    flags.checkHealth = flagOn(flags["check-health"]);
+  }
+  if (flags["health-url"] !== undefined) {
+    flags.healthUrl = flags["health-url"];
+  }
+  if (flags["app-compose-file"] !== undefined) {
+    flags.appComposeFile = flags["app-compose-file"];
+  }
+  if (flags["app-service"] !== undefined) {
+    flags.appService = flags["app-service"];
+  }
+  if (flags["data-dir"] !== undefined) {
+    flags.dataDir = flags["data-dir"];
+  }
+  if (flags["container-data-dir"] !== undefined) {
+    flags.containerDataDir = flags["container-data-dir"];
+  }
+  if (flags["compose-file"] !== undefined) {
+    flags.composeFile = flags["compose-file"];
+  }
+
+  const resultExit = (results) => (results.some((r) => !r.success) ? 1 : 0);
 
   switch (command) {
     case "setup": {
       const setupTargets = target === "all" ? ["board"] : targets;
       const results = setupTargets.map((t) => setupStandby(t, flags, deps));
       console.log(JSON.stringify({ command: "setup", results }, null, 2));
-      const anyFailed = results.some((r) => !r.success);
-      return anyFailed ? 1 : 0;
+      return resultExit(results);
     }
 
     case "check-lag": {
@@ -1642,27 +2564,28 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
       const failoverTargets = target === "all" ? ["board"] : targets;
       const results = failoverTargets.map((t) => executeFailover(t, flags, deps));
       console.log(JSON.stringify({ command: "failover", results }, null, 2));
-      const anyFailed = results.some((r) => !r.success);
-      return anyFailed ? 1 : 0;
+      return resultExit(results);
     }
 
     case "switchback": {
       const switchTargets = target === "all" ? ["board"] : targets;
       const results = switchTargets.map((t) => executeSwitchback(t, flags, deps));
       console.log(JSON.stringify({ command: "switchback", results }, null, 2));
-      const anyFailed = results.some((r) => !r.success);
-      return anyFailed ? 1 : 0;
+      return resultExit(results);
     }
 
     case "rehearse": {
       const rehearseTargets = target === "all" ? ["board"] : targets;
-      const results = rehearseTargets.map((t) => executeRehearsal(t, flags, deps));
+      // --keep-drill reads BETTER_AUTH_SECRET / PAPERCLIP_DB_PASSWORD from this env.
+      const rehearseDeps = { ...deps, env: deps.env || env };
+      const results = rehearseTargets.map((t) => executeRehearsal(t, flags, rehearseDeps));
+      // A dry-run or --cleanup-drill result carries no RTO; only an explicit rtoOk:false fails.
       const allSuccess = results.every((r) => r.success);
-      const allRtoOk = results.every((r) => r.rtoOk);
+      const allRtoOk = results.every((r) => r.rtoOk !== false);
       console.log(
         JSON.stringify({ command: "rehearse", allSuccess, allRtoOk, results }, null, 2)
       );
-      const anyFailed = results.some((r) => !r.success || !r.rtoOk);
+      const anyFailed = results.some((r) => !r.success || r.rtoOk === false);
       return anyFailed ? 1 : 0;
     }
 
@@ -1674,24 +2597,44 @@ Usage: standby-ctl.mjs <command> [target] [options]
 Commands:
   setup [board|hindsight|all]      Configure streaming replication and start standby
   check-lag [board|hindsight|all]  Measure lag vs primary WAL LSN, verify RPO <= 15m
-  failover [board|hindsight|all]   Promote standby to primary and reroute application
+  failover [board|hindsight|all]   Promote standby to primary (split-brain guarded; see --fenced)
   switchback [board|hindsight|all] Re-sync and restore standby after primary recovery
   rehearse [board|hindsight|all]   Perform isolated rehearsal test, verify RTO <= 30m
 
 Options:
   --dry-run                        Print operational plans without executing commands
   --force                          Allow cleaning non-empty data directory during setup/switchback
-  --discard-promoted-standby       Switchback: explicitly accept discarding writes on a promoted (non-recovery) standby
+  --discard-promoted-standby       Setup --force / switchback: explicitly accept discarding writes on a promoted
+                                   (non-recovery) standby; the timeline/LSN comparison is reported
+  --accept-data-loss               With --discard-promoted-standby: also required when the comparison says the standby
+                                   is AHEAD of the primary (or a different cluster), i.e. it holds writes found nowhere else
+  --fenced[=<how>]                 Failover: confirm the OLD primary is fenced (hypervisor power-off). REQUIRED when
+                                   the primary is unreachable; a reachable writable primary is always refused
+  --accept-split-brain             Failover: bypass the split-brain guard entirely (emergency, data may diverge)
+  --primary-host=<h> --primary-port=<p>
+                                   Original primary endpoint (default: PRIMARY_PG_HOST/PORT env, then the
+                                   standby's primary_conninfo)
+  --restart-app                    Failover: recreate the application after promotion (needs --app-compose-file)
+  --app-compose-file=<file>        Failover: production compose file of the application (never the drill file)
+  --app-service=<name>             Failover: application service name (default: myrmidon-board)
+  --check-health [--health-url=<u>] Failover: GET the board health URL after promotion
+  --data-dir=<host dir>            Host data directory of the standby (default: /srv/standby/myrmidon-pg/data)
+  --container-data-dir=<dir>       In-container PGDATA used in docker mode (default: /var/lib/postgresql/data)
+  --compose-file=<file>            Standby/drill compose file (default: docker-compose.standby.yml next to this tool)
   --rpo=<sec>                      Maximum acceptable lag in seconds (alias for --rpo-max-seconds)
   --rpo-max-seconds=<sec>          Maximum acceptable lag in seconds (default: 900)
   --offline                        Measure standby without querying primary
   --target=<target>                board, hindsight, or all (default: all)
   --max-rate=<rate>                Pass --max-rate to pg_basebackup (e.g. 30M) to throttle I/O
   --pg-runner=docker|host          Execution mode for PG binaries (default: docker). docker runs
-                                   them inside a short-lived pgvector/pgvector:pg18 container;
+                                   them inside the standby container via docker exec (or a one-shot
+                                   container of the same service for setup/switchback);
                                    host requires a local PostgreSQL 18 client installation.
   --pg-image=<image>               Container image for --pg-runner=docker (default: pgvector/pgvector:pg18)
-  --keep-drill                     Keep the ephemeral drill cluster and board container after rehearsal
+  --drill-dir=<dir> --drill-port=<p>  Rehearsal drill directory (in-container path in docker mode) and port
+  --keep-drill                     Keep the drill cluster and START the drill board (needs BETTER_AUTH_SECRET,
+                                   PAPERCLIP_DB_PASSWORD in the environment)
+  --cleanup-drill                  Rehearse: tear down a kept drill (board + drill cluster + drill dir)
 `);
       return command === "help" ? 0 : 1;
     }
