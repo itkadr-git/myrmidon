@@ -1020,8 +1020,11 @@ function popGuardToolArguments(state: ExecutionState, name: string): unknown {
 async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
   if (!ctx.runGuard || state.guardModelTurnObserved) return;
   state.guardModelTurnObserved = true;
+  // myrmidon(RUN-GUARD-LOOPS): a stopped guard keeps answering stop; report the
+  // stop once, on the call that made it.
+  const alreadyStopped = ctx.runGuard.stopped;
   const decision = ctx.runGuard.modelCall();
-  if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+  if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
 }
 
 async function observeRunGuardEvent(input: {
@@ -1042,7 +1045,13 @@ async function observeRunGuardEvent(input: {
     const name = toolNameFromEvent(record);
     const args = record?.input ?? record?.arguments ?? record?.preview;
     if (args !== undefined) pushGuardToolArguments(state, name, args);
-    guard.event();
+    // myrmidon(RUN-GUARD-LOOPS): the call is classified (read-only or not) and
+    // counted; a long read-only streak or a thrice-repeated read stops the run.
+    // The wire event carries only the tool name and a short preview of the
+    // primary argument, which is all the guard hashes or inspects.
+    const alreadyStopped = guard.stopped;
+    const decision = guard.toolStarted(name, args);
+    if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
     return;
   }
   if (eventName === "tool.completed") {
@@ -1052,10 +1061,11 @@ async function observeRunGuardEvent(input: {
     }
     const name = toolNameFromEvent(record);
     const args = popGuardToolArguments(state, name);
+    const alreadyStopped = guard.stopped;
     const decision = toolHasError(record)
       ? guard.toolFailure(name, args)
       : guard.toolSuccess();
-    if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+    if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
     if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
     return;
   }

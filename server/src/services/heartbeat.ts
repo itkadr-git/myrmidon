@@ -56,6 +56,8 @@ import {
   detectInputOverflowRun,
   readInputOverflowMaxFailures,
 } from "../myrmidon/input-overflow-guard.js";
+// myrmidon(RUN-GUARD-LOOPS): a run the run guard stopped is not retried; its issue is blocked.
+import { buildRunGuardStopNotice, readRunGuardStopReason } from "../myrmidon/run-guard-stop.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 // myrmidon(B1c): short alias for template literals below.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -16304,6 +16306,54 @@ export function heartbeatService(
     return decision;
   }
 
+  // myrmidon(RUN-GUARD-LOOPS): the run guard stopped this run (model call limit,
+  // idle timeout, tool retry loop, read-only exploration, repeated read). The
+  // stop comes from what the agent did with the task, so another run with the
+  // same task and context repeats it: no automatic retry (see
+  // scheduleBoundedRetryForRun and the stranded-recovery enqueue). The assignee's
+  // todo / in_progress / in_review issue goes to `blocked` through the
+  // stranded-recovery escalation, with a comment that says why and that a new
+  // input is needed. Without it the issue would sit in its status with no run
+  // and no retry for the sweep to act on.
+  async function handleRunGuardStop(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    guardStats: { readOnlyStreak: number; modelCalls: number },
+  ) {
+    const reason = readRunGuardStopReason(run);
+    if (!reason) return null;
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    await appendRunEvent(run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Run stopped by the run guard (${reason}); it will not be retried automatically`,
+      payload: { runGuardStopReason: reason, runGuardStats: guardStats },
+    });
+    if (!issueId) return null;
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !issue ||
+      isConversation(issue) ||
+      issue.assigneeAgentId !== agent.id ||
+      (issue.status !== "todo" &&
+        issue.status !== "in_progress" &&
+        issue.status !== "in_review")
+    ) {
+      return null;
+    }
+    return recovery.escalateStrandedAssignedIssue({
+      issue,
+      previousStatus: issue.status,
+      latestRun: run,
+      notice: buildRunGuardStopNotice(run, guardStats),
+    });
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -16317,6 +16367,25 @@ export function heartbeatService(
     },
   ) {
     const now = opts?.now ?? new Date();
+    // myrmidon(RUN-GUARD-LOOPS): never retry a run the run guard stopped, whoever
+    // asks (recovery sweep, process-loss retry, quota monitor, continuation).
+    // Maintenance interruptions and transport failures are different error codes
+    // and keep their own retry paths.
+    if (readRunGuardStopReason(run)) {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Automatic retry suppressed because the run was stopped by the run guard",
+        payload: { runGuardStopReason: readRunGuardStopReason(run) },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: "Automatic retry suppressed because the run was stopped by the run guard",
+        errorCode: "run_guard_stopped" as const,
+        issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+      };
+    }
     const isGatewayConnectFailed =
       run.errorCode === "hermes_gateway_connect_failed" ||
       opts?.retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON ||
@@ -28551,7 +28620,9 @@ export function heartbeatService(
                   ? parseObject(latestRun?.resultJson)
                   : {}),
                 ...parseObject(adapterResult.resultJson),
-                ...(runGuardStopReason ? { runGuardStopReason } : {}),
+                ...(runGuardStopReason
+                  ? { runGuardStopReason, runGuardStats: runGuard.stats() }
+                  : {}),
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
                   : {}),
@@ -28818,6 +28889,15 @@ export function heartbeatService(
               "stderr",
               `[myrmidon] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
+          }
+          // myrmidon(RUN-GUARD-LOOPS): block the issue of a guard-stopped run; no retry follows.
+          if (runGuardStopReason !== null) {
+            await handleRunGuardStop(livenessRun, agent, runGuard.stats()).catch((err) => {
+              logger.warn(
+                { err, runId: livenessRun.id },
+                "failed to apply run guard stop handling",
+              );
+            });
           }
           if (outcome === "failed") {
             await handleInputOverflowFailure(livenessRun, agent).catch((err) => {
@@ -29266,7 +29346,9 @@ export function heartbeatService(
             errorMessage: stopMessage,
             resultJson: {
               ...parseObject(stopSnapshot?.resultJson),
-              ...(stopReason ? { runGuardStopReason: stopReason } : {}),
+              ...(stopReason
+                ? { runGuardStopReason: stopReason, runGuardStats: runGuard.stats() }
+                : {}),
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
                 {}),
@@ -29338,6 +29420,15 @@ export function heartbeatService(
             !isConfigurationIncompleteFailedRun(livenessRun)
           ) {
             await finalizeIssueCommentPolicy(livenessRun, agent);
+          }
+          // myrmidon(RUN-GUARD-LOOPS): block the issue of a guard-stopped run; no retry follows.
+          if (runGuardStopReason !== null) {
+            await handleRunGuardStop(livenessRun, agent, runGuard.stats()).catch((err) => {
+              logger.warn(
+                { err, runId: livenessRun.id },
+                "failed to apply run guard stop handling",
+              );
+            });
           }
           const scheduled =
             await scheduleInteractionContinuationInfrastructureRetryIfEligible(
@@ -35024,6 +35115,23 @@ export function heartbeatService(
       const agent = await getAgent(run.agentId);
       if (!agent) return { outcome: "missing_agent" as const };
       return scheduleBoundedRetryForRun(run, agent, opts);
+    },
+
+    // myrmidon(RUN-GUARD-LOOPS): the stop handling heartbeat applies when it ends
+    // a run the run guard stopped (block the assignee's issue, say why), for a
+    // stored run: tests, and repair of a stop whose handling was lost. Idempotent:
+    // an issue that is no longer todo / in_progress / in_review is left alone.
+    applyRunGuardStop: async (runId: string) => {
+      const run = await getRun(runId, { unsafeFullResultJson: true });
+      if (!run) return { outcome: "missing_run" as const };
+      const agent = await getAgent(run.agentId);
+      if (!agent) return { outcome: "missing_agent" as const };
+      const stored = parseObject(parseObject(run.resultJson).runGuardStats);
+      const issue = await handleRunGuardStop(run, agent, {
+        readOnlyStreak: Number(stored.readOnlyStreak) || 0,
+        modelCalls: Number(stored.modelCalls) || 0,
+      });
+      return { outcome: "handled" as const, issue };
     },
 
     reconcileStrandedAssignedIssues,

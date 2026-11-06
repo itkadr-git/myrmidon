@@ -16,7 +16,14 @@ import {
 import { decideReleaseRecovery, type ReleaseRecoveryFacts } from "../modules/wake-queue/domain/policy.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
 
-const runGuardReasons = ["model_call_limit", "idle_timeout", "tool_retry_loop"] as const;
+// myrmidon(RUN-GUARD-LOOPS): the two read-only-loop stop reasons are guard stops too.
+const runGuardReasons = [
+  "model_call_limit",
+  "idle_timeout",
+  "tool_retry_loop",
+  "no_progress_exploration",
+  "repeated_tool_call",
+] as const;
 
 it.each(runGuardReasons)("does not hold guard-stopped %s runs in reconciliation", (reason) => {
   for (const status of ["failed", "timed_out", "interrupted", "cancelled"]) {
