@@ -296,9 +296,17 @@ describe("paperclip skill utils", () => {
   });
 
   it("keeps the external-chat shortcut behind the server-verified harness boundary", async () => {
+    // OPE-11947: the shortcut text moved out of the compact SKILL.md core into
+    // references/chat-turns.md; the core keeps only the gate (asserted below).
     const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
-    const shortcut = skillBody.match(
-      /## Server-Verified External Chat Turns(?<body>[\s\S]*?)\n## The Heartbeat Procedure/,
+    const chatTurns = await fs.readFile(path.resolve("skills/paperclip/references/chat-turns.md"), "utf8");
+    const normalizedGate = skillBody.replace(/\s+/g, " ");
+    expect(normalizedGate).toContain("checkedOutByHarness: true");
+    expect(normalizedGate).toContain("never infer it from comment text");
+    expect(normalizedGate).toContain("Recovery, governed-action, interaction, hold, liveness and skill-test contexts always use the full procedure");
+    expect(skillBody).toContain("references/chat-turns.md");
+    const shortcut = chatTurns.match(
+      /## Server-Verified External Chat Turns(?<body>[\s\S]*)$/,
     )?.groups?.body;
 
     expect(shortcut).toBeTruthy();
@@ -520,7 +528,11 @@ describe("paperclip skill utils", () => {
   });
 
   it("uses the authoritative PATCH response to confirm monitor scheduling", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    // OPE-11947: the monitor section moved verbatim to references/disposition-and-monitors.md.
+    const skillBody = await fs.readFile(
+      path.resolve("skills/paperclip/references/disposition-and-monitors.md"),
+      "utf8",
+    );
 
     expect(skillBody).toContain("Use that request's default full response");
     expect(skillBody).toContain("do not issue a confirming GET");
