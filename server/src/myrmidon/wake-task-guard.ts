@@ -113,7 +113,7 @@ const COOLING_TERMINAL_STATUSES = ["succeeded", "failed", "timed_out", "cancelle
  * `updatedAt` after `finishedAt` unconditionally, so it would always lift the
  * window of exactly the runs the cooling exists for.
  */
-const MOVEMENT_ACTIVITY_ACTIONS = [
+export const MOVEMENT_ACTIVITY_ACTIONS = [
   "issue.updated",
   "issue.comment_added",
   "issue.comment.created",
@@ -126,7 +126,7 @@ const MOVEMENT_ACTIVITY_ACTIONS = [
   "myrmidon.task_pr_sync.settled",
   "myrmidon.task_pr_sync.returned",
 ];
-const EXTERNAL_SYSTEM_MOVEMENTS = new Set([
+export const EXTERNAL_SYSTEM_MOVEMENTS = new Set([
   "issue.blockers_resolved_wake_emitted",
   "issue.work_product_updated",
   "myrmidon.task_pr_sync.settled",

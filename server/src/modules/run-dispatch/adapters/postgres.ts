@@ -579,6 +579,21 @@ export function createPostgresRunDispatchAdapter(
         retryReason === "issue_continuation_needed",
     );
 
+    // myrmidon(OPE-11948): an automatic continuation wake — the system's own
+    // `issue_continuation_needed`, not a person's comment, a resume request or
+    // an interaction answer (a card a person resolved keeps its own rules) — is
+    // only started while the issue is actionable.
+    const isAutomaticContinuationWake = Boolean(
+      input.invocationSource === "automation" &&
+        wakeReason === "issue_continuation_needed" &&
+        !wakeCommentId &&
+        !resumeIntent &&
+        !isInteractionWake &&
+        !pendingInteractionAddresseeWake &&
+        !isResolvedInteractionContinuation &&
+        !readNonEmptyString(context.interactionId),
+    );
+
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
@@ -608,6 +623,7 @@ export function createPostgresRunDispatchAdapter(
       isPendingInteractionAddresseeWake: pendingInteractionAddresseeWake,
       isAuthorizedSourceScopedRecovery,
       isProductiveContinuationRecovery,
+      isAutomaticContinuationWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
       wakeCommentIdPresent: Boolean(wakeCommentId),
