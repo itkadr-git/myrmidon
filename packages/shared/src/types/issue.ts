@@ -1339,7 +1339,7 @@ export interface AskUserQuestionsResult {
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
-  expirationReason?: "superseded_by_comment" | "superseded_by_newer_interaction";
+  expirationReason?: "superseded_by_comment" | "superseded_by_newer_interaction" | "issue_closed";
   commentId?: string | null;
   // Set with expirationReason "superseded_by_newer_interaction": the newer
   // sibling ask_user_questions that replaced this one (PAP-437).
@@ -1468,6 +1468,7 @@ export interface ConnectionIntentPayload {
 export interface ConnectionIntentResult {
   version: 1;
   outcome: "connected" | "declined" | "superseded" | "expired";
+  expirationReason?: "issue_closed";
   connectionId?: string | null;
   reason?: string | null;
   supersededByInteractionId?: string | null;
@@ -1550,6 +1551,7 @@ export interface RequestConfirmationResult {
     | "withdrawn"
     | "issue_closed"
     | "addressee_deleted";
+  expirationReason?: "issue_closed";
   reason?: string | null;
   commentId?: string | null;
   supersededByInteractionId?: string | null;
@@ -1586,6 +1588,7 @@ export interface RequestItemVerdictsResultItem {
 export interface RequestItemVerdictsResult {
   version: 1;
   outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "skipped" | "withdrawn" | "issue_closed" | "addressee_deleted";
+  expirationReason?: "issue_closed";
   reason?: string | null;
   complete: boolean;
   items: RequestItemVerdictsResultItem[];
