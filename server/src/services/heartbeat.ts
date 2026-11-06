@@ -87,6 +87,15 @@ import {
 } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
 import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
+import {
+  CONTINUATION_CAP_COMMENT,
+  MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
+  buildContinuationCapBlockedPatch,
+  continuationStatusesFor,
+  isContinuationActionable,
+  readContinuationCap,
+  type ContinuationCapStop,
+} from "../myrmidon/continuation-cap.js"; // myrmidon(OPE-11948)
 import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
@@ -30048,6 +30057,55 @@ export function heartbeatService(
     }
   }
 
+  // myrmidon(OPE-11948): parks an issue whose automatic continuation cap was
+  // reached. Runs after the wake admission committed, in its own transaction:
+  // a failure here must never fail the (already skipped) wake, and the issue is
+  // re-read under its lock so a concurrent status change or reassignment wins.
+  async function applyContinuationCapStop(stop: ContinuationCapStop) {
+    try {
+      await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
+          .for("update")
+          .limit(1);
+        if (!current || !isContinuationActionable(current, stop.agentId)) return;
+        await issuesSvc.update(
+          current.id,
+          buildContinuationCapBlockedPatch({
+            issueId: current.id,
+            assigneeAgentId: stop.agentId,
+            ownerUserId: current.createdByUserId ?? current.responsibleUserId ?? null,
+          }) as Partial<typeof issues.$inferInsert>,
+          tx,
+        );
+        await issuesSvc.addComment(current.id, CONTINUATION_CAP_COMMENT, {}, { authorType: "system" }, tx);
+        await logActivity(tx as unknown as Db, {
+          companyId: current.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: stop.agentId,
+          runId: null,
+          action: "issue.continuation_cap_reached",
+          entityType: "issue",
+          entityId: current.id,
+          details: {
+            identifier: current.identifier,
+            previousStatus: current.status,
+            consecutiveContinuations: stop.consecutiveContinuations,
+            maxContinuations: MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
+          },
+        });
+      });
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), issueId: stop.issueId, agentId: stop.agentId },
+        "continuation cap: could not park the issue as blocked",
+      );
+    }
+  }
+
   const wakeStormGuard = new WakeStormGuard();
 
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
@@ -30891,6 +30949,9 @@ export function heartbeatService(
       // admission cancelled under a bypassed hold. Applied only once the
       // transaction has committed; emptied if it is rolled back.
       const doomedWaitingRunEffects: PostCommitEffect[] = [];
+      // myrmidon(OPE-11948): issues whose continuation cap was reached inside
+      // this admission. Parked as blocked only after the transaction committed.
+      const continuationCapStops: ContinuationCapStop[] = [];
 
       const outcome = await db
         .transaction(async (tx) => {
@@ -32119,6 +32180,95 @@ export function heartbeatService(
             source === "automation" &&
             (opts.requestedByActorType === "system" || !opts.requestedByActorType)
           ) {
+            // myrmidon(OPE-11948): an automatic continuation is for an issue that
+            // can be worked on right now. A backlog / blocked / in_review / done
+            // issue, or one assigned to someone else, gets no continuation wake:
+            // the recovery sweep and the release tail read the issue before this
+            // lock, and an agent's own bookkeeping flips the status in between.
+            // A continuation that answers a resolved interaction card is a
+            // person's doing: it may also run in_review and is not counted.
+            const interactionContinuation = Boolean(
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+                readNonEmptyString(payload?.interactionId),
+            );
+            if (!isContinuationActionable(issue, agentId, { interaction: interactionContinuation })) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_state_guard_mismatch",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  continuationSkipped: "issue_not_actionable",
+                  heartbeatSkip: {
+                    reason:
+                      "An automatic continuation needs an actionable issue assigned to the woken agent.",
+                    issueId: issue.id,
+                    expectedStatuses: [...continuationStatusesFor(interactionContinuation)],
+                    actualStatus: issue.status,
+                    expectedAssigneeAgentId: agentId,
+                    actualAssigneeAgentId: issue.assigneeAgentId,
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              return { kind: "skipped" as const };
+            }
+
+            // myrmidon(OPE-11948): the real attempt counter. Succeeded
+            // continuation runs of this (agent, issue) with no external input
+            // between them; the agent's own comments and updates do not reset
+            // it. At the cap no further continuation is enqueued and the issue
+            // is parked as blocked once this transaction has committed.
+            const continuationCap = interactionContinuation
+              ? null
+              : await readContinuationCap(tx as unknown as Db, {
+                  companyId: agent.companyId,
+                  issueId: issue.id,
+                  agentId,
+                });
+            if (continuationCap?.capped) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_rewake_throttled",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  continuationSkipped: "continuation_cap_reached",
+                  heartbeatSkip: {
+                    reason: "continuation_cap_reached",
+                    requestedReason: reason,
+                    consecutiveContinuations: continuationCap.count,
+                    maxContinuations: continuationCap.max,
+                    issueId: issue.id,
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              continuationCapStops.push({
+                companyId: issue.companyId,
+                issueId: issue.id,
+                agentId,
+                consecutiveContinuations: continuationCap.count,
+              });
+              return { kind: "skipped" as const };
+            }
+
             const recoveryParentRunId =
               readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
               readNonEmptyString(payload?.retryOfRunId) ??
@@ -33042,10 +33192,15 @@ export function heartbeatService(
             // The transaction rolled back, and so did any waiting run it
             // cancelled: there is nothing to publish for it.
             doomedWaitingRunEffects.length = 0;
+            continuationCapStops.length = 0;
             return { kind: "deferred" as const };
           }
           throw error;
         });
+
+      for (const stop of continuationCapStops) {
+        await applyContinuationCapStop(stop);
+      }
 
       // Telemetry for the cancelled runs is best-effort background work.
       // Fire it here and never await it: none of the lifecycle work below,

@@ -162,6 +162,12 @@ export type QueuedRunFacts = {
   isPendingInteractionAddresseeWake?: boolean;
   isAuthorizedSourceScopedRecovery: boolean;
   isProductiveContinuationRecovery?: boolean;
+  /**
+   * myrmidon(OPE-11948): the run is an automatic `issue_continuation_needed`
+   * wake of the system — no comment, no resume intent, no interaction. It is
+   * only worth starting while the issue is todo or in_progress.
+   */
+  isAutomaticContinuationWake?: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
   resumeIntent: boolean;
@@ -686,6 +692,27 @@ export function decideQueuedRunStaleness(
       errorCode: "queued_run_issue_not_startable",
       reason: `Cancelled because issue is not startable (status: ${facts.issueStatus}) before the queued run could start`,
       details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
+    };
+  }
+  // myrmidon(OPE-11948): a queued automatic continuation outlives the state it
+  // was created for — the issue can have been parked (blocked) or sent to
+  // review since. Such a wake must die here instead of costing a session.
+  // Ownership was decided above; terminal and backlog have their own codes.
+  if (
+    facts.isAutomaticContinuationWake &&
+    facts.issueStatus !== null &&
+    facts.issueStatus !== "todo" &&
+    facts.issueStatus !== "in_progress"
+  ) {
+    return {
+      stale: true,
+      errorCode: "issue_not_in_progress",
+      reason: `Cancelled because an automatic continuation needs a todo or in_progress issue (current status: ${facts.issueStatus}) before the queued run could start`,
+      details: {
+        issueId: facts.issueId,
+        currentStatus: facts.issueStatus,
+        requiredStatuses: ["todo", "in_progress"],
+      },
     };
   }
   if (statusOutcome === "not_in_progress") {
