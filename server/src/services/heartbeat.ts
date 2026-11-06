@@ -886,6 +886,7 @@ import {
   buildRunQueuedPayload,
   listAgentsWithQueuedRunsAndNoRunningRun,
   queuedResweepArmDecision,
+  resolveStaleQueuedRunIssueId,
   startQueuedResweepTimer,
   type RunQueuedBus,
 } from "../myrmidon/run-dispatch/index.js";
@@ -22171,10 +22172,18 @@ export function heartbeatService(
     listQueuedAgents: async ({ cutoff }) => listAgentsWithQueuedRunsAndNoRunningRun(db, { cutoff }),
     startNextQueuedRunForAgent: (agentId, options) => startNextQueuedRunForAgent(agentId, options),
     listStaleQueuedRuns: async ({ executionCutoff, staleAfterMs }) => {
-      const staleRuns = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId, createdAt: heartbeatRuns.createdAt })
+      const staleRuns = await db.select({
+        id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId, createdAt: heartbeatRuns.createdAt,
+        // myrmidon(OPE-11947): the task the run stood on, so the wake after its
+        // cancellation can resume it.
+        contextSnapshot: heartbeatRuns.contextSnapshot, contextIssueId: heartbeatRuns.contextIssueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+      })
         .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, new Date(Date.now() - staleAfterMs)), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
         .orderBy(asc(heartbeatRuns.createdAt)).limit(200);
-      return staleRuns;
+      return staleRuns.map((row) => ({
+        id: row.id, agentId: row.agentId, companyId: row.companyId, createdAt: row.createdAt,
+        issueId: resolveStaleQueuedRunIssueId(row),
+      }));
     },
     createCancelStaleQueuedRun: async (run, staleAfterMs) => {
       const outcome = await runDispatch.cancelStaleQueuedRun({
@@ -22185,12 +22194,19 @@ export function heartbeatService(
       applyRunDispatchPostCommitEffects(outcome.postCommitEffects);
       return true;
     },
-    wakeAgent: async (agentId, companyId) => {
+    wakeAgent: async (agentId, companyId, { issueId }) => {
+      // myrmidon(OPE-11947): resume the task the cancelled run stood on. The
+      // former `taskId: "system:queued-run-stale-timeout"` placeholder is not
+      // a UUID, so `lockIdentityTask` (run-identity.ts) failed every such wake
+      // at setup (`setup_failed`, "Run task identity is invalid"). A cancelled
+      // run that stood on no task has nothing to resume, and an automatic wake
+      // without a task is not allowed (INV-10): no wake then.
+      if (!issueId) return;
       await enqueueWakeup(agentId, {
         source: "automation",
         reason: "queued_run_stale_timeout",
-        payload: { companyId },
-        contextSnapshot: { taskId: "system:queued-run-stale-timeout" },
+        payload: { companyId, issueId },
+        contextSnapshot: { issueId, taskKey: issueId },
       });
     },
     loadSettings: () => loadRunDispatchSettings(db),
