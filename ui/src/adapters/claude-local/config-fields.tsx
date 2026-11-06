@@ -27,6 +27,7 @@ export function ClaudeLocalConfigFields({
   mark,
   models,
   hideInstructionsFile,
+  managedSandboxOnly,
 }: AdapterConfigFieldsProps) {
   const { t } = useTranslation();
   return configFieldsForSection(section, (
@@ -67,6 +68,7 @@ export function ClaudeLocalConfigFields({
         mode={mode}
         adapterType={adapterType}
         models={models}
+        managedSandboxOnly={managedSandboxOnly}
       />
     </>
   ));

@@ -16,6 +16,13 @@ import {
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
+// Protocol tokens the adapter sends when the field is left empty (execute.ts DEFAULT_CLIENT_*).
+const CLIENT_IDENTITY_DEFAULTS = {
+  clientId: "gateway-client",
+  clientMode: "backend",
+  clientVersion: "paperclip",
+} as const;
+
 function HeadersJsonTextarea({
   isCreate,
   createDraft,
@@ -206,6 +213,22 @@ export function OpenClawGatewayConfigFields({
           placeholder={t("area.adapters-plugins-1.openclaw-gateway.fields.agentIdPlaceholder")}
         />
       </Field>
+
+      {(["clientId", "clientMode", "clientVersion"] as const).map((field) => (
+        <Field key={field} label={t(`area.adapters-plugins-1.openclaw-gateway.fields.${field}Label`)}>
+          <DraftInput
+            placeholder={CLIENT_IDENTITY_DEFAULTS[field]}
+            value={isCreate
+              ? values![field] ?? ""
+              : eff("adapterConfig", field, String(config[field] ?? ""))}
+            onCommit={(value) => isCreate
+              ? set!({ [field]: value })
+              : mark("adapterConfig", field, value || undefined)}
+            immediate
+            className={inputClass}
+          />
+        </Field>
+      ))}
 
       <Field label={t("area.adapters-plugins-1.openclaw-gateway.fields.sessionStrategyLabel")}>
         <select

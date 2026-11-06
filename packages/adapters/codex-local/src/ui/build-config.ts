@@ -66,6 +66,19 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  // myrmidon(1.6.6 OPE-11239): sandbox and timeout settings from the Agent Settings form.
+  const form = v.adapterSchemaValues ?? {};
+  if (form.filesystemScope === "workspace") ac.filesystemScope = "workspace";
+  if (Array.isArray(form.filesystemExtraPaths) && form.filesystemExtraPaths.length > 0) {
+    ac.filesystemExtraPaths = form.filesystemExtraPaths;
+  }
+  if (form.networkScope === "deny" || form.networkScope === "allowlist") ac.networkScope = form.networkScope;
+  if (Array.isArray(form.networkAllowlist) && form.networkAllowlist.length > 0) {
+    ac.networkAllowlist = form.networkAllowlist;
+  }
+  if (typeof form.outputInactivityTimeoutMs === "number" && form.outputInactivityTimeoutMs > 0) {
+    ac.outputInactivityTimeoutMs = form.outputInactivityTimeoutMs;
+  }
   return ac;
 }
 
@@ -87,6 +100,11 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "fastMode",
     "command",
     "extraArgs",
+    "filesystemScope",
+    "filesystemExtraPaths",
+    "networkScope",
+    "networkAllowlist",
+    "outputInactivityTimeoutMs",
   ]) {
     delete config[unsupportedKey];
     delete schemaValues[unsupportedKey];
