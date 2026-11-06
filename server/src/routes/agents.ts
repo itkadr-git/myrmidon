@@ -5180,6 +5180,47 @@ function getActorIdentityPart(req: Request): string {
     // check below. The gate applies only when the request carries `boardAdmin`,
     // so ordinary permission updates keep their existing behavior.
     const requestedBoardAdmin = req.body.boardAdmin as boolean | undefined;
+    // myrmidon(1.6.6 SETTINGS-UI / OPE-11237): modifying agent authorizationPolicy requires
+    // explicit users:manage_permissions and prohibits agents from modifying their own policy.
+    const requestedAuthPolicy = req.body.authorizationPolicy as Record<string, unknown> | null | undefined;
+    if (requestedAuthPolicy !== undefined) {
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId) {
+          res.status(403).json({ error: "Agent authentication required" });
+          return;
+        }
+        if (req.actor.agentId === existing.id) {
+          res.status(403).json({ error: "An agent cannot modify its own authorization policy" });
+          return;
+        }
+        if (
+          !(await access.hasPermission(
+            existing.companyId,
+            "agent",
+            req.actor.agentId,
+            "users:manage_permissions",
+          ))
+        ) {
+          res.status(403).json({ error: "Missing users:manage_permissions grant" });
+          return;
+        }
+      } else {
+        if (!hasCompanyAccess(req, existing.companyId)) throw notFound("Agent not found");
+        assertCompanyAccess(req, existing.companyId);
+        const isLocalImplicitActor =
+          req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+        if (!isLocalImplicitActor) {
+          const allowed = await access.canUser(
+            existing.companyId,
+            req.actor.userId,
+            "users:manage_permissions",
+          );
+          if (!allowed) {
+            throw forbidden("Missing users:manage_permissions permission for the company");
+          }
+        }
+      }
+    }
     // myrmidon(1.6.5-F-23): the off-run self-secret toggle is board-only.
     if (req.body.offRunSecretRead !== undefined && req.actor.type !== "board") {
       res.status(403).json({ error: "Only board actors can manage off-run secret read grants" });

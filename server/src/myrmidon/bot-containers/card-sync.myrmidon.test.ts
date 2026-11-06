@@ -241,4 +241,18 @@ describe("myrmidon(W2a) createBotCardSync", () => {
     expect(plan.adapterConfig.apiBaseUrl).toBe("http://192.0.2.110:18701");
     expect(plan.changedKeys).toContain("apiBaseUrl");
   });
+
+  it("syncs card apiBaseUrl with https fleetd site from registry to http gateway apiBaseUrl", async () => {
+    const { ports, saved } = fakePorts({
+      adapterType: "hermes_gateway",
+      container: { host: "site-alpha" },
+      apiBaseUrl: "http://old-gateway:18700",
+    });
+    ports.fleetSiteUrl = async (_cid, host) => (host === "site-alpha" ? "https://site-alpha.example:9100" : null);
+    ports.status = async () => ({ botKey: "agent-a", state: "running", gatewayPort: 18701 });
+    const syncCard = createBotCardSync(ports);
+    const result = await syncCard("agent-a", "agent-a", TARGET_VERSION);
+    expect(result.changedKeys).toContain("apiBaseUrl");
+    expect(saved.at(-1)?.apiBaseUrl).toBe("http://site-alpha.example:18701");
+  });
 });

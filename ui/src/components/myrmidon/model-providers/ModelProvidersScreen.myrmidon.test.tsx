@@ -34,6 +34,10 @@ vi.mock("./modelProvidersApi", async (importOriginal) => ({
     updateModels: vi.fn(),
     channels: vi.fn(),
     litellmChannels: vi.fn(),
+    oauthBegin: vi.fn(),
+    oauthStatus: vi.fn(),
+    oauthComplete: vi.fn(),
+    oauthRefresh: vi.fn(),
   },
 }));
 
@@ -127,6 +131,15 @@ beforeEach(() => {
     ],
   });
   vi.mocked(modelProvidersApi.litellmChannels).mockResolvedValue({ channels: [] });
+  vi.mocked(modelProvidersApi.oauthBegin).mockResolvedValue({
+    accountNumber: 1,
+    userCode: "TEST-CODE",
+    verificationUri: "https://auth.openai.com/codex/device",
+    expiresInSec: 900,
+    intervalSec: 5,
+  });
+  vi.mocked(modelProvidersApi.oauthComplete).mockResolvedValue({ ok: true, accountNumber: 1 });
+  vi.mocked(modelProvidersApi.oauthRefresh).mockResolvedValue({ ok: true, accountNumber: 1 });
 });
 
 afterEach(() => {
@@ -426,6 +439,159 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     const channelModelsEl = container.querySelector('[data-testid="myrmidon-pool-channel-models-1"]');
     expect(channelModelsEl).toBeTruthy();
     expect(channelModelsEl?.textContent).toBe("gpt-4o, o1-mini, o1-preview");
+  });
+
+  it("renders Plus, Pro, K-12 plans and excludes K-12 disabled accounts (1.6.6 OPE-10810)", async () => {
+    vi.mocked(modelProvidersApi.channels).mockResolvedValue({
+      providerId: "prov-pool",
+      providerType: "chatgpt-pool",
+      channels: [
+        {
+          n: 1,
+          label: "ChatGPT Plus #1",
+          plan: "plus",
+          state: "active",
+          stateRu: "Активен",
+          limitedUntil: null,
+          lastOk: 1700000000,
+          windows: {
+            primary: { usedPct: 15, windowMin: 300, resetsAt: 1700018000 },
+            secondary: { usedPct: 10, windowMin: 10080, resetsAt: 1700600000 },
+          },
+          isBanned: false,
+          isExhausted: false,
+          isDisabled: false,
+        },
+        {
+          n: 2,
+          label: "ChatGPT Pro #2",
+          plan: "pro",
+          state: "active",
+          stateRu: "Активен",
+          limitedUntil: null,
+          lastOk: 1700000000,
+          windows: {
+            primary: { usedPct: 90, windowMin: 300, resetsAt: 1700018000 },
+            secondary: { usedPct: 80, windowMin: 10080, resetsAt: 1700600000 },
+          },
+          isBanned: false,
+          isExhausted: false,
+          isDisabled: false,
+        },
+        {
+          n: 3,
+          label: "ChatGPT K-12 #3",
+          plan: "k-12",
+          state: "disabled",
+          stateRu: "Отключен (K-12)",
+          limitedUntil: null,
+          lastOk: null,
+          windows: { primary: null, secondary: null },
+          isBanned: false,
+          isExhausted: false,
+          isDisabled: true,
+          isExcluded: true,
+        },
+      ],
+      signals: [],
+      summary: {
+        total: 3,
+        live: 2,
+        exhausted: 0,
+        banned: 0,
+        disabled: 1,
+        nextResetAt: null,
+      },
+    });
+
+    const poolView: ModelProvidersView = {
+      providers: [
+        {
+          id: "prov-pool",
+          type: "chatgpt-pool",
+          name: "ChatGPT Codex Pool",
+          baseUrl: "http://localhost:8895",
+          hasKey: true,
+          free: false,
+          createdAt: "2026-10-14T00:00:00.000Z",
+          updatedAt: "2026-10-14T00:00:00.000Z",
+        },
+      ],
+      changeLog: [],
+    };
+
+    const { root: r } = render({ view: poolView });
+    root = r;
+    await flushReact();
+
+    const plan1 = container.querySelector('[data-testid="myrmidon-pool-channel-plan-1"]');
+    const plan2 = container.querySelector('[data-testid="myrmidon-pool-channel-plan-2"]');
+    const plan3 = container.querySelector('[data-testid="myrmidon-pool-channel-plan-3"]');
+    expect(plan1?.textContent).toBe("PLUS");
+    expect(plan2?.textContent).toBe("PRO");
+    expect(plan3?.textContent).toBe("K-12");
+
+    const disabledSummary = container.querySelector('[data-testid="myrmidon-pool-summary-disabled"]');
+    expect(disabledSummary?.textContent).toContain("1 disabled");
+
+    expect(container.textContent).toContain("Отключен (K-12)");
+  });
+
+  it("handles Codex OAuth begin, code display, and completion (1.6.6 OPE-10810)", async () => {
+    vi.mocked(modelProvidersApi.channels).mockResolvedValue({
+      providerId: "prov-pool",
+      providerType: "chatgpt-pool",
+      channels: [],
+      signals: [],
+      summary: { total: 0, live: 0, exhausted: 0, banned: 0, disabled: 0, nextResetAt: null },
+    });
+
+    const poolView: ModelProvidersView = {
+      providers: [
+        {
+          id: "prov-pool",
+          type: "chatgpt-pool",
+          name: "ChatGPT Codex Pool",
+          baseUrl: "http://localhost:8895",
+          hasKey: true,
+          free: false,
+          createdAt: "2026-10-14T00:00:00.000Z",
+          updatedAt: "2026-10-14T00:00:00.000Z",
+        },
+      ],
+      changeLog: [],
+    };
+
+    const { root: r } = render({ view: poolView });
+    root = r;
+    await flushReact();
+
+    const beginBtn = container.querySelector('[data-testid="myrmidon-pool-oauth-begin-btn-prov-pool"]');
+    expect(beginBtn).toBeTruthy();
+
+    await act(async () => {
+      beginBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(modelProvidersApi.oauthBegin).toHaveBeenCalledWith(COMPANY_ID, "prov-pool");
+
+    const codeEl = container.querySelector('[data-testid="myrmidon-pool-oauth-code-prov-pool"]');
+    const uriEl = container.querySelector('[data-testid="myrmidon-pool-oauth-uri-prov-pool"]');
+    expect(codeEl?.textContent).toBe("TEST-CODE");
+    expect(uriEl?.textContent).toBe("https://auth.openai.com/codex/device");
+
+    const completeBtn = container.querySelector('[data-testid="myrmidon-pool-oauth-complete-btn-prov-pool"]');
+    expect(completeBtn).toBeTruthy();
+
+    await act(async () => {
+      completeBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(modelProvidersApi.oauthComplete).toHaveBeenCalledWith(COMPANY_ID, "prov-pool", {
+      accountNumber: 1,
+    });
   });
 
   it("omits chatgpt-pool from type select when availableTypes excludes it", async () => {

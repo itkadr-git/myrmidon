@@ -1200,7 +1200,22 @@ function dockerRequest(
 }
 
 function describeFailure(what: string, res: DockerHttpResponse): Error {
-  return new Error(`${what} failed: ${res.status} ${res.body.toString("utf8").slice(0, 300)}`);
+  const raw = res.body.toString("utf8");
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof parsed.message === "string") {
+      const match = parsed.message.match(/dockergate:\s*denied\s*\(([^)]+)\)/);
+      if (match) {
+        const code = match[1];
+        if (code === "limit_exceeds_ceiling") {
+          return new Error(`${what} failed: requested resource limits exceed platform ceiling (dockergate: denied limit_exceeds_ceiling)`);
+        }
+      }
+    }
+  } catch {
+    // ignore parse error, fallback to raw status/body
+  }
+  return new Error(`${what} failed: ${res.status} ${raw.slice(0, 300)}`);
 }
 
 function realSleep(ms: number): Promise<void> {
@@ -1752,6 +1767,26 @@ export function dockerBotContainerDriver(
   }
 
   async function updateResources(spec: BotContainerSpec): Promise<void> {
+    // 1. Update dockergate bots[] configuration and reload in-memory runtime ceilings.
+    // If running against plain Docker without dockergate (404), skip dockergate update.
+    const configRes = await requestWithRateLimitRetry({
+      method: "PUT",
+      path: `/containers/${nameSegment(containerNameFor(spec.botKey))}/config/update`,
+      body: Buffer.from(
+        JSON.stringify({
+          botKey: spec.botKey,
+          memoryMb: spec.memoryMb,
+          cpus: spec.cpus,
+          pidsLimit: spec.pidsLimit,
+        }),
+      ),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (configRes.status >= 400 && configRes.status !== 404) {
+      throw describeFailure(`update resource ceilings for ${spec.botKey}`, configRes);
+    }
+
+    // 2. Apply updated resources to the live container via Docker update API.
     const body: DockerUpdateContainerBody = {
       Memory: Math.round(spec.memoryMb * 1024 * 1024),
       MemorySwap: Math.round(spec.memoryMb * 2 * 1024 * 1024),

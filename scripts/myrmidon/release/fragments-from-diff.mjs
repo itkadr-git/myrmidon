@@ -43,7 +43,7 @@ const DOCS = {
   "settings-en": { rel: "docs/myrmidon/SETTINGS.md" },
   "settings-ru": { rel: "docs/myrmidon/SETTINGS.ru.md" },
 };
-const isRow = (l) => l.trimStart().startsWith("|");
+const isRow = (l) => /^\s*(?:\d+i)?\|/.test(l);
 const isBlank = (l) => !l.trim();
 
 /** Parses `git diff -U0` output of one file into hunks. */

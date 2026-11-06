@@ -1,6 +1,6 @@
 import { buildContinuationKey } from "@myrmidon/shared";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueContinuationKeys, issues, type Db } from "@myrmidon/db";
 import { heartbeatService } from "./heartbeat.js";
@@ -234,6 +234,24 @@ const support = await getEmbeddedPostgresTestSupport();
         assigneeAgentId: hbAgentId,
         responsibleUserId: "responsible-user",
       });
+    });
+
+    // myrmidon(OPE-11948): the scenarios share one issue. A run of an earlier
+    // scenario fails on the unconfigured test adapter, and the release recovery
+    // then parks the shared issue as blocked. An automatic continuation is not
+    // admitted for a blocked issue, so each scenario starts from the in_progress
+    // issue it is written for.
+    beforeEach(async () => {
+      await db
+        .update(issues)
+        .set({
+          status: "in_progress",
+          assigneeAgentId: hbAgentId,
+          blockerMetadata: null,
+          unblockDescriptor: null,
+          blockedTransitionAt: null,
+        })
+        .where(eq(issues.id, hbIssueId));
     });
 
     it("absence of new event after prior run does not wake model (skipped with no_new_issue_input)", async () => {

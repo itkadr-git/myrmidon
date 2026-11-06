@@ -51,17 +51,27 @@ func errForbidden(reason string) error {
 
 func errConflict(reason string) error { return &apiError{status: http.StatusConflict, reason: reason} }
 
-func (s *server) imageAllowed(image string) bool {
-	if !strings.Contains(image, "@sha256:") {
+// isImageAllowed verifies that the image specifies a non-empty sha256 digest and matches
+// either an exact allowed entry or an allowed pattern ending with '*' (e.g. 'repo@sha256:*').
+func isImageAllowed(image string, allowedImages []string) bool {
+	if len(allowedImages) == 0 {
 		return false
 	}
-	for _, allowed := range s.cfg.Images {
-		prefix, _, ok := strings.Cut(allowed, "*")
-		if (ok && strings.HasPrefix(image, prefix)) || (!ok && image == allowed) {
+	repo, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || repo == "" || digest == "" || strings.ContainsAny(image, " 	\r\n") {
+		return false
+	}
+	for _, allowed := range allowedImages {
+		prefix, _, hasWildcard := strings.Cut(allowed, "*")
+		if (hasWildcard && strings.HasPrefix(image, prefix)) || (!hasWildcard && image == allowed) {
 			return true
 		}
 	}
 	return false
+}
+
+func (s *server) imageAllowed(image string) bool {
+	return isImageAllowed(image, s.cfg.Images)
 }
 
 // botVolumes are the per-bot directories under volumeRoot/<botKey> that the

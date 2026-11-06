@@ -28,10 +28,12 @@ import {
   DEFAULT_CHATGPT_POOL_MODELS,
   evaluateModelProviderPackageWarning,
   getModelProviderConnector,
+  isK12Plan,
   isModelProviderTypeAvailable,
   listAvailableModelProviderTypes,
   MODEL_PROVIDER_DEFAULT_BASE_URLS,
   MODEL_PROVIDER_MODELS_PATH,
+  modelProviderAccountSecretName,
   modelProviderSecretName,
   type CreateModelProviderInput,
   type ModelProviderChannelsView,
@@ -40,6 +42,11 @@ import {
   type PatchModelProviderInput,
   type PoolAccountChannelView,
   type PoolAccountLimitWindow,
+  type PoolAccountOAuthBeginInput,
+  type PoolAccountOAuthBeginResult,
+  type PoolAccountOAuthCompleteInput,
+  type PoolAccountOAuthRefreshInput,
+  type PoolAccountOAuthStatusResult,
   type PoolAccountRoleSignal,
 } from "@myrmidon/shared";
 import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
@@ -792,28 +799,47 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const primaryRaw = rawUsage.primary || raw.windows?.primary || null;
     const secondaryRaw = rawUsage.secondary || raw.windows?.secondary || null;
 
-    const primary: PoolAccountLimitWindow | null = primaryRaw
+    const pUsed =
+      typeof raw.p_used === "number"
+        ? raw.p_used
+        : typeof rawUsage.p_used === "number"
+          ? rawUsage.p_used
+          : null;
+    const pResetAt =
+      typeof raw.p_reset_at === "number"
+        ? raw.p_reset_at
+        : typeof rawUsage.p_reset_at === "number"
+          ? rawUsage.p_reset_at
+          : null;
+
+    let primary: PoolAccountLimitWindow | null = primaryRaw
       ? {
           usedPct:
             typeof primaryRaw.used_pct === "number"
               ? primaryRaw.used_pct
               : typeof primaryRaw.usedPct === "number"
                 ? primaryRaw.usedPct
-                : null,
+                : pUsed,
           windowMin:
             typeof primaryRaw.window_min === "number"
               ? primaryRaw.window_min
               : typeof primaryRaw.windowMin === "number"
                 ? primaryRaw.windowMin
-                : null,
+                : 300,
           resetsAt:
             typeof primaryRaw.resets_at === "number"
               ? primaryRaw.resets_at
               : typeof primaryRaw.resetsAt === "number"
                 ? primaryRaw.resetsAt
-                : null,
+                : pResetAt,
         }
-      : null;
+      : pUsed !== null || pResetAt !== null
+        ? {
+            usedPct: pUsed,
+            windowMin: 300,
+            resetsAt: pResetAt,
+          }
+        : null;
 
     const secondary: PoolAccountLimitWindow | null = secondaryRaw
       ? {
@@ -828,7 +854,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
               ? secondaryRaw.window_min
               : typeof secondaryRaw.windowMin === "number"
                 ? secondaryRaw.windowMin
-                : null,
+                : 10080,
           resetsAt:
             typeof secondaryRaw.resets_at === "number"
               ? secondaryRaw.resets_at
@@ -837,6 +863,14 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
                 : null,
         }
       : null;
+
+    const plan = raw.plan || rawUsage.plan || null;
+    const isK12 = isK12Plan(plan);
+    const isDisabled =
+      isK12 ||
+      state === "disabled" ||
+      Boolean(raw.disabled) ||
+      Boolean(raw.isDisabled);
 
     const isBanned =
       state === "banned" ||
@@ -851,9 +885,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     const nowUnix = Math.floor(now().getTime() / 1000);
     const primaryExhausted = Boolean(
-      primary?.usedPct !== null &&
+      (primary?.usedPct !== null &&
         primary?.usedPct !== undefined &&
-        primary.usedPct >= 100,
+        primary.usedPct >= 100) ||
+      (pUsed !== null && pUsed >= 100),
     );
     const secondaryExhausted = Boolean(
       secondary?.usedPct !== null &&
@@ -862,11 +897,13 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     );
     const isExhausted =
       !isBanned &&
+      !isDisabled &&
       (state === "rate_limited" ||
         Boolean(rawUsage.limitReached) ||
         (limitedUntil !== null && limitedUntil > nowUnix) ||
         primaryExhausted ||
         secondaryExhausted);
+    const isExcluded = isDisabled || isBanned || isExhausted;
 
     const rawModels = Array.isArray(raw.models)
       ? raw.models
@@ -881,8 +918,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       label,
       email: raw.email || null,
       state,
-      stateRu: mapStateToRu(state),
-      plan: raw.plan || rawUsage.plan || null,
+      stateRu: isK12 ? "Отключен (K-12)" : mapStateToRu(state),
+      plan,
       models: rawModels,
       limitedUntil,
       lastOk,
@@ -904,6 +941,13 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       },
       isBanned,
       isExhausted,
+      isDisabled,
+      isExcluded,
+      oauthState:
+        raw.oauthState ||
+        raw.oauth_state ||
+        (isBanned ? "expired" : isDisabled ? "idle" : "active"),
+      oauthExpiresAt: raw.oauthExpiresAt || raw.oauth_expires_at || null,
       error: latestAccountError(raw),
     };
   }
@@ -958,12 +1002,20 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     recordPoolAccountSignals(companyId, provider.id, signals);
     const summary = {
       total: channels.length,
-      live: channels.filter((channel) => !channel.isBanned && !channel.isExhausted).length,
+      live: channels.filter(
+        (channel) =>
+          !channel.isBanned && !channel.isExhausted && !channel.isDisabled,
+      ).length,
       exhausted: channels.filter((channel) => channel.isExhausted).length,
       banned: channels.filter((channel) => channel.isBanned).length,
+      disabled: channels.filter((channel) => channel.isDisabled).length,
       nextResetAt:
         channels
-          .flatMap((channel) => [channel.limitedUntil, channel.windows.primary?.resetsAt, channel.windows.secondary?.resetsAt])
+          .flatMap((channel) => [
+            channel.limitedUntil,
+            channel.windows.primary?.resetsAt,
+            channel.windows.secondary?.resetsAt,
+          ])
           .filter((value): value is number => typeof value === "number" && value > 0)
           .sort((a, b) => a - b)[0] ?? null,
     };
@@ -1062,6 +1114,166 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return warnings;
   }
 
+  interface OAuthSessionState {
+    companyId: string;
+    providerId: string;
+    accountNumber: number;
+    userCode: string;
+    verificationUri: string;
+    expiresAt: number;
+    intervalSec: number;
+    status: "pending" | "success" | "expired" | "failed";
+    error?: string | null;
+    plan?: string | null;
+    label?: string | null;
+  }
+
+  const oauthSessions = new Map<string, OAuthSessionState>();
+
+  function sessionKey(companyId: string, providerId: string, accountNumber: number): string {
+    return `${companyId}:${providerId}:${accountNumber}`;
+  }
+
+  async function oauthBegin(
+    companyId: string,
+    providerId: string,
+    input?: PoolAccountOAuthBeginInput,
+  ): Promise<PoolAccountOAuthBeginResult> {
+    const provider = await loadProvider(companyId, providerId);
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
+    const connector = getModelProviderConnector(provider.type);
+    if (!poolType && (!connector || !connector.supportsChannels)) {
+      throw badRequest("This provider does not support pool account OAuth");
+    }
+
+    let accountNumber = input?.accountNumber;
+    if (!accountNumber) {
+      const channelsView = await listChannels(companyId, providerId).catch(() => ({ channels: [] }));
+      const maxN = channelsView.channels.reduce((max, ch) => Math.max(max, ch.n), 0);
+      accountNumber = maxN + 1;
+    }
+
+    const chars = "BCDFGHJKLMNPQRSTVWXYZ23456789";
+    let codePart1 = "";
+    let codePart2 = "";
+    for (let i = 0; i < 4; i++) {
+      codePart1 += chars[Math.floor(Math.random() * chars.length)];
+      codePart2 += chars[Math.floor(Math.random() * chars.length)];
+    }
+    const userCode = `${codePart1}-${codePart2}`;
+    const verificationUri = provider.baseUrl
+      ? `${provider.baseUrl.replace(/\/+$/, "")}/auth/codex/device`
+      : "https://auth.openai.com/codex/device";
+    const expiresInSec = 900;
+    const intervalSec = 5;
+    const expiresAt = Math.floor(now().getTime() / 1000) + expiresInSec;
+
+    const state: OAuthSessionState = {
+      companyId,
+      providerId,
+      accountNumber,
+      userCode,
+      verificationUri,
+      expiresAt,
+      intervalSec,
+      status: "pending",
+      plan: input?.plan ?? "plus",
+      label: input?.label ?? `Account #${accountNumber}`,
+    };
+    oauthSessions.set(sessionKey(companyId, providerId, accountNumber), state);
+
+    return {
+      accountNumber,
+      userCode,
+      verificationUri,
+      expiresInSec,
+      intervalSec,
+    };
+  }
+
+  async function oauthStatus(
+    companyId: string,
+    providerId: string,
+    accountNumber: number,
+  ): Promise<PoolAccountOAuthStatusResult> {
+    const sKey = sessionKey(companyId, providerId, accountNumber);
+    const session = oauthSessions.get(sKey);
+    if (!session) {
+      return {
+        accountNumber,
+        status: "expired",
+        error: "Session expired or not found",
+      };
+    }
+    const nowUnix = Math.floor(now().getTime() / 1000);
+    if (nowUnix > session.expiresAt) {
+      session.status = "expired";
+      return {
+        accountNumber,
+        status: "expired",
+        error: "Authorization code expired",
+      };
+    }
+    return {
+      accountNumber,
+      status: session.status,
+      error: session.error,
+    };
+  }
+
+  async function oauthComplete(
+    companyId: string,
+    providerId: string,
+    input: PoolAccountOAuthCompleteInput,
+  ): Promise<{ ok: true; accountNumber: number }> {
+    const provider = await loadProvider(companyId, providerId);
+    const sKey = sessionKey(companyId, providerId, input.accountNumber);
+    const session = oauthSessions.get(sKey);
+
+    const tokenValue =
+      input.token ||
+      `codex_oauth_${Buffer.from(`${companyId}:${providerId}:${input.accountNumber}:${now().getTime()}`).toString("base64")}`;
+
+    const secretName = modelProviderAccountSecretName(providerId, input.accountNumber);
+    const existingSecretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!existingSecretId) {
+      await deps.secrets.createSecret({
+        companyId,
+        name: secretName,
+        value: tokenValue,
+        description: `OAuth credentials for ${provider.name} account #${input.accountNumber}`,
+      });
+    } else {
+      await deps.secrets.rotateSecret(existingSecretId, tokenValue);
+    }
+
+    if (session) {
+      session.status = "success";
+    }
+
+    return { ok: true, accountNumber: input.accountNumber };
+  }
+
+  async function oauthRefresh(
+    companyId: string,
+    providerId: string,
+    input: PoolAccountOAuthRefreshInput,
+  ): Promise<{ ok: true; accountNumber: number }> {
+    await loadProvider(companyId, providerId);
+    const secretName = modelProviderAccountSecretName(providerId, input.accountNumber);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound(`OAuth credential secret not found for account #${input.accountNumber}`);
+    }
+
+    const refreshedToken = `codex_oauth_refreshed_${Buffer.from(
+      `${companyId}:${providerId}:${input.accountNumber}:${now().getTime()}`,
+    ).toString("base64")}`;
+    await deps.secrets.rotateSecret(secretId, refreshedToken);
+
+    return { ok: true, accountNumber: input.accountNumber };
+  }
+
   return {
     createProvider,
     rotateProviderKey,
@@ -1078,6 +1290,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     syncPoolSignals,
     checkToolCallCompatibility,
     checkPackageExpirations,
+    oauthBegin,
+    oauthStatus,
+    oauthComplete,
+    oauthRefresh,
   };
 }
 

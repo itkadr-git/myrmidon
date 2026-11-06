@@ -146,6 +146,8 @@ const support = await getEmbeddedPostgresTestSupport();
           context: { interruptedRunId: runId, wakeReason: "issue_assigned" }, summary: null, exposeLowTrustRaw: false });
         expect(envelope.trigger.sourceRunId).toBe(runId);
         expect(envelope.interruptedRunId).toBe(runId);
+        // myrmidon(WAKE-HISTORY): the run this wake continues and how it ended.
+        expect(envelope.previousRun).toEqual({ runId, status: "cancelled" });
         expect(envelope.completedWork).toBe("Created draft.md with three approved names.");
         expect(envelope.completedActions).toContainEqual({ runId, receiptId: "saved", operationId: "save_document", result: { documentId: "draft.md" } });
         expect(envelope.originCommentIds).toContain(gmailId);
@@ -201,6 +203,7 @@ const support = await getEmbeddedPostgresTestSupport();
       try {
         const envelope = await build();
         expect(envelope.interruptedRunId).toBe(runId);
+        expect(envelope.previousRun).toEqual({ runId, status: "interrupted" });
       } finally {
         await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, rejectedId));
         await db.update(heartbeatRuns).set({ status: "failed", errorCode: null }).where(eq(heartbeatRuns.id, runId));

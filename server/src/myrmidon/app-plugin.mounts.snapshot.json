@@ -85,6 +85,7 @@
   "api.use(boardJanitorRoutes(db))",
   "api.use(myrmidonReplayBlockedRoutes(db))",
   "api.use(aboutRoutes())",
+  "api.use(systemUpdatesRoutes())",
   "api.use(licensingRoutes({ installId: installIdProviderFor(db), installedModules: installedClosedModules(db) }))",
   "api.use(myrmidonBotContainerRoutes(db))",
   "api.use(myrmidonBrowserConsoleRoutes(db))",

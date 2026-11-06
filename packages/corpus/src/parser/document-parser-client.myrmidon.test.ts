@@ -75,7 +75,7 @@ function client(options: Partial<Parameters<typeof createDocumentParserClient>[0
   return createDocumentParserClient({
     baseUrl: service.baseUrl,
     pollIntervalMs: 1,
-    pollTimeoutMs: 2_000,
+    ...(options.parserTimeoutMs === undefined ? { pollTimeoutMs: 2_000 } : {}),
     sleep: async () => {},
     retry: fastRetries,
     ...options,
@@ -249,6 +249,37 @@ describe("document parser client", () => {
     expect(outcome.error).toBeInstanceOf(DocumentParserError);
     expect(outcome.error.kind).toBe("timeout");
     expect(outcome.error.retryable).toBe(true);
+  });
+
+  it("uses parserTimeoutMs for a long-running job when no dedicated poll timeout is set", async () => {
+    let currentTime = 0;
+    let polls = 0;
+    service.setHandler((request, response) => {
+      if (request.method === "POST") {
+        json(response, 202, { jobId: "long-job", status: "pending" });
+        return;
+      }
+      polls += 1;
+      if (polls === 1) {
+        currentTime = 120_001;
+        json(response, 200, { jobId: "long-job", status: "running" });
+        return;
+      }
+      json(response, 200, { jobId: "long-job", status: "succeeded", text: "finished after two minutes" });
+    });
+
+    const outcome = await client({
+      parserTimeoutMs: 600_000,
+      pollIntervalMs: 1,
+      now: () => currentTime,
+      sleep: async (milliseconds) => {
+        currentTime += milliseconds;
+      },
+    }).parseDocument(submission);
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.result.text).toBe("finished after two minutes");
+    expect(polls).toBe(2);
   });
 
   it("reports a job that never finishes as a retryable timeout", async () => {

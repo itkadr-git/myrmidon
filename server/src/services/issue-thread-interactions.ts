@@ -1035,8 +1035,9 @@ function buildAdministrativeOutcomeResult(
   outcome: "withdrawn" | "issue_closed" | "addressee_deleted",
   reason: string | null = null,
 ) {
+  const expirationReason = outcome === "issue_closed" ? "issue_closed" : undefined;
   if (row.kind === "connection_intent") {
-    return { version: 1, outcome: "expired", reason } as const;
+    return { version: 1, outcome: "expired", reason, expirationReason } as const;
   }
   if (row.kind === "ask_user_questions") {
     return {
@@ -1045,6 +1046,7 @@ function buildAdministrativeOutcomeResult(
       reason,
       answers: [],
       summaryMarkdown: null,
+      expirationReason,
     } as const;
   }
   if (row.kind === "request_item_verdicts") {
@@ -1057,12 +1059,14 @@ function buildAdministrativeOutcomeResult(
       reason,
       complete: false,
       items: interaction.result?.items ?? [],
+      expirationReason,
     } satisfies RequestItemVerdictsResult;
   }
   return {
     version: 1,
     outcome,
     reason,
+    expirationReason,
     ...(linkedSecretProposalId(row)
       ? {
           secretProposal: {
