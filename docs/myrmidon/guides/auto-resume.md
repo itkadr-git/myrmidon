@@ -23,12 +23,8 @@ A sweep pass runs on the scheduler tick, at most once a minute
 2. Skips an agent that is not invokable (paused, terminated, or with a broken
    reporting chain) or that sits inside a maintenance window. Such an agent
    stays in `error` until it becomes invokable again.
-   Also skips an agent whose last finished run is model-unavailable
-   (`resultJson.model_unavailable`: the model pool is out of quota or down,
-   including a provider quota or overload text returned as the answer). A
-   resume wakes every task the agent is stranded on and each new run fails
-   on the same quota; the model-unavailable retry policy (30 min, 1 h, up to
-   6 h) owns that agent's return.
+   An agent whose last finished run is model-unavailable is resumed on its
+   own long schedule instead (see "Quota and model outages" below).
 3. Resumes every remaining agent whose backoff step is due: the agent goes
    back to `idle`, its `errorReason` is cleared, and the resume reuses the
    pause/resume wake chain (the same chain `POST /api/agents/:id/resume`
@@ -56,6 +52,30 @@ The count is of issued automatic resumes, not of their outcomes: once the
 board flips the agent to `idle` and sends the wake, the attempt is spent.
 If the agent lands in `error` again, the streak continues with the next
 backoff step.
+
+## Quota and model outages
+
+A run is model-unavailable when `resultJson.model_unavailable` is set: the
+model pool is out of quota or down, including a provider quota, overload or
+maintenance text returned as the answer. A resume wakes every task the agent
+is stranded on, and each new run fails on the same quota, so such an agent is
+not resumed on the 1/5/15 minute backoff. It returns on the model-unavailable
+schedule, counted from the moment its last run ended:
+
+- 30 minutes, then 1 hour, 2 hours, 4 hours, and 6 hours; the 6 hour step
+  repeats. A resume is never sooner than one step after the previous resume.
+- These resumes do not count towards `MYRMIDON_AUTO_RESUME_MAX_ATTEMPTS` and
+  never lead to a give-up: the quota resets some day. An agent with an
+  exhausted quota comes back by itself no later than 6 hours after the reset,
+  with no operator action. While it waits, the sweep skips it with the reason
+  `model_unavailable_wait`.
+- The series counter is the `modelUnavailableResumes` field of the same state.
+  Once the agent's last finished run is not model-unavailable (the model is
+  back, or the error is another one) the counter is dropped and the ordinary
+  backoff with its cap applies again. A series also starts over when the next
+  model-unavailable run ends more than 6 hours after the last resume.
+- The activity row `agent.auto_resume_issued` of such a resume carries
+  `modelUnavailable: true` and the series counter in its details.
 
 ## The operator card after the give-up
 

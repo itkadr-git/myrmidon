@@ -240,26 +240,167 @@ describe("decideAutoResume policy", () => {
     ).toMatchObject({ action: "skip", reason: "exhausted", nextState: EXHAUSTED });
   });
 
-  it("skips an agent whose last finished run is model-unavailable (OPE-11947)", () => {
-    expect(decide({ now: at(600_000), lastRunModelUnavailable: true })).toMatchObject({
-      action: "skip",
-      reason: "model_unavailable",
+  // myrmidon(OPE-11947): an agent whose last finished run is model-unavailable
+  // returns on the long schedule 30 min, 1 h, 2 h, 4 h, 6 h, 6 h ... counted from
+  // the end of that run, outside the attempt cap.
+  const MIN = 60_000;
+  const LONG_DELAYS_MIN = [30, 60, 120, 240, 360, 360, 360, 360, 360, 360, 360, 360];
+
+  it("waits for a model-unavailable agent until 30 minutes after its last run ended", () => {
+    const finishedAt = at(10 * MIN);
+    const before = decide({
+      now: at(10 * MIN + 30 * MIN - 1),
+      lastRunModelUnavailable: true,
+      lastRunFinishedAt: finishedAt,
     });
-    // The same agent without that marker is resumed once the backoff is due.
-    expect(decide({ now: at(600_000), lastRunModelUnavailable: false })).toMatchObject({ action: "resume" });
-    // It keeps its streak state untouched while skipped.
-    const streak: AutoResumeState = {
-      failures: 1,
+    expect(before).toMatchObject({ action: "skip", reason: "model_unavailable_wait", nextState: null });
+    // The ordinary 1/5/15 min backoff would have resumed long ago.
+    expect(decide({ now: at(10 * MIN + 30 * MIN - 1), lastRunModelUnavailable: false })).toMatchObject({
+      action: "resume",
+    });
+
+    const due = decide({
+      now: at(10 * MIN + 30 * MIN),
+      lastRunModelUnavailable: true,
+      lastRunFinishedAt: finishedAt,
+    });
+    expect(due).toMatchObject({ action: "resume", reason: "model_unavailable_due" });
+    // Not an attempt of the capped streak.
+    expect(due.nextState).toMatchObject({ failures: 0, exhaustedAt: null, modelUnavailableResumes: 1 });
+  });
+
+  it("grows the wait 30 min, 1 h, 2 h, 4 h, 6 h and never gives up, even after ten series", () => {
+    let state: AutoResumeState | null = null;
+    let finishedAt = at(0);
+    for (const [index, minutes] of LONG_DELAYS_MIN.entries()) {
+      // One millisecond early: still waiting.
+      const early = decide({
+        state,
+        now: new Date(finishedAt.getTime() + minutes * MIN - 1),
+        lastRunModelUnavailable: true,
+        lastRunFinishedAt: finishedAt,
+      });
+      expect(early).toMatchObject({ action: "skip", reason: "model_unavailable_wait" });
+
+      // On the step: resume, and never exhaust, however many series went before.
+      const now: Date = new Date(finishedAt.getTime() + minutes * MIN);
+      const due = decide({ state, now, lastRunModelUnavailable: true, lastRunFinishedAt: finishedAt });
+      expect(due.action).toBe("resume");
+      expect(due.reason).toBe("model_unavailable_due");
+      expect(due.nextState).toMatchObject({
+        failures: 0,
+        exhaustedAt: null,
+        modelUnavailableResumes: index + 1,
+      });
+
+      // The resumed agent fails on the same quota at once: the next series starts from that run.
+      state = due.nextState;
+      finishedAt = now;
+    }
+    expect(state?.modelUnavailableResumes).toBe(LONG_DELAYS_MIN.length);
+    expect(state?.failures).toBe(0);
+  });
+
+  it("does not wake a model-unavailable agent sooner than one step after the last resume", () => {
+    const resumed: AutoResumeState = {
+      failures: 0,
+      lastFailureAt: at(60 * MIN).toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: at(60 * MIN).toISOString(),
+      modelUnavailableResumes: 1,
+    };
+    // The run that failed is older than the resume (no new run since): count from the resume.
+    expect(
+      decide({
+        state: resumed,
+        now: at(60 * MIN + 59 * MIN),
+        lastRunModelUnavailable: true,
+        lastRunFinishedAt: at(0),
+      }),
+    ).toMatchObject({ action: "skip", reason: "model_unavailable_wait" });
+    expect(
+      decide({
+        state: resumed,
+        now: at(60 * MIN + 60 * MIN),
+        lastRunModelUnavailable: true,
+        lastRunFinishedAt: at(0),
+      }),
+    ).toMatchObject({ action: "resume", reason: "model_unavailable_due" });
+  });
+
+  it("starts a new series after a healthy stretch instead of keeping a stale counter", () => {
+    const stale: AutoResumeState = {
+      failures: 0,
       lastFailureAt: at(0).toISOString(),
-      nextAttemptAt: at(300_000).toISOString(),
+      nextAttemptAt: null,
       exhaustedAt: null,
       lastResumeAt: at(0).toISOString(),
+      modelUnavailableResumes: 4,
     };
-    expect(decide({ state: streak, now: at(900_000), lastRunModelUnavailable: true })).toMatchObject({
-      action: "skip",
-      reason: "model_unavailable",
-      nextState: streak,
+    // The next model-unavailable run ended 7 h after the last resume: a fresh series, 30 min.
+    const finishedAt = at(7 * 60 * MIN);
+    expect(
+      decide({
+        state: stale,
+        now: new Date(finishedAt.getTime() + 30 * MIN - 1),
+        lastRunModelUnavailable: true,
+        lastRunFinishedAt: finishedAt,
+      }),
+    ).toMatchObject({ action: "skip", reason: "model_unavailable_wait" });
+    const due = decide({
+      state: stale,
+      now: new Date(finishedAt.getTime() + 30 * MIN),
+      lastRunModelUnavailable: true,
+      lastRunFinishedAt: finishedAt,
     });
+    expect(due).toMatchObject({ action: "resume" });
+    expect(due.nextState?.modelUnavailableResumes).toBe(1);
+  });
+
+  it("returns to the ordinary backoff and cap once the last run is not model-unavailable", () => {
+    const series: AutoResumeState = {
+      failures: 0,
+      lastFailureAt: at(0).toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: at(0).toISOString(),
+      modelUnavailableResumes: 5,
+    };
+    // Another error: the series counter is dropped, the streak starts at attempt one.
+    const first = decide({ state: series, now: at(10 * MIN), lastRunModelUnavailable: false });
+    expect(first).toMatchObject({ action: "resume", reason: "due" });
+    expect(first.nextState).toMatchObject({ failures: 1 });
+    expect(first.nextState?.modelUnavailableResumes).toBeUndefined();
+
+    // And it gives up after the cap again.
+    let state = first.nextState;
+    let nowMs = 10 * MIN;
+    for (let attempt = 2; attempt <= SETTINGS.maxAttempts; attempt += 1) {
+      nowMs += 30 * MIN;
+      const next = decide({ state, now: at(nowMs), lastRunModelUnavailable: false });
+      expect(next.action).toBe("resume");
+      state = next.nextState;
+    }
+    nowMs += MIN;
+    expect(decide({ state, now: at(nowMs), lastRunModelUnavailable: false })).toMatchObject({
+      action: "exhaust",
+      reason: "max_attempts",
+    });
+  });
+
+  it("round-trips the series counter and drops a malformed one", () => {
+    const state: AutoResumeState = {
+      failures: 0,
+      lastFailureAt: ENTRY.toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: ENTRY.toISOString(),
+      modelUnavailableResumes: 3,
+    };
+    expect(readAutoResumeState(mergeAutoResumeState(null, state))).toEqual(state);
+    const malformed = mergeAutoResumeState(null, { ...state, modelUnavailableResumes: -2 });
+    expect(readAutoResumeState(malformed)?.modelUnavailableResumes).toBeUndefined();
   });
 
   it("drops a streak whose last failure is older than the window", () => {

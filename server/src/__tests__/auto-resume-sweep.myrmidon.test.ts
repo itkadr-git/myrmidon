@@ -354,7 +354,7 @@ describeEmbeddedPostgres("auto-resume sweep (AUTO-RESUME)", () => {
     expect(readAutoResumeState((await agentRow(agentId)).metadata)?.exhaustedAt).toBeNull();
   });
 
-  it("does not resume an agent whose last finished run is model-unavailable (OPE-11947)", async () => {
+  it("brings a model-unavailable agent back on the long schedule, outside the attempt cap (OPE-11947)", async () => {
     const { companyId, agentId } = await seedAgent({ updatedAt: new Date(BASE) });
     const { resumeWake, sweepAt } = makeSweeper();
 
@@ -375,25 +375,89 @@ describeEmbeddedPostgres("auto-resume sweep (AUTO-RESUME)", () => {
       createdAt: new Date(BASE - 3 * MINUTE),
     });
 
-    const held = await sweepAt(10 * MINUTE);
-    expect(held.resumed).toBe(0);
-    expect(held.skipped).toBe(1);
+    // 30 min after that run ended (BASE + 26 min) is the first step; the 1/5/15 min backoff does not apply.
+    for (const offset of [10 * MINUTE, 25 * MINUTE]) {
+      const waiting = await sweepAt(offset);
+      expect(waiting.resumed).toBe(0);
+      expect(waiting.skipped).toBe(1);
+    }
     expect(resumeWake).not.toHaveBeenCalled();
     expect((await agentRow(agentId)).status).toBe("error");
     expect(readAutoResumeState((await agentRow(agentId)).metadata)).toBeNull();
 
-    // A later finished run that failed for another reason lifts the hold.
+    const first = await sweepAt(26 * MINUTE);
+    expect(first.agentIds).toEqual([agentId]);
+    expect(resumeWake).toHaveBeenCalledTimes(1);
+    let row = await agentRow(agentId);
+    expect(row.status).toBe("idle");
+    expect(readAutoResumeState(row.metadata)).toMatchObject({
+      failures: 0,
+      exhaustedAt: null,
+      modelUnavailableResumes: 1,
+    });
+    const issued = (await db.select().from(activityLog)).filter((entry) => entry.action === AUTO_RESUME_ACTIVITY_ACTION);
+    expect(issued).toHaveLength(1);
+    expect(issued[0]?.details).toMatchObject({ modelUnavailable: true, modelUnavailableResumes: 1 });
+
+    // The resumed agent fails on the same quota: the next step is one hour after that run ended.
     await seedRun({
       companyId,
       agentId,
       status: "failed",
-      createdAt: new Date(BASE + 2 * MINUTE),
-      finishedAt: new Date(BASE + 3 * MINUTE),
+      createdAt: new Date(BASE + 27 * MINUTE),
+      finishedAt: new Date(BASE + 28 * MINUTE),
+      resultJson: { provider_error_as_content: true, model_unavailable: true },
+    });
+    await failAgain(agentId, new Date(BASE + 28 * MINUTE));
+    expect((await sweepAt(28 * MINUTE + 59 * MINUTE)).resumed).toBe(0);
+    expect((await sweepAt(28 * MINUTE + 60 * MINUTE)).agentIds).toEqual([agentId]);
+    row = await agentRow(agentId);
+    expect(readAutoResumeState(row.metadata)).toMatchObject({ failures: 0, modelUnavailableResumes: 2 });
+    expect(resumeWake).toHaveBeenCalledTimes(2);
+
+    // A later failure of another kind ends the series: the ordinary backoff and its cap apply again.
+    await seedRun({
+      companyId,
+      agentId,
+      status: "failed",
+      createdAt: new Date(BASE + 89 * MINUTE),
+      finishedAt: new Date(BASE + 90 * MINUTE),
       resultJson: { errorFamily: "transient_upstream" },
     });
-    const resumed = await sweepAt(11 * MINUTE);
+    await failAgain(agentId, new Date(BASE + 90 * MINUTE));
+    const ordinary = await sweepAt(91 * MINUTE);
+    expect(ordinary.agentIds).toEqual([agentId]);
+    const state = readAutoResumeState((await agentRow(agentId)).metadata);
+    expect(state?.failures).toBe(1);
+    expect(state?.modelUnavailableResumes).toBeUndefined();
+  });
+
+  it("does not leave a given-up agent in error once its last run is model-unavailable (OPE-11947)", async () => {
+    const { companyId, agentId } = await seedAgent({
+      updatedAt: new Date(BASE),
+      metadata: exhaustedMetadata(),
+    });
+    const { resumeWake, sweepAt } = makeSweeper();
+    await seedRun({
+      companyId,
+      agentId,
+      status: "failed",
+      createdAt: new Date(BASE - 5 * MINUTE),
+      finishedAt: new Date(BASE - 4 * MINUTE),
+      resultJson: { provider_error_as_content: true, model_unavailable: true },
+    });
+
+    // An earlier give-up does not hold the agent back from the long schedule.
+    expect((await sweepAt(25 * MINUTE)).resumed).toBe(0);
+    const resumed = await sweepAt(26 * MINUTE);
+    expect(resumed.exhausted).toBe(0);
     expect(resumed.agentIds).toEqual([agentId]);
     expect(resumeWake).toHaveBeenCalledTimes(1);
+    expect(readAutoResumeState((await agentRow(agentId)).metadata)).toMatchObject({
+      failures: 0,
+      exhaustedAt: null,
+      modelUnavailableResumes: 1,
+    });
   });
 
   it("does not resume a non-invokable agent or one under maintenance", async () => {

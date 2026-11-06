@@ -848,7 +848,7 @@ export async function execute(
   // myrmidon(OPE-11947): the model pool did not answer (Hermes gave up without a
   // reply, or the provider returned an overload/quota/maintenance text as the
   // response); the board defers the retry of such a run by 30 min and up
-  // (resultJson.model_unavailable) and auto-resume leaves the agent to that policy.
+  // (resultJson.model_unavailable) and auto-resume returns the agent on the same long schedule.
   const modelUnavailable = providerErrorAsContent;
   if (providerErrorAsContent) {
     await ctx.onLog("stderr", `[hermes] provider_error_as_content model=${model}\n`);
