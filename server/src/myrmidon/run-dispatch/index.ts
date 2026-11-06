@@ -52,6 +52,7 @@
 
 import { and, asc, eq, gte, sql } from "drizzle-orm";
 import { companies, heartbeatRuns, type Db } from "@myrmidon/db";
+import { isUuidLike } from "@myrmidon/shared";
 import {
   DEFAULT_QUEUED_RESWEEP_SEC,
   DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
@@ -151,6 +152,68 @@ export interface RunDispatchLog {
   error?: (fields: Record<string, unknown>, message: string) => void;
 }
 
+/**
+ * myrmidon(OPE-11947): a queued run the sweep found stale. `issueId` is the
+ * task the run stood on, already resolved to a real issue UUID (or null when
+ * it had none), so the wake that follows the cancellation can resume that
+ * task instead of inventing a task id.
+ */
+export interface StaleQueuedRunRef {
+  id: string;
+  agentId: string;
+  companyId: string;
+  createdAt: Date;
+  issueId?: string | null;
+}
+
+/** What `wakeAgent` learns about the run whose cancellation it follows. */
+export interface StaleQueuedRunWakeOptions {
+  issueId?: string | null;
+}
+
+/**
+ * myrmidon(OPE-11947): the issue UUID a queued run stood on, or null. Reads the
+ * same places the run identity gate reads (`contextSnapshot.issueId`/`taskId`,
+ * the denormalized `contextIssueId`, `nativeIssueId`) but returns the first
+ * value that is a real UUID: anything else (a `system:*` marker, a stray key)
+ * is not a task and must never be fed back into a wake context, where
+ * `lockIdentityTask` would reject it and fail the run at setup.
+ */
+export function resolveStaleQueuedRunIssueId(run: {
+  contextSnapshot?: unknown;
+  contextIssueId?: string | null;
+  nativeIssueId?: string | null;
+}): string | null {
+  const context =
+    run.contextSnapshot && typeof run.contextSnapshot === "object" && !Array.isArray(run.contextSnapshot)
+      ? (run.contextSnapshot as Record<string, unknown>)
+      : {};
+  const candidates: unknown[] = [context.issueId, run.contextIssueId, run.nativeIssueId, context.taskId];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && isUuidLike(candidate)) return candidate.trim();
+  }
+  return null;
+}
+
+/**
+ * myrmidon(OPE-11947): the wake that follows the cancellation of a stale queued
+ * run. With a task it continues THAT task (`issueId`/`taskKey` in the context,
+ * `issueId` in the payload); without one it carries no task fields at all.
+ * It never carries a made-up `taskId`: every run's identity gate requires the
+ * task id to be a UUID, so a placeholder fails each such wake at setup.
+ */
+export function buildStaleQueuedRunWake(
+  companyId: string,
+  issueId?: string | null,
+): { payload: Record<string, unknown>; contextSnapshot: Record<string, unknown> } {
+  const taskId = typeof issueId === "string" && isUuidLike(issueId) ? issueId.trim() : null;
+  if (!taskId) return { payload: { companyId }, contextSnapshot: {} };
+  return {
+    payload: { companyId, issueId: taskId },
+    contextSnapshot: { issueId: taskId, taskKey: taskId },
+  };
+}
+
 export interface RunStartDispatcher {
   /** The mode in force right now; re-read on every call, never cached. */
   mode: () => Promise<RunStartDispatchMode>;
@@ -168,9 +231,14 @@ export interface RunStartDispatcherDeps {
     agentId: string,
     options?: RunStartDispatchOptions,
   ) => Promise<unknown[]>;
-  listStaleQueuedRuns?: (options: { executionCutoff: Date | null; staleAfterMs: number }) => Promise<Array<{ id: string; agentId: string; companyId: string; createdAt: Date }>>;
-  createCancelStaleQueuedRun?: (run: { id: string; agentId: string; companyId: string; createdAt: Date }, staleAfterMs: number) => Promise<boolean>;
-  wakeAgent?: (agentId: string, companyId: string) => Promise<void>;
+  listStaleQueuedRuns?: (options: { executionCutoff: Date | null; staleAfterMs: number }) => Promise<StaleQueuedRunRef[]>;
+  createCancelStaleQueuedRun?: (run: StaleQueuedRunRef, staleAfterMs: number) => Promise<boolean>;
+  /**
+   * Wakes the agent after its stale queued run was cancelled. `options.issueId`
+   * is the task the cancelled run stood on (null when it had none): the wake
+   * continues that task (myrmidon(OPE-11947)).
+   */
+  wakeAgent?: (agentId: string, companyId: string, options: StaleQueuedRunWakeOptions) => Promise<void>;
   loadSettings?: () => Promise<RunDispatchSettings>;
   /** The worktree execution cutoff, when the host has one. */
   readCutoff?: () => Promise<Date | null>;
@@ -258,7 +326,7 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
     for (const run of staleCandidates) {
       try {
         const cancelled = await deps.createCancelStaleQueuedRun?.(run, staleAfterMs);
-        if (cancelled) await deps.wakeAgent?.(run.agentId, run.companyId);
+        if (cancelled) await deps.wakeAgent?.(run.agentId, run.companyId, { issueId: run.issueId ?? null });
       } catch (err) {
         deps.log?.error?.({ err, runId: run.id, agentId: run.agentId }, "stale queued run cleanup failed");
       }
