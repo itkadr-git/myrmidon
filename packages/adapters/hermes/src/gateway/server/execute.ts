@@ -1016,8 +1016,11 @@ function popGuardToolArguments(state: ExecutionState, name: string): unknown {
 async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
   if (!ctx.runGuard || state.guardModelTurnObserved) return;
   state.guardModelTurnObserved = true;
+  // myrmidon(RUN-GUARD-LOOPS): a stopped guard keeps answering stop; report the
+  // stop once, on the call that made it.
+  const alreadyStopped = ctx.runGuard.stopped;
   const decision = ctx.runGuard.modelCall();
-  if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+  if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
 }
 
 async function observeRunGuardEvent(input: {
@@ -1054,10 +1057,11 @@ async function observeRunGuardEvent(input: {
     }
     const name = toolNameFromEvent(record);
     const args = popGuardToolArguments(state, name);
+    const alreadyStopped = guard.stopped;
     const decision = toolHasError(record)
       ? guard.toolFailure(name, args)
       : guard.toolSuccess();
-    if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+    if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
     if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
     return;
   }
