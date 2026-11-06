@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  buildStaleQueuedRunWake,
   createRunStartDispatcher,
   queuedResweepArmDecision,
   resolveStaleQueuedRunIssueId,
@@ -369,28 +368,8 @@ describe("queued resweep pass", () => {
   });
 });
 
-describe("stale queued run wake context", () => {
+describe("stale queued run task resolution", () => {
   const issueId = "5b3f8a52-6f0c-4f6b-9d21-0c1f5a3e7a10";
-
-  it("resumes the cancelled run's task: issueId and taskKey in the context, issueId in the payload", () => {
-    expect(buildStaleQueuedRunWake("company-1", issueId)).toEqual({
-      payload: { companyId: "company-1", issueId },
-      contextSnapshot: { issueId, taskKey: issueId },
-    });
-  });
-
-  it("carries no task fields when the cancelled run had no task", () => {
-    for (const none of [null, undefined]) {
-      const wake = buildStaleQueuedRunWake("company-1", none);
-      expect(wake).toEqual({ payload: { companyId: "company-1" }, contextSnapshot: {} });
-      expect(wake.contextSnapshot).not.toHaveProperty("taskId");
-    }
-  });
-
-  it("never turns a non-UUID value into a task id", () => {
-    const wake = buildStaleQueuedRunWake("company-1", "system:queued-run-stale-timeout");
-    expect(wake).toEqual({ payload: { companyId: "company-1" }, contextSnapshot: {} });
-  });
 
   it("reads the cancelled run's task from its context, then the denormalized columns", () => {
     const other = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";

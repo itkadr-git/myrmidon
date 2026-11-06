@@ -884,7 +884,6 @@ import {
   createRunStartDispatcher,
   createRunQueuedBusListener,
   buildRunQueuedPayload,
-  buildStaleQueuedRunWake,
   listAgentsWithQueuedRunsAndNoRunningRun,
   queuedResweepArmDecision,
   resolveStaleQueuedRunIssueId,
@@ -22188,13 +22187,15 @@ export function heartbeatService(
       // myrmidon(OPE-11947): resume the task the cancelled run stood on. The
       // former `taskId: "system:queued-run-stale-timeout"` placeholder is not
       // a UUID, so `lockIdentityTask` (run-identity.ts) failed every such wake
-      // at setup (`setup_failed`, "Run task identity is invalid").
-      const wake = buildStaleQueuedRunWake(companyId, issueId);
+      // at setup (`setup_failed`, "Run task identity is invalid"). A cancelled
+      // run that stood on no task has nothing to resume, and an automatic wake
+      // without a task is not allowed (INV-10): no wake then.
+      if (!issueId) return;
       await enqueueWakeup(agentId, {
         source: "automation",
         reason: "queued_run_stale_timeout",
-        payload: wake.payload,
-        contextSnapshot: wake.contextSnapshot,
+        payload: { companyId, issueId },
+        contextSnapshot: { issueId, taskKey: issueId },
       });
     },
     loadSettings: () => loadRunDispatchSettings(db),

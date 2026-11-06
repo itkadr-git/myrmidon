@@ -195,25 +195,6 @@ export function resolveStaleQueuedRunIssueId(run: {
   return null;
 }
 
-/**
- * myrmidon(OPE-11947): the wake that follows the cancellation of a stale queued
- * run. With a task it continues THAT task (`issueId`/`taskKey` in the context,
- * `issueId` in the payload); without one it carries no task fields at all.
- * It never carries a made-up `taskId`: every run's identity gate requires the
- * task id to be a UUID, so a placeholder fails each such wake at setup.
- */
-export function buildStaleQueuedRunWake(
-  companyId: string,
-  issueId?: string | null,
-): { payload: Record<string, unknown>; contextSnapshot: Record<string, unknown> } {
-  const taskId = typeof issueId === "string" && isUuidLike(issueId) ? issueId.trim() : null;
-  if (!taskId) return { payload: { companyId }, contextSnapshot: {} };
-  return {
-    payload: { companyId, issueId: taskId },
-    contextSnapshot: { issueId: taskId, taskKey: taskId },
-  };
-}
-
 export interface RunStartDispatcher {
   /** The mode in force right now; re-read on every call, never cached. */
   mode: () => Promise<RunStartDispatchMode>;

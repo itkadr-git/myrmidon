@@ -4,7 +4,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
-import { buildStaleQueuedRunWake } from "../myrmidon/run-dispatch/index.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable execution identity", () => {
@@ -270,24 +269,11 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("accepts the stale-queued-run wake that resumes the cancelled run's task", async () => {
     const seeded = await seed();
-    const wake = buildStaleQueuedRunWake(seeded.companyId, seeded.issueId);
     const runId = randomUUID();
     // enqueueWakeup mirrors the payload issueId into the context as taskId.
     await db.insert(heartbeatRuns).values({
       id: runId, companyId: seeded.companyId, agentId: seeded.agentId, status: "queued",
-      contextSnapshot: { ...wake.contextSnapshot, taskId: seeded.issueId, wakeReason: "queued_run_stale_timeout" },
-    });
-    const identity = await initializeRunIdentity(db, { companyId: seeded.companyId, runId, responsibleUserId: null, cause: "dispatch" });
-    expect(identity.runId).toBe(runId);
-  });
-
-  it("accepts the stale-queued-run wake of a cancelled run that had no task", async () => {
-    const seeded = await seed();
-    const wake = buildStaleQueuedRunWake(seeded.companyId, null);
-    const runId = randomUUID();
-    await db.insert(heartbeatRuns).values({
-      id: runId, companyId: seeded.companyId, agentId: seeded.agentId, status: "queued",
-      contextSnapshot: { ...wake.contextSnapshot, wakeReason: "queued_run_stale_timeout" },
+      contextSnapshot: { issueId: seeded.issueId, taskKey: seeded.issueId, taskId: seeded.issueId, wakeReason: "queued_run_stale_timeout" },
     });
     const identity = await initializeRunIdentity(db, { companyId: seeded.companyId, runId, responsibleUserId: null, cause: "dispatch" });
     expect(identity.runId).toBe(runId);
