@@ -1,6 +1,7 @@
 import { logger } from "../middleware/logger.js";
 
-export type GitHubRequestSource = "ci-resolver" | "review-recovery" | "task-pr-sync" | "broker";
+// myrmidon(OPE-11767): "board-merge" counts the requests of the board-side merge.
+export type GitHubRequestSource = "ci-resolver" | "review-recovery" | "task-pr-sync" | "broker" | "board-merge";
 
 export interface GitHubRateLimitMetrics {
   remaining: number | null;
@@ -36,6 +37,7 @@ const state: RateLimitState = {
     "review-recovery": 0,
     "task-pr-sync": 0,
     broker: 0,
+    "board-merge": 0,
   },
 };
 
@@ -190,6 +192,7 @@ export function resetGitHubRateLimitForTests(): void {
     "review-recovery": 0,
     "task-pr-sync": 0,
     broker: 0,
+    "board-merge": 0,
   };
 }
 

@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, activityLog, heartbeatRuns, companies, createDb, issues } from "@myrmidon/db";
+import { agents, agentWakeupRequests, activityLog, heartbeatRuns, companies, createDb, issueExecutionDecisions, issues, issueWorkProducts } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPgReviewRoutingStore } from "./store.js";
 import { REVIEW_ROUTING_WAKE_ACTION } from "@myrmidon/shared";
@@ -141,5 +141,174 @@ describeEmbeddedPostgres("Postgres review routing wake state", () => {
     expect(escalation).toBeDefined();
     expect((escalation?.details as Record<string, unknown>)?.owner).toBe("ADM");
     expect((escalation?.details as Record<string, unknown>)?.attempts).toBe(5);
+  });
+});
+
+// myrmidon(OPE-11767): the stored half of the board-side merge — which tasks
+// have an approved review stage and an open pull request, and the guarded
+// return of such a task to its implementer.
+describeEmbeddedPostgres("Postgres review routing board merge", () => {
+  let cleanupDatabase: (() => Promise<void>) | undefined;
+  let db: ReturnType<typeof createDb>;
+  const companyId = randomUUID();
+  const reviewerId = randomUUID();
+  const implementerId = randomUUID();
+  const SHA = "28f15c1be15204153f0e06464842d88875c373f8";
+
+  beforeAll(async () => {
+    const database = await startEmbeddedPostgresTestDatabase("review-routing-board-merge-");
+    cleanupDatabase = database.cleanup;
+    db = createDb(database.connectionString);
+    await db.insert(companies).values({ id: companyId, name: "board-merge-test", status: "active" });
+    await db.insert(agents).values([
+      { id: reviewerId, companyId, name: "reviewer", role: "reviewer", status: "idle", runtimeConfig: {} },
+      { id: implementerId, companyId, name: "implementer", role: "engineer", status: "idle", runtimeConfig: {} },
+    ]);
+  }, 120_000);
+
+  afterEach(async () => {
+    // The decisions and work products go with their issues (cascade).
+    await db.delete(issues).where(eq(issues.companyId, companyId));
+  });
+
+  afterAll(async () => {
+    if (db) {
+      await db.delete(agents).where(eq(agents.companyId, companyId));
+      await db.delete(companies).where(eq(companies.id, companyId));
+    }
+    await cleanupDatabase?.();
+  });
+
+  async function approvedIssue(input: {
+    status?: string;
+    state?: Record<string, unknown> | null;
+    verdict?: string | null;
+    withDecisionId?: boolean;
+    products?: Array<{ status?: string; url?: string | null; metadata?: Record<string, unknown> | null }>;
+  }) {
+    const id = randomUUID();
+    const decisionId = randomUUID();
+    const withDecision = input.verdict !== null && input.verdict !== undefined;
+    const state =
+      input.state === undefined
+        ? {
+            status: "completed",
+            lastDecisionOutcome: "approved",
+            ...(withDecision && input.withDecisionId !== false ? { lastDecisionId: decisionId } : {}),
+            returnAssignee: { type: "agent", agentId: implementerId },
+          }
+        : input.state;
+    await db.insert(issues).values({
+      id,
+      companyId,
+      identifier: `TEST-${id.slice(0, 8)}`,
+      title: "approved pull request",
+      status: input.status ?? "in_review",
+      priority: "normal",
+      assigneeAgentId: reviewerId,
+      executionState: state,
+    });
+    if (withDecision) {
+      await db.insert(issueExecutionDecisions).values({
+        id: decisionId,
+        companyId,
+        issueId: id,
+        stageId: randomUUID(),
+        stageType: "review",
+        actorAgentId: reviewerId,
+        outcome: "approved",
+        body: input.verdict!,
+      });
+    }
+    for (const product of input.products ?? [{ metadata: { repo: "acme/widgets", number: 7 } }]) {
+      await db.insert(issueWorkProducts).values({
+        companyId,
+        issueId: id,
+        type: "pull_request",
+        provider: "github",
+        title: "PR",
+        status: product.status ?? "open",
+        url: product.url ?? null,
+        metadata: product.metadata ?? null,
+      });
+    }
+    return id;
+  }
+
+  it("lists tasks with an approved stage and an open PR, with the approving verdict, one row per PR", async () => {
+    const verdict = `APPROVE PR #7 ${SHA}`;
+    const inReview = await approvedIssue({
+      verdict,
+      // The same PR recorded twice (repeated work products) is one row.
+      products: [{ metadata: { repo: "acme/widgets", number: 7 } }, { url: "https://github.com/acme/widgets/pull/7" }],
+    });
+    // After the guard-return the task is with the author, the stage state says so; the PR is known by its URL only.
+    const withAuthor = await approvedIssue({
+      status: "in_progress",
+      state: { status: "in_progress", lastDecisionOutcome: "approved", returnAssignee: { type: "agent", agentId: implementerId } },
+      verdict: `APPROVE PR #8 ${SHA}`,
+      withDecisionId: false,
+      products: [{ url: "https://github.com/acme/widgets/pull/8", status: "ready_for_review" }],
+    });
+    // Not ours: merged PR, changes requested, a review still pending, a task that is not in review/progress.
+    await approvedIssue({ verdict, products: [{ status: "merged", metadata: { repo: "acme/widgets", number: 9 } }] });
+    await approvedIssue({
+      verdict,
+      state: { status: "changes_requested", lastDecisionOutcome: "changes_requested" },
+      products: [{ metadata: { repo: "acme/widgets", number: 10 } }],
+    });
+    await approvedIssue({
+      verdict,
+      state: { status: "pending", currentStageType: "review", lastDecisionOutcome: null },
+      products: [{ metadata: { repo: "acme/widgets", number: 11 } }],
+    });
+    await approvedIssue({ status: "done", verdict, products: [{ metadata: { repo: "acme/widgets", number: 12 } }] });
+
+    const store = createPgReviewRoutingStore(db);
+    const rows = await store.listApprovedPrIssues(companyId);
+    expect(rows.map((row) => [row.issueId, row.repository, row.number]).sort()).toEqual(
+      [
+        [inReview, "acme/widgets", 7],
+        [withAuthor, "acme/widgets", 8],
+      ].sort(),
+    );
+    expect(rows.find((row) => row.issueId === inReview)).toMatchObject({ verdict, status: "in_review" });
+    // A state without `lastDecisionId` still finds its approving decision: the task's latest approved one.
+    expect(rows.find((row) => row.issueId === withAuthor)).toMatchObject({ verdict: `APPROVE PR #8 ${SHA}`, status: "in_progress" });
+
+    expect(await store.listApprovedPrIssues(companyId, { issueId: inReview })).toHaveLength(1);
+    expect(await store.listApprovedPrIssues(companyId, { limit: 1 })).toHaveLength(1);
+  });
+
+  it("returns an approved task to its implementer once, under the lock", async () => {
+    const id = await approvedIssue({ verdict: `APPROVE PR #7 ${SHA}` });
+    const store = createPgReviewRoutingStore(db);
+    const at = new Date("2026-11-06T08:00:00.000Z");
+
+    const returned = await store.returnApprovedPrToImplementer({ companyId, issueId: id, at });
+    expect(returned).toMatchObject({ implementerAgentId: implementerId, previousStatus: "in_review" });
+
+    const [row] = await db.select().from(issues).where(eq(issues.id, id));
+    expect(row).toMatchObject({ status: "in_progress", assigneeAgentId: implementerId });
+    expect(row!.executionState).toMatchObject({ status: "changes_requested", lastDecisionOutcome: "changes_requested", reviewRequest: null });
+
+    // The approval no longer stands: neither a second call nor the listing sees the task again.
+    expect(await store.returnApprovedPrToImplementer({ companyId, issueId: id, at })).toBeNull();
+    expect(await store.listApprovedPrIssues(companyId, { issueId: id })).toEqual([]);
+  });
+
+  it("does not move a task whose approval does not stand, or whose implementer is a person", async () => {
+    const store = createPgReviewRoutingStore(db);
+    const at = new Date();
+    const pending = await approvedIssue({ state: { status: "pending", currentStageType: "review", lastDecisionOutcome: null } });
+    const done = await approvedIssue({ status: "done" });
+    const byPerson = await approvedIssue({
+      state: { status: "completed", lastDecisionOutcome: "approved", returnAssignee: { type: "user", userId: "u1" } },
+    });
+    for (const issueId of [pending, done, byPerson]) {
+      expect(await store.returnApprovedPrToImplementer({ companyId, issueId, at })).toBeNull();
+    }
+    const [unchanged] = await db.select().from(issues).where(eq(issues.id, pending));
+    expect(unchanged!.status).toBe("in_review");
   });
 });

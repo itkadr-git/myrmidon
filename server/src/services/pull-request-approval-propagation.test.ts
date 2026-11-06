@@ -57,6 +57,20 @@ describe("pull-request-approval-propagation", () => {
       expect(parseReviewedHead("VERDICT: APPROVE looks good to me")).toBe(null);
       expect(parseReviewedHead(null)).toBe(null);
     });
+
+    // myrmidon(OPE-11767): the reviewers write `APPROVE PR #N <sha>`; the explicit
+    // `head <sha>` spelling alone left PR #2449 and #2467 with `missing_reviewed_head`.
+    it("reads the bare sha of an `APPROVE PR #N <sha>` verdict", () => {
+      const sha = "28f15c1be15204153f0e06464842d88875c373f8";
+      expect(parseReviewedHead(`APPROVE PR #2467 ${sha}\nГолова: ${sha}. CI завершён успешно.`)).toBe(sha);
+      expect(parseReviewedHead("APPROVE PR #2449 d75e816fcea7d115ababc4dad032687ffc8ed14c\nТочный head подтверждён")).toBe(
+        "d75e816fcea7d115ababc4dad032687ffc8ed14c",
+      );
+      // The explicit spelling still wins over a bare sha earlier in the text.
+      expect(parseReviewedHead("old 1111aaa rejected; APPROVE head 2222bbb")).toBe("2222bbb");
+      // A plain number is not a sha.
+      expect(parseReviewedHead("APPROVE PR #2467, issue 1234567890")).toBe(null);
+    });
   });
 
   describe("parsePullRequestCoordinates", () => {
