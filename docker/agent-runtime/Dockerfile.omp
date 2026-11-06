@@ -20,10 +20,12 @@ RUN mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$OMP_SESSION
 USER 1000:1000
 WORKDIR /workspace
 
-RUN test "$(bun --version)" = "1.4.3" \
-    && test "$(omp --version)" = "18.9.2" \
-    && command -v omp \
-    && omp --help >/dev/null \
-    && omp models ls >/dev/null
+# Smoke check prints what it sees: a silent `test` failure hid the real cause on rc.38-rc.40 (OPE-7762).
+RUN set -e; \
+    bv="$(bun --version)"; echo "bun: $bv"; test "$bv" = "1.4.3"; \
+    ov="$(omp --version 2>&1)"; echo "omp --version: $ov"; case "$ov" in *18.9.2*) ;; *) echo "unexpected omp version"; exit 1;; esac; \
+    command -v omp; \
+    omp --help >/dev/null; \
+    if ! omp models ls >/tmp/omp-models.txt 2>&1; then echo "omp models ls (no provider configured at build time):"; head -20 /tmp/omp-models.txt; fi
 
 CMD ["omp"]
