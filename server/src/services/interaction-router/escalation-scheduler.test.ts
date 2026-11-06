@@ -473,19 +473,24 @@ describe("interaction-router escalation: card status transitions and event gener
     );
   });
 
-  it("enforces terminal step in escalation chain to be a serviceQueue", async () => {
-    const invalidChainCard = createSampleCard({
+  it("allows a chain whose top is an agent: the top of the chain is a company setting, not a service queue", async () => {
+    const managerChainCard = createSampleCard({
       escalationChain: [
         { recipient: { agentId: "agent-lead" }, afterMinutes: 0 },
         { recipient: { agentId: "agent-architect" }, afterMinutes: 15 },
-        // Terminal step is an agent, not a serviceQueue
+        // The top step is an agent: OPE-11751 routes by reportsTo and the top
+        // of the chain is whatever the company configured.
       ],
     });
-    const { db } = createMockEscalationDb(invalidChainCard);
+    const { db, state } = createMockEscalationDb(managerChainCard);
 
-    await expect(escalateInteractionStep(db, invalidChainCard.id, 1)).rejects.toThrow(
-      "Escalation chain must end in a service queue",
-    );
+    expect(await escalateInteractionStep(db, managerChainCard.id, 1)).toBe("escalated");
+    expect(state.escalationAudits).toHaveLength(1);
+    expect(state.escalationAudits[0]).toMatchObject({
+      toRecipient: { agentId: "agent-architect" },
+    });
+    // Nothing above the top step: a further level is a no-op, never an error.
+    expect(await escalateInteractionStep(db, managerChainCard.id, 2)).toBe("unchanged");
   });
 
   it("enforces code_review route constraint: code_review cannot escalate to a human user", async () => {
