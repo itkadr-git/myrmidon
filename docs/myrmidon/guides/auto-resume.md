@@ -23,6 +23,12 @@ A sweep pass runs on the scheduler tick, at most once a minute
 2. Skips an agent that is not invokable (paused, terminated, or with a broken
    reporting chain) or that sits inside a maintenance window. Such an agent
    stays in `error` until it becomes invokable again.
+   Also skips an agent whose last finished run is model-unavailable
+   (`resultJson.model_unavailable`: the model pool is out of quota or down,
+   including a provider quota or overload text returned as the answer). A
+   resume wakes every task the agent is stranded on and each new run fails
+   on the same quota; the model-unavailable retry policy (30 min, 1 h, up to
+   6 h) owns that agent's return.
 3. Resumes every remaining agent whose backoff step is due: the agent goes
    back to `idle`, its `errorReason` is cleared, and the resume reuses the
    pause/resume wake chain (the same chain `POST /api/agents/:id/resume`
@@ -66,10 +72,13 @@ escalated:
 
 From that point the board stops resuming the agent. The operator path is the
 existing one: fix the cause of the failing runs, then resume the agent with
-`POST /api/agents/:id/resume` (or the agent card in the UI). The resume
-updates the agent record, and any change of the record after the give-up
-re-arms the streak: if the agent fails into `error` again later, the backoff
-starts over from the first step.
+`POST /api/agents/:id/resume` (or the agent card in the UI). Only an
+operator action re-arms the streak: a resume, an update or an error clear
+written to the activity log by a user (`agent.resumed`, `agent.updated`,
+`agent.error_cleared`) after the give-up. Then, if the agent
+fails into `error` again later, the backoff starts over from the first step.
+A change of the agent record alone (`updated_at` moved by a run or a status
+change) does not re-arm it.
 
 ## Activity log and metrics
 

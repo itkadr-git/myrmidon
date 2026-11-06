@@ -2336,8 +2336,13 @@ export function mapFinalResultForTest(input: {
       })(),
       ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
       // myrmidon(OPE-11947): the board defers the retry of a model-unavailable
-      // run by 30 min and up instead of the 30 s transient pair.
-      ...(hermesNoReply ? { model_unavailable: true } : {}),
+      // run by 30 min and up instead of the 30 s transient pair, and auto-resume
+      // leaves the agent to that policy. Every provider-error-as-content text
+      // (Hermes' "No reply" notice, an overload, a quota or maintenance reply)
+      // means the model pool did not answer, so the marker follows
+      // providerErrorAsContent, not only the "No reply" sentinel. Replay safety
+      // is a separate question, answered by executionRecovery above.
+      ...(providerErrorAsContent ? { model_unavailable: true } : {}),
     },
   };
 }

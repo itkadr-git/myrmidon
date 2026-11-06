@@ -200,25 +200,66 @@ describe("decideAutoResume policy", () => {
     expect(decide({ settings, state: first.nextState, now: at(120_000) })).toMatchObject({ action: "exhaust" });
   });
 
-  it("re-arms when the agent record changed after the give-up point (operator acted)", () => {
-    const exhausted: AutoResumeState = {
-      failures: 3,
-      lastFailureAt: at(60_000).toISOString(),
-      nextAttemptAt: null,
-      exhaustedAt: at(1_200_000).toISOString(),
-      lastResumeAt: at(60_000).toISOString(),
-    };
-    // The record is older than the give-up: still given up.
-    expect(decide({ state: exhausted, now: at(1_300_000) })).toMatchObject({ action: "skip", reason: "exhausted" });
+  const EXHAUSTED: AutoResumeState = {
+    failures: 3,
+    lastFailureAt: at(60_000).toISOString(),
+    nextAttemptAt: null,
+    exhaustedAt: at(1_200_000).toISOString(),
+    lastResumeAt: at(60_000).toISOString(),
+  };
 
-    // The operator resumed/re-ran the agent afterwards: a new episode.
+  it("re-arms a give-up only when an operator acted after it (OPE-11947)", () => {
+    // Nobody acted: still given up.
+    expect(decide({ state: EXHAUSTED, now: at(1_300_000) })).toMatchObject({ action: "skip", reason: "exhausted" });
+
+    // An operator action older than the give-up does not re-arm it.
+    expect(
+      decide({ state: EXHAUSTED, now: at(1_300_000), lastOperatorActionAt: at(600_000) }),
+    ).toMatchObject({ action: "skip", reason: "exhausted" });
+
+    // The operator resumed/updated the agent afterwards: a new episode.
     const rearmed = decide({
-      state: exhausted,
+      state: EXHAUSTED,
       now: at(3_600_000),
       agent: { status: "error", updatedAt: at(3_000_000) },
+      lastOperatorActionAt: at(3_000_000),
     });
     expect(rearmed.action).toBe("resume");
     expect(rearmed.nextState).toMatchObject({ failures: 1, exhaustedAt: null });
+  });
+
+  it("does not re-arm a give-up because agents.updated_at moved (runs and status changes move it)", () => {
+    // A system touch five minutes after the give-up: the old rule re-armed here.
+    expect(
+      decide({
+        state: EXHAUSTED,
+        now: at(3_600_000),
+        agent: { status: "error", updatedAt: at(1_500_000) },
+        lastOperatorActionAt: null,
+      }),
+    ).toMatchObject({ action: "skip", reason: "exhausted", nextState: EXHAUSTED });
+  });
+
+  it("skips an agent whose last finished run is model-unavailable (OPE-11947)", () => {
+    expect(decide({ now: at(600_000), lastRunModelUnavailable: true })).toMatchObject({
+      action: "skip",
+      reason: "model_unavailable",
+    });
+    // The same agent without that marker is resumed once the backoff is due.
+    expect(decide({ now: at(600_000), lastRunModelUnavailable: false })).toMatchObject({ action: "resume" });
+    // It keeps its streak state untouched while skipped.
+    const streak: AutoResumeState = {
+      failures: 1,
+      lastFailureAt: at(0).toISOString(),
+      nextAttemptAt: at(300_000).toISOString(),
+      exhaustedAt: null,
+      lastResumeAt: at(0).toISOString(),
+    };
+    expect(decide({ state: streak, now: at(900_000), lastRunModelUnavailable: true })).toMatchObject({
+      action: "skip",
+      reason: "model_unavailable",
+      nextState: streak,
+    });
   });
 
   it("drops a streak whose last failure is older than the window", () => {
