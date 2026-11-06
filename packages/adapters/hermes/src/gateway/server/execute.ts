@@ -27,6 +27,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
+  resolvePaperclipWakeHistoryMode,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
 } from "@myrmidon/adapter-utils/server-utils";
@@ -437,6 +438,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: Boolean(taskMarkdown),
+    // myrmidon(WAKE-HISTORY): how much task history the wake carries — the
+    // card's wakeHistory, else by session strategy (run | none: summary only).
+    wakeHistory: resolvePaperclipWakeHistoryMode(ctx.config),
   });
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
     omitIssueDescription: Boolean(taskMarkdown),
