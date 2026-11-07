@@ -151,7 +151,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
       gitMigrationEnabled: "MYRMIDON_GIT_MIGRATION_ENABLED",
     });
     // botd authenticates with the bot's own board key, referenced by name only.
-    expect(WS_BOTD_BOARD_KEY_ENV_VALUE).toBe("PAPERCLIP_API_KEY");
+    expect(WS_BOTD_BOARD_KEY_ENV_VALUE).toBe("MYRMIDON_API_KEY");
   });
 
   it("the settings schema takes the botd interval beside the C7 keys", () => {

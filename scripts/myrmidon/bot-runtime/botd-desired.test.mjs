@@ -7,12 +7,14 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createDesiredClient, parseDesiredState } from "../../../docker/bot-runtime/botd/lib/desired.js";
 import { createReporter } from "../../../docker/bot-runtime/botd/lib/report.js";
+import { boardKeyValues, redact } from "../../../docker/bot-runtime/botd/lib/board-env.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const FIXTURE = JSON.parse(
   fs.readFileSync(path.join(ROOT, "docs/myrmidon/bot-disk-contract/desired-state.json"), "utf8"),
 );
 const KEY = "pcp_SECRETKEY_0123456789";
+const OLD_KEY = "pcp_OLD_ALIAS_KEY_9876543210";
 
 let server;
 let baseUrl;
@@ -205,8 +207,6 @@ describe("botd desired state client (C3)", () => {
 // myrmidon(REBRAND-ENV, OPE-12052): botd reads the board address and key as
 // MYRMIDON_API_URL / MYRMIDON_API_KEY first; PAPERCLIP_* is only the legacy alias.
 describe("botd board env names: MYRMIDON_* first, PAPERCLIP_* as the alias (REBRAND-ENV)", () => {
-  const OLD_KEY = "pcp_OLD_ALIAS_KEY_9876543210";
-
   it("MYRMIDON_API_URL and MYRMIDON_API_KEY alone are enough", async () => {
     const c = createDesiredClient({ env: { MYRMIDON_API_URL: `${baseUrl}/api`, MYRMIDON_API_KEY: KEY } });
     const r = await c.poll();
@@ -294,5 +294,80 @@ describe("botd board env names: MYRMIDON_* first, PAPERCLIP_* as the alias (REBR
       ["board.test", `Bearer ${KEY}`],
       ["old.test", `Bearer ${OLD_KEY}`],
     ]);
+  });
+});
+
+describe("boardKeyValues and redact unit tests in botd (REBRAND-ENV-2, OPE-12070)", () => {
+  it("boardKeyValues returns every non-empty board key under either name", () => {
+    assert.deepEqual(boardKeyValues({}), []);
+    assert.deepEqual(boardKeyValues({ MYRMIDON_API_KEY: "myr-key" }), ["myr-key"]);
+    assert.deepEqual(boardKeyValues({ PAPERCLIP_API_KEY: "pcp-key" }), ["pcp-key"]);
+    assert.deepEqual(
+      boardKeyValues({ MYRMIDON_API_KEY: "myr-key", PAPERCLIP_API_KEY: "pcp-key" }),
+      ["myr-key", "pcp-key"],
+    );
+    assert.deepEqual(
+      boardKeyValues({ MYRMIDON_API_KEY: "", PAPERCLIP_API_KEY: "pcp-key" }),
+      ["pcp-key"],
+    );
+    assert.deepEqual(
+      boardKeyValues({ MYRMIDON_API_KEY: "myr-key", PAPERCLIP_API_KEY: "" }),
+      ["myr-key"],
+    );
+    assert.deepEqual(boardKeyValues({ MYRMIDON_API_KEY: "", PAPERCLIP_API_KEY: "" }), []);
+    assert.deepEqual(boardKeyValues(undefined), []);
+  });
+
+  it("redact strips the key when set under MYRMIDON_API_KEY", () => {
+    const env = { MYRMIDON_API_KEY: "secret-myr-key" };
+    const text = "error with secret-myr-key in response";
+    assert.equal(redact(text, env), "error with [redacted] in response");
+    assert.equal(redact(env, text), "error with [redacted] in response");
+  });
+
+  it("redact strips the key when set under PAPERCLIP_API_KEY", () => {
+    const env = { PAPERCLIP_API_KEY: "secret-pcp-key" };
+    const text = "error with secret-pcp-key in response";
+    assert.equal(redact(text, env), "error with [redacted] in response");
+    assert.equal(redact(env, text), "error with [redacted] in response");
+  });
+
+  it("redact strips both keys when set under both names with distinct values", () => {
+    const env = { MYRMIDON_API_KEY: "secret-myr-key", PAPERCLIP_API_KEY: "secret-pcp-key" };
+    const text = "headers: secret-myr-key and secret-pcp-key leaked";
+    assert.equal(redact(text, env), "headers: [redacted] and [redacted] leaked");
+    assert.equal(redact(env, text), "headers: [redacted] and [redacted] leaked");
+  });
+
+  it("redact leaves text intact when neither key is present in env", () => {
+    assert.equal(redact("safe text", {}), "safe text");
+    assert.equal(redact("safe text", { OTHER_VAR: "123" }), "safe text");
+    assert.equal(redact("safe text", undefined), "safe text");
+  });
+
+  it("reporter redacts board key under both names from error reasons and logs", async () => {
+    const report = JSON.parse(
+      fs.readFileSync(path.join(ROOT, "docs/myrmidon/bot-disk-contract/disk-report.json"), "utf8"),
+    );
+    const logs = [];
+    const fetchImpl = async () => {
+      const err = new Error("connection failed");
+      err.code = `LEAK_${KEY}_AND_${OLD_KEY}`;
+      throw err;
+    };
+    const reporter = createReporter({
+      fetchImpl,
+      sleep: async () => {},
+      log: (l) => logs.push(l),
+      env: { MYRMIDON_API_URL: "http://board.test", MYRMIDON_API_KEY: KEY, PAPERCLIP_API_KEY: OLD_KEY },
+      retryDelaysMs: [],
+    });
+    const res = await reporter.send(report);
+    assert.equal(res.ok, false);
+    assert.equal(res.reason.includes(KEY), false);
+    assert.equal(res.reason.includes(OLD_KEY), false);
+    assert.match(res.reason, /\[redacted\]/);
+    assert.equal(logs.some((l) => l.includes("[redacted]")), true);
+    assert.equal(logs.some((l) => l.includes(KEY) || l.includes(OLD_KEY)), false);
   });
 });
