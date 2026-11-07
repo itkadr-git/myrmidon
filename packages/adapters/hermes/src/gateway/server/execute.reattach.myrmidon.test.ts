@@ -289,6 +289,39 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
     });
   });
 
+  it("stopGatewayRunForBoard still reaches the gateway when the cancellation reason is not Latin-1", async () => {
+    // Regression (OPE-11889): a Russian operator reason made fetch throw while
+    // building the headers, so the best-effort stop never left the board.
+    const requests: Array<Record<string, string>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      // Throws exactly like fetch when a header value holds a character above U+00FF.
+      requests.push(Object.fromEntries(new Headers(init?.headers).entries()));
+      return new Response(JSON.stringify({ stopped: true }), { status: 200 });
+    }));
+
+    const stopped = await stopGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "board-key",
+      gatewayRunId: "gw-run-ru",
+      cancellation: {
+        correlationId: "corr-ru",
+        source: { code: "board_timeout", actor: "board" },
+        reason: "Отменено оператором:\nпрогон завис",
+      },
+    });
+
+    expect(stopped.stopped).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      "x-paperclip-correlation-id": "corr-ru",
+      "x-paperclip-cancellation-source": "board_timeout",
+    });
+    // Provenance survives: the reason is percent-encoded, single-line, bounded.
+    const reason = requests[0]!["x-paperclip-cancellation-reason"]!;
+    expect(reason).not.toMatch(/[^\x20-\x7e]/);
+    expect(decodeURIComponent(reason)).toBe("Отменено оператором: прогон завис");
+  });
+
   it("stopGatewayRunForBoard reports not-stopped without throwing when the gateway forgot the run", async () => {
     const fetchMock = vi.fn(async () => new Response("gone", { status: 404 }));
     vi.stubGlobal("fetch", fetchMock);

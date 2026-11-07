@@ -2446,6 +2446,19 @@ async function stopRun(input: {
 }
 
 /**
+ * myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): provenance travels as HTTP header
+ * values, which must be single-line Latin-1. An operator's cancellation reason
+ * is free text (often Russian); one character above U+00FF makes fetch throw
+ * before the request is sent, and the best-effort stop then silently never
+ * reached the gateway. Non-ASCII text is percent-encoded, control characters
+ * dropped, length bounded.
+ */
+function headerSafe(value: string): string {
+  const flat = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 160);
+  return /^[\x20-\x7e]*$/.test(flat) ? flat : encodeURIComponent(flat);
+}
+
+/**
  * myrmidon(HERMES-RUN-REATTACH): board-side stop for a gateway run the board
  * is not actively supervising (no live adapter execution): the heartbeat
  * cancellation path calls this with the run's persisted externalRunId so the
@@ -2472,11 +2485,11 @@ export async function stopGatewayRunForBoard(input: {
         Authorization: `Bearer ${input.apiKey}`,
         ...(input.cancellation
           ? {
-              "x-paperclip-correlation-id": input.cancellation.correlationId,
-              "x-paperclip-cancellation-source": input.cancellation.source.code,
-              ...(input.cancellation.source.endpoint ? { "x-paperclip-cancellation-endpoint": input.cancellation.source.endpoint } : {}),
-              ...(input.cancellation.source.actor ? { "x-paperclip-cancellation-actor": input.cancellation.source.actor } : {}),
-              "x-paperclip-cancellation-reason": input.cancellation.reason,
+              "x-paperclip-correlation-id": headerSafe(input.cancellation.correlationId),
+              "x-paperclip-cancellation-source": headerSafe(input.cancellation.source.code),
+              ...(input.cancellation.source.endpoint ? { "x-paperclip-cancellation-endpoint": headerSafe(input.cancellation.source.endpoint) } : {}),
+              ...(input.cancellation.source.actor ? { "x-paperclip-cancellation-actor": headerSafe(input.cancellation.source.actor) } : {}),
+              "x-paperclip-cancellation-reason": headerSafe(input.cancellation.reason),
             }
           : {}),
       },
