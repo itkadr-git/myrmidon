@@ -649,7 +649,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     if ((urgent)); then
       plan "urgent: steps 3 and 3b skipped; no database dump or PREDEPLOY-DB-CHECK; rollback relies on the VM's nightly backup (reason: $urgent_reason)"
     else
-      plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes)"
+      plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes); keep newest $DUMP_KEEP validated dumps by modification time"
       if ((board_changed)) && [[ "${MYRMIDON_PREDEPLOY_CHECK:-1}" == "1" ]]; then
         plan "3b. prove the image on a copy of the production database BEFORE the window (PREDEPLOY-DB-CHECK, predeploy-board-check.sh): own Postgres restored from the dump, own network, the NEW dockergate next to it; wait for status ok and walk the attention list and the main APIs; a failure stops the deploy here, production untouched"
       elif ((board_changed)); then
