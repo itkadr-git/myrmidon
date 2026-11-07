@@ -42,6 +42,12 @@ describe("invite token in API logs (OPE-11891)", () => {
         `/api/invites/${TOKEN}/accept`,
       ),
     ).toBe(true);
+    expect(
+      isSecretSensitiveHttpRequest(
+        "GET",
+        `/api/invites/${TOKEN}`,
+      ),
+    ).toBe(true);
   });
 
   it.each([

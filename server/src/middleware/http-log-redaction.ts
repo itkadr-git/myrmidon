@@ -43,16 +43,5 @@ export const HTTP_LOG_REDACT_PATHS = [
   // at the final serialization boundary in case a future custom serializer
   // bypasses the recursive redactor.
   "reqBody.credentials",
-  "reqBody.password",
-  "reqBody.token",
-  "reqBody.secret",
-  "reqBody.inviteToken",
-  "reqBody.invite_token",
-  "reqParams.token",
-  "reqParams.inviteToken",
-  "reqParams.invite_token",
   "errorContext.details.credentials",
-  "errorContext.details.password",
-  "errorContext.details.token",
-  "errorContext.details.secret",
 ] as const;
