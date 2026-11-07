@@ -78,7 +78,8 @@ describe("settings readers", () => {
     expect(readAutoResumeSettings({ [AUTO_RESUME_MAX_ATTEMPTS_ENV]: "5" }).maxAttempts).toBe(5);
     expect(readAutoResumeSettings({ [AUTO_RESUME_WINDOW_MS_ENV]: "abc" }).failureWindowMs).toBe(60 * 60 * 1000);
     expect(readAutoResumeSettings({ [AUTO_RESUME_WINDOW_MS_ENV]: "120000" }).failureWindowMs).toBe(120_000);
-    expect(readAutoResumeSettings({ [AUTO_RESUME_INTERVAL_SEC_ENV]: "1" }).intervalSec).toBe(10);
+    // The legacy reader's historical clamp is still part of its public contract.
+    expect(readAutoResumeSettings({ [AUTO_RESUME_INTERVAL_SEC_ENV]: "1" }).intervalSec).toBe(60);
     expect(readAutoResumeSettings({ [AUTO_RESUME_INTERVAL_SEC_ENV]: "300" }).intervalSec).toBe(300);
   });
 });
@@ -143,6 +144,10 @@ describe("decideAutoResume policy", () => {
     expect(decide({ agent: { status: "idle", updatedAt: ENTRY } })).toMatchObject({ action: "skip", reason: "not_error" });
     expect(decide({ invokable: false })).toMatchObject({ action: "skip", reason: "not_invokable" });
     expect(decide({ underMaintenance: true })).toMatchObject({ action: "skip", reason: "maintenance" });
+    expect(decide({ agent: { status: "error", errorReason: "контейнер не поднят", updatedAt: ENTRY } })).toMatchObject({
+      action: "skip",
+      reason: "container_not_started",
+    });
   });
 
   it("waits one minute after the error entry, then resumes on the 1/5/15 steps", () => {
@@ -195,25 +200,207 @@ describe("decideAutoResume policy", () => {
     expect(decide({ settings, state: first.nextState, now: at(120_000) })).toMatchObject({ action: "exhaust" });
   });
 
-  it("re-arms when the agent record changed after the give-up point (operator acted)", () => {
-    const exhausted: AutoResumeState = {
-      failures: 3,
-      lastFailureAt: at(60_000).toISOString(),
-      nextAttemptAt: null,
-      exhaustedAt: at(1_200_000).toISOString(),
-      lastResumeAt: at(60_000).toISOString(),
-    };
-    // The record is older than the give-up: still given up.
-    expect(decide({ state: exhausted, now: at(1_300_000) })).toMatchObject({ action: "skip", reason: "exhausted" });
+  const EXHAUSTED: AutoResumeState = {
+    failures: 3,
+    lastFailureAt: at(60_000).toISOString(),
+    nextAttemptAt: null,
+    exhaustedAt: at(1_200_000).toISOString(),
+    lastResumeAt: at(60_000).toISOString(),
+  };
 
-    // The operator resumed/re-ran the agent afterwards: a new episode.
+  it("re-arms a give-up only when an operator acted after it (OPE-11947)", () => {
+    // Nobody acted: still given up.
+    expect(decide({ state: EXHAUSTED, now: at(1_300_000) })).toMatchObject({ action: "skip", reason: "exhausted" });
+
+    // An operator action older than the give-up does not re-arm it.
+    expect(
+      decide({ state: EXHAUSTED, now: at(1_300_000), lastOperatorActionAt: at(600_000) }),
+    ).toMatchObject({ action: "skip", reason: "exhausted" });
+
+    // The operator resumed/updated the agent afterwards: a new episode.
     const rearmed = decide({
-      state: exhausted,
+      state: EXHAUSTED,
       now: at(3_600_000),
       agent: { status: "error", updatedAt: at(3_000_000) },
+      lastOperatorActionAt: at(3_000_000),
     });
     expect(rearmed.action).toBe("resume");
     expect(rearmed.nextState).toMatchObject({ failures: 1, exhaustedAt: null });
+  });
+
+  it("does not re-arm a give-up because agents.updated_at moved (runs and status changes move it)", () => {
+    // A system touch five minutes after the give-up: the old rule re-armed here.
+    expect(
+      decide({
+        state: EXHAUSTED,
+        now: at(3_600_000),
+        agent: { status: "error", updatedAt: at(1_500_000) },
+        lastOperatorActionAt: null,
+      }),
+    ).toMatchObject({ action: "skip", reason: "exhausted", nextState: EXHAUSTED });
+  });
+
+  // myrmidon(OPE-11947): an agent whose last finished run is model-unavailable
+  // returns on the long schedule 30 min, 1 h, 2 h, 4 h, 6 h, 6 h ... counted from
+  // the end of that run, outside the attempt cap.
+  const MIN = 60_000;
+  const LONG_DELAYS_MIN = [30, 60, 120, 240, 360, 360, 360, 360, 360, 360, 360, 360];
+
+  it("waits for a model-unavailable agent until 30 minutes after its last run ended", () => {
+    const finishedAt = at(10 * MIN);
+    const before = decide({
+      now: at(10 * MIN + 30 * MIN - 1),
+      lastRunModelUnavailable: true,
+      lastRunFinishedAt: finishedAt,
+    });
+    expect(before).toMatchObject({ action: "skip", reason: "model_unavailable_wait", nextState: null });
+    // The ordinary 1/5/15 min backoff would have resumed long ago.
+    expect(decide({ now: at(10 * MIN + 30 * MIN - 1), lastRunModelUnavailable: false })).toMatchObject({
+      action: "resume",
+    });
+
+    const due = decide({
+      now: at(10 * MIN + 30 * MIN),
+      lastRunModelUnavailable: true,
+      lastRunFinishedAt: finishedAt,
+    });
+    expect(due).toMatchObject({ action: "resume", reason: "model_unavailable_due" });
+    // Not an attempt of the capped streak.
+    expect(due.nextState).toMatchObject({ failures: 0, exhaustedAt: null, modelUnavailableResumes: 1 });
+  });
+
+  it("grows the wait 30 min, 1 h, 2 h, 4 h, 6 h and never gives up, even after ten series", () => {
+    let state: AutoResumeState | null = null;
+    let finishedAt = at(0);
+    for (const [index, minutes] of LONG_DELAYS_MIN.entries()) {
+      // One millisecond early: still waiting.
+      const early = decide({
+        state,
+        now: new Date(finishedAt.getTime() + minutes * MIN - 1),
+        lastRunModelUnavailable: true,
+        lastRunFinishedAt: finishedAt,
+      });
+      expect(early).toMatchObject({ action: "skip", reason: "model_unavailable_wait" });
+
+      // On the step: resume, and never exhaust, however many series went before.
+      const now: Date = new Date(finishedAt.getTime() + minutes * MIN);
+      const due = decide({ state, now, lastRunModelUnavailable: true, lastRunFinishedAt: finishedAt });
+      expect(due.action).toBe("resume");
+      expect(due.reason).toBe("model_unavailable_due");
+      expect(due.nextState).toMatchObject({
+        failures: 0,
+        exhaustedAt: null,
+        modelUnavailableResumes: index + 1,
+      });
+
+      // The resumed agent fails on the same quota at once: the next series starts from that run.
+      state = due.nextState;
+      finishedAt = now;
+    }
+    expect(state?.modelUnavailableResumes).toBe(LONG_DELAYS_MIN.length);
+    expect(state?.failures).toBe(0);
+  });
+
+  it("does not wake a model-unavailable agent sooner than one step after the last resume", () => {
+    const resumed: AutoResumeState = {
+      failures: 0,
+      lastFailureAt: at(60 * MIN).toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: at(60 * MIN).toISOString(),
+      modelUnavailableResumes: 1,
+    };
+    // The run that failed is older than the resume (no new run since): count from the resume.
+    expect(
+      decide({
+        state: resumed,
+        now: at(60 * MIN + 59 * MIN),
+        lastRunModelUnavailable: true,
+        lastRunFinishedAt: at(0),
+      }),
+    ).toMatchObject({ action: "skip", reason: "model_unavailable_wait" });
+    expect(
+      decide({
+        state: resumed,
+        now: at(60 * MIN + 60 * MIN),
+        lastRunModelUnavailable: true,
+        lastRunFinishedAt: at(0),
+      }),
+    ).toMatchObject({ action: "resume", reason: "model_unavailable_due" });
+  });
+
+  it("starts a new series after a healthy stretch instead of keeping a stale counter", () => {
+    const stale: AutoResumeState = {
+      failures: 0,
+      lastFailureAt: at(0).toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: at(0).toISOString(),
+      modelUnavailableResumes: 4,
+    };
+    // The next model-unavailable run ended 7 h after the last resume: a fresh series, 30 min.
+    const finishedAt = at(7 * 60 * MIN);
+    expect(
+      decide({
+        state: stale,
+        now: new Date(finishedAt.getTime() + 30 * MIN - 1),
+        lastRunModelUnavailable: true,
+        lastRunFinishedAt: finishedAt,
+      }),
+    ).toMatchObject({ action: "skip", reason: "model_unavailable_wait" });
+    const due = decide({
+      state: stale,
+      now: new Date(finishedAt.getTime() + 30 * MIN),
+      lastRunModelUnavailable: true,
+      lastRunFinishedAt: finishedAt,
+    });
+    expect(due).toMatchObject({ action: "resume" });
+    expect(due.nextState?.modelUnavailableResumes).toBe(1);
+  });
+
+  it("returns to the ordinary backoff and cap once the last run is not model-unavailable", () => {
+    const series: AutoResumeState = {
+      failures: 0,
+      lastFailureAt: at(0).toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: at(0).toISOString(),
+      modelUnavailableResumes: 5,
+    };
+    // Another error: the series counter is dropped, the streak starts at attempt one.
+    const first = decide({ state: series, now: at(10 * MIN), lastRunModelUnavailable: false });
+    expect(first).toMatchObject({ action: "resume", reason: "due" });
+    expect(first.nextState).toMatchObject({ failures: 1 });
+    expect(first.nextState?.modelUnavailableResumes).toBeUndefined();
+
+    // And it gives up after the cap again.
+    let state = first.nextState;
+    let nowMs = 10 * MIN;
+    for (let attempt = 2; attempt <= SETTINGS.maxAttempts; attempt += 1) {
+      nowMs += 30 * MIN;
+      const next = decide({ state, now: at(nowMs), lastRunModelUnavailable: false });
+      expect(next.action).toBe("resume");
+      state = next.nextState;
+    }
+    nowMs += MIN;
+    expect(decide({ state, now: at(nowMs), lastRunModelUnavailable: false })).toMatchObject({
+      action: "exhaust",
+      reason: "max_attempts",
+    });
+  });
+
+  it("round-trips the series counter and drops a malformed one", () => {
+    const state: AutoResumeState = {
+      failures: 0,
+      lastFailureAt: ENTRY.toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: ENTRY.toISOString(),
+      modelUnavailableResumes: 3,
+    };
+    expect(readAutoResumeState(mergeAutoResumeState(null, state))).toEqual(state);
+    const malformed = mergeAutoResumeState(null, { ...state, modelUnavailableResumes: -2 });
+    expect(readAutoResumeState(malformed)?.modelUnavailableResumes).toBeUndefined();
   });
 
   it("drops a streak whose last failure is older than the window", () => {
@@ -244,5 +431,108 @@ describe("decideAutoResume policy", () => {
       action: "skip",
       reason: "not_error",
     });
+  });
+});
+// 1.6.6: an agent left in "контейнер не поднят" is no longer skipped: the sweep starts the
+// bot container (15 min between failed starts, 4 attempts), then resumes the agent.
+describe("decideAutoResume: reason 'контейнер не поднят'", () => {
+  const MIN = 60_000;
+  const containerAgent = { status: "error", errorReason: "контейнер не поднят", updatedAt: ENTRY };
+  const decideContainer = (overrides: Partial<Parameters<typeof decideAutoResume>[0]> = {}) =>
+    decide({ agent: containerAgent, canStartContainer: true, ...overrides });
+
+  it("keeps the old skip when the sweep cannot start a container", () => {
+    expect(decide({ agent: containerAgent })).toMatchObject({ action: "skip", reason: "container_not_started" });
+  });
+
+  it("starts the container at once, recording the attempt as a failure and the resume as its follow-up", () => {
+    const first = decideContainer({ now: at(0) });
+    expect(first).toMatchObject({ action: "start_container", reason: "container_not_started" });
+    expect(first.nextState).toMatchObject({
+      failures: 0,
+      exhaustedAt: null,
+      containerStartFailures: 1,
+      lastContainerStartAt: at(0).toISOString(),
+      nextAttemptAt: at(15 * MIN).toISOString(),
+    });
+    // After a healthy start: an ordinary resume, counted in the ordinary streak, no start marks.
+    expect(first.stateAfterStart).toMatchObject({ failures: 1, exhaustedAt: null, lastResumeAt: at(0).toISOString() });
+    expect(first.stateAfterStart?.containerStartFailures).toBeUndefined();
+  });
+
+  it("retries a failed start no sooner than 15 minutes, 4 attempts in all, then gives up once", () => {
+    let state = decideContainer({ now: at(0) }).nextState;
+    expect(state?.containerStartFailures).toBe(1);
+
+    expect(decideContainer({ state, now: at(15 * MIN - 1) })).toMatchObject({ action: "skip", reason: "container_start_wait" });
+    for (const attempt of [2, 3, 4]) {
+      const due = decideContainer({ state, now: at((attempt - 1) * 15 * MIN) });
+      expect(due.action, `attempt ${attempt}`).toBe("start_container");
+      state = due.nextState;
+      expect(state?.containerStartFailures).toBe(attempt);
+    }
+
+    // Four failed starts: the give-up needs no further wait, and carries the attempts count.
+    const gaveUp = decideContainer({ state, now: at(45 * MIN + 1) });
+    expect(gaveUp).toMatchObject({ action: "exhaust", reason: "container_start_failed" });
+    expect(gaveUp.nextState).toMatchObject({ failures: 4, exhaustedAt: at(45 * MIN + 1).toISOString() });
+
+    // Given up: skipped for ever, until an operator acts.
+    expect(decideContainer({ state: gaveUp.nextState, now: at(24 * 60 * MIN) })).toMatchObject({
+      action: "skip",
+      reason: "exhausted",
+    });
+    expect(
+      decideContainer({ state: gaveUp.nextState, now: at(24 * 60 * MIN), lastOperatorActionAt: at(60 * MIN) }).action,
+    ).toBe("start_container");
+    // An action from before the give-up does not re-arm it.
+    expect(
+      decideContainer({ state: gaveUp.nextState, now: at(24 * 60 * MIN), lastOperatorActionAt: at(10 * MIN) }).action,
+    ).toBe("skip");
+  });
+
+  it("treats a series whose last attempt is older than two retry steps as a new episode", () => {
+    const stale = decideContainer({ now: at(0) }).nextState;
+    const later = decideContainer({ state: stale, now: at(30 * MIN + 1) });
+    expect(later.action).toBe("start_container");
+    expect(later.nextState?.containerStartFailures).toBe(1);
+  });
+
+  it("stops starting containers when resumes after a healthy start keep failing (ordinary cap)", () => {
+    // Three ordinary resumes inside the window, the last one 5 minutes ago: the container
+    // starts every time and still refuses the gateway.
+    const state: AutoResumeState = {
+      failures: 3,
+      lastFailureAt: at(0).toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: at(0).toISOString(),
+    };
+    expect(decideContainer({ state, now: at(5 * MIN) })).toMatchObject({ action: "exhaust", reason: "max_attempts" });
+    // Two resumes: one more start is allowed, and it counts as the third.
+    const two = decideContainer({ state: { ...state, failures: 2 }, now: at(5 * MIN) });
+    expect(two.action).toBe("start_container");
+    expect(two.stateAfterStart?.failures).toBe(3);
+    // The window passed: a new episode.
+    expect(decideContainer({ state, now: at(61 * MIN) }).action).toBe("start_container");
+  });
+
+  it("still obeys the gates and leaves every other reason alone", () => {
+    expect(decideContainer({ invokable: false })).toMatchObject({ action: "skip", reason: "not_invokable" });
+    expect(decideContainer({ underMaintenance: true })).toMatchObject({ action: "skip", reason: "maintenance" });
+    expect(decideContainer({ settings: { ...SETTINGS, enabled: false } })).toMatchObject({ action: "skip", reason: "disabled" });
+    // Another reason takes the ordinary path, with or without the ability to start a container.
+    const other = decide({ agent: { status: "error", errorReason: "gateway 500", updatedAt: ENTRY }, canStartContainer: true, now: at(MIN) });
+    expect(other).toMatchObject({ action: "resume", reason: "due" });
+    expect(other.stateAfterStart).toBeUndefined();
+  });
+
+  it("round-trips the start-attempt marks through the metadata codec", () => {
+    const state = decideContainer({ now: at(0) }).nextState!;
+    expect(state.containerStartFailures).toBe(1);
+    expect(readAutoResumeState(mergeAutoResumeState({ keep: 1 }, state))).toEqual(state);
+    // A counter without its time is not a series.
+    const broken = { [AUTO_RESUME_METADATA_KEY]: { ...state, lastContainerStartAt: "garbage" } };
+    expect(readAutoResumeState(broken)?.containerStartFailures).toBeUndefined();
   });
 });

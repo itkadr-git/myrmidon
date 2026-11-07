@@ -6,7 +6,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/itkadr-git/myrmidon?sort=semver&label=release)](https://github.com/itkadr-git/myrmidon/releases/latest)
 
-[What it is](#what-myrmidon-is) &middot; [Why](#why-myrmidon) &middot; [Quick start](#quick-start--deploy) &middot; [Architecture](#architecture-at-a-glance) &middot; [Configuration](#configuration) &middot; [What it does today](#what-it-does-today) &middot; [The idea](#the-idea-the-ant-colony-model) &middot; [Road to 2.0](#where-we-are-going-the-road-to-20) &middot; [Upgrading](#upgrading)
+[What it is](#what-myrmidon-is) &middot; [Telegram agent addressing](docs/myrmidon/guides/telegram-alias-addressing.md) &middot; [Why](#why-myrmidon) &middot; [Quick start](#quick-start--deploy) &middot; [Architecture](#architecture-at-a-glance) &middot; [Configuration](#configuration) &middot; [What it does today](#what-it-does-today) &middot; [The idea](#the-idea-the-ant-colony-model) &middot; [Road to 2.0](#where-we-are-going-the-road-to-20) &middot; [Upgrading](#upgrading)
 
 English &middot; [Русский](README.ru.md)
 
@@ -31,6 +31,19 @@ A fleet of AI agents needs what a team needs: a board, roles, budgets, review
 and a way to ask the owner. Myrmidon gives agents isolation (a container, a key
 and a memory bank each), accountability (every run, cost and approval is on the
 board) and recovery (stalled runs resume, deploys roll back).
+| Metaphor | What it is in Myrmidon | Status |
+|---|---|---|
+| **The nest** | A company on the board: its tasks, agents, secrets and budgets are isolated from other companies. Multi-company isolation is inherited from the base. | Works today |
+| **The swarm** | The fleet of agents: each runs in its own container with its own model, keys, tools and memory bank. | Works today (see [bot-container-card](docs/myrmidon/guides/bot-container-card.md)) |
+| **Pheromone trails** | Signals on work in the shared environment that guide who picks it up and what happens to it: issue labels, priority, wake-ups, review gates, blocker links. The board is the blackboard; a task's state, labels and relations are its scent. | The board and its signals work today; caste queues with pheromone-style labels and TTL-leased claiming arrive in the swarm-claim feature (planned, 1.6) |
+| **Castes** | Roles for agents: today per-agent configuration of models, tool permissions and skills; the lead/overseer role reviews and approves. Strict model-based castes (heavy models audit, light models execute) are part of the swarm-claim design. | Per-agent configuration works today; caste queues are planned (1.6) |
+| **Foraging** | Agents gathering knowledge in idle time: a source registry per role, snapshot comparison, and findings that land as skill candidates and go live only after approval. Ships off by default (`MYRMIDON_FORAGING_ENABLED`). | Works today, off by default (see [foraging](docs/myrmidon/guides/foraging.md)) |
+| **The queen / overseer** | The lead agent and the human owner: the lead decomposes work, watches the board and reviews results; the owner approves what crosses the autonomy line. | Works today (board approvals, review gates, Telegram owner cards) |
+| **Agent board administrators** | An agent the organization trusts with board administration: a **Board administrator** toggle in the agent card's Permissions tab, a badge row naming every agent administrator on the Members page, and the full grant semantics behind the flag — a fixed 17-key operator set, a snapshot that keeps personal grants on disable, and a self-toggle prohibition. | Works today (see [agent-board-admin](docs/myrmidon/guides/agent-board-admin.md)) |
+| **Autonomy matrix** | A hard line between what the colony does on its own (claiming tasks, choosing libraries, isolated debates) and what needs a human (new regulations, budget expansion, the final push to production, public posts). | Approvals and gates work today; the matrix as a first-class core policy is planned (1.6) |
+| **The colony's metabolism** | Budgets as computing energy: limits per company, per direction, per task; a hard stop for research, a soft stop (pause + question) for production work. | LLM spend tracking and budget signals work today; the full hierarchy of limits is planned (on the road to 2.0) |
+| **Shared memory of the swarm** | The colony's experience outlives a single run: per-agent memory banks, reviewable from the agent card. | Works today (see [agent-memory-card](docs/myrmidon/guides/agent-memory-card.md)) |
+
 
 ## Quick start / deploy
 
@@ -137,8 +150,9 @@ by default — the full reference is
 ## What it does today
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
-(Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). Highlights of
-what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release candidate):
+(Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). The current
+pre-release is [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18);
+the latest stable release remains [1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5).
 
 ### Work and agents
 
@@ -224,7 +238,7 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release cand
   ([alibaba-image-connector](docs/myrmidon/guides/alibaba-image-connector.md)).
 - **Cloud storage.** Owner-connected cloud accounts with per-agent folder
   grants; tokens stay in the company secret store
-  ([cloud-files-connector](docs/myrmidon/guides/cloud-files-connector.md)).
+  ([cloud-connector](docs/myrmidon/guides/cloud-connector.md)).
 - **Client connectors (the browser bridge).** A browser extension on a client
   PC dials out to the board; a bot drives that browser, and actions marked for
   human confirmation wait for a person on that PC. Details:
@@ -268,14 +282,16 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release cand
 - **UI 2.0 + language.** The 2.0 shell with six re-skinned data screens
   (behind the `enableMyrmidonUi2` flag, off by default) and a per-user board
   language RU/EN ([ui2-shell](docs/myrmidon/guides/ui2-shell.md)).
+- **1.6.6 — bounded run-output guardrails.** Optional, flag-only detection scans
+  a bounded output window, caps recorded events, and redacts/clamps snippets;
+  see the [run-output guide](docs/myrmidon/guides/guardrails-run-output.md).
 
 ### New in the 1.6 line
 
 Full notes per release: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md) and the
-[releases page](https://github.com/itkadr-git/myrmidon/releases) — latest is
-[1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.14](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.14)
-is the current release candidate.
+[releases page](https://github.com/itkadr-git/myrmidon/releases). Latest stable:
+[1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5); current
+pre-release: [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18).
 
 - **1.6.3 — one deploy for every component.** `deploy.sh --release` updates
   the board, dockergate, fleetd and the bot images in one all-or-nothing

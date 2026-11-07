@@ -23,6 +23,8 @@ import { PriorityIcon } from "@/components/PriorityIcon";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 // myrmidon(UI-RU): page strings through the fork i18n catalog.
 import { useTranslation } from "@/i18n";
+// myrmidon(1.7-DEBATE-ASYM-B): the «Discuss» button of a caste's task.
+import { DebateTaskButton } from "@/components/myrmidon/DebateTaskButton";
 import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -153,7 +155,7 @@ function TableShell({ title, description, emptyMessage, rowCount, testId, childr
 
 const HEAD_CELL = "px-3 py-2 text-left font-medium text-muted-foreground";
 
-function QueueTable({ role }: { role: SwarmSupervisorRole }) {
+function QueueTable({ role, companyId }: { role: SwarmSupervisorRole; companyId: string }) {
   const { t } = useTranslation();
   return (
     <TableShell
@@ -172,6 +174,7 @@ function QueueTable({ role }: { role: SwarmSupervisorRole }) {
           <th scope="col" className={HEAD_CELL}>{t("swarm.columns.project")}</th>
           <th scope="col" className={HEAD_CELL}>{t("swarm.columns.queuedAt")}</th>
           <th scope="col" className={HEAD_CELL}>{t("swarm.columns.blockedSince")}</th>
+          <th scope="col" className={HEAD_CELL}>{t("swarm.columns.action")}</th>
         </tr>
       </thead>
       <tbody>
@@ -197,6 +200,9 @@ function QueueTable({ role }: { role: SwarmSupervisorRole }) {
             <td className="px-3 py-2 tabular-nums">{formatDateTime(item.createdAt)}</td>
             <td className="px-3 py-2 tabular-nums">
               {item.blockedTransitionAt ? formatDateTime(item.blockedTransitionAt) : "—"}
+            </td>
+            <td className="px-3 py-2">
+              <DebateTaskButton issueId={item.issueId} casteKey={role.role} companyId={companyId} />
             </td>
           </tr>
         ))}
@@ -328,11 +334,13 @@ function IdleAgentsTable({ role, maxActiveTasksPerAgent }: IdleAgentsTableProps)
 
 function RoleSection({
   role,
+  companyId,
   maxActiveTasksPerAgent,
   onRelease,
   releasingClaimId,
 }: {
   role: SwarmSupervisorRole;
+  companyId: string;
   maxActiveTasksPerAgent: number | null;
   onRelease: (claimId: string) => void;
   releasingClaimId: string | null;
@@ -351,7 +359,7 @@ function RoleSection({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5 px-5 pb-5 pt-2">
-        <QueueTable role={role} />
+        <QueueTable role={role} companyId={companyId} />
         <ClaimsTable role={role} onRelease={onRelease} releasingClaimId={releasingClaimId} />
         <IdleAgentsTable role={role} maxActiveTasksPerAgent={maxActiveTasksPerAgent} />
       </CardContent>
@@ -656,6 +664,7 @@ export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {})
                   <RoleSection
                     key={role.role}
                     role={role}
+                    companyId={companyId}
                     maxActiveTasksPerAgent={data.maxActiveTasksPerAgent}
                     onRelease={(claimId) => releaseMutation.mutate(claimId)}
                     releasingClaimId={releasingClaimId}

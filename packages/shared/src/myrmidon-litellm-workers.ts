@@ -10,9 +10,9 @@
 // the production container the ticket names (6 cores / 12 GB, an upper-bound
 // estimate of 1.5 GB per worker process), and every caller may pass its own.
 //
-// Why a default of `cores - 1`: one core is left to the gunicorn master and
-// the board it serves, so a pool of `cores - 1` utilises the box without the
-// master and the workers competing for the same slice. The ceiling is not the
+// Why a default of `cores - 1`: one core is left to the gateway's master
+// process and the board it serves, so a pool of `cores - 1` utilises the box
+// without the master and the workers competing for the same slice. The ceiling is not the
 // default: `maxByCpu` is the number of cores, because an operator may claim
 // the whole box deliberately.
 
@@ -32,22 +32,30 @@ export const LITELLM_WORKERS_CORES_ENV = "MYRMIDON_LITELLM_WORKERS_CORES";
 export const LITELLM_WORKERS_MEMORY_GB_ENV = "MYRMIDON_LITELLM_WORKERS_MEMORY_GB";
 
 /**
- * The command that delivers one gunicorn master signal. `{signal}` and
- * `{container}` are substituted per delivery; the default is the production
- * contour, where the gateway is the container's PID 1 and `docker kill -s`
- * therefore reaches the gunicorn master.
+ * The command that restarts the gateway with a new pool size. `{workers}` is
+ * replaced by the target (a whole number the board has already validated).
+ * Unset means the board only records the target and the operator restarts the
+ * unit in the window; nothing is ever run by default.
+ *
+ * The gateway starts as `litellm --num_workers N` (not under gunicorn), so
+ * the pool size changes only with a planned restart of the unit: a few
+ * seconds of dropped requests, which the card warns about.
  */
-export const LITELLM_WORKERS_SIGNAL_COMMAND_ENV = "MYRMIDON_LITELLM_WORKERS_SIGNAL_COMMAND";
+export const LITELLM_WORKERS_RESTART_COMMAND_ENV = "MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND";
 
-/** The container the signal command addresses; unset means `litellm-gateway`. */
-export const LITELLM_WORKERS_CONTAINER_ENV = "MYRMIDON_LITELLM_WORKERS_CONTAINER";
+/**
+ * The gateway's unit file, read (never written) for the `--num_workers N` it
+ * starts with: the actual pool size when the gateway's metrics do not publish
+ * one. Unset means the production path; a file the board cannot read is
+ * skipped and the next source answers.
+ */
+export const LITELLM_WORKERS_UNIT_FILE_ENV = "MYRMIDON_LITELLM_WORKERS_UNIT_FILE";
 
 /**
  * The pool size the gateway's unit starts with (`--num_workers N` on the
- * production node it is 4). Only needed while the gateway reports no pool size
- * of its own AND the board has never resized it: it is the baseline the first
- * TTIN/TTOU count is measured from. Unset means "unknown", and then the first
- * resize is refused rather than guessed.
+ * production node it is 2). Only needed while the gateway reports no pool size
+ * of its own AND the board has never resized it: it is the last-resort `current`. Unset
+ * means "unknown".
  */
 export const LITELLM_WORKERS_BASELINE_ENV = "MYRMIDON_LITELLM_WORKERS_BASELINE";
 
@@ -62,19 +70,14 @@ export const DEFAULT_LITELLM_WORKERS_MEMORY_GB = 12;
 /** The upper-bound memory estimate for ONE worker process. */
 export const DEFAULT_LITELLM_WORKERS_GB_PER_WORKER = 1.5;
 
-/** The floor: a gunicorn master with no worker cannot serve anything. */
+/** The floor: a gateway with no worker process cannot serve anything. */
 export const MIN_LITELLM_WORKERS = 1;
 
 /** Cores left to the master by the default (`cores - 1`). */
 export const LITELLM_WORKERS_DEFAULT_CORE_RESERVE = 1;
 
-/** The production signal path: the master is the container's PID 1. */
-export const DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND = "docker kill -s {signal} {container}";
-export const DEFAULT_LITELLM_WORKERS_CONTAINER = "litellm-gateway";
-
-/** The two gunicorn master signals that resize the pool in place. */
-export const LITELLM_WORKER_GROW_SIGNAL = "TTIN";
-export const LITELLM_WORKER_SHRINK_SIGNAL = "TTOU";
+/** The production unit the declared `--num_workers` is read from. */
+export const DEFAULT_LITELLM_WORKERS_UNIT_FILE = "/etc/systemd/system/litellm-gateway.service";
 
 // ---------------------------------------------------------------------------
 // The container's shape and the ceilings it implies
@@ -220,47 +223,44 @@ export function resolveLitellmWorkersTarget(
 }
 
 // ---------------------------------------------------------------------------
-// Delivery: the signals that resize the pool in place
+// Delivery: a planned restart of the unit with the new pool size
 // ---------------------------------------------------------------------------
 
-/** One signal and how many times the master must receive it. */
-export interface LitellmWorkersSignalStep {
-  signal: string;
-  count: number;
+/** The restart command with `{workers}` filled in. */
+export function renderLitellmWorkersRestartCommand(template: string, workers: number): string {
+  return template.split("{workers}").join(String(Math.trunc(workers)));
 }
 
 /**
- * The steps that take a pool of `current` workers to `target` without a
- * restart: gunicorn's master grows by one worker per TTIN and drops one per
- * TTOU, so the difference is delivered as that many signals. An equal pair
- * asks for nothing.
+ * The pool size a gateway launch line declares: `--num_workers N` or
+ * `--num_workers=N`. Comment lines are skipped (a unit comment may mention the
+ * flag), and the first declaration wins. Null when the text declares none or
+ * a value that is not a whole number of at least one.
  */
-export function litellmWorkersSignalSteps(current: number, target: number): LitellmWorkersSignalStep[] {
-  if (!Number.isFinite(current) || !Number.isFinite(target)) return [];
-  const delta = Math.trunc(target) - Math.trunc(current);
-  if (delta === 0) return [];
-  return delta > 0
-    ? [{ signal: LITELLM_WORKER_GROW_SIGNAL, count: delta }]
-    : [{ signal: LITELLM_WORKER_SHRINK_SIGNAL, count: Math.abs(delta) }];
-}
-
-/** The signal command with its placeholders filled in. */
-export function renderLitellmWorkersSignalCommand(
-  template: string,
-  input: { signal: string; container: string },
-): string {
-  return template.split("{signal}").join(input.signal).split("{container}").join(input.container);
+export function parseLitellmWorkersFromCommandLine(text: string): number | null {
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = /--num_workers(?:=|\s+)(\d+)(?![\w.])/.exec(line);
+    if (!match) continue;
+    const value = Number(match[1]);
+    return Number.isInteger(value) && value >= MIN_LITELLM_WORKERS ? value : null;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
 // The runtime shape, read from an environment
 // ---------------------------------------------------------------------------
 
-/** The container shape and the delivery path, as the instance declares them. */
+/** The container shape and the restart path, as the instance declares them. */
 export interface LitellmWorkersRuntime {
   host: LitellmWorkersHostShape;
   hostSource: { cores: LitellmWorkersHostSource; memoryGb: LitellmWorkersHostSource };
-  signal: { command: string; container: string; source: LitellmWorkersHostSource };
+  /** The planned-restart command; null when none is configured. */
+  restart: { command: string | null };
+  /** The unit file the declared `--num_workers` is read from. */
+  unitFile: string;
   /** The pool the unit starts with, when the instance declares it. */
   baseline: number | null;
 }
@@ -284,7 +284,7 @@ export function readLitellmWorkersBaseline(env: Record<string, string | undefine
 }
 
 /**
- * Reads the container's shape and the signal path from an environment. The
+ * Reads the container's shape and the restart path from an environment. The
  * environment is a parameter, never `process.env` read here, because this
  * module is imported by the interface too. Nothing throws: an unreadable
  * number falls back to the production value it names.
@@ -292,17 +292,13 @@ export function readLitellmWorkersBaseline(env: Record<string, string | undefine
 export function readLitellmWorkersRuntime(env: Record<string, string | undefined>): LitellmWorkersRuntime {
   const cores = positiveEnvNumber(env[LITELLM_WORKERS_CORES_ENV], DEFAULT_LITELLM_WORKERS_CORES);
   const memoryGb = positiveEnvNumber(env[LITELLM_WORKERS_MEMORY_GB_ENV], DEFAULT_LITELLM_WORKERS_MEMORY_GB);
-  const command = env[LITELLM_WORKERS_SIGNAL_COMMAND_ENV]?.trim();
-  const container = env[LITELLM_WORKERS_CONTAINER_ENV]?.trim();
-  const commandSource: LitellmWorkersHostSource = command ? "env" : "default";
+  const command = env[LITELLM_WORKERS_RESTART_COMMAND_ENV]?.trim();
+  const unitFile = env[LITELLM_WORKERS_UNIT_FILE_ENV]?.trim();
   return {
     host: { cores: cores.value, memoryGb: memoryGb.value, gbPerWorker: DEFAULT_LITELLM_WORKERS_GB_PER_WORKER },
     hostSource: { cores: cores.source, memoryGb: memoryGb.source },
-    signal: {
-      command: command || DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND,
-      container: container || DEFAULT_LITELLM_WORKERS_CONTAINER,
-      source: commandSource,
-    },
+    restart: { command: command || null },
+    unitFile: unitFile || DEFAULT_LITELLM_WORKERS_UNIT_FILE,
     baseline: readLitellmWorkersBaseline(env),
   };
 }

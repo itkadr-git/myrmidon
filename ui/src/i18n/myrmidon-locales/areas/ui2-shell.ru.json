@@ -1,0 +1,21 @@
+{
+  "area": {
+    "ui2-shell": {
+      "ui2-top-bar": {
+        "nestsAll": "Все гнёзда",
+        "colonyChip": "{{active}} из {{total}}",
+        "fleetAttentionChip": "Флот: 1 требует внимания",
+        "fleetChip": "Флот",
+        "forecastChip": "{{spend}} из {{budget}}",
+        "forecastSpendOnlyChip": "Потрачено {{spend}}",
+        "commanderAria": "Сказать Командиру (Ctrl K)",
+        "commanderPlaceholder": "Сказать Командиру…",
+        "commanderShortcut": "Ctrl K",
+        "decisionsBadge_one": "{{count}} решение ждёт",
+        "decisionsBadge_few": "{{count}} решения ждут",
+        "decisionsBadge_many": "{{count}} решений ждут",
+        "decisionsBadge_other": "{{count}} решения ждут"
+      }
+    }
+  }
+}

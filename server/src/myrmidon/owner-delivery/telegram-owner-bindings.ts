@@ -10,16 +10,17 @@ import {
   companyMemberships,
   instanceSettings,
   issues,
-} from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+} from "@myrmidon/db";
+import type { Db } from "@myrmidon/db";
 import {
   OWNER_DELIVERY_DEFAULT_MODE,
   OWNER_DELIVERY_SETTINGS_KEY,
   normalizeOwnerDeliverySettings,
   ownerDeliveryAllowsCard,
   type OwnerDeliveryMode,
-} from "@paperclipai/shared";
-import { telegramConversationUserId } from "../agent-chat-bridge/identity.js";
+} from "@myrmidon/shared";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the conversation key comes through the seam.
+import { telegramConversationUserId } from "../channel-connectors/bridge/identity.js";
 
 /** Bindings the owner-delivery extension may hand back to the publication path. */
 export interface OwnerDeliveryBinding {

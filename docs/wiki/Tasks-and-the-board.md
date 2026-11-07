@@ -18,6 +18,14 @@ either a list of blocking tasks or a reason reference. A stale blocked
 reason (the blocker long done, the task still parked) is caught by the
 stale-block watchdog instead of sitting silent forever.
 
+Scheduled issue monitors are checked for tasks in `in_progress`, `in_review`,
+and `blocked`; a due monitor wakes its assignee with the monitor context.
+Completed or cancelled tasks have their schedules cleared. If a due monitor
+has not triggered within the overdue threshold, the Attention feed raises an
+`issue_monitor_overdue` item for operators. Inspect the task's monitor schedule
+and wake history, then resume or reschedule the task; the item clears when the
+monitor is no longer overdue.
+
 ## Role queues
 
 With the role-queue pilot, a free agent claims the top task of its role's
@@ -35,11 +43,30 @@ badge on the agent and raises a signal when an agent is over the limit.
 ## Review routing
 
 A task in `in_review` with no reviewer does not wait for someone to notice:
-the review-routing sweep picks the least-loaded eligible reviewer agent
-(never the task's author or its assignee), assigns the review and wakes it.
-A review that stays without a verdict past the configured hours is signalled
-and moved to another reviewer. With no eligible reviewer at all, the task is
-signalled on the attention desk.
+the review-routing sweep picks an eligible reviewer agent (prioritizing idle
+reviewers first, then least-loaded; never the task's author, its assignee, or a
+reviewer that already had the task), assigns the review and wakes it.
+
+When a task has green CI (`head.ci === "green"`) and no verdict after
+`reassignAfterMinutes` minutes (taking precedence over `reassignAfterHours` when
+set to > 0), the review stage is automatically reassigned to another available
+reviewer of the same role with a comment recorded on the issue. Value `0`
+disables minute-based reassignment. A review that stays without a verdict past
+the configured hours (`reassignAfterHours`) is signalled and moved to another
+reviewer. With no eligible reviewer at all, the task is signalled on the
+attention desk.
+
+When an issue enters `in_review` or its reviewer is reassigned, the issue update
+and the durable reviewer wake request are committed in one database transaction.
+Execution-stage reviewer wake requests use that same transaction path. If the
+wake request cannot be persisted, the issue update does not leave the task in
+review without a durable wake receipt.
+
+A review task is not treated as stranded while its review participant is alive:
+if the participant has a live run on any task of the company, the
+stranded-work sweep skips the board escalation and keeps the task waiting for
+that participant. Only when the participant has no live run at all can the
+review task be moved to board-only `blocked` with a recovery card.
 
 ## Planning from a chat message
 
@@ -69,3 +96,37 @@ an optional finisher summarizes the outcome.
 - [Commander chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
 - [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
+
+## Knowledge-note gate for system changes
+
+When a system-significant change reaches `done`, or when its review is
+approved, the board checks for a valid wiki reference in the form
+`Вики: slug@rev`. The referenced knowledge item and revision must exist; a
+missing or invalid reference is rejected after the rollout grace period. The
+same gate is applied to both the issue route and the issue service, so direct
+service updates cannot bypass it. During the first three days after
+`2026-10-31`, the default is warning-only; operators can explicitly select
+`warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
+rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
+are unaffected. See the [knowledge gate change record](../changes/knowledge-gate-system-changes.md)
+for the rollout and settings reference.
+
+## Recovery and requeue holds
+
+If a failed run is reconciled after an operator has already returned its task
+to `todo` or `backlog`, the recovery sweep preserves that chosen status rather
+than changing it to `blocked`. It records a closed hold (`outcome = "cancelled"`)
+so the task is not automatically replayed. An operator can explicitly resume
+the held task by moving it to a working status; normal recovery of tasks that
+were not requeued remains unchanged.
+
+## Concurrent settings edits
+
+General and experimental instance-settings updates are serialized on the
+`instance_settings` row. Concurrent PATCH requests therefore merge against the
+latest stored document instead of overwriting one another's edits. This also
+covers creation of the first settings row.
+
+## Review admission
+
+When a task enters `in_review` or its reviewer changes, Myrmidon persists the reviewer wake request in the same transaction as the task update. Review-stage wake requests are persisted through that transaction path as well. This keeps the task update and the request to wake its reviewer atomic.

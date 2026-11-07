@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
@@ -23,6 +25,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { MaintenanceBanner } from "./myrmidon/MaintenanceBanner"; // myrmidon(R3)
+import { LicenseAttentionBanner } from "./myrmidon/LicenseAttentionBanner"; // myrmidon(LICENSING)
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
@@ -78,6 +81,7 @@ const RESERVED_APP_SUBPATHS = new Set([
 ]);
 
 export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
+  const { t } = useTranslation();
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -185,7 +189,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     streamlinedUiEnabled ? (
       <ContextualSidebarFrame
         surface={`plugin:${routeSidebarSlot.id}`}
-        title={routeSidebarSlot.displayName}
+        title={pluginLabel(t, routeSidebarSlot.pluginKey, routeSidebarSlot.id, routeSidebarSlot.displayName)} // myrmidon(OPE-9352)
       >
         <PluginSlotMount
           slot={routeSidebarSlot}
@@ -630,18 +634,19 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        Skip to Main Content
+        {t("area.shell-sidebar-layout-1.layout.skipToMain")}
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
       <MaintenanceBanner companyId={selectedCompanyId ?? null} /> {/* myrmidon(R3) */}
+      <LicenseAttentionBanner /> {/* myrmidon(LICENSING): a closed module without a working license */}
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
             type="button"
             className="fixed inset-0 z-40 bg-black/50"
             onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
+            aria-label={t("area.shell-sidebar-layout-1.layout.closeSidebar")}
           />
         )}
 

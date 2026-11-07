@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
+import type { ToolConnectionCredentialSource } from "@myrmidon/shared";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
@@ -92,8 +92,14 @@ import { StackScreen } from "./components/myrmidon/stack/StackScreen"; // myrmid
 import { AutonomyMatrixScreen } from "./components/myrmidon/autonomy/AutonomyMatrixContainer"; // myrmidon(1.6 AUTONOMY-MATRIX B)
 import { WipLimitScreen } from "./components/myrmidon/wip-limit/WipLimitScreenContainer"; // myrmidon(1.6.1 WIP-LIMIT B)
 import { OwnerDeliveryScreen } from "./components/myrmidon/owner-delivery/OwnerDeliveryScreenContainer"; // myrmidon(1.6.5-OWNER-DM-FILTER)
+// myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms.
+import { AgentExchangeFeedScreen } from "./components/myrmidon/AgentExchangeFeedScreen"; // myrmidon(1.7-AGENT-EXCHANGE-B)
+import { GuardrailsScreen } from "./components/myrmidon/guardrails/GuardrailsScreenContainer"; // myrmidon(1.7 GRD-MODES)
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
 import { CorpusScreen } from "./components/myrmidon/corpus/CorpusScreenContainer"; // myrmidon(1.6.6 CORPUS E)
+import { KnowledgeReview } from "./pages/KnowledgeReview";
+import { Ui2KnowledgeCurrentUi } from "./ui2/screens/knowledge/Ui2KnowledgeCurrentUi"; // myrmidon(OPE-9222)
+import { BudgetLimitsScreen } from "./components/myrmidon/budget-limits/BudgetLimitsScreenContainer"; // myrmidon(1.7 BUDGET-CONFIG D)
 
 import { ModelProvidersScreen } from "./components/myrmidon/model-providers/ModelProvidersContainer"; // myrmidon(1.6.1 MODEL-PROVIDERS C)
 import { CastesScreen } from "./components/myrmidon/castes/CastesContainer"; // myrmidon(1.6.1 CUSTOM-CASTES C)
@@ -102,7 +108,12 @@ import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
+import { AdminUsers } from "./pages/AdminUsers";
+import { UsersAdmin } from "./pages/UsersAdmin";
+import { PasswordSetPage } from "./pages/PasswordSet"; // myrmidon(OPE-8985)
+import { InstanceFeatures } from "./pages/InstanceFeatures"; // myrmidon(FEATURES)
 import { BoardApiKeysPage } from "./pages/BoardApiKeys";
+import { LicensesPage } from "./components/myrmidon/LicensesPage"; // myrmidon(LICENSING)
 import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
@@ -128,7 +139,7 @@ import { useCloudInstance } from "./hooks/useCloudInstance";
 import { useStreamlinedUiEnabled } from "./hooks/useStreamlinedUiEnabled";
 import { useMyrmidonUi2Enabled } from "./ui2/useMyrmidonUi2Enabled"; // myrmidon(UI2-SHELL)
 import { Ui2Root } from "./ui2/Ui2Root"; // myrmidon(UI2-SHELL)
-import { ui2PlaceholderRoutes } from "./ui2/routes"; // myrmidon(UI2-SHELL)
+import { ui2PlaceholderRoutes, Ui2PlaceholderScreen } from "./ui2/routes"; // myrmidon(UI2-SHELL)
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 
@@ -184,6 +195,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
+      <Route path="company/settings/users" element={<UsersAdmin />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>
@@ -225,8 +237,14 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/autonomy" element={<AutonomyMatrixScreen />} /> {/* myrmidon(1.6 AUTONOMY-MATRIX B) */}
       <Route path="company/settings/wip-limit" element={<WipLimitScreen />} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
       <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
+      <Route path="company/settings/guardrails" element={<GuardrailsScreen />} /> {/* myrmidon(1.7 GRD-MODES) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
+      <Route path="knowledge/review" element={<KnowledgeReview />} />
+      <Route path="wiki" element={<Ui2KnowledgeCurrentUi />} /> {/* myrmidon(OPE-9222): the Knowledge screen of the current UI */}
+      <Route path="wiki/:spaceKey/:slug" element={<Ui2KnowledgeCurrentUi />} />
       <Route path="company/settings/corpus" element={<CorpusScreen />} /> {/* myrmidon(1.6.6 CORPUS E): the knowledge corpus settings screen route */}
+      <Route path="company/settings/budgets" element={<BudgetLimitsScreen />} /> {/* myrmidon(1.7 BUDGET-CONFIG D): per-level spend limits screen */}
+      <Route path="company/settings/agent-exchange" element={<AgentExchangeFeedScreen />} /> {/* myrmidon(1.7-AGENT-EXCHANGE-B): the feed of the agents' discussion rooms */}
 
       {/* myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — Castes is the caste
           directory, Models & providers moved off /castes, and the pre-IA-v2
@@ -236,6 +254,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/caste-directory" element={<Navigate to="/company/settings/castes" replace />} />
       <Route path="company/settings/voice-stt" element={<VoiceSttScreen />} /> {/* myrmidon(1.6.1 VOICE-STT C) */}
       <Route path="company/settings/clouds" element={<CloudsSettingsPage />} /> {/* myrmidon(CLOUD-CONNECTOR) */}
+      <Route path="company/settings/guards" element={<Ui2PlaceholderScreen />} /> {/* myrmidon(OPE-10138): guardrails settings route */}
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
@@ -291,12 +310,16 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
         <Route path="company/settings/instance/access" element={<InstanceAccess />} />
+        <Route path="company/settings/instance/users" element={<AdminUsers />} />
         {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
         <Route path="company/settings/instance/board-api-keys" element={<BoardApiKeysPage />} />
       </Route>
+      <Route path="company/settings/instance/licenses" element={<LicensesPage />} /> {/* myrmidon(LICENSING): installation id, license request, license state and install */}
       <Route element={<HiddenSettingsPageGate pageKey="instance.experimental" />}>
         <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
       </Route>
+      {/* myrmidon(FEATURES): fork features with live health */}
+      <Route path="company/settings/instance/features" element={<InstanceFeatures />} />
       <Route element={<HiddenSettingsPageGate pageKey="instance.plugins" />}>
         <Route path="company/settings/instance/plugins" element={<PluginManager />} />
         <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
@@ -433,6 +456,10 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="activity" element={streamlinedUiEnabled ? <CompanyActivity /> : <ProductionSurface><ProductionCompanyActivity /></ProductionSurface>} />
+      {/* Registered in both UI modes: the sidebar links to them in the
+          streamlined menu too (OPE-7948). */}
+      <Route path="swarm-claim" element={<ProductionSurface><ProductionSwarmSupervisor /></ProductionSurface>} /> {/* myrmidon(1.6-SWARM-CLAIM-B) */}
+      <Route path="foraging" element={<ProductionSurface><ProductionForaging /></ProductionSurface>} /> {/* myrmidon(1.6-FORAGE) */}
       {streamlinedUiEnabled ? (
         <>
           <Route path="activity/runs" element={<AuditHub section="runs" />} />
@@ -453,8 +480,6 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <>
           <Route path="costs" element={<ProductionSurface><ProductionCosts /></ProductionSurface>} />
           <Route path="quality" element={<ProductionSurface><ProductionQuality /></ProductionSurface>} /> {/* myrmidon(1.6-BASELINE) */}
-          <Route path="swarm-claim" element={<ProductionSurface><ProductionSwarmSupervisor /></ProductionSurface>} /> {/* myrmidon(1.6-SWARM-CLAIM-B) */}
-          <Route path="foraging" element={<ProductionSurface><ProductionForaging /></ProductionSurface>} /> {/* myrmidon(1.6-FORAGE) */}
           <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
         </>
       )}
@@ -819,6 +844,7 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
+        <Route path="password-set/:token" element={<PasswordSetPage />} />
         <Route element={streamlinedUiLoaded ? <CloudAccessGate /> : <PaperclipLoading />}>
           <Route path="chat-identity/confirm" element={
             <ChatConnectorsExperimentalGate><ChatIdentityConfirm /></ChatConnectorsExperimentalGate>

@@ -11,7 +11,7 @@ import {
   ShieldAlert,
   XCircle,
 } from "lucide-react";
-import { decisionEffectTargetIssueIds, type DecisionEffect, type DecisionOption } from "@paperclipai/shared";
+import { decisionEffectTargetIssueIds, type DecisionEffect, type DecisionOption } from "@myrmidon/shared";
 import type {
   Decision,
   DecisionEffectExecution,
@@ -22,6 +22,8 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { MarkdownBody } from "./MarkdownBody";
+import { i18n, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 
 /**
  * Presentational card for a single Decisions-v1 decision (PAP-14966 / PAP-14939
@@ -64,18 +66,23 @@ export interface DecisionCardProps {
 // --- small helpers ----------------------------------------------------------
 
 function humanStatus(status: string | null | undefined): string {
-  if (!status) return "unknown";
-  return status.replaceAll("_", " ");
+  if (!status) return i18n.t("area.approvals-decisions-notices-1.decision-card.unknownStatus");
+  const fallback = status.replaceAll("_", " ");
+  return i18n.t(`status.${status}`, { defaultValue: fallback }).toLowerCase();
 }
 
 function issueLabel(ref: DecisionIssueRef | null, fallbackId: string): string {
   if (ref?.identifier) return ref.identifier;
   if (ref?.title) return ref.title;
-  return `issue ${fallbackId.slice(0, 8)}`;
+  return i18n.t("area.approvals-decisions-notices-1.decision-card.issueFallback", { id: fallbackId.slice(0, 8) });
 }
 
-function pluralize(count: number, singular: string): string {
-  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+function blockerCount(count: number): string {
+  return i18n.t("area.approvals-decisions-notices-1.decision-card.blockerCount", { count });
+}
+
+function issueCount(count: number): string {
+  return i18n.t("area.approvals-decisions-notices-1.decision-card.issueCount", { count });
 }
 
 function isDestructiveOption(option: DecisionOption): boolean {
@@ -97,35 +104,43 @@ function effectSummary(
   const target = issueLabel(resolve(effect.targetIssueId), effect.targetIssueId);
   switch (effect.type) {
     case "comment_on_issue":
-      return `Comment on ${target}`;
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.effect.comment", { target });
     case "create_issue": {
       const parent = effect.draft.parentId
         ? issueLabel(resolve(effect.draft.parentId), effect.draft.parentId)
         : target;
-      return `Create issue “${effect.draft.title}” under ${parent}`;
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.effect.create", { title: effect.draft.title, parent });
     }
     case "update_issue_status":
-      return `Set ${target} to ${humanStatus(effect.status)}`;
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.effect.setStatus", { target, status: humanStatus(effect.status) });
     case "assign_issue":
-      return `Reassign ${target}`;
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.effect.reassign", { target });
     case "resolve_blocker":
-      return `Unblock ${target} — remove ${pluralize(effect.removeBlockedByIssueIds.length, "blocker")}`;
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.effect.unblock", { target, blockers: blockerCount(effect.removeBlockedByIssueIds.length) });
     case "cancel_issue_tree": {
       const snapshot = snapshots[effect.targetIssueId];
       const descendantCount = snapshot?.descendantCount ?? snapshot?.descendantIds?.length ?? snapshot?.childCount ?? 0;
-      return `Cancel ${target} and its sub-tree (${pluralize(descendantCount + 1, "issue")})`;
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.effect.cancelTree", { target, issues: issueCount(descendantCount + 1) });
     }
     default:
-      return "Apply effect";
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.effect.apply");
   }
 }
 
-const FAILURE_CAUSE: Record<string, string> = {
-  deny_decision_intersection: "blocked by the permission boundary (fail-closed)",
-  invalid_effect_reference: "a referenced issue no longer exists",
-  target_changed: "the target changed since this was proposed",
-  effect_execution_failed: "the effect errored while running",
-};
+function failureCause(code: string | null | undefined): string {
+  switch (code) {
+    case "deny_decision_intersection":
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.failure.denied");
+    case "invalid_effect_reference":
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.failure.invalidReference");
+    case "target_changed":
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.failure.targetChanged");
+    case "effect_execution_failed":
+      return i18n.t("area.approvals-decisions-notices-1.decision-card.failure.executionFailed");
+    default:
+      return code || i18n.t("area.approvals-decisions-notices-1.decision-card.failure.generic");
+  }
+}
 
 interface ResultRow {
   key: string;
@@ -142,43 +157,45 @@ function executionRow(
   const target = issueLabel(targetRef, execution.targetIssueId);
   const result = execution.result ?? {};
   if (execution.status === "skipped") {
-    return { key: execution.id, status: "skipped", summary: `Skipped ${target} — target changed since proposal`, link: targetRef };
+    return { key: execution.id, status: "skipped", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.skipped", { target }), link: targetRef };
   }
   if (execution.status === "failed") {
-    const cause = FAILURE_CAUSE[execution.error ?? ""] ?? execution.error ?? "the effect could not run";
-    return { key: execution.id, status: "failed", summary: `Failed on ${target} — ${cause}`, link: targetRef };
+    const cause = failureCause(execution.error);
+    return { key: execution.id, status: "failed", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.failed", { target, cause }), link: targetRef };
   }
   if (execution.status === "claimed") {
-    return { key: execution.id, status: "claimed", summary: `Running on ${target}…`, link: targetRef };
+    return { key: execution.id, status: "claimed", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.running", { target }), link: targetRef };
   }
   // executed
   switch (execution.effectType) {
     case "comment_on_issue":
-      return { key: execution.id, status: "executed", summary: `Commented on ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.commented", { target }), link: targetRef };
     case "create_issue": {
       const createdId = typeof result.issueId === "string" ? result.issueId : null;
       const created = createdId ? resolve(createdId) : null;
       return {
         key: execution.id,
         status: "executed",
-        summary: `Created ${created ? issueLabel(created, createdId!) : "a new issue"}`,
+        summary: created
+          ? i18n.t("area.approvals-decisions-notices-1.decision-card.result.created", { issue: issueLabel(created, createdId!) })
+          : i18n.t("area.approvals-decisions-notices-1.decision-card.result.createdNew"),
         link: created ?? targetRef,
       };
     }
     case "update_issue_status":
-      return { key: execution.id, status: "executed", summary: `Set ${target} to ${humanStatus(typeof result.status === "string" ? result.status : null)}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.setStatus", { target, status: humanStatus(typeof result.status === "string" ? result.status : null) }), link: targetRef };
     case "assign_issue":
-      return { key: execution.id, status: "executed", summary: `Reassigned ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.reassigned", { target }), link: targetRef };
     case "resolve_blocker": {
       const removed = Array.isArray(result.removedBlockedByIssueIds) ? result.removedBlockedByIssueIds.length : 0;
-      return { key: execution.id, status: "executed", summary: `Removed ${pluralize(removed, "blocker")} from ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.removedBlockers", { blockers: blockerCount(removed), target }), link: targetRef };
     }
     case "cancel_issue_tree": {
       const cancelled = Array.isArray(result.cancelledIssueIds) ? result.cancelledIssueIds.length : 0;
-      return { key: execution.id, status: "executed", summary: `Cancelled ${pluralize(cancelled, "issue")} under ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.cancelledIssues", { issues: issueCount(cancelled), target }), link: targetRef };
     }
     default:
-      return { key: execution.id, status: "executed", summary: `Applied effect on ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: i18n.t("area.approvals-decisions-notices-1.decision-card.result.applied", { target }), link: targetRef };
   }
 }
 
@@ -239,6 +256,7 @@ export function DecisionCard({
   onDismiss,
   className,
 }: DecisionCardProps) {
+  const { t } = useTranslation();
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [confirmOptionId, setConfirmOptionId] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
@@ -270,19 +288,21 @@ export function DecisionCard({
             ? "partial"
             : "failed";
 
-  const badgeLabel = open
-    ? "Pending"
+  // Stable machine-readable state (data attribute); the visible badge is translated below.
+  const stateCode = open
+    ? "pending"
     : decision.status === "expired"
-      ? "Expired"
+      ? "expired"
       : decision.status === "cancelled"
-        ? "Cancelled"
+        ? "cancelled"
         : dismissed
-          ? "Dismissed"
+          ? "dismissed"
           : decision.executionStatus === "succeeded"
-            ? "Decided"
+            ? "decided"
             : decision.executionStatus === "partial"
-              ? "Partial"
-              : "Failed";
+              ? "partial"
+              : "failed";
+  const badgeLabel = t(`area.approvals-decisions-notices-1.decision-card.badge.${stateCode}`);
 
   const requiredUnmet = (decision.inputs ?? []).some(
     (field) => field.required && !(inputValues[field.id] ?? "").trim(),
@@ -325,7 +345,7 @@ export function DecisionCard({
         dimmed && "opacity-80",
         className,
       )}
-      data-decision-state={badgeLabel.toLowerCase()}
+      data-decision-state={stateCode}
     >
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -333,7 +353,7 @@ export function DecisionCard({
         <div className="flex shrink-0 items-center gap-1.5">
           {open && hasCancelTree && (
             <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-wide", BADGE.destructive)}>
-              <ShieldAlert className="h-3 w-3" aria-hidden /> Destructive
+              <ShieldAlert className="h-3 w-3" aria-hidden /> {t("area.approvals-decisions-notices-1.decision-card.destructive")}
             </span>
           )}
           <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-wide", BADGE[tone])}>
@@ -344,10 +364,10 @@ export function DecisionCard({
 
       {/* Provenance */}
       <p className="mt-1 text-xs text-muted-foreground">
-        Proposed by <span className="font-medium text-foreground">{originAgentName ?? "an agent"}</span>
+        {t("area.approvals-decisions-notices-1.decision-card.proposedBy")} <span className="font-medium text-foreground">{originAgentName ?? t("area.approvals-decisions-notices-1.decision-card.anAgent")}</span>
         {originIssue && (
           <>
-            {" "}while running{" "}
+            {" "}{t("area.approvals-decisions-notices-1.decision-card.whileRunning")}{" "}
             <a href={originIssue.href} className="font-medium text-primary underline-offset-2 hover:underline">
               {issueLabel(originIssue, originIssue.id)}
             </a>
@@ -355,7 +375,7 @@ export function DecisionCard({
         )}
         {targetRefs.length > 0 && (
           <>
-            {" · applies to "}
+            {` · ${t("area.approvals-decisions-notices-1.decision-card.appliesTo")} `}
             {targetRefs.map(({ id, ref }, index) => (
               <span key={id}>
                 {index > 0 && ", "}
@@ -373,7 +393,7 @@ export function DecisionCard({
         {runHref && (
           <>
             {" · "}
-            <a href={runHref} className="hover:underline">view run</a>
+            <a href={runHref} className="hover:underline">{t("area.approvals-decisions-notices-1.decision-card.viewRun")}</a>
           </>
         )}
       </p>
@@ -390,7 +410,7 @@ export function DecisionCard({
         <div className="mt-3 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2">
           <div className="flex items-center gap-2 text-sm font-medium text-amber-800 dark:text-amber-200">
             <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
-            {pluralize(staleTargetIds.length, "target")} changed since this was proposed
+            {t("area.approvals-decisions-notices-1.decision-card.staleTitle", { count: staleTargetIds.length })}
           </div>
           <ul className="mt-1.5 space-y-1 text-xs text-amber-900/90 dark:text-amber-100/90">
             {staleTargetIds.map((id) => {
@@ -401,13 +421,13 @@ export function DecisionCard({
                   <span className="font-medium">{issueLabel(ref, id)}:</span>
                   <span className="tabular-nums">{humanStatus(from?.status)}</span>
                   <ArrowRight className="h-3 w-3" aria-hidden />
-                  <span className="tabular-nums">{humanStatus(ref?.status) || "changed"}</span>
+                  <span className="tabular-nums">{humanStatus(ref?.status) || t("area.approvals-decisions-notices-1.decision-card.changed")}</span>
                 </li>
               );
             })}
           </ul>
           <p className="mt-1.5 text-xs text-amber-800/80 dark:text-amber-200/80">
-            Options that require an unchanged target are disabled below.
+            {t("area.approvals-decisions-notices-1.decision-card.staleHint")}
           </p>
         </div>
       )}
@@ -467,7 +487,7 @@ export function DecisionCard({
                     </span>
                     {blockedStale && (
                       <span className="shrink-0 rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-800 dark:text-amber-200">
-                        Blocked · stale
+                        {t("area.approvals-decisions-notices-1.decision-card.blockedStale")}
                       </span>
                     )}
                   </div>
@@ -496,12 +516,12 @@ export function DecisionCard({
                 {confirming && cancelTree && (
                   <div className="rounded-lg border border-rose-500/50 bg-rose-500/5 p-3">
                     <div className="flex items-center gap-2 text-sm font-semibold text-rose-700 dark:text-rose-300">
-                      <Ban className="h-4 w-4" aria-hidden /> This cancels an entire issue tree
+                      <Ban className="h-4 w-4" aria-hidden /> {t("area.approvals-decisions-notices-1.decision-card.cancelsTree")}
                     </div>
                     {previewRows && previewRows.length > 0 ? (
                       <>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {pluralize(previewRows.length, "issue")} will be cancelled:
+                          {t("area.approvals-decisions-notices-1.decision-card.willBeCancelled", { count: previewRows.length })}
                         </p>
                         <ul className="mt-1 max-h-40 space-y-0.5 overflow-auto text-xs">
                           {previewRows.map((row) => (
@@ -517,17 +537,21 @@ export function DecisionCard({
                       </>
                     ) : (
                       <p className="mt-1 text-xs text-muted-foreground">
-                        This issue and every sub-issue beneath it will be cancelled.
+                        {t("area.approvals-decisions-notices-1.decision-card.cancelsAllBelow")}
                       </p>
                     )}
                     <p className="mt-2 text-xs text-muted-foreground">
-                      Type <span className="font-mono font-medium text-foreground">{confirmToken}</span> to confirm.
+                      <Trans
+                        i18nKey="area.approvals-decisions-notices-1.decision-card.typeToConfirm"
+                        values={{ token: confirmToken }}
+                        components={{ token: <span className="font-mono font-medium text-foreground" /> }}
+                      />
                     </p>
                     <Input
                       value={confirmText}
                       onChange={(event) => setConfirmText(event.target.value)}
                       placeholder={confirmToken}
-                      aria-label="Type the issue identifier to confirm"
+                      aria-label={t("area.approvals-decisions-notices-1.decision-card.confirmInputLabel")}
                       autoFocus
                       className="mt-1"
                     />
@@ -540,7 +564,7 @@ export function DecisionCard({
                           setConfirmText("");
                         }}
                       >
-                        Cancel
+                        {t("common.cancel")}
                       </Button>
                       <Button
                         variant="destructive"
@@ -549,7 +573,7 @@ export function DecisionCard({
                         onClick={() => onDecide?.(option.id, inputValues)}
                       >
                         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                        {previewRows ? `Cancel ${pluralize(previewRows.length, "issue")}` : "Cancel tree"}
+                        {previewRows ? t("area.approvals-decisions-notices-1.decision-card.cancelIssues", { count: previewRows.length }) : t("area.approvals-decisions-notices-1.decision-card.cancelTree")}
                       </Button>
                     </div>
                   </div>
@@ -561,9 +585,9 @@ export function DecisionCard({
           {/* Always-present zero-effect Dismiss (telemetered "no", distinct from expiry) */}
           {!decision.options.some((option) => option.effects.length === 0) && (
             <div className="flex items-center justify-between gap-2 pt-1">
-              <span className="text-xs text-muted-foreground">Not now?</span>
+              <span className="text-xs text-muted-foreground">{t("area.approvals-decisions-notices-1.decision-card.notNow")}</span>
               <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.()}>
-                Dismiss — no effects
+                {t("area.approvals-decisions-notices-1.decision-card.dismissNoEffects")}
               </Button>
             </div>
           )}
@@ -577,26 +601,26 @@ export function DecisionCard({
           {decision.status === "expired" && (
             <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
               <div className="flex items-center gap-2 font-medium text-foreground">
-                <Clock className="h-4 w-4" aria-hidden /> The decision window closed
+                <Clock className="h-4 w-4" aria-hidden /> {t("area.approvals-decisions-notices-1.decision-card.windowClosed")}
               </div>
               <p className="mt-1">
                 {expiredReason === "target_gone"
-                  ? "A target issue was cancelled before this was decided."
+                  ? t("area.approvals-decisions-notices-1.decision-card.expired.targetGone")
                   : expiredReason === "target_completed"
-                    ? "All target issues were completed before this was decided."
-                    : "No response before the expiry deadline."}
-                {decision.continuationPolicy === "wake_origin_agent" && " The proposer was re-woken."}
+                    ? t("area.approvals-decisions-notices-1.decision-card.expired.targetCompleted")
+                    : t("area.approvals-decisions-notices-1.decision-card.expired.noResponse")}
+                {decision.continuationPolicy === "wake_origin_agent" && ` ${t("area.approvals-decisions-notices-1.decision-card.expired.proposerWoken")}`}
               </p>
             </div>
           )}
           {decision.status === "cancelled" && (
             <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              This decision was withdrawn by the proposer before a response.
+              {t("area.approvals-decisions-notices-1.decision-card.withdrawn")}
             </p>
           )}
           {decision.status === "decided" && dismissed && (
             <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              Dismissed — no effects were run.
+              {t("area.approvals-decisions-notices-1.decision-card.dismissedNoEffects")}
             </p>
           )}
           {decision.status === "decided" && !dismissed && (executions ?? []).length > 0 && (
@@ -615,7 +639,7 @@ export function DecisionCard({
               </ul>
               {decision.executionStatus !== "succeeded" && (
                 <p className="text-xs text-muted-foreground">
-                  Some effects may already have been applied. Review the results before asking the proposer to re-propose.
+                  {t("area.approvals-decisions-notices-1.decision-card.partialWarning")}
                 </p>
               )}
             </>

@@ -10,6 +10,18 @@ If the company runs the Telegram DM bridge (X8b, see
 card also reaches the owner's Telegram as a message from the bot that belongs
 to the authoring agent. The owner can answer without opening the board.
 
+## Plain-text owner publications
+
+The additive owner-only Telegram DM projection for `ask_user_questions` and safe `request_confirmation` interactions is readable text, without cards or inline buttons. It is selected only when no live task-bound chat conversation exists, and only when the existing owner and endpoint filters match. Vendor task conversations retain their current provider-specific behavior.
+
+A question message includes its title, prompt and help text, all numbered options with descriptions, the task URL as plain text, and the instruction: "Ответьте сообщением: номером варианта или своими словами." Show a recommendation only if explicitly present in source data.
+
+A safe confirmation includes its prompt and details, along with a supplied target and consequences. When no Telegram-native confirmation path can resolve it, say it can only be answered on the board and include the task URL; do not imply that a text reply will resolve it. Exclude tool-action, secret-proposal, and connection-authorization content.
+
+Reuse the durable publication outbox and preserve the canonical interaction ID and provider receipt. Do not create callback actions, link buttons, or executable action tokens for the owner-only projection, even if the endpoint advertises action support. Preserve owner filters and redaction. If the complete message exceeds Telegram's 4,096-character limit, never truncate it: log a warning (interaction id only, no text) and send a short notice that the question is too long for Telegram and can be answered on the board, with the task link. Confirmations that cannot be rendered as text (tool, secret, connection) get the same kind of notice ("can only be answered on the board" plus the link).
+
+The delivery mode uses the instance's owner-delivery setting (`instance_settings.general[ownerDelivery]`; `GET /api/myrmidon/owner-delivery` and `PATCH /api/myrmidon/owner-delivery`). For owner-only Telegram DMs, the mode selects the audience, not the format: eligible owner publications are always plain text without buttons. `via_bot` adds no owner-DM publication; `owner_decisions_only` limits it to human decisions; `all` also allows agent-addressed and operational interactions. A task-bound vendor conversation retains its existing provider-specific projection.
+
 ## The delivery mode
 
 How an owner decision reaches the owner's Telegram is the instance's
@@ -27,21 +39,23 @@ same three choices). The modes:
   consequence, and a recommendation. The owner answers in the chat with
   ordinary text, and the agent records the decision on the card (see
   "The `via_bot` mode" below).
-- `owner_decisions_only` — only the cards that wait for the owner are
-  delivered as cards with buttons: cards whose effective resolver policy is
-  `human_only`, or cards whose addressee user is the task owner (its
-  responsible user, otherwise its creator). Cards addressed to an agent and
-  purely operational agent-to-agent confirmations (resolver policy `anyone`
+- `owner_decisions_only` — only questions and confirmations that wait for a
+  human owner are delivered to the owner DM: interactions whose effective
+  resolver policy is `human_only`, or cards whose addressee user is the task
+  owner (its responsible user, otherwise its creator). Cards addressed to an
+  agent and purely operational agent-to-agent interactions (resolver policy `anyone`
   or `not_creator` with no human addressee) stay on the board only. The rest
-  of this page describes this card delivery.
-- `all` — every card an agent raises is delivered, the pre-filter behaviour.
+  of this page describes this owner-DM delivery.
+- `all` — all eligible agent-created questions and confirmations are delivered
+  to the owner DM, including agent-addressed or operational interactions.
+  This broadens the audience; it does not restore cards or buttons.
 
 An explicitly saved `owner_decisions_only` or `all` keeps its behaviour;
 only instances without a stored mode follow the new default.
 
 ## When a card is delivered to Telegram
 
-In the `via_bot` mode a card never reaches the owner's Telegram — the bot
+In the `via_bot` mode no owner-DM publication is enqueued — the agent bot
 message replaces it. In the other two modes, all of the following must hold:
 
 1. The card is a pending `ask_user_questions` or `request_confirmation`
@@ -69,14 +83,15 @@ to agent B.
 
 ## What the owner sees and how the answer lands
 
-The card arrives in the owner's Telegram DM with the authoring agent's bot as
-a message with the card text and answer affordances (buttons for closed
-shapes, a link to the task otherwise — the same projection the vendor uses for
-chat-bound tasks). The text opens with a short human-readable header line
+The owner-only publication arrives as readable text in the owner's Telegram
+DM with the authoring agent's bot; it has no card, inline buttons, link
+actions, or executable action tokens. The task URL is plain text. The text
+includes the question or confirmation details and opens with a short
+human-readable header line
 (`Нужно ваше решение: …`) built from the interaction's own fields — the
 question or confirmation prompt, never internal ids — so the owner sees what
-is being asked before the raw card text. Cards the vendor path delivers to a
-task's own chat thread keep the vendor text unchanged. The owner's reply is
+is being asked before the interaction text. Task-bound vendor publications
+retain their existing provider-specific projection. The owner's reply is
 recorded against the same card on the board, and the task's run continues as
 if the card had been answered from the board UI.
 
@@ -95,8 +110,8 @@ particular:
 
 - the card is filtered out by the owner-delivery mode (see "Which cards
   reach the owner's Telegram" above) — with the default
-  `owner_decisions_only` mode, cards addressed to an agent never leave the
-  board;
+  `owner_decisions_only` mode, agent-addressed and operational interactions do
+  not leave the board;
 - the owner has no standing Telegram DM with the authoring agent (the bridge
   is off for that endpoint, the DM was never started, or it is not
   `active`/`waiting`) — the card is not delivered anywhere outside the board;
@@ -156,7 +171,7 @@ answers it with ordinary text in the same Telegram chat.
 - Call site for card delivery: `server/src/services/chat-interaction-publications.ts`
   (marker `myrmidon(U2)`, after the vendor binding lookup; the mode filter
   lives inside the binding search).
-- Binding search: `server/src/myrmidon/owner-delivery/telegram-owner-bindings.ts`.
-- Human-readable card prefix: `server/src/myrmidon/owner-delivery/owner-card-text.ts`.
+- Binding search: `server/src/myrmidon/owner-active-channel/owner-delivery-gate.ts` (since 1.7-ACTIVE-CHANNEL; the owner-delivery gate picks the channel).
+- Plain-text owner message (replaces the former card prefix `owner-card-text.ts`): `server/src/myrmidon/owner-delivery/telegram-text.ts`; see "Plain-text owner publications" above, which supersedes the button and header description for the owner DM.
 - Callback resolution: `server/src/myrmidon/owner-delivery/callback-interaction-lookup.ts`.
 - Behaviour record: [../DIVERGENCE.md](../DIVERGENCE.md), row U2.

@@ -571,6 +571,26 @@ its default:
 | `sharedCacheRoles` | `engineer`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; other bots get none and are not recreated when the cache is enabled |
 | `idleTtlMs`, `enabled` | 6 h, on | The draft lifecycle of BOT-DISK A, which the clone hygiene follows |
 
+## Bot cache lifecycle and pressure cleanup (1.6.6 BOT-DISK-H)
+
+`general.botDisk` also controls the botd maintenance pass. The defaults are applied when a field is absent, so existing instances do not need a settings migration or a rollout-time edit:
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `npmCacheTtlHours` | `48` | Maximum mtime age for npm `_cacache` entries/root shards and `_npx` package entries |
+| `uvCacheTtlHours` | `168` (7 days) | Age used for uv cache maintenance |
+| `terminalOutputTtlHours` | `24` | Maximum mtime age for `cache/terminal-output` entries |
+| `scratchTtlHours` | existing default | Maximum mtime age for scratch files; evaluated on every maintenance pass |
+| `sessionRetentionDays` | existing default | Retention for bot session data |
+
+The cleanup is mtime-based and never removes a path that is open or contains an open file descriptor or current working directory. Open-path protection is prefix-based: an open descendant protects its whole cache entry. npm `_npx/<hash>` directories and npm content/index shards are removed as whole entries; files are never deleted one by one inside those trees. uv is maintained with `uv cache prune`; under hard pressure botd may use `uv cache clean` rather than walking the cache. A failed or skipped cleanup is reported in the botd maintenance log with the reason and bytes reclaimed.
+
+When disk pressure is `soft` or `hard`, botd schedules a local-only pressure cleanup outside the normal cadence. This pass does not poll desired state or send a disk report early: those remain bounded by their normal report cadence. Pressure passes have a floor of 60 seconds and back off when a pass frees no bytes, so a failing board cannot turn pressure into a request storm.
+
+The git-base maintenance pass is also guarded. `git repack -A -d` runs at low priority (`nice -n 19`, `ionice -c 3` when available, `pack.threads=1`), only during the idle gate, and one repository at a time under a fleet-wide lock. It is skipped at `hard` pressure. A successful repack is followed by `git prune --expire=2.weeks`, and the botd log records the repository plus before/after size. The lock prevents all bots from repacking concurrently and stale lock state is safely recoverable.
+
+**Rollout and reporting.** No production setting change is required for the defaults. After rollout, operators should inspect botd maintenance reports for `pressure`, `reclaimedBytes`, skipped-open entries, uv command results, and repack before/after sizes. If a cache entry is in use, leave it in place and investigate the owning process rather than deleting it manually. The board's disk acceptance check is that stale npm entries are gone while fresh and open entries remain.
+
 ## Enabling git mirrors (operator steps)
 
 1. The shared cache steps above are done (`packageCacheRoot` in dockergate).

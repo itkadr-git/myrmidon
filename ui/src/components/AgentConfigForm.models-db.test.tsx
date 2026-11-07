@@ -10,7 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm } from "./AgentConfigForm";
@@ -290,5 +290,31 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS D) card model picker", () => {
     expect(document.body.textContent).toContain("new-free-model");
     const badges = Array.from(document.body.querySelectorAll("[data-model-pricing]"));
     expect(badges[0]?.getAttribute("data-model-pricing")).toBe("free");
+  });
+
+  it("renders pool account badges for models provided by pool accounts (1.6.6 OPE-9932)", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "pool-model-multi", label: "pool-model-multi", accounts: ["acc1", "acc2"], pricing: "free" },
+      { id: "pool-model-single", label: "pool-model-single", accounts: ["acc11"] },
+      { id: "standard-model", label: "standard-model" },
+    ]);
+    const result = await renderForm({ adapterConfig: { model: "pool-model-multi" } });
+    roots.push(result.root);
+
+    const trigger = modelTrigger(result.container, "pool-model-multi");
+    expect(trigger).not.toBeNull();
+    const triggerBadge = trigger!.querySelector("[data-model-accounts]");
+    expect(triggerBadge?.getAttribute("data-model-accounts")).toBe("acc1,acc2");
+    expect(triggerBadge?.textContent).toBe("acc1, acc2");
+
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const optionBadges = Array.from(document.body.querySelectorAll("[data-model-accounts]"));
+    const accountTexts = optionBadges.map((b) => b.getAttribute("data-model-accounts"));
+    expect(accountTexts).toContain("acc1,acc2");
+    expect(accountTexts).toContain("acc11");
   });
 });

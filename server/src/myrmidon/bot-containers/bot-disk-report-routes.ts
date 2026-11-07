@@ -14,7 +14,7 @@ import {
   WS_DISK_REPORT_MAX_BODY_BYTES,
   wsDiskReportResponseSchema,
   wsDiskReportSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest, forbidden, payloadTooLarge, unauthorized } from "../../errors.js";
 import { botKeyForAgent } from "./agent-config.js";
 import { readBotDiskReports, storeBotDiskReport } from "./bot-disk-report-store.js";

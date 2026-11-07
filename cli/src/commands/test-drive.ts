@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { Option, type Command } from "commander";
-import type { Agent, Company, InstanceExperimentalSettings } from "@paperclipai/shared";
+import type { Agent, Company, InstanceExperimentalSettings } from "@myrmidon/shared";
 import { PaperclipApiClient } from "../client/http.js";
 import { openUrl } from "../client/board-auth.js";
 import {
@@ -17,7 +17,7 @@ import { readConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { runCommand, type StartedServer } from "./run.js";
 import { isLinkedGitWorktree } from "./git-workspace.js";
-import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const TEST_DRIVE_HARNESSES = ["claude", "codex", "opencode"] as const;
 export type TestDriveHarness = (typeof TEST_DRIVE_HARNESSES)[number];
@@ -91,7 +91,7 @@ const NON_PAPERCLIP_ISOLATED_ENV_KEYS = [
 
 function requiredApiResult<T>(value: T | null, action: string): T {
   if (value === null) {
-    throw new Error(`Paperclip returned no result while ${action}.`);
+    throw new Error(`Myrmidon returned no result while ${action}.`);
   }
   return value;
 }
@@ -311,7 +311,7 @@ export async function reconcileTestDriveWorktreeExecution(
   );
   if (!worktreeExecutionArmed(verified, instanceId)) {
     throw new Error(
-      `Could not arm “Run tasks in this worktree” for Paperclip instance ${instanceId}. ` +
+      `Could not arm “Run tasks in this worktree” for Myrmidon instance ${instanceId}. ` +
         "Check that PAPERCLIP_IN_WORKTREE=true and retry the command.",
     );
   }
@@ -425,7 +425,7 @@ export async function testDriveCommand(
   ];
 
   p.log.message(pc.dim(`Data directory: ${dataDir}`));
-  p.log.message(pc.dim("The data directory is retained when Paperclip exits."));
+  p.log.message(pc.dim("The data directory is retained when Myrmidon exits."));
   if (options.apiKey !== undefined) {
     p.log.warn("A key passed with --api-key may be visible in process arguments and shell history.");
   }
@@ -439,7 +439,7 @@ export async function testDriveCommand(
       // Auto-created directories are private to this process. Explicitly reused
       // directories retain the normal guard against an already-managed instance.
       skipServiceManagerCheck: !options.dataDir?.trim(),
-      introLabel: "paperclipai test-drive",
+      introLabel: "myrmidon test-drive",
       afterStart: async (server) => {
         const api = dependencies.createApi(server.apiUrl);
         const result = await bootstrapTestDrive({
@@ -464,14 +464,14 @@ export async function testDriveCommand(
 
         const url = dashboardUrl(server);
         if (options.browser === false) {
-          p.log.success(`Paperclip is ready at ${pc.cyan(url)}.`);
+          p.log.success(`Myrmidon is ready at ${pc.cyan(url)}.`);
           return;
         }
         const opened = await dependencies.openBrowser(url);
         if (opened) {
-          p.log.success(`Paperclip is ready and opened at ${pc.cyan(url)}.`);
+          p.log.success(`Myrmidon is ready and opened at ${pc.cyan(url)}.`);
         } else {
-          p.log.warn(`Paperclip is ready, but the browser could not be opened. Visit ${url}.`);
+          p.log.warn(`Myrmidon is ready, but the browser could not be opened. Visit ${url}.`);
         }
       },
     });
@@ -483,8 +483,8 @@ export async function testDriveCommand(
 export function registerTestDriveCommand(program: Command): void {
   program
     .command("test-drive")
-    .description("Start an isolated, initialized Paperclip instance for manual testing")
-    .option("-d, --data-dir <path>", "Paperclip data directory to create or reuse")
+    .description("Start an isolated, initialized Myrmidon instance for manual testing")
+    .option("-d, --data-dir <path>", "Myrmidon data directory to create or reuse")
     .option("--company-name <name>", "Initial company name", "Test Company")
     .option("--agent-name <name>", "Initial CEO agent name", "CEO")
     .addOption(

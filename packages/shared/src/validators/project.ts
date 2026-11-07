@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { issueExecutionPolicySchema } from "./issue.js";
 import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
@@ -114,6 +115,11 @@ const projectFields = {
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
+  developmentProcess: z.object({
+    enabled: z.boolean(),
+    executionPolicy: issueExecutionPolicySchema,
+    pipelineId: z.string().uuid().optional().nullable(),
+  }).strict().optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
   /**
    * 1.6.5 (F-27 rework 09.10, design §2.1): the caste the project's tasks

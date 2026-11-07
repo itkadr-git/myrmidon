@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, issues } from "@paperclipai/db";
+import { agents, companies, createDb, issues } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -11,8 +11,8 @@ import {
 
 // X2: the vendor planning work mode reaches the prompt of a hermes_local run.
 const spawned = vi.hoisted(() => ({ stdin: [] as string[] }));
-vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/server-utils")>();
+vi.mock("@myrmidon/adapter-utils/server-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@myrmidon/adapter-utils/server-utils")>();
   return {
     ...actual,
     runChildProcess: vi.fn(async (_runId: string, _command: string, _args: string[], opts: { stdin?: string }) => {
@@ -22,7 +22,7 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
   };
 });
 
-import { execute } from "@paperclipai/hermes-paperclip-adapter/server";
+import { execute } from "@myrmidon/hermes-paperclip-adapter/server";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

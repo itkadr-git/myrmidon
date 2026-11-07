@@ -2,18 +2,18 @@ import { Router, type Request, type Response } from "express";
 // myrmidon(B1c): product name in the gateway initialize response; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, toolApplications, toolCallEvents, toolConnections, toolInvocations } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { agents, toolApplications, toolCallEvents, toolConnections, toolInvocations } from "@myrmidon/db";
 import {
   humanizeConnectionDisplayName,
   type PermissionKey,
   type ToolConnectionLifecycleEventType,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   createToolMcpGatewaySchema,
   createToolMcpGatewayTokenSchema,
   updateToolMcpGatewaySchema,
-} from "@paperclipai/shared/validators/tool-access";
+} from "@myrmidon/shared/validators/tool-access";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";

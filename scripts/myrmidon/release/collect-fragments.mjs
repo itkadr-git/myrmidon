@@ -86,11 +86,11 @@ const EDIT_KEYS = Object.keys(DOC_FILES).flatMap((doc) =>
 );
 const DIRECTIVE_KEYS = ["section", "after", "after-line", "occurrence"];
 
-const isTableRow = (line) => line.trimStart().startsWith("|");
+const isTableRow = (line) => /^\s*(?:\d+i)?\|/.test(line);
 
 /** First cell of a markdown table row, trimmed (escaped pipes stay inside the cell). */
 export function firstCell(line) {
-  const m = /^\s*\|\s*((?:\\\||[^|])*?)\s*\|/.exec(line);
+  const m = /^\s*(?:\d+i)?\|\s*((?:\\\||[^|])*?)\s*\|/.exec(line);
   return m ? m[1] : null;
 }
 
@@ -284,11 +284,12 @@ export function sectionKey(heading) {
   if (track) return `track:${track[1]}`;
   const version = /^(\d+\.\d+(?:\.\d+)?)\s+[—-]\s+/.exec(h);
   const body = version ? h.slice(version[0].length) : h;
+  const monitoringPart = /\bMONITORING\s+([A-Z])\b/.exec(body);
   const runs = (body.match(/[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*/g) || []).filter(
     (t) => t.length >= 2,
   );
   if (runs.length === 0) return null;
-  return `${version ? version[1] : ""}|${runs.join("|")}`;
+  return `${version ? version[1] : ""}|${monitoringPart ? `MONITORING-${monitoringPart[1]}` : runs.join("|")}`;
 }
 
 /**
@@ -679,12 +680,11 @@ export function collect(root, { version, dryRun = false, log = () => {} } = {}) 
         edits.set(rel, foldReplaceRows(read(rel), { rows: e.body, section: e.directives.section ?? null, occurrence: e.directives.occurrence ? Number(e.directives.occurrence) : null }, { fileName: f.name }));
       }
     }
-    // 2. rows appended to the section named in the front matter; the RU settings
-    //    document carries Russian variants of the EN headings, so its heading is
-    //    resolved by language-independent key (see `sectionKey`)
+    // 2. rows appended to the section named in the front matter. Both settings
+    //    registries share the version/feature-key pairing across EN and RU.
     for (const f of fragments) {
       if (!f.sections[doc]) continue;
-      const target = doc === "settings-ru" ? resolveSectionHeading(read(rel), f.meta[sectionKey[doc]]) : f.meta[sectionKey[doc]];
+      const target = resolveSectionHeading(read(rel), f.meta[sectionKey[doc]]);
       edits.set(
         rel,
         foldTableRows(read(rel), {

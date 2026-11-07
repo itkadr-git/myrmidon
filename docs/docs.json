@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "name": "Paperclip",
+  "name": "Myrmidon",
   "description": "The control plane for autonomous AI companies",
   "theme": "mint",
   "colors": {
@@ -107,6 +107,21 @@
               "adapters/external-adapters",
               "adapters/adapter-ui-parser",
               "adapters/creating-an-adapter"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Agents and execution",
+            "pages": [
+              "architecture/agent-adapters",
+              "architecture/execution-workspaces",
+              "architecture/agent-chat",
+              "architecture/debates",
+              "architecture/agent-exchange"
             ]
           }
         ]

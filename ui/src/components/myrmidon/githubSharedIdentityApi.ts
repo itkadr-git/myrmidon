@@ -89,10 +89,13 @@ export interface AppInstallUrlResponse {
   installUrl: string;
 }
 
+export interface GitHubPatEntry { id: string; name: string; tokenSecretId: string; agentIds: string[]; allowedRepos: string[]; }
+
 export interface GitHubSharedIdentitySettings {
   version: 1;
   enabled: boolean;
   apps: GitHubAppEntry[];
+  pats: GitHubPatEntry[];
   commitEmailDomain: string | null;
 }
 

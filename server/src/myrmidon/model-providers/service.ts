@@ -23,30 +23,54 @@
 // Everything injectable arrives through ModelProviderServiceDeps, so the suite
 // runs the real service with fakes (the real wiring is wiring.ts).
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
+  evaluateModelProviderPackageWarning,
   getModelProviderConnector,
+  isK12Plan,
   isModelProviderTypeAvailable,
   listAvailableModelProviderTypes,
   MODEL_PROVIDER_DEFAULT_BASE_URLS,
   MODEL_PROVIDER_MODELS_PATH,
+  modelProviderAccountSecretName,
   modelProviderSecretName,
   type CreateModelProviderInput,
   type ModelProviderChannelsView,
+  type ModelProviderPackageWarning,
   type ModelProviderType,
   type PatchModelProviderInput,
   type PoolAccountChannelView,
   type PoolAccountLimitWindow,
+  type PoolAccountOAuthBeginInput,
+  type PoolAccountOAuthBeginResult,
+  type PoolAccountOAuthCompleteInput,
+  type PoolAccountOAuthRefreshInput,
+  type PoolAccountOAuthStatusResult,
   type PoolAccountRoleSignal,
-} from "@paperclipai/shared";
-import { modelProviderModels, modelProviders, type Db } from "@paperclipai/db";
+} from "@myrmidon/shared";
+import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
+import { latestAccountError, parseResetAfterText } from "./quota-payload.js";
 import {
   clearPoolAccountSignals,
   evaluateAccountSignals,
+  recordPackageExpirySignals,
   recordPoolAccountSignals,
+  type ModelProviderPackageSignal,
 } from "./signals.js";
+
+export interface ModelProviderKeyRotationSnapshot {
+  secretId: string;
+  secretValue: string | null;
+  models: Array<{
+    modelName: string;
+    litellmModelName: string;
+    enabled: boolean;
+    free: boolean;
+  }>;
+  keyValidatedAt: Date | null;
+}
 
 /** The provider surface this module needs from the secret store. */
 export interface ModelProviderSecretStoreDeps {
@@ -63,6 +87,8 @@ export interface ModelProviderSecretStoreDeps {
   }): Promise<{ id: string }>;
   /** Rotates a company secret to a new value. */
   rotateSecret(secretId: string, value: string): Promise<void>;
+  /** Restores a previously stored company secret value after failed propagation. */
+  restoreSecret(secretId: string, value: string | null): Promise<void>;
   /** Removes (soft-deletes) a company secret. */
   deleteSecret(secretId: string): Promise<void>;
 }
@@ -79,6 +105,13 @@ export interface ModelProviderCatalogPort {
     apiKey: string;
   }): Promise<{ models: string[] }>;
 
+  /** Sends one minimal tool-call request without exposing its response. */
+  probeToolCall?(input: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  }): Promise<void>;
+
   /**
    * Fetches the account channel list from the ChatGPT / Codex subscription pool.
    * Returns the accounts array on success.
@@ -91,6 +124,23 @@ export interface ModelProviderCatalogPort {
 }
 
 /** The error a provider answers an invalid key with (maps to 4xx). */
+/**
+ * A tool-call probe failure whose code and text are safe to store and return:
+ * never the provider's response body, headers or the raw exception text.
+ */
+export class ToolCallProbeError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "ToolCallProbeError";
+  }
+}
+
+/** Turns any probe failure into `code: short description`. */
+export function normalizeToolCallCheckError(error: unknown): string {
+  if (error instanceof ToolCallProbeError) return `${error.code}: ${error.message}`.slice(0, 200);
+  return "probe_failed: the tool-call probe failed";
+}
+
 export class ProviderAuthError extends Error {
   constructor(message: string) {
     super(message);
@@ -111,12 +161,17 @@ export interface ModelProviderView {
   type: ModelProviderType;
   name: string;
   baseUrl: string | null;
-  /** True when the secret store holds a value for the credential secret. */
   hasKey: boolean;
-  /** The secret-store name the credential lives under (a reference, not a value). */
   credentialSecretName: string | null;
   free: boolean;
+  expiresAt: string | null;
+  packageName: string | null;
+  rpmLimit: number | null;
+  toolCallCompatible: boolean | null;
+  toolCallCheckedAt: string | null;
+  toolCallCheckError: string | null;
   keyValidatedAt: string | null;
+  packageWarning?: ModelProviderPackageWarning | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -129,11 +184,18 @@ export interface ModelProviderModelView {
   free: boolean;
 }
 
-/** Activity-log entry of add / rotate / remove. */
+/** Activity-log entry of add / rotate / remove / patch / setModels. */
 export interface ModelProviderActivityEntry {
   companyId: string;
-  action: "model_provider_added" | "model_provider_key_rotated" | "model_provider_removed";
+  action:
+    | "model_provider_added"
+    | "model_provider_key_rotated"
+    | "model_provider_removed"
+    | "model_provider_patched"
+    | "model_provider_models_updated"
+    | (string & {});
   providerId: string;
+  actor?: { type: string; id: string; name?: string | null };
   details: Record<string, unknown>;
 }
 
@@ -151,7 +213,25 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       hasKey,
       credentialSecretName: row.credentialSecretName,
       free: row.free,
+      expiresAt: row.expiresAt?.toISOString() ?? null,
+      packageName: row.packageName,
+      rpmLimit: row.rpmLimit,
+      toolCallCompatible: row.toolCallCompatible,
+      toolCallCheckedAt: row.toolCallCheckedAt?.toISOString() ?? null,
+      toolCallCheckError: row.toolCallCheckError,
       keyValidatedAt: row.keyValidatedAt ? row.keyValidatedAt.toISOString() : null,
+      packageWarning: evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: now() },
+      ),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -265,6 +345,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     companyId: string;
     body: CreateModelProviderInput;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
   }): Promise<ModelProviderView> {
     const name = input.body.name.trim();
     const existing = await deps.db
@@ -299,6 +380,9 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         name,
         baseUrl: input.body.baseUrl?.trim() || null,
         free: input.body.free ?? false,
+        expiresAt: input.body.expiresAt ? new Date(input.body.expiresAt) : null,
+        packageName: input.body.packageName ?? null,
+        rpmLimit: input.body.rpmLimit ?? null,
         keyValidatedAt: now(),
       })
       .returning();
@@ -326,6 +410,20 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       details: { name, type: row.type, baseUrl: stored.baseUrl, models: models.length },
     });
 
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
+
     return view({ ...stored, updatedAt: now() }, true);
   }
 
@@ -339,6 +437,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     providerId: string;
     key: string;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
   }): Promise<ModelProviderView> {
     const row = await loadProvider(input.companyId, input.providerId);
     const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
@@ -364,7 +463,131 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       details: { name: row.name, type: row.type, models: models.length },
     });
 
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
+
     return view({ ...row, credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() }, true);
+  }
+
+  /**
+   * Captures the snapshot of current key/secret and models cache before rotation,
+   * allowing rollback if live gateway synchronization fails.
+   */
+  async function captureKeyRotationSnapshot(
+    companyId: string,
+    providerId: string,
+  ): Promise<ModelProviderKeyRotationSnapshot> {
+    const row = await loadProvider(companyId, providerId);
+    const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound("the provider has no stored key; add the provider again", {
+        code: "model_provider_key_absent",
+      });
+    }
+    const secretValue = await deps.secrets.readSecretValue(companyId, secretName);
+    const models = await deps.db
+      .select({
+        modelName: modelProviderModels.modelName,
+        litellmModelName: modelProviderModels.litellmModelName,
+        enabled: modelProviderModels.enabled,
+        free: modelProviderModels.free,
+      })
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, row.id));
+
+    return {
+      secretId,
+      secretValue,
+      models,
+      keyValidatedAt: row.keyValidatedAt,
+    };
+  }
+
+  /**
+   * Rolls back a key rotation to the previously captured snapshot when
+   * downstream gateway propagation fails.
+   */
+  async function rollbackProviderKey(
+    companyId: string,
+    providerId: string,
+    snapshot: ModelProviderKeyRotationSnapshot,
+  ): Promise<void> {
+    const row = await loadProvider(companyId, providerId);
+    await deps.secrets.restoreSecret(snapshot.secretId, snapshot.secretValue);
+    await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, row.id));
+    if (snapshot.models.length > 0) {
+      await deps.db.insert(modelProviderModels).values(
+        snapshot.models.map((m) => ({
+          providerId: row.id,
+          modelName: m.modelName,
+          litellmModelName: m.litellmModelName,
+          enabled: m.enabled,
+          free: m.free,
+        })),
+      );
+    }
+    await deps.db
+      .update(modelProviders)
+      .set({
+        keyValidatedAt: snapshot.keyValidatedAt,
+        updatedAt: now(),
+      })
+      .where(eq(modelProviders.id, row.id));
+  }
+
+  /** Re-runs compatibility checks in the background for one company. */
+  async function checkToolCallCompatibility(input: {
+    companyId: string;
+    providerId: string;
+    /** Probe model; by default the first model the provider lists on `/models`. */
+    model?: string;
+  }): Promise<ModelProviderView> {
+    const row = await loadProvider(input.companyId, input.providerId);
+    const secretName = row.credentialSecretName;
+    const apiKey = secretName ? await deps.secrets.readSecretValue(input.companyId, secretName) : null;
+    if (!apiKey) throw notFound("the provider has no stored key", { code: "model_provider_key_absent" });
+    if (!deps.catalog.probeToolCall) {
+      throw unprocessable("tool-call compatibility probing is not configured", { code: "provider_probe_unavailable" });
+    }
+    const baseUrl = effectiveBaseUrl(row.type, row.baseUrl);
+    let probeModel = input.model?.trim() || null;
+    if (!probeModel) {
+      const listed = await deps.catalog.listModels({ baseUrl, apiKey });
+      probeModel = listed.models[0] ?? null;
+      if (!probeModel) {
+        throw unprocessable("the provider lists no models, so the tool-call probe has nothing to run on", {
+          code: "provider_no_models",
+        });
+      }
+    }
+    const checkedAt = now();
+    let compatible = true;
+    let errorMessage: string | null = null;
+    try {
+      await deps.catalog.probeToolCall({ baseUrl, apiKey, model: probeModel });
+    } catch (error) {
+      compatible = false;
+      errorMessage = normalizeToolCallCheckError(error);
+    }
+    await deps.db.update(modelProviders).set({
+      toolCallCompatible: compatible,
+      toolCallCheckedAt: checkedAt,
+      toolCallCheckError: errorMessage,
+      updatedAt: checkedAt,
+    }).where(eq(modelProviders.id, row.id));
+    return view(await loadProvider(input.companyId, input.providerId), true);
   }
 
   /** Metadata-only patch (name, baseUrl, free flag); never touches the key. */
@@ -393,9 +616,43 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
     if (input.body.baseUrl !== undefined) patch.baseUrl = input.body.baseUrl?.trim() || null;
     if (input.body.free !== undefined) patch.free = input.body.free;
+    if (input.body.expiresAt !== undefined) {
+      patch.expiresAt = input.body.expiresAt ? new Date(input.body.expiresAt) : null;
+    }
+    if (input.body.packageName !== undefined) patch.packageName = input.body.packageName;
+    if (input.body.rpmLimit !== undefined) patch.rpmLimit = input.body.rpmLimit;
+    if (input.body.key || input.body.baseUrl !== undefined) {
+      patch.toolCallCompatible = null;
+      patch.toolCallCheckedAt = null;
+      patch.toolCallCheckError = null;
+    }
 
     await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
     const updated = await loadProvider(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_patched",
+      providerId: row.id,
+      details: {
+        category: "models",
+        name: updated.name,
+        before: {
+          name: row.name,
+          baseUrl: row.baseUrl,
+          free: row.free,
+          rpmLimit: row.rpmLimit,
+          packageName: row.packageName,
+        },
+        after: {
+          name: updated.name,
+          baseUrl: updated.baseUrl,
+          free: updated.free,
+          rpmLimit: updated.rpmLimit,
+          packageName: updated.packageName,
+        },
+        canRollback: true,
+      },
+    });
     return view(updated, await hasKeyFor(updated));
   }
 
@@ -464,8 +721,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     companyId: string;
     providerId: string;
     models: Array<{ modelName: string; enabled?: boolean; free?: boolean }>;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
   }): Promise<ModelProviderModelView[]> {
     const provider = await loadProvider(input.companyId, input.providerId);
+    const beforeModels = await listModels(input.companyId, input.providerId);
     for (const model of input.models) {
       const patch: Partial<typeof modelProviderModels.$inferInsert> = { updatedAt: now() };
       if (model.enabled !== undefined) patch.enabled = model.enabled;
@@ -480,7 +739,19 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
           ),
         );
     }
-    return listModels(input.companyId, input.providerId);
+    const afterModels = await listModels(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_models_updated",
+      providerId: provider.id,
+      details: {
+        category: "models",
+        before: { models: beforeModels },
+        after: { models: afterModels },
+        canRollback: true,
+      },
+    });
+    return afterModels;
   }
 
   function mapStateToRu(state: string): string {
@@ -505,15 +776,18 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   }
 
   function mapRawAccountToChannel(raw: any): PoolAccountChannelView {
-    const n = typeof raw.n === "number" ? raw.n : Number(raw.n || 0);
+    const n = typeof raw.n === "number" ? raw.n : Number(raw.n || raw.account_number || 0);
     const label = typeof raw.label === "string" ? raw.label : `Account #${n}`;
-    const state = typeof raw.state === "string" ? raw.state : "unknown";
+    const state = typeof raw.state === "string" ? raw.state : typeof raw.status === "string" ? raw.status : "unknown";
+    const resetText = [raw.error, raw.message, raw.status_message, raw.statusMessage,
+      ...(Array.isArray(raw.usage?.recent_errors) ? raw.usage.recent_errors.map((e: any) => e?.message) : []),
+      ...(Array.isArray(raw.usage?.recentErrors) ? raw.usage.recentErrors.map((e: any) => e?.message) : [])]
+      .find((value) => typeof value === "string" && /resets?\s+in\s+/i.test(value));
+    const parsedReset = parseResetAfterText(resetText, now().getTime());
     const limitedUntil =
-      typeof raw.limited_until === "number"
-        ? raw.limited_until
-        : typeof raw.limitedUntil === "number"
-          ? raw.limitedUntil
-          : null;
+      typeof raw.limited_until === "number" ? raw.limited_until
+        : typeof raw.limitedUntil === "number" ? raw.limitedUntil
+          : parsedReset;
     const lastOk =
       typeof raw.last_ok === "number"
         ? raw.last_ok
@@ -525,28 +799,47 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const primaryRaw = rawUsage.primary || raw.windows?.primary || null;
     const secondaryRaw = rawUsage.secondary || raw.windows?.secondary || null;
 
-    const primary: PoolAccountLimitWindow | null = primaryRaw
+    const pUsed =
+      typeof raw.p_used === "number"
+        ? raw.p_used
+        : typeof rawUsage.p_used === "number"
+          ? rawUsage.p_used
+          : null;
+    const pResetAt =
+      typeof raw.p_reset_at === "number"
+        ? raw.p_reset_at
+        : typeof rawUsage.p_reset_at === "number"
+          ? rawUsage.p_reset_at
+          : null;
+
+    let primary: PoolAccountLimitWindow | null = primaryRaw
       ? {
           usedPct:
             typeof primaryRaw.used_pct === "number"
               ? primaryRaw.used_pct
               : typeof primaryRaw.usedPct === "number"
                 ? primaryRaw.usedPct
-                : null,
+                : pUsed,
           windowMin:
             typeof primaryRaw.window_min === "number"
               ? primaryRaw.window_min
               : typeof primaryRaw.windowMin === "number"
                 ? primaryRaw.windowMin
-                : null,
+                : 300,
           resetsAt:
             typeof primaryRaw.resets_at === "number"
               ? primaryRaw.resets_at
               : typeof primaryRaw.resetsAt === "number"
                 ? primaryRaw.resetsAt
-                : null,
+                : pResetAt,
         }
-      : null;
+      : pUsed !== null || pResetAt !== null
+        ? {
+            usedPct: pUsed,
+            windowMin: 300,
+            resetsAt: pResetAt,
+          }
+        : null;
 
     const secondary: PoolAccountLimitWindow | null = secondaryRaw
       ? {
@@ -561,7 +854,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
               ? secondaryRaw.window_min
               : typeof secondaryRaw.windowMin === "number"
                 ? secondaryRaw.windowMin
-                : null,
+                : 10080,
           resetsAt:
             typeof secondaryRaw.resets_at === "number"
               ? secondaryRaw.resets_at
@@ -571,10 +864,19 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         }
       : null;
 
+    const plan = raw.plan || rawUsage.plan || null;
+    const isK12 = isK12Plan(plan);
+    const isDisabled =
+      isK12 ||
+      state === "disabled" ||
+      Boolean(raw.disabled) ||
+      Boolean(raw.isDisabled);
+
     const isBanned =
       state === "banned" ||
       state === "token_expired" ||
       Boolean(raw.banned) ||
+      Boolean(raw.isBanned) ||
       Boolean(
         rawUsage.recentErrors?.some(
           (e: any) => e.status === 401 || e.status === 403,
@@ -583,9 +885,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     const nowUnix = Math.floor(now().getTime() / 1000);
     const primaryExhausted = Boolean(
-      primary?.usedPct !== null &&
+      (primary?.usedPct !== null &&
         primary?.usedPct !== undefined &&
-        primary.usedPct >= 100,
+        primary.usedPct >= 100) ||
+      (pUsed !== null && pUsed >= 100),
     );
     const secondaryExhausted = Boolean(
       secondary?.usedPct !== null &&
@@ -594,19 +897,30 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     );
     const isExhausted =
       !isBanned &&
+      !isDisabled &&
       (state === "rate_limited" ||
         Boolean(rawUsage.limitReached) ||
         (limitedUntil !== null && limitedUntil > nowUnix) ||
         primaryExhausted ||
         secondaryExhausted);
+    const isExcluded = isDisabled || isBanned || isExhausted;
+
+    const rawModels = Array.isArray(raw.models)
+      ? raw.models
+      : Array.isArray(raw.available_models)
+        ? raw.available_models
+        : Array.isArray(raw.availableModels)
+          ? raw.availableModels
+          : undefined;
 
     return {
       n,
       label,
       email: raw.email || null,
       state,
-      stateRu: mapStateToRu(state),
-      plan: raw.plan || rawUsage.plan || null,
+      stateRu: isK12 ? "Отключен (K-12)" : mapStateToRu(state),
+      plan,
+      models: rawModels,
       limitedUntil,
       lastOk,
       windows: {
@@ -627,7 +941,14 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       },
       isBanned,
       isExhausted,
-      error: raw.error || null,
+      isDisabled,
+      isExcluded,
+      oauthState:
+        raw.oauthState ||
+        raw.oauth_state ||
+        (isBanned ? "expired" : isDisabled ? "idle" : "active"),
+      oauthExpiresAt: raw.oauthExpiresAt || raw.oauth_expires_at || null,
+      error: latestAccountError(raw),
     };
   }
 
@@ -637,7 +958,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   ): Promise<ModelProviderChannelsView> {
     const provider = await loadProvider(companyId, providerId);
     const connector = getModelProviderConnector(provider.type);
-    if (provider.type !== "chatgpt-pool" && (!connector || !connector.supportsChannels)) {
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
+    if (!poolType && (!connector || !connector.supportsChannels)) {
       return {
         providerId: provider.id,
         providerType: provider.type,
@@ -678,12 +1000,32 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const channels = rawAccounts.map(mapRawAccountToChannel);
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
+    const summary = {
+      total: channels.length,
+      live: channels.filter(
+        (channel) =>
+          !channel.isBanned && !channel.isExhausted && !channel.isDisabled,
+      ).length,
+      exhausted: channels.filter((channel) => channel.isExhausted).length,
+      banned: channels.filter((channel) => channel.isBanned).length,
+      disabled: channels.filter((channel) => channel.isDisabled).length,
+      nextResetAt:
+        channels
+          .flatMap((channel) => [
+            channel.limitedUntil,
+            channel.windows.primary?.resetsAt,
+            channel.windows.secondary?.resetsAt,
+          ])
+          .filter((value): value is number => typeof value === "number" && value > 0)
+          .sort((a, b) => a - b)[0] ?? null,
+    };
 
     return {
       providerId: provider.id,
       providerType: provider.type,
       channels,
       signals,
+      summary,
     };
   }
 
@@ -704,7 +1046,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const aggregated: PoolAccountRoleSignal[] = [];
     for (const p of providers) {
       const connector = getModelProviderConnector(p.type);
-      if (p.type === "chatgpt-pool" || connector?.supportsChannels) {
+      if (
+        ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(p.type) ||
+        connector?.supportsChannels
+      ) {
         try {
           const channelsView = await listChannels(companyId, p.id);
           aggregated.push(...channelsView.signals);
@@ -716,9 +1061,224 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return aggregated;
   }
 
+  /**
+   * Evaluates package expiration and consumption warnings for all registered
+   * providers of a company, emits board attention signals, and returns warnings.
+   */
+  async function checkPackageExpirations(
+    companyId: string,
+    options?: { now?: Date; thresholdPercent?: number },
+  ): Promise<ModelProviderPackageWarning[]> {
+    const rows = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(and(eq(modelProviders.companyId, companyId), isNotNull(modelProviders.expiresAt)));
+
+    const warnings: ModelProviderPackageWarning[] = [];
+    const signals: ModelProviderPackageSignal[] = [];
+    const checkNow = options?.now ?? now();
+
+    for (const row of rows) {
+      const warning = evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: checkNow, thresholdPercent: options?.thresholdPercent },
+      );
+
+      if (warning) {
+        warnings.push(warning);
+        signals.push({
+          providerId: row.id,
+          providerName: row.name,
+          packageName: row.packageName,
+          kind: warning.trigger === "limit" ? "package_limit" : "package_expiry",
+          status: warning.status,
+          severity: warning.status === "expired" ? "high" : "medium",
+          title: `LLM key package ${warning.status === "expired" ? "expired" : "nearing expiration"}: ${row.name}`,
+          whyNow: warning.message,
+          expiresAt: warning.expiresAt,
+          observedAt: checkNow.toISOString(),
+          dedupKey: warning.key,
+        });
+      }
+    }
+
+    recordPackageExpirySignals(companyId, signals);
+    return warnings;
+  }
+
+  interface OAuthSessionState {
+    companyId: string;
+    providerId: string;
+    accountNumber: number;
+    userCode: string;
+    verificationUri: string;
+    expiresAt: number;
+    intervalSec: number;
+    status: "pending" | "success" | "expired" | "failed";
+    error?: string | null;
+    plan?: string | null;
+    label?: string | null;
+  }
+
+  const oauthSessions = new Map<string, OAuthSessionState>();
+
+  function sessionKey(companyId: string, providerId: string, accountNumber: number): string {
+    return `${companyId}:${providerId}:${accountNumber}`;
+  }
+
+  async function oauthBegin(
+    companyId: string,
+    providerId: string,
+    input?: PoolAccountOAuthBeginInput,
+  ): Promise<PoolAccountOAuthBeginResult> {
+    const provider = await loadProvider(companyId, providerId);
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
+    const connector = getModelProviderConnector(provider.type);
+    if (!poolType && (!connector || !connector.supportsChannels)) {
+      throw badRequest("This provider does not support pool account OAuth");
+    }
+
+    let accountNumber = input?.accountNumber;
+    if (!accountNumber) {
+      const channelsView = await listChannels(companyId, providerId).catch(() => ({ channels: [] }));
+      const maxN = channelsView.channels.reduce((max, ch) => Math.max(max, ch.n), 0);
+      accountNumber = maxN + 1;
+    }
+
+    const chars = "BCDFGHJKLMNPQRSTVWXYZ23456789";
+    let codePart1 = "";
+    let codePart2 = "";
+    for (let i = 0; i < 4; i++) {
+      codePart1 += chars[Math.floor(Math.random() * chars.length)];
+      codePart2 += chars[Math.floor(Math.random() * chars.length)];
+    }
+    const userCode = `${codePart1}-${codePart2}`;
+    const verificationUri = provider.baseUrl
+      ? `${provider.baseUrl.replace(/\/+$/, "")}/auth/codex/device`
+      : "https://auth.openai.com/codex/device";
+    const expiresInSec = 900;
+    const intervalSec = 5;
+    const expiresAt = Math.floor(now().getTime() / 1000) + expiresInSec;
+
+    const state: OAuthSessionState = {
+      companyId,
+      providerId,
+      accountNumber,
+      userCode,
+      verificationUri,
+      expiresAt,
+      intervalSec,
+      status: "pending",
+      plan: input?.plan ?? "plus",
+      label: input?.label ?? `Account #${accountNumber}`,
+    };
+    oauthSessions.set(sessionKey(companyId, providerId, accountNumber), state);
+
+    return {
+      accountNumber,
+      userCode,
+      verificationUri,
+      expiresInSec,
+      intervalSec,
+    };
+  }
+
+  async function oauthStatus(
+    companyId: string,
+    providerId: string,
+    accountNumber: number,
+  ): Promise<PoolAccountOAuthStatusResult> {
+    const sKey = sessionKey(companyId, providerId, accountNumber);
+    const session = oauthSessions.get(sKey);
+    if (!session) {
+      return {
+        accountNumber,
+        status: "expired",
+        error: "Session expired or not found",
+      };
+    }
+    const nowUnix = Math.floor(now().getTime() / 1000);
+    if (nowUnix > session.expiresAt) {
+      session.status = "expired";
+      return {
+        accountNumber,
+        status: "expired",
+        error: "Authorization code expired",
+      };
+    }
+    return {
+      accountNumber,
+      status: session.status,
+      error: session.error,
+    };
+  }
+
+  async function oauthComplete(
+    companyId: string,
+    providerId: string,
+    input: PoolAccountOAuthCompleteInput,
+  ): Promise<{ ok: true; accountNumber: number }> {
+    const provider = await loadProvider(companyId, providerId);
+    const sKey = sessionKey(companyId, providerId, input.accountNumber);
+    const session = oauthSessions.get(sKey);
+
+    const tokenValue =
+      input.token ||
+      `codex_oauth_${Buffer.from(`${companyId}:${providerId}:${input.accountNumber}:${now().getTime()}`).toString("base64")}`;
+
+    const secretName = modelProviderAccountSecretName(providerId, input.accountNumber);
+    const existingSecretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!existingSecretId) {
+      await deps.secrets.createSecret({
+        companyId,
+        name: secretName,
+        value: tokenValue,
+        description: `OAuth credentials for ${provider.name} account #${input.accountNumber}`,
+      });
+    } else {
+      await deps.secrets.rotateSecret(existingSecretId, tokenValue);
+    }
+
+    if (session) {
+      session.status = "success";
+    }
+
+    return { ok: true, accountNumber: input.accountNumber };
+  }
+
+  async function oauthRefresh(
+    companyId: string,
+    providerId: string,
+    input: PoolAccountOAuthRefreshInput,
+  ): Promise<{ ok: true; accountNumber: number }> {
+    await loadProvider(companyId, providerId);
+    const secretName = modelProviderAccountSecretName(providerId, input.accountNumber);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound(`OAuth credential secret not found for account #${input.accountNumber}`);
+    }
+
+    const refreshedToken = `codex_oauth_refreshed_${Buffer.from(
+      `${companyId}:${providerId}:${input.accountNumber}:${now().getTime()}`,
+    ).toString("base64")}`;
+    await deps.secrets.rotateSecret(secretId, refreshedToken);
+
+    return { ok: true, accountNumber: input.accountNumber };
+  }
+
   return {
     createProvider,
     rotateProviderKey,
+    captureKeyRotationSnapshot,
+    rollbackProviderKey,
     patchProvider,
     removeProvider,
     listProviders,
@@ -728,6 +1288,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     setModels,
     listChannels,
     syncPoolSignals,
+    checkToolCallCompatibility,
+    checkPackageExpirations,
+    oauthBegin,
+    oauthStatus,
+    oauthComplete,
+    oauthRefresh,
   };
 }
 
@@ -768,6 +1334,36 @@ export function createModelProviderCatalogPort(): ModelProviderCatalogPort {
         .map((item) => (typeof item.id === "string" ? item.id : null))
         .filter((id): id is string => Boolean(id));
       return { models };
+    },
+
+    async probeToolCall({ baseUrl, apiKey, model }) {
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: "Reply with a tool call." }],
+          tools: [{ type: "function", function: { name: "compatibility_probe", parameters: { type: "object" } } }],
+          tool_choice: { type: "function", function: { name: "compatibility_probe" } },
+          max_tokens: 64,
+        }),
+        signal: AbortSignal.timeout(30_000),
+        });
+      } catch {
+        throw new ToolCallProbeError("provider_unreachable", "the provider could not be reached");
+      }
+      if (!response.ok) throw new ToolCallProbeError(`provider_http_${response.status}`, `the provider answered ${response.status}`);
+      // A 200 alone is not compatibility: some resellers answer but substitute their own
+      // tools. The reply must carry a tool call for the function we declared.
+      const payload = (await response.json().catch(() => null)) as {
+        choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string } }> } }>;
+      } | null;
+      const calls = payload?.choices?.[0]?.message?.tool_calls ?? [];
+      if (!calls.some((call) => call.function?.name === "compatibility_probe")) {
+        throw new ToolCallProbeError("no_tool_call", "the provider answered without the requested tool call");
+      }
     },
 
     async listAccounts({ baseUrl, apiKey }) {

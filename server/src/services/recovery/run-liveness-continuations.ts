@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
-import type { RunLivenessState } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@myrmidon/db";
+import type { RunLivenessState } from "@myrmidon/shared";
 import { withRecoveryContext } from "./status-only-context.js";
 import { RECOVERY_REASON_KINDS } from "./origins.js";
 
@@ -89,6 +89,7 @@ export function decideRunLivenessContinuation(input: {
   livenessState: RunLivenessState | null;
   livenessReason: string | null;
   nextAction: string | null;
+  hasOpenPullRequestWaitingForCi?: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
   maxAttempts?: number;
@@ -127,6 +128,9 @@ export function decideRunLivenessContinuation(input: {
   }
   if (budgetBlocked) {
     return { kind: "skip", reason: "budget hard stop blocks continuation" };
+  }
+  if (input.hasOpenPullRequestWaitingForCi) {
+    return { kind: "skip", reason: "open pull request is waiting for CI/review external event" };
   }
   const currentAttempt = readContinuationAttempt(run.continuationAttempt);
   if (currentAttempt >= maxAttempts) {

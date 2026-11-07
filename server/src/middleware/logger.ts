@@ -8,10 +8,12 @@ import {
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
 import {
+  maskPasswordSetToken,
+  maskPathTokens,
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -99,6 +101,11 @@ export function createHttpLogger(baseLogger: Logger) {
             typeof req.url === "string"
               ? stripSecretBearingUrlParts(req.url)
               : req.url,
+          // myrmidon(OPE-8985, OPE-11891): route params of /password-set/:token or /invites/:token hold tokens.
+          params:
+            typeof req.url === "string" && maskPathTokens(req.url) !== req.url
+              ? undefined
+              : req.params,
           // The URL policy intentionally drops all query parameters. The default
           // serializer also exposes the parsed query separately, so omit that
           // duplicate path instead of letting credentials bypass the URL scrub.

@@ -10,7 +10,7 @@ import {
   executionWorkspaces,
   issues,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -93,7 +93,11 @@ describeEmbeddedPostgres("execution workspace runtime control lease enforcement"
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-runtime-lease-route-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+    // Load the route module graph here too, outside any test's budget. It is
+    // huge, and its cold load took ~10 s on a GitHub runner and more on a slower
+    // one; it used to be paid inside the first test's 15 s budget.
+    await Promise.all([import("../routes/execution-workspaces.js"), import("../middleware/index.js")]);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

@@ -315,7 +315,7 @@ export async function renderRunnerWorkflowWithCanonicalEvalbook({
   );
   await access(resolve(viewerRoot, "index.html")).catch(() => {
     throw new Error(
-      "Evalbook requires the chat viewer. Run pnpm --filter @paperclipai/paperclip-runner build:issue-thread first.",
+      "Evalbook requires the chat viewer. Run pnpm --filter @myrmidon/paperclip-runner build:issue-thread first.",
     );
   });
   const runsRoot = resolve(outputDirectory, "evalbook-runs");

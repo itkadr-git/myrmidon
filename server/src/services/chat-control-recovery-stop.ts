@@ -12,7 +12,7 @@ import {
   statusDecisions,
   statusDecisionEffects,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 export const CHAT_CONTROL_RECOVERY_STOP_CODE = "chat_control_completed_source";
 export const CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE =
@@ -272,7 +272,20 @@ export async function readChatControlRecoveryStop(
             wake.reason ?? "",
           ));
       if (!automatic) return { kind: "clear" };
-      if (!id(run.retryOfRunId)) return { kind: "unresolved" };
+      if (!id(run.retryOfRunId)) {
+        const [hasChat] = await db
+          .select({ id: chatConversations.id })
+          .from(chatConversations)
+          .where(
+            and(
+              eq(chatConversations.companyId, scope.companyId),
+              eq(chatConversations.issueId, scope.issueId),
+            ),
+          )
+          .limit(1);
+        if (!hasChat) return { kind: "clear" };
+        return { kind: "unresolved" };
+      }
       runId = run.retryOfRunId;
       continue;
     }

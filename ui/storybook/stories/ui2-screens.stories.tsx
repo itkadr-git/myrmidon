@@ -10,7 +10,7 @@
 // desktop 1440 included.
 
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { Agent, HeartbeatRun } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun } from "@myrmidon/shared";
 import { storybookAgents } from "../fixtures/paperclipData";
 import { Ui2Decisions } from "@/ui2/screens/decisions/Ui2Decisions";
 import { Ui2Costs } from "@/ui2/screens/costs/Ui2Costs";

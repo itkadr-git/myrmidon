@@ -19,7 +19,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/shared";
 import { EventEmitter } from "node:events";
 import { createPluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";

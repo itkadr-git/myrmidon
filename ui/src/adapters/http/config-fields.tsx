@@ -1,4 +1,5 @@
 import { configFieldsForSection } from "../config-sections";
+import { useTranslation } from "@/i18n";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -18,8 +19,9 @@ export function HttpConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   return configFieldsForSection(section, (
-    <Field label="Webhook URL" hint={help.webhookUrl}>
+    <Field label={t("area.adapters-plugins-1.http.webhookUrlLabel")} hint={help.webhookUrl}>
       <DraftInput
         value={
           isCreate
@@ -33,7 +35,7 @@ export function HttpConfigFields({
         }
         immediate
         className={inputClass}
-        placeholder="https://..."
+        placeholder={t("area.adapters-plugins-1.http.urlPlaceholder")}
       />
     </Field>
   ));

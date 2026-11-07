@@ -348,3 +348,61 @@ describe("myr-ws close", { skip: !hasGit && "git missing" }, () => {
     assert.equal(e.name, "MyrWsError");
   });
 });
+
+describe("myr-ws close — two repositories for one task (OPE-8946)", { skip: !hasGit && "git missing" }, () => {
+  // a second copy of the same key in another base, registered next to the first
+  function openSecond(w, key) {
+    const base2 = path.join(w.home, "git-base/acme/vault.git");
+    fs.mkdirSync(path.dirname(base2), { recursive: true });
+    git(w.dir, "init", "--bare", "--quiet", base2);
+    git(base2, "remote", "add", "origin", w.origin);
+    git(base2, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+    git(base2, "fetch", "--quiet", "origin");
+    const copy = path.join(w.workspaceRoot, `${key}.vault`);
+    git(base2, "worktree", "add", "--no-track", "-b", `bot/${key}`, copy, "refs/remotes/origin/main");
+    w.entries.push({ key, repo: "acme/vault", path: copy, class: "E", branch: `bot/${key}`, openedAt: "2026-10-06T14:00:00Z" });
+    writeRegistry(w);
+    return copy;
+  }
+
+  it("close <KEY> removes every copy of the key", async () => {
+    const w = world();
+    const first = openTask(w, "ABC-120");
+    const second = openSecond(w, "ABC-120");
+    const res = await closeMod.closeCopy({ key: "ABC-120" }, deps(w, fakeArchive(w, { ok: true })));
+    assert.equal(res.key, "ABC-120");
+    assert.equal(res.removed, true);
+    assert.equal(res.copies.length, 2);
+    assert.ok(!fs.existsSync(first));
+    assert.ok(!fs.existsSync(second));
+    assert.deepEqual(registryKeys(w), []);
+  });
+
+  it("close <KEY> <owner/repo> removes only that copy", async () => {
+    const w = world();
+    const first = openTask(w, "ABC-121");
+    const second = openSecond(w, "ABC-121");
+    const res = await closeMod.closeCopy({ key: "ABC-121", repo: "acme/vault" }, deps(w, fakeArchive(w, { ok: true })));
+    assert.deepEqual(res, { key: "ABC-121", removed: true, archived: false });
+    assert.ok(fs.existsSync(first));
+    assert.ok(!fs.existsSync(second));
+    assert.deepEqual(registryKeys(w), ["ABC-121"]);
+  });
+
+  it("a repository without a copy of the key is exit 6; a malformed one is exit 2", async () => {
+    const w = world();
+    openTask(w, "ABC-122");
+    assert.equal((await exitOf(closeMod.closeCopy({ key: "ABC-122", repo: "acme/vault" }, deps(w)))).code, 6);
+    assert.equal((await exitOf(closeMod.closeCopy({ key: "ABC-122", repo: "nonsense" }, deps(w)))).code, 2);
+  });
+
+  it("a dirty copy stops the close with exit 7 and keeps it", async () => {
+    const w = world();
+    openTask(w, "ABC-123");
+    const second = openSecond(w, "ABC-123");
+    fs.writeFileSync(path.join(second, "wip.txt"), "x\n");
+    const r = await exitOf(closeMod.closeCopy({ key: "ABC-123" }, deps(w, fakeArchive(w, { ok: true }))));
+    assert.equal(r.code, 7);
+    assert.ok(fs.existsSync(second));
+  });
+});

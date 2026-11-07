@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, type Db } from "@myrmidon/db";
 
 import {
   getEmbeddedPostgresTestSupport,

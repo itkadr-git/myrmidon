@@ -1,0 +1,81 @@
+name: Myrmidon Knowledge screen
+
+# OPE-5957 / OPE-9222: a real browser renders the Knowledge screen (UI2 and the
+# current interface) at 1920x1080 and 1366x768 and checks scrolling, rendered
+# Markdown and Russian captions. Screenshots are uploaded as an artifact.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "ui/src/ui2/**"
+      - "ui/src/ui2/screens/knowledge/**"
+      - "ui/src/knowledge-qa/**"
+      - "ui/knowledge-qa.html"
+      - "ui/vite.knowledge-qa.config.mjs"
+      - "ui/src/i18n/**"
+      - "tests/knowledge-screen/**"
+      - ".github/workflows/myrmidon-knowledge-screen.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: myrmidon-knowledge-screen-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  knowledge-screen:
+    name: knowledge screen (playwright)
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the Knowledge screen browser test
+        run: npx playwright test --config tests/knowledge-screen/playwright.config.ts
+
+      - name: Upload screenshots and report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: knowledge-screen-screenshots
+          path: |
+            tests/knowledge-screen/screenshots
+            tests/knowledge-screen/playwright-report
+            tests/knowledge-screen/test-results
+          if-no-files-found: warn
+          retention-days: 14

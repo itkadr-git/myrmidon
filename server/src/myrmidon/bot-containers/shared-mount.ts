@@ -6,7 +6,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { SharedMountSettings } from "@paperclipai/shared";
+import type { SharedMountSettings } from "@myrmidon/shared";
 import type { BotSharedMount } from "./driver.js";
 
 /** Default shared mount settings: off. */

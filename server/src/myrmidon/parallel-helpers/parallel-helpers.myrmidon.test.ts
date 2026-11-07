@@ -7,7 +7,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { parallelHelpersRoutes } from "./routes.js";
 import { PARALLEL_HELPERS_ACTION, parallelHelpersService, type ParallelHelpersServiceDeps } from "./service.js";
@@ -149,6 +149,24 @@ describe("myrmidon(PARALLEL-HELPERS) routes: writing the settings", () => {
     expect(audits).toHaveLength(2);
     expect(audits[0]).toMatchObject({ action: PARALLEL_HELPERS_ACTION, entityType: "instance_settings" });
     expect(audits[0]?.details).toMatchObject({ changedKeys: ["defaultMaxPerAgent"] });
+  });
+
+  it("accepts null to clear host capacity values while retaining other settings", async () => {
+    const { withActor, updated, audits } = harness({
+      stored: { maxPerAgent: 7, buildSlots: 8, hostMemoryMb: 16384 },
+    });
+    const res = await request(withActor(admin))
+      .patch(URL)
+      .send({ buildSlots: null, hostMemoryMb: null })
+      .expect(200);
+
+    expect(updated[0]?.parallelHelpers).toEqual({
+      maxPerAgent: 7,
+      buildSlots: null,
+      hostMemoryMb: null,
+    });
+    expect(res.body.settings).toEqual(updated[0]?.parallelHelpers);
+    expect(audits[0]?.details).toMatchObject({ changedKeys: ["buildSlots", "hostMemoryMb"] });
   });
 
   it("rejects invalid bodies with 400", async () => {

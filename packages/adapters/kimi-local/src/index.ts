@@ -1,4 +1,4 @@
-import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
+import { buildSandboxNpmInstallCommand } from "@myrmidon/adapter-utils";
 
 export const type = "kimi_local";
 export const label = "Kimi Code CLI (local)";

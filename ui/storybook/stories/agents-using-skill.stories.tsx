@@ -5,7 +5,7 @@ import type {
   CompanySkillDetail,
   CompanySkillUsageAgent,
   CompanySkillVersion,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   AgentsUsingSkillBadge,
   AgentsUsingSkillDialog,

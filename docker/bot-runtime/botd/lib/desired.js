@@ -10,6 +10,8 @@
 // Plain Node (no dependencies): the schema of `wsDesiredStateSchema` is
 // mirrored by hand and checked against the contract fixtures in the test.
 
+import { boardEnv, boardKeyValues } from "./board-env.js";
+
 const DEFAULT_TIMEOUT_MS = 10_000;
 // botd never runs this timer alongside the main loop (the entry wires .poll()
 // only); 300 s keeps even an autonomous start() off the board's hot path
@@ -38,6 +40,9 @@ export function parseDesiredState(body) {
   for (const k of ["closingMinutes", "scratchTtlHours", "orphanHours"]) {
     if (!isPosInt(grace[k])) return bad(`grace.${k} is not a positive integer`);
   }
+  for (const k of ["npmCacheTtlHours", "uvCacheTtlHours", "terminalOutputTtlHours"]) {
+    if (grace[k] !== undefined && !isPosInt(grace[k])) return bad(`grace.${k} is not a positive integer`);
+  }
   if (grace.legacyPressureIdleDays !== undefined && !(isPosInt(grace.legacyPressureIdleDays) && grace.legacyPressureIdleDays <= 90)) {
     return bad("grace.legacyPressureIdleDays is not 1..90");
   }
@@ -52,6 +57,7 @@ export function parseDesiredState(body) {
     const at = `workspaces[${i}]`;
     if (!isObj(w)) return bad(`${at} is not an object`);
     if (!nonEmpty(w.key)) return bad(`${at}.key is empty`);
+    if (w.id !== undefined && typeof w.id !== "string") return bad(`${at}.id is not a string`);
     if (w.repo !== undefined && !(typeof w.repo === "string" && REPO_RE.test(w.repo))) return bad(`${at}.repo is not owner/name`);
     if (!STATES.includes(w.state)) return bad(`${at}.state is unknown (${JSON.stringify(String(w.state)).slice(0, 40)})`);
     if (!isDatetime(w.since)) return bad(`${at}.since is not a UTC datetime`);
@@ -64,17 +70,27 @@ export function parseDesiredState(body) {
   if (body.closedKeys !== undefined && !(Array.isArray(body.closedKeys) && body.closedKeys.every((k) => typeof k === "string"))) {
     return bad("closedKeys is not an array of strings");
   }
+  if (body.closedTasks !== undefined) {
+    if (!Array.isArray(body.closedTasks)) return bad("closedTasks is not an array");
+    for (let i = 0; i < body.closedTasks.length; i += 1) {
+      const k = body.closedTasks[i];
+      if (!isObj(k) || !nonEmpty(k.key)) return bad(`closedTasks[${i}] missing key`);
+      if (k.closedAt !== undefined && !isDatetime(k.closedAt)) return bad(`closedTasks[${i}].closedAt is not a UTC datetime`);
+      if (k.issueId !== undefined && typeof k.issueId !== "string") return bad(`closedTasks[${i}].issueId is not a string`);
+    }
+  }
   return { ok: true, value: body };
 }
 
 function desiredUrl(env) {
-  const base = String(env.PAPERCLIP_API_URL || "").trim().replace(/\/+$/, "").replace(/\/api$/, "");
+  const base = String(boardEnv(env, "API_URL") || "").trim().replace(/\/+$/, "").replace(/\/api$/, "");
   return base ? `${base}${DESIRED_PATH}` : null;
 }
 
 /**
  * @param {object} [opts]
- * @param {object} [opts.env]       process.env-like: PAPERCLIP_API_URL, PAPERCLIP_API_KEY
+ * @param {object} [opts.env]       process.env-like: MYRMIDON_API_URL, MYRMIDON_API_KEY
+ *   (PAPERCLIP_API_URL / PAPERCLIP_API_KEY are read as the legacy alias)
  * @param {Function} [opts.fetchImpl]
  * @param {(line: string) => void} [opts.log]
  * @param {() => Date} [opts.now]
@@ -99,9 +115,8 @@ export function createDesiredClient(opts = {}) {
 
   // The key must never reach a log or a reason string.
   const redact = (text) => {
-    const key = env.PAPERCLIP_API_KEY;
     let out = String(text);
-    if (key) out = out.split(key).join("[redacted]");
+    for (const key of boardKeyValues(env)) out = out.split(key).join("[redacted]");
     return out;
   };
   const fail = (reason) => {
@@ -111,10 +126,10 @@ export function createDesiredClient(opts = {}) {
   };
 
   async function pollOnce() {
-    const key = env.PAPERCLIP_API_KEY;
-    if (!key) return fail("PAPERCLIP_API_KEY is not set");
+    const key = boardEnv(env, "API_KEY");
+    if (!key) return fail("MYRMIDON_API_KEY is not set");
     const url = desiredUrl(env);
-    if (!url) return fail("PAPERCLIP_API_URL is not set");
+    if (!url) return fail("MYRMIDON_API_URL is not set");
     if (typeof fetchImpl !== "function") return fail("fetch is not available");
     const ctl = new AbortController();
     const timeout = setTimeout(() => ctl.abort(), timeoutMs);

@@ -42,7 +42,7 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const CARD = { enabled: true, image: "bot-image:1", memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+const CARD = { enabled: true, image: "bot-image:1", memoryMb: 1024, cpus: 1, pidsLimit: 512 };
 
 const STATUS: BotContainerStatus = {
   enabled: true,
@@ -57,6 +57,7 @@ const STATUS: BotContainerStatus = {
   gatewayConcurrency: { board: 3, applied: 3, diverged: false, checkedAt: "2026-01-01T00:00:00.000Z" },
   gatewayConcurrencyNote: null,
   gatewayConcurrencyWarning: null,
+  profileUpdatePendingSince: null,
 };
 
 let container: HTMLDivElement;
@@ -158,7 +159,7 @@ describe("myrmidon(W2b) container card logic", () => {
 
   it("turning the section on writes explicit defaults and keeps values already set", () => {
     expect(enableBotContainer({})).toEqual({ enabled: true, ...BOT_CONTAINER_DEFAULTS });
-    expect(BOT_CONTAINER_DEFAULTS).toEqual({ memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+    expect(BOT_CONTAINER_DEFAULTS).toEqual({ memoryMb: 1024, cpus: 1, pidsLimit: 512 });
     expect(enableBotContainer({ image: "x:1", memoryMb: 4096, enabled: false, extra: "kept" })).toEqual({
       enabled: true,
       image: "x:1",
@@ -223,7 +224,7 @@ describe("myrmidon(W2b) container card section", () => {
     const { onChange } = renderView({ value: undefined });
     click(sectionHeader());
     click(byId("enabled"));
-    expect(onChange).toHaveBeenCalledWith({ enabled: true, memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+    expect(onChange).toHaveBeenCalledWith({ enabled: true, memoryMb: 1024, cpus: 1, pidsLimit: 512 });
   });
 
   it("turning it off keeps the settings and hides the fields", () => {
@@ -240,7 +241,7 @@ describe("myrmidon(W2b) container card section", () => {
   it("shows the saved values in the fields", () => {
     renderView();
     expect((byId("image") as HTMLInputElement).value).toBe("bot-image:1");
-    expect((byId("memoryMb") as HTMLInputElement).value).toBe("2048");
+    expect((byId("memoryMb") as HTMLInputElement).value).toBe("1024");
     expect((byId("cpus") as HTMLInputElement).value).toBe("1");
     expect((byId("pidsLimit") as HTMLInputElement).value).toBe("512");
     expect((byId("group") as HTMLInputElement).value).toBe("");
@@ -253,7 +254,7 @@ describe("myrmidon(W2b) container card section", () => {
     setText(byId("image")!, "");
     const cleared = onChange.mock.calls.at(-1)![0] as Record<string, unknown>;
     expect("image" in cleared).toBe(false);
-    expect(cleared.memoryMb).toBe(2048);
+    expect(cleared.memoryMb).toBe(1024);
   });
 
   it("validates the numbers: a valid entry is stored, an invalid one is flagged and not stored", () => {
@@ -302,7 +303,7 @@ describe("myrmidon(W2b) container card section", () => {
   });
 
   it("asks for an image on an enabled card without one", () => {
-    renderView({ value: { enabled: true, memoryMb: 2048, cpus: 1, pidsLimit: 512 } });
+    renderView({ value: { enabled: true, memoryMb: 1024, cpus: 1, pidsLimit: 512 } });
     expect(text("problems")).toContain("Image is required.");
   });
 
@@ -351,6 +352,19 @@ describe("myrmidon(W2b) container card section", () => {
     const { onRefresh } = renderView();
     click(byId("refresh"));
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("myrmidon(L6-PROFILE-UPDATE-STARVATION) pending profile update note", () => {
+  it("shows the note while a change waits for the agent's runs to drain", () => {
+    renderView({ status: { ...STATUS, profileUpdatePendingSince: "2026-10-02T15:04:05.000Z" } });
+    expect(text("profile-pending")).toContain("Profile update pending since");
+    expect(text("profile-pending")).toContain("2026");
+  });
+
+  it("shows nothing when no update is pending", () => {
+    renderView();
+    expect(byId("profile-pending")).toBeNull();
   });
 });
 
@@ -630,7 +644,7 @@ describe("myrmidon(1.6.4-BOT-CONTAINER-CARD) legacy cards and rollout category",
     expect(byId("memoryMb")).not.toBeNull();
     expect(text("problems")).toContain("Enabled is not set on this card");
     click(byId("enabled"));
-    expect(onChange).toHaveBeenCalledWith({ image: "bot-image:1", enabled: true, memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+    expect(onChange).toHaveBeenCalledWith({ image: "bot-image:1", enabled: true, memoryMb: 1024, cpus: 1, pidsLimit: 512 });
   });
 
   it("says how the release rollout treats the bot", () => {

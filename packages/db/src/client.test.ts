@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
   DEFAULT_DATABASE_APPLICATION_NAME,
@@ -16,18 +16,38 @@ import {
   resetPostgresDatabase,
 } from "./client.js";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
+  startEmbeddedPostgresTestCluster,
+  type EmbeddedPostgresTestCluster,
 } from "./test-embedded-postgres.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+// One cluster per file. It replays every migration once; each test clones the
+// migrated template. Starting a cluster and replaying every migration per test
+// cost ~7 s on a developer machine and well over the 20-30 s test budgets on a
+// loaded CI runner, in about twenty tests of this file.
+let cluster: EmbeddedPostgresTestCluster | null = null;
+
 async function createTempDatabase(): Promise<string> {
-  const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-");
+  if (!cluster) throw new Error("embedded Postgres test cluster is not started");
+  const db = await cluster.createDatabase();
   cleanups.push(db.cleanup);
   return db.connectionString;
+}
+
+if (embeddedPostgresSupport.supported) {
+  beforeAll(async () => {
+    cluster = await startEmbeddedPostgresTestCluster("paperclip-db-client-");
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await cluster?.cleanup();
+    cluster = null;
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 }
 
 async function migrationHash(migrationFile: string): Promise<string> {

@@ -5,7 +5,7 @@ import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   connectionGrants,
   smokeRuns,
@@ -17,7 +17,7 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolStdioCommandTemplates,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   CreateSmokeRun,
   DeploymentExposure,
@@ -27,7 +27,7 @@ import type {
   SmokeRun,
   SmokeRunStep,
   UpdateSmokeRun,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { instanceSettingsService } from "./instance-settings.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.

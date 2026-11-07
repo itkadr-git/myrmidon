@@ -22,7 +22,7 @@ import {
   PAIRING_CODE_GROUP_LENGTH,
   PAIRING_CODE_GROUPS,
   bridgeTokenPrefix,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** Injectable randomness so tests can be deterministic. */
 export type RandomBytes = (size: number) => Buffer;

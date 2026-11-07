@@ -16,6 +16,9 @@ export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
+export { poolChatModuleInstances } from "./pool_chat_module_instances.js";
+export { poolChatRequests } from "./pool_chat_requests.js";
+export { poolChatRequestAttempts, poolChatQuotaReservations } from "./pool_chat_ledger.js";
 export { companySkillPolicies } from "./company_skill_policies.js";
 export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
@@ -93,6 +96,7 @@ export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueCreateIdempotencyKeys } from "./issue_create_idempotency_keys.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
+export { interactionEscalations } from "./interaction_escalations.js";
 export { issueQuestionResponseDeliveries } from "./issue_question_response_deliveries.js";
 export {
   decisions,
@@ -133,7 +137,12 @@ export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 // myrmidon(DB-CARE DBC-3): continuation envelopes leave heartbeat_runs.context_snapshot.
 export { heartbeatRunContinuations } from "./heartbeat_run_continuations.js";
+export { issueContinuationKeys } from "./issue_continuation_keys.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
+export { providerUsageSnapshots, providerUsageEventReceipts } from "./provider_usage_snapshots.js";
+export { providerUsageWarningDeliveries } from "./provider_usage_warning_deliveries.js";
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace.
+export { llmCallTraces } from "./llm_call_traces.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
@@ -154,6 +163,7 @@ export { managedAgentProfiles } from "./managed_agent_profiles.js";
 export { remoteAgentProfiles } from "./remote_agent_profiles.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
+export { companySecretGitHubAppInstallations } from "./company_secret_github_app_installations.js";
 export { companySecretProposals } from "./company_secret_proposals.js";
 export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
@@ -231,7 +241,13 @@ export {
   myrmidonScopeSettings,
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner's last activity per channel (portal / Telegram).
+export { myrmidonOwnerActivity } from "./myrmidon_owner_activity.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
+export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteHealth, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
+export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
+export { myrmidonFleetMoves, type FleetMovePhaseLogEntry } from "./myrmidon_fleet_moves.js";
+export { myrmidonFleetMemorySyncs, fleetMemorySyncs } from "./myrmidon_fleet_memory_syncs.js"; // myrmidon(1.6.6 C-MEM): journal of site memory syncs
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards and the round grid of answers.
@@ -287,13 +303,18 @@ export {
   knowledgeSources,
   knowledgeSuggestions,
   knowledgeEvents,
+  knowledgeDeviations,
+  type KnowledgeDeviation,
+  type NewKnowledgeDeviation,
   KNOWLEDGE_KINDS,
   KNOWLEDGE_ITEM_STATUSES,
+  KNOWLEDGE_REVISION_LANGS,
   KNOWLEDGE_REVISION_STATUSES,
   KNOWLEDGE_SOURCE_KINDS,
   KNOWLEDGE_SUGGESTION_STATUSES,
   type KnowledgeKind,
   type KnowledgeItemStatus,
+  type KnowledgeRevisionLang,
   type KnowledgeRevisionStatus,
   type KnowledgeSourceKind,
   type KnowledgeSuggestionStatus,
@@ -319,3 +340,13 @@ export {
 export { botApplyJobs, BOT_APPLY_JOB_STATUSES, type BotApplyJobStatus } from "./bot_apply_jobs.js";
 // myrmidon(1.6.5 PROCS-0.1): the process registry and leader leases of the board.
 export { boardProcesses, boardLeases } from "./board_processes.js";
+// myrmidon(1.6.6-CORPUS-SHADOW A): shadow log of the corpus-module comparison.
+export { corpusShadowLog } from "./corpus_shadow_log.js";
+// myrmidon(OPE-8836): the single, permanent installation id of the board (licensing).
+export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
+// myrmidon(OPE-8985): users-admin-a — password-set tokens and the block list.
+export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
+// myrmidon(OPE-9187): idempotency journal for legacy blocked imports.
+export { legacyBlockedImports } from "./legacy_blocked_imports.js";
+// myrmidon(1.7-REDACT): redaction substitutions with expiry TTL
+export { redactionSubstitutions } from "./redaction_substitutions.js";

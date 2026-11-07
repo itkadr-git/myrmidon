@@ -20,6 +20,7 @@ import {
   type BoardProcessIdentity,
 } from "./domain.js";
 import type { BoardProcessPulseUpdate, BoardProcessStore } from "./store.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export type BoardProcessPulseFailurePhase = "pulse" | "reap";
 
@@ -95,7 +96,7 @@ export function createBoardProcessPulse(options: BoardProcessPulseOptions): Boar
       // change what myrmidon_board_event_loop_lag_seconds describes.
       enablePulseEventLoopMonitor();
       void tick();
-      timer = setInterval(() => {
+      timer = backgroundInterval(() => {
         void tick();
       }, pulseMs);
       // A registry timer must never hold the process open on shutdown.

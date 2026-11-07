@@ -1,6 +1,6 @@
 # Agent Runtime Image Family
 
-Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/paperclipai/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
+Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/itkadr-git/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
 
 ## Image Lineup
 
@@ -71,7 +71,7 @@ The Dockerfile runs smoke checks at build time without invoking a model or provi
 
 ## Build and Test
 
-The `omp` target is defined in `docker/agent-runtime/buildx-bake.hcl` for `linux/amd64`. Bake defaults are `REGISTRY=ghcr.io/paperclipai` and `VERSION=dev`.
+The `omp` target is defined in `docker/agent-runtime/buildx-bake.hcl` for `linux/amd64`. Bake defaults are `REGISTRY=ghcr.io/itkadr-git` and `VERSION=dev`.
 
 Build locally for validation (this does not publish):
 
@@ -80,7 +80,7 @@ docker buildx bake -f docker/agent-runtime/buildx-bake.hcl omp --load
 docker run --rm --user 1000:1000 \
   --mount type=bind,src=<session-dir>,dst=/home/paperclip/.local/share/omp/sessions \
   --mount type=bind,src=<workspace-dir>,dst=/workspace \
-  ghcr.io/paperclipai/agent-runtime-omp:dev --help
+  ghcr.io/itkadr-git/agent-runtime-omp:dev --help
 ```
 
 Replace `<session-dir>` and `<workspace-dir>` with real host directories; the container needs write access. To test an image published by CI, use a tag or digest verified in the successful workflow run rather than assuming `dev` exists:
@@ -89,12 +89,12 @@ Replace `<session-dir>` and `<workspace-dir>` with real host directories; the co
 docker run --rm --user 1000:1000 \
   --mount type=bind,src=<session-dir>,dst=/home/paperclip/.local/share/omp/sessions \
   --mount type=bind,src=<workspace-dir>,dst=/workspace \
-  ghcr.io/paperclipai/agent-runtime-omp:<verified-tag-or-digest> --help
+  ghcr.io/itkadr-git/agent-runtime-omp:<verified-tag-or-digest> --help
 ```
 
 ## Publishing and Signing
 
-`.github/workflows/agent-runtime-images.yml` runs for pushes to `master` that touch configured paths, or manually through `workflow_dispatch`. A manual run accepts a version; otherwise the tag is `git-<commit-sha>`. The bake publish scope explicitly includes `base`, `opencode`, `pi`, `codex`, `gemini`, `claude`, and `omp` (`linux/amd64`; `hermes` is not included). The workflow retrieves each pushed image digest and signs it with cosign keyless OIDC using its GitHub Actions identity.
+`.github/workflows/agent-runtime-images.yml` runs for pushes to `main` and release tags `myr-v*` that touch configured paths, or manually through `workflow_dispatch`. A manual run accepts a version; otherwise the tag is `git-<commit-sha>`. The bake publish scope explicitly includes `base`, `opencode`, `pi`, `codex`, `gemini`, `claude`, and `omp` (`linux/amd64`; `hermes` is not included). The workflow retrieves each pushed image digest and signs it with cosign keyless OIDC using its GitHub Actions identity.
 
 No successful workflow run or published OMP tag/digest has been verified for this change. Before using a published image, verify the successful workflow run, its GHCR digest, and the signature.
 

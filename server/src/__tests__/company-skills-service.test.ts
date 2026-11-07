@@ -14,8 +14,8 @@ import {
   folders,
   projects,
   projectWorkspaces,
-} from "@paperclipai/db";
-import { parseFrontmatterMarkdown } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { parseFrontmatterMarkdown } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

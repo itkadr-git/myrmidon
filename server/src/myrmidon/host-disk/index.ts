@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { resolveHostDiskSettings, type HostDiskSettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { resolveHostDiskSettings, type HostDiskSettings } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { hostDiskRoutes } from "./routes.js";
@@ -179,7 +179,7 @@ export function createHostDiskActivityStore(db: Db): HostDiskActivityStore {
   return {
     lastSignalAt: async () => {
       try {
-        const { activityLog } = await import("@paperclipai/db");
+        const { activityLog } = await import("@myrmidon/db");
         const { desc, eq } = await import("drizzle-orm");
         const rows = await db
           .select({ createdAt: activityLog.createdAt })

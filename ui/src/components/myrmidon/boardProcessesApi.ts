@@ -39,9 +39,10 @@ export interface BoardProcessesView {
 
 export const boardProcessesQueryKey = ["myrmidon", "board-processes"] as const;
 
-/** The panel refreshes at the pulse cadence, so a process that stops
- * answering shows up as stale within one tick. */
-export const BOARD_PROCESSES_POLL_MS = 10_000;
+/** The panel refreshes twice per pulse (OPE-7003, 5 s), so a process that
+ * stops answering turns amber here within a couple of ticks and a fresh
+ * restart surfaces almost at once. */
+export const BOARD_PROCESSES_POLL_MS = 5_000;
 
 export const boardProcessesApi = {
   list: () => api.get<BoardProcessesView>("/myrmidon/board-processes"),

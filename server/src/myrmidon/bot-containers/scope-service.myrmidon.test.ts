@@ -3,7 +3,7 @@
 // required" and "apply". The resolver's own rules are tested in packages/shared.
 
 import { describe, expect, it } from "vitest";
-import { ISOLATED_LAYOUT, type IsolationMode, type ScopeLayout, type ScopeSettingInput, type SettableScopeKind } from "@paperclipai/shared";
+import { ISOLATED_LAYOUT, type IsolationMode, type ScopeLayout, type ScopeSettingInput, type SettableScopeKind } from "@myrmidon/shared";
 import {
   botScopeService,
   type ScopeAgentRow,

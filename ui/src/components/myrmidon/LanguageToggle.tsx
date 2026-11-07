@@ -2,6 +2,7 @@
 // the ThemeToggle compact-menu-action row so the account menu stays uniform.
 import { Languages } from "lucide-react";
 
+import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   FORK_LANGUAGES,
@@ -17,6 +18,7 @@ interface LanguageToggleProps {
 }
 
 export function LanguageToggle({ className, onAfterChange }: LanguageToggleProps) {
+  const { t } = useTranslation();
   const { language, setLanguage } = useAppLanguage();
 
   function select(next: ForkLanguage) {
@@ -26,7 +28,7 @@ export function LanguageToggle({ className, onAfterChange }: LanguageToggleProps
   }
 
   return (
-    <div className={cn("flex flex-col gap-0.5 px-2.5 py-1", className)} role="group" aria-label="Language">
+    <div className={cn("flex flex-col gap-0.5 px-2.5 py-1", className)} role="group" aria-label={t("language.label")}>
       {FORK_LANGUAGES.map((code) => (
         <button
           key={code}

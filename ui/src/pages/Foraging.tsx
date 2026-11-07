@@ -32,6 +32,7 @@ import {
   type ForagingIdleGateSource,
   type ForagingSkipReason,
   type ForagingSourceKind,
+  type ForagingSource,
 } from "@/api/foraging";
 
 const NO_COMPANY = "__none__";
@@ -87,6 +88,7 @@ export interface ForagingProps {
 export function Foraging({ embedded = false }: ForagingProps = {}) {
   const { t, i18n } = useTranslation();
   const language = i18n.language;
+  const locale = language === "ru" ? "ru-RU" : "en-US";
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -143,6 +145,13 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
       setUrl("");
       void queryClient.invalidateQueries({ queryKey: foragingSourcesKey(companyId) });
     },
+  });
+
+  // myrmidon(SETTINGS-UI-REMAINDER): persist per-source enablement through the registry PUT.
+  const toggleSource = useMutation({
+    mutationFn: ({ source, enabled }: { source: ForagingSource; enabled: boolean }) =>
+      foragingApi.saveSource(companyId, { role: source.role, url: source.url, kind: source.kind, enabled }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: foragingSourcesKey(companyId) }),
   });
 
   const removeSource = useMutation({
@@ -220,10 +229,10 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="foraging-budget">
             <span>
               {budget.budget.enabled
-                ? t("foraging.budget.passBudget", { value: formatCents(budget.budget.maxCostCents) })
+                ? t("foraging.budget.passBudget", { value: formatCents(budget.budget.maxCostCents, locale) })
                 : t("foraging.budget.passBudget", { value: t("foraging.budget.noLimit") })}
             </span>
-            <span>{t("foraging.budget.spentThisMonth", { value: formatCents(budget.spentCents) })}</span>
+            <span>{t("foraging.budget.spentThisMonth", { value: formatCents(budget.spentCents, locale) })}</span>
             <span>{t("foraging.budget.passInterval", { minutes: Math.round(budget.intervalMs / 60_000) })}</span>
             <span>{t("foraging.budget.sameHostPause", { seconds: Math.round(budget.minHostIntervalMs / 1000) })}</span>
           </div>
@@ -339,7 +348,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
               <input
                 value={role}
                 onChange={(event) => setRole(event.target.value)}
-                placeholder="engineer"
+                placeholder={t("area.settings-models-runtime-2.foraging.rolePlaceholder")}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
                 data-testid="foraging-source-role"
               />
@@ -349,7 +358,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
               <input
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
-                placeholder="https://example.com/changelog"
+                placeholder={t("area.settings-models-runtime-2.foraging.urlPlaceholder")}
                 className="h-9 w-80 rounded-md border border-input bg-background px-3 text-sm text-foreground"
                 data-testid="foraging-source-url"
               />
@@ -386,6 +395,11 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
             </p>
           ) : null}
 
+          {toggleSource.error ? (
+            <p className="text-sm text-destructive" role="alert" data-testid="foraging-source-toggle-error">
+              {t("foraging.sources.saveFailed", { message: (toggleSource.error as Error).message })}
+            </p>
+          ) : null}
           {sourcesQuery.isLoading ? (
             <PageSkeleton variant="costs" />
           ) : sources.length === 0 ? (
@@ -400,6 +414,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.role")}</th>
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.source")}</th>
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.kind")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.enabled")}</th>
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.lastSnapshot")}</th>
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.lastCheck")}</th>
                     <th scope="col" className="px-3 py-2 text-right font-medium text-muted-foreground" />
@@ -418,6 +433,18 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
                         ) : null}
                       </td>
                       <td className="px-3 py-2">{t(KIND_LABEL_KEYS[source.kind], { defaultValue: source.kind })}</td>
+                      <td className="px-3 py-2">
+                        <ToggleSwitch
+                          checked={source.enabled}
+                          onCheckedChange={(enabled) => toggleSource.mutate({ source, enabled })}
+                          disabled={toggleSource.isPending || sourcesQuery.isFetching}
+                          aria-label={t("foraging.sources.toggleEnabled", { url: source.url })}
+                          data-testid="foraging-source-enabled-toggle"
+                        />
+                        <span className="ml-2 text-muted-foreground" data-testid="foraging-source-status">
+                          {t(source.enabled ? "foraging.sources.active" : "foraging.sources.paused")}
+                        </span>
+                      </td>
                       <td className="px-3 py-2 tabular-nums">
                         {source.lastSnapshotAt
                           ? formatWhen(source.lastSnapshotAt, language)

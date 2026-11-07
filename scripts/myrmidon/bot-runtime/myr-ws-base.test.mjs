@@ -253,8 +253,8 @@ describe("myr-ws base: ensureBase", { skip: !hasGit && "git missing" }, () => {
 describe("myr-ws CLI frame", () => {
   const run = (args, env = {}) => spawnSync(process.execPath, [ENTRY, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
 
-  it("registers the five verbs and every one is a real handler (none is a stub)", () => {
-    assert.deepEqual(Object.keys(cli.COMMANDS).sort(), ["close", "list", "migrate", "open", "restore"]);
+  it("registers the six verbs and every one is a real handler (none is a stub)", () => {
+    assert.deepEqual(Object.keys(cli.COMMANDS).sort(), ["close", "list", "migrate", "open", "repair", "restore"]);
     for (const [verb, fn] of Object.entries(cli.COMMANDS)) {
       assert.equal(typeof fn, "function", verb);
       assert.ok(typeof fn === "function", `${verb} is a notImplemented stub`);

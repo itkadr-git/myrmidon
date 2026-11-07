@@ -32,7 +32,7 @@ import {
   principalPermissionGrants,
   activityLog,
   companySecrets,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { Thread } from "chat";
 import {
   chatChannelService,
@@ -55,7 +55,7 @@ import {
 } from "./errors.js";
 import { createTgNotifySweepRunner } from "./errors-sweep.js";
 import { readTelegramNotifyErrors, TELEGRAM_NOTIFY_SETTINGS_GENERAL_KEY } from "./errors-settings.js";
-import { emptyTelegramNotifyDocument } from "@paperclipai/shared";
+import { emptyTelegramNotifyDocument } from "@myrmidon/shared";
 import { attentionService } from "../../services/attention.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -80,7 +80,7 @@ const ISSUE_CENTRAL_ERROR: ErrorChannelSettings = {
 function card(input: {
   id: string;
   companyId: string;
-  sourceKind: "failed_run" | "agent_error_alert" | "budget_alert";
+  sourceKind: "failed_run" | "agent_error_alert" | "budget_alert" | "litellm_budget";
   severity: "critical" | "high" | "medium" | "low";
   dedupKey: string;
   title: string;
@@ -563,6 +563,41 @@ describeEmbeddedPostgres("telegram-notify errors channel (TG-NOTIFY-C)", () => {
     });
     expect(relaxed.checked).toBe(1);
     expect(relaxed.sent).toBe(1);
+  });
+
+  it("delivers litellm_budget attention cards through the error channel", async () => {
+    const { companyId, agentId } = await seedCompany();
+    await seedDmConversation(companyId, agentId, "770099");
+    await writeSettings(ISSUE_CENTRAL_ERROR, companyId);
+    const feed = {
+      list: async () => [
+        card({
+          id: "litellm-budget-near-cap",
+          companyId,
+          sourceKind: "litellm_budget",
+          severity: "high",
+          dedupKey: `litellm_budget:near_cap:${companyId}:${agentId}`,
+          title: `LiteLLM key near cap: bot-${agentId}`,
+          subjectId: `litellm_budget:near_cap:${companyId}:${agentId}`,
+          whyNow: "Gateway spend is 85.0% of the key cap.",
+        }),
+      ],
+    };
+    const result = await sweepErrorChannel(companyId, {
+      db,
+      settings: settingsSource,
+      feed,
+    });
+    expect(result.checked).toBe(1);
+    expect(result.sent).toBe(1);
+    const rows = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].idempotencyKey).toBe(`notify:errors:${companyId}:litellm_budget:near_cap:${companyId}:${agentId}`);
+    expect((rows[0].payload as any).text).toContain("[high] LiteLLM key near cap: bot-");
+    expect((rows[0].payload as any).text).toContain("Gateway spend is 85.0% of the key cap.");
   });
 
   it("maxPerHour drops cards beyond the limit; the drop is not queued anywhere", async () => {

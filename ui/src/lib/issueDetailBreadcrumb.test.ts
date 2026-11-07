@@ -11,7 +11,7 @@ import {
   shouldArmIssueDetailInboxQuickArchive,
   withIssueDetailHeaderSeed,
 } from "./issueDetailBreadcrumb";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@myrmidon/shared";
 
 const sessionStorageMock = (() => {
   const store = new Map<string, string>();
@@ -89,6 +89,7 @@ describe("issueDetailBreadcrumb", () => {
         pauseReason: null,
         pausedAt: null,
         executionWorkspacePolicy: null,
+        developmentProcess: null,
         codebase: {
           workspaceId: null,
           repoUrl: null,

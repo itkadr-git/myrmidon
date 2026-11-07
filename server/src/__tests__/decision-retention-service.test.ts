@@ -7,8 +7,9 @@ import {
   createDb,
   decisionArchiveNotificationOutbox,
   decisionRetention,
+  instanceSettings,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { attentionService } from "../services/attention.js";
 import { decisionRetentionService } from "../services/decision-retention.js";
@@ -24,6 +25,18 @@ describePg("decision retention", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decision-retention-");
     db = createDb(tempDb.connectionString);
+    // myrmidon(OPE-10245): DEVFLOW health alerts are on by default since #1986
+    // (opt-out: instance_settings.general.devflowHealth.enabled = false). The
+    // seeded `in_review` issues are months old, so with the collector on every
+    // one of them also gets reviewQueueAgeMs and stalledRouterMs cards in the
+    // feed. This suite tests retention of the review rows, not DEVFLOW cards,
+    // so the collector is switched off for the fixture.
+    await db.insert(instanceSettings)
+      .values({ singletonKey: "default", general: { devflowHealth: { enabled: false } } })
+      .onConflictDoUpdate({
+        target: instanceSettings.singletonKey,
+        set: { general: { devflowHealth: { enabled: false } } },
+      });
   }, 30_000);
 
   afterEach(async () => {

@@ -1,0 +1,12 @@
+# OPE-8950: files of area apps-connections-2
+components/ai-connections/AiConnectionCredentialStep.tsx
+components/ai-connections/AiConnectionDesignExamples.tsx
+components/ai-connections/AiConnectionField.tsx
+components/ai-connections/AiConnectionManagement.tsx
+components/ai-connections/AiConnectionPicker.tsx
+components/ai-connections/ManagedAiConnectionDetails.tsx
+components/new-agent/AgentProviderConnection.tsx
+components/onboarding/ConnectModelPreview.tsx
+components/onboarding/FooterNav.tsx
+components/onboarding/SavedProviderKeySelect.tsx
+features/connections/ConnectionIntentInteractionBody.tsx

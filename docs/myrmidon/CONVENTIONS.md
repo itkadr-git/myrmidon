@@ -365,7 +365,7 @@ Code rules from `AGENTS.md` apply:
 
 Do not apply:
 
-- section 5, items 5–6 — plans and artifacts live in Paperclip tasks;
+- section 5, items 5–6 — plans and artifacts live in Myrmidon tasks;
 - section 10 — the vendor PR template; we have our own (section 5 of this file).
 
 ## 15. Releases (owner's decision 30.09.2026)

@@ -5,7 +5,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { emptyTelegramNotifyDocument, parseTelegramNotifyDocument } from "@paperclipai/shared";
+import { emptyTelegramNotifyDocument, parseTelegramNotifyDocument } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { telegramNotifyRoutes } from "./routes.js";
 import { applyTelegramNotifyPatch, telegramNotifyService } from "./service.js";
@@ -124,6 +124,7 @@ describe("myrmidon(TG-NOTIFY-A): the routes", () => {
         inbound: { enabled: false, requireMention: true },
         escalations: { enabled: false, hours: 24, channel: "none", chatId: null, topicId: null },
         proactivity: { mode: "only_on_owner_request", rarelyMaxPerDay: 3 },
+        updates: { enabled: false, chatId: null, topicId: null },
       },
       changelog: [],
     });
@@ -156,6 +157,19 @@ describe("myrmidon(TG-NOTIFY-A): the routes", () => {
     await request(app).patch(URL).send({ digest: { enabled: true } }).expect(200);
     const res = await request(app).patch(URL).send({ digest: { enabled: true } }).expect(200);
     expect(res.body.changelog).toHaveLength(1);
+  });
+
+  it("PATCH applies updates section", async () => {
+    const app = appWith(member);
+    const res = await request(app)
+      .patch(URL)
+      .send({ updates: { enabled: true, chatId: "chat-up", topicId: "topic-1" } })
+      .expect(200);
+    expect(res.body.settings.updates).toEqual({
+      enabled: true,
+      chatId: "chat-up",
+      topicId: "topic-1",
+    });
   });
 
   it("PATCH is board only: an agent actor is refused", async () => {

@@ -31,6 +31,11 @@ export const lowTrustReviewPresetPolicySchema = z.object({
   rawOutputDisposition: z.literal(LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION),
 }).strict();
 
+export const agentVisibilityAuthorizationPolicySchema = z.object({
+  mode: z.enum(["discoverable", "private"]).optional(),
+  hiddenFromDefaultDirectory: z.boolean().optional(),
+}).catchall(z.unknown());
+
 export const assignmentAuthorizationPolicySchema = z.object({
   mode: z.enum(["company_default", "protected"]).optional(),
   // Legacy compatibility only. This remains a hard block and never creates an approval.
@@ -49,8 +54,10 @@ export const trustAuthorizationPolicySchema = z.object({
   trustPreset: trustPresetSchema.optional(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   trustBoundary: lowTrustBoundarySchema.optional(),
+  agentVisibility: agentVisibilityAuthorizationPolicySchema.optional(),
   assignmentPolicy: assignmentAuthorizationPolicySchema.optional(),
   protectedAgent: protectedAgentAuthorizationPolicySchema.optional(),
+  managedBy: z.unknown().optional(),
 }).catchall(z.unknown());
 
 export const sourceTrustArtifactKindSchema = z.enum(["issue", "comment", "document", "work_product"]);
@@ -73,5 +80,6 @@ export const sourceTrustMetadataSchema = z.object({
 
 export type TrustPresetInput = z.infer<typeof trustPresetSchema>;
 export type LowTrustBoundaryInput = z.infer<typeof lowTrustBoundarySchema>;
+export type AgentVisibilityAuthorizationPolicyInput = z.infer<typeof agentVisibilityAuthorizationPolicySchema>;
 export type TrustAuthorizationPolicyInput = z.infer<typeof trustAuthorizationPolicySchema>;
 export type SourceTrustMetadataInput = z.infer<typeof sourceTrustMetadataSchema>;

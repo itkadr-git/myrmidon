@@ -92,7 +92,7 @@ Myrmidon 1.6.5-rc.2 replaces 1.6.4. Deploy the board, the release component imag
 
 - Migration `0299_bot_container_card_complete`: every agent whose card has an
   `adapterConfig.container` block gets `enabled: true` when it is absent and the
-  product defaults for any missing limit (`memoryMb` 2048, `cpus` 1, `pidsLimit`
+  product defaults for any missing limit (`memoryMb` 1024, `cpus` 1, `pidsLimit`
   512 — the card form's defaults; one set for every bot image family). Values
   already on the card win, including `enabled: false`. Before it, such cards were
   refused at apply (`container.enabled is not true`, then `container.memoryMb must

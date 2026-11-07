@@ -1,0 +1,181 @@
+{
+  "area": {
+    "task-chat-runner": {
+      "task-chat-marker": {
+        "tryAgain": "Try again",
+        "tryingAgain": "Trying again...",
+        "viewRun": "View run"
+      },
+      "task-chat-plan-view": {
+        "title": "Plan",
+        "revision": "rev {{revision}}",
+        "progress": "{{done}}/{{total}} done"
+      },
+      "protocol-activity-row": {
+        "research": {
+          "query": "Query",
+          "resultsCount_one": "{{count}} result",
+          "resultsCount_other": "{{count}} results",
+          "resultsCount_few": "{{count}} results",
+          "resultsCount_many": "{{count}} results",
+          "sources": "Research sources",
+          "showMore_one": "Show {{count}} more result",
+          "showMore_other": "Show {{count}} more results",
+          "showMore_few": "Show {{count}} more results",
+          "showMore_many": "Show {{count}} more results",
+          "showFewer": "Show fewer results",
+          "extraOutput": "Additional provider output is available in Runner Inspector."
+        },
+        "provider": {
+          "planSteps": "Plan steps",
+          "sources": "Research sources",
+          "delegatedAgents": "Delegated agents",
+          "outputTruncated": "Output truncated to 8 KiB."
+        },
+        "change": {
+          "noDetails": "No changed-file details were reported.",
+          "changedFiles": "Changed files",
+          "moreFiles_one": "{{count}} more file not shown",
+          "moreFiles_other": "{{count}} more files not shown",
+          "moreFiles_few": "{{count}} more files not shown",
+          "moreFiles_many": "{{count}} more files not shown"
+        },
+        "file": {
+          "previewUnavailable": "Preview unavailable.",
+          "previewTruncated": "Preview truncated by the runner."
+        },
+        "row": {
+          "noticeFallback": "The provider reported a notice without a message.",
+          "error": "Error",
+          "warning": "Warning"
+        }
+      },
+      "task-chat-runner-turn": {
+        "duration": {
+          "seconds": "{{seconds}}s",
+          "minutes": "{{minutes}}m",
+          "minutesSeconds": "{{minutes}}m {{seconds}}s"
+        },
+        "status": {
+          "stopped": "Stopped",
+          "stoppedAfter": "Stopped after {{elapsed}}",
+          "worked": "Worked",
+          "workedFor": "Worked for {{elapsed}}",
+          "workingFor": "Working for {{elapsed}}",
+          "continuedAfterSteering": "Continued after steering · {{status}}"
+        },
+        "thinking": "Thinking",
+        "activityUnavailable": "Live runner activity is temporarily unavailable. Retrying…"
+      },
+      "tool-card": {
+        "allowed": "allowed",
+        "rejected": "rejected",
+        "interrupted": "Interrupted",
+        "changed": "Changed"
+      },
+      "task-chat-turn-status-island": {
+        "filesChanged_one": "{{count}} file changed",
+        "filesChanged_other": "{{count}} files changed",
+        "filesChanged_few": "{{count}} files changed",
+        "filesChanged_many": "{{count}} files changed",
+        "additions_one": "{{count}} addition",
+        "additions_other": "{{count}} additions",
+        "additions_few": "{{count}} additions",
+        "additions_many": "{{count}} additions",
+        "deletions_one": "{{count}} deletion",
+        "deletions_other": "{{count}} deletions",
+        "deletions_few": "{{count}} deletions",
+        "deletions_many": "{{count}} deletions",
+        "stepCounter": "Step {{current}} / {{total}}",
+        "stepLabel": "Step {{current}} of {{total}}",
+        "stepLabelWithName": "Step {{current}} of {{total}}: {{label}}",
+        "turnPlan": "Turn plan",
+        "checklist": "Within-turn checklist"
+      },
+      "activity-group": {
+        "thinking": "Thinking",
+        "thought": "Thought",
+        "tokenUsage": "Token usage",
+        "contextUsage": "{{used}}/{{size}} ctx",
+        "permissionAllowed": "Permission allowed",
+        "permissionRejected": "Permission rejected",
+        "activityCount_one": "{{count}} activity",
+        "activityCount_other": "{{count}} activities",
+        "activityCount_few": "{{count}} activities",
+        "activityCount_many": "{{count}} activities",
+        "summaryWithCount": "{{summary}} ({{count}})",
+        "collapse": "Collapse {{what}}",
+        "expand": "Expand {{what}}",
+        "history": "Activity history"
+      },
+      "protocol-card": {
+        "planSteps": "Plan steps",
+        "provider": {
+          "delegatedAgents": "Delegated agents",
+          "researchSources": "Research sources",
+          "details": "Details",
+          "outputTruncated": "Output truncated to 8 KiB."
+        },
+        "change": {
+          "summaryDone_one": "{{count}} file changed",
+          "summaryDone_other": "{{count}} files changed",
+          "summaryDone_few": "{{count}} files changed",
+          "summaryDone_many": "{{count}} files changed",
+          "summaryDoneWithStats_one": "{{count}} file changed · {{stats}}",
+          "summaryDoneWithStats_other": "{{count}} files changed · {{stats}}",
+          "summaryDoneWithStats_few": "{{count}} files changed · {{stats}}",
+          "summaryDoneWithStats_many": "{{count}} files changed · {{stats}}",
+          "inProgress": "Workspace changes in progress",
+          "title": "Workspace changes",
+          "binaryPrefix": "binary · ",
+          "showFewer": "Show fewer files",
+          "showMore_one": "Show {{count}} more file",
+          "showMore_other": "Show {{count}} more files",
+          "showMore_few": "Show {{count}} more files",
+          "showMore_many": "Show {{count}} more files",
+          "reviewDiff": "Review diff",
+          "diffTitle": "Workspace diff",
+          "changedFiles": "Changed files",
+          "binaryNoDiff": "Binary file; text diff is unavailable.",
+          "noPatch": "No inline patch was recorded for this file."
+        },
+        "file": {
+          "genericLabel": "File",
+          "summary": "{{label}} · {{extension}}",
+          "summaryWithLine": "{{label}} · {{extension}} · line {{line}}",
+          "preview": "Preview",
+          "previewUnavailable": "Preview unavailable. The verified workspace reference is still available above.",
+          "previewTruncated": "Preview truncated by the runner."
+        },
+        "question": {
+          "answered": "Questions answered",
+          "cancelled": "Questions cancelled",
+          "expired": "Questions expired",
+          "resolved": "Questions resolved",
+          "runtimeInput": "Runtime input",
+          "olderRuntime": "Answer details were not recorded by this older runtime.",
+          "noAnswers": "No answers were submitted; this request was {{status}}."
+        },
+        "request": {
+          "permissionTitle": "Runtime permission",
+          "inputTitle": "Runtime input",
+          "responseField": "Response",
+          "resolveError": "The runtime request could not be resolved.",
+          "submitting": "Submitting…",
+          "submit": "Submit response",
+          "deny": "Deny",
+          "resolveInSession": "Resolve this request in the active runtime session."
+        },
+        "result": {
+          "title": "Run result",
+          "blocked": "Blocked: {{reason}}",
+          "verification": "Verification results",
+          "blocksCompletion": " · blocks completion"
+        },
+        "terminal": {
+          "title": "Run ended"
+        }
+      }
+    }
+  }
+}

@@ -7,14 +7,14 @@
 // attention registry, so the rules in sweep.ts stay pure and every vendor file
 // keeps a single call site (CONVENTIONS.md section 8).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { logger } from "../../middleware/logger.js";
 import { recordPauseGuardSignal } from "./attention.js";
 import { pauseGuardRoutes } from "./routes.js";
 import { pauseGuardService, type PauseGuardServiceDeps } from "./service.js";
 import { createPauseGuardSweep, type PauseGuardSweep } from "./sweep.js";
-import type { PauseGuardSettings } from "@paperclipai/shared";
+import type { PauseGuardSettings } from "@myrmidon/shared";
 
 export { createPauseGuardSweep, createPauseGuardStore, decidePauseGuardCandidate } from "./sweep.js";
 export type {

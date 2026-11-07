@@ -1,0 +1,11 @@
+# myrmidon(OPE-8950): area adapters-plugins-2
+adapters/opencode-local/config-fields.tsx
+adapters/pi-local/config-fields.tsx
+adapters/process/config-fields.tsx
+adapters/runtime-json-fields.tsx
+components/MissingPluginTabPlaceholder.tsx
+pages/AdapterManager.tsx
+pages/PluginManager.tsx
+pages/PluginPage.tsx
+pages/PluginSettings.tsx
+plugins/launchers.tsx

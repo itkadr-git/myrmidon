@@ -11,8 +11,8 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { resolveTeamLivenessSettings } from "@paperclipai/shared";
-import type { Db } from "@paperclipai/db";
+import { resolveTeamLivenessSettings } from "@myrmidon/shared";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { runStallRoutes } from "./routes.js";
 import {

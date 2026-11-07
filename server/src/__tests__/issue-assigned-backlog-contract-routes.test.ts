@@ -39,6 +39,7 @@ vi.mock("../services/index.js", () => ({
         companyId: "company-1",
         status: "active",
         orgChainHealth: { status: "healthy" },
+        role: "engineer",
       },
     })),
   }),

@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, isNotNull, lte, or, sql } from "drizzle-orm";
-import { activityLog, executionWorkspaces, type Db } from "@paperclipai/db";
-import { WORKSPACE_HYGIENE_METADATA_KEY } from "@paperclipai/shared";
+import { activityLog, executionWorkspaces, type Db } from "@myrmidon/db";
+import { WORKSPACE_HYGIENE_METADATA_KEY } from "@myrmidon/shared";
 
 /**
  * Database port of the workspace hygiene sweep (myrmidon WORKSPACE-HYGIENE,
@@ -61,7 +61,7 @@ type WorkspaceHygieneColumnSelection = {
 
 /**
  * The selected columns, built per call rather than once at import time: a test
- * that mocks `@paperclipai/db` with only the exports it needs (the server
+ * that mocks `@myrmidon/db` with only the exports it needs (the server
  * startup test does) must be able to import this module without the mock
  * failing on a missing table. Reading `executionWorkspaces` at module scope
  * made that import throw.

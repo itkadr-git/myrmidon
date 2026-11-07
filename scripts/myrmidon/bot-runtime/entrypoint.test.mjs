@@ -13,13 +13,18 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const ENTRYPOINT = path.join(ROOT, "docker/bot-runtime/entrypoint.sh");
+const COREUTILS_TIMEOUT = "/usr/bin/timeout";
 
 function run(env) {
-  return spawnSync("bash", [ENTRYPOINT], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-test-bin-"));
+  fs.symlinkSync(COREUTILS_TIMEOUT, path.join(bin, "timeout"));
+  const result = spawnSync("bash", [ENTRYPOINT], {
+    env: { PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, ...env },
     encoding: "utf8",
     timeout: 10_000,
   });
+  fs.rmSync(bin, { recursive: true, force: true });
+  return result;
 }
 
 /** A fresh HERMES_HOME dir, optionally with a .env carrying API_SERVER_KEY. */
@@ -32,6 +37,31 @@ function hermesHome(envLine) {
 }
 
 describe("docker/bot-runtime/entrypoint.sh", () => {
+  it("declares the gateway before launching slow startup diagnostics", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const launch = source.indexOf('hermes gateway run --replace --accept-hooks "$@" &');
+    const diagnostics = source.indexOf("run_startup_diagnostics &", launch);
+    assert.ok(launch >= 0, "gateway must launch as a background child");
+    assert.ok(diagnostics > launch, "diagnostics must start after the gateway launch");
+    assert.match(source, /run_bounded_diagnostic reflink_self_check/);
+    assert.match(source, /run_bounded_diagnostic uv_cache_self_check/);
+    assert.match(source, /run_bounded_diagnostic git_objects_self_check/);
+    assert.match(source, /DEVBUILD_BOT_NAME:-.*DEVBUILD_HOST:-.*devbuild/s);
+    assert.match(source, /log "phase \$\{check\} starting"/);
+    assert.match(source, /log "phase \$\{check\} finished in \$\{duration_ms\}ms/);
+    assert.match(source, /log "phase gateway_launch starting"/);
+  });
+
+  it("does not run session pruning or optimization before launching the gateway", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const launch = source.indexOf("phase gateway_launch starting");
+    assert.ok(launch >= 0, "gateway launch must be present");
+    assert.doesNotMatch(source.slice(0, launch), /hermes sessions (?:prune|optimize)/);
+    assert.match(source, /run_live_session_maintenance\(\) \{/);
+    assert.match(source, /run_live_session_maintenance >\/dev\/null 2>&1 &/);
+  });
+
+
   it("fails when HERMES_HOME is unset, before even looking at API_SERVER_KEY", () => {
     const result = run({});
     assert.notEqual(result.status, 0);
@@ -185,6 +215,9 @@ function runWithStub(env, probeDir) {
   const bin = probeDir ?? stubHermes();
   if (probeDir && !fs.existsSync(path.join(bin, "hermes"))) {
     fs.writeFileSync(path.join(bin, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  if (!fs.existsSync(path.join(bin, "timeout"))) {
+    fs.symlinkSync(COREUTILS_TIMEOUT, path.join(bin, "timeout"));
   }
   try {
     // PATH is the stub dir plus the base system dirs only: the dev-variant
@@ -1249,7 +1282,17 @@ describe("docker/bot-runtime/entrypoint.sh botd start", () => {
   });
 });
 
-// myrmidon(BOT-UMASK): run files must be owner-only — every bot on a host shares
+describe("hermes session storage maintenance", () => {
+  it("does not run optimize-storage against the live gateway database", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const liveStart = source.indexOf("run_live_session_maintenance() {");
+    assert.ok(liveStart >= 0, "post-health maintenance must be present");
+    assert.doesNotMatch(source.slice(liveStart), /hermes sessions optimize-storage/);
+    assert.doesNotMatch(source.slice(liveStart), /optimize-storage\.v23\.done/);
+    assert.match(source, /while ! curl -fsS --max-time 3 .*\/health/);
+  });
+});
+
 // uid 10001, so the mode bits are the only barrier between one run's scratch/cache
 // and another bot's processes. The entrypoint sets umask 077 before any file write
 // and every child (gateway -> session -> terminal/tool) inherits it.
@@ -1287,7 +1330,7 @@ describe("docker/bot-runtime/entrypoint.sh umask 077", () => {
         `#!/bin/sh\numask > "${probe}/umask-value"\n: > "${probe}/probe-file"\nmkdir "${probe}/probe-dir"\n`,
         { mode: 0o755 },
       );
-      const result = runWithStub({ HERMES_HOME: hermesHomeDir }, probe);
+      const result = runWithStub({ HERMES_HOME: hermesHomeDir, MYRMIDON_DIAGNOSTIC_TIMEOUT_SEC: "0.05" }, probe);
       assert.equal(result.error, undefined);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(

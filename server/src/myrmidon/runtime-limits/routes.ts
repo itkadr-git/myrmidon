@@ -8,8 +8,8 @@
 // settings follow.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { patchRunLimitsSchema, type RunLimitsPatch } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { patchRunLimitsSchema, type RunLimitsPatch } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { RuntimeLimitsService } from "./service.js";

@@ -28,7 +28,8 @@ import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import type { PluginRecord } from "@myrmidon/shared";
 import {
   agents,
   companies,
@@ -36,19 +37,20 @@ import {
   pluginLogs,
   pluginWebhookDeliveries,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   PluginApiRouteDeclaration,
   PluginStatus,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
   PluginLauncherRenderContextSnapshot,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   PLUGIN_STATUSES,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { myrmidonModelProviderRoutes } from "../myrmidon/model-providers/wiring.js";
 import {
   getPluginUiContributionMetadata,
   listMissingDeclaredPluginEntrypoints,
@@ -64,8 +66,8 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
-import type { PluginPerformActionActorContext, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
+import type { PluginPerformActionActorContext, ToolRunContext } from "@myrmidon/plugin-sdk";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@myrmidon/plugin-sdk";
 import {
   assertAuthenticated,
   assertBoard,
@@ -182,9 +184,9 @@ const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES = new Set([
-  "@paperclipai/plugin-llm-wiki",
-  "@paperclipai/plugin-modal",
-  "@paperclipai/plugin-workspace-diff",
+  "@myrmidon/plugin-llm-wiki",
+  "@myrmidon/plugin-modal",
+  "@myrmidon/plugin-workspace-diff",
 ]);
 /**
  * Cached bundled-plugin discovery. Static metadata (name, key, display, paths)
@@ -443,6 +445,11 @@ export interface PluginRouteBridgeDeps {
   workerManager: PluginWorkerManager;
   /** Optional stream bus for SSE push from worker to UI. */
   streamBus?: PluginStreamBus;
+  /** Optional provider model lifecycle synchronization. */
+  providerModelSync?: {
+    sync(companyId: string, plugin: PluginRecord): Promise<void>;
+    remove(companyId: string, plugin: PluginRecord): Promise<void>;
+  };
 }
 
 export interface PluginRouteToolGatewayDeps {
@@ -538,9 +545,11 @@ export function pluginRoutes(
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
+  const providerRoutes = myrmidonModelProviderRoutes(db);
   const lifecycle = pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
+    providerModelSync: bridgeDeps?.providerModelSync,
   });
   const issuesSvc = issueService(db);
 
@@ -786,6 +795,8 @@ export function pluginRoutes(
         agentId: null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        // myrmidon(PLUGIN-INSTANCE-ADMIN): the host-verified instance-admin flag.
+        isInstanceAdmin: req.actor.isInstanceAdmin === true,
       };
     }
     return {
@@ -1872,6 +1883,8 @@ export function pluginRoutes(
     res.on("error", safeUnsubscribe);
   });
 
+  router.use("/model-providers", providerRoutes);
+
   router.use("/plugins/:pluginId/api", async (req, res) => {
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin scoped API routes are not enabled" });
@@ -2255,10 +2268,11 @@ export function pluginRoutes(
    *
    * Request body (optional):
    * - version: Target version (defaults to latest)
+   * - approvedCapabilities: Exact capability names explicitly approved for this upgrade
    *
    * If the upgrade adds new capabilities, the plugin transitions to
-   * 'upgrade_pending' state for board approval. Otherwise, it goes
-   * directly to 'ready'.
+   * 'upgrade_pending' state unless `approvedCapabilities` exactly matches the
+   * added capabilities. Otherwise, it goes directly to 'ready'.
    *
    * Response: PluginRecord
    * Errors: 404 if plugin not found, 400 for lifecycle errors
@@ -2267,8 +2281,12 @@ export function pluginRoutes(
     assertInstanceAdmin(req);
     assertPluginManagementVisible();
     const { pluginId } = req.params;
-    const body = req.body as { version?: string } | undefined;
+    const body = req.body as { version?: string; approvedCapabilities?: string[] } | undefined;
     const version = body?.version;
+    const approvedCapabilities = body?.approvedCapabilities;
+    if (approvedCapabilities !== undefined && (!Array.isArray(approvedCapabilities) || approvedCapabilities.some((capability) => typeof capability !== "string"))) {
+      throw badRequest("approvedCapabilities must be an array of capability names");
+    }
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2282,13 +2300,18 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await lifecycle.upgrade(plugin.id, version);
-      await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
+      const result = approvedCapabilities === undefined
+        ? await lifecycle.upgrade(plugin.id, version)
+        : await lifecycle.upgrade(plugin.id, version, approvedCapabilities);
+      await logPluginMutationActivity(req, approvedCapabilities === undefined ? "plugin.upgraded" : "plugin.upgrade.approved", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         previousVersion: plugin.version,
         version: result?.version ?? plugin.version,
         targetVersion: version ?? null,
+        approvedCapabilities: approvedCapabilities ?? [],
+        approvedBy: approvedCapabilities === undefined ? null : getActorInfo(req).actorId,
+        approvedAt: approvedCapabilities === undefined ? null : new Date().toISOString(),
       });
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);

@@ -4,7 +4,7 @@
 // out of index.ts so the event paths (issue hooks, resume, the claim API, the
 // supervisor rebalance) can build it without importing the wiring point.
 
-import { readStoredSwarmSettings, resolveSwarmClaimSettings } from "@paperclipai/shared";
+import { readStoredSwarmSettings, resolveSwarmClaimSettings } from "@myrmidon/shared";
 import { currentHostCpuGate, currentHostMemoryGate } from "../run-admission.js";
 import {
   matchAgent,

@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
+import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@myrmidon/adapter-codex-local/server";
 import {
   activityLog,
   agents,
@@ -21,8 +21,8 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@myrmidon/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -1901,6 +1901,28 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("user-one-secret");
   });
 
+  it("requires an OpenClaw device token secret reference and resolves it for runtime", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `openclaw-device-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "device-token-test-value",
+    });
+    await expect(svc.normalizeAdapterConfigForPersistence(companyId, {
+      deviceToken: "raw-token",
+    }, { adapterType: "openclaw_gateway" })).rejects.toThrow(/company secret reference/);
+    const stored = await svc.normalizeAdapterConfigForPersistence(companyId, {
+      deviceToken: { type: "secret_ref", secretId: secret.id, version: "latest" },
+    }, { adapterType: "openclaw_gateway" });
+    expect(JSON.stringify(stored)).not.toContain("device-token-test-value");
+    const resolved = await svc.resolveAdapterConfigForRuntime(companyId, stored, undefined, {
+      adapterType: "openclaw_gateway",
+    });
+    expect(resolved.config.deviceToken).toBe("device-token-test-value");
+    expect(resolved.secretKeys).toEqual(new Set(["deviceToken"]));
+  });
+
   it("can skip user-secret refs while resolving adapter config for non-runtime skill discovery", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -2685,6 +2707,43 @@ describeEmbeddedPostgres("secretService", () => {
         heartbeatRunId: randomUUID(),
       }),
     ).rejects.toThrow("provider resolution failed");
+  });
+
+  it("updates lastResolvedAt at most once per five minutes per secret", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `resolved-throttle-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "system",
+      targetId: "system",
+      configPath: "env.API_KEY",
+    });
+    const resolveOnce = () =>
+      svc.resolveSecretValue(companyId, secret.id, "latest", {
+        consumerType: "system",
+        consumerId: "system",
+        configPath: "env.API_KEY",
+      });
+    const readResolvedAt = async () =>
+      (await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))[0]!.lastResolvedAt;
+
+    await resolveOnce();
+    const first = await readResolvedAt();
+    expect(first).toBeInstanceOf(Date);
+
+    await resolveOnce();
+    expect((await readResolvedAt())!.getTime()).toBe(first!.getTime());
+
+    const stale = new Date(Date.now() - 6 * 60_000);
+    await db.update(companySecrets).set({ lastResolvedAt: stale }).where(eq(companySecrets.id, secret.id));
+    await resolveOnce();
+    expect((await readResolvedAt())!.getTime()).toBeGreaterThan(stale.getTime() + 5 * 60_000);
   });
 
   it("keeps one default provider vault per company provider", async () => {

@@ -12,7 +12,7 @@
 // one company has the channel enabled (the per-company early return).
 
 import { eq } from "drizzle-orm";
-import { companies, type Db } from "@paperclipai/db";
+import { companies, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { attentionService } from "../../services/attention.js";
 import {
@@ -22,6 +22,7 @@ import {
   type ErrorChannelSettingsSource,
   type ErrorChannelSweepResult,
 } from "./errors.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export const TG_NOTIFY_SWEEP_INTERVAL_SEC_ENV = "MYRMIDON_TG_NOTIFY_INTERVAL_SEC";
 const DEFAULT_SWEEP_INTERVAL_SEC = 300;
@@ -119,7 +120,7 @@ export function startTgNotifySweep(deps: TgNotifySweepDeps & { env?: NodeJS.Proc
   const env = deps.env ?? process.env;
   const intervalMs = readTgNotifySweepIntervalMs(env);
   const runner = createTgNotifySweepRunner(deps);
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void runner.tick().catch((err) => {
       logger.error({ err }, "telegram-notify errors sweep tick failed");
     });

@@ -34,6 +34,10 @@ import type {
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
+import type {
+  InteractionRouteType,
+  InteractionEscalationStep,
+} from "../interaction-routing.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
@@ -45,6 +49,38 @@ import type {
 } from "../trust-policy.js";
 
 export type { IssueWorkMode };
+
+export interface IssueRewakeFreeze {
+  agentId: string;
+  frozenAt: string;
+  noProgressStreak: number;
+  statusVersion?: number;
+  assigneeAgentId?: string | null;
+}
+
+export interface IssueActiveBlockerMetadata {
+  blockReason: "external_wait" | "dependency" | "recovery" | "human_decision" | "resource";
+  owner: { agentId: string } | { userId: string };
+  blockedByIssueIds?: string[];
+  externalRef?: string;
+  nextCheckAt: string;
+  timeoutAt: string;
+  escalationPolicy: string;
+  issueRewakeFreeze?: IssueRewakeFreeze | null;
+}
+
+export interface IssueFreezeOnlyMetadata {
+  blockReason?: never;
+  owner?: never;
+  blockedByIssueIds?: never;
+  externalRef?: never;
+  nextCheckAt?: never;
+  timeoutAt?: never;
+  escalationPolicy?: never;
+  issueRewakeFreeze: IssueRewakeFreeze;
+}
+
+export type IssueBlockerMetadata = IssueActiveBlockerMetadata | IssueFreezeOnlyMetadata;
 
 export interface IssueAncestorProject {
   id: string;
@@ -224,6 +260,7 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  blockerMetadata?: IssueBlockerMetadata | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
   scheduledRetry?: IssueScheduledRetry | null;
@@ -401,6 +438,8 @@ export interface IssueSubtreeDiagnosticsResponse {
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
 
 export type IssueBlockerAttentionReason =
+  | "unassigned_blocked_issue_overdue"
+  | "blocked_by_unassigned_issue"
   | "active_child"
   | "active_dependency"
   | "stalled_review"
@@ -443,7 +482,9 @@ export type IssueReviewAttentionPathKind =
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
-  | "recovery";
+  | "recovery"
+  // myrmidon(OPE-10045): the last stage was approved before the PR merged; the PR sync closes the task.
+  | "approved_pending_merge";
 
 export interface IssueReviewAttentionPath {
   kind: IssueReviewAttentionPathKind;
@@ -480,6 +521,7 @@ export type IssueBlockedInboxState =
 export type IssueBlockedInboxSeverity = "critical" | "high" | "medium" | "low";
 
 export type IssueBlockedInboxReason =
+  | "unassigned_blocked_issue_overdue"
   | "blocked_by_unassigned_issue"
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
@@ -552,6 +594,7 @@ export interface IssueUnblockDescriptor {
   owner: IssueUnblockOwner;
   action: string;
   reasonRef?: IssueUnblockReasonRef;
+  reason?: string;
 }
 
 export interface IssueRecoveryAction {
@@ -599,6 +642,13 @@ export interface SuccessfulRunHandoffState {
 
 export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
 
+/**
+ * myrmidon(1.6.6 RUN-RETRY-POLICY): how the retry policy classified the failure
+ * that queued this run — a transient failure is worth another attempt, a
+ * permanent one is not.
+ */
+export type IssueScheduledRetryClassification = "transient" | "permanent" | "unknown";
+
 export interface IssueScheduledRetry {
   runId: string;
   status: IssueScheduledRetryStatus;
@@ -608,6 +658,14 @@ export interface IssueScheduledRetry {
   scheduledRetryAt: Date | string | null;
   scheduledRetryAttempt: number;
   scheduledRetryReason: string | null;
+  /**
+   * myrmidon(1.6.6 RUN-RETRY-POLICY): the attempt ceiling the scheduler
+   * enforced for this retry, and the class of the failure that caused it. Null
+   * for retries queued before the policy existed; the UI then renders the bare
+   * attempt number.
+   */
+  scheduledRetryMaxAttempts?: number | null;
+  scheduledRetryClassification?: IssueScheduledRetryClassification | null;
   retryExhaustedReason?: string | null;
   error?: string | null;
   errorCode?: string | null;
@@ -690,10 +748,24 @@ export interface IssueExecutionPolicy {
   authorizationPolicy?: TrustAuthorizationPolicy;
   /**
    * Maximum consecutive agent-initiated changes-requested rounds before the
-   * pending stage escalates to the responsible human. Null uses the server
-   * default. Human decisions reset the round counter.
+   * pending stage advances to a technical escalation reviewer. Null uses the
+   * server default. Human decisions reset the round counter.
    */
   maxReviewRounds?: number | null;
+  reviewEscalationPolicy?: {
+    maxReviewRounds?: number;
+    participantRoles: Array<"lead" | "architect" | "secondary_reviewer">;
+    fallbackQueue: string;
+    timeoutAt: string | null;
+    policyRevision: string;
+    participants?: Partial<Record<"lead" | "architect" | "secondary_reviewer", {
+      type: "agent" | "user";
+      agentId?: string | null;
+      userId?: string | null;
+      projectId?: string | null;
+      casteKey?: string | null;
+    } | null>>;
+  } | null;
 }
 
 export interface IssueExecutionMonitorState {
@@ -711,6 +783,8 @@ export interface IssueExecutionMonitorState {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
   clearedAt: string | null;
   clearReason: IssueExecutionMonitorClearReason | null;
+  // myrmidon(MON-RESTORE): preserve the scheduled time after a recovery clear.
+  nextScheduledAt?: string | null;
 }
 
 export interface IssueReviewRequest {
@@ -731,6 +805,17 @@ export interface IssueExecutionState {
   monitor?: IssueExecutionMonitorState | null;
   /** Consecutive agent-initiated changes-requested rounds on the current stage. */
   changesRequestedCount?: number;
+  reviewCycleId?: string | null;
+  escalationPolicyRevision?: string | null;
+  escalationReason?: "review_round_limit" | null;
+  escalationFromParticipant?: IssueExecutionStagePrincipal | null;
+  escalationToParticipant?: IssueExecutionStagePrincipal | null;
+  /**
+   * myrmidon(OPE-11970): head commit of the pull request at the last
+   * changes-requested decision. A repeat return on the same head (no new commit)
+   * does not wake the executor again.
+   */
+  lastChangesRequestedHeadSha?: string | null;
 }
 
 export interface IssueExecutionDecision {
@@ -826,6 +911,7 @@ export interface Issue {
   createdByAgentId: string | null;
   createdByUserId: string | null;
   responsibleUserId: string | null;
+  responsibleAgentId?: string | null;
   issueNumber: number | null;
   identifier: string | null;
   originKind?: IssueOriginKind;
@@ -852,6 +938,7 @@ export interface Issue {
   cancelledAt: Date | null;
   hiddenAt: Date | null;
   sourceTrust?: SourceTrustMetadata | null;
+  blockerMetadata?: IssueBlockerMetadata | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
@@ -1258,7 +1345,7 @@ export interface AskUserQuestionsResult {
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
-  expirationReason?: "superseded_by_comment" | "superseded_by_newer_interaction";
+  expirationReason?: "superseded_by_comment" | "superseded_by_newer_interaction" | "issue_closed";
   commentId?: string | null;
   // Set with expirationReason "superseded_by_newer_interaction": the newer
   // sibling ask_user_questions that replaced this one (PAP-437).
@@ -1387,6 +1474,7 @@ export interface ConnectionIntentPayload {
 export interface ConnectionIntentResult {
   version: 1;
   outcome: "connected" | "declined" | "superseded" | "expired";
+  expirationReason?: "issue_closed";
   connectionId?: string | null;
   reason?: string | null;
   supersededByInteractionId?: string | null;
@@ -1469,6 +1557,7 @@ export interface RequestConfirmationResult {
     | "withdrawn"
     | "issue_closed"
     | "addressee_deleted";
+  expirationReason?: "issue_closed";
   reason?: string | null;
   commentId?: string | null;
   supersededByInteractionId?: string | null;
@@ -1505,6 +1594,7 @@ export interface RequestItemVerdictsResultItem {
 export interface RequestItemVerdictsResult {
   version: 1;
   outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "skipped" | "withdrawn" | "issue_closed" | "addressee_deleted";
+  expirationReason?: "issue_closed";
   reason?: string | null;
   complete: boolean;
   items: RequestItemVerdictsResultItem[];
@@ -1524,6 +1614,11 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   sourceIdentityContextId?: string | null;
   addresseeAgentId?: string | null;
   addresseeUserId?: string | null;
+  routeType?: InteractionRouteType | null;
+  addresseeQueue?: string | null;
+  timeoutAt?: Date | string | null;
+  escalationChain?: InteractionEscalationStep[] | null;
+  escalationLevel?: number;
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;

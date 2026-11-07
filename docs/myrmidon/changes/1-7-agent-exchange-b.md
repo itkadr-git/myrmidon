@@ -1,0 +1,38 @@
+## divergence-new
+
+<!-- after: 1.2 — русский интерфейс (UI-RU-A) -->
+
+### 1.7 — AGENT-EXCHANGE B: лента обменов владельцу и «опыт → кандидат навыка»
+
+| ID | Что меняем | Файлы вендора | Причина | Тест-сторож | Как снимать | PR |
+|---|---|---|---|---|---|---|
+| AXB | Лента обсуждений агентов для владельца и действие «в навык». Экран (текущий интерфейс, без экранов 2.0): комнаты компании новыми сверху — задача со ссылкой на карточку (`issues`), участники и их модели, состояние и круг, токены и цена, ключ итога (`exchange:<roomId>`), суммы страницы (комнат, с итогом, кандидатов, токенов, стоимости, комнат с неизвестной ценой) и признак усечения (`показаны новейшие N`). Цена честная: комната без трат — «бесплатно», комната с токенами без записанной цены (часть A пишет 0, когда каталог не знал цены модели) — «неизвестно (N токенов)», остальное — `$0.1250` (запись хранит сотые доли цента, `costCents / 10 000`). Кнопка «в навык» на комнате с итогом: берёт итог завершителя как есть (документ задачи), создаёт навык компании с этим текстом плюс происхождение (задача, комната, участники, стоимость, заметка владельца) и регистрирует его кандидатом SKILL-LIFECYCLE (`setCandidate`); продвижения в этом пути нет — порт `AgentExchangeSkillCandidatePort` не имеет метода продвижения, кандидат доставляется только пилотному набору и становится verified лишь по одобренной карточке `skill_promotion`. Ключ кандидата детерминирован от комнаты (`company/<companyId>/exchange-room-<roomId>` в библиотеке навыков), поэтому повторное нажатие идемпотентно (`created: false`) и дополнительной колонки в таблице комнат не нужно. Отказы: `404 room_not_found`, `422 room_not_summarized` (нет итога или документ пропал), `422 skill_candidate_disabled`, `422 skill_candidate_unavailable`. Настройки `instance_settings.general.agentExchangeFeed` (ключ в zod-схеме общих настроек, переживает вендорские записи `general` тем же spread, что `1.7-BUDGET-CONFIG-B`): комнат на странице (5–200, по умолчанию 50) и «предлагать кнопку в навык» (по умолчанию включено); экран Instance → General и `GET`/`PATCH /api/myrmidon/agent-exchange/feed/settings` без перезапуска (GET — board, PATCH — админ инстанса), env `MYRMIDON_AGENT_EXCHANGE_FEED_*` — принудительное переопределение для инстанса без сохранённых настроек с показом источника каждого значения, ошибка чтения настроек не ломает ленту (дефолты). Модуль `server/src/myrmidon/agent-exchange/`: `feed.ts` (чистая сборка ленты над портом стора), `skill-candidate.ts` (чистая логика действия над портом), `feed-routes.ts`, `feed-settings.ts`, `feed-wiring.ts` (drizzle-стор, компания-скиллы + SKILL-LIFECYCLE, документы задач) | `packages/shared/src/index.ts` (экспорт), `packages/shared/src/validators/instance.ts` + `types/instance.ts` (ключ `agentExchangeFeed`), `server/src/services/instance-settings.ts` (сохранение ключа), `server/src/app.ts` (импорт + монтирование маршрутов), `ui/src/pages/InstanceGeneralSettings.tsx` (панель), `ui/src/App.tsx` (маршрут `company/settings/agent-exchange`), `ui/src/components/access/CompanySettingsNav.tsx` (пункт «Agent exchanges» + ветка `getCompanySettingsTab` + ключ метки) и его вендорский тест `ui/src/components/access/CompanySettingsNav.test.tsx` (пункт в обоих списках вкладок) — все помечены `myrmidon(1.7-AGENT-EXCHANGE-B)`; + наши файлы `packages/shared/src/myrmidon-agent-exchange-feed.ts`, `server/src/myrmidon/agent-exchange/{feed.ts,skill-candidate.ts,feed-routes.ts,feed-settings.ts,feed-wiring.ts}`, `ui/src/components/myrmidon/{AgentExchangeFeedScreen.tsx,AgentExchangeFeedSettingsPanel.tsx,agentExchangeFeedApi.ts}`, доки `docs/myrmidon/guides/agent-exchange-feed.{md,ru.md}` | OPE-4172 (1.7 AGENT-EXCHANGE B): агенты обмениваются опытом вне тикетов, но владелец этого не видит и не может превратить полезный итог в знание команды. Лента закрывает видимость и стоимость, кнопка «в навык» замыкает итог на существующий конвейер одобрений навыков без автопродвижения. Вендорского аналога нет | `server/src/myrmidon/agent-exchange/feed.myrmidon.test.ts` (метка задачи, переданный предел, честная цена «неизвестно»/«бесплатно», суммы страницы, кандидат комнаты, `truncated`), `server/src/myrmidon/agent-exchange/skill-candidate.myrmidon.test.ts` (критерий приёмки: итог → кандидат `state=\"candidate\"` и `promotionRequired: true` с текстом завершителя и происхождением в теле; повторное нажатие идемпотентно; отказы по кодам), `server/src/myrmidon/agent-exchange/feed-settings.myrmidon.test.ts` (прецедентность настройки → env → дефолт, источник значения, битый blob → дефолт, ошибка чтения → дефолты, частичная запись сохраняет показанные значения), `ui/src/components/myrmidon/AgentExchangeFeedScreen.myrmidon.test.tsx` (строки комнаты, цена, кнопка «в навык» вызывает API, состояние «ждёт одобрения», выключенный выключатель), `ui/src/components/myrmidon/AgentExchangeFeedSettingsPanel.myrmidon.test.tsx` (поля, строки источника, гейт сохранения) | Когда вендор даст ленту обсуждений агентов и конвейер «итог → навык» — сверить семантику и удалить метки `myrmidon(1.7-AGENT-EXCHANGE-B)`, модули `feed*.ts`/`skill-candidate.ts`, экран, панель, маршрут, пункт навигации и доки; правки вендорского теста вкладок откатить | (этот PR) |
+
+## settings-en-new
+
+<!-- after: 1.7 — BUDGET-CONFIG B: enforcement mode of spend limits -->
+
+### 1.7 — AGENT-EXCHANGE-B: the owner's feed of discussion rooms and «outcome → skill candidate»
+
+Part B of agent exchanges is the owner's side of the room: a screen
+(Settings → Agent exchanges, `/company/settings/agent-exchange`, current
+interface) that lists the rooms of a company with their outcome, their price
+tag and the link to the task, and one button per summarized room that turns
+the outcome into a **candidate** skill of SKILL-LIFECYCLE. The candidate is
+registered (`setCandidate`) and waits for an approved `skill_promotion`;
+nothing is promoted from this path, and the port the action calls has no
+promote method. Two switches govern the screen and are a live instance
+setting — change them on Instance → General or via `GET`/`PATCH
+/api/myrmidon/agent-exchange/feed/settings` (GET is board, PATCH is
+instance-admin) with no restart; the next read of the feed applies them. The
+environment variables are the forced override for an instance that never
+saved the settings (precedence: stored settings → env → default; the
+effective source of every key is shown on the panel). The feed reads the room
+records of part A only and never writes to a room; the cost it shows is the
+number part A recorded — a room that spent tokens with no price in the model
+catalog reads as "unknown", never as free.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_AGENT_EXCHANGE_FEED_LIMIT` | 1.7-AGENT-EXCHANGE-B | unset (`50`) | How many rooms one read of the feed answers with, newest first (5–200); the screen says when the company has more | Out of range or unreadable — the default; the feed itself keeps working. Full guide: [guides/agent-exchange-feed.md](guides/agent-exchange-feed.md) |
+| `MYRMIDON_AGENT_EXCHANGE_SKILL_CANDIDATE_ENABLED` | 1.7-AGENT-EXCHANGE-B | unset (`true`) | Whether the «to skill» button is offered at all: `1`/`true` offers it, `0`/`false` hides it (the feed stays readable, the action answers `422 skill_candidate_disabled`) | Any other value or unreadable — the default; once saved from the settings panel, the environment stops mattering |

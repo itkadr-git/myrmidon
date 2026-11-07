@@ -3,21 +3,21 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
-import type { AdapterExecutionContext, AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterRuntimeMcpAccess } from "@myrmidon/adapter-utils";
 import {
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
   prepareAdapterExecutionTargetRuntime,
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidon/adapter-utils/execution-target";
 
 // Wrap the staging seam + both sandbox bridges in call-recording spies that
 // still delegate to the real implementations (a runner-backed sandbox test
 // exercises them end-to-end against a local runner). This lets the staging
 // tests assert the exact `runtimeRootDir`/`workspaceLocalDir`/`assets` the
 // engine threads without changing any real behavior for the other tests.
-vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
-  const actual = await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>();
+vi.mock("@myrmidon/adapter-utils/execution-target", async (importActual) => {
+  const actual = await importActual<typeof import("@myrmidon/adapter-utils/execution-target")>();
   return {
     ...actual,
     prepareAdapterExecutionTargetRuntime: vi.fn(actual.prepareAdapterExecutionTargetRuntime),
@@ -2661,7 +2661,7 @@ describe("findAncestorBin", () => {
 
   it("finds the binary in the start directory's own node_modules/.bin", async () => {
     const root = await makeTempRoot();
-    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
+    const packageDir = path.join(root, "node_modules", "@myrmidon", "adapter-utils");
     await fs.mkdir(packageDir, { recursive: true });
     const expectedBin = await writeFakeBin(packageDir, "claude-agent-acp");
 
@@ -2672,7 +2672,7 @@ describe("findAncestorBin", () => {
 
   it("finds the binary hoisted to an ancestor node_modules/.bin", async () => {
     const root = await makeTempRoot();
-    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
+    const packageDir = path.join(root, "node_modules", "@myrmidon", "adapter-utils");
     await fs.mkdir(packageDir, { recursive: true });
     const expectedBin = await writeFakeBin(root, "claude-agent-acp");
 
@@ -2683,7 +2683,7 @@ describe("findAncestorBin", () => {
 
   it("returns null when the binary is not present in any ancestor", async () => {
     const root = await makeTempRoot();
-    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
+    const packageDir = path.join(root, "node_modules", "@myrmidon", "adapter-utils");
     await fs.mkdir(packageDir, { recursive: true });
 
     const resolved = await findAncestorBin(packageDir, "claude-agent-acp");

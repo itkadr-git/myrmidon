@@ -150,6 +150,17 @@ export const myrWsOpenResultSchema = z.object({
   base: z.string().min(1).optional(),
   /** True when the copy already existed (`open` is idempotent). */
   reused: z.boolean(),
+  /** Original full clone retained here after safe legacy conversion. */
+  recoveryPath: z.string().min(1).optional(),
+  /** Original HEAD retained in this ref in the class-D base. */
+  recoveryRef: z.string().min(1).optional(),
+  /**
+   * What `open` found wrong with a reused copy (operation left half-way, unresolved
+   * stages, detached head, branch drift) and did about it. Absent for a clean copy.
+   */
+  recovered: z
+    .array(z.object({ problem: z.string().min(1), action: z.string().min(1), detail: z.string().optional() }))
+    .optional(),
 });
 export type MyrWsOpenResult = z.infer<typeof myrWsOpenResultSchema>;
 
@@ -221,6 +232,7 @@ export type WsDesiredPrState = z.infer<typeof wsDesiredPrStateSchema>;
 
 export const wsDesiredWorkspaceSchema = z.object({
   key: z.string().min(1),
+  id: z.string().min(1).optional(),
   repo: myrWsRepoNameSchema.optional(),
   state: wsDesiredWorkspaceStateSchema,
   since: z.string().datetime({ offset: false }),
@@ -228,6 +240,19 @@ export const wsDesiredWorkspaceSchema = z.object({
   branch: z.string().min(1).optional(),
 });
 export type WsDesiredWorkspace = z.infer<typeof wsDesiredWorkspaceSchema>;
+
+export const wsClosedKeyObjectSchema = z.object({
+  key: myrWsIssueKeySchema,
+  closedAt: z.string().datetime({ offset: false }).optional(),
+  issueId: z.string().min(1).optional(),
+});
+export type WsClosedKeyObject = z.infer<typeof wsClosedKeyObjectSchema>;
+
+export const wsClosedKeyEntrySchema = z.union([
+  myrWsIssueKeySchema,
+  wsClosedKeyObjectSchema,
+]);
+export type WsClosedKeyEntry = z.infer<typeof wsClosedKeyEntrySchema>;
 
 /**
  * Response of `GET /api/myrmidon/bots/me/workspaces` (auth: the bot's
@@ -240,6 +265,9 @@ export const wsDesiredStateSchema = z.object({
     closingMinutes: z.number().int().positive(),
     scratchTtlHours: z.number().int().positive(),
     orphanHours: z.number().int().positive(),
+    npmCacheTtlHours: z.number().int().positive().optional(),
+    uvCacheTtlHours: z.number().int().positive().optional(),
+    terminalOutputTtlHours: z.number().int().positive().optional(),
     /** myrmidon(1.6.5-BOT-DISK-H, rc.9): idle days before a named directory is archived under hard pressure. Optional: an older board omits it (botd uses 7). */
     legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
   }),
@@ -263,6 +291,11 @@ export const wsDesiredStateSchema = z.object({
    * board omits it, and then such directories are never removed.
    */
   closedKeys: z.array(myrWsIssueKeySchema).optional(),
+  /**
+   * myrmidon(1.6.6 DISK, OPE-9673): structured metadata for closed tasks
+   * (key, closedAt, issueId) for safe session retention without relying on updatedAt.
+   */
+  closedTasks: z.array(wsClosedKeyObjectSchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 
@@ -326,6 +359,12 @@ export const wsReportActionSchema = z.object({
 });
 export type WsReportAction = z.infer<typeof wsReportActionSchema>;
 
+/** Stable bot-disk gauges emitted with each report. */
+export const wsDiskReportMetricsSchema = z.object({
+  copies_without_assignee: z.number().int().nonnegative(),
+});
+export type WsDiskReportMetrics = z.infer<typeof wsDiskReportMetricsSchema>;
+
 /** Why a copy does not match the registry/desired state. */
 export const wsForeignSignSchema = z.enum([
   "promisor",
@@ -341,6 +380,12 @@ export const wsReportForeignSchema = z.object({
   sign: wsForeignSignSchema,
 });
 export type WsReportForeign = z.infer<typeof wsReportForeignSchema>;
+
+export const wsReportForeignUidSchema = z.object({
+  path: z.string().min(1).max(500),
+  reason: z.string().min(1).max(500),
+});
+export type WsReportForeignUid = z.infer<typeof wsReportForeignUidSchema>;
 
 /**
  * Body of `POST /api/myrmidon/bots/me/disk-report`. The body is capped at 1 MiB
@@ -358,8 +403,22 @@ export const wsDiskReportSchema = z.object({
   archives: z.array(wsReportArchiveSchema),
   actions: z.array(wsReportActionSchema),
   foreign: z.array(wsReportForeignSchema),
+  foreignUid: wsReportForeignUidSchema.nullable().optional(),
+  sessionPrune: z.object({
+    stateDbBytesBefore: z.number().int().nonnegative().nullable().optional(),
+    stateDbBytesAfter: z.number().int().nonnegative().nullable().optional(),
+    deletedSessions: z.number().int().nonnegative().optional(),
+  }).nullable().optional(),
+  metrics: wsDiskReportMetricsSchema.optional(),
 });
 export type WsDiskReport = z.infer<typeof wsDiskReportSchema>;
+
+export const wsReportSessionPruneSchema = z.object({
+  stateDbBytesBefore: z.number().int().nonnegative().nullable().optional(),
+  stateDbBytesAfter: z.number().int().nonnegative().nullable().optional(),
+  deletedSessions: z.number().int().nonnegative().optional(),
+});
+export type WsReportSessionPrune = z.infer<typeof wsReportSessionPruneSchema>;
 
 /** Answer of the report route; `nextReportSec` paces the next botd pass. */
 export const wsDiskReportResponseSchema = z.object({
@@ -448,15 +507,17 @@ export const runWorkspaceFieldSchema = z.object({
   key: myrWsIssueKeySchema,
   repo: myrWsRepoNameSchema,
   baseRef: myrWsGitBaseRefSchema.optional(),
+  /** Branch of the task's pull request; `myr-ws open --branch` (default `bot/<KEY>`). */
+  branch: myrWsGitBaseRefSchema.optional(),
 });
 export type RunWorkspaceField = z.infer<typeof runWorkspaceFieldSchema>;
 
 /**
  * What the gateway does with the field before starting the model:
- * `myr-ws open <key> <repo> [--base <baseRef>] --json`, then the run starts
+ * `myr-ws open <key> <repo> [--base <baseRef>] [--branch <branch>] --json`, then the run starts
  * with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` and that directory as cwd.
- * Exit codes 3/4/5 never fail the run silently: it starts in `/scratch` with a
- * warning event instead.
+ * Any open failure (exit codes 3/4/5, any other code, timeout, bad output) never fails
+ * the run: it starts in `/scratch` with a warning event instead (OPE-8946).
  */
 export const RUN_WORKSPACE_FALLBACK_DIR = "/scratch";
 
@@ -468,22 +529,34 @@ export const RUN_WORKSPACE_FALLBACK_DIR = "/scratch";
 export const WS_BOT_DISK_SETTING_DEFAULTS = {
   graceClosingMinutes: 30,
   scratchTtlHours: 24,
+  npmCacheTtlHours: 48,
+  uvCacheTtlHours: 168,
+  terminalOutputTtlHours: 24,
   partitionThresholdPercent: 85,
   partitionRefuseOpenPercent: 90,
   partitionCriticalPercent: 95,
+  sessionRetentionDays: 30,
 } as const;
 
-// myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle fields exported
+// myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle fields exported
 // individually, so `myrmidon-bot-disk.ts` validates the same stored object with
 // the same ranges instead of duplicating them (one source of truth).
 export const wsGraceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
 export const wsScratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
+export const wsNpmCacheTtlHoursSchema = z.number().int().min(1).max(24 * 365);
+export const wsUvCacheTtlHoursSchema = z.number().int().min(1).max(24 * 365);
+export const wsTerminalOutputTtlHoursSchema = z.number().int().min(1).max(24 * 365);
 export const wsPartitionPercentSchema = z.number().int().min(50).max(100);
+export const wsSessionRetentionDaysSchema = z.number().int().min(1).max(3650);
 
 export const wsBotDiskSettingsSchema = z
   .object({
     graceClosingMinutes: wsGraceClosingMinutesSchema.optional(),
     scratchTtlHours: wsScratchTtlHoursSchema.optional(),
+    npmCacheTtlHours: wsNpmCacheTtlHoursSchema.optional(),
+    uvCacheTtlHours: wsUvCacheTtlHoursSchema.optional(),
+    terminalOutputTtlHours: wsTerminalOutputTtlHoursSchema.optional(),
+    sessionRetentionDays: wsSessionRetentionDaysSchema.optional(),
     legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
     partitionThresholdPercent: wsPartitionPercentSchema.optional(),
     partitionRefuseOpenPercent: wsPartitionPercentSchema.optional(),
@@ -495,6 +568,9 @@ export const wsBotDiskSettingsSchema = z
     /** myrmidon(1.6.5-BOT-DISK-H5c): seconds between two passes of the in-container
      *  disk daemon (botd). Compiled into the bot profile; absent = the in-image default. */
     botdIntervalSec: z.number().int().min(30).max(24 * 60 * 60).optional(),
+    hermesPruneEnabled: z.boolean().optional(),
+    hermesPruneDays: z.number().int().min(1).max(365).optional(),
+    gitMigrationEnabled: z.boolean().optional(),
   })
   .passthrough();
 export type WsBotDiskSettings = z.infer<typeof wsBotDiskSettingsSchema>;
@@ -525,8 +601,12 @@ export const WS_PROFILE_ENV = {
   botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
   graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
   scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
+  sessionRetentionDays: "MYRMIDON_BOTD_SESSION_RETENTION_DAYS",
   boardUrl: "MYRMIDON_BOTD_BOARD_URL",
   boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+  hermesPruneEnabled: "MYRMIDON_HERMES_PRUNE_ENABLED",
+  hermesPruneDays: "MYRMIDON_HERMES_PRUNE_DAYS",
+  gitMigrationEnabled: "MYRMIDON_GIT_MIGRATION_ENABLED",
 } as const;
 
 /** The value {@link WS_PROFILE_ENV.boardKeyEnv} always carries: the board key

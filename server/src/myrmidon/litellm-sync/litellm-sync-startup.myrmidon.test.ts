@@ -11,7 +11,7 @@
 // - the allowlist pass runs after a company's reconciliation.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { startLitellmModelReconciliation, type LitellmReconcilePorts } from "./startup-reconciler.js";
 
 const ENABLED_ENV = {

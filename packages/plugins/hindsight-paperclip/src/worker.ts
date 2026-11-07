@@ -1,4 +1,4 @@
-import { runWorker } from "@paperclipai/plugin-sdk";
+import { runWorker } from "@myrmidon/plugin-sdk";
 import { createHindsightPlugin } from "./plugin.js";
 
 const plugin = createHindsightPlugin();

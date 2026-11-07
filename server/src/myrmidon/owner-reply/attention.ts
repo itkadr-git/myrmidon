@@ -8,8 +8,8 @@
 // the same "computed on the fly" shape as the execution-hold cards.
 
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { issueThreadInteractions, issues, type Db } from "@paperclipai/db";
-import { isOwnerDecisionAudience } from "@paperclipai/shared";
+import { issueThreadInteractions, issues, type Db } from "@myrmidon/db";
+import { isOwnerDecisionAudience } from "@myrmidon/shared";
 import { OWNER_CARD_STALE_AGE_MS } from "./settings.js";
 
 export interface OwnerPendingCardsSummary {

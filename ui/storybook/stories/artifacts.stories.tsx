@@ -15,8 +15,8 @@ import { Input } from "@/components/ui/input";
 import { cn, formatDate } from "@/lib/utils";
 import type { CompanyArtifact } from "@/api/artifacts";
 import {
-  ARTIFACT_GROUP_OPTIONS,
-  ARTIFACT_KIND_FILTERS,
+  artifactGroupOptions,
+  artifactKindFilters,
   artifactGroupByLabel,
 } from "@/pages/Artifacts";
 
@@ -29,8 +29,8 @@ import {
  * screenshots without booting a live backend.
  */
 
-type StoryArtifactKindFilter = (typeof ARTIFACT_KIND_FILTERS)[number]["value"];
-type StoryArtifactGroupBy = (typeof ARTIFACT_GROUP_OPTIONS)[number]["value"];
+type StoryArtifactKindFilter = ReturnType<typeof artifactKindFilters>[number]["value"];
+type StoryArtifactGroupBy = ReturnType<typeof artifactGroupOptions>[number]["value"];
 
 const SAMPLE_IMAGE =
   "data:image/svg+xml;utf8," +
@@ -208,7 +208,7 @@ function ArtifactsToolbar({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
             <DropdownMenuLabel>Group by</DropdownMenuLabel>
-            {ARTIFACT_GROUP_OPTIONS.map(({ value, label }) => (
+            {artifactGroupOptions().map(({ value, label }) => (
               <DropdownMenuItem
                 key={value}
                 aria-selected={groupBy === value}
@@ -223,7 +223,7 @@ function ArtifactsToolbar({
         </DropdownMenu>
 
         <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Filter artifacts by type">
-          {ARTIFACT_KIND_FILTERS.map((filter) => (
+          {artifactKindFilters().map((filter) => (
             <button
               key={filter.value}
               type="button"

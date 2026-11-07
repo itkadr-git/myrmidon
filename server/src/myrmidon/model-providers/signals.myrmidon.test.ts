@@ -5,7 +5,7 @@
 // and in-memory registry.
 
 import { beforeEach, describe, expect, it } from "vitest";
-import type { PoolAccountChannelView } from "@paperclipai/shared";
+import type { PoolAccountChannelView } from "@myrmidon/shared";
 import {
   clearPoolAccountSignals,
   codexPoolBannedDedupKey,

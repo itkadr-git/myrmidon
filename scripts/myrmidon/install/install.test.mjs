@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { composeEnvVars, composeInterpolation } from "./compose-check.mjs";
 
@@ -17,10 +17,41 @@ const A = `sha256:${"a".repeat(64)}`;
 const B = `sha256:${"b".repeat(64)}`;
 const C = `sha256:${"c".repeat(64)}`;
 
+const cleanups = new Set();
+
+export function cleanupSandbox(sb) {
+  const dir = typeof sb === "string" ? sb : sb?.dir;
+  if (dir && fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    cleanups.delete(dir);
+  }
+}
+
+afterEach(() => {
+  for (const dir of cleanups) {
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+  cleanups.clear();
+});
+
 const FAKE_DOCKER = `#!/usr/bin/env bash
+if [[ "$1" == "compose" ]]; then
+  shift
+  while [[ "$1" == "--project-name" || "$1" == "--project-directory" || "$1" == "--env-file" || "$1" == "-f" ]]; do shift 2; done
+elif [[ "$1" == "--project-name" ]]; then
+  shift 2
+fi
 printf 'docker %s\\n' "$*" >> "$SANDBOX/calls.log"
 case "$*" in
   "compose version") echo "Docker Compose version v2.30.0"; exit 0 ;;
+  *"config"*) exit 0 ;;
+  *"pull --quiet"*) exit 0 ;;
+  *"up -d"*) touch "$SANDBOX/up"; exit 0 ;;
+  *"down"*) rm -f "$SANDBOX/up"; exit 0 ;;
   *"network inspect"*) exit 0 ;;
   *"network create"*) exit 0 ;;
   *pg_dump*) echo "PGDUMP-FAKE-CONTENT"; exit 0 ;;
@@ -74,7 +105,9 @@ exit 0
 const FAKE_NOOP = "#!/usr/bin/env bash\nexit 0\n";
 
 function sandbox({ tag = "myr-v1.6.6", board = A, up = false, osRelease = null } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-install-test-"));
+  const scratchRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
+  const dir = fs.mkdtempSync(path.join(scratchRoot, "myrmidon-install-test-"));
+  cleanups.add(dir);
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
   for (const [name, body] of [
@@ -93,16 +126,22 @@ function sandbox({ tag = "myr-v1.6.6", board = A, up = false, osRelease = null }
 }
 
 function run(sb, args = [], env = {}) {
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.BASH_ENV;
+  delete cleanEnv.ENV;
   return spawnSync("bash", [INSTALL, "--dir", sb.opt, ...args], {
     cwd: sb.dir,
     encoding: "utf8",
     env: {
-      ...process.env,
-      PATH: `${sb.bin}:${process.env.PATH}`,
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(PAPERCLIP|MYRMIDON|POSTGRES|DATABASE_URL|BETTER_AUTH_SECRET|JWT_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET|PAPERCLIP_INSTALL_DATABASE_URL)/.test(key))),
+      PATH: `${sb.bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      BASH_ENV: "",
       SANDBOX: sb.dir,
       MYRMIDON_INSTALL_SKIP_ROOT_CHECK: "1",
+      MYRMIDON_INSTALL_SKIP_DOCKER_INSTALL: "1",
       MYRMIDON_INSTALL_LANG: "en",
       MYRMIDON_INSTALL_HEALTH_TIMEOUT: "5",
+      MYR_LICENSE_INSTANCE_ID: "test-instance-id",
       ...env,
     },
   });
@@ -110,6 +149,15 @@ function run(sb, args = [], env = {}) {
 
 const calls = (sb) => (fs.existsSync(path.join(sb.dir, "calls.log")) ? fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8") : "");
 const envFile = (sb) => fs.readFileSync(path.join(sb.opt, "deploy.env"), "utf8");
+
+it("dry-run renders and validates without pulling or starting services", () => {
+  const sb = sandbox();
+  const result = run(sb, ["--dry-run"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /Dry run complete/);
+  assert.ok(fs.existsSync(path.join(sb.opt, "compose.yml")));
+  assert.doesNotMatch(calls(sb), /pull|up -d/);
+});
 
 const REPO = path.join(HERE, "..", "..", "..");
 
@@ -123,6 +171,7 @@ describe("install.sh", () => {
     assert.match(env, /MYRMIDON_VERSION=1\.6\.6/);
     assert.match(env, /POSTGRES_PASSWORD=[0-9a-f]{48}/);
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
+    assert.match(env, /MYR_LICENSE_INSTANCE_ID=test-instance-id$/m);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
     // The daemon socket is root:docker 0660 and dockergate runs as the nonroot
     // user 65532: without the socket's group the container dies on
@@ -142,6 +191,9 @@ describe("install.sh", () => {
     );
     const config = JSON.parse(fs.readFileSync(path.join(sb.opt, "dockergate", "config.json"), "utf8"));
     assert.deepEqual(config.images, [`ghcr.io/itkadr-git/myrmidon-hermes@${C}`]);
+    assert.match(compose, /container_name:\s*myrmidon-board/, "fresh installs must use the branded board container name");
+    assert.match(compose, /myrmidon-bots:\s*\n\s+aliases:[\s\S]{0,600}- paperclip-server-1/, "legacy DNS name stays available on the bot network");
+    assert.equal(config.caller.container, "myrmidon-board", "dockergate tracks the renamed board container");
     assert.equal(config.caller.mode, "container-main-process");
     assert.ok(calls(sb).includes("pull --quiet"));
     assert.ok(calls(sb).includes("up -d"));
@@ -151,6 +203,25 @@ describe("install.sh", () => {
     const urls = fs.readFileSync(path.join(sb.dir, "curl.log"), "utf8");
     assert.ok(urls.includes("/releases/latest/download/release-components.json"), urls);
     assert.ok(!urls.includes("api.github.com"), `no anonymous API call expected, got: ${urls}`);
+    // The board refuses every Host header it was not told about, the machine's
+    // own address included, so the allow list travels with the install.
+    assert.match(env, /MYRMIDON_ALLOWED_HOSTNAMES=\S+/);
+    assert.match(compose, /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/);
+  });
+
+  it("opens the board by IP and names that address in the allow list", () => {
+    const sb = sandbox();
+    // The address the installer prints has to reach the board on the first
+    // click: a bare hostname only resolves for whoever has DNS for it.
+    const r = run(sb, [], { MYRMIDON_ALLOWED_HOSTS: "board.test,203.0.113.7" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(envFile(sb), /MYRMIDON_ALLOWED_HOSTNAMES=board\.test,203\.0\.113\.7/);
+    assert.match(envFile(sb), /MYRMIDON_PUBLIC_URL=http:\/\/203\.0\.113\.7:3100/);
+    assert.match(r.stdout, /Address:\s+http:\/\/203\.0\.113\.7:3100/);
+    assert.match(
+      fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8"),
+      /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/,
+    );
   });
 
   it("refuses a manifest that does not name a board digest", () => {
@@ -314,6 +385,7 @@ describe("install.sh", () => {
     assert.ok(compose.includes("postgres://") && compose.includes("@db:5432/"), "the board's database lives on the shared server");
 
     assert.doesNotMatch(compose, /image: postgres:/, "no literal postgres:17 image in the generated compose");
+    assert.doesNotMatch(compose, /paperclip-data:/i, "clean installs do not generate legacy Paperclip volume names");
 
     const init = fs.readFileSync(path.join(sb.opt, "db-init", "01-shared-roles.sh"), "utf8");
     assert.equal(fs.statSync(path.join(sb.opt, "db-init", "01-shared-roles.sh")).mode & 0o755, 0o755);
@@ -370,6 +442,52 @@ describe("install.sh", () => {
     assert.doesNotMatch(fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8"), /^  db:$/m);
   });
 
+  it("preserves an existing qualified PostgreSQL image and data configuration", () => {
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const composePath = path.join(sb.opt, "compose.yml");
+    let compose = fs.readFileSync(composePath, "utf8");
+    compose = `services:\n  db:\n    image: registry.example.internal/team/postgres-custom:17.4\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n  server:\n    volumes:\n      - /srv/myrmidon-state:/var/lib/myrmidon\n${compose}`;
+    fs.writeFileSync(composePath, compose);
+    const envPath = path.join(sb.opt, "deploy.env");
+    const envBefore = fs.readFileSync(envPath, "utf8");
+    const secretsBefore = envBefore.split("\n").filter((line) => /PASSWORD=|SECRET=/.test(line));
+    const volumeBefore = compose.match(/pgdata:[^\n]*/)[0];
+    const dataPathBefore = compose.match(/\/srv\/myrmidon-state[^\n]*/)?.[0];
+    const databaseUrlBefore = envBefore.match(/^MYRMIDON_DATABASE_URL=.*$/m)?.[0];
+
+    fs.writeFileSync(path.join(sb.dir, "up"), "");
+    const updated = run(sb);
+    assert.equal(updated.status, 0, updated.stderr);
+
+    const envAfter = fs.readFileSync(envPath, "utf8");
+    const composeAfter = fs.readFileSync(composePath, "utf8");
+    assert.ok(composeAfter.includes("registry.example.internal/team/postgres-custom:17.4"));
+    assert.equal(composeAfter.match(/pgdata:[^\n]+/)[0].split("\\n")[0], volumeBefore);
+    assert.ok(dataPathBefore && composeAfter.includes(dataPathBefore), "the bind mount path stays unchanged");
+    for (const secret of secretsBefore) assert.ok(envAfter.includes(secret), "preserves generated secret values");
+    assert.ok(envAfter.includes("MYRMIDON_DB_PROFILE=internal"));
+    if (databaseUrlBefore) assert.ok(envAfter.includes(databaseUrlBefore), "preserves the database connection setting");
+  });
+
+  it("detects qualified legacy PostgreSQL references", () => {
+    const sb = sandbox();
+    const composePath = path.join(sb.opt, "compose.yml");
+    fs.mkdirSync(sb.opt, { recursive: true });
+    fs.writeFileSync(composePath, "services:\n  db:\n    image: registry.example.internal/team/postgres:17\nvolumes:\n  pgdata:\n    name: paperclip_pgdata\n  myrmidon-data:\n");
+    const legacyUrl = `postgresql://${"legacy-role"}:${"preserved"}@db.example:5432/app`;
+    const envContents = `MYRMIDON_DB_PROFILE=keep\nMYRMIDON_DB_IMAGE=registry.example.internal/team/postgres:17\nMYRMIDON_DATABASE_URL=${legacyUrl}\nPOSTGRES_PASSWORD=legacy-secret\n`;
+    fs.writeFileSync(path.join(sb.opt, "deploy.env"), envContents);
+    fs.writeFileSync(path.join(sb.opt, ".myrmidon-install"), "myrmidon\n");
+    const r = run(sb);
+    assert.equal(r.status, 0, r.stderr);
+    const result = fs.readFileSync(composePath, "utf8");
+    assert.ok(result.includes("registry.example.internal/team/postgres:17") || result.includes("MYRMIDON_DB_IMAGE=registry.example.internal/team/postgres:17"));
+    assert.ok(result.includes("paperclip_pgdata"));
+    assert.ok(result.includes("myrmidon-data"));
+    assert.ok(fs.readFileSync(path.join(sb.opt, "deploy.env"), "utf8").includes("MYRMIDON_DB_PROFILE=keep"));
+  });
+
   it("refuses an external database URL that is not a postgres connection string", () => {
     const sb = sandbox();
     const r = run(sb, ["--database-url", "http://db.internal/paperclip"]);
@@ -417,6 +535,48 @@ describe("install.sh", () => {
     );
   });
 
+  it("gives the board the one shared license directory, read-write, at the module path", () => {
+    // The antigravity adapter runs inside the board and reads
+    // /etc/myrmidon-license/license.key there; host modules read the same host
+    // file. The licensing screen must write that one file, so the board mounts
+    // the host directory read-write and points MYR_LICENSE_PATH at it.
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const env = envFile(sb);
+    assert.match(env, /^MYRMIDON_LICENSE_DIR=\/etc\/myrmidon-license$/m);
+    const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.match(compose, /^      MYR_LICENSE_PATH: "\/etc\/myrmidon-license\/license\.key"$/m);
+    assert.match(compose, /^      - \$\{MYRMIDON_LICENSE_DIR:-\/etc\/myrmidon-license\}:\/etc\/myrmidon-license$/m);
+    const { errors, interpolated } = composeInterpolation(compose, composeEnvVars(env));
+    assert.deepEqual(errors, []);
+    assert.ok(interpolated.includes("- /etc/myrmidon-license:/etc/myrmidon-license\n"), "mounted read-write, not :ro");
+
+    const custom = sandbox();
+    assert.equal(run(custom, [], { MYRMIDON_LICENSE_DIR: "/srv/licenses" }).status, 0);
+    assert.match(envFile(custom), /^MYRMIDON_LICENSE_DIR=\/srv\/licenses$/m);
+  });
+
+  it("stops when the license issuing key sits in the license directory", () => {
+    for (const make of [
+      (d) => fs.mkdirSync(path.join(d, "issuer")),
+      (d) => fs.writeFileSync(path.join(d, "signing.pem"), "x"),
+      (d) => fs.writeFileSync(path.join(d, "key_ed25519"), "x"),
+    ]) {
+      const sb = sandbox();
+      const licDir = path.join(sb.dir, "lic");
+      fs.mkdirSync(licDir);
+      make(licDir);
+      const result = run(sb, ["--dry-run"], { MYRMIDON_LICENSE_DIR: licDir });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ключ выпуска лежит в каталоге лицензии/);
+    }
+    const clean = sandbox();
+    const licDir = path.join(clean.dir, "lic");
+    fs.mkdirSync(licDir);
+    fs.writeFileSync(path.join(licDir, "license.key"), "MYR1.x\n");
+    assert.equal(run(clean, ["--dry-run"], { MYRMIDON_LICENSE_DIR: licDir }).status, 0);
+  });
+
   it("mounts the database volume at the path the PostgreSQL 18 image declares", () => {
     // PG18 keeps the cluster at /var/lib/postgresql/18/docker and the image
     // declares VOLUME /var/lib/postgresql. Mounting .../data would leave the
@@ -457,5 +617,24 @@ describe("install.sh", () => {
     });
     assert.equal(piped.status, 0, piped.stderr);
     assert.match(piped.stdout, /--database-url/);
+  });
+
+  it("sandbox cleanup removes created temporary directories", () => {
+    const sb = sandbox();
+    assert.ok(fs.existsSync(sb.dir), "sandbox directory exists before cleanup");
+    cleanupSandbox(sb);
+    assert.ok(!fs.existsSync(sb.dir), "sandbox directory is removed after cleanup");
+  });
+
+  it("install.sh cleans up temporary manifest file on completion", () => {
+    const sb = sandbox();
+    // install.sh creates its manifest with a bare `mktemp`, which lands in
+    // $TMPDIR. Give this run its own empty TMPDIR and inspect only that: the
+    // shared TMPDIR also receives `tmp.*` files from other tests running in
+    // parallel, so a before/after comparison there reports their files as a leak.
+    const ownTmp = fs.mkdtempSync(path.join(sb.dir, "tmp-"));
+    const r = run(sb, [], { TMPDIR: ownTmp });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(fs.readdirSync(ownTmp), [], "install.sh must not leave temporary manifest files behind");
   });
 });

@@ -4,7 +4,7 @@ import {
   type LowTrustBoundary,
   LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
   LOW_TRUST_REVIEW_PRESET,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import {
   isIssueWithinLowTrustBoundary,

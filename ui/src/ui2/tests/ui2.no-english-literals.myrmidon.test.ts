@@ -30,7 +30,8 @@ function walk(dir: string, out: string[] = []): string[] {
     if (statSync(full).isDirectory()) {
       if (entry === "tests") continue;
       walk(full, out);
-    } else if (/\.tsx$/.test(entry)) {
+    } else if (/\.tsx$/.test(entry) && !/\.test\.tsx$/.test(entry)) {
+      // Test files are not shipped UI: their JSX fixtures are not user-visible literals.
       out.push(full);
     }
   }

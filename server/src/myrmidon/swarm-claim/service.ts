@@ -10,7 +10,7 @@
 // is exactly this plus the sweep).
 //
 // The per-agent ceiling and the P0 order are NOT re-implemented here: they are
-// decisions of the shared contract (`@paperclipai/shared`) applied through
+// decisions of the shared contract (`@myrmidon/shared`) applied through
 // `nextQueueTaskForAgent`, so the supervisor view and the core cannot disagree.
 //
 // The wake goes through the existing `enqueueWakeup` admission path (the same
@@ -18,7 +18,7 @@
 // this module re-deriving any of them.
 
 import { and, eq } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
+import { agents, issues, type Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
@@ -33,7 +33,7 @@ import {
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
@@ -53,6 +53,11 @@ import {
   releaseClaimsForIssue,
 } from "./store.js";
 import type { swarmClaimSettingsService } from "./settings.js";
+import type { SwarmMatcherDeps } from "./matcher.js";
+import type {
+  SwarmAgentAvailability,
+  SwarmTaskBudgetBlock,
+} from "./availability.js";
 
 /** The wake admission path (heartbeat.ts) — reuses every limit and gate. */
 export type SwarmClaimEnqueueWakeup = (
@@ -95,6 +100,19 @@ export interface SwarmClaimServicePorts {
     entityId: string;
     details: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * The periodic matcher's gates, forwardable by a test that does not stand up
+   * the wake-layer dependencies (maintenance, budgets, the cooling rule's own
+   * tables). Absent, the matcher reads the real ones per call. The sweeper hands
+   * them through `matcherDeps` unchanged — the same seam the event matcher uses.
+   */
+  isIssueCoolingDown?: SwarmMatcherDeps["isIssueCoolingDown"];
+  coolingSettings?: SwarmMatcherDeps["coolingSettings"];
+  isAgentAvailable?: SwarmAgentAvailability;
+  isTaskBudgetBlocked?: SwarmTaskBudgetBlock;
+  resolveTaskCaste?: SwarmMatcherDeps["resolveTaskCaste"];
+  agentNests?: SwarmMatcherDeps["agentNests"];
+  pickAgentForTask?: SwarmMatcherDeps["pickAgentForTask"];
   env?: Record<string, string | undefined>;
 }
 
@@ -194,12 +212,27 @@ export async function claimNextTaskForAgent(
   ]);
   const liveClaims = [...companyClaims, ...agentClaims];
 
+  const activeByProject: Record<string, number> = {};
+  const activeByCaste: Record<string, number> = {};
+  const candidateMap = new Map(candidates.map((c) => [c.issueId, c]));
+  for (const claim of liveClaims) {
+    const candidate = candidateMap.get(claim.issueId);
+    if (candidate?.projectId) {
+      activeByProject[candidate.projectId] = (activeByProject[candidate.projectId] ?? 0) + 1;
+    }
+    if (candidate?.casteId) {
+      activeByCaste[candidate.casteId] = (activeByCaste[candidate.casteId] ?? 0) + 1;
+    }
+  }
+
   const next = nextQueueTaskForAgent({
     candidates,
     liveClaims,
     activeTasks: agentClaims.length,
     settings: effectiveSettings,
     now,
+    activeByProject,
+    activeByCaste,
   });
   if (!next) {
     // Distinguish "nothing to take" from "not allowed to take".
@@ -210,6 +243,8 @@ export async function claimNextTaskForAgent(
         activeTasks: 0,
         settings: effectiveSettings,
         now,
+        activeByProject,
+        activeByCaste,
       });
       if (bareQueue) return { claim: null, reason: "limit_reached" };
     }

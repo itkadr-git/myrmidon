@@ -22,6 +22,8 @@ export interface InstanceBotSettings {
   hindsightUrl: string;
   /** Base URL bots use to reach the LLM gateway. */
   llmBaseUrl: string;
+  /** Board address bots use to reach the control plane from this site. */
+  boardAddress?: string;
   /** Directory bot volumes live under ON THE MACHINE THE BOT RUNS ON. */
   volumeRoot: string;
   /** Docker network the bot's container joins on its own machine. */
@@ -31,6 +33,8 @@ export interface InstanceBotSettings {
   /** Name a bot container resolves the board by (docker `--add-host` target),
    *  i.e. the hostname the board's own allowlist accepts. */
   boardHost: string;
+  /** MCP endpoints reachable from the bot's host. */
+  mcpEndpoints?: readonly string[];
 }
 
 /** The settings a bot actually gets, after its host's overrides. */
@@ -51,11 +55,27 @@ export function effectiveBotSettings(
   return {
     hindsightUrl: host.hindsightUrl ?? instanceWide.hindsightUrl,
     llmBaseUrl: host.llmBaseUrl ?? instanceWide.llmBaseUrl,
+    boardAddress: host.boardAddress ?? instanceWide.boardAddress,
     volumeRoot: host.volumeRoot ?? instanceWide.volumeRoot,
     network: host.network ?? instanceWide.network,
     imageAllowlist: host.imageAllowlist ?? instanceWide.imageAllowlist,
     boardHost: host.boardExtraHost ?? instanceWide.boardHost,
+    mcpEndpoints: host.mcpEndpoints ?? instanceWide.mcpEndpoints,
   };
+}
+
+export type FleetGatewaySource = "registry" | "env";
+
+export interface FleetGatewayUrlOptions {
+  /**
+   * Source of the fleet host:
+   * - "registry": site from the registry, allows https:// fleetd URL.
+   * - "env": host from MYRMIDON_FLEET_HOSTS, requires http:// fleetd URL.
+   * Defaults to "env".
+   */
+  source?: FleetGatewaySource;
+  /** Explicit override to allow https:// fleetd URLs. */
+  allowHttps?: boolean;
 }
 
 /**
@@ -66,17 +86,38 @@ export function effectiveBotSettings(
  * `BotContainerStatus.gatewayPort`, because only fleetd knows which port it
  * allocated. A missing port is an error, never a guessed default: pointing the
  * card at the wrong port would silently break the bot's runs.
+ *
+ * For a remote site enrolled in the registry (/companies/:id/fleet/sites), fleetd
+ * is reached over mTLS (`https://...` or `http://...`), while the bot's Hermes gateway
+ * on that site listens on plain HTTP (`gatewayBindIp`, ports 18700-18799).
+ * For legacy `MYRMIDON_FLEET_HOSTS` on the internal network, fleetd URL must be `http://`.
  */
-export function fleetGatewayApiBaseUrl(fleetdUrl: string, gatewayPort: number | undefined): string {
+export function fleetGatewayApiBaseUrl(
+  fleetdUrl: string,
+  gatewayPort: number | undefined,
+  options?: FleetGatewayUrlOptions | FleetGatewaySource,
+): string {
+  if (!fleetdUrl) throw new Error("fleet host URL is required for gateway routing");
   if (gatewayPort === undefined) {
     throw new Error("fleetd did not report a gateway port for this bot; the card cannot be pointed at it");
   }
   if (!Number.isInteger(gatewayPort) || gatewayPort <= 0 || gatewayPort > 65535) {
     throw new Error(`fleetd reported an invalid gateway port: ${JSON.stringify(gatewayPort)}`);
   }
+  const source = typeof options === "string" ? options : options?.source;
+  const allowHttps =
+    typeof options === "object" && typeof options?.allowHttps === "boolean"
+      ? options.allowHttps
+      : source === "registry";
   const url = new URL(fleetdUrl);
-  if (url.protocol !== "http:") {
-    throw new Error(`fleetd url must be http:// (got ${url.protocol}//)`);
+  if (allowHttps) {
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error(`fleetd url must be http:// or https:// (got ${url.protocol}//)`);
+    }
+  } else {
+    if (url.protocol !== "http:") {
+      throw new Error(`fleetd url must be http:// (got ${url.protocol}//)`);
+    }
   }
   return `http://${url.hostname}:${gatewayPort}`;
 }

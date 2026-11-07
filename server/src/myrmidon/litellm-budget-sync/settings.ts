@@ -11,16 +11,16 @@
 // override (never a default source); every response names where the value
 // came from ("settings" / "env" / "default").
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings } from "@paperclipai/db";
+import { instanceSettings } from "@myrmidon/db";
 import {
   BUDGET_PROJECTION_COMPANIES_KEY,
   budgetProjectionSettingsSchema,
   normalizeBudgetProjectionSettings,
   type BudgetProjectionSettingSource,
   type BudgetProjectionStoredSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** Forced override of the sweep interval (seconds); env is never the default. */
 export const BUDGET_PROJECTION_SWEEP_INTERVAL_ENV = "MYRMIDON_LITELLM_BUDGET_SYNC_INTERVAL_SEC";

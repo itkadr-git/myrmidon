@@ -17,7 +17,7 @@ import {
   releaseTagMatches,
   runPriorityWeight,
   type RunPrioritySettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   compareRunsByPriority,
   rankQueuedRuns,

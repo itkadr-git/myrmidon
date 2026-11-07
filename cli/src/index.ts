@@ -1,8 +1,9 @@
 import { registerEmailCommands } from "./commands/client/email.js";
 import { Command } from "commander";
-import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
+import { warnIfUnsupportedNodeVersion } from "@myrmidon/shared/node-version";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
+import { geoCheckCommand } from "./commands/geo-check.js";
 import { envCommand } from "./commands/env.js";
 import { channelsCommand } from "./commands/channels.js";
 import { configure } from "./commands/configure.js";
@@ -11,6 +12,8 @@ import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
+import { registerMyrmidonMigrateCommand } from "./commands/myrmidon-migrate.js";
+import { registerMyrmidonSchemaDiffCommand } from "./commands/myrmidon-schema-diff.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
@@ -29,6 +32,7 @@ import { registerSkillsCommands } from "./commands/client/skills.js";
 import { registerTeamCommands } from "./commands/client/teams.js";
 import { applyDataDirOverride, type DataDirOptionLike } from "./config/data-dir.js";
 import { loadPaperclipEnvFile } from "./config/env.js";
+import { PRODUCT_NAME } from "./myrmidon-product.js";
 import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
@@ -46,6 +50,7 @@ import { registerManagedAgentCommands } from "./commands/managed-agent.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
 import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
+import { warnIfLegacyBinaryName } from "./legacy-bin.js";
 import { installCommand } from "./commands/install.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { updateCommand } from "./commands/update.js";
@@ -59,20 +64,23 @@ import {
   type TestDriveOptions,
 } from "./commands/test-drive.js";
 
+// myrmidon(DB4): the "paperclipai" binary stays as a deprecated synonym.
+warnIfLegacyBinaryName();
+
 const program = new Command();
-const DATA_DIR_OPTION_HELP =
-  "Paperclip data directory root (isolates state from ~/.paperclip)";
+// myrmidon(B1b): help text shows the product name; the vendor path stays.
+const DATA_DIR_OPTION_HELP = `${PRODUCT_NAME} data directory root (isolates state from ~/.paperclip)`;
 
 program.enablePositionalOptions();
 
 program
-  .name("paperclipai")
-  .description("Paperclip CLI — setup, diagnose, and configure your instance")
+  .name("myrmidon")
+  .description(`${PRODUCT_NAME} CLI — setup, diagnose, and configure your instance`)
   .version(cliVersion);
 
 program
   .command("install")
-  .description("Install Paperclip into a managed per-user CLI store")
+  .description(`Install ${PRODUCT_NAME} into a managed per-user CLI store`)
   .option("--canary", "Install the npm canary channel")
   .option("--version <version>", "Install an exact published npm version")
   .option("--ref <ref>", "Install a GitHub branch, tag, or commit SHA")
@@ -88,7 +96,7 @@ program
 program
   .command("update")
   .alias("upgrade")
-  .description("Check, update, or roll back the Paperclip CLI")
+  .description(`Check, update, or roll back the ${PRODUCT_NAME} CLI`)
   .option("--latest", "Switch to the latest stable channel")
   .option("--canary", "Switch to the canary channel")
   .option("--version <version>", "Install an exact published version")
@@ -134,12 +142,12 @@ program
   .option("-y, --yes", "Accept quickstart defaults (trusted local loopback unless --bind is set) and start immediately", false)
   .option("--install-service", "Install and start the background service after onboarding")
   .option("--no-install-service", "Do not install or suggest the background service")
-  .option("--run", "Start Paperclip immediately after saving config", false)
+  .option("--run", `Start ${PRODUCT_NAME} immediately after saving config`, false)
   .action(onboard);
 
 program
   .command("doctor")
-  .description("Run diagnostic checks on your Paperclip setup")
+  .description(`Run diagnostic checks on your ${PRODUCT_NAME} setup`)
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("--repair", "Attempt to repair issues automatically")
@@ -147,6 +155,26 @@ program
   .option("-y, --yes", "Skip repair confirmation prompts")
   .action(async (opts) => {
     await doctor(opts);
+  });
+
+program
+  .command("geo-check")
+  .description("Validate standby site readiness for HA-GEO deployment")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--pg-host <host>", "PostgreSQL host to check (default: 127.0.0.1)")
+  .option("--pg-port <port>", "PostgreSQL port to check (default: 5432)")
+  .option("--litellm-host <host>", "LiteLLM host to check (default: 127.0.0.1)")
+  .option("--litellm-port <port>", "LiteLLM port to check (default: 4000)")
+  .option("--secrets <secrets>", "Comma-separated required secret names")
+  .option("--mirror-config <path>", "Path to LiteLLM mirror config file")
+  .option("--min-os-major <major>", "Minimum OS major version (default: 22 / debian 12 / ubuntu 22)")
+  .option("--min-docker-major <major>", "Minimum Docker major version (default: 24)")
+  .option("--min-pg-major <major>", "Minimum PostgreSQL major version (default: 14)")
+  .option("--timeout <ms>", "TCP port check timeout in milliseconds (default: 2000)")
+  .option("--json", "Print output in JSON format")
+  .action(async (opts) => {
+    await geoCheckCommand(opts);
   });
 
 program
@@ -195,7 +223,7 @@ program
 
 const run = program
   .command("run")
-  .description("Bootstrap local setup (onboard + doctor) and run Paperclip")
+  .description(`Bootstrap local setup (onboard + doctor) and run ${PRODUCT_NAME}`)
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("-i, --instance <id>", "Local instance id (default: default)")
@@ -218,7 +246,7 @@ heartbeat
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("--context <path>", "Path to CLI context file")
   .option("--profile <name>", "CLI context profile name")
-  .option("--api-base <url>", "Base URL for the Paperclip server API")
+  .option("--api-base <url>", `Base URL for the ${PRODUCT_NAME} server API`)
   .option("--api-key <token>", "Bearer token for agent-authenticated calls")
   .option(
     "--source <source>",
@@ -260,6 +288,8 @@ registerSecretCommands(program);
 registerSkillsCommands(program);
 registerTeamCommands(program);
 registerWorktreeCommands(program);
+registerMyrmidonMigrateCommand(program);
+registerMyrmidonSchemaDiffCommand(program);
 registerEnvLabCommands(program);
 registerPluginCommands(program);
 

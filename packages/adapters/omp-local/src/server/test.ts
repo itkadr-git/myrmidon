@@ -2,13 +2,13 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   asString,
   asStringArray,
   parseObject,
   ensurePathInEnv,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   maybeRunSandboxInstallCommand,
@@ -16,7 +16,7 @@ import {
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidon/adapter-utils/execution-target";
 import { discoverOmpModelsCached } from "./models.js";
 import { parseOmpJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";

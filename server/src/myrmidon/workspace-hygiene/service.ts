@@ -8,7 +8,7 @@ import {
   type ResolvedWorkspaceHygieneLimits,
   type WorkspaceHygieneLimits,
   type WorkspaceHygieneLimitsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import type { WorkspaceHygieneStore } from "./store.js";

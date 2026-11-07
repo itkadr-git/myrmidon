@@ -17,7 +17,7 @@ const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 vi.mock("../autonomy/gate.js", async (importOriginal) => {
   const actual = await importOriginal() as any;
   const { memoryAutonomyStore } = await import("../autonomy/store.js");
-  const { AUTONOMY_SAFE_DEFAULTS } = await import("@paperclipai/shared");
+  const { AUTONOMY_SAFE_DEFAULTS } = await import("@myrmidon/shared");
 
   // Create a real gate with an in-memory store that has deploy forbidden for engineers
   const store = memoryAutonomyStore({

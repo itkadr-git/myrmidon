@@ -40,7 +40,7 @@ import {
   issues,
   principalPermissionGrants,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { Attachment, Author, Message, Thread } from "chat";
 import {
   chatChannelService,

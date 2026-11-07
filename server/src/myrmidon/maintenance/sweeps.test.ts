@@ -13,7 +13,7 @@ import {
   projects,
   routineRuns,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -31,8 +31,13 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 describeEmbeddedPostgres("maintenance holds routines and watchdog sweeps", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousJwtSecret: string | undefined;
 
   beforeAll(async () => {
+    previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    if (previousJwtSecret === undefined) {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-maintenance-sweeps-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
@@ -46,6 +51,11 @@ describeEmbeddedPostgres("maintenance holds routines and watchdog sweeps", () =>
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousJwtSecret === undefined) {
+      delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+    } else {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+    }
   });
 
   async function seedCompany() {
@@ -183,6 +193,13 @@ describeEmbeddedPostgres("maintenance holds routines and watchdog sweeps", () =>
     const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const held = await seedAgent(companyId, { lastHeartbeatAt: longAgo });
     const free = await seedAgent(companyId, { lastHeartbeatAt: longAgo });
+    await db.insert(issues).values({
+      companyId,
+      title: "ready task for timer-enabled agent",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: free,
+    });
     await openWindow({ type: "agent", id: held }, companyId);
 
     await heartbeatService(db).tickTimers(new Date());

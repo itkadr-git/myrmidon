@@ -31,9 +31,9 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolRuntimeSlots,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { and, eq, sql } from "drizzle-orm";
-import { MCP_CONFIG_HELP_PROMPT } from "@paperclipai/shared";
+import { MCP_CONFIG_HELP_PROMPT } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -23,8 +23,8 @@
 // the settings row on every activation pass.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { toPluginEntitlementKeyViews } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { toPluginEntitlementKeyViews } from "@myrmidon/shared";
 import { resolvePaperclipInstanceId } from "../../home-paths.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { assertInstanceAdmin } from "../../routes/authz.js";

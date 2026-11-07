@@ -1,17 +1,18 @@
 // Run queue priority (myrmidon 1.6.5 RUN-PRIORITY part B): the read side of a
 // queued run's waiting state and the settings side of queue priority.
 //
-//   GET /api/heartbeat-runs/:runId               — wait reason of a queued run
-//   GET /api/myrmidon/run-priority               — the priority settings view
-//   PATCH /api/myrmidon/run-priority             — save it; applies without restart
+//   GET /api/myrmidon/run-queue/position?runId=…   — position in queue + wait reason
+//   GET /api/myrmidon/run-queue/priority           — the priority settings view
+//   PATCH /api/myrmidon/run-queue/priority         — save it; applies without restart
 //
-// The settings endpoints are the server core (RUN-PRIORITY A), which mirrors the runtime-limits pattern:
+// The endpoints are the contract of part A (OPE-5526, branch
+// ope-5445-run-priority-core), which mirrors the runtime-limits pattern:
 // settings live in the instance settings, the server re-reads them on every
 // admission sweep (applyRunAdmissionLimits), so a saved change takes effect on
-// the next pass without restarting the server. The waiting state is the same
-// pass's view of the run, read from its contextSnapshot: `waitReason` (the gate
-// holding it back, "priority" when a heavier run went first) and
-// `queuePosition`/`queueLength` (its place in the priority order).
+// the next pass without restarting the server. The wait reason is the same
+// token the admission sweep already writes into the run's contextSnapshot
+// (`waitReason`, server/src/services/heartbeat.ts); the queue rank is what
+// part A adds alongside it.
 //
 // Everything here degrades to `null` when the server does not (yet) serve the
 // endpoint — a 404/405 means "no data", never a crash and never a number the
@@ -59,45 +60,60 @@ export interface RunQueuePositionView {
 }
 
 /**
- * The queue-priority settings of the server core (`GET/PATCH
- * /api/myrmidon/run-priority`, packages/shared myrmidon-run-priority.ts):
- * the role sets the band and a current-release run is lifted one band above
- * the heaviest role, while the issue-priority weight, the release bonus and
- * the aging bonus only order runs *inside* their band; a run that waited past
- * the starvation limit takes the top lane. `source` says whether the stored
- * row or the environment/defaults decide.
+ * The queue-priority settings block part A adds to the instance settings
+ * (weights by role, current-release bonus, aging), following the runtime-limits
+ * shape: every value carries its source (saved here / env / default).
  */
 export const RUN_PRIORITY_ROLES = ["review", "release", "lead", "engineer", "docs"] as const;
 export type RunPriorityRole = (typeof RUN_PRIORITY_ROLES)[number];
 
-export type RunPrioritySource = "settings" | "env";
+export type RunPrioritySource = "settings" | "env" | "default";
 
 export interface RunPrioritySettings {
-  enabled: boolean;
-  /** Role key (lowercase) -> weight; a role without an entry weighs `defaultRoleWeight`. */
-  roleWeights: Record<string, number>;
-  defaultRoleWeight: number;
-  issuePriorityWeights: Record<string, number>;
-  /** The release tag that earns the bonus; null = no release bonus. */
+  /** Weight per role; higher starts first. null = the role has no weight (others first). */
+  roleWeights: Record<RunPriorityRole, number | null>;
+  /** Bonus weight a task of the current release gets on top of its role weight. */
+  currentReleaseBonus: number | null;
+  /** The release tag/string tasks of the current release are matched against; "" = off. */
   currentRelease: string | null;
-  releaseBonus: number;
-  agingStepMinutes: number;
-  agingStepWeight: number;
-  agingMaxBonus: number;
-  starvationLimitMinutes: number;
-  starvationTopWeight: number;
+  /** Weight added per full aging step while a run waits queued. */
+  agingStepPerHour: number | null;
+  /** Cap of the aging weight added on top of the base weight. */
+  agingMaxBonus: number | null;
 }
 
 export interface RunPriorityView {
   settings: RunPrioritySettings;
-  source: RunPrioritySource;
+  /**
+   * Where each served value came from. roleWeights may report one source for
+   * the whole field or per role; anything the older server does not send
+   * reads as "default".
+   */
+  sources: Partial<Record<keyof RunPrioritySettings, RunPrioritySource | Partial<Record<RunPriorityRole, RunPrioritySource>>>>;
 }
 
-export function viewSource(view: RunPriorityView): RunPrioritySource {
-  return view.source === "settings" ? "settings" : "env";
+export function fieldSource(view: RunPriorityView, key: Exclude<keyof RunPrioritySettings, "roleWeights">): RunPrioritySource {
+  const source = view.sources?.[key];
+  return source === "settings" || source === "env" ? source : "default";
 }
 
-export type RunPriorityPatch = Partial<RunPrioritySettings>;
+export function roleWeightSource(view: RunPriorityView, role: RunPriorityRole): RunPrioritySource {
+  const source = view.sources?.roleWeights;
+  if (source === "settings" || source === "env") return source;
+  if (source && typeof source === "object") {
+    const perRole = source[role];
+    if (perRole === "settings" || perRole === "env") return perRole;
+  }
+  return "default";
+}
+
+export type RunPriorityPatch = Partial<{
+  roleWeights: Partial<Record<RunPriorityRole, number | null>>;
+  currentReleaseBonus: number | null;
+  currentRelease: string | null;
+  agingStepPerHour: number | null;
+  agingMaxBonus: number | null;
+}>;
 
 export const runQueuePositionQueryKey = (runId: string) =>
   ["myrmidon", "run-queue-position", runId] as const;
@@ -109,33 +125,13 @@ function isNotServed(err: unknown): boolean {
 }
 
 export const runQueueApi = {
-  /**
-   * Waiting state of one queued run: where it waits (`queuePosition` of
-   * `queueLength`, written by the priority sweep of the same pass) and why
-   * (`waitReason`) read from the run's `contextSnapshot`, plus since when it
-   * waits. A field the server does not publish stays null (never a number the
-   * UI made up); a run that left the queue, or one the reader cannot see,
-   * answers null.
-   */
+  /** Position + wait reason of one queued run; null when the server does not serve it. */
   async position(runId: string): Promise<RunQueuePosition | null> {
     try {
-      const run = await api.get<{
-        id?: string;
-        status?: string;
-        createdAt?: string | null;
-        contextSnapshot?: Record<string, unknown> | null;
-      }>(`/heartbeat-runs/${encodeURIComponent(runId)}`);
-      if (!run || run.status !== "queued") return null;
-      const waitReason = run.contextSnapshot?.waitReason;
-      const queuePosition = run.contextSnapshot?.queuePosition;
-      const queueLength = run.contextSnapshot?.queueLength;
-      return {
-        runId,
-        position: typeof queuePosition === "number" ? queuePosition : null,
-        queueLength: typeof queueLength === "number" ? queueLength : null,
-        waitReason: typeof waitReason === "string" ? waitReason : null,
-        queuedAt: typeof run.createdAt === "string" ? run.createdAt : null,
-      };
+      const view = await api.get<RunQueuePositionView>(
+        `/myrmidon/run-queue/position?runId=${encodeURIComponent(runId)}`,
+      );
+      return view?.position ?? null;
     } catch (err) {
       if (isNotServed(err)) return null;
       throw err;
@@ -144,7 +140,7 @@ export const runQueueApi = {
 
   async priority(): Promise<RunPriorityView | null> {
     try {
-      return await api.get<RunPriorityView>("/myrmidon/run-priority");
+      return await api.get<RunPriorityView>("/myrmidon/run-queue/priority");
     } catch (err) {
       if (isNotServed(err)) return null;
       throw err;
@@ -152,7 +148,7 @@ export const runQueueApi = {
   },
 
   async updatePriority(patch: RunPriorityPatch): Promise<RunPriorityView> {
-    return api.patch<RunPriorityView>("/myrmidon/run-priority", patch);
+    return api.patch<RunPriorityView>("/myrmidon/run-queue/priority", patch);
   },
 };
 
@@ -211,7 +207,6 @@ const FALLBACK_EN: Record<string, string> = {
   "runQueue.waitReason.agent_fair_share": "another agent's turn comes first (fair share)",
   "runQueue.waitReason.agent_concurrency": "the agent's own concurrency limit is full",
   "runQueue.waitReason.priority": "higher-priority runs are ahead",
-  "runQueue.waitReason.higher_priority_ready": "the agent's more important ready task goes first",
 };
 
 function interpolateFallback(key: string, options?: Record<string, unknown>): string {

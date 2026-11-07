@@ -9,7 +9,7 @@ import type {
   ToolProfileNewToolsReview,
   ToolProfileSummary,
   ToolProfileWithDetails,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentToolsTab } from "@/pages/AgentToolsTab";
 import { ProfileDetail } from "@/pages/tools/profiles/ProfileDetail";

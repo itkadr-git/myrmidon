@@ -12,7 +12,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import type { BoardLeaseRow, BoardLeaseStore } from "./leases.js";
 import { serializeBoardLeases } from "./leases.js";

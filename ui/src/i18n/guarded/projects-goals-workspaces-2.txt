@@ -1,0 +1,13 @@
+# OPE-8950: area projects-goals-workspaces-2
+components/RunWorkspaceRecoverySurface.tsx
+components/WorkspaceAccessCard.tsx
+components/WorkspaceRuntimeControls.tsx
+components/WorkspaceServiceControlBar.tsx
+components/WorktreeBanner.tsx
+components/myrmidon/ProjectEgressFields.tsx
+pages/ExecutionWorkspaceDetail.tsx
+pages/GoalDetail.tsx
+pages/Goals.tsx
+pages/ProjectDetail.tsx
+pages/ProjectWorkspaceDetail.tsx
+pages/Workspaces.tsx

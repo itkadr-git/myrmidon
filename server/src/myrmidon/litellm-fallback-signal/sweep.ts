@@ -18,8 +18,8 @@
 // per first tick and stays idle, it does not fail the server.
 
 import { and, eq, ne, isNotNull } from "drizzle-orm";
-import { agents, companies, type Db } from "@paperclipai/db";
-import type { ResolvedFallbackSignalSettings } from "@paperclipai/shared";
+import { agents, companies, type Db } from "@myrmidon/db";
+import type { ResolvedFallbackSignalSettings } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { secretService, instanceSettingsService } from "../../services/index.js";
 import {
@@ -30,6 +30,7 @@ import {
   readLitellmCostSettings,
 } from "../litellm-costs/litellm-costs.js";
 import { listGatewayBotKeys } from "../litellm-costs/bot-keys.js";
+import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 import {
   cardModelSet,
   fallbackShares,
@@ -38,6 +39,8 @@ import {
   shareTripsSignal,
   readFallbackSignalSettings,
   recordModelFallbackSignals,
+  recordModelFallbackDeadendSignals,
+  FALLBACK_DEADEND_DEDUP_PREFIX,
   resetModelFallbackSignals,
   toFallbackSignalSettings,
   type FallbackCall,
@@ -82,7 +85,13 @@ export async function sweepModelFallbackSignals(
   const log = deps.log ?? logger;
   let signalsTotal = 0;
   let companies = 0;
-  const companyIds = await deps.listCompanyIds().catch(() => [] as string[]);
+  // myrmidon(FEATURES): one outcome per pass for the features page.
+  const failures: string[] = [];
+  let callsTotal = 0;
+  const companyIds = await deps.listCompanyIds().catch((err: unknown) => {
+    failures.push(err instanceof Error ? err.message : String(err));
+    return [] as string[];
+  });
   companies = companyIds.length;
   for (const companyId of companyIds) {
     try {
@@ -107,6 +116,23 @@ export async function sweepModelFallbackSignals(
         signals.push(fallbackSignalForShare(share, settings, to.toISOString()));
       }
       recordModelFallbackSignals(companyId, signals);
+      const deadends = entries.flatMap((entry) => {
+        if (entry.status?.toLowerCase() !== "failure" || !entry.requestId || !entry.attemptedFallbacks) return [];
+        const agentId = entry.apiKey ? keys.get(entry.apiKey) : undefined;
+        if (!agentId) return [];
+        return [{
+          agentId,
+          requestId: entry.requestId,
+          model: entry.model,
+          title: `LLM fallback exhausted: ${entry.model}`,
+          whyNow: `A live gateway request failed after routing to ${entry.model}. Inspect the model fallback chain.`,
+          summaryExcerpt: `Request ${entry.requestId} failed; gateway model ${entry.model}.`,
+          dedupKey: `${FALLBACK_DEADEND_DEDUP_PREFIX}${agentId}`,
+          severity: "high" as const,
+          activityAt: entry.startTime,
+        }];
+      });
+      recordModelFallbackDeadendSignals(companyId, [...new Map(deadends.map((item) => [item.agentId, item])).values()]);
       // myrmidon(BOT-RUNTIME-TUNING D2): the rows behind the cards, recorded on
       // every pass — above or below the threshold — so the agent card can show
       // the live share and go quiet again when the fallback stops.
@@ -117,15 +143,23 @@ export async function sweepModelFallbackSignals(
         windowSec: Math.round(settings.windowMs / 1000),
         rows: buildFallbackStatusRows(shares, settings),
       });
+      callsTotal += calls.length;
       signalsTotal += signals.length;
       log.info(
         { companyId, calls: calls.length, signals: signals.length, window: { from: from.toISOString(), to: to.toISOString() } },
         "model fallback signal sweep done",
       );
     } catch (err) {
+      failures.push(err instanceof Error ? err.message : String(err));
       log.warn({ err, companyId }, "model fallback signal sweep failed for one company");
     }
   }
+  recordFeatureOutcome(
+    "model-fallback-signal",
+    failures.length > 0
+      ? { ok: false, error: failures[0]!, detail: { calls: callsTotal, signals: signalsTotal } }
+      : { ok: true, detail: { calls: callsTotal, signals: signalsTotal } },
+  );
   return { companies, signals: signalsTotal };
 }
 

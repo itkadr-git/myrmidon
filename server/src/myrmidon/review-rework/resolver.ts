@@ -6,7 +6,7 @@
 // decision and the remote `updated_at`. A new file so the vendor seam stays
 // untouched; the object identity shape is the provider's own.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { createGitHubExternalObjectProvider } from "../../services/github-external-object-provider.js";
 import type { ReviewReworkPrState } from "./domain.js";
 

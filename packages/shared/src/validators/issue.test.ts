@@ -145,6 +145,14 @@ describe("issue validators", () => {
     expect(
       // myrmidon(STALE-BLOCK): blocked updates need a reasonRef in the descriptor.
       updateIssueSchema.parse({
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000002" },
+          externalRef: "structured-unblock-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
         status: "blocked",
         unblockDescriptor: {
           owner: { agentId: "00000000-0000-4000-8000-000000000001" },
@@ -181,144 +189,195 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
-  // myrmidon(STALE-BLOCK): blocked transitions require a reason reference.
-  it("requires a reason reference when transitioning into blocked", () => {
-    // no blockers, no descriptor — rejected
-    expect(
-      updateIssueSchema.safeParse({ status: "blocked" }).success,
-    ).toBe(false);
-    // empty blocker list — still rejected
-    expect(
-      updateIssueSchema.safeParse({
-        status: "blocked",
-        blockedByIssueIds: [],
-      }).success,
-    ).toBe(false);
-    // non-empty blocker list — accepted
+  it("validates typed blocker metadata", () => {
+    const valid: {
+      status: string;
+      blockerMetadata: {
+        blockReason: string;
+        owner: { agentId: string } | { userId: string };
+        blockedByIssueIds: string[];
+        nextCheckAt: string;
+        timeoutAt: string;
+        escalationPolicy: string;
+      };
+    } = {
+      status: "blocked",
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { agentId: "00000000-0000-4000-8000-000000000001" },
+        blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
+    };
+    const parsed = updateIssueSchema.safeParse(valid);
+    expect(parsed.success, JSON.stringify(parsed.success ? null : parsed.error.issues)).toBe(true);
+    for (const field of ["blockReason", "owner", "nextCheckAt", "timeoutAt", "escalationPolicy"]) {
+      const metadata = { ...valid.blockerMetadata } as Record<string, unknown>;
+      delete metadata[field];
+      expect(updateIssueSchema.safeParse({ ...valid, blockerMetadata: metadata }).success).toBe(false);
+    }
+    expect(updateIssueSchema.safeParse({
+      ...valid,
+      blockerMetadata: { ...valid.blockerMetadata, blockedByIssueIds: undefined, externalRef: undefined },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      ...valid,
+      blockerMetadata: { ...valid.blockerMetadata, owner: "board" },
+    }).success).toBe(false);
+    // exactly one principal: an agent and a user together is not one owner
+    expect(updateIssueSchema.safeParse({
+      ...valid,
+      blockerMetadata: {
+        ...valid.blockerMetadata,
+        owner: { agentId: "00000000-0000-4000-8000-000000000001", userId: "00000000-0000-4000-8000-000000000002" },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      ...valid,
+      blockerMetadata: { ...valid.blockerMetadata, owner: { userId: "00000000-0000-4000-8000-000000000002" } },
+    }).success).toBe(true);
+  });
+  it("does not apply transition-only blocker requirements in the shared payload schema", () => {
+    expect(updateIssueSchema.safeParse({ status: "blocked" }).success).toBe(true);
+  });
+
+  it("validates freeze-only and active blocker metadata with issueRewakeFreeze", () => {
+    const freeze = {
+      agentId: "00000000-0000-4000-8000-000000000001",
+      frozenAt: "2026-10-20T00:00:00.000Z",
+      noProgressStreak: 6,
+    };
+    // freeze-only metadata is valid on an issue update without status: blocked
+    expect(updateIssueSchema.safeParse({ blockerMetadata: { issueRewakeFreeze: freeze } }).success).toBe(true);
+
+    // active blocker can optionally carry issueRewakeFreeze
+    const activeWithFreeze = {
+      status: "blocked",
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { agentId: "00000000-0000-4000-8000-000000000001" },
+        blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+        issueRewakeFreeze: freeze,
+      },
+    };
+    expect(updateIssueSchema.safeParse(activeWithFreeze).success).toBe(true);
+  });
+
+  it("rejects incomplete typed blocker metadata", () => {
+    const result = updateIssueSchema.safeParse({
+      status: "blocked",
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { agentId: "00000000-0000-4000-8000-000000000001" },
+      },
+      blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const missing = result.error.issues.map((issue) => issue.path.join("."));
+      expect(missing).toEqual(expect.arrayContaining(["blockerMetadata.nextCheckAt", "blockerMetadata.timeoutAt", "blockerMetadata.escalationPolicy"]));
+    }
+  });
+
+  it("leaves transition-only blocker completeness to the route guard", () => {
+    // Route-level guard (PATCH /issues/:id) returns 422 with missingFields;
+    // the shared schema stays permissive so service-layer callers are unaffected.
     expect(
       updateIssueSchema.safeParse({
         status: "blocked",
         blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
       }).success,
     ).toBe(true);
-    // descriptor without reasonRef — rejected
-    expect(
-      updateIssueSchema.safeParse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Review the finding",
-        },
-      }).success,
-    ).toBe(false);
-    // descriptor with reasonRef kind=date/dueAt — accepted
-    expect(
-      updateIssueSchema.safeParse({
+  });
+
+  it("keeps accepting payloads that rely on route-level typed metadata enforcement", () => {
+    // Both payloads are schema-valid; the route guard rejects them with 422
+    // until complete blockerMetadata is present (P1.10).
+    for (const patch of [
+      { status: "blocked", blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"] },
+      {
         status: "blocked",
         unblockDescriptor: {
           owner: "board",
           action: "Review the finding",
           reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
         },
-      }).success,
-    ).toBe(true);
-    // descriptor with reasonRef kind=issue — accepted and preserved
-    expect(
-      updateIssueSchema.parse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Review the finding",
-          reasonRef: {
-            kind: "issue",
-            issueId: "00000000-0000-4000-8000-000000000010",
-          },
-        },
-      }).unblockDescriptor?.reasonRef,
-    ).toEqual({
-      kind: "issue",
-      issueId: "00000000-0000-4000-8000-000000000010",
-    });
-    // reasonRef kind=event with eventKey — accepted
-    expect(
-      updateIssueSchema.safeParse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Review the finding",
-          reasonRef: { kind: "event", eventKey: "release-1.6" },
-        },
-      }).success,
-    ).toBe(true);
-    // myrmidon(BLOCKER-WAKE-LOOP-B): kind=event may carry an optional dueAt
-    // deadline (the stale-block watchdog kills the block after it passes).
-    expect(
-      updateIssueSchema.parse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Wait for the tag",
-          reasonRef: { kind: "event", eventKey: "release-1.6", dueAt: "2026-10-20T00:00:00.000Z" },
-        },
-      }).unblockDescriptor?.reasonRef,
-    ).toEqual({ kind: "event", eventKey: "release-1.6", dueAt: "2026-10-20T00:00:00.000Z" });
-    // event with a non-datetime dueAt — rejected
-    expect(
-      updateIssueSchema.safeParse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Wait for the tag",
-          reasonRef: { kind: "event", eventKey: "release-1.6", dueAt: "next tuesday" },
-        },
-      }).success,
-    ).toBe(false);
-    // invalid reasonRef shape — rejected
-    expect(
-      updateIssueSchema.safeParse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Review the finding",
-          reasonRef: { kind: "date", dueAt: "not-a-date" },
-        },
-      }).success,
-    ).toBe(false);
-    // kind=event without eventKey — still rejected (superRefine unchanged)
-    expect(
-      updateIssueSchema.safeParse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Wait for the tag",
-          reasonRef: { kind: "event", dueAt: "2026-10-20T00:00:00.000Z" },
-        },
-      }).success,
-    ).toBe(false);
-    expect(
-      updateIssueSchema.safeParse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Review the finding",
-          reasonRef: { kind: "surprise" },
-        },
-      }).success,
-    ).toBe(false);
-    // non-blocked statuses are not affected
-    expect(
-      updateIssueSchema.safeParse({ status: "todo" }).success,
-    ).toBe(true);
-    expect(
-      updateIssueSchema.safeParse({
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Review the finding",
-          reasonRef: { kind: "date" },
-        },
-      }).success,
-    ).toBe(false);
+      },
+    ]) {
+      expect(updateIssueSchema.safeParse(patch).success).toBe(true);
+    }
+  });
+
+  it("still rejects malformed unblockDescriptor objects", () => {
+    // reasonRef completeness for blocked transitions is route-enforced (422 +
+    // missingFields); the schema keeps rejecting structurally invalid descriptors.
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: { owner: "board" },
+    }).success).toBe(false);
+  });
+
+  it("preserves legacy descriptor reason validation", () => {
+    expect(updateIssueSchema.safeParse({
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "legacy-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Review the finding",
+        reasonRef: { kind: "issue", issueId: "00000000-0000-4000-8000-000000000010" },
+      },
+    }).success).toBe(true);
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Review", reasonRef: { kind: "date" } },
+    }).success).toBe(false);
+  });
+
+  it("validates legacy descriptor reason variants", () => {
+    expect(updateIssueSchema.safeParse({
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "legacy-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Wait for the tag",
+        reasonRef: { kind: "event", eventKey: "release-1.6" },
+      },
+    }).success).toBe(true);
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Wait for the tag",
+        reasonRef: { kind: "event", dueAt: "next tuesday" },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Review",
+        reasonRef: { kind: "surprise" },
+      },
+    }).success).toBe(false);
   });
 
   it("rejects invalid task-scoped network egress CIDRs", () => {

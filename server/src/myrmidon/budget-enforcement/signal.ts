@@ -18,9 +18,9 @@
 // incident write that carries it.
 
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { issueComments, issues } from "@paperclipai/db";
-import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { issueComments, issues } from "@myrmidon/db";
+import type { IssueCommentMetadata, IssueCommentPresentation } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 
 /** The signal dedup key: `budget-signal-only:<incidentId>:<issueId>`. */

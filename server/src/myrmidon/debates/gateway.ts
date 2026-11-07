@@ -14,7 +14,7 @@
 // conservative character/4 estimate for input and output, so the token ceiling
 // bounds every response shape.
 
-import type { DebateModelCall } from "@paperclipai/shared";
+import type { DebateModelCall } from "@myrmidon/shared";
 
 export const DEBATE_BASE_URL_ENV = "MYRMIDON_DEBATE_BASE_URL";
 export const DEBATE_KEY_SECRET_ENV = "MYRMIDON_DEBATE_KEY_SECRET";

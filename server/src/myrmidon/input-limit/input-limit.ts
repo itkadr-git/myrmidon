@@ -23,8 +23,9 @@
 // count towards the new session. Turn it off with MYRMIDON_INPUT_LIMIT_PRECHECK=0.
 
 import { and, desc, eq, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents, heartbeatRuns, litellmModels } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { heartbeatRunEvents, heartbeatRuns, litellmModels } from "@myrmidon/db";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 import {
   DEFAULT_CHARS_PER_TOKEN,
   DEFAULT_INPUT_LIMIT_SAFETY,
@@ -32,7 +33,7 @@ import {
   inputBudgetTokens,
   readInputLimitHint,
   type InputLimitHint,
-} from "@paperclipai/adapter-utils/input-limit";
+} from "@myrmidon/adapter-utils/input-limit";
 
 export const INPUT_LIMIT_PRECHECK_ENV = "MYRMIDON_INPUT_LIMIT_PRECHECK";
 export const INPUT_LIMIT_CHARS_PER_TOKEN_ENV = "MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN";
@@ -51,9 +52,10 @@ export interface InputLimitSettings {
 }
 
 export function readInputLimitSettings(env: NodeJS.ProcessEnv = process.env): InputLimitSettings {
-  const enabled = env[INPUT_LIMIT_PRECHECK_ENV]?.trim() !== "0";
-  const cpt = Number(env[INPUT_LIMIT_CHARS_PER_TOKEN_ENV]?.trim());
-  const safety = Number(env[INPUT_LIMIT_SAFETY_ENV]?.trim());
+  const saved = env === process.env;
+  const enabled = (saved ? liveSavedSetting<boolean>("input_limit_precheck") : undefined) ?? (env[INPUT_LIMIT_PRECHECK_ENV]?.trim() !== "0");
+  const cpt = (saved ? liveSavedSetting<number>("input_limit_chars_per_token") : undefined) ?? Number(env[INPUT_LIMIT_CHARS_PER_TOKEN_ENV]?.trim());
+  const safety = (saved ? liveSavedSetting<number>("input_limit_safety") : undefined) ?? Number(env[INPUT_LIMIT_SAFETY_ENV]?.trim());
   return {
     enabled,
     charsPerToken: Number.isFinite(cpt) && cpt >= 1 && cpt <= 10 ? cpt : DEFAULT_CHARS_PER_TOKEN,

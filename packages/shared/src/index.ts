@@ -1,5 +1,26 @@
 // myrmidon(B1c): product name constant, see myrmidon-product.ts.
-export { PRODUCT_NAME } from "./myrmidon-product.js";
+export { PRODUCT_NAME, PRODUCT_DESCRIPTION } from "./myrmidon-product.js";
+export {
+  adminAssistantDryRunDiagnosticsSchema,
+  adminAssistantDryRunProbeResultSchema,
+  adminAssistantDryRunProbeStatusSchema,
+  adminAssistantDryRunSummarySchema,
+  sanitizeDryRunDiagnostics,
+  sanitizeDryRunDiagnosticsDetail,
+  toSafeDryRunDiagnosticsJson,
+  type AdminAssistantDryRunDiagnostics,
+  type AdminAssistantDryRunProbeResult,
+  type AdminAssistantDryRunProbeStatus,
+  type AdminAssistantDryRunSummary,
+} from "./admin-assistant-diagnostics.js";
+export {
+  LEGACY_BLOCKED_IMPORT_RULE_VERSION,
+  createLegacyBlockedImportKey,
+  legacyBlockedClassSchema,
+  legacyBlockedReportRowSchema,
+  type LegacyBlockedClass,
+  type LegacyBlockedReportRow,
+} from "./legacy-blocked.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
@@ -142,9 +163,11 @@ export {
 } from "./pipeline-case-type.js";
 export {
   deriveResponsibleUser,
+  deriveResponsibleActor,
   deriveOriginatingActor,
   type ResponsibleUserAttribution,
   type ResponsibleUserSource,
+  type ResponsibleActor,
   type OriginatingActor,
 } from "./issue-attribution.js";
 export {
@@ -301,6 +324,7 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AgentVisibilityAuthorizationPolicy,
   type AssignmentAuthorizationPolicy,
   type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
@@ -489,6 +513,7 @@ export {
   SECRET_SCOPES,
   STORAGE_PROVIDERS,
   BILLING_TYPES,
+  COST_STATUSES,
   FINANCE_EVENT_KINDS,
   FINANCE_DIRECTIONS,
   FINANCE_UNITS,
@@ -911,6 +936,8 @@ export type {
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
   InstanceExecutionMode,
+  InstanceNumberFormat,
+  InstanceDateFormat,
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
@@ -923,6 +950,7 @@ export type {
   AgentChainOfCommandEntry,
   // myrmidon(PERF-DIET-G): the slim company list row and the configuration read
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDetail,
   ClearAgentErrorResponse,
@@ -957,6 +985,7 @@ export type {
   SetupTokenTransportAdvisoryCode,
   AssetImage,
   Project,
+  ProjectDevelopmentProcess,
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
@@ -1121,6 +1150,10 @@ export type {
   IssueInboxAttentionKind,
   IssueBlockedInboxAction,
   IssueBlockedInboxAttention,
+  IssueBlockerMetadata,
+  IssueActiveBlockerMetadata,
+  IssueFreezeOnlyMetadata,
+  IssueRewakeFreeze,
   IssueUnblockDescriptor,
   IssueUnblockOwner,
   IssueBlockedInboxIssueRef,
@@ -1254,6 +1287,7 @@ export type {
   CostByAgentModel,
   CostWindowSpendRow,
   CostByProject,
+  CostByDay,
   FinanceEvent,
   FinanceSummary,
   FinanceByBiller,
@@ -1604,6 +1638,7 @@ export type {
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,
   PluginModelProviderDeclaration,
+  PluginProviderModelDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
@@ -1761,6 +1796,9 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
@@ -1798,6 +1836,11 @@ export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  boardProcessesSettingsSchema,
+  isValidIanaTimeZone,
+  instanceTimeZoneSchema,
+  instanceNumberFormatSchema,
+  instanceDateFormatSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
@@ -1814,6 +1857,7 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  agentVisibilityAuthorizationPolicySchema,
   assignmentAuthorizationPolicySchema,
   protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
@@ -1824,7 +1868,12 @@ export {
   type RecordSmokeRunStep,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
+  type AgentVisibilityAuthorizationPolicyInput,
   type TrustAuthorizationPolicyInput,
+  type HaStandbyStatus,
+  haStandbyStatusSchema,
+  haStandbyCheckSchema,
+  haStandbyCheckStatusSchema,
 } from "./validators/index.js";
 
 export {
@@ -1964,6 +2013,11 @@ export {
   updateIssueShapeSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  issueBlockReasonSchema,
+  issueBlockerMetadataSchema,
+  realIssueBlockerMetadataSchema,
+  issueFreezeOnlyMetadataSchema,
+  issueRewakeFreezeSchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
   issueReviewRequestSchema,
@@ -2499,6 +2553,7 @@ export {
   type PluginToolDeclarationInput,
   type PluginEnvironmentDriverDeclarationInput,
   type PluginModelProviderDeclarationInput,
+  type PluginProviderModelDeclarationInput,
   type SandboxProviderCapabilitiesInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
@@ -2515,6 +2570,13 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  blockUserSchema,
+  type BlockUserInput,
+  auditQuerySchema,
+  type AuditQueryInput,
+  sshDryRunInputSchema,
+  type SshDryRunInput,
+  type SshDryRunAuth,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
@@ -2788,29 +2850,18 @@ export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
+export * from "./validators/guardrails.js";
 export * from "./announcements.js";
+// myrmidon(1.6.6 NOTIF-PREFS): per-agent notification preferences for
+// event-shaped wakes (assignment / mention / review), read at wake generation.
+export * from "./notification-prefs.js";
 
-// myrmidon(WORKSPACE-HYGIENE): workspace quota values and the measurement record shared by the
-// server, the sweep and the settings validator.
-export * from "./myrmidon-workspace-hygiene.js";
-// myrmidon(BOT-DISK E): host disk usage threshold, samples and growth shared by the server, the
-// UI and the settings validator.
-export * from "./myrmidon-host-disk.js";
-// myrmidon(1.6.6 SETTINGS-UI C-4): the attention-feed windows (failed-run horizon, feed cache
-// TTL) shared by the feed, the settings route and the settings screen.
-export * from "./myrmidon-attention-feed.js";
-// myrmidon(1.6.6 MONITORING D): the alert-recovery contract — the owner task of an alert
-// (runbook steps and document link) and the sustained-resolution auto-close, shared by the
-// server, the settings validator and the board UI.
-export * from "./myrmidon-alert-recovery.js";
-// myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
-export * from "./myrmidon-bot-disk.js";
-// myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
-export * from "./myrmidon-isolation-scope.js";
-
-// myrmidon(1.7-BUDGET-CONFIG A): the shared contract of the per-level spend
-// limits — schemas, level semantics, signal-only resolution, window math.
-export * from "./myrmidon-budget-limits.js";
+// myrmidon(OPE-9341): domain barrel for Myrmidon contracts.
+// All Myrmidon control plane contracts and specifications are exported via
+// this domain barrel. Do NOT append new exports to the end of index.ts;
+// add them to packages/shared/src/myrmidon/index.ts (or regenerate via
+// `pnpm generate:shared`) to prevent parallel PR merge conflicts.
+export * from "./myrmidon/index.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-bot-disk-quota.js";
@@ -2873,6 +2924,7 @@ export * from "./myrmidon-telegram-notify.js";
 export * from "./myrmidon-agent-tool-permissions.js";
 // myrmidon(ADMIN-AGENT): the board administrator flag on an agent.
 export * from "./myrmidon-agent-board-admin.js";
+export * from "./myrmidon-idle-stop.js"; // myrmidon(OPE-7898)
 // myrmidon(M2-B): per-agent gateway key names and fallback-chain cycle checks.
 export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
@@ -2891,6 +2943,15 @@ export * from "./myrmidon-datastore-care.js";
 export * from "./myrmidon-shared-mount.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the model fallback
 // signal (stored instance settings over environment over defaults).
+// Unique SETTINGS-TO-UI B registration module is imported for side effects by
+// myrmidon-behavior-settings.ts; avoid star-exporting its duplicate registry names.
+export {
+  RUNS_QUEUE_SECTION,
+  RUNS_QUEUE_SETTING_KEYS,
+  validateRunsQueueBoolean,
+  validateRunsQueueIntRange,
+} from "./myrmidon-runs-queue-settings.js";
+
 export * from "./myrmidon-fallback-signal.js";
 
 // myrmidon(1.6.5 BASE-SKILLS): the company base-skills contract — the list of
@@ -2898,6 +2959,7 @@ export * from "./myrmidon-fallback-signal.js";
 export * from "./myrmidon-base-skills.js";
 // myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
 export * from "./myrmidon-autonomy.js";
+export * from "./myrmidon-knowledge-tools.js";
 // myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
 export * from "./myrmidon-cto-chat.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
@@ -2929,6 +2991,8 @@ export * from "./myrmidon-behavior-settings.js";
 // the behavior registry — deploy smoke parameters, tracing windows, Zabbix
 // maintenance and the hindsight key selection. Side effect: registers the keys.
 export * from "./myrmidon-system-settings.js";
+// Import registrations only after the registry module has initialized.
+import "./myrmidon-runs-queue-settings.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —
@@ -2939,6 +3003,11 @@ export * from "./myrmidon-debate.js";
 // foraging pass journal (what each pass read, and which roles it skipped why).
 export * from "./myrmidon-foraging-pass-journal.js";
 
+// myrmidon(1.7-DEBATE-ASYM-B): the per-caste debate configuration — the stored
+// override entry (enabled, role models, prompts, rounds, token ceiling), the
+// resolution over the instance configuration and the run gate.
+export * from "./myrmidon-debate-castes.js";
+
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
 
@@ -2948,10 +3017,15 @@ export * from "./myrmidon-telegram-dm-progress.js";
 
 // myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
 export * from "./myrmidon-model-providers.js";
-
 // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
 // Telegram DM — storage key, precedence and resolver.
 export * from "./myrmidon-bridge-language.js";
+// myrmidon(FEATURES): the Instance -> Features page contract (registry view, health report).
+export * from "./myrmidon-features.js";
+// myrmidon(1.6.6 MODEL-MENU A): the model menu tree and resolver.
+export * from "./myrmidon-model-menu.js";
+// OPE-9499: operator-maintained list-price equivalent for subscription-backed model use.
+export * from "./myrmidon-model-api-pricing.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";
@@ -2980,7 +3054,63 @@ export * from "./myrmidon-tool-policy-cache.js";
 // myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
 // idle gate — the toggle, its storage key and the resolver with sources.
 export * from "./myrmidon-foraging-idle-gate.js";
+export * from "./validators/foraging.js";
+// myrmidon(1.7-AGENT-EXCHANGE-B): owner-facing exchange feed and skill candidates.
+export * from "./myrmidon-agent-exchange-feed.js";
 // myrmidon(1.6.5 LITELLM-WORKERS A): the shared contract of the LiteLLM worker
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.
 export * from "./myrmidon-litellm-workers.js";
+export * from "./myrmidon-capacity-policy.js";
+export * from "./myrmidon-capacity-policy-order.js";
+export * from "./blocker-graph.js";
+// myrmidon(1.6.6 P1.9 CLAIM-TRANSACTION): the continuation dedupe contract —
+// one deterministic key per (issue, event, head) plus the dedupe outcome and
+// metrics surfaces shared by every continuation producer.
+export * from "./continuation-key.js";
+
+export {
+  INTERACTION_ROUTE_TYPES,
+  interactionRecipientSchema,
+  interactionEscalationStepSchema,
+  interactionRoutingInputSchema,
+  type InteractionRouteType,
+  type InteractionRecipient,
+  type InteractionEscalationStep,
+  type InteractionRoutingInput,
+  type InteractionRoutingMetrics,
+} from "./interaction-routing.js";
+export * from "./interaction-recipient-resolver.js";
+export * from "./build-chain.js";
+
+// myrmidon(1.6.6 RECOVERY-FACTORY P1.7, OPE-9133): the typed request/result
+// contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
+// operator failures ask for a recovery issue with a deterministic dedupe key.
+export * from "./recovery-factory.js";
+
+// myrmidon(1.6.6 ARCH-DATA): read-only product access for the architect role
+// to full operational metrics without secrets.
+export * from "./myrmidon-architect-data.js";
+
+// myrmidon(1.7 LOCALE-UPLOAD): installed locales list and coverage percentage
+export * from "./installed-locales.js";
+
+// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure linter and validator
+export * from "./locale-validator.js";
+export * from "./locale-upload.js";
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator.
+export * from "./myrmidon-auto-update-window-cron.js";
+export * from "./validators/updates.js";
+export * from "./validators/auto-update-settings.js";
+
+// myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
+// mode (ratchet / strict), the baseline and the source of each value.
+export * from "./myrmidon-vendor-name.js";
+
+// myrmidon(1.7 HA-GEO, OPE-10184): site readiness evaluation contract and helpers for geo-check.
+export * from "./geo-check.js";
+export * from "./validators/geo-check.js";
+
+// myrmidon(1.7 WAKE-9, OPE-9501): session-per-task isolation and reviewer containment contracts.
+export * from "./myrmidon-task-session-and-reviewer-isolation.js";

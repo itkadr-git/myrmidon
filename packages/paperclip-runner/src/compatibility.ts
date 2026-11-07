@@ -2,7 +2,7 @@ import { capabilityCanonicalOperation } from "./catalog/index.js";
 
 export const PAPERCLIP_RUNNER_COMPATIBILITY = Object.freeze({
   schema: "paperclip.runner.compatibility.v1" as const,
-  packageName: "@paperclipai/paperclip-runner" as const,
+  packageName: "@myrmidon/paperclip-runner" as const,
   packageVersion: "0.0.0" as const,
   components: Object.freeze({
     catalog: 1,

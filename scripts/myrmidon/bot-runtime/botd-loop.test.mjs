@@ -17,6 +17,7 @@ const { buildReport, createReporter, validateReport, MAX_ACTIONS } = await impor
   path.join(ROOT, "docker/bot-runtime/botd/lib/report.js")
 );
 const realRules = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/rules.js"));
+const { guardedRemove } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/remove.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 const fixture = (name) => JSON.parse(fs.readFileSync(path.join(FIXTURES, name), "utf8"));
 
@@ -40,7 +41,7 @@ function fakeBoard(script = []) {
   return { fetchImpl, calls };
 }
 
-function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings } = {}) {
+function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings, hygiene, repack, pressurePass } = {}) {
   const logs = [];
   const states = [];
   const executed = [];
@@ -79,6 +80,9 @@ function rig({ desired, plan, rules, inventory, executor, gatherParts, board = f
     botKey: "bot-001",
     imageGeneration: "myr-v1.6.5-rc.5",
     settings,
+    hygiene,
+    repack,
+    pressurePass,
   });
   return { loop, logs, states, executed, board };
 }
@@ -208,6 +212,34 @@ describe("botd loop: one pass", () => {
 });
 
 describe("botd loop: real rules with the Date clock", () => {
+  it("deletes the oldest 0600 archives to enforce the cap", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "botd-archive-cap-"));
+    try {
+      const archives = [1, 2, 3].map((number) => {
+        const file = path.join(dir, `${number}.dir.tar`);
+        fs.writeFileSync(file, "archive", { mode: 0o600 });
+        return { path: file, sizeBytes: 7, createdAt: new Date(NOW.getTime() - (4 - number) * 3600_000).toISOString() };
+      });
+      const removed = [];
+      const r = rig({
+        rules: realRules,
+        inventory: { worktrees: [], scratch: [], bases: [], archives: [...archives].reverse() },
+        desired: { ok: true, state: desiredState({ workspaces: [] }) },
+        settings: { archiveCapBytes: 8 },
+        executor: { "delete-archive": (action) => {
+          removed.push(action);
+          return guardedRemove(action.path, [dir]);
+        } },
+      });
+      await r.loop.runOnce();
+      assert.deepEqual(removed.map((action) => action.path), archives.slice(0, 2).map((entry) => entry.path));
+      assert.deepEqual(removed.map((action) => action.reason), ["archive-over-cap", "archive-over-cap"]);
+      assert.deepEqual(archives.map((entry) => fs.existsSync(entry.path)), [false, false, true]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("plans a removal for a stale scratch copy (a Date clock used to give an empty plan)", async () => {
     const stale = { name: "old-clone", path: "/scratch/old-clone", mtime: new Date(NOW.getTime() - 48 * 3600 * 1000).toISOString(), isGit: false };
     const r = rig({
@@ -296,8 +328,9 @@ describe("botd loop: policy visibility and dry run", () => {
 
 describe("botd loop: tick pacing (BOT-DISK-H LOAD)", () => {
   /** A loop with fake timers, an injectable board answer script and jitter. */
-  function paceRig({ intervalMs, send, desired = async () => ({ ok: true, state: desiredState() }), jitter = () => 0 } = {}) {
+  function paceRig({ intervalMs, send, desired = async () => ({ ok: true, state: desiredState() }), jitter = () => 0, pressurePass = async () => ({ cleanedBytes: 1 }) } = {}) {
     const timers = [];
+    const pressureCalls = [];
     const loop = createLoop({
       intervalMs,
       jitter,
@@ -305,6 +338,10 @@ describe("botd loop: tick pacing (BOT-DISK-H LOAD)", () => {
       gather: async () => ({ inventory: { worktrees: [], scratch: [], bases: [], archives: [] }, parts: { copies: [], foreign: [], bases: [], archives: [], selfChecks: { reflink: true, gitref: true, wsCli: true } } }),
       rules: { plan: () => ({ actions: [] }) },
       executor: {},
+      pressurePass: async (level) => {
+        pressureCalls.push(level);
+        return pressurePass(level);
+      },
       report: { build: buildReport, send },
       writeDiskState: async () => {},
       now: () => NOW,
@@ -313,7 +350,7 @@ describe("botd loop: tick pacing (BOT-DISK-H LOAD)", () => {
       setTimer: (fn, ms) => (timers.push(ms), 1),
       clearTimer: () => {},
     });
-    return { loop, timers };
+    return { loop, timers, pressureCalls };
   }
 
   it("a 60 s interval does not clamp the board's 300 s cadence: the next tick is 300000, not 60000", async () => {
@@ -328,6 +365,32 @@ describe("botd loop: tick pacing (BOT-DISK-H LOAD)", () => {
     loop.start({ on() {}, off() {} }); // schedules with lastDelayMs after the pass
     await new Promise((r) => setImmediate(r));
     assert.equal(timers.at(-1), 300_000);
+  });
+
+  it("soft-pressure failing report preserves cadence and exponential backoff", async () => {
+    const { loop } = paceRig({
+      intervalMs: 60_000,
+      send: async () => ({ ok: false, reason: "HTTP 500", nextReportSec: 180 }),
+    });
+    await loop.runOnce();
+    loop.onPressure("soft");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(loop.getLastDelayMs() >= 180_000, `must respect 180s report cadence/backoff: ${loop.getLastDelayMs()}`);
+    assert.ok(loop.getLastDelayMs() >= 60_000, `must respect 60s pressure floor: ${loop.getLastDelayMs()}`);
+  });
+
+  it("pressure wake does local cleanup only and never polls/reports out of turn", async () => {
+    let desiredCalls = 0;
+    let reportCalls = 0;
+    const { loop, pressureCalls } = paceRig({
+      intervalMs: 60_000,
+      desired: async () => ((desiredCalls += 1), { ok: true, state: desiredState() }),
+      send: async () => ((reportCalls += 1), { ok: true, nextReportSec: 300 }),
+    });
+    await loop.onPressure("soft");
+    assert.deepEqual(pressureCalls, ["soft"]);
+    assert.equal(desiredCalls, 0);
+    assert.equal(reportCalls, 0);
   });
 
   it("a series of failed passes backs off 60 s -> 120 s -> 240 s ... to the 3600 s cap", async () => {
@@ -533,6 +596,21 @@ describe("botd report: contract", () => {
     assert.ok(Buffer.byteLength(JSON.stringify(rep)) <= 1024 * 1024);
     assert.deepEqual(validateReport(rep), { ok: true });
   });
+
+  it("reports reassigned copies without an active assignee", async () => {
+    const r = rig({
+      desired: { ok: true, state: desiredState({
+        workspaces: [{ key: "ABC-099", state: "closing", since: "2026-10-06T14:00:00Z", prState: "none" }],
+      }) },
+      gatherParts: {
+        copies: [{ path: "/workspace/ABC-099", class: "E", key: "ABC-099", clean: true, pushed: true, sizeBytes: 1000, ageSec: 3600 }],
+        foreign: [], bases: [], archives: [], selfChecks: {},
+      },
+      plan: () => ({ actions: [] }),
+    });
+    await r.loop.runOnce();
+    assert.equal(r.board.calls[0].body.metrics.copies_without_assignee, 1);
+  });
 });
 
 describe("botd entry", () => {
@@ -556,5 +634,55 @@ describe("botd entry", () => {
     const text = fs.readFileSync(entry, "utf8");
     assert.ok(/desiredClient\s*\?\s*desiredClient\.poll\(\)/.test(text), "the entry must poll desired-state via the loop");
     assert.ok(!/desiredClient\.start\(/.test(text), "the entry must not start the client's own 60 s timer");
+  });
+});
+
+describe("botd loop: cache hygiene and pressure triggers (1.6.6 OPE-10039)", () => {
+  it("invokes hygiene on every pass with current desired state and pressure", async () => {
+    let hygieneCalled = 0;
+    let receivedPressure = null;
+    const r = rig({
+      hygiene: async ({ pressure }) => {
+        hygieneCalled++;
+        receivedPressure = pressure;
+      },
+    });
+    await r.loop.runOnce();
+    assert.equal(hygieneCalled, 1);
+    assert.equal(receivedPressure, "none");
+  });
+
+  it("floors the ordinary soft-pressure cadence at 60 s without bypassing the board", async () => {
+    const r = rig({
+      plan: () => ({ actions: [], held: [], pressure: "soft" }),
+    });
+    await r.loop.runOnce();
+    assert.ok(r.loop.getLastDelayMs() >= 60_000);
+  });
+
+  it("onPressure runs only the local pressure pass", async () => {
+    let regularHygiene = 0;
+    let pressurePasses = 0;
+    const r = rig({
+      hygiene: async () => { regularHygiene++; },
+      pressurePass: async () => { pressurePasses++; return { cleanedBytes: 1 }; },
+    });
+    await r.loop.runOnce();
+    assert.equal(regularHygiene, 1);
+    assert.equal(pressurePasses, 0);
+    await r.loop.onPressure("hard");
+    assert.equal(regularHygiene, 1);
+    assert.equal(pressurePasses, 1);
+  });
+
+  it("invokes repack hook on every pass when provided", async () => {
+    let repackCalled = 0;
+    const r = rig({
+      repack: async () => {
+        repackCalled++;
+      },
+    });
+    await r.loop.runOnce();
+    assert.equal(repackCalled, 1);
   });
 });

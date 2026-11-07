@@ -7,18 +7,18 @@ import {
   mergePaperclipConfig,
   paperclipConfigSchema,
   type PaperclipConfig,
-} from "@paperclipai/shared";
-import { updateEnvFileContents, writeEnvFileAtomicallyIfChanged } from "@paperclipai/shared/env-file";
+} from "@myrmidon/shared";
+import { updateEnvFileContents, writeEnvFileAtomicallyIfChanged } from "@myrmidon/shared/env-file";
 import {
   readWorktreePortRegistry,
   withWorktreePortRegistryLockSync,
   writeWorktreePortRegistry,
-} from "@paperclipai/shared/worktree-port-registry";
+} from "@myrmidon/shared/worktree-port-registry";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import { rewriteUrlPort } from "./url-utils.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "./myrmidon/product.js";
-import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;

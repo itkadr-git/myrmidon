@@ -1,0 +1,8 @@
+components/FrontmatterPanel.tsx
+components/ImageGalleryModal.tsx
+components/JsonSchemaForm.tsx
+components/MarkdownBody.tsx
+components/MarkdownEditor.tsx
+components/PathInstructionsModal.tsx
+components/artifacts/ArtifactCard.tsx
+pages/Artifacts.tsx

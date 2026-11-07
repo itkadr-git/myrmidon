@@ -19,14 +19,16 @@
 
 import { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
+  addCorpusUrlDocumentSchema,
   corpusSearchBodySchema,
   createCorpusDatasetSchema,
   patchCorpusSettingsSchema,
   updateCorpusDatasetSchema,
+  type AddCorpusUrlDocumentInput,
   type CorpusSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import {
   assertBoardOrgAccess,
@@ -59,11 +61,19 @@ export interface CorpusRoutesDeps {
   serviceDeps?: Partial<CorpusServiceDeps>;
 }
 
-/** Multipart upload of one document; the field name is the vendor one, `file`. */
+/**
+ * Multipart upload of one document; the field name is the vendor one, `file`.
+ *
+ * `defParamCharset: "utf8"`: browsers and HTTP clients put the file name into
+ * `Content-Disposition` as raw UTF-8 bytes. Multer hands the header parameters to
+ * busboy, whose default charset is `latin1`, so a non-ASCII name (for example a
+ * Cyrillic one) would reach the service as mojibake and be stored as the title.
+ */
 function singleFileUpload(req: Request, res: Response, maxBytes: number): Promise<void> {
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: maxBytes, files: 1 },
+    defParamCharset: "utf8",
   }).single("file");
   return new Promise<void>((resolve, reject) => {
     upload(req, res, (err: unknown) => {
@@ -92,6 +102,9 @@ function handle(
       await run(req, res);
     } catch (err) {
       if (err instanceof CorpusRequestError) {
+        if (err.status === 429 && typeof err.details.retryAfterSeconds === "number") {
+          res.setHeader("Retry-After", String(err.details.retryAfterSeconds));
+        }
         res.status(err.status).json({ error: err.code, message: err.message, ...err.details });
         return;
       }
@@ -275,6 +288,40 @@ export function myrmidonCorpusRoutes(db: Db, deps: CorpusRoutesDeps) {
     }),
   );
 
+  // OPE-12000: a document by address. The download, the byte ceiling and the SSRF guard live in
+  // the service (./source-fetch.ts); the answer is the one an upload gets: 202, the document and its job.
+  router.post(
+    "/myrmidon/companies/:companyId/corpus/datasets/:datasetId/documents/url",
+    validate(addCorpusUrlDocumentSchema),
+    handle(async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const body = req.body as AddCorpusUrlDocumentInput;
+      const result = await service.addDocumentFromUrl({
+        companyId,
+        datasetId: req.params.datasetId as string,
+        url: body.url,
+        refreshIntervalHours: body.refreshIntervalHours,
+        name: body.name,
+        actor: actorOf(req),
+      });
+      res.status(202).json(result);
+    }),
+  );
+
+  // OPE-12000: start fetching the URL-sourced documents of the dataset now, whatever their interval.
+  // The answer comes at once (202 {started}); the run is one per dataset at a time (409), with a
+  // pause between runs (429), and its counters land in the audit log.
+  router.post(
+    "/myrmidon/companies/:companyId/corpus/datasets/:datasetId/refresh-urls",
+    handle(async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await service.refreshDatasetUrls(companyId, req.params.datasetId as string, actorOf(req));
+      res.status(202).json(result);
+    }),
+  );
+
   router.get(
     "/myrmidon/companies/:companyId/corpus/documents/:documentId",
     handle(async (req, res) => {
@@ -282,6 +329,21 @@ export function myrmidonCorpusRoutes(db: Db, deps: CorpusRoutesDeps) {
       assertCompanyAccess(req, companyId);
       const document = await service.getDocument(companyId, req.params.documentId as string);
       res.json({ document });
+    }),
+  );
+
+  // A failed document is parsed again from the bytes already stored — no delete and re-upload.
+  router.post(
+    "/myrmidon/companies/:companyId/corpus/documents/:documentId/reparse",
+    handle(async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await service.reparseDocument(
+        companyId,
+        req.params.documentId as string,
+        actorOf(req),
+      );
+      res.status(202).json(result);
     }),
   );
 

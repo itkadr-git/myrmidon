@@ -10,7 +10,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { HttpError, badRequest, conflict, notFound } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
@@ -24,6 +24,8 @@ export const deployJobCreateSchema = z
   .object({
     reference: z.string().trim().min(1).max(200),
     reason: z.string().trim().max(500).optional(),
+    mode: z.enum(["manual", "auto", "canary"]).optional(),
+    window: z.string().trim().max(120).nullable().optional(),
   })
   .strict();
 
@@ -46,7 +48,8 @@ export function deployJobsRoutes(_db: Db, service: DeployJobsService) {
 
   router.get("/myrmidon/deploy-jobs", async (req, res) => {
     assertBoardOrgAccess(req);
-    res.json(await service.current());
+    const query = req.query as { mode?: string; status?: string; outcome?: string };
+    res.json(await service.current({ mode: query.mode, status: query.status, outcome: query.outcome }));
   });
 
   router.post("/myrmidon/deploy-jobs/preview", validate(deployJobPreviewSchema), async (req, res) => {

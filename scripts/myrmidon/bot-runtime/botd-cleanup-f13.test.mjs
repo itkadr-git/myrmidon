@@ -38,7 +38,7 @@ after(() => {
 });
 
 const git = (cwd, ...args) => {
-  const r = spawnSync("git", args, {
+  const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
     cwd,
     encoding: "utf8",
     env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
@@ -117,6 +117,43 @@ describe("guardedRemove: ENOENT is success", () => {
     assert.ok(fs.existsSync(outside));
     assert.equal(inside(tmp, tmp), false);
   });
+});
+
+describe("guardedRemove: permission checks match unlink", () => {
+  it("removes a non-executable 0600 file when its parent is writable", () => {
+    const dir = path.join(tmp, "file-permissions");
+    const file = path.join(dir, "archive.dir.tar");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    fs.writeFileSync(file, "archive\n", { mode: 0o600 });
+    assert.equal(guardedRemove(file, [tmp]), "removed");
+    assert.equal(fs.existsSync(file), false);
+  });
+
+  it("removes a directory owned by the caller", () => {
+    const dir = path.join(tmp, "directory-permissions");
+    fs.mkdirSync(path.join(dir, "nested"), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(path.join(dir, "nested", "archive.dir.tar"), "archive\n", { mode: 0o600 });
+    assert.equal(guardedRemove(dir, [tmp]), "removed");
+    assert.equal(fs.existsSync(dir), false);
+  });
+
+  it(
+    "defers a file when its parent directory is not writable",
+    { skip: typeof process.getuid === "function" && process.getuid() === 0 ? "root ignores directory permissions" : false },
+    () => {
+      const dir = path.join(tmp, "parent-permissions");
+      const file = path.join(dir, "archive.dir.tar");
+      fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+      fs.writeFileSync(file, "archive\n", { mode: 0o600 });
+      fs.chmodSync(dir, 0o555);
+      try {
+        assert.throws(() => guardedRemove(file, [tmp]), (err) => err.deferred === "foreign-uid");
+        assert.equal(fs.existsSync(file), true);
+      } finally {
+        fs.chmodSync(dir, 0o755);
+      }
+    },
+  );
 });
 
 describe("guardedRemove: EACCES defers without deleting", () => {
@@ -496,6 +533,79 @@ describe("archiveTree: bounded like the fallback tar", () => {
     assert.match(r.reason, /only \d+ bytes free in .* for a \d+-byte directory/);
     assert.deepEqual(fs.readdirSync(archiveRoot), []);
     assert.ok(fs.existsSync(dir));
+  });
+
+  it("archiveThenRemove reuses a verified unchanged archive, but re-archives after edits", () => {
+    const dir = path.join(tmp, "archive-reuse");
+    const { copy } = makeRepo(dir);
+    const archiveRoot = path.join(dir, "archive");
+    const calls = [];
+    const archiveMod = {
+      archive: (...args) => { calls.push("repo"); return archive(...args); },
+      archiveTree: (...args) => { calls.push("tree"); return archiveTree(...args); },
+      verifyEntry,
+    };
+    const deps = { archiveMod, archiveRoot, isGit: (p) => fs.existsSync(path.join(p, ".git")), remove: () => "removed" };
+    const item = { path: copy, key: KEY };
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 1);
+    assert.equal(archiveThenRemove(item, deps), "previous archive verified unchanged; removed");
+    assert.equal(calls.length, 1, "unchanged source does not produce duplicate archives");
+    fs.writeFileSync(path.join(copy, "new-work.txt"), "new\\n");
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 2, "changed source gets a fresh archive");
+  });
+
+  it("regression: archive reuse refuses stale/duplicate keys, missing parts, and corrupted archives", () => {
+    const dir = path.join(tmp, "archive-regression");
+    const { copy } = makeRepo(dir);
+    const archiveRoot = path.join(dir, "archive");
+    const calls = [];
+    const archiveMod = {
+      archive: (...args) => { calls.push("repo"); return archive(...args); },
+      archiveTree: (...args) => { calls.push("tree"); return archiveTree(...args); },
+      verifyEntry,
+    };
+    const deps = { archiveMod, archiveRoot, isGit: (p) => fs.existsSync(path.join(p, ".git")), remove: () => "removed" };
+    const item = { path: copy, key: KEY };
+
+    // Initial archive creation
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 1);
+
+    const mPath = path.join(archiveRoot, "manifest.json");
+    const readM = () => JSON.parse(fs.readFileSync(mPath, "utf8"));
+    const writeM = (m) => fs.writeFileSync(mPath, JSON.stringify(m, null, 2));
+
+    // 1. Stale duplicate entry with same key but outdated/unrelated content should not hijack snapshot
+    const m1 = readM();
+    const goodEntry = m1.archives[0];
+    const staleEntry = {
+      key: KEY,
+      bundle: path.join(archiveRoot, "stale.bundle"),
+      createdAt: new Date(Date.now() - 100000).toISOString(),
+      // no sourceSnapshot or different sourceSnapshot
+    };
+    fs.writeFileSync(staleEntry.bundle, "dummy");
+    m1.archives.unshift(staleEntry);
+    writeM(m1);
+
+    // Should still reuse because the valid matching entry exists
+    assert.equal(archiveThenRemove(item, deps), "previous archive verified unchanged; removed");
+    assert.equal(calls.length, 1);
+
+    // 2. Missing required archive part: if bundle of the valid entry is removed, cannot reuse
+    fs.rmSync(goodEntry.bundle, { force: true });
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 2, "re-archived because archive part was missing");
+
+    // 3. Corrupted archive content: if bundle is corrupted, cannot reuse
+    const m2 = readM();
+    // Latest entry is the last one in archives
+    const latestGood = m2.archives[m2.archives.length - 1];
+    fs.writeFileSync(latestGood.bundle, "corrupted-content");
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 3, "re-archived because archive content was corrupt");
   });
 
   it("legacy.archiveThenRemove keeps the directory when archiveTree refuses it", () => {

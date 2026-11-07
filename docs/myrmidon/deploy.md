@@ -34,12 +34,17 @@ settings file of an installation lives in a private deploy repository and never 
 
 ## Where to get the digest
 
-In the summary of the `image` job of the **Myrmidon image** workflow (Actions → the run on the
-commit or tag): the `Digest` line. Or:
+For a release, use the `Digest` line in the `image` job summary of the **Myrmidon image**
+workflow for the `myr-vX.Y.Z[-rc.N]` tag, or resolve the version tag directly:
 
 ```sh
 docker buildx imagetools inspect ghcr.io/itkadr-git/myrmidon:1.0.0 --format '{{json .Manifest.Digest}}'
 ```
+
+Do not resolve a release digest from `sha-<short>` or `main`: those tags are not the
+release selector. CI publishes `sha-<short>` only for tagged releases and checks that
+it and the version tag point to the tested digest; untagged main builds use
+`main-sha-<short>` instead. Always pass the resulting digest, not the tag, to deploy.
 
 `--digest` accepts `sha256:<64 hex>` or the full reference
 `ghcr.io/itkadr-git/myrmidon@sha256:<64 hex>`. The script does not take a tag (`1.0.0`, `main`,
@@ -49,7 +54,44 @@ The version and commit that `/api/health` must report come from the image labels
 (`org.opencontainers.image.version`, `org.opencontainers.image.revision`). They can be set
 explicitly: `--expect-version`, `--expect-commit`.
 
-## CI-built images only
+## Production migration registry
+
+The checked-in `packages/db/src/migrations/.deployed.json` records migrations confirmed applied
+in production. It is the CI source of truth: do not infer applied state from SQL files present in
+a release branch or tag, since those can include migrations that were never run. CI fails closed
+if the registry is missing or invalid.
+
+After a production rollout, the release operator owns reconciliation of this registry against
+the migration ledger on the production database. Update the manifest in a PR on the product
+repository; do not edit it directly on the host. Review the actual applied migration names and
+numbers, release branch/tag, and rollout timestamp before accepting the change. For example, the
+current confirmed release is represented as:
+
+```json
+{
+  "releaseBranch": "rel/1.6.6-rc.19",
+  "releaseTag": "myr-v1.6.6-rc.19",
+  "deployedAt": "2026-10-30T12:37:21Z",
+  "lastMigration": "0424_clear_stale_replay_holds.sql",
+  "migrations": [
+    { "number": "0423", "file": "0423_colorful_jazinda.sql", "pr": 1997 },
+    { "number": "0424", "file": "0424_clear_stale_replay_holds.sql", "pr": 2012 }
+  ]
+}
+```
+
+The updater can propose a candidate list from the release tree; it is not proof that every
+migration ran. Run `node scripts/myrmidon/ci/update-deployed-migrations.mjs --dry-run`, compare
+the proposal with the production migration ledger, then edit and review the manifest in the PR.
+Never apply a dry-run proposal without that comparison. Once confirmed, commit the manifest
+update with the deployment record. Missing an applied migration can let CI permit a conflicting
+number; recording an unapplied migration creates a false collision and blocks valid work. Either
+mismatch must be corrected from the production ledger by the release operator.
+
+The `deployed-migrations` CI job checks added migrations against this registry and is included in
+`CI result`. On collision it reports the occupied production number and filename; renumber the
+new migration only after coordinating the order of the PR that owns the deployed number.
+
 
 The owner's decision: only an image built by CI (the **Myrmidon image** workflow) from `main`
 or from a `myr-v*` tag reaches production. A hotfix also goes through a PR, even an expedited
@@ -649,8 +691,9 @@ the same settings file the deploy uses. It checks:
 4. nginx, LiteLLM, RAGFlow and Hindsight answer their check URLs (each URL
    unset: the check is off with a log line — nothing is silently skipped);
 5. the DNS names other services use resolve on the docker network
-   (`DNS_CHECK_NAMES`, default `mysql es01 paperclip-server-1` — the RAGFlow
-   lesson);
+   (`DNS_CHECK_NAMES`, default `mysql es01 paperclip-server-1` — the legacy
+   name resolves via its compatibility alias; the rc.17 rename window adds
+   `myrmidon-board`, see `docs/myrmidon/board-rename-runbook.md`);
 6. `systemctl --failed` is empty.
 
 Every failure is listed (not just the first), the script exits 1 and the unit
@@ -989,8 +1032,8 @@ be published by hand.
 
 **How it works.** The **Myrmidon release publish** workflow (started by the
 `myr-vX.Y.Z` tag push) opens an issue titled `release-freeze: <tag>`; the
-issue being open IS the freeze. The **Release freeze gate** check (workflow
-[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+issue being open IS the freeze. The **Release freeze gate** check (integrated
+directly into the `plan` job of `Myrmidon CI`, [.github/workflows/myrmidon-ci.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci.yml))
 fails on every PR into `main` while the freeze is active. As soon as
 `Myrmidon CI` is green on the tag, the same tag workflow closes the issue —
 freeze cleared. The state is derived from GitHub (newest tag + its CI + the

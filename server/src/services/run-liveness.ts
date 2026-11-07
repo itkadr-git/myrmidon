@@ -1,4 +1,4 @@
-import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@paperclipai/shared";
+import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@myrmidon/shared";
 
 export type RunLivenessActionability =
   | "runnable"

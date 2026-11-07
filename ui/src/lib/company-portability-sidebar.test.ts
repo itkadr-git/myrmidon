@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Agent, Project } from "@paperclipai/shared";
+import type { Agent, Project } from "@myrmidon/shared";
 import {
   buildPortableAgentSlugMap,
   buildPortableProjectSlugMap,
@@ -51,6 +51,7 @@ function makeProject(id: string, name: string): Project {
     pauseReason: null,
     pausedAt: null,
     executionWorkspacePolicy: null,
+    developmentProcess: null,
     archivedAt: null,
     goalIds: [],
     goals: [],

@@ -10,6 +10,11 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### LiteLLM v1.104.1 overlay restores streaming cost accounting
+
+- Added the operator runbook [`guides/litellm-streaming-cost-overlay.md`](guides/litellm-streaming-cost-overlay.md) and its [Russian version](guides/litellm-streaming-cost-overlay.ru.md). It documents the pinned `ghcr.io/berriai/litellm:v1.104.1` overlay, the two module mounts, the `usage.cost = 0.0` failure mode for custom-priced streaming deployments, the planned-restart procedure, live smoke checks, rollback, and the decision not to backfill historical rows.
+- The verification procedure requires the overlay test suite to pass all seven tests and checks that `LiteLLM_SpendLogs.spend` equals the configured token-price calculation instead of the provider's zero cost.
+
 ## 1.6.6
 
 ### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
@@ -2345,7 +2350,7 @@ and dockergate.md.
   adapter saves the final output of every completed run as a session-turn record
   in the bot's own hindsight bank (documents keyed by the session key, tag
   `myrmidon-session-history`) and on the next wake of the same session restores
-  the last turns (default 20, card field `centralHistoryMaxTurns`) into the wake
+  the last turns (default 10, card field `centralHistoryMaxTurns`) into the wake
   input under a visible "restored conversation history" header. Recreating the
   container volume no longer loses the history.
 - Store address, bank and key resolve in order (first hit wins): card fields

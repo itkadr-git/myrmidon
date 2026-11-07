@@ -11,7 +11,7 @@ import {
   normalizeOwnerDeliverySettings,
   ownerDeliverySettingsSchema,
   type OwnerDeliverySettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 export type OwnerDeliverySettingsService = Pick<

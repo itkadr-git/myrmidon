@@ -15,7 +15,7 @@ import {
   createDb,
   heartbeatRuns,
   principalPermissionGrants,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

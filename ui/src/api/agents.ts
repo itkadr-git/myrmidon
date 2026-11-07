@@ -1,6 +1,7 @@
 import type {
   Agent,
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDesiredSkillEntry,
   AgentSkillAssignmentMode,
@@ -30,9 +31,11 @@ import type {
   AgentConfigRevision,
   ClearAgentErrorResponse,
   AgentApiKeyScope,
-} from "@paperclipai/shared";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { isUuidLike, normalizeAgentUrlKey } from "@myrmidon/shared";
 import { ApiError, api } from "./client";
+
+export type { AgentListFilters };
 
 export interface AgentKey {
   id: string;
@@ -47,6 +50,8 @@ export interface AdapterModel {
   label: string;
   /** MODEL-PROVIDERS D (1.6.1): pricing tier badge from the board DB. */
   pricing?: "free" | "paid";
+  /** 1.6.6 OPE-9932: accounts in the pool providing this model. */
+  accounts?: string[];
 }
 
 export interface DetectedAdapterModel {
@@ -103,6 +108,7 @@ export interface AgentWakeRequest {
   idempotencyKey?: string | null;
   forceFreshSession?: boolean;
   debug?: { providerTrace: "raw" };
+  externalSession?: { connectionId: string; grantId: string; model: string };
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -119,7 +125,18 @@ export const agentsApi = {
   // myrmidon(PERF-DIET-G): the company list is a slim projection — no
   // adapterConfig; the model comes precomputed as `adapterModel`. Full configs
   // come from getConfiguration / listConfigurations.
-  list: (companyId: string) => api.get<AgentListItem[]>(`/companies/${companyId}/agents`),
+  list: (companyId: string, filters?: AgentListFilters) => {
+    const params = new URLSearchParams();
+    if (filters?.q) params.set("q", filters.q);
+    if (filters?.status) {
+      const statusValue = Array.isArray(filters.status) ? filters.status.join(",") : filters.status;
+      params.set("status", statusValue);
+    }
+    if (filters?.role) params.set("role", filters.role);
+    if (filters?.reportsTo) params.set("reportsTo", filters.reportsTo);
+    const qs = params.toString();
+    return api.get<AgentListItem[]>(`/companies/${companyId}/agents${qs ? `?${qs}` : ""}`);
+  },
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<AgentConfigurationSummary[]>(`/companies/${companyId}/agent-configurations`),
@@ -245,7 +262,7 @@ export const agentsApi = {
     type: string,
     data: {
       adapterConfig: Record<string, unknown>;
-      aiConnection?: import("@paperclipai/shared").AiConnectionBinding;
+      aiConnection?: import("@myrmidon/shared").AiConnectionBinding;
       agentId?: string;
       testCredentials?: Record<string, string>;
       environmentId?: string | null;
@@ -263,6 +280,12 @@ export const agentsApi = {
   },
   invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>
     api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), data),
+  externalSession: (id: string, data: AgentWakeRequest, companyId?: string) =>
+    api.post<AgentWakeupResponse | HeartbeatRun>(agentPath(id, companyId, "/wakeup"), {
+      ...data,
+      source: "on_demand",
+      triggerDetail: "manual",
+    }),
   wakeup: (
     id: string,
     data: AgentWakeRequest,
@@ -297,7 +320,7 @@ export const agentsApi = {
   startAdapterAuthLogin: (
     companyId: string,
     type: string,
-    data: { environmentId: string; ttlSeconds?: number; aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent },
+    data: { environmentId: string; ttlSeconds?: number; aiConnection?: import("@myrmidon/shared").AiConnectionLoginIntent },
   ) =>
     api.post<AdapterAuthSessionResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
@@ -340,7 +363,7 @@ export const agentsApi = {
     ),
   startClaudeSetupTokenLogin: (
     companyId: string,
-    data: { environmentId: string; overwrite?: ClaudeSetupTokenOverwrite; aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent },
+    data: { environmentId: string; overwrite?: ClaudeSetupTokenOverwrite; aiConnection?: import("@myrmidon/shared").AiConnectionLoginIntent },
   ) =>
     api.post<ClaudeSetupTokenSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions`,

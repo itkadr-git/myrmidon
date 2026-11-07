@@ -171,7 +171,21 @@ if [ ! -w "$(pwd)" ]; then
   fail "workspace $(pwd) is not writable by $(id -u):$(id -g) — the /workspace volume must be owned by uid 10001"
 fi
 
+# myrmidon(BOT-DISK): SQLite's temporary files go to the data volume. hermes' automatic VACUUM of state.db
+# writes a copy of the live data (about 1.5 GB for the largest database) to SQLite's temp directory, which
+# defaults to /tmp: tmpfs in this container, i.e. RAM charged to the container's memory limit. The patched
+# hermes refuses to VACUUM while that directory is RAM (patches/30-vacuum-by-freelist.patch), so without this
+# line the state.db of a bot would never be compacted. SQLite unlinks a temp file as soon as it is open, so a
+# killed process leaves nothing behind; umask 077 makes the directory owner-only.
+export SQLITE_TMPDIR="${HERMES_HOME}/.sqlite-tmp"
+if mkdir -p "${SQLITE_TMPDIR}" 2>/dev/null && [ -w "${SQLITE_TMPDIR}" ]; then
+  chmod 700 "${SQLITE_TMPDIR}" 2>/dev/null || true
+else
+  log "WARNING: cannot create SQLITE_TMPDIR=${SQLITE_TMPDIR}; the state.db VACUUM will not run"
+  unset SQLITE_TMPDIR
+fi
 log "HERMES_HOME=${HERMES_HOME}"
+log "SQLITE_TMPDIR=${SQLITE_TMPDIR:-<unset>}"
 log "workspace=$(pwd)"
 log "API_SERVER_HOST=${API_SERVER_HOST} API_SERVER_PORT=${API_SERVER_PORT}"
 # Set by the image (see the Dockerfile's runtime ENV block) so a lazy
@@ -333,9 +347,6 @@ reflink_self_check() {
       || log "WARNING: cannot write ${out_dir}/reflink-check.json"
   fi
 }
-if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then
-  reflink_self_check || log "WARNING: the reflink self-check itself failed to run"
-fi
 
 # --- uv cache self-check (myrmidon 1.6.5 BOT-DISK-UV-B) ------------------------
 # myrmidon(BOT-DISK-UV): since part A the bots with the shared package cache
@@ -506,9 +517,7 @@ uv_cache_self_check() {
       || log "WARNING: cannot write ${out_dir}/uv-cache-check.json"
   fi
 }
-if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then
-  uv_cache_self_check || log "WARNING: the uv cache self-check itself failed to run"
-fi
+# Checks are deferred until after the gateway exec below.
 
 # --- shared git-object store facts (myrmidon 1.6.5 BOT-DISK-G live check) ---
 # The live acceptance of the shared-objects fix needs FACTS, not only pass/fail:
@@ -777,21 +786,11 @@ git_objects_self_check() {
       || log "WARNING: cannot write ${out_dir}/git-objects-check.json"
   fi
 }
-if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then
-  git_objects_self_check || log "WARNING: the shared-objects self-check itself failed to run"
-fi
+# Checks are deferred until after the gateway exec below.
 
 # --- devbuild self-check (dev variant) --------------------------------------
-# myrmidon(1.6.5 DEVBUILD-IN-BOTS): the bot's heavy commands are meant to run
-# on the build VPS through devbuild, so a start without a working devbuild is
-# a misconfiguration worth one loud line. The check only runs when the wiring
-# is expected (DEVBUILD_HOST set in the container env); a bot without it is
-# the ordinary no-devbuild case and stays silent. The probe is `devbuild
-# 'true'`: it exercises the key (file mount or the DEVBUILD_SSH_KEY_DATA env
-# key), the ssh handshake and the remote shell, and rsyncs the (empty or
-# nearly empty) /workspace of a fresh container. It never stops the gateway —
-# a bot with a broken build offload still edits files and runs git; it logs
-# ERROR and writes ${HERMES_HOME}/.myrmidon/devbuild-check.json for the board.
+# Diagnostics run only for developer bots: this is the role that can use the
+# devbuild offload; other bot roles must not make an SSH/rsync startup probe.
 # MYRMIDON_DEVBUILD_CHECK=0 disables the probe (tests, manual runs).
 devbuild_self_check() {
   local out_dir="${HERMES_HOME}/.myrmidon" now ok=false err=""
@@ -815,9 +814,7 @@ devbuild_self_check() {
       || log "WARNING: cannot write ${out_dir}/devbuild-check.json"
   fi
 }
-if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ]; then
-  devbuild_self_check || log "WARNING: the devbuild self-check itself failed to run"
-fi
+# The devbuild check is deferred until after gateway launch.
 
 # --- bot disk lifecycle agent (dev variant) --------------------------------
 # myrmidon(1.6.5 BOT-DISK-H1c): botd (BOT-DISK-H3) replaces bot-clone-hygiene: it
@@ -835,8 +832,257 @@ elif command -v bot-clone-hygiene >/dev/null 2>&1; then
   log "clone hygiene reporter started (pid $!) — no botd in this image"
 fi
 
+
+# These checks may touch mounts, probe reflink/shared-object support, or wait
+# on remote SSH/rsync. Run them after the gateway is live and cap each probe.
+now_monotonic_ms() {
+  if [ -r /proc/uptime ]; then
+    read -r up _ < /proc/uptime
+    awk -v u="$up" 'BEGIN { printf "%.0f\n", u * 1000 }' 2>/dev/null || date +%s%3N
+  else
+    date +%s%3N
+  fi
+}
+
+run_bounded_diagnostic() {
+  local check="$1" pid watchdog rc=0 t0 t1 duration_ms
+  t0="$(now_monotonic_ms)"
+  log "phase ${check} starting"
+  ( "$check" ) &
+  pid=$!
+  ( sleep "${MYRMIDON_DIAGNOSTIC_TIMEOUT_SEC:-120}"; kill "$pid" 2>/dev/null || true ) &
+  watchdog=$!
+  wait "$pid" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  t1="$(now_monotonic_ms)"
+  duration_ms=$(( t1 - t0 ))
+  log "phase ${check} finished in ${duration_ms}ms (rc=${rc})"
+  return "$rc"
+}
+
+run_startup_diagnostics() {
+  local t_diag_0 t_diag_1
+  t_diag_0="$(now_monotonic_ms)"
+  log "phase startup_diagnostics starting in background"
+  if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then run_bounded_diagnostic reflink_self_check || log "WARNING: reflink self-check timed out or failed"; fi
+  if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then run_bounded_diagnostic uv_cache_self_check || log "WARNING: uv cache self-check timed out or failed"; fi
+  if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then run_bounded_diagnostic git_objects_self_check || log "WARNING: shared-objects self-check timed out or failed"; fi
+  if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ] && [ -n "${DEVBUILD_BOT_NAME:-}" ] && [ -n "${DEVBUILD_HOST:-}" ]; then
+    run_bounded_diagnostic devbuild_self_check || log "WARNING: devbuild self-check timed out or failed"
+  fi
+  t_diag_1="$(now_monotonic_ms)"
+  log "phase startup_diagnostics completed in $(( t_diag_1 - t_diag_0 ))ms"
+}
+
+# Session retention runs after the gateway is healthy. Do not put database
+# maintenance on the startup critical path: large state.db files can take
+# minutes to rewrite and can exceed the bot memory limit.
+
 # --replace: a previous instance's lock (from a hard container restart) does
 # not block this one — the fleet manager, not hermes, decides whether two
 # instances should ever coexist. --accept-hooks: no TTY to answer a shell
 # hook consent prompt (equivalent to hooks_auto_accept: true).
-exec hermes gateway run --replace --accept-hooks "$@"
+log "phase gateway_launch starting"
+hermes gateway run --replace --accept-hooks "$@" &
+# Waiting for startup self-checks to execute synchronously can delay the Docker
+# healthcheck until the rollout times out. Attach the gateway first, then run
+# bounded diagnostics concurrently, keeping Docker stop signals handled here.
+gateway_pid=$!
+log "phase gateway_launch pid=${gateway_pid} running"
+
+run_live_session_maintenance() {
+  local retention_days="${MYRMIDON_BOTD_SESSION_RETENTION_DAYS:-30}"
+  local interval="${MYRMIDON_BOTD_SESSION_DELETE_PAUSE_SEC:-1}"
+  local max_mb="${MYRMIDON_BOTD_SESSION_MAX_MB:-500}"
+  local base="http://127.0.0.1:${API_SERVER_PORT}"
+  local key="${API_SERVER_KEY:-}"
+  [[ "$retention_days" =~ ^[0-9]+$ ]] || retention_days=30
+  [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] || interval=1
+  [[ "$max_mb" =~ ^[0-9]+$ ]] || max_mb=500
+  command -v curl >/dev/null 2>&1 || { log "WARNING: session retention skipped: curl is unavailable"; return 0; }
+  command -v python3 >/dev/null 2>&1 || { log "WARNING: session retention skipped: python3 is unavailable"; return 0; }
+
+  local deadline=$(( $(date +%s) + ${MYRMIDON_BOTD_SESSION_HEALTH_WAIT_SEC:-180} ))
+  while ! curl -fsS --max-time 3 "${base}/health" >/dev/null 2>&1; do
+    [ "$(date +%s)" -lt "$deadline" ] || { log "WARNING: session retention skipped: gateway did not become healthy"; return 0; }
+    sleep 2
+  done
+
+  # The API returns only session metadata here. Each old session is then
+  # downloaded as a stream before its DELETE request; no transcript batch is
+  # held in shell or Python memory. The gateway remains the sole DB writer.
+  local archive_dir="${HERMES_HOME}/.myrmidon/archive"
+  mkdir -p "$archive_dir"
+  # Page the metadata endpoint because the gateway caps list responses at 100
+  # rows. Selection is local and explicit: the list route exposes recency and
+  # safety flags, while the older_than query is not a gateway API filter.
+  local manifest="${archive_dir}/live-sessions-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
+  local list_file="${archive_dir}/.sessions.$$"
+  local auth=(-H "Authorization: Bearer ${key}")
+  local state_db="${HERMES_HOME}/state.db"
+  local bytes_before=0 bytes_after=0
+  if [ -f "$state_db" ]; then
+    bytes_before="$(stat -c%s "$state_db" 2>/dev/null || stat -f%z "$state_db" 2>/dev/null || echo 0)"
+  fi
+  : >"$list_file"
+  local offset=0 page_file page_count
+  while :; do
+    page_file="${list_file}.${offset}"
+    if ! curl -fsS --max-time 30 "${auth[@]}" "${base}/api/sessions?limit=100&offset=${offset}&archived=include&order=recent" >"$page_file"; then
+      rm -f "$list_file" "$page_file"
+      log "WARNING: session retention list request failed"
+      return 0
+    fi
+    cat "$page_file" >>"$list_file"
+    printf '\n' >>"$list_file"
+    page_count="$(python3 - "$page_file" <<'PYEOF'
+import json, sys
+try:
+    value=json.load(open(sys.argv[1]))
+    sessions = value.get("data") if "data" in value else value.get("sessions", [])
+    print(len(sessions) if isinstance(sessions, list) else 0)
+except Exception:
+    print(0)
+PYEOF
+)"
+    rm -f "$page_file"
+    [ "$page_count" -lt 100 ] && break
+    offset=$((offset + 100))
+  done
+  local ids
+  ids="$(python3 - "$list_file" "$retention_days" "$max_mb" "${HERMES_HOME}/state.db" <<'PYEOF'
+import json, os, sqlite3, sys, time
+retention_days = int(sys.argv[2]) if sys.argv[2].isdigit() else 30
+max_mb = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 500
+db_path = sys.argv[4] if len(sys.argv) > 4 else ""
+
+cutoff = time.time() - retention_days * 86400
+
+used_bytes = 0
+if db_path and os.path.exists(db_path):
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cur = con.cursor()
+        page_count = cur.execute("PRAGMA page_count").fetchone()[0]
+        freelist_count = cur.execute("PRAGMA freelist_count").fetchone()[0]
+        page_size = cur.execute("PRAGMA page_size").fetchone()[0]
+        con.close()
+        used_bytes = max(0, (page_count - freelist_count) * page_size)
+    except Exception:
+        try:
+            used_bytes = os.path.getsize(db_path)
+        except OSError:
+            used_bytes = 0
+
+max_bytes = max_mb * 1024 * 1024 if max_mb > 0 else 0
+excess = max(0, used_bytes - max_bytes) if max_bytes > 0 else 0
+
+eligible_sessions = []
+total_session_count = 0
+total_message_count = 0
+
+try:
+    # Each page is a JSON document concatenated by the shell. Parse pages
+    # independently so a large fleet never becomes one in-memory response.
+    for raw in open(sys.argv[1]):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        sessions = (value.get("data") if "data" in value else value.get("sessions", [])) if isinstance(value, dict) else []
+        for row in sessions if isinstance(sessions, list) else []:
+            if not isinstance(row, dict):
+                continue
+            total_session_count += 1
+            msg_count = row.get("message_count")
+            if isinstance(msg_count, int) and msg_count > 0:
+                total_message_count += msg_count
+            if row.get("pinned") or row.get("is_active"):
+                continue
+            last_active = row.get("last_active") or row.get("ended_at") or row.get("started_at")
+            sid = row.get("id")
+            if isinstance(sid, str) and sid:
+                eligible_sessions.append((last_active if isinstance(last_active, (int, float)) else 0, sid, row))
+except OSError:
+    pass
+
+# Sort eligible sessions oldest first
+eligible_sessions.sort(key=lambda x: x[0])
+
+avg_session_bytes = (used_bytes / max(1, total_session_count)) if total_session_count > 0 else 1
+
+to_delete = set()
+for last_active, sid, row in eligible_sessions:
+    if last_active < cutoff:
+        to_delete.add(sid)
+        msg_count = row.get("message_count")
+        est = (msg_count * (used_bytes / max(1, total_message_count))) if (isinstance(msg_count, int) and total_message_count > 0) else avg_session_bytes
+        excess -= est
+
+if excess > 0:
+    for last_active, sid, row in eligible_sessions:
+        if sid in to_delete:
+            continue
+        to_delete.add(sid)
+        msg_count = row.get("message_count")
+        est = (msg_count * (used_bytes / max(1, total_message_count))) if (isinstance(msg_count, int) and total_message_count > 0) else avg_session_bytes
+        excess -= est
+        if excess <= 0:
+            break
+
+for last_active, sid, row in eligible_sessions:
+    if sid in to_delete:
+        print(sid)
+PYEOF
+)"
+  rm -f "$list_file"
+  local id safe_id downloaded=0 deleted=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    safe_id="$(printf '%s' "$id" | tr -c 'A-Za-z0-9._-' '_')"
+    if curl -fsS --max-time 120 "${auth[@]}" "${base}/api/sessions/${id}" >>"${manifest}.tmp"; then
+      printf '\n' >>"${manifest}.tmp"
+      downloaded=$((downloaded + 1))
+      if curl -fsS -X DELETE --max-time 30 "${auth[@]}" "${base}/api/sessions/${id}" >/dev/null; then
+        deleted=$((deleted + 1))
+      else
+        log "WARNING: session retention delete failed for ${safe_id}"
+      fi
+    else
+      log "WARNING: session retention export failed for ${safe_id}; keeping session"
+    fi
+    sleep "$interval"
+  done <<<"$ids"
+  mv -f "${manifest}.tmp" "$manifest" 2>/dev/null || true
+  if [ -f "$state_db" ]; then
+    bytes_after="$(stat -c%s "$state_db" 2>/dev/null || stat -f%z "$state_db" 2>/dev/null || echo 0)"
+  fi
+  printf '{"stateDbBytesBefore":%s,"stateDbBytesAfter":%s,"deletedSessions":%s,"downloaded":%s,"deleted":%s,"updatedAt":"%s"}\n' \
+    "$bytes_before" "$bytes_after" "$deleted" "$downloaded" "$deleted" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >"${HERMES_HOME}/.myrmidon/session-prune.json"
+  log "phase live_session_maintenance completed: downloaded ${downloaded}, deleted ${deleted}, state.db bytes: ${bytes_before} -> ${bytes_after}"
+}
+
+# Maintenance is intentionally detached from gateway startup. A failed pass is
+# safe: the next botd/entrypoint pass retries, while the gateway stays healthy.
+run_live_session_maintenance >/dev/null 2>&1 &
+session_maintenance_pid=$!
+run_startup_diagnostics &
+diagnostics_pid=$!
+cleanup_diagnostics() {
+  kill "$gateway_pid" "$diagnostics_pid" "$session_maintenance_pid" 2>/dev/null || true
+  wait "$gateway_pid" 2>/dev/null || true
+  wait "$diagnostics_pid" 2>/dev/null || true
+}
+trap cleanup_diagnostics TERM INT HUP
+set +e
+wait "$gateway_pid"
+gateway_status=$?
+set -e
+if [ "$gateway_status" -ne 0 ]; then
+  kill "$diagnostics_pid" 2>/dev/null || true
+fi
+wait "$diagnostics_pid" 2>/dev/null || true
+trap - TERM INT HUP
+exit "$gateway_status"

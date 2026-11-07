@@ -1,4 +1,5 @@
 import { configFieldsForSection } from "../config-sections";
+import { useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps, CreateConfigValues } from "../types";
@@ -16,6 +17,7 @@ const inputClass =
 const DEFAULT_SESSION_KEY_STRATEGY = "issue";
 const DEFAULT_TIMEOUT_SEC = 600;
 const DEFAULT_EVENT_RECONNECT_MS = 2000;
+const DEFAULT_POLL_INTERVAL_MS = 1000;
 
 type SecretRef = {
   type: "secret_ref";
@@ -72,6 +74,7 @@ function SecretField({
   placeholder?: string;
   stored?: boolean;
 }) {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   return (
     <Field label={label}>
@@ -80,7 +83,7 @@ function SecretField({
           type="button"
           onClick={() => setVisible((v) => !v)}
           className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
+          aria-label={visible ? t("area.adapters-plugins-1.hermes-gateway.secretField.hideLabel", { label }) : t("area.adapters-plugins-1.hermes-gateway.secretField.showLabel", { label })}
         >
           {visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
         </button>
@@ -90,7 +93,7 @@ function SecretField({
           immediate
           type={visible ? "text" : "password"}
           className={inputClass + " pl-8"}
-          placeholder={stored ? "Stored secret; enter a new value to replace it" : placeholder}
+          placeholder={stored ? t("area.adapters-plugins-1.hermes-gateway.secretField.storedPlaceholder") : placeholder}
         />
       </div>
     </Field>
@@ -106,6 +109,7 @@ export function HermesGatewayConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   const storedApiKey = config.apiKey;
   const hasStoredApiKey = isSecretRef(storedApiKey) || typeof storedApiKey === "string";
   const editApiKeyValue = typeof storedApiKey === "string" ? String(eff("adapterConfig", "apiKey", storedApiKey)) : "";
@@ -135,64 +139,87 @@ export function HermesGatewayConfigFields({
   const timeoutSec = Number(readValue("timeoutSec", DEFAULT_TIMEOUT_SEC) ?? DEFAULT_TIMEOUT_SEC);
   const eventReconnectMs = Number(readValue("eventReconnectMs", DEFAULT_EVENT_RECONNECT_MS) ?? DEFAULT_EVENT_RECONNECT_MS);
   const allowInsecureRemoteHttp = Boolean(readValue("dangerouslyAllowInsecureRemoteHttp", false));
+  const pollIntervalMs = Number(readValue("pollIntervalMs", DEFAULT_POLL_INTERVAL_MS) ?? DEFAULT_POLL_INTERVAL_MS);
   const instructions = String(readValue("instructions", "") ?? "");
+  const flag = readValue("centralHistory", false);
+  const centralHistory = flag === true || flag === "1" || flag === "true";
+  const livenessEvents = Boolean(readValue("livenessEvents", false));
+  const debugEvents = Boolean(readValue("debugEvents", false));
+  const runtimeMcpUrlRewrite = readValue("runtimeMcpUrlRewrite", true) !== false;
+  const runtimeMcpUrlBase = String(readValue("runtimeMcpUrlBase", "") ?? "");
+  const createRequestTimeoutSec = Number(readValue("createRequestTimeoutSec", 60) ?? 60);
+  const centralHistoryMaxTurns = Number(readValue("centralHistoryMaxTurns", 10) ?? 10);
   const headers = isCreate
     ? String(readCreateValue(values, "headers", "") ?? "")
     : headersDraft;
+  const hindsightValue = readValue("hindsight", null);
+  const hindsight = hindsightValue && typeof hindsightValue === "object" && !Array.isArray(hindsightValue)
+    ? hindsightValue as Record<string, unknown>
+    : {};
+  const updateHindsight = (key: string, value: unknown) => {
+    const next = { ...hindsight };
+    if (value === undefined || value === "") delete next[key];
+    else next[key] = value;
+    writeValue("hindsight", Object.keys(next).length ? next : undefined);
+  };
+  const hindsightTags = Array.isArray(hindsight.tags) ? hindsight.tags.join(", ") : "";
+  const observationScopes = Array.isArray(hindsight.observationScopes)
+    ? hindsight.observationScopes.map((scope) => Array.isArray(scope) ? scope.join(", ") : "").join("\n")
+    : "";
 
   return configFieldsForSection(section, (
     <>
       <Field
-        label="API base URL"
-        hint="Hermes API server base URL that Myrmidon can reach, such as http://127.0.0.1:8642 or a private HTTPS URL. Default dashboard root/chat URLs such as http://127.0.0.1:9119/chat are accepted and map to /api."
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.apiBaseUrlLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.apiBaseUrlHint")}
       >
         <DraftInput
           value={apiBaseUrl}
           onCommit={(v) => writeValue("apiBaseUrl", v || undefined)}
           immediate
           className={inputClass}
-          placeholder="http://127.0.0.1:8642"
+          placeholder={t("area.adapters-plugins-1.hermes-gateway.fields.apiBaseUrlPlaceholder")}
         />
       </Field>
 
       <SecretField
-        label="API key"
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.apiKeyLabel")}
         value={isCreate ? String(readCreateValue(values, "apiKey", "") ?? "") : editApiKeyValue}
         onCommit={(v) => writeValue("apiKey", v || undefined)}
-        placeholder="Hermes API_SERVER_KEY, not PAPERCLIP_API_KEY"
+        placeholder={t("area.adapters-plugins-1.hermes-gateway.fields.apiKeyPlaceholder")}
         stored={!isCreate && hasStoredApiKey && !editApiKeyValue}
       />
 
       <Field
-        label="Myrmidon API URL"
-        hint="Optional Myrmidon API URL reachable by the Hermes host. This is not a credential."
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.myrmidonApiUrlLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.myrmidonApiUrlHint")}
       >
         <DraftInput
           value={paperclipApiUrl}
           onCommit={(v) => writeValue("paperclipApiUrl", v || undefined)}
           immediate
           className={inputClass}
-          placeholder="http://127.0.0.1:3100"
+          placeholder={t("area.adapters-plugins-1.hermes-gateway.fields.myrmidonApiUrlPlaceholder")}
         />
       </Field>
 
       <Field configSection="runPolicy"
-        label="Session key strategy"
-        hint="Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default."
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.sessionKeyStrategyLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.sessionKeyStrategyHint")}
       >
         <select
           value={sessionKeyStrategy}
           onChange={(event) => writeValue("sessionKeyStrategy", event.target.value)}
           className={inputClass}
         >
-          <option value="issue">Issue scoped</option>
-          <option value="agent">Agent scoped</option>
-          <option value="run">Run scoped</option>
-          <option value="none">None</option>
+          <option value="issue">{t("area.adapters-plugins-1.hermes-gateway.fields.sessionKeyIssue")}</option>
+          <option value="agent">{t("area.adapters-plugins-1.hermes-gateway.fields.sessionKeyAgent")}</option>
+          <option value="run">{t("area.adapters-plugins-1.hermes-gateway.fields.sessionKeyRun")}</option>
+          <option value="none">{t("common.none")}</option>
         </select>
       </Field>
 
-      <Field configSection="runPolicy" label="Timeout seconds">
+      <Field configSection="runPolicy" label={t("area.adapters-plugins-1.hermes-gateway.fields.timeoutLabel")}>
         <DraftNumberInput
           value={Number.isFinite(timeoutSec) ? timeoutSec : DEFAULT_TIMEOUT_SEC}
           onCommit={(v) => writeValue("timeoutSec", v)}
@@ -202,8 +229,8 @@ export function HermesGatewayConfigFields({
       </Field>
 
       <Field
-        label="Event reconnect ms"
-        hint="Delay before reconnecting the Hermes SSE events stream after a nonterminal disconnect."
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.eventReconnectLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.eventReconnectHint")}
       >
         <DraftNumberInput
           value={Number.isFinite(eventReconnectMs) ? eventReconnectMs : DEFAULT_EVENT_RECONNECT_MS}
@@ -213,16 +240,50 @@ export function HermesGatewayConfigFields({
         />
       </Field>
 
+      <Field
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.pollIntervalLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.pollIntervalHint")}
+      >
+        <DraftNumberInput
+          value={Number.isFinite(pollIntervalMs) ? pollIntervalMs : DEFAULT_POLL_INTERVAL_MS}
+          onCommit={(v) => writeValue("pollIntervalMs", v > 0 ? v : undefined)}
+          immediate
+          className={inputClass}
+        />
+      </Field>
+
       <ToggleField
-        label="Dangerously allow remote HTTP"
-        hint="Unsafe dev-only escape hatch. Remote Hermes gateways should use HTTPS; loopback HTTP remains allowed."
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.allowRemoteHttpLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.allowRemoteHttpHint")}
         checked={allowInsecureRemoteHttp}
         onChange={(v) => writeValue("dangerouslyAllowInsecureRemoteHttp", v)}
       />
 
+      <Field configSection="runPolicy" label={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutHint")}>
+        <DraftNumberInput value={createRequestTimeoutSec} onCommit={(v) => writeValue("createRequestTimeoutSec", v > 0 ? v : undefined)} immediate className={inputClass} />
+      </Field>
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.livenessEventsLabel")} checked={livenessEvents} onChange={(v) => writeValue("livenessEvents", v)} />
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.debugEventsLabel")} checked={debugEvents} onChange={(v) => writeValue("debugEvents", v)} />
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlRewriteLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlRewriteHint")} checked={runtimeMcpUrlRewrite} onChange={(v) => writeValue("runtimeMcpUrlRewrite", v)} />
+      <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlBaseLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlBaseHint")}>
+        <DraftInput value={runtimeMcpUrlBase} onCommit={(v) => writeValue("runtimeMcpUrlBase", v || undefined)} immediate className={inputClass} />
+      </Field>
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryHint")} checked={centralHistory} onChange={(v) => writeValue("centralHistory", v ? "1" : "0")} />
+      {centralHistory && <>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryUrlLabel")}>
+          <DraftInput value={String(readValue("centralHistoryUrl", "") ?? "")} onCommit={(v) => writeValue("centralHistoryUrl", v || undefined)} immediate className={inputClass} />
+        </Field>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryBankIdLabel")}>
+          <DraftInput value={String(readValue("centralHistoryBankId", "") ?? "")} onCommit={(v) => writeValue("centralHistoryBankId", v || undefined)} immediate className={inputClass} />
+        </Field>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryMaxTurnsLabel")}>
+          <DraftNumberInput value={centralHistoryMaxTurns} onCommit={(v) => writeValue("centralHistoryMaxTurns", v > 0 ? v : undefined)} immediate className={inputClass} />
+        </Field>
+      </>}
+
       <Field
-        label="Extra headers"
-        hint="Optional JSON object of extra nonsecret headers. Security-critical headers are generated by the adapter."
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.extraHeadersLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.extraHeadersHint")}
       >
         <textarea
           value={headers}
@@ -237,16 +298,66 @@ export function HermesGatewayConfigFields({
           }}
           rows={3}
           className={inputClass}
-          placeholder='{"x-custom-header": "value"}'
+          placeholder={t("area.adapters-plugins-1.hermes-gateway.fields.headersPlaceholder")}
         />
       </Field>
 
-      <Field label="Instructions" hint="Optional stable Hermes instructions sent separately from the wake input.">
+      <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.instructionsLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.instructionsHint")}>
         <DraftTextarea
           value={instructions}
           onCommit={(v) => writeValue("instructions", v || undefined)}
           immediate
           minRows={3}
+        />
+      </Field>
+      <Field
+        configSection="advanced"
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightBankIdLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightBankIdHint")}
+      >
+        <DraftInput
+          value={String(hindsight.bankId ?? "")}
+          onCommit={(v) => updateHindsight("bankId", v.trim())}
+          immediate
+          className={inputClass}
+        />
+      </Field>
+      <Field
+        configSection="advanced"
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightTagsLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightTagsHint")}
+      >
+        <DraftInput value={hindsightTags} onCommit={(v) => updateHindsight("tags", v.split(",").map((tag) => tag.trim()).filter(Boolean))} immediate className={inputClass} />
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMissionLabel")}>
+        <DraftTextarea value={String(hindsight.mission ?? "")} onCommit={(v) => updateHindsight("mission", v.trim())} immediate minRows={2} />
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightRecallBudgetLabel")}>
+        <select className={inputClass} value={String(hindsight.recallBudget ?? "")} onChange={(event) => updateHindsight("recallBudget", event.target.value)}>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
+          <option value="low">{t("area.adapters-plugins-1.hermes-gateway.fields.low")}</option><option value="mid">{t("area.adapters-plugins-1.hermes-gateway.fields.mid")}</option><option value="high">{t("area.adapters-plugins-1.hermes-gateway.fields.high")}</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeLabel")}>
+        <select className={inputClass} value={String(hindsight.memoryMode ?? "")} onChange={(event) => updateHindsight("memoryMode", event.target.value)}>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
+          <option value="hybrid">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeHybrid")}</option>
+          <option value="context">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeContext")}</option>
+          <option value="tools">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeTools")}</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightAutoRetainLabel")}>
+        <select className={inputClass} value={typeof hindsight.autoRetain === "boolean" ? String(hindsight.autoRetain) : ""} onChange={(event) => updateHindsight("autoRetain", event.target.value === "" ? undefined : event.target.value === "true")}>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
+          <option value="true">{t("area.adapters-plugins-1.hermes-gateway.fields.enabled")}</option><option value="false">{t("area.adapters-plugins-1.hermes-gateway.fields.disabled")}</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightObservationScopesLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightObservationScopesHint")}>
+        <DraftTextarea
+          value={observationScopes}
+          onCommit={(v) => updateHindsight("observationScopes", v.split("\n").map((line) => line.split(",").map((tag) => tag.trim()).filter(Boolean)).filter((scope) => scope.length > 0))}
+          immediate
+          minRows={2}
         />
       </Field>
     </>

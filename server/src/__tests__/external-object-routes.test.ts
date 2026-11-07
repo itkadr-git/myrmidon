@@ -107,6 +107,16 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Test-only: errorHandler answers a bare "Internal server error" and keeps the
+// cause off the response, so a 500 in CI is unexplained. Record the raw error
+// here and surface it in the assertion message.
+let lastRouteError: unknown = null;
+
+function describeResponse(res: { status: number; body: unknown }) {
+  const err = lastRouteError as { stack?: string; message?: string } | null;
+  return `${res.status} ${JSON.stringify(res.body)} routeError=${err ? (err.stack ?? err.message ?? String(err)) : "none"}`;
+}
+
 async function createApp(actor: Express.Request["actor"]) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -126,6 +136,10 @@ async function createApp(actor: Express.Request["actor"]) {
     next();
   });
   app.use("/api", issueRoutes(routeDb as any, { provider: "local_disk" } as any));
+  app.use((err: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    lastRouteError = err;
+    next(err);
+  });
   app.use(errorHandler);
   return app;
 }
@@ -176,6 +190,7 @@ describe("external object routes", () => {
   });
 
   beforeEach(() => {
+    lastRouteError = null;
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../services/index.js");
@@ -250,7 +265,7 @@ describe("external object routes", () => {
       .post(`/api/companies/${companyId}/issues/external-object-summaries`)
       .send({ issueIds: [issueId] });
 
-    expect(res.status).toBe(200);
+    expect(res.status, describeResponse(res)).toBe(200);
     expect(res.body.summaries[issueId].total).toBe(1);
     expect(mockExternalObjectsService.getIssueSummaries).toHaveBeenCalledWith(companyId, [issueId]);
   });

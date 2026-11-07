@@ -10,7 +10,7 @@ import type {
   StoredSecretVersionMaterial,
 } from "./types.js";
 import { badRequest } from "../errors.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
   scheme: "local_encrypted_v1";

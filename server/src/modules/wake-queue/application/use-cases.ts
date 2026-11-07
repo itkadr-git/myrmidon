@@ -1,3 +1,4 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
@@ -34,6 +35,7 @@ import type {
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
+import { shouldSkipContinuation } from "../../../myrmidon/swarm-claim/requires-engineer.js";
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -54,6 +56,19 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
+/**
+ * OPE-10383: the OPE-9178 role gate applies to continuations only — a wake an
+ * agent gets to keep going on its own work. A stage request, a comment, an
+ * interaction, a recovery or an operator wake is addressed to the agent and is
+ * never role-gated.
+ */
+const ROLE_GATED_CONTINUATION_WAKE_REASONS = new Set([
+  "issue_continuation_needed",
+  "run_liveness_continuation",
+  "max_turn_continuation",
+  "max_turns_continuation",
+  "max_turns_continuation_retry",
+]);
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -70,7 +85,15 @@ function didAutomaticRecoveryFail(
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ): boolean {
   const latestRetryReason = readNonEmptyString(run.contextSnapshot.retryReason);
-  return latestRetryReason === expectedRetryReason && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
+  const latestWakeReason = readNonEmptyString(run.contextSnapshot.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        run.contextSnapshot.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(run.contextSnapshot.source) === "issue.assignment_recovery")));
+  return matchesReason && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
 }
 
 function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | null {
@@ -80,6 +103,13 @@ function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | nu
   if (!participant || participant.type !== "agent") return null;
   const agentId = readNonEmptyString(participant.agentId);
   return agentId ? { agentId } : null;
+}
+
+/** A continuation of an agent that is neither the assignee nor the current stage participant (OPE-10383). */
+function isRoleGatedContinuation(issue: IssueSnapshot, candidate: DeferredWakeCandidate): boolean {
+  if (!ROLE_GATED_CONTINUATION_WAKE_REASONS.has(candidate.wakeReason ?? candidate.reason ?? "")) return false;
+  if (candidate.agentId === issue.assigneeAgentId) return false;
+  return currentAgentParticipant(issue)?.agentId !== candidate.agentId;
 }
 
 /**
@@ -120,6 +150,19 @@ export type ReleaseIssueExecutionInput = {
   runId: string;
   now: Date;
   suppressImmediateRecovery?: boolean;
+  /**
+   * Set by the stranded-wake sweep only when every deferred wake of the issue
+   * was requested after the finishing run ended. An acknowledged operator Stop
+   * must not promote work queued before it, but input that arrived after the
+   * Stop is new work and is not covered by it (OPE-8268).
+   */
+  deferredWakesPostdateRun?: boolean;
+  /**
+   * Set by the stranded-wake sweep: a failed or cancelled legacy run that has
+   * no recorded execution hold does not by itself stop the drain. A recorded
+   * hold still does, through the execution-blocker gate in the lock adapter.
+   */
+  ignoreUnrecordedReconciliation?: boolean;
 };
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
@@ -137,11 +180,46 @@ async function runReleaseDrain(
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult> {
   const { run } = locked;
-  const issue = locked.primaryIssue;
+  let issue = locked.primaryIssue;
   const postCommitEffects: PostCommitEffect[] = [];
-
+  const siblingIssue = locked.releasedSiblingIssue;
+  const shouldDrainSibling = Boolean(siblingIssue &&
+    (!siblingIssue.assigneeAgentId || siblingIssue.assigneeAgentId === run.agentId));
   if (locked.recoveryOnly) {
     return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
+  }
+  if (locked.primaryReleaseOnly && !siblingIssue) {
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
+  let drainsPrimary = true;
+  if (siblingIssue && shouldDrainSibling) {
+    const claimed = await ports.transaction.claimIssueExecutionLease({
+      companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
+    });
+    if (!claimed) {
+      return { outcome: { kind: "released" }, postCommitEffects };
+    }
+    // A sibling is only worth holding the lease for when it has a deferred
+    // wake to drain. Otherwise hand the lease back so the issue stays released
+    // (no orphan execution_run_id, no spurious recovery block) and fall
+    // through to the primary issue's own drain.
+    const siblingWake = await ports.transaction.findNextDeferredWake({
+      companyId: run.companyId, issueId: siblingIssue.id,
+    });
+    const sibling = siblingWake
+      ? await ports.transaction.findIssue({ companyId: run.companyId, issueId: siblingIssue.id })
+      : null;
+    if (sibling && sibling.status !== "done" && sibling.status !== "cancelled") {
+      issue = sibling;
+      drainsPrimary = false;
+    } else {
+      await ports.transaction.releaseIssueExecutionLease({
+        companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
+      });
+    }
+  }
+  if (drainsPrimary && locked.primaryReleaseOnly) {
+    return { outcome: { kind: "released" }, postCommitEffects };
   }
 
   // Each `continue` path either excludes a pending handoff receipt from
@@ -304,6 +382,19 @@ async function runReleaseDrain(
     // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
     if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
 
+    if (
+      isRoleGatedContinuation(issue, workingCandidate)
+      && shouldSkipContinuation({ agentRole: deferredAgent.role, issueRole: issue.issueRole })
+    ) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Deferred continuation skipped because agent and issue roles differ",
+        now: input.now,
+      });
+      continue;
+    }
+
     const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
     if (!promoted) continue;
     return promoted;
@@ -334,6 +425,15 @@ async function promoteDeferredWake(
     workingCandidate.deferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
+    if (workingCandidate.deferredContextSeed.chatFailedRunRetry) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Failed-chat retry is not authorized for terminal task reopening",
+        now: input.now,
+      });
+      return null;
+    }
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
       companyId: run.companyId,
       issueId: currentIssue.id,
@@ -368,6 +468,27 @@ async function promoteDeferredWake(
       now: input.now,
     });
     return null;
+  }
+
+  if (workingCandidate.wakeReason === "issue_continuation_needed" || workingCandidate.reason === "issue_continuation_needed") {
+    const claimed = await ports.transaction.claimContinuationKey({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      key: buildContinuationKey({
+        issueId: issue.id,
+        event: "issue_continuation_needed",
+        head: readNonEmptyString(workingCandidate.deferredContextSeed.continuationHead) ?? workingCandidate.id,
+      }),
+    });
+    if (claimed === "deduped") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Deferred execution wake continuation already claimed",
+        now: input.now,
+      });
+      return null;
+    }
   }
 
   // Claim before reopening. A reopen write and its post-commit effect must
@@ -488,6 +609,12 @@ async function runReleaseRecoveryTail(
   input: ReleaseIssueExecutionInput,
   postCommitEffects: PostCommitEffect[],
 ): Promise<ReleaseTransactionResult> {
+  const currentIssue = await transaction.findIssue({ companyId: issue.companyId, issueId: issue.id });
+  if (!currentIssue || currentIssue.status === "done" || currentIssue.status === "cancelled") {
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
+  issue = currentIssue;
+  if (issue.status === "blocked") return { outcome: { kind: "released" }, postCommitEffects };
   const suppressImmediateRecovery = input.suppressImmediateRecovery === true || Boolean(
     issue.conversationAgentId && issue.conversationUserId &&
     issue.conversationState === "waiting" && issue.status === "in_review"
@@ -583,6 +710,7 @@ async function runReleaseRecoveryTail(
     },
     immediate: {
       applies: immediateApplies,
+      isTodoIssue: issue.status === "todo",
       isDispositionRepairRetry:
         readNonEmptyString(run.contextSnapshot.retryReason) ===
         ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
@@ -715,6 +843,15 @@ async function runReleaseRecoveryTail(
         wakeReason: recoveryReason,
       },
     );
+  }
+
+  if (recoveryReason === "issue_continuation_needed") {
+    const claimed = await transaction.claimContinuationKey({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      key: buildContinuationKey({ issueId: issue.id, event: "issue_continuation_needed", head: run.id }),
+    });
+    if (claimed === "deduped") return { outcome: { kind: "released" }, postCommitEffects };
   }
 
   const queuedRun = await transaction.queueImmediateRecoveryRun({
@@ -956,8 +1093,18 @@ export function createReleaseIssueExecution(deps: {
   return async function releaseIssueExecution(
     input: ReleaseIssueExecutionInput,
   ): Promise<{ outcome: ReleaseOutcome; postCommitEffects: PostCommitEffect[] }> {
+    // Persist the CI wait before the release transaction can queue a recovery run.
+    // The tail then observes monitorNextCheckAt and leaves review recovery asleep.
+    await deps.recovery.deferReviewParticipantReleaseForCi({
+      companyId: input.companyId,
+      runId: input.runId,
+    });
     const result = await deps.issueLock.withIssueExecutionLock(
-      { companyId: input.companyId, runId: input.runId, now: input.now },
+      {
+        companyId: input.companyId, runId: input.runId, now: input.now,
+        ...(input.deferredWakesPostdateRun ? { deferredWakesPostdateRun: true } : {}),
+        ...(input.ignoreUnrecordedReconciliation ? { ignoreUnrecordedReconciliation: true } : {}),
+      },
       (locked, ports) => runReleaseDrain(locked, ports, input),
     );
 

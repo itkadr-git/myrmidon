@@ -7,10 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { execute as executeClaude } from "@paperclipai/adapter-claude-local/server";
-import { execute as executeCodex } from "@paperclipai/adapter-codex-local/server";
-import { execute as executeHermes } from "@paperclipai/hermes-paperclip-adapter/server";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
+import { execute as executeClaude } from "@myrmidon/adapter-claude-local/server";
+import { execute as executeCodex } from "@myrmidon/adapter-codex-local/server";
+import { execute as executeHermes } from "@myrmidon/hermes-paperclip-adapter/server";
 
 // Obviously fake values: nothing here is a real credential.
 const FAKE_SERVER_SECRETS: Record<string, string> = {
@@ -159,6 +159,9 @@ describe("myrmidon(S2) adapter runs do not inherit server secrets", () => {
       expect(agentRun.names).toContain("OPENAI_API_KEY");
       expect(agentRun.names).toContain("PAPERCLIP_RUN_ID");
       expect(agentRun.names).toContain("PAPERCLIP_API_KEY");
+      // myrmidon(REBRAND-C): canonical MYRMIDON_* names ship alongside.
+      expect(agentRun.names).toContain("MYRMIDON_RUN_ID");
+      expect(agentRun.names).toContain("MYRMIDON_API_KEY");
     });
 
     it(`${testCase.label}: inheritProcessEnv restores the server environment`, async () => {

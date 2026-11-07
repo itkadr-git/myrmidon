@@ -335,6 +335,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issues.wakeup` |
 | | `issue.comments.create` |
 | | `issue.comments.create_human_attributed` |
+| | `issue.attachments.write` |
 | | `issue.documents.write` |
 | | `issue.relations.write` |
 | | `activity.log.write` |
@@ -489,6 +490,21 @@ before dispatch. The worker receives route params, query, parsed JSON body,
 sanitized headers, actor context, and `companyId`; responses are JSON `{ status?,
 headers?, body? }`.
 
+## Issue Attachments
+
+Plugins can upload a bounded base64-encoded file using `ctx.issues.uploadAttachment` after creating an issue. Declare `issue.attachments.write`; the host validates the issue's company, size and allowed content type, stores bytes without exposing board credentials, and audits the operation.
+
+```ts
+const issue = await ctx.issues.create({ companyId, projectId, title: "Evidence" });
+const attachment = await ctx.issues.uploadAttachment({
+  issueId: issue.id,
+  companyId,
+  filename: "evidence.txt",
+  contentType: "text/plain",
+  contentBase64: Buffer.from("proof").toString("base64"),
+});
+```
+
 ## Issue Orchestration APIs
 
 Workflow plugins can use `ctx.issues` for orchestration-grade issue operations without importing host server internals.
@@ -594,6 +610,7 @@ Required capabilities:
 
 | API | Capability |
 |-----|------------|
+| `ctx.issues.uploadAttachment` | `issue.attachments.write` |
 | `ctx.issues.relations.get` | `issue.relations.read` |
 | `ctx.issues.relations.setBlockedBy` / `addBlockers` / `removeBlockers` | `issue.relations.write` |
 | `ctx.issues.getSubtree` | `issue.subtree.read` |

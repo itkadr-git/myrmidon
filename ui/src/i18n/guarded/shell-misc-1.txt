@@ -1,0 +1,7 @@
+components/AnimatedPaperclipIcon.tsx
+components/AppErrorBoundary.tsx
+components/BootstrapPendingPage.tsx
+components/CommandPalette.tsx
+components/DevRestartBanner.tsx
+components/KeyboardShortcutsCheatsheet.tsx
+components/PageTabBar.tsx

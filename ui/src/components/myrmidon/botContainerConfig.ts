@@ -1,12 +1,12 @@
 // myrmidon(W2b): pure helpers for the "Container" section of the agent card.
 //
 // The card stores `adapterConfig.container = { enabled, image, memoryMb, cpus,
-// pidsLimit, group? }`. The server reads it in
+// pidsLimit, idleStopMode, group? }`. The server reads it in
 // server/src/myrmidon/bot-containers/agent-config.ts and only requires the numbers
 // to be positive; the ranges below are the UI's own sanity bounds (they keep a
 // typo like an extra zero from asking the host for terabytes), not server rules.
 
-export const BOT_CONTAINER_DEFAULTS = { memoryMb: 2048, cpus: 1, pidsLimit: 512 } as const;
+export const BOT_CONTAINER_DEFAULTS = { memoryMb: 1024, cpus: 1, pidsLimit: 512 } as const;
 
 export type BotContainerNumberField = "memoryMb" | "cpus" | "pidsLimit";
 
@@ -24,7 +24,9 @@ export const BOT_CONTAINER_NUMBER_FIELDS: Record<BotContainerNumberField, Number
   pidsLimit: { label: "Process limit", unit: "processes", min: 16, max: 65_536, integer: true },
 };
 
-export type BotContainerCard = Record<string, unknown>;
+export interface BotContainerCard extends Record<string, unknown> {
+  idleStopMode?: "on_demand" | "always_on";
+}
 
 /** The stored `container` block as a plain object; anything else reads as empty. */
 export function readBotContainerCard(value: unknown): BotContainerCard {

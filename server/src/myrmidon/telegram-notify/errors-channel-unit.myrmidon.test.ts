@@ -4,7 +4,7 @@
 // transport) lives in errors-channel.myrmidon.test.ts.
 
 import { describe, expect, it } from "vitest";
-import { defaultTelegramNotifySettings } from "@paperclipai/shared";
+import { defaultTelegramNotifySettings } from "@myrmidon/shared";
 import {
   ERROR_CHANNEL_SOURCE_KINDS,
   ERROR_CHANNEL_TEXT_MAX,
@@ -44,6 +44,8 @@ describe("filterErrorChannelCard", () => {
       expect(filterErrorChannelCard(ON, { sourceKind, severity: "high" })).toEqual({ send: true });
       expect(filterErrorChannelCard(ON, { sourceKind, severity: "critical" })).toEqual({ send: true });
     }
+    expect(filterErrorChannelCard(ON, { sourceKind: "litellm_budget", severity: "high" })).toEqual({ send: true });
+    expect(filterErrorChannelCard(ON, { sourceKind: "litellm_budget", severity: "critical" })).toEqual({ send: true });
   });
 
   it("keeps non-error attention kinds out of the channel", () => {

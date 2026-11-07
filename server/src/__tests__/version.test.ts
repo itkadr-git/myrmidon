@@ -180,7 +180,7 @@ describe("resolveServerVersion", () => {
         buildCommit: "0123456789abcdef0123456789abcdef01234567",
         packageVersion: "2026.707.0-canary.12",
         debugLog,
-        packageRoot: "/tmp/npm/_npx/example/node_modules/@paperclipai/server",
+        packageRoot: "/tmp/npm/_npx/example/node_modules/@myrmidon/server",
       }),
     ).toBe("2026.707.0-canary.12");
 

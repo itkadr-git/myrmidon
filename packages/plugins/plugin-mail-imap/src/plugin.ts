@@ -4,7 +4,7 @@ import {
   type PluginContext,
   type PluginJobContext,
   type PluginPerformActionContext,
-} from "@paperclipai/plugin-sdk";
+} from "@myrmidon/plugin-sdk";
 import { randomUUID } from "node:crypto";
 import { resolveConfig, type MailPluginConfig } from "./config.js";
 import { ImapFlowClient } from "./imap-client.js";

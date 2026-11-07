@@ -4,7 +4,7 @@ import type {
   DecisionQueueItem,
   DecisionQueueSeedRule,
   DecisionTriage,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 // The shared types model timestamps as `Date` (the server row shape); over the

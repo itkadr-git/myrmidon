@@ -8,7 +8,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PROCESSES_SETTINGS, PROCESSES_SPLIT_UNSUPPORTED_REASON } from "@paperclipai/shared";
+import { DEFAULT_PROCESSES_SETTINGS, PROCESSES_SPLIT_UNSUPPORTED_REASON } from "@myrmidon/shared";
 import { ProcessesSettingsPanel } from "./ProcessesSettingsPanel";
 import type { ProcessesSettingsView } from "./processesApi";
 

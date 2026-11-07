@@ -8,7 +8,7 @@ import {
   type SourceTrustMetadata,
   type TrustAuthorizationPolicy,
   type TrustPreset,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export type LowTrustBoundaryTarget =
   | { type: "project"; id: string }

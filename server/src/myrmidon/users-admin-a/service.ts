@@ -1,0 +1,423 @@
+// myrmidon(OPE-8985): create, block and reset the password of board users on
+// behalf of an instance administrator, plus the one-time password-set link.
+//
+// Users are written in the shape Better Auth's own email/password sign-up
+// writes them (`user` + credential `account`), so sign-in keeps going through
+// the vendor path. A user created by an administrator has no mailbox: the
+// address is the synthetic `<login>@myr.local`, and the login form takes it
+// like any other email.
+
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { and, desc, eq, gt, inArray, isNull, like } from "drizzle-orm";
+import { hashPassword } from "better-auth/crypto";
+import type { Db } from "@myrmidon/db";
+import { setBlockedUser } from "./store.js";
+import {
+  activityLog,
+  authAccounts,
+  authSessions,
+  authUsers,
+  boardApiKeys,
+  instanceUserRoles,
+  userBlocks,
+  userPasswordSetTokens,
+} from "@myrmidon/db";
+
+export const CREDENTIAL_ISSUER = "local:credential";
+export const MANAGED_EMAIL_DOMAIN = "myr.local";
+export const PASSWORD_SET_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+export const PASSWORD_MIN = 8;
+export const PASSWORD_MAX = 128;
+export const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$/;
+
+export type ManagedRole = "instance_admin" | "member";
+
+export interface ManagedUser {
+  id: string;
+  username: string;
+  email: string;
+  name: string;
+  role: ManagedRole;
+  blocked: boolean;
+  syntheticEmail: boolean;
+  createdAt: string;
+}
+
+export interface CreateUserResult extends ManagedUser {
+  user: ManagedUser;
+  token: string | null;
+  passwordSetLink: string | null;
+}
+
+export class UsersAdminError extends Error {
+  constructor(public status: number, public code: string, message: string) {
+    super(message);
+  }
+}
+
+export function hashPasswordSetToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function newToken(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function emailToUsername(email: string): string {
+  return email.split("@")[0] ?? email;
+}
+
+function toManagedUser(
+  row: { id: string; name: string; email: string; createdAt: Date },
+  admins: Set<string>,
+  blocked: Set<string>,
+): ManagedUser {
+  return {
+    id: row.id,
+    username: emailToUsername(row.email),
+    email: row.email,
+    name: row.name,
+    role: admins.has(row.id) ? "instance_admin" : "member",
+    blocked: blocked.has(row.id),
+    syntheticEmail: row.email.endsWith(`@${MANAGED_EMAIL_DOMAIN}`),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+export async function listUsers(db: Db): Promise<ManagedUser[]> {
+  const rows = await db
+    .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, createdAt: authUsers.createdAt })
+    .from(authUsers);
+  const admins = new Set(
+    (await db.select({ userId: instanceUserRoles.userId }).from(instanceUserRoles).where(eq(instanceUserRoles.role, "instance_admin")))
+      .map((r) => r.userId),
+  );
+  const blocked = new Set((await db.select({ userId: userBlocks.userId }).from(userBlocks)).map((r) => r.userId));
+  return rows
+    .map((row) => toManagedUser(row, admins, blocked))
+    .sort((a, b) => a.email.localeCompare(b.email));
+}
+
+export async function getUser(db: Db, userId: string) {
+  const row = await db
+    .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, createdAt: authUsers.createdAt })
+    .from(authUsers)
+    .where(eq(authUsers.id, userId))
+    .then((rows) => rows[0] ?? null);
+  if (!row) throw new UsersAdminError(404, "NOT_FOUND", "User not found");
+  return row;
+}
+
+function assertPassword(password: string): void {
+  if (password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) {
+    throw new UsersAdminError(422, "INVALID_PASSWORD", `Password must be ${PASSWORD_MIN}-${PASSWORD_MAX} characters`);
+  }
+}
+
+async function issueToken(
+  db: Pick<Db, "insert">,
+  input: { userId: string; via: "create" | "reset"; actorUserId: string; now: Date },
+): Promise<string> {
+  const token = newToken();
+  await db.insert(userPasswordSetTokens).values({
+    tokenHash: hashPasswordSetToken(token),
+    userId: input.userId,
+    issuedVia: input.via,
+    issuedByUserId: input.actorUserId,
+    createdAt: input.now,
+    expiresAt: new Date(input.now.getTime() + PASSWORD_SET_TOKEN_TTL_MS),
+  });
+  return token;
+}
+
+/**
+ * Creates a user. With a password the account is usable at once; without one the
+ * result carries the raw one-time `token` (the caller turns it into a link).
+ */
+export async function createUser(
+  db: Db,
+  input: { username: string; name?: string; displayName?: string; password?: string | null; role: ManagedRole; actorUserId: string },
+): Promise<CreateUserResult> {
+  const username = input.username.trim().toLowerCase();
+  if (!USERNAME_PATTERN.test(username)) {
+    throw new UsersAdminError(422, "INVALID_USERNAME", "Username must be 3-32 chars: lowercase letters, digits, dots, dashes or underscores");
+  }
+  const password = input.password ? input.password : null;
+  if (password) assertPassword(password);
+  const email = `${username}@${MANAGED_EMAIL_DOMAIN}`;
+  const taken = await db.select({ id: authUsers.id }).from(authUsers).where(eq(authUsers.email, email)).then((r) => r[0] ?? null);
+  if (taken) throw new UsersAdminError(409, "CONFLICT", `Username "${username}" is already taken`);
+
+  const now = new Date();
+  const userId = randomUUID();
+  const passwordHash = password ? await hashPassword(password) : null;
+  let token: string | null = null;
+  await db.transaction(async (tx) => {
+    await tx.insert(authUsers).values({
+      id: userId,
+      name: input.name?.trim() || username, email, emailVerified: true, createdAt: now, updatedAt: now,
+    });
+    await tx.insert(authAccounts).values({
+      id: randomUUID(), issuer: CREDENTIAL_ISSUER, accountId: userId, providerId: "credential",
+      userId, password: passwordHash, createdAt: now, updatedAt: now,
+    });
+    if (input.role === "instance_admin") {
+      await tx.insert(instanceUserRoles).values({ userId, role: "instance_admin" }).onConflictDoNothing();
+    }
+    if (!password) token = await issueToken(tx, { userId, via: "create", actorUserId: input.actorUserId, now });
+  });
+  const row = await getUser(db, userId);
+  const admins = new Set(input.role === "instance_admin" ? [userId] : []);
+  const user = toManagedUser(row, admins, new Set());
+  const link = token ? `/api/myrmidon/users-admin-a/password-set?token=${encodeURIComponent(token)}` : null;
+  return Object.assign(
+    { ...user, user, token, passwordSetLink: link },
+    { user, token, passwordSetLink: link },
+  );
+}
+
+/** Blocks or unblocks a user; blocking closes every live session. */
+export async function setUserBlocked(
+  db: Db,
+  input: { userId: string; blocked: boolean; actorUserId: string; reason?: string | null },
+): Promise<{ sessionsClosed: number }> {
+  await getUser(db, input.userId);
+  if (input.blocked && input.userId === input.actorUserId) {
+    throw new UsersAdminError(409, "CONFLICT", "You cannot block yourself");
+  }
+  if (!input.blocked) {
+    await db.delete(userBlocks).where(eq(userBlocks.userId, input.userId));
+    await setBlockedUser(db, {
+      userId: input.userId,
+      blocked: false,
+      blockedBy: input.actorUserId,
+      reason: null,
+    });
+    return { sessionsClosed: 0 };
+  }
+  await db
+    .insert(userBlocks)
+    .values({ userId: input.userId, blockedByUserId: input.actorUserId })
+    .onConflictDoNothing();
+  await setBlockedUser(db, {
+    userId: input.userId,
+    blocked: true,
+    blockedBy: input.actorUserId,
+    reason: input.reason ?? null,
+  });
+  // Board API keys are a second way in besides sessions: revoke them too. They stay
+  // revoked after unblocking; the user issues a new key.
+  await db
+    .update(boardApiKeys)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(boardApiKeys.userId, input.userId), isNull(boardApiKeys.revokedAt)));
+  const closed = await db.delete(authSessions).where(eq(authSessions.userId, input.userId)).returning({ id: authSessions.id });
+  return { sessionsClosed: closed.length };
+}
+
+export async function isUserBlocked(db: Pick<Db, "select">, userId: string): Promise<boolean> {
+  const row = await db.select({ userId: userBlocks.userId }).from(userBlocks).where(eq(userBlocks.userId, userId)).then((r) => r[0] ?? null);
+  return row !== null;
+}
+
+/** Updates user role (instance_admin or member). Prevents self-demotion or demoting the last admin. */
+export async function setUserRole(
+  db: Db,
+  input: { userId: string; role: ManagedRole; actorUserId: string },
+): Promise<{ previousRole: ManagedRole; newRole: ManagedRole }> {
+  if (input.userId === input.actorUserId && input.role !== "instance_admin") {
+    throw new UsersAdminError(409, "CONFLICT", "You cannot demote yourself");
+  }
+  await getUser(db, input.userId);
+  const currentAdmins = await db
+    .select({ userId: instanceUserRoles.userId })
+    .from(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, input.userId), eq(instanceUserRoles.role, "instance_admin")))
+    .then((rows) => rows.length > 0);
+  const previousRole: ManagedRole = currentAdmins ? "instance_admin" : "member";
+
+  if (previousRole === input.role) {
+    return { previousRole, newRole: input.role };
+  }
+
+  if (input.role === "instance_admin") {
+    await db
+      .insert(instanceUserRoles)
+      .values({ userId: input.userId, role: "instance_admin" })
+      .onConflictDoNothing();
+  } else {
+    const totalAdmins = await db
+      .select({ userId: instanceUserRoles.userId })
+      .from(instanceUserRoles)
+      .where(eq(instanceUserRoles.role, "instance_admin"))
+      .then((rows) => rows.length);
+    if (totalAdmins <= 1) {
+      throw new UsersAdminError(409, "CONFLICT", "Cannot demote the last instance administrator");
+    }
+    await db
+      .delete(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, input.userId), eq(instanceUserRoles.role, "instance_admin")));
+  }
+
+  return { previousRole, newRole: input.role };
+}
+
+export interface UserAuditItem {
+  id: string;
+  action: string;
+  actorId: string;
+  actorName: string;
+  actorUsername: string;
+  targetUserId: string;
+  targetName: string;
+  targetUsername: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ListAuditOptions {
+  userId?: string;
+  actorId?: string;
+  action?: string;
+  limit?: number;
+}
+
+export async function listAuditLogs(
+  db: Db,
+  options: ListAuditOptions = {},
+): Promise<UserAuditItem[]> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+
+  const conditions = [
+    eq(activityLog.entityType, "user"),
+    like(activityLog.action, "instance.user.%"),
+  ];
+  if (options.userId) {
+    conditions.push(eq(activityLog.entityId, options.userId));
+  }
+  if (options.actorId) {
+    conditions.push(eq(activityLog.actorId, options.actorId));
+  }
+  if (options.action) {
+    conditions.push(eq(activityLog.action, options.action));
+  }
+
+  const fetchLimit = limit * 10;
+  const rawRows = await db
+    .select({
+      id: activityLog.id,
+      actorId: activityLog.actorId,
+      action: activityLog.action,
+      entityId: activityLog.entityId,
+      details: activityLog.details,
+      createdAt: activityLog.createdAt,
+    })
+    .from(activityLog)
+    .where(and(...conditions))
+    .orderBy(desc(activityLog.createdAt))
+    .limit(fetchLimit);
+
+  const seen = new Set<string>();
+  const deduplicated: typeof rawRows = [];
+  for (const row of rawRows) {
+    const key = `${row.createdAt.getTime()}:${row.action}:${row.actorId}:${row.entityId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduplicated.push(row);
+    if (deduplicated.length >= limit) break;
+  }
+
+  const userIds = Array.from(
+    new Set([
+      ...deduplicated.map((r) => r.actorId),
+      ...deduplicated.map((r) => r.entityId),
+    ]),
+  );
+
+  const userMap = new Map<string, { username: string; name: string }>();
+  if (userIds.length > 0) {
+    const userRows = await db
+      .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+      .from(authUsers)
+      .where(inArray(authUsers.id, userIds));
+    for (const u of userRows) {
+      userMap.set(u.id, {
+        username: emailToUsername(u.email),
+        name: u.name,
+      });
+    }
+  }
+
+  return deduplicated.map((row) => {
+    const actor = userMap.get(row.actorId);
+    const target = userMap.get(row.entityId);
+    return {
+      id: row.id,
+      action: row.action,
+      actorId: row.actorId,
+      actorName: actor?.name ?? row.actorId,
+      actorUsername: actor?.username ?? row.actorId,
+      targetUserId: row.entityId,
+      targetName: target?.name ?? row.entityId,
+      targetUsername: target?.username ?? row.entityId,
+      details: (row.details as Record<string, unknown>) ?? {},
+      createdAt: row.createdAt.toISOString(),
+    };
+  });
+}
+
+/** Revokes older live links of the user and returns a fresh raw token. */
+export async function resetUserPassword(
+  db: Db,
+  input: { userId: string; actorUserId: string },
+): Promise<{ token: string; passwordSetLink: string }> {
+  await getUser(db, input.userId);
+  const now = new Date();
+  return db.transaction(async (tx) => {
+    await tx
+      .update(userPasswordSetTokens)
+      .set({ revokedAt: now, revokedReason: "superseded" })
+      .where(and(eq(userPasswordSetTokens.userId, input.userId), isNull(userPasswordSetTokens.revokedAt)));
+    const token = await issueToken(tx, { userId: input.userId, via: "reset", actorUserId: input.actorUserId, now });
+    const link = `/api/myrmidon/users-admin-a/password-set?token=${encodeURIComponent(token)}`;
+    return { token, passwordSetLink: link };
+  });
+}
+
+/**
+ * Consumes a link token exactly once. The claim is a single UPDATE ... WHERE
+ * revoked_at IS NULL AND expires_at > now, so a replay or a race finds nothing.
+ * Unknown, used and expired tokens answer the same 404: a probe learns nothing.
+ */
+export async function consumePasswordSetToken(db: Db, input: { token: string; newPassword: string }): Promise<{ userId: string }> {
+  assertPassword(input.newPassword);
+  const now = new Date();
+  const hash = await hashPassword(input.newPassword);
+  return db.transaction(async (tx) => {
+    const claimed = await tx
+      .update(userPasswordSetTokens)
+      .set({ revokedAt: now, revokedReason: "used" })
+      .where(and(
+        eq(userPasswordSetTokens.tokenHash, hashPasswordSetToken(input.token)),
+        isNull(userPasswordSetTokens.revokedAt),
+        gt(userPasswordSetTokens.expiresAt, now),
+      ))
+      .returning({ userId: userPasswordSetTokens.userId })
+      .then((rows) => rows[0] ?? null);
+    if (!claimed) throw new UsersAdminError(404, "LINK_INVALID", "The password link is invalid, used or expired");
+    const updated = await tx
+      .update(authAccounts)
+      .set({ password: hash, updatedAt: now })
+      .where(and(eq(authAccounts.userId, claimed.userId), eq(authAccounts.providerId, "credential")))
+      .returning({ id: authAccounts.id });
+    if (updated.length === 0) {
+      await tx.insert(authAccounts).values({
+        id: randomUUID(), issuer: CREDENTIAL_ISSUER, accountId: claimed.userId, providerId: "credential",
+        userId: claimed.userId, password: hash, createdAt: now, updatedAt: now,
+      });
+    }
+    // A new password ends every session opened with the old one.
+    await tx.delete(authSessions).where(eq(authSessions.userId, claimed.userId));
+    return { userId: claimed.userId };
+  });
+}

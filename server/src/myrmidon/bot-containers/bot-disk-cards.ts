@@ -23,7 +23,7 @@ import {
   type WsCardKey,
   type WsDiskReport,
   type WsReportCopy,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** A report older than this on a running container raises `agent-silent`. */
 export const BOT_DISK_AGENT_SILENT_MS = 30 * 60_000;
@@ -31,8 +31,8 @@ export const BOT_DISK_AGENT_SILENT_MS = 30 * 60_000;
 export const BOT_DISK_DRIFT_EXTRA_MS = 15 * 60_000;
 /** A bot on a non-current image for longer than this raises `bot_image_stale`. */
 export const BOT_IMAGE_STALE_MS = 24 * 3_600_000;
-/** Archives live 30 days (design class F); an older one is not shown. */
-export const BOT_DISK_ARCHIVE_TTL_MS = 30 * 24 * 3_600_000;
+/** Archive cards are reminders, not the host archive's retention or deletion policy. */
+export const BOT_DISK_ARCHIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type BotDiskCardSourceKind = "bot_disk_lifecycle" | "bot_disk_archive" | "bot_image_stale";
 
@@ -46,6 +46,8 @@ export interface BotDiskBotSnapshot {
   receivedAtMs: number | null;
   /** The last accepted report (contract C4); null = none yet. */
   report: WsDiskReport | null;
+  /** Latest botd foreign-owner/deferred attention, if any. */
+  foreignUid?: { path: string; reason: string } | null;
   /**
    * Desired state (contract C3): issue key -> ISO time the task became
    * terminal / reassigned / PR-merged (`state: "closing"` + `since`). A copy
@@ -263,7 +265,7 @@ export function buildArchiveCards(input: BotDiskCardsInput): BotDiskCard[] {
         title: `Unpushed work of ${redactReportText(a.key)} was archived`,
         whyNow: `The copy of ${redactReportText(a.key)} held unpushed work and was removed; it is kept as ${redactReportText(baseName(a.path))} (${a.sizeBytes} bytes) until ${iso(expiresMs)}. Restore it with myr-ws restore ${redactReportText(a.key)}.`,
         entryRule: "the disk agent archived a copy with unpushed work",
-        exitRule: "the archive is restored, or expires after 30 days",
+        exitRule: "the archive is restored, or this reminder expires after 30 days",
         at,
         payload: {
           botKey: bot.botKey,
@@ -316,11 +318,37 @@ export function buildImageStaleCards(input: BotDiskCardsInput): BotDiskCard[] {
 export function buildBotDiskCards(input: BotDiskCardsInput): BotDiskCard[] {
   return [
     ...buildAgentSilentCards(input),
+    ...buildForeignUidCards(input),
     ...buildDriftCards(input),
     ...buildForeignCards(input),
     ...buildArchiveCards(input),
     ...buildImageStaleCards(input),
   ];
+}
+
+/** Surface botd's permission failure instead of repeatedly retrying its archive. */
+export function buildForeignUidCards(input: BotDiskCardsInput): BotDiskCard[] {
+  return input.bots.flatMap((bot) => {
+    const issue = bot.foreignUid ?? (bot.report?.foreignUid ?? null);
+    if (!issue) return [];
+    const at = iso(bot.receivedAtMs ?? input.nowMs);
+    const path = redactReportText(issue.path);
+    const reason = redactReportText(issue.reason);
+    return [{
+      sourceKind: "bot_disk_lifecycle" as const,
+      cardKey: WS_CARD_KEYS.foreign,
+      botKey: bot.botKey,
+      issueKey: null,
+      dedupKey: `${WS_CARD_KEYS.foreign}:${bot.botKey}:foreign-uid:${path}`,
+      severity: "high" as const,
+      title: "Bot disk cleanup deferred by foreign ownership",
+      whyNow: `Cleanup of ${path} was deferred: ${reason}. Correct the file ownership before retrying.`,
+      entryRule: "botd reports a foreign-owner permission error while cleaning a workspace",
+      exitRule: "a fresh bot report clears the foreign-owner attention",
+      at,
+      payload: { botKey: bot.botKey, at, path, reason },
+    }];
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -20,9 +20,10 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -32,12 +33,13 @@ import {
   isIssueCoolingDown,
   decideIssueCooling,
   isRealTaskMovement,
+  readSwarmSettings,
   tasklessGateReason,
 } from "./wake-task-guard.js";
 import {
   resolveSwarmSettings,
   swarmCoolingPeriodMs,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 // M3-style adapter spy: proves the gated wake never reaches the adapter.
 const mockAdapterExecute = vi.hoisted(() =>
@@ -125,6 +127,32 @@ describe("myrmidon(1.6.5 F-26 T5) cooling decision (pure, system actors excluded
     expect(decide([{ at: after, actorType: "agent", actorId: "agent-2" }]).cooling).toBe(false);
   });
 
+  it("three returns to todo without external input suppress the fourth wake until an event", () => {
+    const runs = [0, 1, 2].map((index) => ({
+      ...run,
+      status: "succeeded",
+      livenessState: "needs_followup",
+      finishedAt: new Date(finishedAt.getTime() - index * 60_000),
+      startedAt: new Date(finishedAt.getTime() - index * 60_000 - 30_000),
+      createdAt: new Date(finishedAt.getTime() - index * 60_000 - 30_000),
+    }));
+    const decision = decideIssueCooling({ issueStatus: "todo", runs, moves: [
+      { at: finishedAt.getTime() + 1, actorType: "agent", actorId: "agent-1", action: "issue.updated" },
+    ], settings, now });
+    expect(decision.cooling).toBe(true);
+    expect(decision.staleCount).toBe(3);
+    expect(decision.cooldownMin).toBe(120);
+    expect(decideIssueCooling({ issueStatus: "todo", runs, moves: [
+      { at: finishedAt.getTime() + 1, actorType: "user", actorId: "u1", action: "issue.comment_added" },
+    ], settings, now }).cooling).toBe(false);
+  });
+
+  it("external blocker or CI events lift cooling without treating internal status updates as input", () => {
+    expect(decide([{ at: after, actorType: "system", actorId: "recovery", action: "issue.updated" }]).cooling).toBe(true);
+    expect(decide([{ at: after, actorType: "system", actorId: "ci", action: "myrmidon.task_pr_sync.settled" }]).cooling).toBe(false);
+    expect(decide([{ at: after, actorType: "system", actorId: "blocker", action: "issue.blockers_resolved_wake_emitted" }]).cooling).toBe(false);
+  });
+
   it("isRealTaskMovement classifies actors", () => {
     expect(isRealTaskMovement({ at: 1, actorType: "system", actorId: "x" }, "a")).toBe(false);
     expect(isRealTaskMovement({ at: 1, actorType: "user", actorId: "u" }, "a")).toBe(true);
@@ -198,7 +226,13 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
 
   async function seedAutoRun(
     issueId: string,
-    overrides: { status?: string; livenessState?: string | null; finishedAt?: Date } = {},
+    overrides: {
+      status?: string;
+      errorCode?: string | null;
+      livenessState?: string | null;
+      finishedAt?: Date;
+      cancellationCode?: string;
+    } = {},
   ) {
     const finishedAt = overrides.finishedAt ?? new Date();
     await db.insert(heartbeatRuns).values({
@@ -206,7 +240,11 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       agentId,
       invocationSource: "automation",
       status: overrides.status ?? "failed",
-      livenessState: overrides.livenessState ?? null,
+      errorCode: overrides.errorCode ?? null,
+      ...(overrides.cancellationCode ? { resultJson: { executionCancellation: { source: { code: overrides.cancellationCode } } } } : {}),
+      ...(overrides.status === "succeeded"
+        ? { livenessState: overrides.livenessState ?? "empty_response" }
+        : { livenessState: overrides.livenessState ?? null }),
       contextSnapshot: { issueId, wakeReason: "idle_pickup", source: "automation" },
       contextIssueId: issueId,
       contextWakeReason: "idle_pickup",
@@ -289,6 +327,30 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     });
     expect((await isIssueCoolingDown(db, companyId, stuck, settings, now)).cooling).toBe(true);
 
+    const boardCancelled = await seedIssue("todo");
+    await seedAutoRun(boardCancelled, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(boardCancelled, {
+      status: "cancelled",
+      cancellationCode: "reassignment",
+      finishedAt: new Date(now.getTime() - 5 * 60_000),
+    });
+    const reassignmentCooling = await isIssueCoolingDown(db, companyId, boardCancelled, settings, now);
+    expect(reassignmentCooling.cooling).toBe(true);
+    expect(reassignmentCooling.staleCount).toBe(1);
+    expect(reassignmentCooling.cooldownMin).toBe(30);
+
+    const unknownCancellation = await seedIssue("todo");
+    await seedAutoRun(unknownCancellation, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(unknownCancellation, {
+      status: "cancelled",
+      cancellationCode: "adapter_error",
+      finishedAt: new Date(now.getTime() - 5 * 60_000),
+    });
+    const unknownCancellationCooling = await isIssueCoolingDown(db, companyId, unknownCancellation, settings, now);
+    expect(unknownCancellationCooling.cooling).toBe(true);
+    expect(unknownCancellationCooling.staleCount).toBe(1);
+    expect(unknownCancellationCooling.cooldownMin).toBe(30);
+
     const moving = await seedIssue("in_progress");
     await seedAutoRun(moving, {
       status: "succeeded",
@@ -298,7 +360,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     expect((await isIssueCoolingDown(db, companyId, moving, settings, now)).cooling).toBe(false);
   });
 
-  it("cooling: movement between runs resets the exponent; cancelled runs do not cool; real activity lifts", async () => {
+  it("cooling: movement between runs resets the exponent; cancelled runs do not count as stale; real activity lifts", async () => {
     const now = new Date();
     const settings = resolveSwarmSettings(undefined);
 
@@ -318,10 +380,22 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     expect(resetStatus.staleCount).toBe(1);
     expect(resetStatus.cooldownMin).toBe(30);
 
-    // System cancellations are not stale runs.
+    // A board/reassignment cancellation is not stale and cannot increase the
+    // exponent, even when it follows a stale failure.
     const cancelled = await seedIssue("todo");
-    await seedAutoRun(cancelled, { status: "cancelled", finishedAt: new Date(now.getTime() - 5 * 60_000) });
-    expect((await isIssueCoolingDown(db, companyId, cancelled, settings, now)).cooling).toBe(false);
+    await seedAutoRun(cancelled, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(cancelled, { status: "cancelled", cancellationCode: "reassignment", finishedAt: new Date(now.getTime() - 5 * 60_000) });
+    const reassigned = await isIssueCoolingDown(db, companyId, cancelled, settings, now);
+    expect(reassigned.cooling).toBe(true);
+    expect(reassigned.staleCount).toBe(1);
+    expect(reassigned.cooldownMin).toBe(30);
+
+    const staleSuccesses = await seedIssue("todo");
+    await seedAutoRun(staleSuccesses, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(staleSuccesses, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(now.getTime() - 5 * 60_000) });
+    const staleStatus = await isIssueCoolingDown(db, companyId, staleSuccesses, settings, now);
+    expect(staleStatus.cooling).toBe(true);
+    expect(staleStatus.staleCount).toBe(2);
 
     // A status/assignee change logged as activity lifts the window, even
     // though the release-style updatedAt bump alone never does.
@@ -391,6 +465,47 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     expect((await isIssueCoolingDown(db, companyId, issueId, settings, now)).cooling).toBe(false);
   });
 
+  // myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894) — red side: the value the
+  // "Task cooling" block saves into `general.swarm` is the one rule the guard
+  // reads back through `readSwarmSettings`, and it changes the wake decision.
+  it("a cooldown saved through the settings row changes the guard's decision", async () => {
+    const issueId = await seedIssue("todo");
+    const now = new Date();
+    // one stale automatic run 20 minutes ago: with the DEFAULT base (30 min)
+    // the task is still cooling — the wake must not fire.
+    await seedAutoRun(issueId, { status: "failed", finishedAt: new Date(now.getTime() - 20 * 60_000) });
+    expect(
+      (await isIssueCoolingDown(db, companyId, issueId, resolveSwarmSettings(undefined), now)).cooling,
+    ).toBe(true);
+
+    // what PATCH /api/instance/settings/general stores for the cooling block
+    // (the panel's save path): base 10 minutes.
+    // The singleton row may already exist (shared embedded DB): upsert it and
+    // restore the previous value afterwards so other tests see no residue.
+    const [previous] = await db.select().from(instanceSettings).limit(1);
+    const general = { swarm: { cooldownBaseMin: 10, cooldownCeilingHours: 24, runWithoutTaskGate: true } };
+    await db
+      .insert(instanceSettings)
+      .values({ general, experimental: {} })
+      .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { general } });
+    try {
+      const saved = await readSwarmSettings(db);
+      expect(saved.cooldownBaseMin).toBe(10);
+      // the same task, the same clock: the saved value lifted the window, so
+      // the wake goes through (not cooling).
+      expect((await isIssueCoolingDown(db, companyId, issueId, saved, now)).cooling).toBe(false);
+    } finally {
+      if (previous) {
+        await db
+          .update(instanceSettings)
+          .set({ general: previous.general })
+          .where(eq(instanceSettings.singletonKey, "default"));
+      } else {
+        await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
+      }
+    }
+  });
+
   it("heartbeat seam: automatic swarm wake without issueId creates no run and never reaches the adapter", async () => {
     const { heartbeatService } = await import("../services/heartbeat.js");
     const heartbeat = heartbeatService(db, {
@@ -409,5 +524,85 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     );
     expect(runs.length).toBe(0);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("OPE-10784: 10 hermes_gateway_connect_failed runs in a row do not cause cooling; 3 empty successful runs cool as before", async () => {
+    const now = new Date();
+    const settings = resolveSwarmSettings(undefined);
+
+    // 10 runs failed with hermes_gateway_connect_failed in a row
+    const infraIssue = await seedIssue("todo");
+    for (let i = 10; i >= 1; i -= 1) {
+      await seedAutoRun(infraIssue, {
+        status: "failed",
+        errorCode: "hermes_gateway_connect_failed",
+        finishedAt: new Date(now.getTime() - i * 60_000),
+      });
+    }
+    const infraStatus = await isIssueCoolingDown(db, companyId, infraIssue, settings, now);
+    expect(infraStatus.cooling).toBe(false);
+
+    // 3 empty successful runs in a row -> cooling as before (staleCount = 3, cooldown = 120m)
+    const emptyIssue = await seedIssue("todo");
+    for (let i = 3; i >= 1; i -= 1) {
+      await seedAutoRun(emptyIssue, {
+        status: "succeeded",
+        livenessState: "empty_response",
+        finishedAt: new Date(now.getTime() - i * 60_000),
+      });
+    }
+    const emptyStatus = await isIssueCoolingDown(db, companyId, emptyIssue, settings, now);
+    expect(emptyStatus.cooling).toBe(true);
+    expect(emptyStatus.staleCount).toBe(3);
+    expect(emptyStatus.cooldownMin).toBe(120);
+  });
+
+  it("OPE-10784 decideIssueCooling: infra failure runs (process_lost, setup_failed, rollout drain) do not start cooling or count as stale", () => {
+    const now = new Date();
+    const settings = resolveSwarmSettings(undefined);
+
+    // 10 hermes_gateway_connect_failed runs
+    const gatewayRuns = Array.from({ length: 10 }, (_, i) => ({
+      agentId,
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      livenessState: null,
+      finishedAt: new Date(now.getTime() - (10 - i) * 60_000),
+      startedAt: new Date(now.getTime() - (10 - i) * 60_000 - 30_000),
+      createdAt: new Date(now.getTime() - (10 - i) * 60_000 - 30_000),
+    }));
+    expect(decideIssueCooling({ issueStatus: "todo", runs: gatewayRuns, moves: [], settings, now }).cooling).toBe(false);
+
+    // Mixed infra runs: process_lost, setup_failed, maintenance interrupt, shutdown
+    const mixedInfraRuns = [
+      "hermes_gateway_connect_failed",
+      "process_lost",
+      "setup_failed",
+      "server_shutdown_interrupted",
+      "myrmidon_maintenance_interrupted",
+    ].map((errorCode, i) => ({
+      agentId,
+      status: "failed",
+      errorCode,
+      livenessState: null,
+      finishedAt: new Date(now.getTime() - (5 - i) * 60_000),
+      startedAt: new Date(now.getTime() - (5 - i) * 60_000 - 30_000),
+      createdAt: new Date(now.getTime() - (5 - i) * 60_000 - 30_000),
+    }));
+    expect(decideIssueCooling({ issueStatus: "todo", runs: mixedInfraRuns, moves: [], settings, now }).cooling).toBe(false);
+
+    // 3 empty successful runs
+    const emptyRuns = Array.from({ length: 3 }, (_, i) => ({
+      agentId,
+      status: "succeeded",
+      livenessState: "empty_response",
+      finishedAt: new Date(now.getTime() - (3 - i) * 60_000),
+      startedAt: new Date(now.getTime() - (3 - i) * 60_000 - 30_000),
+      createdAt: new Date(now.getTime() - (3 - i) * 60_000 - 30_000),
+    }));
+    const emptyDecision = decideIssueCooling({ issueStatus: "todo", runs: emptyRuns, moves: [], settings, now });
+    expect(emptyDecision.cooling).toBe(true);
+    expect(emptyDecision.staleCount).toBe(3);
+    expect(emptyDecision.cooldownMin).toBe(120);
   });
 });

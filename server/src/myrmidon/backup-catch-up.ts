@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { liveDbBackupCatchupWindow } from "./runs-queue-settings/live.js";
 
 /**
  * Database backup catch-up (P11).
@@ -26,8 +27,7 @@ import { join } from "node:path";
 
 export const BACKUP_CATCHUP_WINDOW_ENV = "MYRMIDON_DB_BACKUP_CATCHUP_WINDOW";
 
-/** Upper bound for shifting the first tick out of the window. */
-const MAX_WINDOW_SHIFT_MS = 60 * 60 * 1000;
+/** Computes the delay to move a planned tick out of the window. */
 const MINUTES_PER_DAY = 24 * 60;
 
 export type BackupWindow = {
@@ -59,7 +59,11 @@ function minuteOfDay(hours: string, minutes: string): number | null {
 }
 
 export function readBackupCatchUpSettings(env: NodeJS.ProcessEnv = process.env): BackupCatchUpSettings {
-  const raw = env[BACKUP_CATCHUP_WINDOW_ENV]?.trim();
+  // OPE-4096: the window value resolves live (UI value → env forced override →
+  // default unset); an explicit env value always wins. The parse contract is
+  // unchanged: unset → disabled, "none" → enabled without a window, otherwise
+  // "<IANA zone> HH:MM-HH:MM".
+  const raw = liveDbBackupCatchupWindow(env);
   if (!raw) return { enabled: false };
   if (raw.toLowerCase() === "none") return { enabled: true, window: null };
   const match = WINDOW_PATTERN.exec(raw);
@@ -137,11 +141,11 @@ export function msUntilWindowEnd(now: Date, window: BackupWindow | null): number
   return Math.max(0, remainingMinutes * 60 * 1000 - secondsIntoMinute);
 }
 
-/** Extra delay that moves a tick planned `rawDelayMs` from now out of the window. */
+/** Computes the delay to move a planned tick out of the window. */
 export function windowShiftForTick(now: Date, rawDelayMs: number, window: BackupWindow | null): number {
   const tickAt = new Date(now.getTime() + Math.max(0, rawDelayMs));
   if (!isWithinBackupWindow(tickAt, window)) return 0;
-  return Math.min(msUntilWindowEnd(tickAt, window), MAX_WINDOW_SHIFT_MS);
+  return msUntilWindowEnd(tickAt, window);
 }
 
 export type CatchUpDecision = {

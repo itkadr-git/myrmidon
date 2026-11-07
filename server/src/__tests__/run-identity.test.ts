@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 
@@ -248,6 +248,35 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });
     const retry = await initializeRunIdentity(db, { companyId: input.companyId, runId, parentRunId: input.runId, responsibleUserId: "A", cause: "retry" });
     expect(retry.cause).toBe("company_default");
+  });
+
+  // myrmidon(OPE-11947): the wake that follows the cancellation of a stale queued
+  // run used to carry `taskId: "system:queued-run-stale-timeout"`, which this
+  // gate rejects, so every such run failed at setup.
+  async function seedWakeRun(contextSnapshot: Record<string, unknown> | null) {
+    const input = await seed();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "queued", contextSnapshot });
+    return { ...input, runId };
+  }
+
+  it("rejects a run whose context carries a placeholder task id", async () => {
+    const input = await seedWakeRun({ taskId: "system:queued-run-stale-timeout" });
+    await expect(
+      initializeRunIdentity(db, { companyId: input.companyId, runId: input.runId, responsibleUserId: null, cause: "dispatch" }),
+    ).rejects.toThrow("Run task identity is invalid");
+  });
+
+  it("accepts the stale-queued-run wake that resumes the cancelled run's task", async () => {
+    const seeded = await seed();
+    const runId = randomUUID();
+    // enqueueWakeup mirrors the payload issueId into the context as taskId.
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId: seeded.companyId, agentId: seeded.agentId, status: "queued",
+      contextSnapshot: { issueId: seeded.issueId, taskKey: seeded.issueId, taskId: seeded.issueId, wakeReason: "queued_run_stale_timeout" },
+    });
+    const identity = await initializeRunIdentity(db, { companyId: seeded.companyId, runId, responsibleUserId: null, cause: "dispatch" });
+    expect(identity.runId).toBe(runId);
   });
 
 });

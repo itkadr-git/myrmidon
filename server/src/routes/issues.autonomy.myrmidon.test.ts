@@ -17,7 +17,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { AUTONOMY_SAFE_DEFAULTS } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS } from "@myrmidon/shared";
 import { errorHandler } from "../middleware/index.js";
 import { autonomyGate, AUTONOMY_FORBIDDEN_CODE } from "../myrmidon/autonomy/gate.js";
 import { memoryAutonomyStore } from "../myrmidon/autonomy/store.js";

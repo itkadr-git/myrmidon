@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 // Guards for the Myrmidon image: reproducible CLI versions, no media tools,
-// and a publish workflow that never runs for pull requests.
+// and a PR build that validates image changes without publishing.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const dockerfile = fs.readFileSync(path.join(ROOT, "Dockerfile"), "utf8");
@@ -45,9 +45,12 @@ describe("Dockerfile production stage", () => {
 });
 
 describe("myrmidon-image.yml", () => {
-  it("never builds for pull requests and only in this repository", () => {
-    assert.doesNotMatch(workflow, /^\s*pull_request(_target)?\s*:/m);
-    assert.match(workflow, /if: \$\{\{ github\.repository == 'itkadr-git\/myrmidon' \}\}/);
+  it("builds the production image for pull requests without publishing", () => {
+    assert.match(workflow, /^\s*pull_request\s*:/m);
+    assert.match(workflow, /name: Build for pull request[\s\S]*?load: true[\s\S]*?push: false/);
+    assert.match(workflow, /if: \$\{\{ github\.event_name == 'pull_request' \}\}/);
+    assert.match(workflow, /if: \$\{\{ github\.event_name != 'pull_request' \}\}/);
+    assert.match(workflow, /Smoke test \/api\/health/);
   });
 
   it("builds amd64 only and publishes to the Myrmidon namespace", () => {

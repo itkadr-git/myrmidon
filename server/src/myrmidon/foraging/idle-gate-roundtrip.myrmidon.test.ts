@@ -3,7 +3,7 @@
 // line spread after the normalized patch restored the old stored value, so the
 // second PATCH answered 200 and the row kept the first value.
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { foragingIdleGateService } from "./idle-gate-settings.js";
 

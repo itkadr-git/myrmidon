@@ -15,11 +15,12 @@
 // The output hook (`run-output.ts`) is the only caller for part A; part B
 // (input injection) and later parts reuse recordGuardrailEvent directly.
 
-import { desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { guardrailEvents } from "@paperclipai/db";
+import { and, desc, eq } from "drizzle-orm";
+import type { Db } from "@myrmidon/db";
+import { guardrailEvents } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { maskSecretsInText } from "../secret-masking.js";
+import { guardrailTriggerMetrics } from "./metrics.js";
 import {
   GUARDRAIL_CATEGORIES,
   detectGuardrailHits,
@@ -80,6 +81,11 @@ export interface RecordGuardrailEventInput {
   issueId: string | null;
   runId: string | null;
   kind: "secret" | "pii";
+  rule?: string | null;
+  mode?: string | null;
+  level?: string | null;
+  agentId?: string | null;
+  decision?: string | null;
   surface: string;
   severity: "info" | "warn" | "error";
   snippet: string | null;
@@ -103,6 +109,11 @@ export function sanitizeGuardrailSnippet(snippet: string | null | undefined): st
 /** FROZEN for part B. Inserts one event row and one activity-log line. */
 export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventInput): Promise<{ id: string }> {
   const maskedSnippet = sanitizeGuardrailSnippet(input.snippet);
+  // myrmidon(1.6.6 GUARDRAILS OPE-10182): count the trigger for Prometheus —
+  // one line, best-effort: a metrics failure can never break journaling.
+  // The base layer is flag-only; mask/block stay zero until the modes epic
+  // (OPE-4167, PR #513) lands and passes its enforcement mode through here.
+  guardrailTriggerMetrics.record(input.kind, "flag");
   const [row] = await db
     .insert(guardrailEvents)
     .values({
@@ -114,6 +125,11 @@ export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventIn
       issueId: input.issueId,
       snippet: maskedSnippet,
       occurredAt: input.occurredAt,
+      rule: input.rule,
+      mode: input.mode,
+      level: input.level,
+      agentId: input.agentId,
+      decision: input.decision,
     })
     .returning({ id: guardrailEvents.id });
   await logActivity(db, {
@@ -135,14 +151,51 @@ export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventIn
   return { id: row.id };
 }
 
-/** Newest-first event list for the board route. */
-export async function listGuardrailEvents(db: Db, companyId: string, limit: number) {
+export type GuardrailEventFilters = {
+  kind?: string;
+  severity?: string;
+  surface?: string;
+  runId?: string;
+  rule?: string;
+  mode?: string;
+  level?: string;
+  agentId?: string;
+  agent?: string;
+  decision?: string;
+};
+
+/**
+ * Newest-first event list for the board route. myrmidon(1.7-GRD-MODES):
+ * optional equality filters applied in SQL.
+ */
+export async function listGuardrailEvents(
+  db: Db,
+  companyId: string,
+  limitOrOptions: number | { limit?: number; offset?: number; filters?: GuardrailEventFilters } = {},
+  legacyFilters: GuardrailEventFilters = {},
+) {
+  const options = typeof limitOrOptions === "number"
+    ? { limit: limitOrOptions, offset: 0, filters: legacyFilters }
+    : { limit: limitOrOptions.limit ?? 100, offset: limitOrOptions.offset ?? 0, filters: limitOrOptions.filters ?? {} };
+  const filters = options.filters;
+  const conditions = [eq(guardrailEvents.companyId, companyId)];
+  if (filters.kind) conditions.push(eq(guardrailEvents.kind, filters.kind));
+  if (filters.severity) conditions.push(eq(guardrailEvents.severity, filters.severity));
+  if (filters.surface) conditions.push(eq(guardrailEvents.surface, filters.surface));
+  if (filters.runId) conditions.push(eq(guardrailEvents.runId, filters.runId));
+  if (filters.rule) conditions.push(eq(guardrailEvents.rule, filters.rule));
+  if (filters.mode) conditions.push(eq(guardrailEvents.mode, filters.mode));
+  if (filters.level) conditions.push(eq(guardrailEvents.level, filters.level));
+  if (filters.agentId || filters.agent) conditions.push(eq(guardrailEvents.agentId, filters.agentId ?? filters.agent!));
+  if (filters.decision) conditions.push(eq(guardrailEvents.decision, filters.decision));
   return db
     .select()
     .from(guardrailEvents)
-    .where(eq(guardrailEvents.companyId, companyId))
+    .where(and(...conditions))
     .orderBy(desc(guardrailEvents.occurredAt))
-    .limit(limit);
+    .limit(options.limit)
+    .offset(options.offset)
+    .then((rows) => rows.map((row) => ({ ...row, agent: row.agentId, ts: row.occurredAt })));
 }
 
 /**
@@ -150,6 +203,11 @@ export async function listGuardrailEvents(db: Db, companyId: string, limit: numb
  * hit. Flag-only — the text is never modified. Returns the report so the
  * caller can decide what to log. Failures never propagate: the guardrail
  * must not break run finalization.
+ *
+ * myrmidon(1.7-GRD-MODES): `modeHint` (optional) only lifts the recorded
+ * severity — flag keeps the 1.6.1 levels, mask records warn, block records
+ * error — so the journal shows what a hit actually DID. The frozen part-A
+ * contract is unchanged for callers that pass no hint.
  */
 export async function recordRunOutputGuardrailEvents(
   db: Db,
@@ -157,9 +215,12 @@ export async function recordRunOutputGuardrailEvents(
     companyId: string;
     runId: string;
     issueId: string | null;
+    agentId?: string;
     text: string | null;
     now(): Date;
     env?: NodeJS.ProcessEnv;
+    /** myrmidon(1.7-GRD-MODES): the mode the hits were enforced with. */
+    modeHint?: "flag" | "mask" | "block";
   },
 ): Promise<{ recorded: number; total: number; totalSecrets: number; totalPii: number } | null> {
   const settings = readGuardrailOutputSettings(input.env);
@@ -181,13 +242,25 @@ export async function recordRunOutputGuardrailEvents(
       const allIndex = allHits.findIndex((other) => other.span[0] < hit.span[1] && hit.span[0] < other.span[1]);
       if (allIndex < 0) continue;
       const snippet = guardrailSnippet(redacted.text, redacted.spans[allIndex]!, GUARDRAIL_SNIPPET_MAX_CHARS);
+      const baseSeverity = hit.kind === "secret" ? "warn" : "info";
+      const severity =
+        input.modeHint === "block"
+          ? "error"
+          : input.modeHint === "mask"
+            ? "warn"
+            : baseSeverity;
       await recordGuardrailEvent(db, {
         companyId: input.companyId,
         issueId: input.issueId,
         runId: input.runId,
         kind: hit.kind,
+        rule: hit.kind,
+        mode: input.modeHint ?? "flag",
+        level: "run",
+        agentId: input.agentId ?? null,
+        decision: input.modeHint ?? "flag",
         surface: GUARDRAIL_SURFACE_RUN_OUTPUT,
-        severity: hit.kind === "secret" ? "warn" : "info",
+        severity,
         snippet,
         occurredAt: input.now(),
       });

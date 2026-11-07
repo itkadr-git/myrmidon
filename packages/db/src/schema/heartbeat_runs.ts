@@ -236,9 +236,43 @@ export const heartbeatRuns = pgTable(
         sql`((${table.contextSnapshot} -> 'paperclipIssue') ->> 'id')`,
       )
       .where(sql`${table.contextSnapshot} ? 'paperclipIssue'`),
+    // myrmidon(DB-CARE / DBC-2): migration 0302 creates this index, but the
+    // schema lacked a declaration, leaving pg_indexes and Drizzle out of sync.
+    companyIssueCoalesceCreatedIdx: index("heartbeat_runs_company_issue_coalesce_created_idx").on(
+      table.companyId,
+      sql`(coalesce(${table.nativeIssueId}::text, ${table.contextSnapshot} ->> 'issueId'))`,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+    // myrmidon(DB-CARE / DBC-2): supports valuesForIssue lookup by company and
+    // snapshot issue id; production already has this index, so migration is safe.
+    companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx").on(
+      table.companyId,
+      sql`((${table.contextSnapshot} -> 'paperclipIssue') ->> 'id')`,
+      table.createdAt.desc(),
+    ),
     // myrmidon(DB-CARE): the stuck-run sweeper scans the runs by updated_at,
     // which no other index serves. Persisted from the production database, see
     // migration 0308_db_care_audit_indexes.
     updatedAtIdx: index("heartbeat_runs_updated_at_idx").on(table.updatedAt),
+    // myrmidon(SWARM-B): the matcher reads the provider-quota failures of the
+    // candidate agents on every match. Such rows are a sliver of the table, so a
+    // partial index keeps that read off the week of ordinary runs.
+    providerQuotaIdx: index("heartbeat_runs_provider_quota_idx")
+      .on(table.companyId, table.agentId, table.createdAt)
+      .where(sql`${table.errorCode} = 'provider_quota'`),
+    // myrmidon(1.6.6 OPE-9967): retention compaction scans heartbeat_runs for
+    // terminal runs older than cutoff that carry uncompacted keys.
+    // The partial index keeps the scan off tens of thousands of already compacted runs.
+    ctxCompactPendingIdx: index("heartbeat_runs_ctx_compact_pending_idx")
+      .on(table.companyId, table.createdAt)
+      .where(
+        sql`jsonb_exists(${table.contextSnapshot}, 'executionContinuation') or jsonb_exists(${table.contextSnapshot}, 'paperclipWake') or jsonb_exists(${table.contextSnapshot}, 'paperclipWakeComment') or jsonb_exists(${table.contextSnapshot}, 'paperclipTaskMarkdown') or jsonb_exists(${table.contextSnapshot}, 'paperclipTaskMarkdownCompact') or jsonb_exists(${table.contextSnapshot}, 'paperclipSessionHandoffMarkdown') or jsonb_exists(${table.contextSnapshot}, 'paperclipContinuationSummary') or jsonb_exists(${table.contextSnapshot}, 'externalChatContinuation')`,
+      ),
+    // myrmidon(1.6.6 OPE-10438): the swarm queue probes recent terminal runs by
+    // company/status and then applies the finished_at window.
+    failedQueueIdx: index("heartbeat_runs_failed_queue_idx")
+      .on(table.companyId, table.status, table.updatedAt, table.finishedAt)
+      .where(sql`${table.status} in ('failed', 'timed_out') and ${table.finishedAt} is not null`),
   }),
 );

@@ -43,6 +43,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { MyrWsError } = require("./errors.js");
 const { archiveRootOf } = require("./layout.js");
+const { resolveCopyDir } = require("./open.js");
 
 // --- contract constants (C1/C2); drift here is caught by the unit test ---
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
@@ -73,10 +74,15 @@ function parseRestoreArgs(argv) {
 }
 
 function resolveRestoreRequest(args) {
-  if (args.positional.length !== 1) throw usage("usage: myr-ws restore <KEY> [--json]");
+  if (args.positional.length < 1 || args.positional.length > 2) throw usage("usage: myr-ws restore <KEY> [owner/repo] [--json]");
   const key = args.positional[0];
   if (!ISSUE_KEY_RE.test(key)) throw usage(`invalid issue key ${JSON.stringify(key)} (expected PREFIX-123)`);
-  return { key };
+  const repo = args.positional[1];
+  if (repo !== undefined && (!REPO_RE.test(repo) || repo.split("/").some((x) => x === "." || x === ".."))) {
+    throw usage(`repository must look like owner/name, got ${JSON.stringify(repo)}`);
+  }
+  // A task may hold copies of several repositories (OPE-8946): the repository picks the archive.
+  return repo === undefined ? { key } : { key, repo };
 }
 
 // --- archive discovery by bundle name (C1; no manifest in the contract) ---
@@ -88,7 +94,7 @@ function resolveRestoreRequest(args) {
  * Sibling files (<stem>.patch, <stem>.untracked.tar) are attached only when
  * present and regular.
  */
-function findArchive(ctx, key) {
+function findArchive(ctx, key, repo) {
   let names;
   try {
     names = fs.readdirSync(ctx.archiveRoot);
@@ -110,9 +116,10 @@ function findArchive(ctx, key) {
       continue;
     }
     if (!st.isFile()) continue;
+    if (repo && manifestRepoOfBundle(ctx, bundle) !== repo) continue;
     found.push({ ts, bundle });
   }
-  if (found.length === 0) throw new MyrWsError(EXIT.notFound, `no archive of ${key} in ${ctx.archiveRoot}`);
+  if (found.length === 0) throw new MyrWsError(EXIT.notFound, `no archive of ${key}${repo ? ` for ${repo}` : ""} in ${ctx.archiveRoot}`);
   found.sort((a, b) => b.ts.localeCompare(a.ts));
   const latest = found[0];
   const stem = latest.bundle.slice(0, -".bundle".length);
@@ -155,9 +162,18 @@ function readRegistry(ctx) {
  * else the archive manifest entry that botd wrote for this very bundle (`close` drops the
  * registry entry, and passes the repo to the archive for exactly this case).
  */
-function repoOf(ctx, key, archive) {
-  const entry = readRegistry(ctx).entries.find((e) => e && e.key === key && typeof e.repo === "string");
-  let repo = entry ? entry.repo : null;
+function repoOf(ctx, key, archive, wanted) {
+  if (wanted) {
+    if (!REPO_RE.test(wanted)) throw new MyrWsError(EXIT.notFound, `the repo ${JSON.stringify(wanted)} of ${key} is invalid`);
+    return wanted;
+  }
+  // The manifest row of this very bundle names its repository exactly; the registry may hold
+  // several copies of the key (one per repository), so it only answers when the manifest is silent.
+  let repo = manifestRepoOfBundle(ctx, archive.bundle);
+  if (repo === null) {
+    const entry = readRegistry(ctx).entries.find((e) => e && e.key === key && typeof e.repo === "string");
+    repo = entry ? entry.repo : null;
+  }
   if (repo === null) repo = manifestRepo(ctx, key, archive);
   if (repo === null) {
     throw new MyrWsError(
@@ -169,6 +185,19 @@ function repoOf(ctx, key, archive) {
     throw new MyrWsError(EXIT.notFound, `the repo ${JSON.stringify(repo)} of ${key} is invalid`);
   }
   return repo;
+}
+
+/** The repo the archive manifest records for exactly this bundle file, else null. */
+function manifestRepoOfBundle(ctx, bundle) {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(path.join(ctx.archiveRoot, "manifest.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const rows = parsed && Array.isArray(parsed.archives) ? parsed.archives : [];
+  const row = rows.find((e) => e && typeof e.repo === "string" && typeof e.bundle === "string" && (e.bundle === bundle || path.basename(e.bundle) === path.basename(bundle)));
+  return row ? row.repo : null;
 }
 
 function manifestRepo(ctx, key, archive) {
@@ -247,12 +276,13 @@ async function restore(request, deps = {}) {
   const ctx = makeCtx(deps);
   const { key } = request;
   const branch = `${TASK_BRANCH_PREFIX}${key}`;
-  const dir = path.join(ctx.workspaceRoot, key);
   const git = makeGit(ctx);
 
   // 1. Pick the archive first: a broken/absent archive must not touch anything.
-  const archive = findArchive(ctx, key);
-  const repo = repoOf(ctx, key, archive);
+  const archive = findArchive(ctx, key, request.repo);
+  const repo = repoOf(ctx, key, archive, request.repo);
+  // Where the copy of this repository lives (or would be opened) next to the task's other copies.
+  const dir = resolveCopyDir(ctx, readRegistry(ctx), { key, repo, scratch: false, klass: "E" }).dir;
 
   // 2. Verify the bundle before any mutation: list-heads validates the file
   //    structure without needing a repository (a broken bundle -> exit 6,

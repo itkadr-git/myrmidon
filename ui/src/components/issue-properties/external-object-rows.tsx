@@ -13,6 +13,7 @@ import {
   externalObjectStatusIconDefault,
 } from "../../lib/status-colors";
 import { cn } from "../../lib/utils";
+import { i18n, useTranslation } from "@/i18n";
 import { ExternalObjectStatusIcon } from "../ExternalObjectStatusIcon";
 import { PropertyRow } from "./primitives";
 import { ExpandRelationListButton } from "./relation-controls";
@@ -32,8 +33,8 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
   const displayKey = pill.displayKey?.trim();
   if (displayKey) return displayKey;
   if (pill.providerKey === "github") {
-    if (pill.objectType === "pull_request") return "Github PR";
-    if (pill.objectType === "issue") return "Github Issue";
+    if (pill.objectType === "pull_request") return i18n.t("area.issue-properties-panels-3.external-object-rows.githubPr");
+    if (pill.objectType === "issue") return i18n.t("area.issue-properties-panels-3.external-object-rows.githubIssue");
   }
   return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
 }
@@ -57,8 +58,8 @@ function githubObjectPropertyValue(url: string | null | undefined): string | nul
     if (parsed.hostname !== "github.com") return null;
     const [, owner, repo, kind, number] = parsed.pathname.split("/");
     if (!owner || !repo || !number) return null;
-    if (kind === "pull") return `PR ${number}`;
-    if (kind === "issues") return `Issue ${number}`;
+    if (kind === "pull") return i18n.t("area.issue-properties-panels-3.external-object-rows.prValue", { number });
+    if (kind === "issues") return i18n.t("area.issue-properties-panels-3.external-object-rows.issueValue", { number });
     return null;
   } catch {
     return null;
@@ -101,6 +102,7 @@ function externalObjectPropertyTitle(group: IssueExternalObjectGroup): string {
 }
 
 function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGroup }) {
+  const { t } = useTranslation();
   const { pill } = group;
   const statusLabel = externalObjectPropertyStatusLabel(group);
   const providerLabel = externalObjectProviderLabel(pill.providerKey);
@@ -113,7 +115,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         liveness={pill.liveness}
         statusIconKey={externalObjectPropertyStatusIconKey(group)}
         sizeClassName="h-3.5 w-3.5"
-        label={`${providerLabel}: ${statusLabel}`}
+        label={t("area.issue-properties-panels-3.external-object-rows.statusIconLabel", { provider: providerLabel, status: statusLabel })}
       />
       <span className="min-w-0 truncate">{value}</span>
     </>
@@ -135,7 +137,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         data-external-liveness={pill.liveness}
         className={className}
         title={externalObjectPropertyTitle(group)}
-        aria-label={`${providerLabel} ${typeLabel} - ${statusLabel}: ${pill.displayTitle ?? value}`}
+        aria-label={t("area.issue-properties-panels-3.external-object-rows.linkAriaLabel", { provider: providerLabel, type: typeLabel, status: statusLabel, title: pill.displayTitle ?? value })}
       >
         {content}
       </a>
@@ -149,7 +151,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
       data-external-liveness={pill.liveness}
       className={className}
       title={externalObjectPropertyTitle(group)}
-      aria-label={`${providerLabel} ${typeLabel} - ${statusLabel}: ${pill.displayTitle ?? value}`}
+      aria-label={t("area.issue-properties-panels-3.external-object-rows.linkAriaLabel", { provider: providerLabel, type: typeLabel, status: statusLabel, title: pill.displayTitle ?? value })}
     >
       {content}
     </span>
@@ -167,6 +169,7 @@ export function ExternalObjectRows({
   externalObjectsError?: boolean;
   onRetryExternalObjects?: () => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
@@ -175,9 +178,9 @@ export function ExternalObjectRows({
 
   if (externalObjectsError) {
     return (
-      <PropertyRow label="External objects">
+      <PropertyRow label={t("area.issue-properties-panels-3.external-object-rows.rowLabel")}>
         <span className="text-xs text-muted-foreground">
-          Couldn't load external objects.
+          {t("area.issue-properties-panels-3.external-object-rows.loadError")}
           {onRetryExternalObjects ? (
             <>
               {" "}
@@ -186,7 +189,7 @@ export function ExternalObjectRows({
                 className="text-primary underline-offset-2 hover:underline"
                 onClick={onRetryExternalObjects}
               >
-                Retry
+                {t("common.retry")}
               </button>
             </>
           ) : null}
@@ -197,7 +200,7 @@ export function ExternalObjectRows({
 
   if (externalObjectsLoading) {
     return (
-      <PropertyRow label="External objects">
+      <PropertyRow label={t("area.issue-properties-panels-3.external-object-rows.rowLabel")}>
         <span className="h-4 w-24 animate-pulse rounded bg-muted/40" />
       </PropertyRow>
     );
@@ -226,7 +229,7 @@ export function ExternalObjectRows({
           );
         })}
       {expanded || hiddenExternalObjectCount > 0 ? (
-        <PropertyRow label="References">
+        <PropertyRow label={t("area.issue-properties-panels-3.external-object-rows.referencesLabel")}>
           <ExpandRelationListButton
             hiddenCount={hiddenExternalObjectCount}
             expanded={expanded}

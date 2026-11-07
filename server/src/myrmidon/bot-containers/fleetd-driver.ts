@@ -24,10 +24,12 @@
 //    limits the local driver's tar path uses.
 
 import http from "node:http";
+import https from "node:https";
 
 import { logger } from "../../middleware/logger.js";
 
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
+import type { DriverOomEvent } from "./container-oom.js";
 import type { CompiledProfile } from "./types.js";
 
 /** The token header fleetd requires on every call. */
@@ -40,10 +42,109 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 const START_TIMEOUT_MS = 180_000;
 
+/** Wire format of a mount accepted by fleetd v1 (/bots, /template-drift). */
+export interface FleetdWireMount {
+  source: string;
+  destination: string;
+  readOnly?: boolean;
+}
+
+/** Wire format of a container spec accepted by fleetd v1 (/bots, /template-drift, /resources). */
+export interface FleetdWireSpec {
+  botKey: string;
+  image: string;
+  cpus: number;
+  memoryMb: number;
+  pidsLimit: number;
+  network: string;
+  mounts?: FleetdWireMount[];
+  labels?: Record<string, string>;
+  gatewayPort?: number;
+  boardExtraHost?: string;
+}
+
+/** Wire format of a profile file accepted by fleetd v1 (/bots/:key/profile). */
+export interface FleetdWireProfileFile {
+  path: string;
+  content: string;
+  mode: number;
+  secret: boolean;
+}
+
+/** Wire format of a compiled profile accepted by fleetd v1 (/bots/:key/profile). */
+export interface FleetdWireProfile {
+  botKey: string;
+  files: FleetdWireProfileFile[];
+  restartHash: string;
+  filesHash: string;
+}
+
+/**
+ * Maps the internal BotContainerSpec to the strict /v1 wire spec accepted by fleetd.
+ * fleetd uses json.Decoder.DisallowUnknownFields, so only fields known to fleetd
+ * (botKey, image, cpus, memoryMb, pidsLimit, network, mounts, labels, gatewayPort, boardExtraHost)
+ * must be transmitted. extraMounts is mapped to mounts (containerPath -> destination),
+ * and board-local fields like sharedMount are stripped.
+ */
+export function toFleetdWireSpec(spec: BotContainerSpec): FleetdWireSpec {
+  const rawMounts = spec.extraMounts ?? (spec as { mounts?: unknown }).mounts;
+  const mounts: FleetdWireMount[] | undefined = Array.isArray(rawMounts) && rawMounts.length > 0
+    ? rawMounts.map((m: { source: string; destination?: string; containerPath?: string; readOnly?: boolean }) => ({
+        source: m.source,
+        destination: m.destination ?? m.containerPath ?? "",
+        ...(m.readOnly !== undefined ? { readOnly: Boolean(m.readOnly) } : {}),
+      }))
+    : undefined;
+
+  const wire: FleetdWireSpec = {
+    botKey: spec.botKey,
+    image: spec.image,
+    cpus: spec.cpus,
+    memoryMb: spec.memoryMb,
+    pidsLimit: spec.pidsLimit,
+    network: spec.network,
+  };
+  if (mounts && mounts.length > 0) wire.mounts = mounts;
+  if (spec.labels && Object.keys(spec.labels).length > 0) wire.labels = spec.labels;
+  if (typeof (spec as { gatewayPort?: unknown }).gatewayPort === "number") {
+    wire.gatewayPort = (spec as { gatewayPort?: number }).gatewayPort;
+  }
+  if (
+    typeof (spec as { boardExtraHost?: unknown }).boardExtraHost === "string" &&
+    (spec as { boardExtraHost?: string }).boardExtraHost!.length > 0
+  ) {
+    wire.boardExtraHost = (spec as { boardExtraHost?: string }).boardExtraHost;
+  }
+  return wire;
+}
+
+/**
+ * Maps the internal CompiledProfile to the strict /v1 wire profile accepted by fleetd.
+ * Internal board metadata like maxConcurrentRuns or apiServerKeyVersion are stripped
+ * to satisfy fleetd's DisallowUnknownFields.
+ */
+export function toFleetdWireProfile(profile: CompiledProfile, botKeyFallback?: string): FleetdWireProfile {
+  return {
+    botKey: profile.botKey || botKeyFallback || "",
+    files: (profile.files ?? []).map((f) => ({
+      path: f.path,
+      content: f.content,
+      mode: f.mode,
+      secret: Boolean(f.secret),
+    })),
+    restartHash: profile.restartHash ?? "",
+    filesHash: profile.filesHash ?? "",
+  };
+}
+
 export interface FleetdDriverConfig {
   baseUrl: string;
-  token: string;
+  token?: string;
   timeoutMs?: number;
+  caCert?: string;
+  clientCert?: string;
+  clientKey?: string;
+  httpsAgent?: https.Agent;
 }
 
 export class FleetdDriverError extends Error {
@@ -99,16 +200,19 @@ export const FLEETD_PACKAGE_CACHE_NOTICE =
 export interface FleetdEndpoint {
   host: string;
   port: number;
+  protocol: "http:" | "https:";
 }
 
-/** Parses `http://host[:port]` into what node:http wants. No TLS: the fleetd
- *  host is reachable only over the internal network (see the module comment). */
+/** Parses `http://host[:port]` or `https://host[:port]` into what node:http / node:https wants. */
 export function parseFleetdEndpoint(baseUrl: string): FleetdEndpoint {
   const url = new URL(baseUrl);
-  if (url.protocol !== "http:") throw new Error(`fleetd baseUrl must be http:// (got ${url.protocol}//)`);
-  const port = url.port === "" ? 80 : Number(url.port);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`fleetd baseUrl must be http:// or https:// (got ${url.protocol}//)`);
+  }
+  const defaultPort = url.protocol === "https:" ? 443 : 80;
+  const port = url.port === "" ? defaultPort : Number(url.port);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`fleetd baseUrl port is invalid: ${url.port}`);
-  return { host: url.hostname, port };
+  return { host: url.hostname, port, protocol: url.protocol as "http:" | "https:" };
 }
 
 function fleetdRequest(
@@ -122,33 +226,42 @@ function fleetdRequest(
   },
 ): Promise<RawResponse> {
   const endpoint = parseFleetdEndpoint(config.baseUrl);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = isHttps ? https : http;
   return new Promise((resolve, reject) => {
     const headers = { ...(opts.headers ?? {}) };
     if (opts.body) headers["Content-Length"] = String(opts.body.length);
-    const req = http.request(
-      {
-        host: endpoint.host,
-        port: endpoint.port,
-        path: `/v1${opts.path}`,
-        method: opts.method,
-        headers,
-        timeout: opts.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        res.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > BODY_LIMIT_BYTES) {
-            req.destroy(new Error(`fleetd ${opts.method} ${opts.path}: response body over ${BODY_LIMIT_BYTES} bytes`));
-            return;
+    const requestOptions: http.RequestOptions = {
+      host: endpoint.host,
+      port: endpoint.port,
+      path: `/v1${opts.path}`,
+      method: opts.method,
+      headers,
+      timeout: opts.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      ...(isHttps
+        ? {
+            agent: config.httpsAgent,
+            ca: config.caCert,
+            cert: config.clientCert,
+            key: config.clientKey,
+            rejectUnauthorized: true,
           }
-          chunks.push(chunk);
-        });
-        res.on("error", reject);
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
-      },
-    );
+        : {}),
+    };
+    const req = transport.request(requestOptions, (res) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > BODY_LIMIT_BYTES) {
+          req.destroy(new Error(`fleetd ${opts.method} ${opts.path}: response body over ${BODY_LIMIT_BYTES} bytes`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("error", reject);
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
+    });
     req.on("timeout", () => {
       req.destroy(new Error(`fleetd ${opts.method} ${opts.path}: timed out`));
     });
@@ -191,8 +304,8 @@ export function fleetdBotContainerDriver(
       path: opts.path,
       ...(opts.body === undefined ? {} : { body: Buffer.from(JSON.stringify(opts.body), "utf8") }),
       headers: {
-        [AUTHORIZATION]: `Bearer ${config.token}`,
         Accept: "application/json",
+        ...(config.token ? { [AUTHORIZATION]: `Bearer ${config.token}` } : {}),
         ...(opts.body === undefined ? {} : { "Content-Type": "application/json" }),
       },
       ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
@@ -231,26 +344,30 @@ export function fleetdBotContainerDriver(
       const res = await callJson<{ drift: boolean; fields?: TemplateDriftField[] }>({
         method: "POST",
         path: `/bots/${encodeURIComponent(spec.botKey)}/template-drift`,
-        body: { spec },
+        body: { spec: toFleetdWireSpec(spec) },
       });
       return { drifted: res.drift === true, fields: res.fields ?? [] };
     },
 
+    async updateResources(spec: BotContainerSpec): Promise<void> {
+      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/resources`, body: { spec: toFleetdWireSpec(spec) } });
+    },
+
     async create(spec: BotContainerSpec): Promise<void> {
       await noticeSharedPackageCache();
-      await callVoid({ method: "POST", path: "/bots", body: { spec } });
+      await callVoid({ method: "POST", path: "/bots", body: { spec: toFleetdWireSpec(spec) } });
     },
 
     async recreate(spec: BotContainerSpec): Promise<void> {
       await noticeSharedPackageCache();
-      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`, body: { spec } });
+      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`, body: { spec: toFleetdWireSpec(spec) } });
     },
 
     async writeProfile(botKey: string, profile: CompiledProfile): Promise<void> {
       await callVoid({
         method: "PUT",
         path: `/bots/${encodeURIComponent(botKey)}/profile`,
-        body: { profile },
+        body: { profile: toFleetdWireProfile(profile, botKey) },
         timeoutMs: START_TIMEOUT_MS,
       });
     },
@@ -268,6 +385,15 @@ export function fleetdBotContainerDriver(
         method: "POST",
         path: `/bots/${encodeURIComponent(botKey)}/stop`,
         timeoutMs: START_TIMEOUT_MS,
+      });
+    },
+
+    async getOomEvents(sinceNano?: number): Promise<DriverOomEvent[]> {
+      const q = sinceNano ? `?since=${sinceNano}` : "";
+      return callJson<DriverOomEvent[]>({
+        method: "GET",
+        path: `/v1/events/oom${q}`,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
       });
     },
   };

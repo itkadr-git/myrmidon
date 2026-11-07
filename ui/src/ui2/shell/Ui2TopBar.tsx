@@ -6,13 +6,16 @@
 import { useState } from "react";
 import { CircleAlert, ChevronDown, MessagesSquare, Server, Users, Wallet } from "lucide-react";
 import { useTranslation } from "@/i18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { useCompany } from "@/context/CompanyContext";
 import { cn } from "@/lib/utils";
 import { useUi2StatusStrip } from "../useUi2Status";
+import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Ui2CommanderPalette } from "./Ui2CommanderPalette";
+import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
-function formatMoney(cents: number): string {
-  return `$${Math.round(cents / 100).toLocaleString("en-US")}`;
+function formatMoney(cents: number, language: string): string {
+  return `$${Math.round(cents / 100).toLocaleString(language)}`;
 }
 
 function StatusChip({
@@ -58,7 +61,12 @@ function StatusChip({
 }
 
 export function Ui2TopBar() {
-  const { t } = useTranslation();
+  const { t: tApp, i18n } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const ui2Translation = ui2I18n?.t(key as never, values);
+    return ui2Translation && ui2Translation !== key ? ui2Translation : tApp(key, values);
+  };
   const { selectedCompanyId } = useCompany();
   const strip = useUi2StatusStrip(selectedCompanyId);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -95,7 +103,7 @@ export function Ui2TopBar() {
           fontWeight: 600,
         }}
       >
-        {t("ui2.nests.all", { defaultValue: "All nests" })}
+        {t("area.ui2-shell.ui2-top-bar.nestsAll")}
         <ChevronDown aria-hidden="true" style={{ width: 14, height: 14, color: "var(--myr-ink-muted)" }} />
       </button>
 
@@ -107,8 +115,7 @@ export function Ui2TopBar() {
           <>
             <StatusChip
               icon={Users}
-              label={t("ui2.chip.colony", {
-                defaultValue: "{{active}} of {{total}}",
+              label={t("area.ui2-shell.ui2-top-bar.colonyChip", {
                 active: strip.colonyActive,
                 total: strip.colonyTotal,
               })}
@@ -116,7 +123,7 @@ export function Ui2TopBar() {
             />
             <StatusChip
               icon={Server}
-              label={strip.fleetAttention ? t("ui2.chip.fleetAttention", { defaultValue: "Fleet: 1 attention" }) : t("ui2.chip.fleet", { defaultValue: "Fleet" })}
+              label={strip.fleetAttention ? t("area.ui2-shell.ui2-top-bar.fleetAttentionChip") : t("area.ui2-shell.ui2-top-bar.fleetChip")}
               tone={strip.fleetAttention ? "attention" : "default"}
             />
             <StatusChip
@@ -127,14 +134,12 @@ export function Ui2TopBar() {
               // truthful when no cap is configured.
               label={
                 strip.monthBudgetCents > 0
-                  ? t("ui2.chip.forecast", {
-                      defaultValue: "{{spend}} of {{budget}}",
-                      spend: formatMoney(strip.monthSpendCents),
-                      budget: formatMoney(strip.monthBudgetCents),
+                  ? t("area.ui2-shell.ui2-top-bar.forecastChip", {
+                      spend: formatMoney(strip.monthSpendCents, i18n.language),
+                      budget: formatMoney(strip.monthBudgetCents, i18n.language),
                     })
-                  : t("ui2.chip.forecastSpendOnly", {
-                      defaultValue: "{{spend}} spent",
-                      spend: formatMoney(strip.monthSpendCents),
+                  : t("area.ui2-shell.ui2-top-bar.forecastSpendOnlyChip", {
+                      spend: formatMoney(strip.monthSpendCents, i18n.language),
                     })
               }
               tone="default"
@@ -151,7 +156,7 @@ export function Ui2TopBar() {
         <button
           type="button"
           className="myr-ui2__commander-entry"
-          aria-label={t("ui2.commander.aria", { defaultValue: "Tell the Commander (Ctrl K)" })}
+          aria-label={t("area.ui2-shell.ui2-top-bar.commanderAria")}
           onClick={() => setPaletteOpen(true)}
           style={{
             display: "inline-flex",
@@ -170,7 +175,7 @@ export function Ui2TopBar() {
         >
           <MessagesSquare aria-hidden="true" style={{ width: 14, height: 14, flex: "0 0 auto" }} />
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {t("ui2.commander.placeholder", { defaultValue: "Tell the Commander…" })}
+            {t("area.ui2-shell.ui2-top-bar.commanderPlaceholder")}
           </span>
           <kbd
             style={{
@@ -183,12 +188,12 @@ export function Ui2TopBar() {
               padding: "1px 6px",
             }}
           >
-            Ctrl K
+            {t("area.ui2-shell.ui2-top-bar.commanderShortcut")}
           </kbd>
         </button>
         {strip && strip.attentionCount > 0 ? (
           <span
-            aria-label={t("ui2.decisions.badge", { defaultValue: "{{count}} decisions waiting", count: strip.attentionCount })}
+            aria-label={t("area.ui2-shell.ui2-top-bar.decisionsBadge", { count: strip.attentionCount })}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -206,8 +211,11 @@ export function Ui2TopBar() {
             {strip.attentionCount > 99 ? "99+" : strip.attentionCount}
           </span>
         ) : null}
+
+        <Ui2AccountMenu compact />
       </div>
 
+      <div style={{ marginLeft: "auto" }}><LanguageSwitch compact /></div>
       {paletteOpen ? <Ui2CommanderPalette onClose={() => setPaletteOpen(false)} /> : null}
     </header>
   );

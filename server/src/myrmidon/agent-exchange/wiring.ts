@@ -13,8 +13,8 @@
 
 import { Router } from "express";
 import { eq } from "drizzle-orm";
-import { modelProviders, type Db } from "@paperclipai/db";
-import { DEFAULT_AGENT_EXCHANGE_SETTINGS, MODEL_PROVIDER_DEFAULT_BASE_URLS } from "@paperclipai/shared";
+import { modelProviders, type Db } from "@myrmidon/db";
+import { DEFAULT_AGENT_EXCHANGE_SETTINGS, MODEL_PROVIDER_DEFAULT_BASE_URLS } from "@myrmidon/shared";
 import { documentService, secretService } from "../../services/index.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { agentExchangeRoutes } from "./routes.js";

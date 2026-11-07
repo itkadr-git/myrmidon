@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FLEET_HOSTS_ENV, cardFleetHost, parseFleetHosts } from "./fleetd-hosts.js";
+import { FLEET_HOSTS_ENV, cardFleetHost, cardFleetHostPinned, parseFleetHosts } from "./fleetd-hosts.js";
 import { readFleetdDriverConfig } from "./fleetd-driver.js";
 
 // Everything here is placeholder data: fake names and example.com addresses.
@@ -64,6 +64,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
       ENTRY({
         hindsightUrl: "http://hindsight.internal:8890/",
         llmBaseUrl: " http://llm.internal:4000 ",
+        boardAddress: " board.internal:3100 ",
         boardExtraHost: "board.internal",
         volumeRoot: "/srv/bots",
         network: "bots-net",
@@ -76,6 +77,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
       tokenSecret: "secret-a",
       hindsightUrl: "http://hindsight.internal:8890",
       llmBaseUrl: "http://llm.internal:4000",
+      boardAddress: "board.internal:3100",
       boardExtraHost: "board.internal",
       volumeRoot: "/srv/bots",
       network: "bots-net",
@@ -87,6 +89,12 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
     expect(() => parseFleetHosts(ENTRY({ hindsightUrl: "https://hindsight.internal:8890" }))).toThrow(/hindsightUrl" must be http/);
     expect(() => parseFleetHosts(ENTRY({ llmBaseUrl: "llm.internal:4000" }))).toThrow(/llmBaseUrl" must be http/);
     expect(() => parseFleetHosts(ENTRY({ network: "   " }))).toThrow(/network" is empty/);
+  });
+
+  it("rejects malformed boardAddress instead of passing an unreachable URL to bots", () => {
+    for (const address of ["board.internal", "http://board.internal:3100", "board.internal:3100/path", " "]) {
+      expect(() => parseFleetHosts(ENTRY({ boardAddress: address }))).toThrow(/boardAddress/);
+    }
   });
 
   it("rejects a malformed boardExtraHost and a relative volumeRoot", () => {
@@ -115,6 +123,25 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — the card's host", () => {
   it("throws on a malformed host or the reserved name \"local\"", () => {
     expect(() => cardFleetHost({ container: { host: "Host A" } })).toThrow(/must be a host name/);
     expect(() => cardFleetHost({ container: { host: "local" } })).toThrow(/is not a host/);
+  });
+});
+
+describe("myrmidon(1.6.6) fleet hosts — cardFleetHostPinned", () => {
+  it("defaults to false when hostPinned is omitted, null, or undefined", () => {
+    expect(cardFleetHostPinned({})).toBe(false);
+    expect(cardFleetHostPinned({ container: {} })).toBe(false);
+    expect(cardFleetHostPinned({ container: { hostPinned: null } })).toBe(false);
+    expect(cardFleetHostPinned({ container: { hostPinned: undefined } })).toBe(false);
+  });
+
+  it("returns boolean value when set", () => {
+    expect(cardFleetHostPinned({ container: { hostPinned: true } })).toBe(true);
+    expect(cardFleetHostPinned({ container: { hostPinned: false } })).toBe(false);
+  });
+
+  it("throws when hostPinned is not a boolean", () => {
+    expect(() => cardFleetHostPinned({ container: { hostPinned: "true" } })).toThrow(/must be a boolean/);
+    expect(() => cardFleetHostPinned({ container: { hostPinned: 1 } })).toThrow(/must be a boolean/);
   });
 });
 

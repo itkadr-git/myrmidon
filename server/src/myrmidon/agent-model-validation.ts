@@ -1,7 +1,9 @@
+import type { Db } from "@myrmidon/db";
 import { listAdapterModels } from "../adapters/registry.js";
 import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { effortForModel } from "./effort-policy/effort-policy.js";
+import { enrichWithPoolModels } from "./model-providers/pool-models.js";
 
 /**
  * myrmidon(S4/M1): a model that is not in the adapter's model list is
@@ -110,6 +112,8 @@ export async function assertAgentModelsKnown(input: {
   previousAdapterConfig: Record<string, unknown> | null | undefined;
   nextAdapterConfig: Record<string, unknown> | null | undefined;
   listModels?: (adapterType: string) => Promise<Array<{ id: string }>>;
+  companyId?: string;
+  db?: Db;
 }): Promise<void> {
   assertAgentEffortAccepted(input.adapterType, input.nextAdapterConfig);
   if (ADAPTERS_WITHOUT_STATIC_MODEL_LIST.includes(input.adapterType)) return;
@@ -119,7 +123,10 @@ export async function assertAgentModelsKnown(input: {
 
   let known: Array<{ id: string }>;
   try {
-    known = await (input.listModels ?? listAdapterModels)(input.adapterType);
+    const baseKnown = await (input.listModels ?? listAdapterModels)(input.adapterType);
+    known = input.companyId && input.db
+      ? await enrichWithPoolModels(input.db, input.companyId, baseKnown as any)
+      : baseKnown;
   } catch (err) {
     // Model discovery failing must not make every agent uneditable.
     logger.warn({ err, adapterType: input.adapterType }, "model list unavailable; skipping model validation");

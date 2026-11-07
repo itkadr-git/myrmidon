@@ -86,8 +86,12 @@ case "$1" in
         echo 'psql: error: connection to server: FATAL: role "myrmidon" does not exist' >&2
         exit 2
       fi
-      if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
-      exit 0 ;;
+      case "$*" in *"SELECT name FROM pg_available_extensions"*)
+        if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
+        exit 0 ;;
+      esac
+      echo 'psql: error: unexpected pg_available_extensions query' >&2
+      exit 2 ;;
     esac
     case "$*" in *pg_extension*)
       if [ -f "$SANDBOX/copy-installed.txt" ]; then cat "$SANDBOX/copy-installed.txt"; fi
@@ -158,7 +162,7 @@ function sandbox({
   fs.mkdirSync(composeDir);
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, "calls.log"), "");
+  fs.writeFileSync(path.join(bin, "calls.log"), "");
   fs.writeFileSync(path.join(dir, "health.json"), JSON.stringify(health));
   fs.writeFileSync(path.join(dir, "label-version"), `${labelVersion}\n`);
   fs.writeFileSync(path.join(dir, "label-revision"), `${labelRevision}\n`);
@@ -177,6 +181,8 @@ function sandbox({
     ["DUMP_DIR", `DUMP_DIR=${path.join(dir, "dumps")}`],
     ["BOARD_COMPANY_ID", `BOARD_COMPANY_ID=${COMPANY}`],
     ["MYRMIDON_PREDEPLOY_POSTGRES_IMAGE", "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine"],
+    ["MYRMIDON_PREDEPLOY_IO_DEVICE", "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data"],
+    ["MYRMIDON_PREDEPLOY_IO_RATE", "MYRMIDON_PREDEPLOY_IO_RATE=30000000"],
     ["MYRMIDON_PREDEPLOY_BOARD_ENV_FILE", `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${boardEnv}`],
     ["MYRMIDON_PREDEPLOY_BOARD_PORT", "MYRMIDON_PREDEPLOY_BOARD_PORT=13110"],
     ["MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC", "MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC=2"],
@@ -201,6 +207,11 @@ const calls = (sb) => read(path.join(sb.dir, "calls.log"));
 const full = (sb, ...args) => run(sb, ["--digest", NEW, "--dump", sb.dump, ...args]);
 
 describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", () => {
+  it("requires docker before running the predeploy probe", () => {
+    const script = fs.readFileSync(path.join(HERE, "predeploy-board-check.sh"), "utf8");
+    assert.match(script, /require_cmd docker curl jq/);
+  });
+
   it("proves the image on a copy of the production database: own network, the new dockergate, the attention list, teardown", () => {
     const sb = sandbox();
     const { code, out } = full(sb, "--dockergate-digest", DG);
@@ -208,11 +219,12 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     const log = calls(sb);
     // its own network: created, used by all three containers, removed at the end
     assert.match(log, /docker network create myr-predeploy-bbbbbbbb-\d+/);
-    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-/);
+    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ --device-read-bps \/dev\/fake-docker-data:30000000 --device-write-bps \/dev\/fake-docker-data:30000000 -v /);
     assert.match(log, /docker run -d --name myr-predeploy-dockergate-[^ ]+ --network myr-predeploy-/);
     assert.match(log, /docker run -d --name myr-predeploy-board-[^ ]+ --network myr-predeploy-/);
     // the copy is a Postgres created with the configured database/user
     assert.match(log, /-e POSTGRES_DB=myrmidon/);
+    assert.match(log, /--device-read-bps \/dev\/fake-docker-data:30000000 --device-write-bps \/dev\/fake-docker-data:30000000/);
     assert.match(log, /postgres:16-alpine/);
     // the NEW dockergate of the release, from its digest, on the same network
     assert.match(log, new RegExp(`docker run -d --name myr-predeploy-dockergate-[^ ]+ --network myr-predeploy-[^ ]+ ${DOCKERGATE_REPO}@${DG}`));
@@ -228,7 +240,7 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     // DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of
     // this run (an anonymous one survives `docker rm -f` and stays on the
     // disk), mounted into the throwaway Postgres and removed with the stack
-    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ -v myr-predeploy-dbvol-bbbbbbbb-\d+:\/var\/lib\/postgresql\/data/);
+    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ --device-read-bps \/dev\/fake-docker-data:30000000 --device-write-bps \/dev\/fake-docker-data:30000000 -v myr-predeploy-dbvol-bbbbbbbb-\d+:\/var\/lib\/postgresql\/data/);
     assert.match(log, /docker volume rm -f myr-predeploy-dbvol-bbbbbbbb-\d+/);
     // everything was removed again
     assert.match(log, /docker rm -f myr-predeploy-board-[^ ]+ myr-predeploy-dockergate-[^ ]+ myr-predeploy-db-/);

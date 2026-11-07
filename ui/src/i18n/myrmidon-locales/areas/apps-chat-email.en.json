@@ -1,0 +1,768 @@
+{
+  "area": {
+    "apps-chat-email": {
+      "email-connection-access": {
+        "loading": "Loading access…",
+        "loadFailed": "Connection access could not be loaded.",
+        "humanEveryone": "Any human in the company",
+        "humanJustMe": "Just me",
+        "humanOwnerOnly": "Only the credential owner",
+        "humanRevoked": "Access revoked",
+        "humansTitle": "Which humans can use this credential?",
+        "agentsTitle": "Which agents can use this connection?",
+        "agentsAriaLabel": "Which agents can use this connection",
+        "agentsSelected": "Just agents I pick",
+        "agentsAll": "Any agent",
+        "removeNote": "Removing an assigned agent stops receiving and sending from its inbox."
+      },
+      "email-safety-notice": {
+        "title": "Anyone can email an unrestricted inbox",
+        "body": "Incoming email can create tasks and trigger agent work. Set up an allowlist in AgentMail to limit who can contact this inbox.",
+        "caveat": "Myrmidon does not verify sender restrictions. AgentMail controls new messages and replies separately; check both lists.",
+        "openAgentMail": "Open AgentMail ↗",
+        "setUpAllowlists": "Set up allowlists ↗"
+      },
+      "email-message-card": {
+        "received": "Email received",
+        "sent": "Email sent",
+        "external": "External",
+        "to": "To: {{list}}",
+        "cc": "Cc: {{list}}",
+        "bcc": "Bcc: {{list}}",
+        "noTextBody": "(No text body)",
+        "openAttachment": "Open attachment",
+        "details": "Email details",
+        "messageId": "Message ID: {{id}}",
+        "delivered": "Delivered",
+        "deliveryFailed": "Delivery failed",
+        "deliveryUncertain": "Delivery uncertain",
+        "queued": "Queued",
+        "sentOutcome": "Sent",
+        "attachmentsFailed": "Attachments could not be loaded."
+      },
+      "email-task-activity": {
+        "sendIntentAriaLabel": "Email send intent",
+        "replyFallback": "Email reply",
+        "to": "To: {{list}}",
+        "outcomeQueued": "Email queued",
+        "outcomeSent": "Email sent",
+        "outcomeDelivered": "Email delivered",
+        "outcomeFailed": "Email failed",
+        "outcomeUncertain": "Email uncertain",
+        "resolveSummary": "Resolve delivery after checking AgentMail",
+        "resolveNote": "Confirm the outcome in AgentMail before resolving. This action does not resend.",
+        "providerMessageId": "Provider message ID",
+        "confirmSent": "Confirm sent",
+        "confirmNotSent": "Confirm not sent"
+      },
+      "agent-channels-panel": {
+        "title": "Channels",
+        "description": "Chat and email identities connected to this agent.",
+        "connect": "Connect a channel",
+        "loading": "Loading channels…",
+        "emptyTitle": "No channels connected",
+        "emptyDescription": "Connect AgentMail, Slack, GitHub, Discord, Microsoft Teams, or Telegram from Connectors.",
+        "openConnectors": "Open Connectors",
+        "providerIdentity": "Provider identity",
+        "openConnection": "Open connection"
+      },
+      "chat-identity-confirm": {
+        "unavailableTitle": "This identity link is unavailable",
+        "unavailableBody": "The link is invalid, expired, already used, or belongs to another Myrmidon organization.",
+        "checking": "Checking identity link…",
+        "signedInAccountFallback": "the signed-in account",
+        "linkedTitle": "Identity linked",
+        "linkedBody": "Future messages from {{label}} use your current Myrmidon permissions in {{company}}.",
+        "returnToConnection": "Return to connection",
+        "confirmTitle": "Link your external identity",
+        "provider": "Provider",
+        "externalIdentity": "External identity",
+        "account": "Myrmidon account",
+        "agent": "Agent",
+        "agentFallback": "Myrmidon agent",
+        "confirmNote": "Confirm only if this is your {{provider}} identity. Myrmidon will check your current organization membership on every action.",
+        "confirmFailed": "This link could not be confirmed. It may have expired or been revoked.",
+        "confirm": "Confirm identity"
+      },
+      "photon-connect-step": {
+        "title": "Connect iMessage Photon",
+        "description": "Connect {{agent}} to Photon Cloud. Pro supports direct messages through a shared line. Dedicated numbers also support individually enabled groups.",
+        "dashboardLink": "Photon dashboard",
+        "lineSetupLink": "Photon line setup",
+        "reconnectNote": "Reconnect keeps this project and {{target}}. Leave the secret blank to reuse the saved connection.",
+        "allocationShared": "shared DM allocation",
+        "allocationDedicated": "dedicated number",
+        "projectId": "Project ID",
+        "projectSecret": "Project secret",
+        "inspecting": "Inspecting Photon…",
+        "inspect": "Inspect Photon project",
+        "fieldsetLegend": "{{kind}} in {{project}}",
+        "kindShared": "Shared DMs",
+        "kindDedicated": "Dedicated numbers",
+        "sharedTaken": "This shared project already belongs to another channel. Use a separate Photon project for each agent.",
+        "noEligibleNumber": "No eligible dedicated number is available. Check the line allocation in Photon and existing Myrmidon channels.",
+        "sharedNote": "Direct messages only. Enroll each test sender in your Photon project's Users page, then use the number Photon assigns to that sender. Myrmidon identity linking is still required. Groups cannot be enabled on this channel.",
+        "connecting": "Connecting…",
+        "reconnect": "Reconnect Photon",
+        "connectShared": "Connect shared DMs",
+        "connectSelected": "Connect selected number"
+      },
+      "externally-connected-task-banner": {
+        "storageReadFailed": "Saved delivery identity could not be read. Check Activity and restore browser storage before starting another send.",
+        "viewActivity": "View activity",
+        "rejectionSaveFailed": "The rejected send could not be saved. Restore browser storage, then retry this same request to recover its receipt.",
+        "rejectedToast": {
+          "title": "Update was not sent",
+          "body": "A selected file already belongs to another comment. Edit the rejected send to correct the selection."
+        },
+        "unconfirmedToast": {
+          "title": "Couldn't confirm channel delivery",
+          "bodyWithError": "{{message}} Your draft is kept; retrying here reuses the same request identity.",
+          "body": "Your draft is kept; retrying here reuses the same request identity."
+        },
+        "uploadFailed": "{{message}} No channel message was sent. Check task files before retrying the upload.",
+        "uploadUnconfirmed": "Upload could not be confirmed.",
+        "selectedFileUnavailable": "Selected task file (details unavailable)",
+        "unnamedAttachment": "Unnamed attachment",
+        "feedback": {
+          "awaitingConsent": {
+            "title": "Waiting for file consent",
+            "body": "The recipient must accept the file card in Microsoft Teams. The file is not delivered yet; this send identity is kept while Myrmidon waits."
+          },
+          "published": {
+            "title": "Sent to channel",
+            "body": "The board update was published to the connected conversation."
+          },
+          "pending": {
+            "title": "Queued for channel",
+            "body": "Delivery is still pending. Your draft is kept until Myrmidon confirms publication."
+          },
+          "streaming": {
+            "title": "Publishing to channel",
+            "body": "Delivery is still in progress. Your draft is kept until Myrmidon confirms publication."
+          },
+          "retry": {
+            "title": "Delivery retry scheduled",
+            "body": "Myrmidon will retry this publication. Your draft and retry identity are kept."
+          },
+          "deliveryUnknown": {
+            "title": "Delivery not confirmed",
+            "body": "The provider may have accepted this update. Resolve it in Activity before trying again to avoid a duplicate."
+          },
+          "failed": {
+            "title": "Channel delivery failed",
+            "body": "Your draft is kept. Open Activity to retry this same publication safely."
+          },
+          "cancelled": {
+            "title": "Channel delivery cancelled",
+            "body": "Your draft is kept. Some parts may already have been published; check Activity before starting a new send."
+          },
+          "mixed": {
+            "title": "Delivery settled with mixed outcomes",
+            "body": "Not every part was confirmed delivered. Review the outcomes below; dismissing this receipt does not resend anything."
+          },
+          "remainingConsent": {
+            "title": "Waiting for remaining file consent",
+            "body": "Some parts have settled. The remaining file cards still need the recipient's response; this send stays locked until the whole batch is resolved."
+          }
+        },
+        "filePhase": {
+          "consentPending": "Consent card queued",
+          "consentSending": "Sending consent card",
+          "consentUnknown": "Consent card delivery not confirmed",
+          "awaitingConsent": "Awaiting consent",
+          "uploadPending": "Upload queued",
+          "uploading": "Uploading file",
+          "uploadUnknown": "File upload not confirmed",
+          "fileInfoPending": "File notification queued",
+          "fileInfoSending": "Sending file notification",
+          "fileInfoUnknown": "File notification not confirmed",
+          "delivered": "Delivered",
+          "declined": "Declined",
+          "expired": "Consent expired",
+          "cancelled": "Cancelled; remote bytes may remain",
+          "conflict": "File delivery needs review"
+        },
+        "sectionAriaLabel": "External conversation",
+        "connectedTo": "Connected to {{provider}}",
+        "assignmentFixed": "Agent assignment is fixed for this external task.",
+        "openProvider": "Open {{provider}}",
+        "sendToChannel": "Send to channel",
+        "connection": "Connection",
+        "boardUpdate": "Board update",
+        "boardUpdatePlaceholder": "Write only what should be visible in the provider conversation.",
+        "addMessageForFiles": "Add a message to send with your files.",
+        "attachAriaLabel": "Attach file to channel update",
+        "uploading": "Uploading…",
+        "attachFile": "Attach file",
+        "filesStayNote": "Files stay on this task until you send them to the channel.",
+        "selectionNotice": "A file already attached to another comment was removed from this selection. Attach a new copy or share the task link; your message is unchanged.",
+        "filesInSend": "Files in this send",
+        "includeTaskFiles": "Include task files",
+        "filesNoteGithub": "GitHub Apps cannot upload file bytes in comments. Checked files stay on the Myrmidon task; GitHub receives an authenticated task link when this Board has a public URL, or a private-task notice otherwise.",
+        "filesNoteTeams": "In personal Teams chats, recipients accept each file before upload. Channels and group chats receive supported images directly; other files stay on the task, with a task link or private-task notice.",
+        "filesNoteRetained": "These are the files selected for this send. Selection is locked until delivery is resolved.",
+        "filesNoteDefault": "Only checked files will be published to the external conversation.",
+        "rejection": {
+          "title": "Update was not sent",
+          "body": "A selected file already belongs to another comment. This request was rejected before any channel message was queued. Your exact draft is kept."
+        },
+        "rejectionClearFailed": "Saved rejection could not be cleared. Restore browser storage before editing this send.",
+        "editRejected": "Edit rejected send",
+        "unconfirmed": {
+          "title": "Delivery result not confirmed",
+          "body": "Your exact draft and request identity are kept. Retry safely to learn the authoritative publication state without creating a duplicate."
+        },
+        "openActivity": "Open Activity",
+        "summary": {
+          "published": "{{n}} published",
+          "awaitingConsent": "{{n}} awaiting consent",
+          "declined": "{{n}} declined",
+          "expired": "{{n}} expired",
+          "cancelled": "{{n}} cancelled",
+          "partsPublished": "{{published}} of {{total}} parts published."
+        },
+        "fileOutcomesAriaLabel": "File delivery outcomes",
+        "statusRefreshFailed": "Delivery status could not be refreshed. Your draft is kept; Myrmidon will check again without sending another update.",
+        "providerDetail": "Provider detail: {{detail}}",
+        "identityClearFailed": "Saved delivery identity could not be cleared. Restore browser storage before starting another send.",
+        "dismissReceipt": "Dismiss delivery receipt",
+        "boardCommentsNote": "Ordinary board comments remain Myrmidon-only.",
+        "identitySaveFailed": "Browser storage could not preserve this delivery identity. No update was sent. Restore browser storage, then reload to try again.",
+        "sending": "Sending…",
+        "retrySafely": "Retry safely"
+      },
+      "chat-endpoint-detail": {
+        "tabs": {
+          "settings": "Settings",
+          "access": "Access",
+          "conversations": "Conversations",
+          "activity": "Activity"
+        },
+        "lifecycle": {
+          "agentmail": {
+            "reconnect": "Reconnect the same email inbox.",
+            "remove": "Disconnect email and retain task history."
+          },
+          "slack": {
+            "reconnect": "Reconnect verifies or replaces credentials for this same Slack app. It does not reinstall the app or change its workspace or channel membership.",
+            "remove": "Myrmidon archives the endpoint, stops new ingress, and retires its saved Slack credentials. It does not uninstall the Slack app: the app remains installed, and its bot remains in channels, until you remove them in Slack."
+          },
+          "github": {
+            "reconnect": "Reconnect verifies this same App and installation, then updates its webhook URL, secret, and secure delivery settings. It does not reinstall the App or change repository access.",
+            "remove": "Myrmidon archives the endpoint, stops new ingress, and retires its saved App key and webhook secret. It does not uninstall the GitHub App: the App, its installations, and its webhook settings remain until you remove or update them on GitHub."
+          },
+          "discord": {
+            "reconnect": "Reconnect verifies this same Discord application and server installation. It does not add or remove the bot from the server.",
+            "remove": "Myrmidon archives the endpoint, stops its Myrmidon Gateway connection, and retires its saved bot token. It does not uninstall the bot: the bot remains in the Discord server, and the application remains in the Developer Portal, until you remove them there."
+          },
+          "teams": {
+            "reconnect": "Reconnect verifies this same Microsoft app, tenant, and bot identity. It does not upload or reinstall the Teams app.",
+            "remove": "Myrmidon archives the endpoint, stops new ingress, and retires its saved client secret. It does not uninstall the Teams app: the Entra app registration, Azure Bot, custom Teams app, and Teams installations remain until you remove them in Microsoft."
+          },
+          "photon": {
+            "reconnect": "Reconnect verifies the same Photon project and line allocation, then recovers eligible missed messages.",
+            "remove": "Disconnect archives this channel and removes its saved secret. Your Photon project, number, subscription, and Messages history remain in Photon."
+          },
+          "telegram": {
+            "reconnect": "Reconnect verifies this same BotFather bot and automatically refreshes its Myrmidon webhook and command menu.",
+            "remove": "Myrmidon archives the endpoint and queues durable removal of its Telegram webhook and command menu. After Telegram confirms that cleanup, Myrmidon retires the saved token. The BotFather bot and its chat memberships remain until you remove them in Telegram."
+          }
+        },
+        "activityKind": {
+          "delivery": "Inbound delivery",
+          "publication": "Outbound publication",
+          "action": "Provider action",
+          "health": "Connection health",
+          "repair": "Connection repair"
+        },
+        "resolution": {
+          "fileInfoUnknown": "The file upload was confirmed, but its Teams notification was not. Check Teams first. Retrying sends only that notification, not the file bytes, and may create a duplicate card.",
+          "consentUnknown": "The consent card may have reached Teams. File delivery is not confirmed. Cancelling here does not remove any card already sent.",
+          "uploadUnknown": "The file may already exist in OneDrive. Cancelling stops this Myrmidon transfer; it does not delete remote bytes. Uploads cannot be marked delivered or retried from this uncertain state.",
+          "default": "Myrmidon lost confirmation after sending. Check the provider conversation first. Retrying can create a duplicate message."
+        },
+        "reason": "Reason",
+        "details": "Details",
+        "health": {
+          "draft": "Connection setup is incomplete.",
+          "verifying": "Connection verification is in progress.",
+          "paused": "Connection is paused. Resume it to receive new messages.",
+          "attention": "Connection needs attention.",
+          "revoked": "Connection access is revoked. Reconnect to verify access.",
+          "archived": "Connection has been removed from Myrmidon."
+        },
+        "lastReportedError": "Last reported error",
+        "finishSetupToast": {
+          "incompleteTitle": "Setup not finished",
+          "failedTitle": "Finish setup failed",
+          "incompleteBody": "Wait for the agent to reply to the test conversation, then try again."
+        },
+        "tryAgainSentence": "Try again.",
+        "tryAgainButton": "Try again",
+        "breadcrumbConnectors": "Connectors",
+        "loading": "Loading connection…",
+        "loadFailed": "This chat connection could not be loaded.",
+        "inProvider": "{{agent}} in {{provider}}",
+        "chatConnectionFallback": "Chat connection",
+        "verifyingStale": "Verifying over 24 hours with live traffic",
+        "copyNumberAriaLabel": "Copy dedicated number",
+        "numberCopied": "Number copied",
+        "numberCopyFailed": "Could not copy the number. Select and copy it manually.",
+        "copyNumber": "Copy number",
+        "finishSetup": "Finish setup",
+        "continueSetup": "Continue setup",
+        "settings": {
+          "destinationUpdateFailed": "Couldn't update destination",
+          "updateFailed": "Couldn't update settings",
+          "photonShared": "Shared Photon project · direct messages only. Enroll senders in Photon and link their Messages identities in Access. Groups cannot be enabled.",
+          "photonDedicated": "Enable each group individually. Agent replies are visible to everyone in that group; only authorized senders can start work.",
+          "slackCommandTitle": "Slack command",
+          "slackCommandHelp": "Start work with <0>{{command}} investigate this</0>. In a direct message, use <0>{{command}} status</0>, <0>{{command}} new</0>, or <0>{{command}} close</0>. Slack's bare <0>/status</0> command is not a Myrmidon control.",
+          "telegramCommandTitle": "Telegram group command",
+          "telegramCommandHelp": "Telegram's default privacy mode does not deliver ordinary mentions to bots. Use this command to start or continue group work, or reply directly to a message from the bot.",
+          "whereTitle": "Where this agent can work",
+          "whereHelp": "Provider membership makes a destination available. Myrmidon responds only where you enable it.",
+          "destinations": "Destinations",
+          "destinationsLoading": "Loading destinations…",
+          "destinationsEmpty": "No provider destinations have been discovered yet.",
+          "unavailableAtProvider": "Unavailable at the provider",
+          "participants": "Participants: {{list}}",
+          "enableResource": "Enable {{label}}",
+          "privateConversations": "Private conversations",
+          "allowDirectMessages": "Allow direct messages",
+          "directMessagesDiscord": "People must also enable Direct Messages in their shared Discord server’s Privacy Settings.",
+          "directMessagesDefault": "People can start or continue a task in a direct conversation.",
+          "allowGroupChats": "Allow group chats",
+          "groupChatsDetail": "The bot may participate in group chats where it is installed."
+        },
+        "access": {
+          "linkCreatedTitle": "Private identity-link URL created",
+          "linkCreatedBody": "Send it only to the person whose provider identity is shown.",
+          "linkCreateFailed": "Couldn't create identity link",
+          "title": "External identity access",
+          "description": "Linked identities act as their current Myrmidon user. Unlinked people, when allowed, receive a fixed restricted profile.",
+          "allowUnlinked": "Allow unlinked people",
+          "unlinkedDetail": "They are restricted guests. Their tasks run only with an isolated workspace and sandbox environment; otherwise Myrmidon safely refuses the request. They cannot approve, hire, spend, manage access, or reassign agents.",
+          "confirmationLink": "Private confirmation link",
+          "linkCopied": "Confirmation link copied",
+          "linkCopyFailedTitle": "Couldn't copy the link",
+          "linkCopyFailedBody": "Select and copy it manually.",
+          "copyLink": "Copy link",
+          "identityLinks": "Identity links",
+          "empty": "External people appear here after they message the agent.",
+          "linkedTo": "Linked to {{user}}",
+          "notLinked": "Not linked",
+          "revoke": "Revoke",
+          "createPrivateLink": "Create private link"
+        },
+        "conversations": {
+          "title": "Conversations",
+          "empty": "No conversations yet. Address the agent in an enabled destination to start one.",
+          "waitingForTask": "Waiting for task",
+          "openProvider": "Open {{provider}}",
+          "openTask": "Open task"
+        },
+        "activity": {
+          "replayQueuedPublication": "Publication queued for replay",
+          "replayQueuedDelivery": "Delivery queued for replay",
+          "replayFailed": "Couldn't replay activity",
+          "resolved": {
+            "taskStartRetried": "Task start retried",
+            "taskStartCancelled": "Task start cancelled",
+            "replyDelivered": "Provider reply marked delivered",
+            "replyRetried": "Provider reply retried",
+            "replyCancelled": "Provider reply cancelled",
+            "publicationDelivered": "Publication marked delivered",
+            "publicationRetried": "Publication queued for retry",
+            "publicationCancelled": "Publication cancelled"
+          },
+          "resolveFailed": "Couldn't resolve activity",
+          "paused": "Connection paused",
+          "resumed": "Connection resumed",
+          "connectionUpdateFailed": "Couldn't update connection",
+          "callbackEvents": "Events API",
+          "callbackInteractivity": "Interactivity",
+          "callbackSlashCommand": "Slash command",
+          "title": "Connection activity",
+          "lastReportedHealth": "Last reported health",
+          "callbackHealth": "Slack callback health",
+          "callbacksNeedUpdate": "Slack callback URLs need an update. Save the current App Manifest, then exercise Events, Interactivity, and the registered command again.",
+          "callbacksNote": "Myrmidon records each callback surface independently after Slack successfully calls it.",
+          "surfaceCurrent": "Current",
+          "surfaceStale": "Stale URL",
+          "surfaceNotObserved": "Not observed",
+          "lastObserved": "Last observed",
+          "pause": "Pause",
+          "resume": "Resume",
+          "reconnect": "Reconnect",
+          "removeConnection": "Remove connection",
+          "historyTitle": "Delivery and publication history",
+          "loading": "Loading activity…",
+          "loadFailed": "Connection activity could not be loaded.",
+          "replayAriaLabel": "Replay failed {{kind}}",
+          "replay": "Replay",
+          "resolve": "Resolve",
+          "empty": "No connection activity yet.",
+          "resolveDialog": {
+            "titleTaskStart": "Resolve unconfirmed task start",
+            "titleReply": "Resolve unconfirmed provider reply",
+            "titleDelivery": "Resolve unconfirmed delivery",
+            "bodyTaskStart": "Myrmidon lost confirmation after asking Slack to start the task. Check Slack first. Retrying can create a duplicate starter message and task.",
+            "bodyReply": "Myrmidon lost confirmation after sending this provider reply. Check the provider first. Marking it delivered applies any pending Myrmidon state change; retrying can create a duplicate message.",
+            "keep": "Keep unresolved",
+            "cancelTaskStart": "Cancel task start",
+            "cancelReply": "Cancel provider reply",
+            "cancelFileTransfer": "Cancel file transfer",
+            "cancelPublication": "Cancel publication",
+            "retryFileNotification": "Retry file notification",
+            "retryAnyway": "Retry anyway",
+            "markDelivered": "Mark delivered"
+          },
+          "removeDialog": {
+            "title": "Remove this connection?",
+            "body": "{{agent}} will stop receiving new work from {{provider}}. Existing Myrmidon tasks remain available."
+          }
+        }
+      },
+      "email-endpoint-setup": {
+        "steps": {
+          "access": "Access",
+          "apiKey": "API key",
+          "connected": "Connected",
+          "agent": "Agent",
+          "emailAddress": "Email address",
+          "review": "Review"
+        },
+        "trust": {
+          "configured": "Low-trust review configured",
+          "needsBoundary": "Low trust needs a work boundary",
+          "notLowTrust": "{{name}} is not a low-trust agent",
+          "bodyLowTrust": "Email tasks stay inside the configured project or root task boundary. Output is quarantined for trusted review.",
+          "bodyDefault": "Email can contain malicious instructions. We recommend Low-trust review to limit the agent’s access to Myrmidon work.",
+          "isolationNote": "Low-trust execution also requires isolated workspaces and an active sandbox environment in the agent’s runtime settings.",
+          "review": "Review trust settings",
+          "configure": "Configure low trust"
+        },
+        "title": {
+          "connect": "Connect AgentMail",
+          "ready": "Your agent’s email is ready",
+          "giveAddress": "Give an agent an email address"
+        },
+        "progressAriaLabel": "Setup progress",
+        "continue": "Continue",
+        "back": "Back",
+        "apiKey": {
+          "title": "Add your AgentMail API key",
+          "label": "API key",
+          "placeholder": "Paste your AgentMail API key",
+          "getKey": "Get a key in AgentMail ↗",
+          "connecting": "Connecting…",
+          "connect": "Connect AgentMail"
+        },
+        "connected": {
+          "title": "AgentMail is connected",
+          "next": "Next, give an agent an email address from Permissions.",
+          "openPermissions": "Open permissions"
+        },
+        "agent": {
+          "title": "Who should handle this inbox?",
+          "description": "Incoming email will create tasks assigned to this agent.",
+          "label": "Agent",
+          "placeholder": "Choose an agent",
+          "searchPlaceholder": "Search all agents…",
+          "empty": "No agents found.",
+          "activationNote": "Activating this inbox also adds the agent to this connection’s allowed agents."
+        },
+        "address": {
+          "title": "Choose {{name}}’s email address",
+          "sourceAriaLabel": "Email address source",
+          "createNew": "Create a new address",
+          "useExisting": "Use an existing inbox",
+          "label": "Email address",
+          "availableInbox": "Available inbox",
+          "chooseInbox": "Choose an inbox",
+          "alreadyAssigned": "already assigned",
+          "advanced": "Advanced options",
+          "domain": "Domain",
+          "customDomain": "Set up a custom domain in AgentMail ↗",
+          "receiving": "Receiving",
+          "modeLive": "Live connection — works locally",
+          "modeWebhook": "Webhook — requires public HTTPS"
+        },
+        "review": {
+          "title": "Ready to start receiving email?",
+          "assignedTo": "Assigned to {{name}}",
+          "modeLive": "Live connection",
+          "modeWebhook": "Signed webhook",
+          "note": "New conversations create tasks. Replies stay in the same task. Task comments stay internal."
+        },
+        "done": {
+          "receiving": "Receiving email for {{name}}",
+          "back": "Back to permissions"
+        },
+        "action": {
+          "activating": "Activating…",
+          "create": "Create email address",
+          "connect": "Connect email address",
+          "review": "Review email address"
+        },
+        "trustDialog": {
+          "title": "Trust settings · {{name}}",
+          "description": "Changes apply to all of this agent’s work. Use a dedicated email agent if its other tasks need broader access.",
+          "note": "Low trust limits Myrmidon access; it does not sandbox the runtime. Review filesystem, tool, and secret access separately.",
+          "save": "Save trust settings"
+        },
+        "inboxes": {
+          "title": "Give an agent an email address",
+          "description": "Each email conversation becomes a task.",
+          "receiving": "Receiving email"
+        },
+        "settings": {
+          "disconnected": "Inbox disconnected. Email history remains in its tasks.",
+          "loading": "Loading email inbox…",
+          "modeLive": "Live connection",
+          "modeWebhook": "Webhook",
+          "lastCheck": "Last mail check: {{time}}",
+          "notChecked": "Not checked yet",
+          "note": "Each email conversation is a task. Task comments stay internal; use Email reply to send.",
+          "pause": "Pause",
+          "resume": "Resume",
+          "disconnect": "Disconnect inbox",
+          "reconnectKey": "Reconnect this inbox with a new API key",
+          "receivingMode": "Receiving mode",
+          "reconnect": "Reconnect inbox"
+        }
+      },
+      "chat-endpoint-setup": {
+        "rail": {
+          "ariaLabel": "Connection setup progress",
+          "chooseAgent": "Choose agent",
+          "connectProvider": "Connect provider",
+          "tryIt": "Try it"
+        },
+        "breadcrumbs": {
+          "connectors": "Connectors",
+          "connectChat": "Connect chat"
+        },
+        "createFailed": "Couldn't start setup",
+        "tryAgain": "Try again.",
+        "generateSecretFailed": "Couldn't generate webhook secret",
+        "testIncomplete": {
+          "title": "Test not complete",
+          "body": "Send the provider message, then try again."
+        },
+        "unsupported": "This chat provider is not supported.",
+        "selectOrganization": "Select an organization to connect chat.",
+        "choice": {
+          "title": "Choose how to connect",
+          "question": "What should this {{provider}} connection do?",
+          "chatTitle": "Chat with an agent",
+          "chatBody": "People in {{provider}} can start and continue Myrmidon tasks.",
+          "toolTitle": "Use this connection as an agent tool",
+          "toolBody": "Let agents use {{provider}} actions and data while they work."
+        },
+        "agent": {
+          "title": "Which agent do you want to chat with?",
+          "description": "This agent is permanent for the connection. Connect another channel to represent a different agent.",
+          "placeholder": "Choose an active agent",
+          "empty": "No active agents are available."
+        },
+        "continue": "Continue",
+        "connectionFailed": "Connection failed",
+        "saveAndExit": "Save & exit",
+        "copyFailed": {
+          "title": "Couldn't copy to clipboard",
+          "body": "Select and copy the value manually."
+        },
+        "endpointUnavailable": "This endpoint is unavailable. Check the server's public URL.",
+        "github": {
+          "readFailed": "Myrmidon couldn't read that file. Choose the .pem file again or paste the private key.",
+          "titleRepair": "Reconnect GitHub App",
+          "titleNew": "Create or connect a GitHub App",
+          "descriptionRepair": "Reconnect verifies this same App and installation, then updates its webhook URL, secret, and secure delivery settings. It does not reinstall the App or change repository access. Leave App ID and private key blank to reuse saved credentials. Keep Webhooks · Active enabled in GitHub; send a test conversation after reconnecting.",
+          "descriptionNew": "Configure its webhook and permissions, then verify the App with Myrmidon.",
+          "step1": "Under the target user or organization, create a new GitHub App. Give it a globally unique name (34 characters or fewer), use the Myrmidon homepage URL below, and leave user authorization off.",
+          "step2": "Keep <0>Webhooks · Active</0> on. Enter the Myrmidon webhook URL and the Myrmidon-generated webhook secret below, and keep <0>Enable SSL verification</0> selected.",
+          "step3": "Under Repository permissions, set <0>Issues</0> and <0>Pull requests</0> to <0>Read & write</0>. Leave every other permission at its default; Metadata remains read-only.",
+          "step4": "Subscribe to <0>Issue comment</0> (<1>issue_comment</1>), <0>Pull request review comment</0> (<1>pull_request_review_comment</1>). GitHub sends <1>installation</1> and <1>installation_repositories</1> to every GitHub App automatically; they are not selectable here.",
+          "step5": "Choose <0>Only on this account</0>, create the App, copy its App ID, generate one private key, then install it on the selected repositories.",
+          "homepageUrl": "Myrmidon homepage URL",
+          "openSettings": "Open GitHub App settings",
+          "openNewForm": "Open new GitHub App form",
+          "appId": "GitHub App ID",
+          "privateKey": "Private key (PEM)",
+          "hideKey": "Hide private key",
+          "showKey": "Show private key",
+          "keyFileAriaLabel": "Choose GitHub App private key file",
+          "chooseFile": "Choose .pem file",
+          "readingFile": "Reading private key file…",
+          "keyLoaded": "Private key loaded. It stays in this form until you connect.",
+          "webhookSecret": "Webhook secret",
+          "generatedSecretAriaLabel": "Generated webhook secret",
+          "copySecret": "Copy webhook secret",
+          "copyNow": "Copy this value now. Myrmidon will not show it again.",
+          "secretConfigured": "A webhook secret is configured and cannot be shown again.",
+          "secretGenerateHint": "Generate the secret in Myrmidon, then paste it into the GitHub App.",
+          "regenerate": "Regenerate webhook secret",
+          "generate": "Generate webhook secret",
+          "regenerateWarning": "Regenerating immediately invalidates GitHub webhook signatures until you replace the secret in the GitHub App settings.",
+          "generateAgainWarning": "Generating another secret replaces the previous value. Paste the newest value into GitHub before continuing.",
+          "verified": "GitHub has verified this webhook.",
+          "waitingVerification": "Waiting for GitHub to deliver its signed webhook ping…",
+          "reconnect": "Reconnect and verify",
+          "connect": "Connect and verify"
+        },
+        "discord": {
+          "title": "Connect {{agent}} to Discord",
+          "descriptionRepair": "Reconnect verifies this same Discord application and server installation. It does not add or remove the bot from the server. Leave fields blank to reuse saved credentials.",
+          "descriptionNew": "Create one dedicated Discord application and bot for this Myrmidon agent.",
+          "step1": "In Discord Developer Portal, create an application. Copy its Application ID from General Information.",
+          "step2": "Open Bot, create the bot, enable Message Content Intent, then reset and copy its token.",
+          "step3": "Enable Developer Mode in Discord, right-click the target server, and copy its Server ID.",
+          "step4": "Enter those values below, then use the generated install link to add the bot to that server.",
+          "openPortal": "Open Discord Developer Portal",
+          "applicationId": "Application ID",
+          "serverId": "Server ID",
+          "install": "Install bot in this server",
+          "permissions": "The install link grants only View Channels, Send Messages, Create Public Threads, Send Messages in Threads, Read Message History, Add Reactions, Embed Links, and Attach Files. Myrmidon still requires each discovered channel to be enabled in Access.",
+          "reconnect": "Reconnect Discord bot",
+          "connect": "Connect Discord bot"
+        },
+        "shared": {
+          "botToken": "Bot token",
+          "publicUrlRequired": "Configure a public HTTPS URL for this Myrmidon instance before connecting {{provider}}.",
+          "webhookUrl": "Myrmidon webhook URL",
+          "openSlackSettings": "Open Slack app settings"
+        },
+        "telegram": {
+          "title": "Create {{agent}} in Telegram",
+          "descriptionRepair": "Reconnect verifies this same BotFather bot and automatically refreshes its Myrmidon webhook and command menu. It does not recreate the bot or change its chat memberships. Leave the token blank to reuse the saved credential.",
+          "descriptionNew": "Create a bot with BotFather, then paste the token it gives you.",
+          "step1": "Open BotFather and send <1>/newbot</1>.",
+          "step2": "Enter the bot display name.",
+          "step3": "Choose an available username ending in <1>bot</1>.",
+          "privacyNote": "Myrmidon works with Telegram's default bot privacy mode and registers its command menu automatically. In a group, ordinary mentions are not delivered to bots: start or continue work with <1>{{usage}}</1>, or reply directly to a message from the bot.",
+          "openBotFather": "Open BotFather",
+          "reconnect": "Reconnect bot",
+          "connect": "Connect bot"
+        },
+        "teams": {
+          "title": "Connect {{agent}} to Microsoft Teams",
+          "descriptionRepair": "Reconnect verifies this same Microsoft app, tenant, and bot identity. It does not upload or reinstall the Teams app. Leave fields blank to reuse saved credentials.",
+          "descriptionNew": "Use your own Microsoft app credentials for this bot.",
+          "requirements": "This setup requires a Microsoft 365 work or school organization where you can register an Entra app, create an Azure Bot, and upload or install a Teams app. Personal or free Teams accounts at teams.live.com cannot complete this setup. This release supports Microsoft 365 commercial cloud tenants only; GCC, GCC High, DoD, and Microsoft 365 operated by 21Vianet are not supported yet.",
+          "step1": "In Microsoft Entra, create a single-tenant app registration. Copy its Application (client) ID and Directory (tenant) ID, then create a client secret and copy its value.",
+          "step2": "In Azure, create an Azure Bot. Choose Single Tenant, use that Application ID, set its messaging endpoint to the Myrmidon URL below, and add the Microsoft Teams channel.",
+          "step3": "In Teams Developer Portal, create an app, add a bot with the same Application ID, then apply the manifest settings shown below. The block binds the Teams resource-specific consent permissions to that Entra app; these are not Microsoft Graph permissions in Entra. These permissions let the installed app receive every message in a team or group chat without an @mention, so describe that access to installers. Download the package and install it in the target team or group chat.",
+          "openEntra": "Open Microsoft Entra",
+          "createAzureBot": "Create Azure Bot",
+          "openPortal": "Open Teams Developer Portal",
+          "messagingEndpoint": "Myrmidon messaging endpoint",
+          "clientId": "Application / Client ID",
+          "tenantId": "Directory / Tenant ID",
+          "clientSecret": "Client secret value",
+          "fieldMapTitle": "Microsoft portal field map",
+          "fieldMapIntro": "Use these exact portal sections and reuse the same Application ID in all three places.",
+          "fieldMap1": "<0>Microsoft Entra admin center · App registrations</0>: select <0>New registration</0>, choose <0>Accounts in this organizational directory only (Single tenant)</0>, then select <0>Register</0>. Copy <0>Application (client) ID</0> and <0>Directory (tenant) ID</0>. Under <0>Certificates & secrets · Client secrets</0>, select <0>New client secret</0> and copy its <0>Value</0>, not its Secret ID.",
+          "fieldMap2": "<0>Azure · Create Azure Bot</0>: set <0>Microsoft App ID</0> to <0>Single Tenant</0>, set <0>Creation type</0> to <0>Use existing app registration</0>, and enter the Application ID and Tenant ID above. After creation, open <0>Settings · Configuration</0> and paste the Myrmidon <0>Messaging endpoint</0>; then open <0>Settings · Channels</0> and enable <0>Microsoft Teams</0>.",
+          "fieldMap3": "<0>Teams Developer Portal · Apps</0>: select <0>New app</0>. Under <0>Configure · App features · Bot</0>, add an existing bot using the same Application ID; enable <0>Personal</0>, <0>Team</0>, and <0>Group chat</0> scopes plus file support. Under <0>Configure · Permissions</0>, add the two RSC <0>Application</0> permissions shown below. Complete the required app details and icons, explain that the app can receive every message in an installed team or group chat, then download the app package.",
+          "fieldMap4": "<0>Microsoft Teams · Apps · Manage your apps</0>: select <0>Upload an app · Upload a custom app</0>, choose the downloaded package, and install it in each intended personal chat, group chat, or team. One team install covers its standard channels. Private and shared channels require a separate app installation and are not supported by this release. If upload is unavailable, a Teams administrator must enable or approve custom apps.",
+          "manifestBlock": "Required Teams app manifest block",
+          "manifestCopied": "Manifest settings copied",
+          "copyManifest": "Copy manifest settings",
+          "manifestNote": "Enter the Application / Client ID above before copying so the block contains the real bot identity. This block contains the Myrmidon-specific fields to verify in Developer Portal or merge into a complete Teams app manifest. It is not a complete app package; Developer Portal supplies the remaining required metadata and packages the manifest with your app icons.",
+          "ssoNote": "Myrmidon does not use Teams single sign-on in this release. The copied <1>webApplicationInfo</1> entry only associates the RSC permissions with the same Entra Application ID. Its nonempty resource is an RSC placeholder; you do not need to register an Entra Application ID URI or add delegated Microsoft Graph permissions.",
+          "rscNote": "The two application RSC permissions let the bot receive every message, without an @mention, in each team or group chat where it is installed. Myrmidon retains and acts only on messages admitted by your Myrmidon reach and access rules. Make this provider access clear in the app description shown to installers.",
+          "scopeNote": "This release supports personal chats, group chats, and standard team channels—not private channels. <1>supportsFiles: true</1> enables native file receipt and consent-based sending in personal chats; channel and group-chat files need a separate Microsoft Graph connection and are not ingested here.",
+          "reconnect": "Reconnect Microsoft app",
+          "verify": "Verify Microsoft credentials"
+        },
+        "slackFinish": {
+          "title": "Finish Slack setup",
+          "description": "Point the Slack app at Myrmidon now that its signing secret is connected.",
+          "command": "Slack command",
+          "useCommand": "Use the registered command",
+          "commandHelp": "Start work with <1>{{command}} investigate this</1>. In a direct message, use <1>{{command}} status</1>, <1>{{command}} new</1>, or <1>{{command}} close</1>. Slack's bare <1>/status</1> command is not a Myrmidon control.",
+          "step1": "Return to <0>App Manifest</0> in Slack and click <0>Save Changes</0>. The copied manifest already contains the event, interaction, and slash-command URLs. Slack verifies the Events URL when you save; Myrmidon records Interactivity and slash command health only after each signed callback is observed.",
+          "startTest": "Start Slack message test"
+        },
+        "slack": {
+          "title": "Connect a Slack app",
+          "descriptionRepair": "Reconnect verifies or replaces credentials for this same Slack app. It does not reinstall the app or change its workspace or channel membership. Leave credentials blank to reuse the saved values.",
+          "descriptionNew": "Bring your own Slack app. The manifest requests the scopes Myrmidon needs; credentials remain write-only.",
+          "step1": "Copy the manifest, then create a Slack app <0>From an app manifest</0> in the target workspace.",
+          "step2": "Open <0>OAuth & Permissions</0>, install the app to the workspace, and copy its Bot User OAuth Token.",
+          "step3": "Open <0>Basic Information</0> and copy its Signing Secret.",
+          "appName": "Slack app name",
+          "botName": "Bot display name",
+          "slashCommand": "Slash command",
+          "manifest": "Slack app manifest",
+          "manifestCopied": "Manifest copied",
+          "copyManifest": "Copy manifest",
+          "botToken": "Bot User OAuth Token",
+          "signingSecret": "Signing Secret",
+          "reconnect": "Reconnect Slack app",
+          "connect": "Connect Slack app"
+        },
+        "try": {
+          "fresh": {
+            "photon": "send a fresh message to your Photon number",
+            "telegram": "start a fresh conversation with /new and send the test message again",
+            "github": "start a new issue or pull request conversation and mention the agent again",
+            "teams": "start a new channel post and mention the agent again",
+            "default": "send a new root mention to the agent"
+          },
+          "guidance": {
+            "photonLinkTitle": "Link your Messages identity",
+            "photonLinkBody": "Send one message to discover your phone number or Apple account address, then link that exact identity in Access. Send a fresh request after linking; earlier messages do not start work.",
+            "checkFailedTitle": "Identity readiness could not be checked",
+            "checkFailedBody": "Review Access before expecting an agent reply. After linking the account you are testing, {{action}}.",
+            "linkTitle": "Link the account you’re testing",
+            "telegramGuestOff": "Tap Start in Telegram to discover your account; the welcome does not start an agent run. Link the account privately in Access, then return and send the test message.",
+            "guestOff": "Your first {{provider}} message discovers the external account, but isolated guest work is off, so it cannot safely start {{agent}}. Send it once, link that account privately in Access, then {{action}}.",
+            "firstMessageTitle": "Your first message identifies your account",
+            "telegramGuestOn": "Tap Start in Telegram to discover your account. Until linked, it is a restricted guest and still needs a sandbox-backed isolated run; test that path intentionally, or link it in Access and then send the test message.",
+            "guestOn": "Until linked, the account is a restricted guest and still needs a sandbox-backed isolated run. Test that guest path intentionally, or link the account in Access and then {{action}}.",
+            "unlinkedGuestOff": "An observed external account is unlinked, and isolated guest work is off, so it cannot safely start {{agent}}. Link the account in Access, then {{action}}; Myrmidon does not replay the refused request.",
+            "unlinkedTitle": "Unlinked identity detected",
+            "unlinkedGuestOn": "An unlinked account is a restricted guest and still needs a sandbox-backed isolated run. Test guest access intentionally, or link the account in Access and then {{action}}."
+          },
+          "steps": {
+            "photonShared": "In your Photon project, enroll your sender in Users and find its assigned number in Get started. Send a fresh message to that number from Apple Messages.",
+            "photonDedicated": "Open Apple Messages and send a fresh message to {{target}}.",
+            "photonLink": "Link the discovered sender to a Myrmidon person in Access, then send a fresh request.",
+            "photonWait": "Wait for the agent’s actual reply. Setup completes after that reply is delivered.",
+            "photonSharedNote": "This Pro-compatible channel supports DMs only. Group messages cannot start work.",
+            "photonGroupNote": "For a group: add the number in Messages, send a message, enable the discovered group in Settings, then send a fresh request.",
+            "discord1": "Open a text channel where the bot is installed.",
+            "discord2": "Mention {{bot}} in a new root message.",
+            "discord3": "Reply once inside {{agent}}'s new Discord thread.",
+            "telegram1": "Open the bot's private chat.",
+            "telegram2": "Tap Start.",
+            "telegram3": "Send “Help me test this”.",
+            "github1": "Open an installed issue or pull request.",
+            "github2": "Mention {{bot}} in a comment.",
+            "github3": "Add another comment to continue the same task.",
+            "teams1": "Open an installed channel and start a new post.",
+            "teams2": "Mention {{bot}} in the post.",
+            "teams3": "Reply once beneath the post.",
+            "default1": "Open a channel and invite the bot if needed.",
+            "default2": "Mention {{bot}} in a new channel message.",
+            "default3": "Reply once in {{agent}}'s thread.",
+            "dedicatedNumber": "the dedicated number"
+          },
+          "title": "Try {{agent}} in {{provider}}",
+          "description": "Complete this real conversation to finish setup.",
+          "checking": "Checking identity and guest readiness…",
+          "reviewAccess": "Review identity access",
+          "copyNumberFailed": "Could not copy the number. Select it in the instructions below.",
+          "numberCopied": "Number copied",
+          "copyNumber": "Copy {{number}}",
+          "openProvider": "Open {{provider}}",
+          "sentTest": "I've sent the test message"
+        }
+      }
+    }
+  }
+}

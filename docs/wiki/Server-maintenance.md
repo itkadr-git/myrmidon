@@ -39,6 +39,16 @@ anything warned about it. The BOT-DISK parts are the layered answer:
 
 ## Monitoring
 
+### Optional centralized memory on fleet sites
+
+`fleetd` can expose authenticated `/v1/memory/recall` and
+`/v1/memory/retain` routes for bots at a remote site. Configure the optional
+`memory` block (`enabled`, `url`, `token`, `bank`, `timeoutMs`) to enable the
+HTTP(S)-only client. With the block absent or disabled, both routes return
+`503 centralized_memory_disabled` and make no upstream request. The timeout
+defaults to 15000 ms (range 100-120000 ms); responses are size-capped. This
+does not require host filesystem access. See the fleetd configuration reference in the operator guide.
+
 - The board serves its own `/metrics` endpoint in Prometheus text format
   (0.0.4). Access is one bearer token from a company secret or
   `MYRMIDON_METRICS_TOKEN`; without a configured token the endpoint answers

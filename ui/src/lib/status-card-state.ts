@@ -1,4 +1,4 @@
-import type { StatusCard, StatusCardRefreshPolicy } from "@paperclipai/shared";
+import type { StatusCard, StatusCardRefreshPolicy } from "@myrmidon/shared";
 
 /**
  * The lifecycle states a status card renders as on the board (plan §7,

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   companies,
@@ -17,7 +17,7 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AgentApiKeyScope,
   AgentEnvConfig,
@@ -34,7 +34,7 @@ import type {
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
   SecretVersionSelector,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   CLASS3_STATIC_LEASE_ALLOWLIST,
   createSecretProviderConfigSchema,
@@ -45,7 +45,7 @@ import {
   secretProviderConfigPayloadSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -85,7 +85,7 @@ import { logActivity } from "./activity-log.js";
 import {
   assertAccountHomeCacheDirStillValid,
   withAccountHomeSecretMutationLock,
-} from "@paperclipai/adapter-codex-local/server";
+} from "@myrmidon/adapter-codex-local/server";
 // myrmidon(S5): resolved secret values are masked in stored text
 import { registerSecretValues } from "../myrmidon/secret-masking.js";
 
@@ -109,6 +109,7 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 ]);
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
+  openclaw_gateway: ["deviceToken"],
 };
 const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
@@ -1408,7 +1409,15 @@ export function secretService(db: Db | DbTransaction) {
         db
           .update(companySecrets)
           .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
-          .where(eq(companySecrets.id, secret.id))
+          .where(
+            and(
+              eq(companySecrets.id, secret.id),
+              or(
+                sql`${companySecrets.lastResolvedAt} IS NULL`,
+                sql`${companySecrets.lastResolvedAt} < ${new Date(Date.now() - 5 * 60_000).toISOString()}`,
+              ),
+            ),
+          )
           .catch(() => undefined),
         recordAccessEvent({
           companyId,
@@ -2087,6 +2096,9 @@ export function secretService(db: Db | DbTransaction) {
       throw unprocessable(`${input.key} must be a string, plain binding, or secret reference`);
     }
     const binding = canonicalizeBinding(parsed.data as EnvBinding);
+    if (input.adapterType === "openclaw_gateway" && input.key === "deviceToken" && binding.type !== "secret_ref") {
+      throw unprocessable("deviceToken must be a company secret reference");
+    }
     if (binding.type === "secret_ref") {
       await assertSecretInCompany(companyId, binding.secretId);
       return {
@@ -2821,6 +2833,15 @@ export function secretService(db: Db | DbTransaction) {
   }
 
   function fallbackBindingTarget(binding: typeof companySecretBindings.$inferSelect): CompanySecretBindingTarget {
+    if (binding.targetType === "github_actions") {
+      return {
+        type: "github_actions",
+        id: binding.targetId,
+        label: `GitHub Actions: ${binding.targetId}`,
+        href: `https://github.com/${binding.targetId}/settings/secrets/actions`,
+        status: "active",
+      };
+    }
     return {
       type: binding.targetType as SecretBindingTargetType,
       id: binding.targetId,
@@ -2965,6 +2986,17 @@ export function secretService(db: Db | DbTransaction) {
           status: row.status,
         });
       }
+    }
+
+    const ghBindings = bindings.filter((b) => b.targetType === "github_actions");
+    for (const b of ghBindings) {
+      setTarget({
+        type: "github_actions",
+        id: b.targetId,
+        label: `GitHub Actions: ${b.targetId}`,
+        href: `https://github.com/${b.targetId}/settings/secrets/actions`,
+        status: "active",
+      });
     }
 
     return targetMap;

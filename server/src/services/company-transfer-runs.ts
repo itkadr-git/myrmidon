@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companyTransferRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { companyTransferRuns } from "@myrmidon/db";
 
 // Durable run ledger for chunked company transfers. A run tracks one export
 // publish or import apply of a transfer container. Progress is recorded per

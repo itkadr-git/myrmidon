@@ -1,5 +1,6 @@
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
 import { describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 
 import { compileHermesProfile } from "./profile-compiler.js";
 import {
@@ -39,6 +40,7 @@ import {
   type BotProfileSettings,
   type BotProfileSource,
 } from "./profile-input.js";
+import { BOT_DEVELOPER_ROLES_ENV, BOT_ROLE_TOOL_DIET_ENV, DEFAULT_BOT_DEVELOPER_ROLES } from "./tool-diet.js";
 
 // Everything here is placeholder data: fake bot keys, example.com URLs and
 // obviously-fake secrets.
@@ -88,6 +90,32 @@ function fileContent(profile: ReturnType<typeof compileHermesProfile>, path: str
 }
 
 describe("myrmidon(W2a) readBotProfileSettings", () => {
+  it("prefers allowlists saved from the UI to the process environment", () => {
+    const previous = liveBehaviorSettingsView();
+    const priorBanks = process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV];
+    const priorServers = process.env[BOT_MCP_SERVERS_ENV];
+    try {
+      process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV] = "env-bank";
+      process.env[BOT_MCP_SERVERS_ENV] = JSON.stringify([{ name: "env", url: "https://env.example.com/mcp", noAuth: true }]);
+      applyLiveBehaviorSettings({
+        settings: { bot_hindsight_allowed_banks: ["managed"], bot_mcp_servers: [{ name: "managed", url: "https://managed.example.com/mcp", noAuth: true }] },
+        sources: { bot_hindsight_allowed_banks: "ui", bot_mcp_servers: "ui" },
+      } as ReturnType<typeof liveBehaviorSettingsView>);
+      const saved = readBotProfileSettings();
+      expect(saved.hindsightAllowedBanks).toEqual(["managed"]);
+      expect(saved.mcpServers.map((server) => server.name)).toEqual(["managed"]);
+      applyLiveBehaviorSettings({ settings: {}, sources: {} } as ReturnType<typeof liveBehaviorSettingsView>);
+      const fromEnv = readBotProfileSettings();
+      expect(fromEnv.hindsightAllowedBanks).toEqual(["env-bank"]);
+      expect(fromEnv.mcpServers.map((server) => server.name)).toEqual(["env"]);
+    } finally {
+      if (priorBanks === undefined) delete process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV];
+      else process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV] = priorBanks;
+      if (priorServers === undefined) delete process.env[BOT_MCP_SERVERS_ENV];
+      else process.env[BOT_MCP_SERVERS_ENV] = priorServers;
+      applyLiveBehaviorSettings(previous);
+    }
+  });
   it("reads the MYRMIDON_BOT_* variables, trimming them and treating blanks as unset", () => {
     expect(
       readBotProfileSettings({
@@ -123,6 +151,9 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
       localMemoryOff: false,
       // myrmidon(TOOL-DIET): unset in the env above -> the fleet default list.
       disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS],
+      // myrmidon(TOOL-DIET-ROLES): unset in the env above -> the role defaults are on, default developer roles.
+      roleToolDiet: true,
+      developerRoles: [...DEFAULT_BOT_DEVELOPER_ROLES],
     });
     expect(readBotProfileSettings({ [BOT_BOARD_URL_ENV]: "   " }).boardUrl).toBeNull();
     expect(readBotProfileSettings({}).hindsightApiUrl).toBeNull();
@@ -294,6 +325,14 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("context_length: 262144");
   });
 
+  it("the card's models.maxOutputTokens reaches model.max_tokens in compiled config", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { model: "model-a", models: { maxOutputTokens: 16_384 } } }),
+      settings(),
+    );
+    expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("max_tokens: 16384");
+  });
+
   it("the card's models.titleGeneration and models.compressionSummary reach the compiled auxiliary block", () => {
     const { input } = buildHermesProfileInput(
       source({
@@ -452,6 +491,152 @@ describe("myrmidon(TOOL-DIET) MYRMIDON_BOT_DISABLED_TOOLS", () => {
     const yaml = configYaml(input);
     expect(yaml).toContain('- "web_extract"');
     expect(yaml).not.toContain("rm -rf");
+  });
+});
+
+// myrmidon(TOOL-DIET-ROLES, OPE-11947): per-role default tool lists, resolved from the agent's role and card.
+describe("myrmidon(TOOL-DIET-ROLES) role tool diet in the profile input", () => {
+  /** The entries of one `agent.<key>` block of a compiled config.yaml, in file order. */
+  function yamlList(yaml: string, key: string): string[] {
+    const body = new RegExp(`\\n  ${key}:\\n((?:  - "[^"\\n]*"\\n)+)`).exec(yaml)?.[1];
+    if (!body) return [];
+    return [...body.matchAll(/"([^"\n]*)"/g)].map((item) => item[1] ?? "");
+  }
+  const toolsOf = (yaml: string) => yamlList(yaml, "disabled_tools");
+  const toolsetsOf = (yaml: string) => yamlList(yaml, "disabled_toolsets");
+  const compileWith = (
+    overrides: Partial<BotProfileSource>,
+    env: Record<string, string> = {},
+  ): string => {
+    const built = buildHermesProfileInput(source(overrides), readBotProfileSettings({ ...baseEnv(), ...env }));
+    return fileContent(compileHermesProfile(built.input), "hermes/config.yaml");
+  };
+  // A card of a team that curated its tools: memory, web, the browser and the rest, as listed.
+  const CURATED = "terminal,file,web,vision,skills,todo,memory,session_search,clarify,browser";
+  // The board always switches `delegation` off for a card that did not enable parallel helpers.
+  const NO_HELPERS = ["delegation"];
+
+  it("the fleet default also drops clarify and skill_manage, for every role and for none", () => {
+    expect(BOT_DEFAULT_DISABLED_TOOLS).toEqual(expect.arrayContaining(["clarify", "skill_manage"]));
+    for (const role of [undefined, "lead", "operator"]) {
+      expect(toolsOf(compileWith({ role }))).toEqual(expect.arrayContaining([...BOT_DEFAULT_DISABLED_TOOLS]));
+    }
+  });
+
+  it("reads the settings: on by default, off with its switch or with MYRMIDON_BOT_DISABLED_TOOLS=none", () => {
+    const base = readBotProfileSettings({ ...baseEnv() });
+    expect(base.roleToolDiet).toBe(true);
+    expect(base.developerRoles).toEqual([...DEFAULT_BOT_DEVELOPER_ROLES]);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_ROLE_TOOL_DIET_ENV]: "off" }).roleToolDiet).toBe(false);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DISABLED_TOOLS_ENV]: "none" }).roleToolDiet).toBe(false);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DISABLED_TOOLS_ENV]: "web_extract" }).roleToolDiet).toBe(true);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DEVELOPER_ROLES_ENV]: "engineer, lead" }).developerRoles).toEqual([
+      "engineer",
+      "lead",
+    ]);
+  });
+
+  it("a developer role whose card names no toolsets loses memory, Hindsight, web, browser and media tools", () => {
+    for (const role of ["engineer", "reviewer", "release"]) {
+      const yaml = compileWith({ role });
+      // The memory toolset gate takes the built-in memory tool and the Hindsight provider tools with it.
+      expect(toolsetsOf(yaml)).toEqual([...NO_HELPERS, "memory"]);
+      expect(toolsOf(yaml)).toEqual(
+        expect.arrayContaining([
+          "web_search",
+          "web_extract",
+          "browser_exec",
+          "browser_navigate",
+          "image_generate",
+          "skill_manage",
+          "clarify",
+        ]),
+      );
+      // What a developer does use is never listed.
+      for (const name of ["terminal", "read_file", "write_file", "patch", "search_files", "skill_view", "execute_code", "tool_search"]) {
+        expect(toolsOf(yaml)).not.toContain(name);
+      }
+    }
+  });
+
+  it("a developer role whose card lists its own toolsets keeps what the card asked for", () => {
+    const yaml = compileWith({ role: "engineer", adapterConfig: { toolsets: CURATED } });
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+    expect(toolsOf(yaml)).not.toContain("web_search");
+    expect(toolsOf(yaml)).not.toContain("browser_exec");
+    // Not asked for: media tools; and the role-independent fleet default still applies.
+    expect(toolsOf(yaml)).toContain("image_generate");
+    expect(toolsOf(yaml)).toContain("skill_manage");
+    // The toolsets may come as a list too.
+    expect(compileWith({ role: "engineer", adapterConfig: { toolsets: CURATED.split(",") } })).toBe(yaml);
+  });
+
+  it("any other role gets the standard list only: browser and media tools, never memory or web", () => {
+    for (const role of ["lead", "operator", "analyst", "infra", "qa"]) {
+      const yaml = compileWith({ role });
+      expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+      expect(toolsOf(yaml)).not.toContain("web_search");
+      expect(toolsOf(yaml)).toEqual(expect.arrayContaining(["browser_exec", "image_generate"]));
+    }
+    const curated = compileWith({ role: "lead", adapterConfig: { toolsets: CURATED } });
+    expect(toolsOf(curated)).not.toContain("browser_exec");
+    expect(toolsOf(curated)).toContain("image_generate");
+  });
+
+  it("a bot with no role gets the fleet default and nothing else", () => {
+    const yaml = compileWith({});
+    expect(toolsOf(yaml)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+  });
+
+  it("matches on the role only, never on the name of the bot", () => {
+    for (const botKey of ["adm-dev-eng-2", "bbq-web-developer", "work-gip", "life"]) {
+      expect(toolsetsOf(compileWith({ botKey, role: "engineer" }))).toEqual([...NO_HELPERS, "memory"]);
+      expect(toolsetsOf(compileWith({ botKey, role: "lead" }))).toEqual(NO_HELPERS);
+    }
+  });
+
+  it("keepTools of the card brings back a role group, a role tool or a fleet-default tool", () => {
+    const yaml = compileWith({ role: "engineer", adapterConfig: { keepTools: ["memory", "web_search", "skill_manage"] } });
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+    expect(toolsOf(yaml)).not.toContain("web_search");
+    expect(toolsOf(yaml)).not.toContain("skill_manage");
+    expect(toolsOf(yaml)).toContain("web_extract");
+    expect(toolsOf(yaml)).toContain("browser_exec");
+    expect(toolsOf(compileWith({ role: "operator", adapterConfig: { keepTools: ["clarify"] } }))).not.toContain("clarify");
+  });
+
+  it("the card's own disabledTools list replaces the instance list and the role defaults", () => {
+    const own = compileWith({ role: "engineer", adapterConfig: { disabledTools: ["web_extract"] } });
+    expect(toolsOf(own)).toEqual(["web_extract"]);
+    expect(toolsetsOf(own)).toEqual(NO_HELPERS);
+    const none = compileWith({ role: "engineer", adapterConfig: { disabledTools: [] } });
+    expect(toolsOf(none)).toEqual([]);
+    expect(toolsetsOf(none)).toEqual(NO_HELPERS);
+  });
+
+  it("the developer roles are the instance's to name", () => {
+    const lead = compileWith({ role: "lead" }, { [BOT_DEVELOPER_ROLES_ENV]: "lead" });
+    expect(toolsetsOf(lead)).toEqual([...NO_HELPERS, "memory"]);
+    expect(toolsOf(lead)).toContain("web_search");
+    const noDevelopers = compileWith({ role: "engineer" }, { [BOT_DEVELOPER_ROLES_ENV]: "none" });
+    expect(toolsetsOf(noDevelopers)).toEqual(NO_HELPERS);
+    expect(toolsOf(noDevelopers)).not.toContain("web_search");
+  });
+
+  it("the switch off, MYRMIDON_BOT_DISABLED_TOOLS=none and hand-built settings leave the role defaults out", () => {
+    const off = compileWith({ role: "engineer" }, { [BOT_ROLE_TOOL_DIET_ENV]: "off" });
+    expect(toolsOf(off)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(off)).toEqual(NO_HELPERS);
+    // `none` switches every default list off.
+    const none = compileWith({ role: "engineer" }, { [BOT_DISABLED_TOOLS_ENV]: "none" });
+    expect(toolsOf(none)).toEqual([]);
+    expect(toolsetsOf(none)).toEqual(NO_HELPERS);
+    // Settings built by hand that never mention the role defaults: off, like the other optional fields.
+    const hand = buildHermesProfileInput(source({ role: "engineer" }), settings({ disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS] }));
+    const handYaml = fileContent(compileHermesProfile(hand.input), "hermes/config.yaml");
+    expect(toolsOf(handYaml)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(handYaml)).toEqual(NO_HELPERS);
   });
 });
 
@@ -1085,8 +1270,12 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
     return fileContent(compileHermesProfile(input), "hermes/config.yaml");
   }
 
-  it("gives a coding role the limited mode", () => {
-    const { input } = buildHermesProfileInput(source({ role: "engineer" }), settings());
+  it("gives a coding role the limited mode with adaptive heap for container memory", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+      settings(),
+    );
+    expect(warnings).toHaveLength(0);
     expect(input.lsp).toEqual({
       enabled: true,
       idleTimeout: 120,
@@ -1094,18 +1283,116 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
         typescript: {
           initialization_options: {
             disableAutomaticTypingAcquisition: true,
-            maxTsServerMemory: 1024,
+            maxTsServerMemory: 409,
             tsserver: { useSyntaxServer: "never" },
           },
         },
       },
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
     });
-    const yaml = configYaml({ role: "engineer" });
+    const yaml = configYaml({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } });
     expect(yaml).toContain("lsp:");
     expect(yaml).toContain("idle_timeout: 120");
-    expect(yaml).toContain("maxTsServerMemory: 1024");
+    expect(yaml).toContain("maxTsServerMemory: 409");
+    expect(yaml).toContain('"**/node_modules/**"');
+    expect(yaml).toContain('"**/dist/**"');
     expect(yaml).toContain('useSyntaxServer: "never"');
     expect(yaml).toContain("disableAutomaticTypingAcquisition: true");
+  });
+
+  it("adapts default heap to container memory limit when no explicit heap is configured", () => {
+    for (const [memoryMb, expectedHeap] of [
+      [768, 307],
+      [1024, 409],
+      [1536, 614],
+      [2048, 819],
+    ] as const) {
+      const { input, warnings } = buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb } } }),
+        settings(),
+      );
+      expect(warnings).toHaveLength(0);
+      const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+      const opts = servers?.initialization_options as Record<string, unknown> | undefined;
+      expect(opts?.maxTsServerMemory).toBe(expectedHeap);
+    }
+  });
+
+  it("safely disables limited LSP when container memory is unknown", () => {
+    const { input: noContainer, warnings: warningsNoContainer } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: {} }),
+      settings(),
+    );
+    expect(noContainer.lsp).toEqual({ enabled: false });
+    expect(warningsNoContainer.some((w) => w.includes("unknown"))).toBe(true);
+
+    const { input: disabledContainer, warnings: warningsDisabled } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: false, memoryMb: 1024 } } }),
+      settings(),
+    );
+    expect(disabledContainer.lsp).toEqual({ enabled: false });
+    expect(warningsDisabled.some((w) => w.includes("unknown"))).toBe(true);
+  });
+
+  it("safely disables limited LSP when container memory is insufficient", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 512 } } }),
+      settings(),
+    );
+    expect(input.lsp).toEqual({ enabled: false });
+    expect(warnings.some((w) => w.includes("insufficient"))).toBe(true);
+  });
+
+  it("clamps limited LSP startup heap to the card container's 40% budget", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({
+        role: "engineer",
+        adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+        botLspSettings: {
+          codingRoles: ["engineer"],
+          idleTimeoutSeconds: 120,
+          tsserverMemoryMb: 308,
+          excludeRoots: ["**/node_modules/**", "**/dist/**"],
+        },
+      }),
+      settings(),
+    );
+    const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+    const initializationOptions = servers?.initialization_options as Record<string, unknown> | undefined;
+    expect(initializationOptions?.maxTsServerMemory).toBe(307);
+    expect(warnings.some((w) => w.includes("safely clamped to 307 MB"))).toBe(true);
+  });
+
+  it("allows heap at the 40% container-memory boundary", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({
+        role: "engineer",
+        adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+        botLspSettings: {
+          codingRoles: ["engineer"],
+          idleTimeoutSeconds: 120,
+          tsserverMemoryMb: 307,
+          excludeRoots: ["**/node_modules/**", "**/dist/**"],
+        },
+      }),
+      settings(),
+    );
+    expect(warnings).toHaveLength(0);
+    expect(input.lsp?.servers).toMatchObject({
+      typescript: { initialization_options: { maxTsServerMemory: 307 } },
+    });
+  });
+
+  it("handles transition: clamps saved heap with warning when container memory is reduced", () => {
+    const { input, warnings } = buildHermesProfileInput(source({
+      role: "engineer",
+      adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+      botLspSettings: { tsserverMemoryMb: 409 },
+    }), settings());
+    const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+    const initializationOptions = servers?.initialization_options as Record<string, unknown> | undefined;
+    expect(initializationOptions?.maxTsServerMemory).toBe(307);
+    expect(warnings.some((w) => w.includes("safely clamped to 307 MB"))).toBe(true);
   });
 
   it("turns language servers off for a role that does not write code, and for no role", () => {
@@ -1121,18 +1408,30 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
       buildHermesProfileInput(source({ role: "engineer", adapterConfig: { lsp: { mode: "off" } } }), settings()).input.lsp,
     ).toEqual({ enabled: false });
     expect(
-      buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings()).input
-        .lsp?.enabled,
+      buildHermesProfileInput(
+        source({ role: "general", adapterConfig: { container: { enabled: true, memoryMb: 1024 }, lsp: { mode: "limited" } } }),
+        settings(),
+      ).input.lsp?.enabled,
     ).toBe(true);
-    // Full = the runtime's defaults: no lsp block at all.
+    // Pinning limited mode without container memory safely disables it with a warning.
+    const unconfigured = buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings());
+    expect(unconfigured.input.lsp).toEqual({ enabled: false });
+    expect(unconfigured.warnings).toContain("lsp: limited language server disabled because container memory limit is unknown");
+    // Full keeps Hermes server defaults and writes the exclusion-only block.
+    const { input } = buildHermesProfileInput(source({ role: "full", adapterConfig: { lsp: { mode: "full" } } }), settings());
+    expect(input.lsp).toMatchObject({ enabled: true, excludeRoots: ["**/node_modules/**", "**/dist/**"] });
+    expect(input.lsp?.servers).toBeUndefined();
     const yaml = configYaml({ role: "engineer", adapterConfig: { lsp: { mode: "full" } } });
-    expect(yaml).not.toContain("lsp:");
+    expect(yaml).toContain("lsp:\n  enabled: true");
+    expect(yaml).toContain('"**/node_modules/**"');
+    expect(yaml).toContain('"**/dist/**"');
   });
 
   it("follows the instance policy", () => {
     const { input } = buildHermesProfileInput(
       source({
         role: "dev-lead",
+        adapterConfig: { container: { enabled: true, memoryMb: 5120 } },
         botLspSettings: { codingRoles: ["dev-lead"], idleTimeoutSeconds: 300, tsserverMemoryMb: 2048, excludeRoots: ["/srv/big"] },
       }),
       settings(),
@@ -1142,8 +1441,18 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
   });
 
   it("is deterministic: the same role and settings give the same hashes", () => {
-    const one = compileHermesProfile(buildHermesProfileInput(source({ role: "engineer" }), settings()).input);
-    const two = compileHermesProfile(buildHermesProfileInput(source({ role: "engineer" }), settings()).input);
+    const one = compileHermesProfile(
+      buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+        settings(),
+      ).input,
+    );
+    const two = compileHermesProfile(
+      buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+        settings(),
+      ).input,
+    );
     expect(one.restartHash).toBe(two.restartHash);
     expect(one.filesHash).toBe(two.filesHash);
   });

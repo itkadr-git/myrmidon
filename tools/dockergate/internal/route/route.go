@@ -44,6 +44,10 @@ const (
 	// A14 is GET /myrmidon/disk: the one route outside the Docker API prefix. It
 	// reads the bot partition (statfs and the project quotas), never the daemon.
 	A14 = "A14"
+	// A19 is GET /myrmidon/events/oom: transports OOM events (docker events oom / cgroup memory.events oom_kill).
+	A19 = "A19"
+	// A20 updates one enrolled bot's resource ceilings in dockergate config.
+	A20 = "A20"
 )
 
 // A15 is the disk route PUT /myrmidon/disk/<botKey>/quota (contract C5). It is
@@ -56,7 +60,11 @@ const A15 = "A15"
 // use (/bot, /data for LEGACY-layout, /bot-scope/<botKey> for a scope member).
 // The gate allows it on the main container only, like A3/A13; the flag itself
 // (MYRMIDON_BOT_SKILL_BACKIMPORT) is read by the board, not by the gate.
-const A16 = "A16"
+const (
+	A16 = "A16"
+	A17 = "A17"
+	A18 = "A18"
+)
 
 // skillsReadQuery is the skills directory the gate serves for A16, in the same
 // literal-encoded form the marker and clone-report queries use.
@@ -75,6 +83,9 @@ const diskQuotaTail = "/quota"
 // DiskTarget is the request-target of A14 (contract C5). It has no API prefix:
 // it is not a call to the daemon.
 const DiskTarget = "/myrmidon/disk"
+
+// EventsOomTarget is the request-target of A19 (OPE-9934). It has no API prefix.
+const EventsOomTarget = "/myrmidon/events/oom"
 
 // diskPrefix is where every disk route lives; what is under it and is not a
 // route of this list is refused as route_not_allowed.
@@ -156,6 +167,8 @@ type Route struct {
 	LegacyMarker bool
 	// Mount is the container path of an A5 upload.
 	Mount string
+	// ConfigBotKey is the target bot for A20 configuration updates.
+	ConfigBotKey string
 }
 
 // NameOf builds the container name of a bot with a role suffix.
@@ -279,8 +292,33 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 		}
 		return nil, notAllowed()
 	}
+	if target == EventsOomTarget || strings.HasPrefix(target, EventsOomTarget+"?") {
+		if method == "GET" {
+			return &Route{ID: A19, Method: method}, nil
+		}
+		return nil, notAllowed()
+	}
+	if method == "PUT" && (target == "/myrmidon/config/update" || strings.HasPrefix(target, "/myrmidon/config/update?")) {
+		return &Route{ID: A20, Method: method}, nil
+	}
+	if rest, ok := strings.CutPrefix(target, "/myrmidon/bots/"); ok {
+		key, hasLimitsSuffix := strings.CutSuffix(rest, "/limits")
+		if hasLimitsSuffix && IsBotKey(key) && method == "PUT" {
+			return &Route{ID: A20, Method: method, ConfigBotKey: key}, nil
+		}
+		return nil, notAllowed()
+	}
+	if rest, ok := strings.CutPrefix(target, "/myrmidon/config/bots/"); ok {
+		if IsBotKey(rest) && method == "PUT" {
+			return &Route{ID: A20, Method: method, ConfigBotKey: rest}, nil
+		}
+		return nil, notAllowed()
+	}
 	if rest, ok := strings.CutPrefix(target, DiskPrefix); ok {
 		return parseDisk(method, rest)
+	}
+	if strings.HasPrefix(target, "/myrmidon/") {
+		return nil, notAllowed()
 	}
 	if strings.HasPrefix(target, diskPrefix) {
 		return nil, notAllowed()
@@ -379,11 +417,27 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A10
+	case "/stop?t=30&myrmidon-idle=true":
+		if method != "POST" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A17
 	case "/restart?t=30":
 		if method != "POST" || suffix != SuffixMain {
 			return nil, notAllowed()
 		}
 		r.ID = A11
+	case "/update":
+		if method != "POST" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A18
+	case "/config/update":
+		if method != "PUT" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A20
+		r.ConfigBotKey = key
 	default:
 		if q, ok := strings.CutPrefix(tail, "/archive?path="); ok {
 			// A5: the path parameter is one of three literals, then the fixed flag.

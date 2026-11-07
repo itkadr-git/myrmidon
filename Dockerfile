@@ -2,8 +2,15 @@
 FROM node:24-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
+# postgresql-client-18 comes from the PGDG repo: Debian trixie ships only 17, and pg_dump must match the PG 18 server.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 tini \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && install -d /usr/share/postgresql-common/pgdg \
+  && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+  && . /etc/os-release \
+  && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 tini postgresql-client-18 \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
@@ -20,6 +27,7 @@ COPY server/package.json server/
 COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
+COPY packages/corpus/package.json packages/corpus/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
 COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/
@@ -47,6 +55,7 @@ COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plug
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
+COPY packages/plugins/plugin-mail-imap/package.json packages/plugins/plugin-mail-imap/
 COPY packages/plugins/hindsight-paperclip/package.json packages/plugins/hindsight-paperclip/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
@@ -130,8 +139,8 @@ COPY --from=deps /app /app
 COPY . .
 RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
   && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
-RUN pnpm --filter @paperclipai/ui build
-RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --filter @myrmidon/ui build
+RUN pnpm --filter @myrmidon/plugin-sdk build
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
@@ -141,7 +150,7 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
 ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
-RUN pnpm --filter @paperclipai/server build
+RUN pnpm --filter @myrmidon/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
 
@@ -171,8 +180,10 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
-COPY scripts/docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY scripts/docker-entrypoint.sh scripts/myrmidon-migrate /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/myrmidon-migrate
+COPY scripts/docker-env-wrapper.sh /usr/local/bin/env
+RUN chmod +x /usr/local/bin/env
 
 COPY --chown=node:node --from=build /app /app
 

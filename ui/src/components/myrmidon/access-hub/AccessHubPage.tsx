@@ -12,7 +12,7 @@ import {
 import { PageTabBar } from "@/components/PageTabBar";
 import { ApiError } from "@/api/client";
 import { agentsApi } from "@/api/agents";
-import { useTranslation } from "@/i18n";
+import { i18n, useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToastActions } from "@/context/ToastContext";
@@ -52,9 +52,9 @@ type AccessDialog =
   | { kind: "hosts"; mode: HostDeployMode };
 
 function readable(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || i18n.t("area.access-hub.access-hub-page.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return i18n.t("area.access-hub.access-hub-page.unexpectedError");
 }
 
 /**
@@ -82,8 +82,8 @@ export function AccessHubPage() {
   const [dialogError, setDialogError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Access hub" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("area.access-hub.access-hub-page.title") }]);
+  }, [setBreadcrumbs, t]);
 
   const accessesQuery = useQuery({
     queryKey: accessHubQueryKeys.accesses,
@@ -160,10 +160,10 @@ export function AccessHubPage() {
 
   function copyPublicKey(publicKey: string) {
     void copyTextToClipboard(publicKey)
-      .then(() => pushToast({ title: "Public key copied", tone: "success" }))
+      .then(() => pushToast({ title: t("area.access-hub.access-hub-page.publicKeyCopied"), tone: "success" }))
       .catch((error) =>
         pushToast({
-          title: "Copy failed",
+          title: t("area.access-hub.access-hub-page.copyFailed"),
           body: readable(error),
           tone: "error",
         }),
@@ -177,7 +177,7 @@ export function AccessHubPage() {
     },
     onSuccess: (result, payload) => {
       pushToast({
-        title: payload.secretId ? "Value replaced" : "Access created",
+        title: payload.secretId ? t("area.access-hub.access-hub-page.valueReplaced") : t("area.access-hub.access-hub-page.accessCreated"),
         body: payload.secretId ? undefined : payload.name,
         tone: "success",
       });
@@ -193,11 +193,11 @@ export function AccessHubPage() {
       accessHubApi.rotate(secretId, input),
     onSuccess: (result) => {
       pushToast({
-        title: `Rotated to v${result.latestVersion}`,
+        title: t("area.access-hub.access-hub-page.rotatedTo", { version: result.latestVersion }),
         body:
           result.restartedContainers && result.restartedContainers.length > 0
-            ? `Restarted: ${result.restartedContainers.join(", ")}`
-            : "No container needed a restart.",
+            ? t("area.access-hub.access-hub-page.restarted", { names: result.restartedContainers.join(", ") })
+            : t("area.access-hub.access-hub-page.noRestartNeeded"),
         tone: "success",
       });
       closeDialog();
@@ -214,7 +214,7 @@ export function AccessHubPage() {
       setSshReveal(material);
       setSelectedSecretId(material.secretId);
       invalidateAccessHub();
-      pushToast({ title: "SSH key generated", body: "Copy the public half now — it is shown once.", tone: "success" });
+      pushToast({ title: t("area.access-hub.access-hub-page.sshGenerated"), body: t("area.access-hub.access-hub-page.sshGeneratedBody"), tone: "success" });
     },
     onError: (error) => setDialogError(readable(error)),
   });
@@ -223,27 +223,27 @@ export function AccessHubPage() {
     mutationFn: ({ secretId, targetAgentId }: { secretId: string; targetAgentId: string }) =>
       accessHubApi.grant(secretId, targetAgentId),
     onSuccess: () => {
-      pushToast({ title: "Access granted", tone: "success" });
+      pushToast({ title: t("area.access-hub.access-hub-page.accessGranted"), tone: "success" });
       invalidateAccessHub();
     },
-    onError: (error) => pushToast({ title: "Grant failed", body: readable(error), tone: "error" }),
+    onError: (error) => pushToast({ title: t("area.access-hub.access-hub-page.grantFailed"), body: readable(error), tone: "error" }),
   });
 
   const revokeMutation = useMutation({
     mutationFn: ({ secretId, targetAgentId }: { secretId: string; targetAgentId: string }) =>
       accessHubApi.revoke(secretId, targetAgentId),
     onSuccess: () => {
-      pushToast({ title: "Access revoked", tone: "info" });
+      pushToast({ title: t("area.access-hub.access-hub-page.accessRevoked"), tone: "info" });
       invalidateAccessHub();
     },
-    onError: (error) => pushToast({ title: "Revoke failed", body: readable(error), tone: "error" }),
+    onError: (error) => pushToast({ title: t("area.access-hub.access-hub-page.revokeFailed"), body: readable(error), tone: "error" }),
   });
 
   const hostRefsMutation = useMutation({
     mutationFn: ({ secretId, hostRefs }: { secretId: string; hostRefs: string[] }) =>
       accessHubApi.setHostRefs(secretId, hostRefs),
     onSuccess: (_result, variables) => {
-      pushToast({ title: "Host set updated", body: `${variables.hostRefs.length} host(s) hold this access.`, tone: "info" });
+      pushToast({ title: t("area.access-hub.access-hub-page.hostSetUpdated"), body: t("area.access-hub.access-hub-page.hostSetBody", { count: variables.hostRefs.length }), tone: "info" });
       closeDialog();
       invalidateAccessHub();
     },
@@ -251,7 +251,7 @@ export function AccessHubPage() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage accesses.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("area.access-hub.access-hub-page.selectOrganization")}</div>;
   }
 
   const listError = accessesQuery.isError ? readable(accessesQuery.error) : null;
@@ -260,7 +260,7 @@ export function AccessHubPage() {
     <div className="flex max-w-6xl flex-col gap-4">
       <div className="flex items-center gap-2">
         <KeyRound className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Access hub</h1>
+        <h1 className="text-lg font-semibold">{t("area.access-hub.access-hub-page.title")}</h1>
       </div>
 
       {unavailable ? (
@@ -272,8 +272,8 @@ export function AccessHubPage() {
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as AccessHubTab)} className="flex flex-col gap-4">
           <PageTabBar
             items={[
-              { value: "accesses", label: "Accesses" },
-              { value: "journal", label: "Journal" },
+              { value: "accesses", label: t("area.access-hub.access-hub-page.tabAccesses") },
+              { value: "journal", label: t("area.access-hub.access-hub-page.tabJournal") },
             ]}
             align="start"
             value={activeTab}
@@ -311,7 +311,7 @@ export function AccessHubPage() {
             <>
               <SheetHeader>
                 <SheetTitle>{selectedRecord.name}</SheetTitle>
-                <SheetDescription>Details, references and actions. Secret values are never shown.</SheetDescription>
+                <SheetDescription>{t("area.access-hub.access-hub-page.sheetDescription")}</SheetDescription>
               </SheetHeader>
               <AccessDetailView
                 record={selectedRecord}

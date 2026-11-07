@@ -25,7 +25,7 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   UsageSummary,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 
 import {
   runChildProcess,
@@ -40,9 +40,16 @@ import {
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 // myrmidon(S2): allow-listed run environment
-import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@paperclipai/adapter-utils/myrmidon-run-env";
+import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@myrmidon/adapter-utils/myrmidon-run-env";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessSandboxExtraPaths,
+  parseLocalProcessNetworkAllowlist,
+  parseLocalProcessNetworkScope,
+  type LocalProcessSandboxOptions,
+} from "@myrmidon/adapter-utils/local-process-sandbox";
 
 import {
   HERMES_CLI,
@@ -56,6 +63,8 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { renderModelInstructionSection, detectModelFamily } from "./model-instruction-profiles.js";
+import { TrajectoryTracker, type TrajectoryEvent } from "./trajectory-events.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 // myrmidon(P4): run-scoped MCP servers, prompt via stdin, spawn envelope check
 import {
@@ -66,7 +75,7 @@ import {
 } from "./myrmidon-runtime-mcp.js";
 // myrmidon(M1): card models in the run-scoped config.yaml
 import { materializeHermesRunModels } from "./myrmidon-profile-config.js";
-import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -96,9 +105,9 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 
 const HERMES_DEFAULT_PROMPT_TEMPLATE = [
-  'You are "{{agent.name}}", an AI agent employee in a Paperclip-managed company.',
+  'You are "{{agent.name}}", an AI agent employee in a Myrmidon-managed company.',
   "",
-  "Paperclip runtime identity:",
+  "Myrmidon runtime identity:",
   "- Agent ID: {{agent.id}}",
   "- Company ID: {{agent.companyId}}",
   "- Run ID: {{run.id}}",
@@ -189,6 +198,10 @@ export function buildPrompt(
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
 
+  const model = cfgString(config.model) || cfgString(ctx.config?.model) || cfgString(context.model) || "";
+  const provider = cfgString(config.provider) || cfgString(ctx.config?.provider) || cfgString(context.provider) || "";
+  const modelDirectivesMarkdown = renderModelInstructionSection(model, provider);
+
   const vars: Record<string, unknown> = {
     agentId: ctx.agent?.id || "",
     agentName,
@@ -213,6 +226,7 @@ export function buildPrompt(
     wakePayloadJson,
     paperclipApiKeyEnv: "PAPERCLIP_API_KEY",
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
+    modelInstructionProfile: modelDirectivesMarkdown,
   };
 
   const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
@@ -223,6 +237,7 @@ export function buildPrompt(
     sessionHandoffMarkdown,
     paperclipTaskMarkdown,
     rendered,
+    modelDirectivesMarkdown,
   ]);
 }
 
@@ -249,6 +264,60 @@ interface ParsedOutput {
   usage?: UsageSummary;
   costUsd?: number;
   errorMessage?: string;
+}
+
+// myrmidon(OPE-11947): Hermes' own give-up notice. When the model pool is out of
+// quota (or the model never answers) Hermes retries, then ends the turn with
+// "⚠️ No reply: <model> didn't produce a reply this time, even after retries.
+// Send `continue` to try again, or switch models with /model." as the final
+// response. The turn "completes", so the board recorded a succeeded run whose
+// comment was that notice and re-woke the agent every few minutes (1709 of 5998
+// runs in 24 h). The notice is anchored at the start and bounded in length so a
+// long agent report that merely quotes it is never reclassified.
+export const HERMES_NO_REPLY_SENTINEL_RE =
+  /^\u26A0\uFE0F?\s*No reply:.{0,300}didn['\u2019]t produce a reply.{0,300}$/i;
+
+export function isHermesNoReplySentinel(response: string): boolean {
+  return HERMES_NO_REPLY_SENTINEL_RE.test(response.trim().replace(/\s+/g, " "));
+}
+
+export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  HERMES_NO_REPLY_SENTINEL_RE,
+  // myrmidon(OPE-10494): provider maintenance / resource-exhaustion replies.
+  // The upstream proxy answers with a bilingual Vietnamese/English notice
+  // ("Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to
+  // resource exhaustion…") that must be classified as a provider error, not
+  // agent output. Match either language fragment; the separator split in
+  // isProviderErrorAsContent below covers the joined " | " and " / " forms.
+  /^(?:tạm bảo trì|bảo trì).*(?:hết tài nguyên|tài nguyên)[.!…]?$/i,
+  /^(?:temporarily )?(?:under )?maintenance.*(?:resource exhaustion|out of resources|insufficient resources|try again later)[.!…]?$/i,
+  /^(?:(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại).*\|\s*)?(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại)[.!]?$/i,
+  /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
+  /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
+  /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
+];
+
+export function isProviderErrorAsContent(response: string): boolean {
+  const normalized = response.trim().replace(/\s+/g, " ");
+  if (PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  // myrmidon(OPE-10494): the bilingual maintenance notice joins its two
+  // halves with " / " (e.g. "Tạm bảo trì… / Temporarily under maintenance…"),
+  // so the split covers both separators.
+  const tails = normalized
+    .split(/\s*(?:\||\/)\s*/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  // The full text was already tested above; test the last segment and any
+  // segment that looks like a self-contained notice.
+  for (const segment of tails) {
+    if (segment !== normalized && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(segment))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +413,74 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Trajectory tracking helpers
+// ---------------------------------------------------------------------------
+
+/** Format a trajectory event as a single-line log string. */
+function formatTrajectoryEventLog(
+  event: TrajectoryEvent<Record<string, unknown>>,
+): string {
+  return `[myrmidon] trajectory ${event.eventType} ${JSON.stringify(event.payload)}`;
+}
+
+// ── Trajectory tracking helpers ───────────────────────────────────────────
+
+/**
+ * Extract tool name and error status from a parsed Hermes stdout line.
+ * Returns null when the line is not a tool completion line.
+ */
+function extractToolInfoFromLine(line: string): {
+  toolName: string;
+  isError: boolean;
+  detail: string;
+  duration: string;
+} | null {
+  const trimmed = line.trim();
+  if (!trimmed.includes("┊")) return null;
+  const doneMatch = trimmed.match(/^\[done\]\s*┊\s*(.*)$/);
+  if (!doneMatch) return null;
+  const body = doneMatch[1];
+  const durationMatch = body.match(/([\d.]+s)\s*(?:\([\d.]+\))?\s*$/);
+  const duration = durationMatch ? durationMatch[1] : "";
+  const hasError = /\[(?:exit \d+|error|full)\]/.test(body);
+  const withoutDuration = durationMatch
+    ? body.slice(0, body.lastIndexOf(durationMatch[0])).trim()
+    : body;
+  const verbMatch = withoutDuration.match(/^\S+\s+(\S+)\s+(.*)$/);
+  const verb = verbMatch ? verbMatch[1] : withoutDuration;
+  const detail = verbMatch ? verbMatch[2].trim() : "";
+  const nameMap: Record<string, string> = {
+    $: "shell",
+    exec: "shell",
+    terminal: "shell",
+    search: "search",
+    fetch: "fetch",
+    read: "read",
+    write: "write",
+    patch: "patch",
+    plan: "plan",
+    recall: "recall",
+    proc: "process",
+    delegate: "delegate",
+    todo: "todo",
+    memory: "memory",
+    clarify: "clarify",
+    session_search: "recall",
+    code: "execute",
+    execute: "execute",
+    web_search: "search",
+    web_extract: "fetch",
+    read_file: "read",
+    write_file: "write_file",
+    search_files: "search",
+    patch_file: "patch",
+    execute_code: "execute",
+  };
+  const toolName = nameMap[verb.toLowerCase()] || verb || "tool";
+  return { toolName, isError: hasError, detail, duration };
+}
+
+// ---------------------------------------------------------------------------
 // Main execute
 // ---------------------------------------------------------------------------
 
@@ -379,12 +516,12 @@ export async function execute(
       if (selectedSkills.length > 0) {
         await ctx.onLog(
           "stdout",
-          `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into the Hermes skills home.\n`,
+          `[hermes] Reconciled ${selectedSkills.length} Myrmidon-managed skill(s) into the Hermes skills home.\n`,
         );
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog("stderr", `[hermes] Cannot start without the required Paperclip-managed skills: ${reason}\n`);
+      await ctx.onLog("stderr", `[hermes] Cannot start without the required Myrmidon-managed skills: ${reason}\n`);
       throw err;
     }
   }
@@ -573,6 +710,33 @@ export async function execute(
     // Non-fatal
   }
 
+  // myrmidon(OPE-8135): opt-in confinement for hermes_local. The default
+  // remains unrestricted for compatibility; enabled runs have no host root.
+  const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(config.networkScope);
+  const localProcessSandbox: LocalProcessSandboxOptions | null =
+    (filesystemScope || networkScope)
+      ? {
+          workspaceDir: cwd,
+          filesystemScope,
+          managedPaths: env.HERMES_HOME ? [{ path: env.HERMES_HOME, access: "rw" }] : [],
+          extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+          homeDir: filesystemScope ? env.HERMES_HOME ?? null : null,
+          networkScope,
+          networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+          networkTrustedUrls: [env.PAPERCLIP_API_URL].filter(
+            (value): value is string => typeof value === "string" && value.length > 0,
+          ),
+          command: cfgString(config.filesystemSandboxCommand) || "bwrap",
+        }
+      : null;
+  if (localProcessSandbox) {
+    const scopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
+      .filter(Boolean)
+      .join(" and ");
+    await ctx.onLog("stdout", `[paperclip] Confining Hermes with ${scopes} scope.\n`);
+  }
+
   // ── Log start ──────────────────────────────────────────────────────────
   await ctx.onLog(
     "stdout",
@@ -585,11 +749,58 @@ export async function execute(
     );
   }
 
+  // ── Initialize trajectory tracker ──────────────────────────────────────
+  const trajectoryEnabled = cfgBoolean(config.trajectoryTracking) !== false;
+  let tracker: TrajectoryTracker | null = null;
+  let stopConditionTriggered = false;
+  if (trajectoryEnabled) {
+    tracker = new TrajectoryTracker({
+      runId: ctx.runId ?? "unknown-run",
+      agentId: ctx.agent?.id ?? "unknown-agent",
+      companyId: ctx.agent?.companyId ?? "unknown-company",
+    });
+    const runStartEvent = tracker.recordRunStart({
+      model,
+      modelFamily: detectModelFamily(model, resolvedProvider),
+      provider: resolvedProvider,
+    });
+    await ctx.onLog("stdout", `${formatTrajectoryEventLog(runStartEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
+  }
+
   // ── Execute ────────────────────────────────────────────────────────────
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
   // Wrap onLog to reclassify benign stderr lines as stdout.
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    if (stream === "stdout" && tracker) {
+      const lines = chunk.split("\n");
+      for (const line of lines) {
+        const info = extractToolInfoFromLine(line);
+        if (info) {
+          const { event: callEvent } = tracker.recordToolCall({
+            toolName: info.toolName,
+            args: info.detail,
+            inputSummary: info.detail.slice(0, 100),
+          });
+          await ctx.onLog("stdout", `${formatTrajectoryEventLog(callEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
+          const { event: resultEvent, stopConditionEvent, isStopConditionTriggered } =
+            tracker.recordToolResult({
+              toolName: info.toolName,
+              status: info.isError ? "error" : "success",
+              durationMs: info.duration ? parseFloat(info.duration) * 1000 : 0,
+              error: info.isError ? info.detail : undefined,
+            });
+          await ctx.onLog("stdout", `${formatTrajectoryEventLog(resultEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
+          if (isStopConditionTriggered && stopConditionEvent) {
+            stopConditionTriggered = true;
+            await ctx.onLog(
+              "stdout",
+              `${formatTrajectoryEventLog(stopConditionEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`,
+            );
+          }
+        }
+      }
+    }
     if (stream === "stderr") {
       const trimmed = chunk.trimEnd();
       // Benign patterns that should NOT appear as errors:
@@ -624,6 +835,7 @@ export async function execute(
       stdin: prompt,
       inheritProcessEnv: readInheritProcessEnvFlag(config), // myrmidon(S2)
       runEnvAdapterType: "hermes_local", // myrmidon(S2)
+      localProcessSandbox,
     });
   } finally {
     await runtimeMcpCleanup?.();
@@ -632,6 +844,25 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const providerErrorAsContent = Boolean(parsed.response && isProviderErrorAsContent(parsed.response));
+  // myrmidon(OPE-11947): the model pool did not answer (Hermes gave up without a
+  // reply, or the provider returned an overload/quota/maintenance text as the
+  // response); the board defers the retry of such a run by 30 min and up
+  // (resultJson.model_unavailable) and auto-resume returns the agent on the same long schedule.
+  const modelUnavailable = providerErrorAsContent;
+  if (providerErrorAsContent) {
+    await ctx.onLog("stderr", `[hermes] provider_error_as_content model=${model}\n`);
+    parsed.errorMessage = "Provider returned an overload or quota error as successful response content";
+    parsed.response = undefined;
+  }
+
+  // ── Trajectory run_complete ────────────────────────────────────────────
+  if (tracker) {
+    const runCompleteEvent = tracker.recordRunComplete({
+      status: stopConditionTriggered ? "aborted" : result.exitCode === 0 ? "completed" : "failed",
+    });
+    await ctx.onLog("stdout", `${formatTrajectoryEventLog(runCompleteEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
+  }
 
   await ctx.onLog(
     "stdout",
@@ -652,6 +883,10 @@ export async function execute(
 
   if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
+    if (providerErrorAsContent) {
+      executionResult.errorCode = "hermes_transient_upstream";
+      executionResult.errorFamily = "transient_upstream";
+    }
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
@@ -677,6 +912,15 @@ export async function execute(
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
+    ...(modelUnavailable ? { model_unavailable: true } : {}),
+    trajectory: tracker
+      ? {
+          stopCondition: stopConditionTriggered ? "repeated_tool_error" : null,
+          totalToolCalls: (tracker as any).totalToolCalls ?? null,
+          totalErrors: (tracker as any).totalErrors ?? null,
+        }
+      : null,
   };
 
   // Store session ID for next run

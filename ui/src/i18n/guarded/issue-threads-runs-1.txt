@@ -1,0 +1,11 @@
+# myrmidon(OPE-8950): area issue-threads-runs-1
+components/CommentThread.tsx
+components/InteractionGovernancePanel.tsx
+components/IssueChatThread.tsx
+components/IssueColumns.tsx
+components/IssueFiltersPopover.tsx
+components/IssueLinkQuicklook.tsx
+components/IssueRecoveryActionCard.tsx
+components/IssueRow.tsx
+components/IssueRunLedger.tsx
+components/IssueScheduledRetryCard.tsx

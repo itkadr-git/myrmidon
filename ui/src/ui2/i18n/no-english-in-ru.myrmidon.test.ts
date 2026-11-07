@@ -13,7 +13,7 @@
 // The vendor tree is out of scope here: the legacy shell translations are a
 // separate track (UI-RU). This guard owns the 2.0 tree only.
 import { describe, expect, it } from "vitest";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { en } from "./catalogs/en";
@@ -62,6 +62,31 @@ const ruKeys = flatten(ru);
 // the nested ui2: namespace (UI2-I18N panels) and the flat screen catalog.
 for (const key of Object.keys(ui2Messages.en)) catalogKeys.add(key);
 for (const key of Object.keys(ui2Messages.ru)) ruKeys.add(key);
+// myrmidon(OPE-8950): ui2 shell components translated through @/i18n use the
+// legacy area catalogs (area.<area>.*); accept those keys too (plural base included).
+const AREAS_DIR = join(UI2_ROOT, "../i18n/myrmidon-locales/areas");
+for (const file of readdirSync(AREAS_DIR)) {
+  const match = /^(.+)\.(en|ru)\.json$/.exec(file);
+  if (!match) continue;
+  const target = match[2] === "en" ? catalogKeys : ruKeys;
+  for (const key of flatten(JSON.parse(readFileSync(join(AREAS_DIR, file), "utf8")))) {
+    target.add(key);
+    target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
+  }
+}
+// myrmidon(OPE-9382): ui2 shell components can also use top-level keys from
+// legacy locales (e.g. uiSwitch from ui/src/i18n/locales/{en,ru}.json).
+const LOCALES_DIR = join(UI2_ROOT, "../i18n/locales");
+for (const locale of ["en", "ru"] as const) {
+  const filePath = join(LOCALES_DIR, `${locale}.json`);
+  if (existsSync(filePath)) {
+    const target = locale === "en" ? catalogKeys : ruKeys;
+    for (const key of flatten(JSON.parse(readFileSync(filePath, "utf8")))) {
+      target.add(key);
+      target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
+    }
+  }
+}
 
 /** Attributes whose string values a human reads. */
 const USER_VISIBLE_ATTRIBUTES = new Set([
@@ -174,9 +199,22 @@ function scanKeyUsage(path: string): Array<string> {
   const source = readFileSync(path, "utf8");
   const result: Array<string> = [];
   const relative = path.slice(UI2_ROOT.length + 1);
+  const legacyCaller = relative === "shell/Ui2AccountMenu.tsx";
+  const topBarCaller = relative === "shell/Ui2TopBar.tsx";
+  const legacyAreaKeys = [catalogKeys, ruKeys];
+  for (const file of readdirSync(AREAS_DIR)) {
+    const match = /^(.+)\.(en|ru)\.json$/.exec(file);
+    if (!match || (topBarCaller && match[1] !== "ui2-shell")) continue;
+    const target = match[2] === "en" ? legacyAreaKeys[0] : legacyAreaKeys[1];
+    for (const key of flatten(JSON.parse(readFileSync(join(AREAS_DIR, file), "utf8")))) {
+      target.add(key);
+      target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
+    }
+  }
+  const sourceKeys = topBarCaller ? legacyAreaKeys : [catalogKeys, ruKeys];
   for (const match of source.matchAll(/\bt\(\s*"([A-Za-z0-9_.-]+)"/g)) {
     const key = match[1];
-    if (!catalogKeys.has(key) || !ruKeys.has(key)) {
+    if (sourceKeys.some((keys) => !keys.has(key))) {
       result.push(`${relative}: t("${key}") — key missing from EN or RU catalog`);
     }
   }

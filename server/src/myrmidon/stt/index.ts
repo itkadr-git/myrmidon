@@ -20,7 +20,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/secrets.js";
 import { assertCompanyAccess, assertBoard, getActorInfo } from "../../routes/authz.js";
@@ -118,6 +118,8 @@ function settingsView(settings: SttSettings) {
     enabled: settings.enabled,
     backend: settings.backend,
     baseUrl: settings.baseUrl,
+    keySecretConfigured: Boolean(settings.keySecret),
+    deepgramKeySecretConfigured: Boolean(settings.deepgramKeySecret),
     model: settings.model,
     language: settings.language,
     diarization: settings.diarization,
@@ -148,6 +150,14 @@ export function myrmidonSttRoutes(
     assertCompanyAccess(req, companyId);
     assertBoard(req);
     const body = req.body as z.infer<typeof patchSchema>;
+    for (const name of [body.keySecret, body.deepgramKeySecret]) {
+      if (name === undefined || name === null) continue;
+      const secret = await secretService(db).getByName(companyId, name);
+      if (!secret || secret.scope !== "company" || secret.status !== "active") {
+        res.status(400).json({ error: "Select an active company secret for STT" });
+        return;
+      }
+    }
     const { doc: stored } = await writeOverrides(db, companyId, (current) => {
       // Explicit null clears the stored field — back to the environment default.
       const next: StoredSttOverrides = {
