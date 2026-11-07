@@ -29,7 +29,7 @@ import { CorpusRequestError, CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR } from "./serv
  * here: an idle corpus costs one settings read every 30 s, and a document that
  * was just uploaded reaches `ready` within about half a minute.
  */
-export const CORPUS_PARSE_SWEEP_INTERVAL_MS = 30_000;
+export const CORPUS_PARSE_SWEEP_INTERVAL_MS = 150_000;
 
 /** Counters of one pass; the sweep logs them and the tests assert them. */
 export interface CorpusParseSweepResult {

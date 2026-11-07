@@ -206,7 +206,8 @@ export interface SearchIndexPort {
   deleteDocument(companyId: string, documentId: string): Promise<void>;
   search(input: {
     companyId: string;
-    datasetId: string;
+    datasetId?: string;
+    datasetIds?: string[];
     query: string;
     limit: number;
     mode: CorpusSearchMode;
