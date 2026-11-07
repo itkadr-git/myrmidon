@@ -352,7 +352,7 @@ run("production corpus adapters", () => {
           res.end(JSON.stringify({
             data: (body.input ?? []).map((_, index) => ({
               index,
-              embedding: Array.from({ length: 3 }, (_, i) => (i === 0 ? 1 : 0)),
+              embedding: Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)),
             })),
           }));
         });
@@ -375,7 +375,7 @@ run("production corpus adapters", () => {
         parserBaseUrl: "http://parser.invalid",
         parserTimeoutMs: 1000,
         embedderModel: "corpus-embed-pplx-0.6b",
-        embedderDimensions: 3,
+        embedderDimensions: 1024,
         embedderBaseUrl: baseUrl,
         maxDocumentBytes: 1024,
         maxDocumentsPerDataset: 5,
