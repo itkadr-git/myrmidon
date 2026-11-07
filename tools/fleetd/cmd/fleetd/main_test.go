@@ -416,6 +416,9 @@ func TestStrictDecodeRejectsUnknownKeys(t *testing.T) {
 	if err := strictDecode([]byte(`{"listen":"a","tlsCert":"server.pem","tlsKey":"server-key.pem","tlsClientCA":"site-ca.pem","unknown":1,"bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]}`), &out); err == nil {
 		t.Fatal("unknown key accepted")
 	}
+	if err := strictDecode([]byte(`{"listen":"a","tlsCert":"server.pem","tlsKey":"server-key.pem","tlsClientCA":"site-ca.pem","bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]} {}`), &out); err == nil {
+		t.Fatal("trailing JSON content accepted")
+	}
 }
 
 func TestImagePolicyRequiresDigestAllowlist(t *testing.T) {
@@ -938,6 +941,23 @@ func TestRestoreKeepsSymlinkAndRefusesTruncatedArchive(t *testing.T) {
 		if len(entries) != 0 {
 			t.Fatalf("cut %d: a failed restore left %d entries in the volume root", cut, len(entries))
 		}
+	}
+}
+
+func TestRestoreRejectsUnknownManifestField(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	needle := []byte(`"version":1`)
+	if !bytes.Contains(archive, needle) {
+		t.Fatal("snapshot manifest version not found")
+	}
+	tampered := bytes.Replace(archive, needle, []byte(`"unknown":1`), 1)
+	root := t.TempDir()
+	rec := restoreInto(t, root, key, tampered)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unknown field") {
+		t.Fatalf("expected unknown manifest field rejection, got %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, key)); !os.IsNotExist(err) {
+		t.Fatalf("datadir exists after rejected manifest: %v", err)
 	}
 }
 
