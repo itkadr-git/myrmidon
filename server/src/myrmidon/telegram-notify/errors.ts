@@ -5,7 +5,7 @@
 // The owner can turn "board errors" into a message to a Telegram
 // chat/topic. The error feed is computed on the fly from the attention
 // desk (no new table, no migration): the closed error-kind set is
-// `failed_run`, `agent_error_alert`, `budget_alert`. Each card passes a
+// `failed_run`, `agent_error_alert`, `budget_alert`, `litellm_budget`. Each card passes a
 // severity threshold (`minSeverity`) and a fixed per-hour rate limit
 // (`maxPerHour` — over the limit, DROP, never a queue). Off by default:
 // with the settings absent or disabled, nothing is read, filtered or sent.
@@ -53,6 +53,7 @@ export const ERROR_CHANNEL_SOURCE_KINDS = [
   "failed_run",
   "agent_error_alert",
   "budget_alert",
+  "litellm_budget",
 ] as const;
 
 export type ErrorChannelSourceKind = (typeof ERROR_CHANNEL_SOURCE_KINDS)[number];

@@ -39,6 +39,7 @@ import {
   type GatewayFallbackReport,
   type KeyBudgetLimitView,
 } from "./litellmKeysApi";
+import { formatCents } from "@/lib/utils";
 import { GatewayFallbacksEditor } from "./GatewayFallbacksEditor";
 
 /** One line per agent: the display name, the secret, present status, value hash, and allowlist. */
@@ -51,6 +52,9 @@ export interface GatewayKeyRow {
   models: string[];
   /** Projected key budget limit (OPE-9859), when the company has one. */
   budget?: KeyBudgetLimitView | null;
+  maxBudgetUsd?: number | null;
+  gatewaySpendUsd?: number | null;
+  usage?: AgentGatewayKeyView["usage"];
 }
 
 /** Joins the key views with the agent names the page already knows. */
@@ -64,6 +68,9 @@ export function keyRows(keys: AgentGatewayKeyView[], agentNames: Map<string, str
       valueHash: entry.valueHash ?? null,
       models: entry.models ?? [],
       budget: entry.budget ?? null,
+      maxBudgetUsd: entry.maxBudgetUsd ?? null,
+      gatewaySpendUsd: entry.gatewaySpendUsd ?? null,
+      usage: entry.usage ?? null,
     }))
     .sort((a, b) => (a.agentName ?? a.agentId).localeCompare(b.agentName ?? b.agentId));
 }
@@ -76,6 +83,7 @@ export function cycleLines(report: GatewayFallbackReport | undefined): string[] 
 
 function GatewayKeysCard({ companyId }: { companyId: string }) {
   const { t } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   const queryClient = useQueryClient();
 
   const { data, isLoading, error } = useQuery({
@@ -247,6 +255,51 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                     </div>
                   )}
 
+                  {row.present && (row.usage || row.maxBudgetUsd != null || row.gatewaySpendUsd != null) && (
+                    <div
+                      data-testid={`key-usage-${row.agentId}`}
+                      className="mt-2 flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground"
+                    >
+                      <span>
+                        {row.maxBudgetUsd != null
+                          ? t("area.costs-budgets-2.gateway-keys-tab.usage.cap", { value: formatCents(row.maxBudgetUsd * 100, locale) })
+                          : row.gatewaySpendUsd != null
+                            ? t("area.costs-budgets-2.gateway-keys-tab.usage.capNone")
+                            : t("area.costs-budgets-2.gateway-keys-tab.usage.capUnavailable")}
+                      </span>
+                      {row.gatewaySpendUsd != null && (
+                        <span
+                          className={
+                            row.usage?.status === "exhausted"
+                              ? "font-medium text-destructive"
+                              : row.usage?.status === "near_cap"
+                                ? "font-medium text-amber-600"
+                                : "text-foreground"
+                          }
+                        >
+                          {row.usage?.utilizationPercent != null
+                            ? t("area.costs-budgets-2.gateway-keys-tab.usage.gatewaySpendOfCap", {
+                              value: formatCents(row.gatewaySpendUsd * 100, locale),
+                              percent: (row.usage?.utilizationPercent ?? 0).toFixed(1),
+                            })
+                            : t("area.costs-budgets-2.gateway-keys-tab.usage.gatewaySpend", {
+                              value: formatCents(row.gatewaySpendUsd * 100, locale),
+                            })}
+                        </span>
+                      )}
+                      {row.usage && (
+                        <>
+                          <span>{t("area.costs-budgets-2.gateway-keys-tab.usage.day", { value: formatCents(row.usage.spentCents, locale) })}</span>
+                          <span>{t("area.costs-budgets-2.gateway-keys-tab.usage.week", { value: formatCents(row.usage.weeklySpentCents, locale) })}</span>
+                          {row.usage.zeroCostEvents > 0 && (
+                            <span className="text-amber-600">
+                              {t("area.costs-budgets-2.gateway-keys-tab.usage.zeroCost", { n: row.usage.zeroCostEvents })}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                 {row.budget && (
                   <div
                     data-testid={`key-budget-${row.agentId}`}

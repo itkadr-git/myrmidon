@@ -28,6 +28,8 @@ import type {
 import { notFound, unprocessable } from "../errors.js";
 // myrmidon(SUB): the stack registry keeps its components in instance settings, not a table
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
+// myrmidon(OPE-11776): the key budget card id prefix
+import { LITELLM_BUDGET_ATTENTION_DEDUP_PREFIX } from "../myrmidon/litellm-costs/attention.js";
 import { logActivity } from "./activity-log.js";
 import {
   authorizationService,
@@ -421,6 +423,18 @@ async function sourceIssueId(
     // (`codex_pool:...`), not a stored row — same shape as foraging_limit / empty_model_catalog above.
     case "codex_pool_alert": {
       return { exists: sourceId.startsWith("codex_pool:"), issueId: null };
+    }
+    // myrmidon(OPE-11776): the key budget card is computed from the
+    // process-level signal registry and its subject id is the stable dedupKey
+    // (`litellm_budget:<kind>:<companyId>:<agentId>`), not a stored row. The
+    // company segment must be the caller's company, so one company's card id
+    // never resolves in another. No agentId is returned: the spend of a key is
+    // board-only, an agent-read authority does not cover it.
+    case "litellm_budget": {
+      return {
+        exists: sourceId.startsWith(LITELLM_BUDGET_ATTENTION_DEDUP_PREFIX) && sourceId.split(":")[2] === companyId,
+        issueId: null,
+      };
     }
   }
 }

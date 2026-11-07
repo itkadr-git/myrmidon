@@ -1049,6 +1049,73 @@ describe("execute", () => {
     expect(bodies[2]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
   });
 
+  it("renders unchanged wake blocks as revision references and resets after compaction", async () => {
+    const description = "stable wake description";
+    const fullTaskMarkdown = `Paperclip task context:\n${description}`;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: `run-${fetchMock.mock.calls.length}`, status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const wake = { issue: { identifier: "PAP-DELTA", title: "Delta wake", description } };
+    const makeWakeCtx = (
+      sessionParams: Record<string, unknown> | null,
+      taskMarkdown: string,
+      handoff?: string,
+    ) => {
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, sessionKeyStrategy: "issue" });
+      ctx.context = {
+        issueId: "issue-delta",
+        wakeReason: "issue_monitor_due",
+        paperclipTaskMarkdown: taskMarkdown,
+        paperclipSessionHandoffMarkdown: handoff,
+        paperclipWake: wake,
+      };
+      ctx.runtime = { sessionId: sessionParams ? "session-delta" : null, sessionParams, sessionDisplayId: "session-delta", taskKey: "PAP-DELTA" };
+      return ctx;
+    };
+
+    // 1. Fresh run: sends full taskMarkdown and records digests in sessionParams
+    const res1 = await execute(makeWakeCtx(null, fullTaskMarkdown));
+    const digests1 = res1.sessionParams?.wakeBlockDigests as Record<string, string> | undefined;
+    expect(digests1?.taskMarkdown).toBeDefined();
+
+    // 2. Stable session resume: unchanged block sends compact revision string
+    const res2 = await execute(makeWakeCtx(res1.sessionParams ?? null, fullTaskMarkdown));
+
+    // 3. Changed block in resumed session: sends full changed content
+    const changedMarkdown = "Paperclip task context:\nchanged description v2";
+    const res3 = await execute(makeWakeCtx(res2.sessionParams ?? null, changedMarkdown));
+    const digests3 = res3.sessionParams?.wakeBlockDigests as Record<string, string> | undefined;
+    expect(digests3?.taskMarkdown).toBeDefined();
+    expect(digests3?.taskMarkdown).not.toBe(digests1?.taskMarkdown);
+
+    // 4. Compaction handoff: resets session state and sends full content
+    await execute(makeWakeCtx(res3.sessionParams ?? null, changedMarkdown, "compacted handoff"));
+
+    const bodies = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .filter(([input]) => String(input).endsWith("/v1/runs"))
+      .map(([, init]) => JSON.parse(String(init?.body)) as { input: string });
+    expect(bodies).toHaveLength(4);
+
+    // Turn 1: initial run gets full block
+    expect(bodies[0]!.input).toContain(description);
+
+    // Turn 2: unchanged block gets short revision string
+    expect(bodies[1]!.input).toContain(`без изменений (ревизия ${digests1!.taskMarkdown})`);
+    expect(bodies[1]!.input).not.toContain(description);
+
+    // Turn 3: changed block gets full content
+    expect(bodies[2]!.input).toContain("changed description v2");
+    expect(bodies[2]!.input).not.toContain("без изменений (ревизия");
+
+    // Turn 4: post-compaction gets full content
+    expect(bodies[3]!.input).toContain("changed description v2");
+    expect(bodies[3]!.input).not.toContain("без изменений (ревизия");
+  });
+
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

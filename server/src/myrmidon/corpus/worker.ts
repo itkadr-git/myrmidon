@@ -12,8 +12,10 @@
 //     ports are not even built, so a fleet that never enables the corpus neither
 //     opens a connection nor logs anything;
 //   * a no-op while the ports are not wired (parts A/B not merged yet);
-//   * bounded parallel jobs inside a pass — `parseConcurrency` caps simultaneous
-//     parser and indexing work; the next tick picks up the rest;
+//   * bounded parallel jobs — `parseConcurrency` caps simultaneous parser and
+//     indexing work ACROSS passes: a pass can outlive many scheduler ticks (a big
+//     scanned book takes the better part of an hour), so a pass claims only as
+//     many jobs as are free right now; the next tick picks up the rest;
 //   * forgiving — any parser, indexer or blob failure settles the job through
 //     `queue.fail`, which retries it until `maxParseAttempts` and then keeps the
 //     reason on the document. Nothing in this pass throws into the board.
@@ -62,6 +64,13 @@ function message(err: unknown): string {
 
 export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusParseWorker {
   const env = deps.env ?? process.env;
+
+  // Jobs this worker holds right now: claimed and not yet settled, whichever pass took them.
+  // The scheduler starts a pass every CORPUS_PARSE_SWEEP_INTERVAL_MS no matter whether the
+  // previous one has finished, and a pass lasts as long as its slowest parse. Counting per pass
+  // would let every new pass claim another `parseConcurrency` jobs on top of the ones still
+  // running, and the parser would be handed more documents than it can work on at once.
+  let inFlight = 0;
 
   async function runJob(
     ports: CorpusPorts,
@@ -178,7 +187,20 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
       if (!ports) return result; // on, but this process has no ports
       result.available = true;
 
-      const jobs = await ports.queue.claim({ limit: resolved.settings.parseConcurrency });
+      const free = resolved.settings.parseConcurrency - inFlight;
+      if (free <= 0) return result; // every slot is busy with a job of an earlier pass
+
+      // The slots are reserved before the claim is awaited: two passes asking at the same
+      // moment must not both see them free.
+      inFlight += free;
+      let jobs: CorpusJobRecord[];
+      try {
+        jobs = await ports.queue.claim({ limit: free });
+      } catch (err) {
+        inFlight -= free;
+        throw err;
+      }
+      inFlight -= free - jobs.length;
       result.claimed = jobs.length;
 
       await Promise.all(jobs.map(async (job) => {
@@ -191,6 +213,8 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
           // A failed persistence operation must not abandon the other claimed jobs.
           result.failed += 1;
           logger.error({ err, companyId: job.companyId, jobId: job.id }, "corpus: could not settle a claimed job");
+        } finally {
+          inFlight -= 1;
         }
       }));
 

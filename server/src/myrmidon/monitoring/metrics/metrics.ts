@@ -72,6 +72,8 @@ import {
 } from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
+import { readAgentSpendWindows } from "../../litellm-keys/key-spend.js"; // myrmidon(OPE-11776)
+import { readLitellmKeyBudgetGauges } from "../../litellm-costs/attention.js"; // myrmidon(OPE-11776)
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
 import { scentMetrics } from "../../scent/metrics.js";
@@ -170,6 +172,8 @@ export const METRIC_FAMILIES = [
   "swarm_scent_classifier_alarm",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
+  "myrmidon_llm_key_spend_cents",
+  "myrmidon_llm_key_budget_utilization_percent",
   "myrmidon_recovery_created_total",
   "myrmidon_recovery_deduped_total",
   "myrmidon_recovery_success_total",
@@ -328,6 +332,13 @@ export interface MetricsSnapshotFields {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  /** Per-agent ledger spend in rolling windows, exported by the authenticated /metrics endpoint. */
+  llmKeySpend?: Array<{ companyId: string; agentId: string; window: "24h" | "7d"; cents: number }>;
+  /**
+   * Gateway spend as a percentage of the key cap, per capped bot key (OPE-11776).
+   * Read from the last evaluation held in memory — a scrape never reaches the gateway.
+   */
+  llmKeyBudgetPercent?: Array<{ companyId: string; agentId: string; percent: number }>;
   recoveryCreatedTotal?: Map<IssueRecoveryActionKind, number> | null;
   recoveryDedupedTotal?: Map<IssueRecoveryActionKind, number> | null;
   recoverySuccessTotal?: Map<IssueRecoveryActionKind, number> | null;
@@ -904,6 +915,23 @@ async function readCostWindow(db: Db, windowStart: Date): Promise<number> {
   return Number(row?.total ?? 0);
 }
 
+/**
+ * Per-agent ledger spend for the authenticated scrape (OPE-11776). The shared,
+ * cached, time-bounded read of the ledger (litellm-keys/key-spend.ts): a scrape
+ * and a key-list page load within the TTL cost one query.
+ */
+async function readKeySpend(db: Db, now: Date): Promise<NonNullable<MetricsSnapshot["llmKeySpend"]>> {
+  const rows = await readAgentSpendWindows(db, now);
+  return rows.flatMap((row) =>
+    typeof row.companyId === "string" && typeof row.agentId === "string"
+      ? [
+          { companyId: row.companyId, agentId: row.agentId, window: "24h" as const, cents: row.dailyCents },
+          { companyId: row.companyId, agentId: row.agentId, window: "7d" as const, cents: row.weeklyCents },
+        ]
+      : [],
+  );
+}
+
 /** One scrape: every family is collected, and one family's failure never kills the rest. */
 export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promise<MetricsSnapshot> {
   const collected = await collectMetricsParts(deps);
@@ -1068,6 +1096,17 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readCostWindow(deps.db, errorWindowStart),
     0,
   );
+  const llmKeySpend = await guarded(
+    "myrmidon_llm_key_spend_cents",
+    () => readKeySpend(deps.db, now),
+    [] as NonNullable<MetricsSnapshot["llmKeySpend"]>,
+  );
+  // Process-local (the sweep tick's last evaluation), so it survives a broken database.
+  const llmKeyBudgetPercent = readLitellmKeyBudgetGauges().map(({ companyId, agentId, percent }) => ({
+    companyId,
+    agentId,
+    percent,
+  }));
   const deferredIssueExecutionOver30m = await guarded(
     "myrmidon_deferred_issue_execution_over_30m",
     () => deps.db.select({ total: count() }).from(agentWakeupRequests).where(and(
@@ -1235,6 +1274,8 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
+      llmKeySpend,
+      llmKeyBudgetPercent,
       recoveryCreatedTotal: new Map(recoveryCounters.created),
       recoveryDedupedTotal: new Map(recoveryCounters.deduped),
       recoverySuccessTotal: new Map(recoveryCounters.succeeded),
@@ -1656,6 +1697,26 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "LLM spend collected by the gateway cost sweep inside the scrape window, in cents.",
       "counter",
       [`myrmidon_llm_cost_cents_total{${R}} ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_llm_key_spend_cents",
+      "Rolling LiteLLM ledger spend in cents by company and agent (24h and 7d).",
+      "gauge",
+      (snapshot.llmKeySpend ?? []).map(({ companyId, agentId, window, cents }) =>
+        `myrmidon_llm_key_spend_cents{${R},company_id="${escapeLabelValue(companyId)}",agent_id="${escapeLabelValue(agentId)}",window="${window}"} ${formatSampleValue(cents)}`,
+      ),
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_llm_key_budget_utilization_percent",
+      "Gateway spend as a percentage of the LiteLLM key cap, by company and agent (capped keys only; above 100 = over the cap).",
+      "gauge",
+      (snapshot.llmKeyBudgetPercent ?? []).map(({ companyId, agentId, percent }) =>
+        `myrmidon_llm_key_budget_utilization_percent{${R},company_id="${escapeLabelValue(companyId)}",agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(Math.round(percent * 10) / 10)}`,
+      ),
     ),
   );
   const recoveryCounterFamily = (
