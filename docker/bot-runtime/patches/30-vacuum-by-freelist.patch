@@ -1,0 +1,289 @@
+diff --git a/gateway/run.py b/gateway/run.py
+index cfe3a89..af611f4 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -4662,7 +4662,23 @@ def _profile_sessions_dir(launch: Optional[Tuple[Path, Path]]) -> Path:
+     return home / "sessions"
+ 
+ 
+-def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = None) -> None:
++def _vacuum_defer_reason(runner) -> Optional[str]:
++    """myrmidon(G1): why the automatic state.db VACUUM must wait, or None. A VACUUM holds the store
++    exclusively for its whole length (every writer, and every reader too in the rollback-journal mode these
++    bots run in), so it waits while this gateway is running a turn: messaging-platform turns
++    (``_running_agents``) and API-server work (pending admissions, in-flight turns, live runs; the board's
++    runs come in through the API server). The housekeeping chore is a thread of its own, so a turn can be
++    running beside it: that is what is checked. Fails closed: a count that cannot be read defers the VACUUM."""
++    if runner is None:
++        return None
++    try:
++        running = int(runner._running_agent_count()) + int(runner._active_api_run_count())
++    except Exception as exc:
++        return f"could not tell whether the gateway is running a turn ({exc})"
++    return f"the gateway is running {running} turn(s)" if running > 0 else None
++
++
++def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = None, runner=None) -> None:
+     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
+     by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
+     SessionDB — SQLite connections are thread-bound.
+@@ -4690,7 +4706,8 @@ def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = Non
+                 min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
+                 min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
+                 vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+-                sessions_dir=_profile_sessions_dir(launch))
++                sessions_dir=_profile_sessions_dir(launch),
++                vacuum_defer=lambda: _vacuum_defer_reason(runner))
+     finally:
+         release_or_close(_adb)
+ 
+@@ -4788,8 +4805,8 @@ def _start_gateway_housekeeping(
+         (60, "state.db maintenance tick", profile_scoped_chore(
+             runner,
+             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
+-            lambda _launch=_launch_sessions_dir(getattr(runner, "config", None)):
+-                _housekeeping_state_db_maintenance(_launch))),
++            lambda _launch=_launch_sessions_dir(getattr(runner, "config", None)), _runner=runner:
++                _housekeeping_state_db_maintenance(_launch, _runner))),
+         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
+         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
+diff --git a/hermes_state_maintenance.py b/hermes_state_maintenance.py
+index a87b6f5..51152be 100644
+--- a/hermes_state_maintenance.py
++++ b/hermes_state_maintenance.py
+@@ -3,9 +3,11 @@
+ from __future__ import annotations
+ 
+ import logging
++import os
++import shutil
+ import time
+ from pathlib import Path
+-from typing import Any, Dict, List, Optional, Tuple
++from typing import Any, Callable, Dict, List, Optional, Tuple
+ 
+ from hermes_state_common import (
+     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
+@@ -42,6 +44,34 @@ def _seconds_since(now: float, raw) -> Optional[float]:
+         return None
+ 
+ 
++# myrmidon(G1): a VACUUM writes the surviving data into a temporary database and then back into the
++# database file, so it needs about the live data twice: once in SQLite's temp directory, once as the rollback
++# journal (-journal; -wal in WAL mode) next to the database. These helpers decide, before the rewrite starts,
++# whether the volumes can take it.
++_VACUUM_RAM_FSTYPES = frozenset({"tmpfs", "ramfs"})
++_vacuum_warned: set = set()
++
++
++def _sqlite_temp_dir() -> Optional[str]:
++    """Directory SQLite puts a VACUUM temp file in: the first of ``SQLITE_TMPDIR``, ``TMPDIR``, ``/var/tmp``,
++    ``/usr/tmp``, ``/tmp``, ``.`` that is a directory it can write (the order of os_unix.c
++    ``unixTempFileDir``; Python's sqlite3 sets no ``sqlite3_temp_directory``). None when there is none."""
++    for candidate in (os.environ.get("SQLITE_TMPDIR"), os.environ.get("TMPDIR"),
++                      "/var/tmp", "/usr/tmp", "/tmp", "."):
++        if candidate and os.path.isdir(candidate) and os.access(candidate, os.R_OK | os.W_OK | os.X_OK):
++            return os.path.realpath(candidate)
++    return None
++
++
++def _warn_once(key: str, message: str, *args) -> None:
++    """Warning the first time per process, debug afterwards: the maintenance retries every housekeeping tick."""
++    if key in _vacuum_warned:
++        logger.debug(message, *args)
++        return
++    _vacuum_warned.add(key)
++    logger.warning(message, *args)
++
++
+ # Prune/archive filters in evaluation order: (kwarg, applies-when, builder -> (clauses, params)).
+ # ``applies-when``: "notnone" (numeric/time bounds; 0 is a real bound) or "truthy" ("" = unset).
+ _PRUNE_FILTERS = (
+@@ -368,16 +398,101 @@ class SessionMaintenanceMixin:
+             self._record_db_file_identity()
+         return optimized
+ 
++    def _live_turn_lease_count(self) -> Optional[int]:
++        """Turn leases held right now (not expired, holder not a dead local process): a turn in progress in
++        any process that shares this store. None = could not be read."""
++        from hermes_state_messages import _stale_holder
++        try:
++            with self._read_ctx() as conn:
++                rows = conn.execute("SELECT holder, expires_at FROM session_turn_leases").fetchall()
++        except Exception as exc:
++            logger.debug("Could not read the session turn leases: %s", exc)
++            return None
++        now = time.time()
++        return sum(1 for row in rows if not _stale_holder({"holder": row[0], "expires_at": row[1]}, now))
++
++    def _vacuum_space_error(self) -> Optional[str]:
++        """Reason a VACUUM must not start for lack of room, or None. Needs 2x the live data
++        (``(page_count - freelist_count) * page_size``) free on the database's volume (temp copy + journal) when
++        SQLite's temp directory is on the same volume, else 1x on each. A temp directory in RAM (tmpfs) is
++        refused: the copy would be charged to the process's memory. Fails closed."""
++        from hermes_state_wal import _mountinfo_fstype
++        values = self._page_pragmas(("page_count", "freelist_count", "page_size"), "Could not read page counts: %s")
++        if values is None:
++            return "could not read the page counts"
++        live = (values[0] - values[1]) * values[2]
++        db_dir = os.path.dirname(os.path.realpath(self.db_path)) or "."
++        tmp_dir = _sqlite_temp_dir()
++        if tmp_dir is None:
++            return "no writable directory for SQLite's temporary file"
++        tmp_fs = _mountinfo_fstype(tmp_dir)
++        if tmp_fs in _VACUUM_RAM_FSTYPES:
++            return (f"SQLite's temp directory {tmp_dir} is {tmp_fs} (RAM); set SQLITE_TMPDIR to a directory "
++                    f"on the data volume")
++        try:
++            same_volume = os.stat(tmp_dir).st_dev == os.stat(db_dir).st_dev
++            checks = [(db_dir, 2 * live)] if same_volume else [(db_dir, live), (tmp_dir, live)]
++            for directory, need in checks:
++                free = shutil.disk_usage(directory).free
++                if free < need:
++                    return (f"only {free / 1e9:.2f} GB free on {directory}; a VACUUM needs {need / 1e9:.2f} GB "
++                            f"({live / 1e9:.2f} GB of live data)")
++        except OSError as exc:
++            return f"could not read the free space ({exc})"
++        return None
++
++    def _vacuum_skip_reason(
++        self, vacuum_defer: Optional[Callable[[], Optional[str]]], result: Optional[Dict[str, Any]] = None,
++    ) -> Optional[str]:
++        """Why an automatic VACUUM must wait, or None to go ahead. Automatic maintenance only ever SKIPS."""
++        # Same admission `hermes sessions optimize` runs: VACUUM plus the TRUNCATE checkpoint
++        # retire the WAL generation a sibling writer (gateway, Desktop, dashboard, cron) still
++        # holds, and that is exactly the state every agent then refuses turns in (#110054).
++        # The foreign scan skips our own pid, so it is paired with the in-process arm: under
++        # one multiplexed process another live SessionDB generation for this same path is
++        # just as much a holder as another process would be.
++        from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
++        holders = (foreign_state_db_holders(self.db_path)
++                   + in_process_state_db_holders(self.db_path, exclude=self))
++        if holders:
++            if result is not None:
++                result["vacuum_skipped_holders"] = len(holders)
++            return (f"{len(holders)} other process(es) hold the store or a WAL sidecar "
++                    f"({', '.join(f'{pid}:{target}' for pid, target in holders[:3])})")
++        # myrmidon(G1): the rewrite holds the store exclusively for its whole length (readers too in
++        # the rollback-journal mode), so it waits for a moment when no turn is running: no live turn lease in
++        # the store, and nothing the caller knows of.
++        leases = self._live_turn_lease_count()
++        if leases is None:
++            return "could not tell whether a turn is running"
++        if leases:
++            return f"{leases} turn(s) hold a session turn lease"
++        if vacuum_defer is not None:
++            try:
++                reason = vacuum_defer()
++            except Exception as exc:
++                return f"could not tell whether a turn is running ({exc})"
++            if reason:
++                return reason
++        return self._vacuum_space_error()
++
+     def maybe_auto_prune_and_vacuum(
+         self, retention_days: int = 90, min_interval_hours: int = 24, vacuum: bool = True,
+         sessions_dir: Optional[Path] = None, min_vacuum_interval_days: int = 30,
+         min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO,
++        vacuum_defer: Optional[Callable[[], Optional[str]]] = None,
+     ) -> Dict[str, Any]:
+         """Idempotent startup auto-maintenance (never raises): prune inactive sessions, reap stale open
+         state-owned rows, optional VACUUM.  Runs at most once per ``min_interval_hours``; VACUUM has its own
+         ``min_vacuum_interval_days`` throttle and also requires ``freelist_count / page_count`` >
+         ``min_vacuum_freelist_ratio`` so a small prune on a dense multi-GB database never triggers a full
+-        rewrite.  Stale-open reconciliation: cron/kanban/subagent/one-shot CLI rows never set ``ended_at``
++        rewrite.  myrmidon(G1): the VACUUM no longer needs the prune to have deleted rows in this very
++        pass (``pruned > 0``): whatever was freed earlier, by this prune, by another process or by an API
++        delete, is reclaimed once the ratio is reached.  It waits (and the whole pass is retried by the next
++        housekeeping tick instead of the next ``min_interval_hours``) while a turn holds a session turn lease,
++        while *vacuum_defer* returns a reason (the gateway passes "a turn is running"), and while the volume
++        cannot hold the rewrite (see :meth:`_vacuum_space_error`); the reason is in ``"vacuum_skipped"``.
++        Stale-open reconciliation: cron/kanban/subagent/one-shot CLI rows never set ``ended_at``
+         when their process dies and prune only deletes ended rows, so after pruning, open rows from
+         :attr:`_AUTO_PRUNE_STALE_OPEN_SOURCES` older than ``retention_days`` are closed
+         (``startup_orphan_reap``); they stay resumable and age from their close.  Returns ``{"skipped",
+@@ -427,45 +542,50 @@ class SessionMaintenanceMixin:
+                 respect_gateway_heartbeats=False,  # state-owned lifecycles, not gateway heartbeats
+             )
+             result["closed"] = len(closed)
+-            # VACUUM only if rows were freed, the time throttle passed AND the
+-            # freelist ratio passed — it holds an exclusive lock for a full rewrite.
++            # VACUUM when the time throttle passed AND the freelist ratio passed (a full rewrite under an
++            # exclusive lock) - myrmidon(G1): whether or not THIS prune freed rows.
+             since_vacuum = _seconds_since(now, self.get_meta("last_vacuum"))
+             vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
+-            if vacuum and pruned > 0 and vacuum_due:
++            retry_vacuum = False
++            if vacuum and vacuum_due:
+                 result["freelist_ratio"] = ratio = self._freelist_ratio()
+-                # Same admission `hermes sessions optimize` runs: VACUUM plus the TRUNCATE checkpoint
+-                # retire the WAL generation a sibling writer (gateway, Desktop, dashboard, cron) still
+-                # holds, and that is exactly the state every agent then refuses turns in (#110054).
+-                # The foreign scan skips our own pid, so it is paired with the in-process arm: under
+-                # one multiplexed process another live SessionDB generation for this same path is
+-                # just as much a holder as another process would be.
+-                # Automatic maintenance only ever SKIPS — a turn is never refused over housekeeping.
+-                from hermes_state_holders import (
+-                    foreign_state_db_holders, in_process_state_db_holders)
+-                holders = (foreign_state_db_holders(self.db_path)
+-                           + in_process_state_db_holders(self.db_path, exclude=self))
+-                if holders:
+-                    result["vacuum_skipped_holders"] = len(holders)
+-                    logger.debug(
+-                        "state.db auto-maintenance: skipping VACUUM, %d other process(es) hold the "
+-                        "store or a WAL sidecar (%s)",
+-                        len(holders), ", ".join(f"{pid}:{target}" for pid, target in holders[:3]))
+-                elif ratio is None or ratio > min_vacuum_freelist_ratio:
+-                    try:
+-                        # VACUUM rewrites every page with ~zero CPU: renew the lease here so
+-                        # a multi-minute rewrite on a large state.db never outlives the clamp.
+-                        report_startup_progress(900.0, phase="state_db_auto_vacuum")
+-                        self.vacuum()
+-                        result["vacuumed"] = True
+-                        self.set_meta("last_vacuum", str(now))
+-                    except Exception as exc:
+-                        logger.warning("state.db VACUUM failed: %s", exc)
+-                else:
++                if ratio is not None and ratio <= min_vacuum_freelist_ratio:
+                     logger.debug("state.db auto-maintenance: skipping VACUUM, only "
+                                  "%.1f%% of pages reclaimable (threshold %.0f%%)",
+                                  ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
+-            # Record even when pruned == 0 so the throttle holds.
+-            self.set_meta("last_auto_prune", str(now))
++                elif ratio is None and pruned <= 0:
++                    logger.debug("state.db auto-maintenance: skipping VACUUM, the page counts are unreadable")
++                else:
++                    reason = self._vacuum_skip_reason(vacuum_defer, result)
++                    if reason:
++                        # Retry on the next tick: a busy or momentarily full store is not a reason to wait
++                        # another min_interval_hours.
++                        retry_vacuum = True
++                        result["vacuum_skipped"] = reason
++                        if reason.startswith(("only ", "SQLite", "no writable", "could not read")):
++                            _warn_once(reason.split()[0], "state.db auto-maintenance: skipping VACUUM, %s", reason)
++                        else:
++                            logger.debug("state.db auto-maintenance: skipping VACUUM, %s", reason)
++                    else:
++                        try:
++                            size_before = self.logical_size_bytes()
++                            # VACUUM rewrites every page with ~zero CPU: renew the lease here so
++                            # a multi-minute rewrite on a large state.db never outlives the clamp.
++                            report_startup_progress(900.0, phase="state_db_auto_vacuum")
++                            self.vacuum()
++                            result["vacuumed"] = True
++                            self.set_meta("last_vacuum", str(now))
++                            size_after = self.logical_size_bytes()
++                            if size_before is not None and size_after is not None:
++                                logger.info("state.db VACUUM: %.0f MB -> %.0f MB (%.1f%% of pages were free)",
++                                            size_before / 1e6, size_after / 1e6,
++                                            (ratio or 0.0) * 100.0)
++                        except Exception as exc:
++                            logger.warning("state.db VACUUM failed: %s", exc)
++            # Record even when pruned == 0 so the throttle holds - except while a VACUUM is only waiting
++            # for a quiet moment: then the next tick runs the pass again.
++            if not retry_vacuum:
++                self.set_meta("last_auto_prune", str(now))
+             if closed or pruned > 0:
+                 logger.info("state.db auto-maintenance: closed %d stale open session(s), "
+                             "pruned %d session(s) inactive for %d days%s",
