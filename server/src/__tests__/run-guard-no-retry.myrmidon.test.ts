@@ -332,6 +332,35 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
       expect(issue?.executionRunId).toBe(successors[0]?.id);
     });
 
+    // myrmidon(OPE-12004): no_progress_exploration continuation
+    it("continues a no_progress_exploration stop once with a hint instruction", async () => {
+      const { issueId, runId } = await seedRun({
+        shape: "stranded",
+        status: "cancelled",
+        errorCode: "no_progress_exploration",
+        resultJson: {
+          runGuardStopReason: "no_progress_exploration",
+          runGuardStats: { toolCalls: 80, writeCalls: 0, readOnlyStreak: 80, modelCalls: 81 },
+        },
+      });
+
+      await heartbeat.applyRunGuardStop(runId);
+
+      const successors = await successorsOf(runId);
+      expect(successors).toHaveLength(1);
+      expect(successors[0]).toMatchObject({
+        status: "scheduled_retry",
+        scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+        scheduledRetryAttempt: 1,
+        retryOfRunId: runId,
+      });
+      const snapshot = successors[0]?.contextSnapshot as Record<string, unknown>;
+      expect(snapshot?.livenessContinuationInstruction).toContain("много чтений без записи");
+      const state = await issueState(issueId);
+      expect(state.status).toBe("in_progress");
+      expect(state.comments).toHaveLength(0);
+    });
+
     it("continues a continuation too, as long as the attempt ceiling allows", async () => {
       const { issueId, runId } = await seedRun({
         shape: "retry",
@@ -410,7 +439,7 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
       }
     });
 
-    it.each(RUN_GUARD_STOP_REASONS.filter((reason) => reason !== "model_call_limit"))(
+    it.each(RUN_GUARD_STOP_REASONS.filter((reason) => reason !== "model_call_limit" && reason !== "no_progress_exploration"))(
       "still blocks the issue for %s, whatever the run changed",
       async (reason) => {
         const { issueId, runId } = await seedRun({
