@@ -17,6 +17,7 @@
 // the resolved token only as git's `password=` answer on stdout. Diagnostics
 // name the repository, statuses and reason — never the token.
 
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import { githubBrokerCandidatesLauncherSource } from "./myrmidon-github-broker.js";
 
 /**
@@ -38,6 +39,7 @@ export function githubCredentialHelperSource(): string {
 // ever persisted, and a refusal answers nothing at all, so git continues
 // exactly as it would without the helper.
 const TOTAL_TIMEOUT_MS = ${GITHUB_CREDENTIAL_HELPER_TOTAL_TIMEOUT_MS};
+const PRODUCT = ${JSON.stringify(PRODUCT_NAME)};
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -79,7 +81,7 @@ async function main() {
   if (description.host !== 'github.com' && description.host !== 'www.github.com') return;
   const capability = (process.env.PAPERCLIP_GITHUB_BROKER_TOKEN || '').trim();
   if (!capability) {
-    process.stderr.write('Paperclip: no GitHub broker capability in this environment; continuing without managed credentials.\n');
+    process.stderr.write(PRODUCT + ': no GitHub broker capability in this environment; continuing without managed credentials.\n');
     return;
   }
   const repository = repositoryFromPath(description.path);
@@ -91,11 +93,11 @@ async function main() {
     response = attempt.response;
   } catch { response = null; }
   if (!response) {
-    process.stderr.write('Paperclip: GitHub broker unreachable; continuing without managed credentials.\n');
+    process.stderr.write(PRODUCT + ': GitHub broker unreachable; continuing without managed credentials.\n');
     return;
   }
   if (!response.ok) {
-    process.stderr.write('Paperclip: GitHub broker answered HTTP ' + response.status + '; continuing without managed credentials.\n');
+    process.stderr.write(PRODUCT + ': GitHub broker answered HTTP ' + response.status + '; continuing without managed credentials.\n');
     return;
   }
   let result = null;
@@ -103,8 +105,8 @@ async function main() {
   if (!result || result.status !== 'available' || !result.env || !result.env.GH_TOKEN) {
     const reason = result && typeof result.reason === 'string'
       ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)
-      : 'check the GitHub connection in Paperclip';
-    process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '; continuing without managed credentials.\n');
+      : 'check the GitHub connection in ' + PRODUCT;
+    process.stderr.write(PRODUCT + ': GitHub access unavailable: ' + reason + '; continuing without managed credentials.\n');
     return;
   }
   process.stdout.write('username=x-access-token\npassword=' + result.env.GH_TOKEN + '\n');
