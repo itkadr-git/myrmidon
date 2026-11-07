@@ -14,6 +14,7 @@ import {
   DEFAULT_EMBEDDING_DIMENSIONS,
   DEFAULT_EMBEDDING_MODEL,
   dryRunRagflowImport,
+  getRagflowImportExitCode,
   importRagflowCorpus,
   type CorpusImportTarget,
 } from "@myrmidon/corpus";
@@ -110,6 +111,13 @@ function createDatabaseTarget(db: ReturnType<typeof createDb>): CorpusImportTarg
         .set({ status: "ready", parsedAt: new Date(), updatedAt: new Date(), parseError: null })
         .where(and(eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.id, documentId)));
     },
+    async uploadDocument(input) {
+      const endpoint = `${process.env.CORPUS_UPLOAD_BASE_URL ?? "http://localhost:3100"}/api/myrmidon/companies/${encodeURIComponent(input.companyId)}/corpus/datasets/${encodeURIComponent(input.datasetId)}/documents`;
+      const form = new FormData();
+      form.append("file", new Blob([input.bytes], { type: input.mimeType ?? "application/octet-stream" }), input.filename);
+      const response = await fetch(endpoint, { method: "POST", body: form, headers: { authorization: `Bearer ${process.env.CORPUS_UPLOAD_API_KEY ?? ""}` } });
+      if (!response.ok) throw new Error(`Corpus upload failed (${response.status})`);
+    },
   };
 }
 
@@ -170,7 +178,8 @@ Environment variables (names only):
   CORPUS_EMBEDDING_DIMENSIONS   Embedding dimensions (default: ${DEFAULT_EMBEDDING_DIMENSIONS})
   CORPUS_IMPORT_BATCH_SIZE      Chunk batch size (default: ${DEFAULT_EMBEDDING_BATCH_SIZE})
   CORPUS_IMPORT_CONCURRENCY     Embedding concurrency (default: ${DEFAULT_EMBEDDING_CONCURRENCY})
-  CORPUS_CHUNK_COUNT_TOLERANCE  Chunk count tolerance ratio (default: 0.01)
+  CORPUS_IMPORT_UPLOAD_UNPARSED Upload source files for unparsed documents (1 enables)
+  CORPUS_CHUNK_COUNT_TOLERANCE  Chunk count tolerance ratio (default 0.01)
   CORPUS_IMPORT_DATASET_NAMES   Comma-separated allowlist of dataset names to import (alias: CORPUS_IMPORT_DATASET_IDS)
 `);
     return;
@@ -233,6 +242,7 @@ Environment variables (names only):
       embeddingDimensions: dimensions,
       chunkCountTolerance: Number(env.CORPUS_CHUNK_COUNT_TOLERANCE ?? 0.01),
       datasetNames: datasetFilter,
+      uploadUnparsed: env.CORPUS_IMPORT_UPLOAD_UNPARSED === "1",
       embeddingBatchSize: Number(env.CORPUS_IMPORT_BATCH_SIZE ?? DEFAULT_EMBEDDING_BATCH_SIZE),
       embeddingConcurrency: Number(env.CORPUS_IMPORT_CONCURRENCY ?? DEFAULT_EMBEDDING_CONCURRENCY),
       onProgress(progress) {
@@ -264,6 +274,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       depth += 1;
     }
     process.stderr.write(`${lines.join("\n")}\n`);
-    process.exitCode = 1;
+    process.exitCode = getRagflowImportExitCode(error);
   });
 }

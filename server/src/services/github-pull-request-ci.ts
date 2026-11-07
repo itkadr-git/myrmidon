@@ -2,6 +2,7 @@ import type { Db } from "@myrmidon/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
+import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
 import { resolveGitHubRepositoryToken } from "./github-external-object-provider.js";
 import type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
@@ -49,6 +50,7 @@ export type PullRequestCiStatus =
   | "queued"
   | "pending"
   | "no_checks"
+  | "not_configured"
   | "unavailable"
   | "unknown";
 
@@ -62,6 +64,7 @@ export type PullRequestCiConclusion =
   | "action_required"
   | "skipped"
   | "no_checks"
+  | "not_configured"
   | "missing"
   | "denied"
   | "rate_limited"
@@ -861,6 +864,15 @@ export function createPullRequestCiResolver(
         repository: repoKey,
         pullNumber: reference.number,
       });
+      if (summarized.totalRuns === 0 && runs.conclusion !== "rate_limited") {
+        const hostedCi = await repositoryHasHostedCi({ ...reference, token, fetch: fetchImpl });
+        if (hostedCi === false) {
+          summarized.status = "not_configured";
+          summarized.conclusion = "not_configured";
+          summarized.summary = NO_HOSTED_CI_SUMMARY;
+          summarized.authoritative = true;
+        }
+      }
 
       const isRateLimited = runs.conclusion === "rate_limited" || isGitHubRateLimited();
       const result: PullRequestCiResult = {
@@ -875,7 +887,7 @@ export function createPullRequestCiResolver(
         runs,
       };
 
-      const ttlMs = result.status === "completed" ? CI_CACHE_COMPLETED_TTL_MS : CI_CACHE_INCOMPLETE_TTL_MS;
+      const ttlMs = result.status === "completed" || result.status === "not_configured" ? CI_CACHE_COMPLETED_TTL_MS : CI_CACHE_INCOMPLETE_TTL_MS;
       if (ciCache.size >= CI_CACHE_MAX_ENTRIES) {
         const oldestKey = ciCache.keys().next().value;
         if (oldestKey !== undefined) ciCache.delete(oldestKey);

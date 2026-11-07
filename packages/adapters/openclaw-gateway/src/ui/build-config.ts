@@ -20,6 +20,9 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   if (v.authToken) ac.authToken = v.authToken;
   if (v.password) ac.password = v.password;
   if (v.agentId) ac.agentId = v.agentId;
+  if (v.clientId) ac.clientId = v.clientId;
+  if (v.clientMode) ac.clientMode = v.clientMode;
+  if (v.clientVersion) ac.clientVersion = v.clientVersion;
 
   // Session routing fields
   if (v.sessionKeyStrategy) ac.sessionKeyStrategy = v.sessionKeyStrategy;

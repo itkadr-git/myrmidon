@@ -183,7 +183,14 @@ export function PromptBudgetSettingsPanel() {
 
       <div className="space-y-2">
         <Label htmlFor="prompt-budget-optimizer">{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerLabel")}</Label>
-        <select id="prompt-budget-optimizer" className="w-full rounded-md border bg-background px-3 py-2 text-sm" value={optimizerAgentId} disabled={!admin} onChange={(event) => setOptimizerAgentId(event.target.value)}>
+        <select
+          id="prompt-budget-optimizer"
+          className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+          value={optimizerAgentId}
+          disabled={!admin}
+          onChange={(event) => setOptimizerAgentId(event.target.value)}
+          data-testid="prompt-budget-optimizer-input"
+        >
           <option value="">{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerNone")}</option>
           {optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId) && <option value={optimizerAgentId} disabled>{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerUnavailable")}</option>}
           {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}

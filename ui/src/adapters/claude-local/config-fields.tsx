@@ -30,9 +30,8 @@ export function ClaudeLocalConfigFields({
   managedSandboxOnly,
 }: AdapterConfigFieldsProps) {
   const { t } = useTranslation();
-  return <>
-    {configFieldsForSection(section, (
-      <>
+  return configFieldsForSection(section, (
+    <>
       {!hideInstructionsFile && (
         <Field label={t("area.adapters-plugins-1.claude-local.fields.instructionsFileLabel")} hint={t("area.adapters-plugins-1.claude-local.fields.instructionsFileHint")}>
           <div className="flex items-center gap-2">
@@ -59,14 +58,20 @@ export function ClaudeLocalConfigFields({
           </div>
         </Field>
       )}
-      </>
-    ))}
-    <LocalWorkspaceRuntimeFields
-      section={section} managedSandboxOnly={managedSandboxOnly} isCreate={isCreate}
-      values={values} set={set} config={config} mark={mark} eff={eff}
-      mode={mode} adapterType={adapterType} models={models}
-    />
-  </>;
+      <LocalWorkspaceRuntimeFields
+        isCreate={isCreate}
+        values={values}
+        set={set}
+        config={config}
+        mark={mark}
+        eff={eff}
+        mode={mode}
+        adapterType={adapterType}
+        models={models}
+        managedSandboxOnly={managedSandboxOnly}
+      />
+    </>
+  ));
 }
 
 export function ClaudeLocalAdvancedFields({

@@ -613,6 +613,7 @@ export function botProfileWiring(
       tokenSecret: site.tokenSecret ?? "",
       hindsightUrl: site.profile.hindsightUrl,
       llmBaseUrl: site.profile.llmBaseUrl,
+      boardAddress: site.profile.boardAddress,
       boardExtraHost: site.profile.boardExtraHost,
       volumeRoot: site.profile.volumeRoot,
       network: site.profile.network,

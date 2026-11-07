@@ -1,10 +1,32 @@
 import { createHash } from "node:crypto";
+// myrmidon(RUN-GUARD-LOOPS): read-only/write classification of tool calls.
+import { classifyToolCall } from "./myrmidon-run-guard-tools.js";
 
 export const DEFAULT_MODEL_CALL_LIMIT = 150;
 export const DEFAULT_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 export const DEFAULT_TOOL_RETRY_LIMIT = 3;
+// myrmidon(RUN-GUARD-LOOPS): consecutive read-only tool calls (no write in between)
+// before the run is stopped, and how many times the same read-only call may be
+// made in one stretch without a write. 0 disables the check.
+export const DEFAULT_NO_PROGRESS_LIMIT = 40;
+export const DEFAULT_REPEATED_TOOL_CALL_LIMIT = 3;
+/** Upper bound of distinct read-only call signatures remembered per run. */
+const MAX_TRACKED_CALL_SIGNATURES = 2000;
 
-export type RunGuardStopReason = "model_call_limit" | "idle_timeout" | "tool_retry_loop";
+// myrmidon(RUN-GUARD-LOOPS): `no_progress_exploration` and `repeated_tool_call` are new.
+export const RUN_GUARD_STOP_REASONS = [
+  "model_call_limit",
+  "idle_timeout",
+  "tool_retry_loop",
+  "no_progress_exploration",
+  "repeated_tool_call",
+] as const;
+
+export type RunGuardStopReason = (typeof RUN_GUARD_STOP_REASONS)[number];
+
+export function isRunGuardStopReason(value: unknown): value is RunGuardStopReason {
+  return typeof value === "string" && (RUN_GUARD_STOP_REASONS as readonly string[]).includes(value);
+}
 
 export interface RunGuardDecision {
   stop: boolean;
@@ -15,6 +37,10 @@ export interface RunGuardOptions {
   modelCallLimit?: number;
   idleTimeoutMs?: number;
   toolRetryLimit?: number;
+  /** myrmidon(RUN-GUARD-LOOPS): 0 disables. */
+  noProgressLimit?: number;
+  /** myrmidon(RUN-GUARD-LOOPS): 0 disables. */
+  repeatedToolCallLimit?: number;
   now?: () => number;
 }
 
@@ -23,6 +49,8 @@ export interface RunGuardConfig {
   idleTimeoutMs?: number | null;
   idleTimeoutSec?: number | null;
   toolRetryLimit?: number | null;
+  noProgressLimit?: number | null;
+  repeatedToolCallLimit?: number | null;
 }
 
 export function resolveRunGuardOptions(sources?: {
@@ -88,10 +116,35 @@ export function resolveRunGuardOptions(sources?: {
     parseNum(env.MYRMIDON_RUN_GUARD_TOOL_RETRY_LIMIT) ??
     DEFAULT_TOOL_RETRY_LIMIT;
 
+  // myrmidon(RUN-GUARD-LOOPS): an explicit 0 switches the check off, so these two
+  // accept zero (the limits above do not).
+  const parseNumOrZero = (val: unknown): number | undefined => {
+    if (val === 0 || val === "0") return 0;
+    return parseNum(val);
+  };
+
+  const noProgressLimit =
+    parseNumOrZero(agentGuardObj?.noProgressLimit) ??
+    parseNumOrZero(agentObj?.noProgressLimit) ??
+    parseNumOrZero(teamGuardObj?.noProgressLimit) ??
+    parseNumOrZero(teamObj?.noProgressLimit) ??
+    parseNumOrZero(env.MYRMIDON_RUN_GUARD_NO_PROGRESS_LIMIT) ??
+    DEFAULT_NO_PROGRESS_LIMIT;
+
+  const repeatedToolCallLimit =
+    parseNumOrZero(agentGuardObj?.repeatedToolCallLimit) ??
+    parseNumOrZero(agentObj?.repeatedToolCallLimit) ??
+    parseNumOrZero(teamGuardObj?.repeatedToolCallLimit) ??
+    parseNumOrZero(teamObj?.repeatedToolCallLimit) ??
+    parseNumOrZero(env.MYRMIDON_RUN_GUARD_REPEATED_TOOL_CALL_LIMIT) ??
+    DEFAULT_REPEATED_TOOL_CALL_LIMIT;
+
   return {
     modelCallLimit,
     idleTimeoutMs,
     toolRetryLimit,
+    noProgressLimit,
+    repeatedToolCallLimit,
     now: sources?.now,
   };
 }
@@ -104,6 +157,8 @@ export class RunGuard {
   private readonly modelCallLimit: number;
   private readonly idleTimeoutMs: number;
   private readonly toolRetryLimit: number;
+  private readonly noProgressLimit: number;
+  private readonly repeatedToolCallLimit: number;
   private readonly now: () => number;
   private modelCalls = 0;
   private lastEventAt: number;
@@ -112,12 +167,20 @@ export class RunGuard {
   private idlePausedCount = 0;
   private lastToolFailure: string | null = null;
   private toolFailureCount = 0;
+  // myrmidon(RUN-GUARD-LOOPS): tool calls seen, the current run of consecutive
+  // read-only calls, and how often each read-only call (hash of tool + argument)
+  // was made since the last write. Arguments themselves are never kept.
+  private toolCalls = 0;
+  private readOnlyStreak = 0;
+  private readonly readCallCounts = new Map<string, number>();
   private stoppedReason: RunGuardStopReason | null = null;
 
   constructor(options: RunGuardOptions = {}) {
     this.modelCallLimit = options.modelCallLimit ?? DEFAULT_MODEL_CALL_LIMIT;
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.toolRetryLimit = options.toolRetryLimit ?? DEFAULT_TOOL_RETRY_LIMIT;
+    this.noProgressLimit = options.noProgressLimit ?? DEFAULT_NO_PROGRESS_LIMIT;
+    this.repeatedToolCallLimit = options.repeatedToolCallLimit ?? DEFAULT_REPEATED_TOOL_CALL_LIMIT;
     this.now = options.now ?? Date.now;
     this.lastEventAt = this.now();
   }
@@ -204,12 +267,57 @@ export class RunGuard {
     return this.stoppedReason;
   }
 
-  stats(): { modelCalls: number; modelCallCount: number; toolRetryCount: number } {
+  stats(): {
+    modelCalls: number;
+    modelCallCount: number;
+    toolRetryCount: number;
+    toolCalls: number;
+    readOnlyStreak: number;
+  } {
     return {
       modelCalls: this.modelCalls,
       modelCallCount: this.modelCalls,
       toolRetryCount: this.toolFailureCount,
+      toolCalls: this.toolCalls,
+      readOnlyStreak: this.readOnlyStreak,
     };
+  }
+
+  /**
+   * myrmidon(RUN-GUARD-LOOPS): a tool call is about to run. Counts consecutive
+   * read-only calls (reset by any write) and repeats of the same read-only call
+   * (reset by any write); stops the run with `repeated_tool_call` at the
+   * configured repeat limit or `no_progress_exploration` at the configured
+   * streak. Also refreshes the idle deadline, like `event()`.
+   *
+   * `args` is only hashed (with the tool name) and inspected for the shell
+   * command of the terminal tool; nothing is retained.
+   */
+  toolStarted(name: string, args: unknown): RunGuardDecision {
+    if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
+    this.toolCalls += 1;
+    if (classifyToolCall(name, args) === "write") {
+      this.readOnlyStreak = 0;
+      this.readCallCounts.clear();
+      return this.event();
+    }
+    this.readOnlyStreak += 1;
+    // A call with no argument text (the gateway sometimes sends an empty preview)
+    // says nothing about what was read, so it never counts as a repeat; it still
+    // counts toward the read-only streak above. The tool name is part of the hash.
+    if (this.repeatedToolCallLimit > 0 && !isEmptyCallArgument(args)) {
+      const signature = toolFailureSignature(name, args);
+      if (this.readCallCounts.size >= MAX_TRACKED_CALL_SIGNATURES && !this.readCallCounts.has(signature)) {
+        this.readCallCounts.clear();
+      }
+      const seen = (this.readCallCounts.get(signature) ?? 0) + 1;
+      this.readCallCounts.set(signature, seen);
+      if (seen >= this.repeatedToolCallLimit) return this.stop("repeated_tool_call");
+    }
+    if (this.noProgressLimit > 0 && this.readOnlyStreak >= this.noProgressLimit) {
+      return this.stop("no_progress_exploration");
+    }
+    return this.event();
   }
 
   toolSuccess(): RunGuardDecision {
@@ -233,6 +341,11 @@ export class RunGuard {
       ? this.stop("tool_retry_loop")
       : { stop: false };
   }
+}
+
+/** No argument at all, or text that is empty or only whitespace. */
+function isEmptyCallArgument(args: unknown): boolean {
+  return args === undefined || args === null || (typeof args === "string" && args.trim().length === 0);
 }
 
 export function toolFailureSignature(name: string, args: unknown): string {

@@ -291,6 +291,7 @@
         "off": "Выкл.",
         "optimizerLabel": "Агент глубокого анализа",
         "optimizerNone": "Нет",
+        "noOptimizer": "Нет",
         "optimizerUnavailable": "Сохранённый агент недоступен",
         "saveFailed": "Не удалось сохранить пороги. Повторите попытку.",
         "saved": "Сохранено",

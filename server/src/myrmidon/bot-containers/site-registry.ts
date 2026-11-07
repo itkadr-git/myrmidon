@@ -293,6 +293,7 @@ export async function bootstrapFleetSitesFromEnv(
         const profile: FleetSiteProfile = {};
         if (host.hindsightUrl) profile.hindsightUrl = host.hindsightUrl;
         if (host.llmBaseUrl) profile.llmBaseUrl = host.llmBaseUrl;
+        if (host.boardAddress) profile.boardAddress = host.boardAddress;
         if (host.boardExtraHost) profile.boardExtraHost = host.boardExtraHost;
         if (host.volumeRoot) profile.volumeRoot = host.volumeRoot;
         if (host.network) profile.network = host.network;

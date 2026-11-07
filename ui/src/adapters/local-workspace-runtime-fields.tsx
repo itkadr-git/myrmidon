@@ -1,59 +1,168 @@
+import { useTranslation } from "@/i18n";
 import type { AdapterConfigFieldsProps } from "./types";
-import { configFieldsForSection } from "./config-sections";
-import { DraftInput, Field } from "../components/agent-config-primitives";
+import { Field, DraftInput, DraftNumberInput } from "@/components/agent-config-primitives";
 
-const inputClass = "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono";
+const inputClass = "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
-export function parseNetworkAllowlist(value: string): string[] {
-  return value.split(/[\n,]/).map((entry) => entry.trim()).filter(Boolean);
+type SandboxPath = string | { path: string; access: "rw" };
+
+const WRITABLE_SUFFIX = /\s*\(rw\)$/;
+
+/** Path list as shown in the form: object entries keep their access mode as a "(rw)" suffix. */
+function formatPaths(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((entry) => {
+      if (typeof entry === "string") return entry;
+      if (entry && typeof entry === "object" && typeof (entry as { path?: unknown }).path === "string") {
+        const { path, access } = entry as { path: string; access?: unknown };
+        return access === "rw" ? `${path} (rw)` : path;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(", ");
 }
 
+function parsePaths(text: string): SandboxPath[] | undefined {
+  const entries = text
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item): SandboxPath =>
+      WRITABLE_SUFFIX.test(item) ? { path: item.replace(WRITABLE_SUFFIX, ""), access: "rw" } : item,
+    );
+  return entries.length > 0 ? entries : undefined;
+}
+
+function formatList(value: unknown): string {
+  if (Array.isArray(value)) return value.filter((entry) => typeof entry === "string").join(", ");
+  return typeof value === "string" ? value : "";
+}
+
+function parseList(text: string): string[] | undefined {
+  const entries = text.split(",").map((item) => item.trim()).filter(Boolean);
+  return entries.length > 0 ? entries : undefined;
+}
+
+/**
+ * Sandbox and timeout settings of the local CLI adapters (claude_local, codex_local).
+ * Every key here is read by the adapter at run time; the server validates the sandbox
+ * keys on save and lets only an instance admin change them.
+ */
 export function LocalWorkspaceRuntimeFields({
-  section, isCreate, values, set, config, eff, mark, adapterType, managedSandboxOnly,
+  isCreate,
+  values,
+  set,
+  config,
+  mark,
+  eff,
+  managedSandboxOnly,
+  adapterType,
 }: AdapterConfigFieldsProps) {
-  if (adapterType !== "claude_local" && adapterType !== "codex_local" && adapterType !== "hermes_local") return null;
-  const filesystemScope = isCreate ? values?.filesystemScope ?? "" : eff("adapterConfig", "filesystemScope", String(config.filesystemScope ?? ""));
-  const networkScope = isCreate ? values?.networkScope ?? "" : eff("adapterConfig", "networkScope", String(config.networkScope ?? ""));
-  const networkAllowlist = isCreate
-    ? values?.networkAllowlist ?? ""
-    : eff("adapterConfig", "networkAllowlist", Array.isArray(config.networkAllowlist) ? config.networkAllowlist.join(", ") : "");
-  const engine = adapterType === "claude_local" ? values?.claudeEngine : values?.codexEngine;
-  const storedEngine = isCreate ? engine : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
-  const needsCli = adapterType !== "hermes_local" && storedEngine !== "cli";
-  const sandboxDisabled = managedSandboxOnly || needsCli;
-  const update = (key: "filesystemScope" | "networkScope" | "networkAllowlist", value: string) => {
-    if (key === "networkAllowlist" && parseNetworkAllowlist(value).some((entry) => {
-      try {
-        const url = new URL(entry.includes("://") ? entry : `https://${entry}`);
-        return Boolean(url.username || url.password || url.pathname !== "/" || url.search || url.hash || !url.hostname || url.hostname.includes("*"));
-      } catch { return true; }
-    })) return;
-    if (isCreate) set?.({ [key]: value || undefined });
-    else mark("adapterConfig", key, key === "networkAllowlist" ? parseNetworkAllowlist(value) : value || undefined);
+  const { t } = useTranslation();
+  if (adapterType !== "claude_local" && adapterType !== "codex_local") return null;
+
+  const read = (key: string): unknown =>
+    isCreate ? values?.adapterSchemaValues?.[key] : eff("adapterConfig", key, config[key]);
+  const write = (key: string, value: unknown) => {
+    if (isCreate) set?.({ adapterSchemaValues: { ...values?.adapterSchemaValues, [key]: value } });
+    else mark("adapterConfig", key, value);
   };
-  const validAllowlist = parseNetworkAllowlist(networkAllowlist).every((entry) => {
-    try {
-      const url = new URL(entry.includes("://") ? entry : `https://${entry}`);
-      return !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash && Boolean(url.hostname) && !url.hostname.includes("*");
-    } catch { return false; }
-  });
-  return configFieldsForSection(section, (
+
+  const network = String(read("networkScope") ?? "");
+  const numberFields = adapterType === "claude_local"
+    ? [
+        {
+          key: "helloProbeTimeoutSec",
+          label: t("area.adapters-plugins-1.localSandbox.helloProbeTimeoutLabel"),
+          hint: t("area.adapters-plugins-1.localSandbox.helloProbeTimeoutHint"),
+        },
+        {
+          key: "terminalResultCleanupGraceMs",
+          label: t("area.adapters-plugins-1.localSandbox.terminalCleanupGraceLabel"),
+          hint: t("area.adapters-plugins-1.localSandbox.terminalCleanupGraceHint"),
+        },
+      ]
+    : [
+        {
+          key: "outputInactivityTimeoutMs",
+          label: t("area.adapters-plugins-1.localSandbox.outputInactivityLabel"),
+          hint: t("area.adapters-plugins-1.localSandbox.outputInactivityHint"),
+        },
+      ];
+
+  return (
     <>
-      <Field configSection="advanced" label="Filesystem scope" hint="Bubblewrap confines the CLI to the workspace; off by default.">
-        <select aria-label="Filesystem scope" className={inputClass} value={filesystemScope} disabled={sandboxDisabled} onChange={(event) => update("filesystemScope", event.target.value)}>
-          <option value="">Off</option><option value="workspace">Workspace only</option>
+      {!managedSandboxOnly && (
+        <Field
+          label={t("area.adapters-plugins-1.localSandbox.filesystemScopeLabel")}
+          hint={t("area.adapters-plugins-1.localSandbox.filesystemScopeHint")}
+        >
+          <select
+            className={inputClass}
+            value={String(read("filesystemScope") ?? "")}
+            onChange={(e) => write("filesystemScope", e.target.value || undefined)}
+          >
+            <option value="">{t("area.adapters-plugins-1.localSandbox.disabled")}</option>
+            <option value="workspace">{t("area.adapters-plugins-1.localSandbox.workspace")}</option>
+          </select>
+        </Field>
+      )}
+      {!managedSandboxOnly && (
+        <Field
+          label={t("area.adapters-plugins-1.localSandbox.extraPathsLabel")}
+          hint={t("area.adapters-plugins-1.localSandbox.extraPathsHint")}
+        >
+          <DraftInput
+            className={inputClass}
+            value={formatPaths(read("filesystemExtraPaths"))}
+            onCommit={(v) => write("filesystemExtraPaths", parsePaths(v))}
+            immediate
+            placeholder="/srv/shared"
+          />
+        </Field>
+      )}
+      <Field
+        label={t("area.adapters-plugins-1.localSandbox.networkScopeLabel")}
+        hint={t("area.adapters-plugins-1.localSandbox.networkScopeHint")}
+      >
+        <select
+          className={inputClass}
+          value={network}
+          onChange={(e) => write("networkScope", e.target.value || undefined)}
+        >
+          <option value="">{t("area.adapters-plugins-1.localSandbox.disabled")}</option>
+          <option value="deny">{t("area.adapters-plugins-1.localSandbox.deny")}</option>
+          <option value="allowlist">{t("area.adapters-plugins-1.localSandbox.allowlist")}</option>
         </select>
       </Field>
-      <Field configSection="advanced" label="Network scope" hint="Bubblewrap blocks direct sockets. Allowlist routes HTTP(S) through the egress proxy.">
-        <select aria-label="Network scope" className={inputClass} value={networkScope} disabled={sandboxDisabled} onChange={(event) => update("networkScope", event.target.value)}>
-          <option value="">Off</option><option value="deny">Deny</option><option value="allowlist">Allowlist</option>
-        </select>
-      </Field>
-      {networkScope === "allowlist" && <Field configSection="advanced" label="Network allowlist" hint="Comma-separated hostnames, host:port entries, or origin URLs. Include the provider endpoint.">
-        <DraftInput value={networkAllowlist} className={inputClass} disabled={sandboxDisabled} onCommit={(value) => update("networkAllowlist", value)} />
-        {!validAllowlist && <p role="alert" className="text-xs text-destructive">Use exact hostnames, host:port, or origin URLs without credentials or paths.</p>}
-      </Field>}
-      {needsCli && <Field configSection="advanced" label="Sandbox engine"><p className="text-xs text-muted-foreground">Select the CLI engine before enabling Bubblewrap confinement; ACP is not supported.</p></Field>}
+      {network === "allowlist" && (
+        <Field
+          label={t("area.adapters-plugins-1.localSandbox.allowlistLabel")}
+          hint={t("area.adapters-plugins-1.localSandbox.allowlistHint")}
+        >
+          <DraftInput
+            className={inputClass}
+            value={formatList(read("networkAllowlist"))}
+            onCommit={(v) => write("networkAllowlist", parseList(v))}
+            immediate
+            placeholder="https://api.example.com"
+          />
+        </Field>
+      )}
+      {numberFields.map((field) => (
+        <Field key={field.key} label={field.label} hint={field.hint}>
+          <DraftNumberInput
+            className={inputClass}
+            value={Number(read(field.key) ?? 0) || 0}
+            onCommit={(v) => write(field.key, v > 0 ? v : undefined)}
+            immediate
+            min={0}
+          />
+        </Field>
+      ))}
     </>
-  ));
+  );
 }

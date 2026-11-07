@@ -25,7 +25,10 @@ export interface FleetSiteHealth {
 
 export interface FleetSiteProfile {
   hindsightUrl?: string;
+  /** LLM gateway base URL as seen from this site. */
   llmBaseUrl?: string;
+  /** Board address the site-agent uses for its health probe, as host:port. */
+  boardAddress?: string;
   boardExtraHost?: string;
   volumeRoot?: string;
   network?: string;

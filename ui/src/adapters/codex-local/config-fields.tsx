@@ -156,9 +156,8 @@ export function CodexLocalConfigFields({
       ? t("area.adapters-plugins-1.codex-local.fastModeCredits")
       : t("area.adapters-plugins-1.codex-local.fastModeUnsupported", { models: supportedModelsLabel });
 
-  return <>
-    {configFieldsForSection(section, (
-      <>
+  return configFieldsForSection(section, (
+    <>
       {!hideEngineChoice && (
         <Field
           label={t("area.adapters-plugins-1.codex-local.engineLabel")}
@@ -714,12 +713,18 @@ export function CodexLocalConfigFields({
           )}
         </>
       )}
-      </>
-    ))}
-    <LocalWorkspaceRuntimeFields
-      section={section} managedSandboxOnly={managedSandboxOnly} isCreate={isCreate}
-      values={values} set={set} config={config} mark={mark} eff={eff}
-      mode={mode} adapterType={adapterType} models={models}
-    />
-  </>;
+      <LocalWorkspaceRuntimeFields
+        isCreate={isCreate}
+        values={values}
+        set={set}
+        config={config}
+        mark={mark}
+        eff={eff}
+        mode={mode}
+        adapterType={adapterType}
+        models={models}
+        managedSandboxOnly={managedSandboxOnly}
+      />
+    </>
+  ));
 }
