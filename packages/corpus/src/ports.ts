@@ -143,6 +143,13 @@ export type EnqueueParseJobInput = {
   documentId: string;
   parserVersion: string;
   maxAttempts?: number;
+  /**
+   * Re-parse on request: an existing job of the same (document, parser version) goes back to
+   * `pending` with its attempts, error and backoff cleared WHATEVER its status is (without this
+   * flag only a `failed` job is re-armed). For the caller that knows the document is not being
+   * parsed any more, e.g. the re-parse of a failed document.
+   */
+  reset?: boolean;
 };
 
 export type ClaimedParseJob = CorpusParseJob;
@@ -153,7 +160,8 @@ export interface WorkQueue {
    * second call with the same pair returns the existing job instead of
    * creating a duplicate, UNLESS the existing job is in `failed` status with
    * retries exhausted — then it is re-armed to `pending` (the "rollback of a
-   * failed job into the queue again" path).
+   * failed job into the queue again" path). With `reset` the existing job is
+   * re-armed whatever its status is.
    */
   enqueue(input: EnqueueParseJobInput): Promise<CorpusParseJob>;
 

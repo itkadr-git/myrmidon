@@ -260,6 +260,44 @@ d("corpus store/queue on embedded Postgres", () => {
     expect(requeued.status).toBe("queued");
   });
 
+  it("re-enqueue with reset re-arms the job of a re-parse whatever its status is", async () => {
+    const { store, queue } = fixture;
+    const companyId = crypto.randomUUID();
+    const db = createDb(testDb.connectionString);
+    await db.execute(rawSql`
+      insert into companies (id, name, issue_prefix) values (${companyId}, 'reparse-co', 'RP')
+    `);
+    const dataset = await store.createDataset({ companyId, name: "reparse" });
+    const doc = await store.createDocument({ companyId, datasetId: dataset.id, title: "book.pdf" });
+    const job = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1", maxAttempts: 3 });
+
+    // A pending job that failed once sits in its backoff with one attempt used.
+    await queue.claimNext(companyId);
+    const backoff = await queue.fail(companyId, job.id, "parser timed out");
+    expect(backoff).toMatchObject({ status: "pending", attempts: 1 });
+    expect(backoff.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+    // Without the flag a re-enqueue leaves such a job alone ...
+    const untouched = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1" });
+    expect(untouched).toMatchObject({ id: job.id, status: "pending", attempts: 1 });
+    // ... with it the attempts and the backoff start over.
+    const reset = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1", reset: true });
+    expect(reset).toMatchObject({ id: job.id, status: "pending", attempts: 0, lastError: null });
+    expect(reset.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+
+    // A job left `running` (the process that held it died) and a `done` one come back too.
+    for (const stale of ["running", "done"] as const) {
+      await db.execute(rawSql`
+        update corpus_parse_jobs set status = ${stale}, attempts = 2, last_error = 'old', finished_at = now()
+        where id = ${job.id}
+      `);
+      const rearmed = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1", reset: true });
+      expect(rearmed).toMatchObject({ id: job.id, status: "pending", attempts: 0, lastError: null, finishedAt: null });
+      expect(await queue.listJobsForDocument(companyId, doc.id)).toHaveLength(1);
+    }
+    const claimed = await queue.claimNext(companyId);
+    expect(claimed?.id).toBe(job.id);
+  });
+
   it("enforces company scoping and legal transitions", async () => {
     const { store, queue, companyId, datasetId } = fixture;
     const otherCompany = crypto.randomUUID();
