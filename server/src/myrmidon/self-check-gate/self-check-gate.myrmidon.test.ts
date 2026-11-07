@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MYRMIDON_SELF_CHECK_REJECT_CODES,
+  SELF_CHECK_REJECT_CODES,
   isMyrmidonDiffEmpty,
   isSameCommitSha,
   isCheckResultStale,
@@ -42,7 +42,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       expect(decisionNull.admitted).toBe(false);
       expect(decisionNull.kind).toBe("reject");
       if (decisionNull.kind === "reject") {
-        expect(decisionNull.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+        expect(decisionNull.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
         expect(decisionNull.message).toContain("EMPTY_DIFF");
         expect(decisionNull.message).toContain("Пустой дифф");
       }
@@ -55,7 +55,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decisionUndef.admitted).toBe(false);
       if (decisionUndef.kind === "reject") {
-        expect(decisionUndef.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+        expect(decisionUndef.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
       }
     });
 
@@ -68,7 +68,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
       }
     });
 
@@ -81,7 +81,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
       }
     });
 
@@ -94,7 +94,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
       }
     });
 
@@ -123,7 +123,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.LINT_FAILED);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.LINT_FAILED);
         expect(decision.message).toContain("LINT_FAILED");
         expect(decision.message.length).toBeGreaterThan(0);
       }
@@ -142,7 +142,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.TEST_FAILED);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.TEST_FAILED);
         expect(decision.message).toContain("TEST_FAILED");
         expect(decision.message.length).toBeGreaterThan(0);
       }
@@ -157,7 +157,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(noTest.admitted).toBe(false);
       if (noTest.kind === "reject") {
-        expect(noTest.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.TEST_FAILED);
+        expect(noTest.code).toBe(SELF_CHECK_REJECT_CODES.TEST_FAILED);
       }
 
       const noLint = evaluateSelfCheckGate({
@@ -168,7 +168,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(noLint.admitted).toBe(false);
       if (noLint.kind === "reject") {
-        expect(noLint.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.LINT_FAILED);
+        expect(noLint.code).toBe(SELF_CHECK_REJECT_CODES.LINT_FAILED);
       }
     });
 
@@ -184,7 +184,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       );
       expect(noTest.admitted).toBe(false);
       if (noTest.kind === "reject") {
-        expect(noTest.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.TEST_MISSING);
+        expect(noTest.code).toBe(SELF_CHECK_REJECT_CODES.TEST_MISSING);
       }
     });
   });
@@ -203,7 +203,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_TEST);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.STALE_TEST);
         expect(decision.message).toContain("STALE_TEST");
         expect(decision.message).toContain("1111111111111111111111111111111111111111");
       }
@@ -222,7 +222,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_LINT);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.STALE_LINT);
         expect(decision.message).toContain("STALE_LINT");
         expect(decision.message).toContain("2222222222222222222222222222222222222222");
       }
@@ -245,7 +245,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_TEST);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.STALE_TEST);
       }
     });
 
@@ -267,7 +267,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       });
       expect(decision.admitted).toBe(false);
       if (decision.kind === "reject") {
-        expect(decision.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_TEST);
+        expect(decision.code).toBe(SELF_CHECK_REJECT_CODES.STALE_TEST);
       }
     });
 
@@ -314,11 +314,11 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
   describe("rejection response structure and assert helper", () => {
     it("reject contains machine code, non-empty text, and actionable continuation instructions", () => {
       const codes = [
-        MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF,
-        MYRMIDON_SELF_CHECK_REJECT_CODES.TEST_FAILED,
-        MYRMIDON_SELF_CHECK_REJECT_CODES.LINT_FAILED,
-        MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_TEST,
-        MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_LINT,
+        SELF_CHECK_REJECT_CODES.EMPTY_DIFF,
+        SELF_CHECK_REJECT_CODES.TEST_FAILED,
+        SELF_CHECK_REJECT_CODES.LINT_FAILED,
+        SELF_CHECK_REJECT_CODES.STALE_TEST,
+        SELF_CHECK_REJECT_CODES.STALE_LINT,
       ];
 
       for (const code of codes) {
@@ -361,7 +361,7 @@ describe("myrmidon(SELF-CHECK-GATE) stop-gate domain", () => {
       } catch (err) {
         expect(err).toBeInstanceOf(SelfCheckGateError);
         const gateErr = err as SelfCheckGateError;
-        expect(gateErr.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+        expect(gateErr.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
         expect(gateErr.decision.admitted).toBe(false);
       }
     });
