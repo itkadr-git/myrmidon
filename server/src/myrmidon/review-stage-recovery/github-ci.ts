@@ -176,6 +176,8 @@ export async function resolvePullRequestHeadCi(input: {
   if (hostedCi === false) return { state: "not_configured", headSha };
   // Only the final check is asked for; `filter=all` keeps the check runs of earlier workflow
   // runs of the same head too, which the policy then discards when they were cancelled/skipped.
+  // OPE-12175: the policy additionally requires the record's head_sha to match the current
+  // head, so a completed `CI result` of a superseded head is never a verdict.
   const checkRunsUrl =
     `${apiBase}/repos/${repository}/commits/${encodeURIComponent(headSha)}/check-runs` +
     `?check_name=${encodeURIComponent(REVIEW_CI_FINAL_CHECK_NAME)}&filter=all&per_page=100`;
@@ -190,7 +192,7 @@ export async function resolvePullRequestHeadCi(input: {
   }
   const runs = asRecord(checkRuns.json)?.check_runs;
   if (!Array.isArray(runs)) return { state: "unknown", headSha, reason: "check_runs:unreadable_payload" };
-  return { state: pullRequestHeadCiStateFromChecks({ checkRuns: runs }), headSha };
+  return { state: pullRequestHeadCiStateFromChecks({ checkRuns: runs, headSha }), headSha };
 }
 
 /** The pull request work product of an issue and its GitHub reference, as far as the board can read them. */
