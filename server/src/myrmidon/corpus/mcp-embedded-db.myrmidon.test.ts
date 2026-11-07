@@ -151,10 +151,18 @@ describeEmbeddedPostgres("corpus MCP endpoint over the settings row", () => {
     expect(hits[0].document.url).toContain("/corpus/documents/");
     expect(memory.calls.search[0].topK).toBe(2);
 
+    // Scoped search by dataset name resolves correctly
+    const byName = await request(app)
+      .post(URL)
+      .send({ id: 5, method: "tools/call", params: { name: "corpus_search", arguments: { query: "сроки", dataset: "Договоры" } } })
+      .expect(200);
+    expect(byName.body.result.isError).toBeUndefined();
+    expect(byName.body.result.structuredContent.hits.length).toBeGreaterThan(0);
+
     // The operator's ceiling is the operator's: a bot cannot raise it.
     const over = await request(app)
       .post(URL)
-      .send({ id: 5, method: "tools/call", params: { name: "corpus_search", arguments: { query: "поставка", top_k: 5 } } })
+      .send({ id: 6, method: "tools/call", params: { name: "corpus_search", arguments: { query: "поставка", top_k: 5 } } })
       .expect(200);
     expect(over.body.result.isError).toBe(true);
     expect(over.body.result.structuredContent.code).toBe("invalid_tool_input");
@@ -166,7 +174,7 @@ describeEmbeddedPostgres("corpus MCP endpoint over the settings row", () => {
     expect(storedSettingsSnapshot).toEqual({ enabled: false, defaultTopK: 5, maxTopK: 50 });
 
     const { app } = harness(createInMemoryCorpus());
-    const listed = await request(app).post(URL).send({ id: 6, method: "tools/list" }).expect(200);
+    const listed = await request(app).post(URL).send({ id: 7, method: "tools/list" }).expect(200);
     expect(listed.body.result.tools).toEqual([]);
   });
 });

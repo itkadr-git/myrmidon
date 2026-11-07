@@ -104,13 +104,13 @@ describe("hybrid search index", () => {
     expect(vectorCall?.text).toContain('from "corpus_chunks" c');
     expect(vectorCall?.text).toContain('join "corpus_documents" d on d.id = c.document_id and d.company_id = c.company_id');
     expect(vectorCall?.text).toContain("c.company_id = $2::uuid");
-    expect(vectorCall?.text).toContain("($3::uuid is null or d.dataset_id = $3::uuid)");
+    expect(vectorCall?.text).toContain("($3::uuid[] is null or d.dataset_id = any($3::uuid[]))");
     expect(vectorCall?.text).toContain("d.status = 'ready'");
-    expect(vectorCall?.values).toEqual([expect.stringContaining("["), companyId, datasetId, 100]);
+    expect(vectorCall?.values).toEqual([expect.stringContaining("["), companyId, [datasetId], 100]);
     expect(textCall?.text).toContain('c."fts"');
     expect(textCall?.text).toContain("plainto_tsquery($5::regconfig, $1)");
     expect(textCall?.text).toContain('c."content" ilike $4');
-    expect(textCall?.values).toEqual(["supply agreement", companyId, datasetId, "%supply agreement%", "english", 100]);
+    expect(textCall?.values).toEqual(["supply agreement", companyId, [datasetId], "%supply agreement%", "english", 100]);
   });
 
   it("merges the rankings with RRF and returns score, chunk and document", async () => {
@@ -174,6 +174,17 @@ describe("hybrid search index", () => {
     const index = createPostgresSearchIndex({ sql, fusion: { k0: 60, kCandidates: 250 } });
     await index.search({ companyId, datasetId, text: "x", embedding: embedding(), limit: 10 });
     expect(calls.find((call) => /<=>/.test(call.text))?.values[3]).toBe(250);
+  });
+
+  it('searches multiple datasets when datasetIds is given', async () => {
+    const { sql, calls } = createRecordingSql({ vector: [chunkRow('a', 0, 1)], fullText: [], documents });
+    const index = createPostgresSearchIndex({ sql });
+
+    const hits = await index.search({ companyId, datasetIds: ['id-1', 'id-2'], text: 'contract', embedding: embedding() });
+
+    expect(hits.map((hit) => hit.chunkId)).toEqual(['a']);
+    expect(calls.find((call) => /<=>/.test(call.text))?.values[2]).toEqual(['id-1', 'id-2']);
+    expect(calls.find((call) => /ts_rank/.test(call.text))?.values[2]).toEqual(['id-1', 'id-2']);
   });
 
   it("searches the whole company when no dataset is given", async () => {
