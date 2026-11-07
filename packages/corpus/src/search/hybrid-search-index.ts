@@ -4,11 +4,13 @@
 // (the dataset lives on `corpus_documents`, and only chunks of `ready` documents are searchable):
 //   * vector: `embedding <=> $query` (cosine over the HNSW index), with `hnsw.ef_search` set for
 //     the transaction, because the pilot measured its recall with ef_search = 64. The index knows
-//     the company only, not the dataset, so the ranking takes a pool of the nearest chunks of the
-//     company with the HNSW iterative scan (`hnsw.iterative_scan = relaxed_order`, pgvector 0.8) and
-//     filters the pool by dataset and status afterwards; a small dataset, and a dataset that the
-//     pool could not fill, are ranked exactly, over their own chunks. Without the iterative scan
-//     (pgvector before 0.8) the ranking is the plain `order by embedding <=> $query` statement;
+//     the company only, not the dataset, and the dataset and status filters run after the index scan,
+//     so a plain `order by embedding <=> $query limit k` keeps whatever survives the filter of the
+//     first 64 rows (about half of the candidates on production). With pgvector 0.8 the ranking runs
+//     with the HNSW iterative scan (`hnsw.iterative_scan = relaxed_order`), which keeps scanning
+//     until the limit is filled; a small dataset (up to `exactSetMaxChunks` chunks) is ranked exactly,
+//     over its own chunks, instead. Without the iterative scan (pgvector before 0.8) the ranking is
+//     the plain statement;
 //   * full text: `fts @@ plainto_tsquery(...)` (the GIN index over the generated tsvector) plus an
 //     `ILIKE` fallback that the trigram GIN index serves for short query texts.
 // The two rankings are merged with RRF (k0 = 60, k_candidates = 100) and the top-k hits are
@@ -30,11 +32,9 @@ import {
   DEFAULT_EF_SEARCH,
   DEFAULT_EXACT_SET_MAX_CHUNKS,
   DEFAULT_ILIKE_MAX_LENGTH,
+  DEFAULT_MAX_SCAN_TUPLES,
   DEFAULT_SEARCH_LIMIT,
   MAX_SEARCH_LIMIT,
-  VECTOR_POOL_FACTOR,
-  VECTOR_POOL_MAX,
-  VECTOR_POOL_MIN,
   type CorpusSearchChunkRef,
   type CorpusSearchDocumentRef,
   type CorpusSearchHitDetail,
@@ -95,9 +95,14 @@ export interface PostgresSearchIndexOptions {
   readonly ilikeMaxLength?: number;
   /**
    * Largest dataset, in embedded chunks, that the vector ranking reads and sorts exactly instead of
-   * taking the HNSW pool of the company. `0` sends every dataset search through the pool.
+   * scanning the HNSW index. `0` sends every dataset search through the index.
    */
   readonly exactSetMaxChunks?: number;
+  /**
+   * `hnsw.max_scan_tuples` of the iterative scan: how many index tuples one search may visit while it
+   * looks for enough chunks of the requested dataset (the default is `DEFAULT_MAX_SCAN_TUPLES`).
+   */
+  readonly maxScanTuples?: number;
 }
 
 interface ChunkRow extends Record<string, unknown> {
@@ -108,6 +113,8 @@ interface ChunkRow extends Record<string, unknown> {
   content: string;
   token_count: number | null;
   metadata: Record<string, unknown> | null;
+  /** Cosine similarity or `ts_rank` of the ranking the row comes from. */
+  score?: unknown;
 }
 
 interface DocumentRow extends Record<string, unknown> {
@@ -195,11 +202,6 @@ export function pgvectorHasIterativeScan(version: unknown): boolean {
   return major > 0 || minor >= 8;
 }
 
-/** Rows the HNSW pass takes before the dataset filter: wide enough to fill `kCandidates` afterwards. */
-export function vectorPoolSize(kCandidates: number): number {
-  return Math.min(VECTOR_POOL_MAX, Math.max(VECTOR_POOL_MIN, kCandidates * VECTOR_POOL_FACTOR));
-}
-
 export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): PostgresSearchIndex {
   const schema = options.schema ?? DEFAULT_SEARCH_INDEX_SCHEMA;
   const fusion = options.fusion ?? DEFAULT_FUSION_PARAMETERS;
@@ -213,6 +215,10 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const exactSetMaxChunks = options.exactSetMaxChunks ?? DEFAULT_EXACT_SET_MAX_CHUNKS;
   if (!Number.isInteger(exactSetMaxChunks) || exactSetMaxChunks < 0) {
     throw new RangeError("exact set max chunks must be a non-negative integer");
+  }
+  const maxScanTuples = options.maxScanTuples ?? DEFAULT_MAX_SCAN_TUPLES;
+  if (!Number.isInteger(maxScanTuples) || maxScanTuples < 1) {
+    throw new RangeError("max scan tuples must be a positive integer");
   }
 
   const chunks = sqlIdentifier(schema.chunksTable, "chunks table");
@@ -236,8 +242,9 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     `       c.token_count, c.metadata,`,
   ].join("\n");
 
-  // The statement as it was before the pool: the planner decides how to rank. Used where the
-  // iterative scan does not exist (pgvector before 0.8).
+  // The planner decides how to rank. With the iterative scan on, an index scan that the planner picks
+  // keeps going until `limit` rows have passed the dataset and status filters; without it (pgvector
+  // before 0.8) the scan stops after `ef_search` rows.
   const vectorSql = [
     `select`,
     chunkColumns,
@@ -251,8 +258,8 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   // Exact ranking of the chunks of the requested datasets. `+ 0` hides the distance from the index
   // ordering, so the planner cannot answer from the HNSW index and filter afterwards (it does that
   // for a dataset it takes for large, and returns whatever the scan reached): it reads the chunks of
-  // the datasets and sorts them. Cheap for a small dataset; for a large one it is the slow path,
-  // reached only when the pool holds too few of its chunks.
+  // the datasets and sorts them. Cheap for a small dataset, seconds to tens of seconds for a large
+  // one, which is why only a small dataset is sent here.
   const exactSetSql = [
     `select`,
     chunkColumns,
@@ -261,36 +268,6 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     `   and c.${embedding} is not null`,
     ` order by (c.${embedding} <=> $1::vector) + 0`,
     ` limit $4`,
-  ].join("\n");
-
-  // The HNSW pass: the `$5` nearest chunks of the company (the index serves the company filter by
-  // iterating), then the dataset and status filters on that pool and the top `$4` of what is left.
-  // MATERIALIZED keeps the planner from folding the pool into the join. The relaxed iterative scan
-  // returns the pool slightly out of order, and the planner takes a CTE ordered by `dist` for sorted,
-  // so the outer `order by` goes through `dist + 0` to be a real sort (pgvector documentation).
-  const poolSql = [
-    `with pool as materialized (`,
-    `  select c.id, c.document_id, c.${embedding} <=> $1::vector as dist`,
-    `    from ${chunks} c`,
-    `   where c.company_id = $2::uuid`,
-    `     and c.${embedding} is not null`,
-    `   order by c.${embedding} <=> $1::vector`,
-    `   limit $5`,
-    `), picked as (`,
-    `  select p.id, p.dist`,
-    `    from pool p`,
-    `    join ${documents} d on d.id = p.document_id and d.company_id = $2::uuid`,
-    `   where ($3::uuid[] is null or d.dataset_id = any($3::uuid[]))`,
-    `     and d.status = 'ready'`,
-    `   order by p.dist + 0`,
-    `   limit $4`,
-    `)`,
-    `select`,
-    chunkColumns,
-    `       1 - k.dist as score`,
-    `  from picked k`,
-    `  join ${chunks} c on c.id = k.id`,
-    ` order by k.dist`,
   ].join("\n");
 
   // Size of the requested datasets in embedded chunks, counted up to `$3` rows: the count stops there,
@@ -343,6 +320,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
 
   const efSearchSql = `set local hnsw.ef_search = ${efSearch}`;
   const iterativeScanSql = `set local hnsw.iterative_scan = relaxed_order`;
+  const maxScanTuplesSql = `set local hnsw.max_scan_tuples = ${maxScanTuples}`;
   const pgvectorVersionSql = `select extversion from pg_extension where extname = 'vector'`;
 
   // The version of the installed pgvector does not change under a running process, so it is read
@@ -363,7 +341,10 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
       const rows = await transaction.query<{ extversion?: unknown }>(pgvectorVersionSql);
       iterativeScanSupported = pgvectorHasIterativeScan(rows[0]?.extversion);
     }
-    if (iterativeScanSupported) await transaction.query(iterativeScanSql);
+    if (iterativeScanSupported) {
+      await transaction.query(iterativeScanSql);
+      await transaction.query(maxScanTuplesSql);
+    }
     return iterativeScanSupported;
   }
 
@@ -389,38 +370,21 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (embeddingLiteral !== null) {
           try {
             await transaction.query(efSearchSql);
-            if (await enableIterativeScan(transaction)) {
-              // A small dataset is cheaper to read and sort than to find in the company's pool.
-              const smallSet =
-                datasetIds !== null && exactSetMaxChunks > 0
-                  ? await isSmallSet(transaction, query.companyId, datasetIds)
-                  : false;
-              if (!smallSet) {
-                vectorRows = await transaction.query<ChunkRow>(poolSql, [
-                  embeddingLiteral,
-                  query.companyId,
-                  datasetIds,
-                  kCandidates,
-                  vectorPoolSize(kCandidates),
-                ]);
-              }
-              // The pool is cut by company: a dataset that holds a small part of the company's chunks
-              // gets few of them, or none. Rank such a dataset exactly, over its own chunks.
-              if (datasetIds !== null && (smallSet || vectorRows.length < kCandidates)) {
-                vectorRows = await transaction.query<ChunkRow>(exactSetSql, [
-                  embeddingLiteral,
-                  query.companyId,
-                  datasetIds,
-                  kCandidates,
-                ]);
-              }
-            } else {
-              vectorRows = await transaction.query<ChunkRow>(vectorSql, [
-                embeddingLiteral,
-                query.companyId,
-                datasetIds,
-                kCandidates,
-              ]);
+            const iterativeScan = await enableIterativeScan(transaction);
+            // A small dataset is cheaper to read and sort than to find in the index.
+            const smallSet =
+              iterativeScan && datasetIds !== null && exactSetMaxChunks > 0
+                ? await isSmallSet(transaction, query.companyId, datasetIds)
+                : false;
+            vectorRows = await transaction.query<ChunkRow>(smallSet ? exactSetSql : vectorSql, [
+              embeddingLiteral,
+              query.companyId,
+              datasetIds,
+              kCandidates,
+            ]);
+            // The relaxed iterative scan returns rows slightly out of order; the fusion ranks by position.
+            if (iterativeScan && !smallSet) {
+              vectorRows = [...vectorRows].sort((left, right) => Number(right.score) - Number(left.score));
             }
           } catch (error) {
             // A cluster migrated without pgvector has neither the embedding column nor the HNSW

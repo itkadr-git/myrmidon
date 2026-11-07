@@ -18,17 +18,6 @@ export const DEFAULT_EF_SEARCH = 64;
 export const MAX_SEARCH_LIMIT = 100;
 
 /**
- * Size of the pool of nearest chunks the vector ranking takes from the HNSW index before the
- * dataset and status filters: `clamp(kCandidates * VECTOR_POOL_FACTOR, VECTOR_POOL_MIN, VECTOR_POOL_MAX)`.
- * The pool is cut by company only (chunks carry no dataset), so it has to be several times wider than
- * the candidates the fusion needs for a dataset that holds a part of the company's chunks to still
- * fill the list.
- */
-export const VECTOR_POOL_FACTOR = 8;
-export const VECTOR_POOL_MIN = 400;
-export const VECTOR_POOL_MAX = 2000;
-
-/**
  * Longest query text, in characters, that still adds the `ILIKE '%…%'` substring match to the
  * full-text ranking. The trigram index reads one posting list per trigram of the pattern, so the cost
  * of the match grows with the length of the text, while a long question is almost never a verbatim
@@ -38,11 +27,20 @@ export const DEFAULT_ILIKE_MAX_LENGTH = 16;
 
 /**
  * Largest dataset (in embedded chunks) that is ranked exactly, straight away, instead of through the
- * HNSW pool. Reading and sorting the chunks of a dataset this size takes milliseconds to a few tenths
- * of a second, while the HNSW pool of the company costs a second or two on a cold index and, cut
- * by company, hardly holds any chunk of a small dataset.
+ * HNSW index. Reading and sorting the chunks of a dataset this size takes milliseconds to a few tenths
+ * of a second, while the HNSW scan, cut by company only, has to walk a large part of the graph to find
+ * a handful of chunks of a small dataset.
  */
 export const DEFAULT_EXACT_SET_MAX_CHUNKS = 10_000;
+
+/**
+ * `hnsw.max_scan_tuples` of the iterative scan: how many index tuples one search may visit while it
+ * looks for enough chunks of the requested dataset. pgvector's own limit is 20 000, and a question
+ * that is far from a dataset of 13 % of the corpus (work-craft) stopped there with 47 to 67 of the 100
+ * candidates; 100 000 filled the list in every measured case. It is only a cap: a question that is
+ * near the dataset stops as soon as the list is full.
+ */
+export const DEFAULT_MAX_SCAN_TUPLES = 100_000;
 
 /** The chunk row behind a hit. */
 export interface CorpusSearchChunkRef {

@@ -36,25 +36,29 @@ One `search()` call runs these statements inside one transaction:
 
 1. `set local hnsw.ef_search = 64` — the pilot's recall/latency balance; configurable.
 2. Vector ranking. The HNSW index knows the company, not the dataset (a chunk has no dataset column,
-   the dataset lives on `corpus_documents`), so a dataset filter placed after `order by embedding <=>
-   … limit k` would cut the 64 rows the index scan reaches and return whatever survives, a few
-   dozen candidates or none. The ranking therefore reads the pgvector version once per index and
-   then, on pgvector 0.8 and later:
-   - `set local hnsw.iterative_scan = relaxed_order`, and a pool: a `MATERIALIZED` CTE of the
-     `poolSize = clamp(kCandidates * 8, 400, 2000)` nearest chunks of the company (the index keeps
-     scanning until the pool is full), then the dataset and `ready` filters on the pool and the top
-     `kCandidates` of what is left. The relaxed scan returns the pool slightly out of order, so the
-     outer sort is `order by dist + 0`, as the pgvector documentation prescribes;
-   - if datasets were requested and fewer than `kCandidates` chunks survived the filter (a dataset
-     that holds a small part of the company), the dataset is ranked exactly: the same statement
-     without the index, `order by (embedding <=> $1) + 0`, over the chunks of the requested datasets
-     only. That is cheap for a small dataset;
-   - a search without a dataset takes the pool as it is.
+   the dataset lives on `corpus_documents`), and the dataset and `ready` filters run after the index
+   scan. Without the iterative scan the scan stops after `ef_search = 64` rows, so the filter leaves
+   whatever of them belongs to the dataset: on production about half of the 100 candidates. The
+   ranking therefore reads the pgvector version once per index and then, on pgvector 0.8 and later:
+   - `set local hnsw.iterative_scan = relaxed_order` with `hnsw.max_scan_tuples = 100000` (the
+     `maxScanTuples` option; pgvector's own limit is 20 000, which a question far from a dataset of
+     13 % of the corpus reached with 47 to 67 of the 100 candidates), and the plain
+     `order by embedding <=> $1::vector limit k` statement: an index scan that the planner picks keeps
+     going until `k` rows have passed the filters. The relaxed scan returns the rows slightly out of
+     order, so the rows are sorted by score before the fusion. A dataset that holds too few chunks
+     for `k` returns what it has;
+   - a dataset of at most `exactSetMaxChunks` embedded chunks (10 000 by default; `0` switches the
+     routing off) is ranked exactly instead: the same statement with `order by (embedding <=> $1) + 0`,
+     which keeps the planner off the index and reads the chunks of the requested datasets. That takes
+     milliseconds for a small dataset, while the index scan, cut by company only, has to walk far to
+     find a few chunks of it. The size comes from a bounded probe (`count(*)` with `limit
+     exactSetMaxChunks + 1`);
+   - a search without a dataset goes through the iterative scan with no probe.
 
-   On pgvector before 0.8 (no `hnsw.iterative_scan`) the ranking is the plain `order by embedding <=>
-   $1::vector limit k` statement. The version is read from `pg_extension` and not tried with a
-   `SET`, because a refused `SET` aborts the transaction and the product's driver rethrows it at the
-   end of the transaction even when the caller caught it.
+   On pgvector before 0.8 (no `hnsw.iterative_scan`) the ranking is the plain statement alone, with no
+   probe. The version is read from `pg_extension` and not tried with a `SET`, because a refused `SET`
+   aborts the transaction and the product's driver rethrows it at the end of the transaction even when
+   the caller caught it.
 3. Full-text ranking: `ts_rank` over the same rows with `plainto_tsquery($5, $1)`. A query text of
    at most `ilikeMaxLength` characters (16 by default) also gets an `ilike '%…%'` trigram match;
    `%` and `_` in the query text are escaped before they reach the pattern. A longer text is matched
