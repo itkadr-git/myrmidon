@@ -39,6 +39,11 @@ import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/po
 import { queuedRunWaitingSince } from "../domain/queued-run-age.js";
 // myrmidon(P2): pending interaction addressee wake
 import { isOwnerExplainWake, isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
+// myrmidon(RUN-GUARD-ESCALATE): the manager's wake after a final run guard stop is not the assignee's.
+import {
+  RUN_GUARD_STOP_NEEDS_INPUT_SOURCE,
+  RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
+} from "../../../myrmidon/run-guard-escalation.js";
 import type {
   QueuedRunFacts,
   QueuedRunStalenessErrorCode,
@@ -586,6 +591,16 @@ export function createPostgresRunDispatchAdapter(
         retryReason === "issue_continuation_needed",
     );
 
+    // myrmidon(RUN-GUARD-ESCALATE): the wake that tells the assignee's manager a task
+    // was stopped for good by the run guard. Bound to the exact automation source and
+    // wake reason; the manager is not the assignee and the assignee does not change.
+    const isRunGuardStopNeedsInputWake = Boolean(
+      issue &&
+        input.invocationSource === "automation" &&
+        context.source === RUN_GUARD_STOP_NEEDS_INPUT_SOURCE &&
+        wakeReason === RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
+    );
+
     // myrmidon(OPE-11948): an automatic continuation wake — the system's own
     // `issue_continuation_needed`, not a person's comment, a resume request or
     // an interaction answer (a card a person resolved keeps its own rules) — is
@@ -630,6 +645,7 @@ export function createPostgresRunDispatchAdapter(
       isPendingInteractionAddresseeWake: pendingInteractionAddresseeWake,
       isAuthorizedSourceScopedRecovery,
       isProductiveContinuationRecovery,
+      isRunGuardStopNeedsInputWake,
       isAutomaticContinuationWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,

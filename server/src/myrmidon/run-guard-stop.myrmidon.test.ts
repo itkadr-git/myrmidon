@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import { RUN_GUARD_STOP_REASONS } from "@myrmidon/adapter-utils/run-guard";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "./maintenance/domain.js";
 import {
+  RUN_GUARD_CONTINUATION_CONTEXT_KEY,
   buildRunGuardStopComment,
   buildRunGuardStopNotice,
+  maxTurnContinuationSchedulerCeiling,
+  parseRunGuardContinuationPolicy,
+  readRunGuardContinuationCount,
   readRunGuardStopReason,
   readRunGuardWriteCalls,
+  runGuardContinuationSchedulerCeiling,
   shouldContinueAfterRunGuardStop,
 } from "./run-guard-stop.js";
 import {
@@ -224,5 +229,60 @@ describe("guard stop metadata", () => {
     expect(
       legacyExecutionNeedsReconciliation({ runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled", resultJson: {} }),
     ).toBe(true);
+  });
+});
+
+// myrmidon(RUN-GUARD-CONTINUE): call-limit continuations have their own ceiling.
+describe("parseRunGuardContinuationPolicy", () => {
+  it("defaults to enabled with 10 continuations", () => {
+    for (const runtimeConfig of [undefined, null, {}, { heartbeat: {} }, { heartbeat: { runGuardContinuation: {} } }]) {
+      expect(parseRunGuardContinuationPolicy(runtimeConfig)).toEqual({ enabled: true, maxAttempts: 10 });
+    }
+  });
+
+  it("reads heartbeat.runGuardContinuation and caps the ceiling at 20", () => {
+    const policy = (runGuardContinuation: unknown) => parseRunGuardContinuationPolicy({ heartbeat: { runGuardContinuation } });
+    expect(policy({ maxAttempts: 4 })).toEqual({ enabled: true, maxAttempts: 4 });
+    expect(policy({ maxAttempts: 20 }).maxAttempts).toBe(20);
+    expect(policy({ maxAttempts: 21 }).maxAttempts).toBe(20);
+    expect(policy({ maxAttempts: 500 }).maxAttempts).toBe(20);
+    expect(policy({ maxAttempts: 3.9 }).maxAttempts).toBe(3);
+    expect(policy({ maxAttempts: -2 }).maxAttempts).toBe(0);
+    expect(policy({ enabled: false })).toEqual({ enabled: false, maxAttempts: 10 });
+  });
+
+  it("falls back to the default for a value that is not a number", () => {
+    for (const maxAttempts of ["7", null, Number.NaN, {}]) {
+      expect(
+        parseRunGuardContinuationPolicy({ heartbeat: { runGuardContinuation: { maxAttempts } } }).maxAttempts,
+      ).toBe(10);
+    }
+  });
+
+  it("does not read the max-turn ceiling", () => {
+    expect(parseRunGuardContinuationPolicy({ heartbeat: { maxTurnContinuation: { maxAttempts: 1 } } }).maxAttempts).toBe(10);
+  });
+});
+
+describe("call-limit continuation ceilings", () => {
+  it("counts the continuations of the chain from the run context, 0 outside a chain", () => {
+    expect(readRunGuardContinuationCount({ contextSnapshot: { [RUN_GUARD_CONTINUATION_CONTEXT_KEY]: 3 } })).toBe(3);
+    expect(readRunGuardContinuationCount({ contextSnapshot: {} })).toBe(0);
+    expect(readRunGuardContinuationCount({ contextSnapshot: { [RUN_GUARD_CONTINUATION_CONTEXT_KEY]: "3" } })).toBe(0);
+    expect(readRunGuardContinuationCount(null)).toBe(0);
+  });
+
+  it("gives the scheduler the shared counter plus what is left of the own ceiling, or null when it is spent", () => {
+    // Three continuations made along a chain whose shared counter stands at 3: the 4th needs a ceiling of 3 + 7.
+    expect(runGuardContinuationSchedulerCeiling({ scheduledRetryAttempt: 3, continuationsMade: 3, maxAttempts: 10 })).toBe(10);
+    expect(runGuardContinuationSchedulerCeiling({ scheduledRetryAttempt: null, continuationsMade: 0, maxAttempts: 10 })).toBe(10);
+    expect(runGuardContinuationSchedulerCeiling({ scheduledRetryAttempt: 12, continuationsMade: 9, maxAttempts: 10 })).toBe(13);
+    expect(runGuardContinuationSchedulerCeiling({ scheduledRetryAttempt: 10, continuationsMade: 10, maxAttempts: 10 })).toBeNull();
+    expect(runGuardContinuationSchedulerCeiling({ scheduledRetryAttempt: 2, continuationsMade: 0, maxAttempts: 0 })).toBeNull();
+  });
+
+  it("leaves the max-turn ceiling whole by the continuations the call limit already made", () => {
+    expect(maxTurnContinuationSchedulerCeiling(2, { contextSnapshot: {} })).toBe(2);
+    expect(maxTurnContinuationSchedulerCeiling(2, { contextSnapshot: { [RUN_GUARD_CONTINUATION_CONTEXT_KEY]: 3 } })).toBe(5);
   });
 });
