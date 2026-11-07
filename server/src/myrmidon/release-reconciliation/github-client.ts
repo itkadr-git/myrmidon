@@ -5,7 +5,7 @@
  * configurable base URL and optional token authentication.
  */
 
-import type { GitHubClient, GitHubReleaseInfo, GitHubTagInfo } from \"./types.js\";
+import type { GitHubClient, GitHubReleaseInfo, GitHubTagInfo } from "./types.js";
 
 /**
  * Normalise a version string: strip leading 'v'/'V', strip image repository prefixes,
@@ -13,11 +13,14 @@ import type { GitHubClient, GitHubReleaseInfo, GitHubTagInfo } from \"./types.js
  */
 export function normaliseVersion(raw: string): string {
   let cleaned = raw.trim();
-  const colonIndex = cleaned.lastIndexOf(\":\");
+  const colonIndex = cleaned.lastIndexOf(":");
   if (colonIndex >= 0) {
     cleaned = cleaned.slice(colonIndex + 1);
   }
-  if (cleaned.startsWith(\"v\") || cleaned.startsWith(\"V\")) {
+  if (cleaned.startsWith("myr-v") || cleaned.startsWith("myr-V")) {
+    cleaned = cleaned.slice(5);
+  }
+  if (cleaned.startsWith("v") || cleaned.startsWith("V")) {
     cleaned = cleaned.slice(1);
   }
   return cleaned.trim();
@@ -32,15 +35,15 @@ export interface DefaultGitHubClientOptions {
 export function createDefaultGitHubClient(
   options: DefaultGitHubClientOptions = {},
 ): GitHubClient {
-  const apiBase = (options.apiBase ?? \"https://api.github.com\").replace(/\\/+$/, \"\");
+  const apiBase = (options.apiBase ?? "https://api.github.com").replace(/\/+$/, "");
   const token = options.token ?? null;
   const timeoutMs = options.timeoutMs ?? 10_000;
 
   async function fetchJson<T>(path: string): Promise<T | null> {
-    const url = `${apiBase}${path.startsWith(\"/\") ? path : `/${path}`}`;
+    const url = `${apiBase}${path.startsWith("/") ? path : `/${path}`}`;
     const headers: Record<string, string> = {
-      Accept: \"application/vnd.github+json\",
-      \"User-Agent\": \"Myrmidon-ReleaseReconciliation/1.0\",
+      Accept: "application/vnd.github+json",
+      "User-Agent": "Myrmidon-ReleaseReconciliation/1.0",
     };
     if (token) {
       headers.Authorization = `Bearer ${token}`;
@@ -87,7 +90,7 @@ export function createDefaultGitHubClient(
         html_url?: string;
       }
       const data = await fetchJson<RawRelease>(`/repos/${repo}/releases/latest`);
-      if (!data || typeof data.tag_name !== \"string\") return null;
+      if (!data || typeof data.tag_name !== "string") return null;
       return {
         tagName: data.tag_name,
         name: data.name,

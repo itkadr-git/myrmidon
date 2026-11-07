@@ -14,9 +14,10 @@ import {
 
 describe("release-reconciliation unit tests", () => {
   describe("normaliseVersion", () => {
-    it("strips prefixes, tags and image repo qualifiers", () => {
+    it("strips prefixes, tags, myr-v prefix, and image repo qualifiers", () => {
       expect(normaliseVersion("v1.6.5")).toBe("1.6.5");
       expect(normaliseVersion("V2.0.0-rc.1")).toBe("2.0.0-rc.1");
+      expect(normaliseVersion("myr-v1.6.6-rc.2")).toBe("1.6.6-rc.2");
       expect(normaliseVersion("ghcr.io/paperclipai/paperclip:v1.6.5")).toBe("1.6.5");
       expect(normaliseVersion("  1.7.0  ")).toBe("1.7.0");
     });
@@ -48,6 +49,21 @@ describe("release-reconciliation unit tests", () => {
       expect(config.vendorTagOverride).toBe("v1.7.0");
       expect(config.intervalSec).toBe(3600);
       expect(config.companyId).toBe("company-123");
+    });
+
+    it("respects fallback non-prefixed env names", () => {
+      const config = readReleaseReconciliationConfig({
+        CURRENT_RELEASE: "1.6.4",
+        VENDOR_GITHUB_REPO: "upstream/paperclip",
+        GITHUB_API_URL: "https://api.github.com",
+        VENDOR_TAG: "1.7.1",
+        GITHUB_TOKEN: "gh-token-sample",
+      });
+
+      expect(config.currentRelease).toBe("1.6.4");
+      expect(config.vendorRepo).toBe("upstream/paperclip");
+      expect(config.vendorTagOverride).toBe("1.7.1");
+      expect(config.gitHubToken).toBe("gh-token-sample");
     });
   });
 
@@ -125,19 +141,19 @@ describe("release-reconciliation unit tests", () => {
       expect(sink.createdTasks).toHaveLength(0);
     });
 
-    it("handles matching versions with different formatting (v prefix)", async () => {
+    it("handles matching versions with different formatting (v prefix and myr-v)", async () => {
       const mockClient: GitHubClient = {
         getLatestRelease: async () => ({
-          tagName: "1.6.5",
+          tagName: "1.6.6",
         }),
-        getLatestTag: async () => ({ name: "1.6.5" }),
+        getLatestTag: async () => ({ name: "1.6.6" }),
       };
 
       const sink = new InMemoryIssueSink();
 
       const result = await reconcileReleases({
         env: {
-          MYRMIDON_CURRENT_RELEASE: "v1.6.5",
+          MYRMIDON_CURRENT_RELEASE: "myr-v1.6.6",
         },
         gitHubClient: mockClient,
         issueSink: sink,

@@ -5,20 +5,20 @@
  * with safe defaults.
  */
 
-import type { ReleaseReconciliationConfig } from \"./types.js\";
+import type { ReleaseReconciliationConfig } from "./types.js";
 
-export const DEFAULT_VENDOR_GITHUB_REPO = \"paperclipai/paperclip\";
-export const DEFAULT_GITHUB_API_BASE = \"https://api.github.com\";
+export const DEFAULT_VENDOR_GITHUB_REPO = "paperclipai/paperclip";
+export const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 export const DEFAULT_RECONCILIATION_INTERVAL_SEC = 86400; // 24 hours / once a day
 
 export const ENV_VARS = {
-  currentRelease: [\"MYRMIDON_CURRENT_RELEASE\", \"MYRMIDON_CURRENT_TAG\", \"CURRENT_RELEASE\"],
-  vendorRepo: [\"MYRMIDON_VENDOR_GITHUB_REPO\", \"MYRMIDON_VENDOR_REPO\", \"VENDOR_GITHUB_REPO\"],
-  gitHubApiBase: [\"MYRMIDON_GITHUB_API_BASE\", \"GITHUB_API_URL\", \"MYRMIDON_STACK_GITHUB_API_BASE\"],
-  vendorTag: [\"MYRMIDON_VENDOR_TAG\", \"VENDOR_TAG\"],
-  gitHubToken: [\"MYRMIDON_STACK_GITHUB_TOKEN\", \"GITHUB_TOKEN\"],
-  intervalSec: [\"MYRMIDON_RELEASE_RECONCILIATION_INTERVAL_SEC\", \"MYRMIDON_RELEASE_CHECK_INTERVAL_SEC\"],
-  companyId: [\"MYRMIDON_RELEASE_TASK_COMPANY_ID\", \"MYRMIDON_DEFAULT_COMPANY_ID\"],
+  currentRelease: ["MYRMIDON_CURRENT_RELEASE", "CURRENT_RELEASE"],
+  vendorRepo: ["MYRMIDON_VENDOR_GITHUB_REPO", "VENDOR_GITHUB_REPO"],
+  gitHubApiBase: ["MYRMIDON_GITHUB_API_BASE", "GITHUB_API_URL"],
+  vendorTag: ["MYRMIDON_VENDOR_TAG", "VENDOR_TAG"],
+  gitHubToken: ["MYRMIDON_STACK_GITHUB_TOKEN", "GITHUB_TOKEN"],
+  intervalSec: ["MYRMIDON_RELEASE_RECONCILIATION_INTERVAL_SEC"],
+  companyId: ["MYRMIDON_RELEASE_TASK_COMPANY_ID"],
 } as const;
 
 function getFirstEnv(env: Record<string, string | undefined>, keys: readonly string[]): string | undefined {
@@ -37,7 +37,7 @@ export function readReleaseReconciliationConfig(
   const currentRelease = getFirstEnv(env, ENV_VARS.currentRelease) ?? null;
   const vendorRepo = getFirstEnv(env, ENV_VARS.vendorRepo) ?? DEFAULT_VENDOR_GITHUB_REPO;
   const rawApiBase = getFirstEnv(env, ENV_VARS.gitHubApiBase) ?? DEFAULT_GITHUB_API_BASE;
-  const gitHubApiBase = rawApiBase.replace(/\\/+$/, \"\");
+  const gitHubApiBase = rawApiBase.replace(/\/+$/, "");
   const vendorTagOverride = getFirstEnv(env, ENV_VARS.vendorTag) ?? null;
   const gitHubToken = getFirstEnv(env, ENV_VARS.gitHubToken) ?? null;
 
