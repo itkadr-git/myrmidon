@@ -173,12 +173,12 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const embedding = sqlIdentifier(schema.embeddingColumn, "embedding column");
 
   // `$3` is the optional dataset: `$3::uuid is null` keeps one statement for both a dataset-scoped
-  // and a company-wide search.
+  // and a company-wide search. `$3::uuid[] is null` supports filtering by multiple datasets.
   const scope = [
     `  from ${chunks} c`,
     `  join ${documents} d on d.id = c.document_id and d.company_id = c.company_id`,
     ` where c.company_id = $2::uuid`,
-    `   and ($3::uuid is null or d.dataset_id = $3::uuid)`,
+    `   and ($3::uuid[] is null or d.dataset_id = any($3::uuid[]))`,
     `   and d.status = 'ready'`,
   ].join("\n");
 
@@ -220,7 +220,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   return {
     async search(query: CorpusSearchQuery) {
       const limit = clampLimit(query.limit);
-      const datasetId = query.datasetId ?? null;
+      const datasetIds = query.datasetIds ?? (query.datasetId ? [query.datasetId] : null);
       const hasEmbedding = query.embedding !== undefined;
       const useFullText = hasText(query.text);
       if (!hasEmbedding && !useFullText) return [];
@@ -240,7 +240,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
             vectorRows = await transaction.query<ChunkRow>(vectorSql, [
               embeddingLiteral,
               query.companyId,
-              datasetId,
+              datasetIds,
               kCandidates,
             ]);
           } catch (error) {
@@ -254,7 +254,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
           fullTextRows = await transaction.query<ChunkRow>(fullTextSql, [
             query.text.trim(),
             query.companyId,
-            datasetId,
+            datasetIds,
             likePattern,
             language,
             kCandidates,

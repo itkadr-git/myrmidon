@@ -34,3 +34,15 @@ export const uploadLocaleBodySchema = z.object({
 });
 
 export type UploadLocaleBody = z.infer<typeof uploadLocaleBodySchema>;
+
+export const uploadLocaleResultSchema = z.object({
+  stored: z.boolean(),
+  dryRun: z.boolean(),
+  locale: z.string(),
+  version: z.number(),
+  checksum: z.string(),
+  uploadedAt: z.string(),
+});
+
+export type UploadLocaleResult = z.infer<typeof uploadLocaleResultSchema>;
+

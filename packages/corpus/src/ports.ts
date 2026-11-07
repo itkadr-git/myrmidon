@@ -103,6 +103,7 @@ export interface CorpusStore {
 export type CorpusSearchQuery = {
   companyId: string;
   datasetId?: string;
+  datasetIds?: string[];
   /** Raw user query text; the index handles tsquery construction. */
   text: string;
   /** Query embedding; must have CORPUS_EMBEDDING_DIMENSIONS components. */
