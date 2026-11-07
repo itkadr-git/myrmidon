@@ -36,6 +36,9 @@ export class PostgresWorkQueue implements WorkQueue {
     // Idempotent on (document_id, parser_version): on conflict, return the
     // existing job unless it is terminally failed — then re-arm it to
     // `pending` so a re-enqueue rolls the failed job back into the queue.
+    // With `reset` the job is re-armed whatever its status is (a re-parse on
+    // request: attempts, error and backoff start over).
+    const rearm = input.reset ? sql`true` : sql`${corpusParseJobs.status} = 'failed'`;
     const rows = await this.db
       .insert(corpusParseJobs)
       .values({
@@ -47,12 +50,12 @@ export class PostgresWorkQueue implements WorkQueue {
       .onConflictDoUpdate({
         target: [corpusParseJobs.documentId, corpusParseJobs.parserVersion],
         set: {
-          status: sql`case when ${corpusParseJobs.status} = 'failed' then 'pending' else ${corpusParseJobs.status} end`,
-          attempts: sql`case when ${corpusParseJobs.status} = 'failed' then 0 else ${corpusParseJobs.attempts} end`,
-          lastError: sql`case when ${corpusParseJobs.status} = 'failed' then null else ${corpusParseJobs.lastError} end`,
-          nextAttemptAt: sql`case when ${corpusParseJobs.status} = 'failed' then now() else ${corpusParseJobs.nextAttemptAt} end`,
-          startedAt: sql`case when ${corpusParseJobs.status} = 'failed' then null else ${corpusParseJobs.startedAt} end`,
-          finishedAt: sql`case when ${corpusParseJobs.status} = 'failed' then null else ${corpusParseJobs.finishedAt} end`,
+          status: sql`case when ${rearm} then 'pending' else ${corpusParseJobs.status} end`,
+          attempts: sql`case when ${rearm} then 0 else ${corpusParseJobs.attempts} end`,
+          lastError: sql`case when ${rearm} then null else ${corpusParseJobs.lastError} end`,
+          nextAttemptAt: sql`case when ${rearm} then now() else ${corpusParseJobs.nextAttemptAt} end`,
+          startedAt: sql`case when ${rearm} then null else ${corpusParseJobs.startedAt} end`,
+          finishedAt: sql`case when ${rearm} then null else ${corpusParseJobs.finishedAt} end`,
           maxAttempts: sql`greatest(${corpusParseJobs.maxAttempts}, excluded.max_attempts)`,
         },
       })
