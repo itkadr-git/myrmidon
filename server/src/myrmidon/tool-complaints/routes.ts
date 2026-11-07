@@ -56,7 +56,7 @@ function requireFeedCompanyId(req: Request) {
     throw unauthorized();
   }
   const requested = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
-  const companyId = requested || (actor.companyIds[0] ?? "");
+  const companyId = requested || (actor.companyIds?.[0] ?? "");
   if (!companyId || !hasCompanyAccess(req, companyId)) {
     throw forbidden("User does not have access to this company");
   }
