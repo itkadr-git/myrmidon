@@ -32,6 +32,7 @@ export * from "../myrmidon-bot-workspace.js";
 export * from "../myrmidon-bridge-language.js";
 export * from "../myrmidon-browser-bridge.js";
 export * from "../myrmidon-browser-console.js";
+export * from "../myrmidon-budget-config.js";
 export * from "../myrmidon-budget-enforcement.js";
 export * from "../myrmidon-budget-limits.js";
 export * from "../myrmidon-budget-projection.js";
