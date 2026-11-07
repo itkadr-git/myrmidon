@@ -101,8 +101,9 @@ function litellmBudgetDedupKey(companyId: string, agentId: string, kind: Litellm
  * utilization; the board ledger's daily/weekly spend is used for anomaly
  * detection: the last 24 h against the average day of the six days before
  * them. A key with no earlier spend has no baseline, so a brand-new key is
- * not an anomaly. The card lands in the board attention feed; the recipient
- * routing of OPE-11751 (the agent's superior) is not part of this module.
+ * not an anomaly. The card lands in the board attention feed (`litellm_budget`),
+ * which dispatches to the owner via the Telegram errors channel (severity
+ * high/critical) and daily digest spend section.
  */
 export function litellmBudgetSignalsForKey(input: {
   companyId: string;
