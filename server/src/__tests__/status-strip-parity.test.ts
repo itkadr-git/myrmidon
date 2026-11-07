@@ -79,28 +79,35 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     await createAgent("agent-paused-1", "paused");
     await createAgent("agent-error-1", "error");
 
-    const now = new Date();
-    const createRun = async (agentId: string, status: string, createdAt = now) => {
+    const baseTime = Date.now();
+    const createRun = async (agentId: string, status: string, offsetMs = 0) => {
       const id = randomUUID();
+      const createdAt = new Date(baseTime + offsetMs);
       await ctx.db.insert(heartbeatRuns).values({ id, companyId, agentId, status, invocationSource: "on_demand", createdAt });
       return id;
     };
 
-    await createRun(agent1, "running");
-    await createRun(agent2, "queued");
-    await createRun(agent3, "retrying");
-    await createRun(agent1, "succeeded");
-    const failedRun1 = await createRun(agent2, "failed", now);
-    const failedRun2 = await createRun(agent3, "timed_out", now);
+    // agent1: early failed run, a running run, and a latest succeeded run
+    await createRun(agent1, "failed", 500);
+    await createRun(agent1, "running", 1000);
+    await createRun(agent1, "succeeded", 4000);
+
+    // agent2: queued run and a latest failed run (dismissed)
+    await createRun(agent2, "queued", 2000);
+    const failedRun1 = await createRun(agent2, "failed", 5000);
+
+    // agent3: retrying run and a latest timed_out run (active failed run)
+    await createRun(agent3, "retrying", 3000);
+    const failedRun2 = await createRun(agent3, "timed_out", 6000);
 
     await ctx.db.insert(costEvents).values([
-      { id: randomUUID(), companyId, agentId: agent1, provider: "test", biller: "test", billingType: "api", model: "test-model", costStatus: "reported", costCents: 1500, occurredAt: now },
-      { id: randomUUID(), companyId, agentId: agent2, provider: "test", biller: "test", billingType: "api", model: "test-model", costStatus: "unpriced", costCents: 0, occurredAt: now },
+      { id: randomUUID(), companyId, agentId: agent1, provider: "test", biller: "test", billingType: "api", model: "test-model", costStatus: "reported", costCents: 1500, occurredAt: new Date(baseTime) },
+      { id: randomUUID(), companyId, agentId: agent2, provider: "test", biller: "test", billingType: "api", model: "test-model", costStatus: "unpriced", costCents: 0, occurredAt: new Date(baseTime) },
     ]);
 
     const createApproval = async (type: string, status: string) => {
       const id = randomUUID();
-      await ctx.db.insert(approvals).values({ id, companyId, type, status, payload: {}, createdAt: now, updatedAt: now });
+      await ctx.db.insert(approvals).values({ id, companyId, type, status, payload: {}, createdAt: new Date(baseTime), updatedAt: new Date(baseTime) });
       return id;
     };
 
@@ -112,8 +119,8 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     await ctx.db.insert(issues).values({ id: issueId, companyId, title: "Test Issue", status: "in_progress" });
 
     await ctx.db.insert(decisions).values([
-      { id: randomUUID(), companyId, originAgentId: agent1, originIssueId: issueId, originRunId: failedRun1, title: "Decision 1", body: "Body", options: [{ id: "opt1", label: "Option 1" }], status: "open", expiresAt: new Date(Date.now() + 86400000), signedSpec: "spec", targetSnapshots: {} },
-      { id: randomUUID(), companyId, originAgentId: agent1, originIssueId: issueId, originRunId: failedRun1, title: "Decision 2", body: "Body", options: [{ id: "opt1", label: "Option 1" }], status: "resolved", expiresAt: new Date(Date.now() + 86400000), signedSpec: "spec", targetSnapshots: {} },
+      { id: randomUUID(), companyId, originAgentId: agent1, originIssueId: issueId, originRunId: failedRun1, title: "Decision 1", body: "Body", options: [{ id: "opt1", label: "Option 1" }], status: "open", expiresAt: new Date(baseTime + 86400000), signedSpec: "spec", targetSnapshots: {} },
+      { id: randomUUID(), companyId, originAgentId: agent1, originIssueId: issueId, originRunId: failedRun1, title: "Decision 2", body: "Body", options: [{ id: "opt1", label: "Option 1" }], status: "resolved", expiresAt: new Date(baseTime + 86400000), signedSpec: "spec", targetSnapshots: {} },
     ]);
 
     await ctx.db.insert(issueThreadInteractions).values([
@@ -122,8 +129,8 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     ]);
 
     await ctx.db.insert(inboxDismissals).values([
-      { id: randomUUID(), companyId, userId, itemKey: `approval:${approval1}`, kind: "dismiss", dismissedAt: new Date(Date.now() + 1000) },
-      { id: randomUUID(), companyId, userId, itemKey: `run:${failedRun1}`, kind: "dismiss", dismissedAt: new Date(Date.now() + 1000) },
+      { id: randomUUID(), companyId, userId, itemKey: `approval:${approval1}`, kind: "dismiss", dismissedAt: new Date(baseTime + 10000) },
+      { id: randomUUID(), companyId, userId, itemKey: `run:${failedRun1}`, kind: "dismiss", dismissedAt: new Date(baseTime + 10000) },
     ]);
 
     const app = routeApp(ctx.db, actor, statusStripRoutes, dashboardRoutes, sidebarBadgeRoutes);

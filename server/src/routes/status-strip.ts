@@ -1,9 +1,8 @@
-import { and, eq, gte, inArray, not, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { Router } from "express";
 import {
   agents,
-  approvals,
   decisions,
   heartbeatRuns,
   inboxDismissals,
@@ -11,22 +10,33 @@ import {
 } from "@myrmidon/db";
 import { costService } from "../services/costs.js";
 import { accessService } from "../services/access.js";
+import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { assertCompanyAccess } from "./authz.js";
 
 const ACTIVE_RUN_STATUSES = ["running"] as const;
 const QUEUED_RUN_STATUSES = ["queued", "retrying"] as const;
-const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 
-function toTimestamp(value: Date | string | null | undefined): number {
-  if (!value) return 0;
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) ? timestamp : 0;
+function buildDismissedAtByKey(
+  dismissals: Array<{ itemKey: string; kind: string; dismissedAt: Date | string; snoozedUntil: Date | string | null }>,
+): Map<string, number> {
+  const now = Date.now();
+  const entries: Array<[string, number]> = [];
+  for (const dismissal of dismissals) {
+    if (dismissal.kind === "snooze") {
+      const snoozedUntil = dismissal.snoozedUntil ? new Date(dismissal.snoozedUntil).getTime() : 0;
+      if (Number.isFinite(snoozedUntil) && snoozedUntil > now) entries.push([dismissal.itemKey, Number.MAX_SAFE_INTEGER]);
+      continue;
+    }
+    entries.push([dismissal.itemKey, new Date(dismissal.dismissedAt).getTime()]);
+  }
+  return new Map(entries);
 }
 
 export function statusStripRoutes(db: Db) {
   const router = Router();
   const costs = costService(db);
   const access = accessService(db);
+  const sidebarBadges = sidebarBadgeService(db);
 
   router.get("/companies/:companyId/status-strip", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -41,29 +51,21 @@ export function statusStripRoutes(db: Db) {
       return;
     }
     const now = new Date();
-    const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const dismissedAtByKey = new Map<string, number>();
-    if (req.actor.type === "board" && req.actor.userId) {
-      const dismissals = await db.select({
-        itemKey: inboxDismissals.itemKey,
-        kind: inboxDismissals.kind,
-        dismissedAt: inboxDismissals.dismissedAt,
-        snoozedUntil: inboxDismissals.snoozedUntil,
-      }).from(inboxDismissals).where(and(
-        eq(inboxDismissals.companyId, companyId),
-        eq(inboxDismissals.userId, req.actor.userId),
-      ));
-      for (const dismissal of dismissals) {
-        const until = dismissal.kind === "snooze"
-          ? toTimestamp(dismissal.snoozedUntil)
-          : toTimestamp(dismissal.dismissedAt);
-        if (until > 0) dismissedAtByKey.set(
-          dismissal.itemKey,
-          dismissal.kind === "snooze" && until > now.getTime() ? Number.MAX_SAFE_INTEGER : until,
-        );
-      }
-    }
-    const [agentRows, runRows, failedRuns, approvalsCount, decisionsCount, interactionsCount, cost] = await Promise.all([
+    const dismissedAtByKey =
+      req.actor.type === "board" && req.actor.userId
+        ? await db
+          .select({
+            itemKey: inboxDismissals.itemKey,
+            kind: inboxDismissals.kind,
+            dismissedAt: inboxDismissals.dismissedAt,
+            snoozedUntil: inboxDismissals.snoozedUntil,
+          })
+          .from(inboxDismissals)
+          .where(and(eq(inboxDismissals.companyId, companyId), eq(inboxDismissals.userId, req.actor.userId)))
+          .then(buildDismissedAtByKey)
+        : new Map<string, number>();
+
+    const [agentRows, runRows, badges, decisionsCount, interactionsCount, cost] = await Promise.all([
       db.select({
         status: agents.status,
         count: sql<number>`count(*)::integer`,
@@ -78,25 +80,9 @@ export function statusStripRoutes(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.companyId, companyId))
         .groupBy(heartbeatRuns.status),
-      db.select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt, status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .where(and(
-          eq(heartbeatRuns.companyId, companyId),
-          eq(agents.companyId, companyId),
-          not(eq(agents.status, "terminated")),
-          inArray(heartbeatRuns.status, ["failed", "timed_out"]),
-          gte(heartbeatRuns.createdAt, dayStart),
-        )),
-      db.select({ id: approvals.id, updatedAt: approvals.updatedAt })
-        .from(approvals)
-        .where(and(
-          eq(approvals.companyId, companyId),
-          inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
-        ))
-        .then((rows) => rows.filter((row) =>
-          (dismissedAtByKey.get(`approval:${row.id}`) ?? 0) < toTimestamp(row.updatedAt),
-        ).length),
+      sidebarBadges.get(companyId, {
+        dismissals: dismissedAtByKey,
+      }),
       db.select({ count: sql<number>`count(*)::integer` })
         .from(decisions)
         .where(and(eq(decisions.companyId, companyId), eq(decisions.status, "open")))
@@ -118,11 +104,7 @@ export function statusStripRoutes(db: Db) {
       else if (row.status === "paused") colony.paused += count;
       else if (row.status === "error") colony.error += count;
     }
-    const failedToday = (failedRuns as Array<{ id: string; createdAt: Date | string }>).filter((run) => {
-      const dismissedAt = dismissedAtByKey.get(`run:${run.id}`);
-      return dismissedAt === undefined || toTimestamp(run.createdAt) > dismissedAt;
-    }).length;
-    const runs = { running: 0, queued: 0, failedToday };
+    const runs = { running: 0, queued: 0, failedToday: badges.failedRuns };
     for (const row of runRows) {
       const count = Number(row.count);
       if ((ACTIVE_RUN_STATUSES as readonly string[]).includes(row.status)) runs.running += count;
@@ -138,7 +120,7 @@ export function statusStripRoutes(db: Db) {
         forecastCents: cost.forecastCents ?? null,
       },
       waiting: {
-        approvals: approvalsCount,
+        approvals: badges.approvals,
         decisions: decisionsCount,
         interactions: interactionsCount,
       },
