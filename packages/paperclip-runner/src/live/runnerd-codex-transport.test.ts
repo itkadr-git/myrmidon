@@ -563,7 +563,7 @@ it.each([
         .digest("hex");
       const appendEvent = vi.fn(async (_event: PrpEvent) => {
         if (slowCommits)
-          await new Promise((resolveCommit) => setTimeout(resolveCommit, 30));
+          await new Promise((resolveCommit) => setTimeout(resolveCommit, 18));
       });
       const maintenanceAbort = new AbortController();
       let finalAuthorityRevoked = false;
