@@ -16,6 +16,8 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 From Python `execute_code`, read the bearer value directly from the environment; do not build a shell/curl command:
 
+If `PAPERCLIP_API_KEY` is empty or missing in `execute_code`, do not send the request without it and do not read `/data/hermes/.env` (that copies the secret into the session history): use the terminal (curl with `$PAPERCLIP_API_KEY` in double quotes) instead. A 401 is not a transient error — do not retry it.
+
 ```python
 import os
 import requests

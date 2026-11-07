@@ -277,6 +277,8 @@ Resolving a card records the response only. Suggested-task creation, plan contin
 
 The creator agent or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
 
+Closing the issue also expires its pending interactions. When an issue transitions to a terminal status (`done` or `cancelled`) — through the HTTP routes or any direct service-level status update — every still-pending interaction on that issue moves `pending` → `expired` with result outcome `issue_closed` and `expirationReason: "issue_closed"` (`connection_intent` cards keep outcome `expired` and record the same `expirationReason`). Linked tool actions and secret proposals are revoked/expired in the same transaction, `resolvedAt` is stamped, and the transition is idempotent: repeated terminal transitions or a concurrent resolution do not double-write. Any later resolve attempt on such a card returns `409` with code `interaction_issue_closed`. Migration `0459_expire_pending_interactions_on_closed_issues` performed the one-time catch-up of pre-existing pending rows on already-closed issues.
+
 ## Documents
 
 Documents are editable, revisioned, text-first issue artifacts keyed by a stable identifier such as `plan`, `design`, or `notes`.

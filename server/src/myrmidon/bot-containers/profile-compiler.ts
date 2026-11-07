@@ -1159,7 +1159,14 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     // Keep the legacy profile mount empty so Hermes cannot index each skill twice.
     skills: { external_dirs: [] },
     sessions: { retention_days: input.instanceDefaults.sessionsRetentionDays },
-    terminal: { cwd: "/workspace" },
+    // myrmidon(OPE-11947): execute_code scrubs every *KEY*/*TOKEN* variable from its
+    // kernel environment unless config.yaml opts it in via terminal.env_passthrough.
+    // Without it the board key the skill tells Python callers to read is missing in
+    // the kernel, every board call from execute_code goes out without credentials
+    // (07.11: 8 of 8 bots that tried, ~4% of /api answered 401), and agents work
+    // around it by reading /data/hermes/.env into the session history. The board
+    // key is the bot's own per-agent key already present in the terminal env.
+    terminal: { cwd: "/workspace", env_passthrough: ["PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"] },
   };
   return writeYamlDocument(root);
 }

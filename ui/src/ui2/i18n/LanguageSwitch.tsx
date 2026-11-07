@@ -12,7 +12,7 @@
 // (aria-checked), so it doubles as the accessible control on phone.
 
 import { clsx } from "clsx";
-import { UI2_LOCALES } from "./locales";
+import { UI2_LOCALES, type Ui2Locale } from "./locales";
 import { useUi2I18n } from "./Ui2I18n";
 
 export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
