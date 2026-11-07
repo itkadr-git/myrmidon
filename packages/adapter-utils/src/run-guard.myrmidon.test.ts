@@ -157,6 +157,62 @@ describe("RunGuard repeated tool call stop", () => {
   });
 });
 
+// myrmidon(RUN-GUARD-CONTINUE): the guard counts the calls that change something, so the board can
+// tell a call-limit stop of a run that was working from one that only looked around.
+describe("RunGuard write calls", () => {
+  it("counts every call the classifier does not take for read-only, over the whole run", () => {
+    const guard = new RunGuard({ noProgressLimit: 0, repeatedToolCallLimit: 0 });
+    guard.toolStarted("read_file", "a.ts L1-40");
+    guard.toolStarted("patch", "a.ts");
+    guard.toolStarted("write_file", "b.ts");
+    guard.toolStarted("terminal", "git commit -m x");
+    guard.toolStarted("terminal", "grep -rn foo src | head");
+    guard.toolStarted("search_files", "foo");
+    // The read-only streak starts over at every write; the write counter only grows.
+    expect(guard.stats()).toMatchObject({ toolCalls: 6, writeCalls: 3, readOnlyStreak: 2 });
+    guard.toolStarted("patch", "c.ts");
+    expect(guard.stats()).toMatchObject({ toolCalls: 7, writeCalls: 4, readOnlyStreak: 0 });
+  });
+
+  it("counts terminal commands that write and tools it does not know as writes", () => {
+    const guard = new RunGuard({ noProgressLimit: 0, repeatedToolCallLimit: 0 });
+    guard.toolStarted("terminal", "pnpm test");
+    guard.toolStarted("terminal", "echo x > out.txt");
+    guard.toolStarted("terminal", "sed -i s/a/b/ f.ts");
+    guard.toolStarted("execute_code", "print(1)");
+    expect(guard.stats().writeCalls).toBe(4);
+  });
+
+  it("stays 0 for a run that only read", () => {
+    const guard = new RunGuard({ noProgressLimit: 0, repeatedToolCallLimit: 0 });
+    guard.toolStarted("read_file", "a.ts");
+    guard.toolStarted("terminal", "ls -la src");
+    guard.toolStarted("terminal", "git log --oneline -5");
+    expect(guard.stats()).toMatchObject({ toolCalls: 3, writeCalls: 0, readOnlyStreak: 3 });
+  });
+
+  it("is in the statistics of a run stopped at the model call limit", () => {
+    const guard = new RunGuard({ modelCallLimit: 3, noProgressLimit: 0, repeatedToolCallLimit: 0 });
+    expect(guard.modelCall()).toEqual({ stop: false });
+    guard.toolStarted("patch", "a.ts");
+    expect(guard.modelCall()).toEqual({ stop: false });
+    guard.toolStarted("read_file", "a.ts");
+    expect(guard.modelCall()).toEqual({ stop: false });
+    expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+    expect(guard.stats()).toMatchObject({ modelCalls: 3, toolCalls: 2, writeCalls: 1 });
+  });
+
+  it("does not count calls after the guard stopped, and keeps no arguments", () => {
+    const guard = new RunGuard({ noProgressLimit: 2, repeatedToolCallLimit: 0 });
+    guard.toolStarted("write_file", "secret-name.ts");
+    guard.toolStarted("read_file", "a");
+    expect(guard.toolStarted("read_file", "b")).toEqual({ stop: true, reason: "no_progress_exploration" });
+    guard.toolStarted("patch", "late");
+    expect(guard.stats().writeCalls).toBe(1);
+    expect(JSON.stringify(guard.stats())).not.toContain("secret-name");
+  });
+});
+
 describe("RunGuard configuration", () => {
   it("defaults to 40 consecutive read-only calls and 3 repeats", () => {
     const options = resolveRunGuardOptions({ env: {} });
