@@ -103,8 +103,8 @@ export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): Li
     const rawOrder = modelInfo.order ?? modelInfo.priority ?? litellmParams.order ?? litellmParams.priority ?? 0;
     const order = Number.isFinite(Number(rawOrder)) ? Number(rawOrder) : 0;
 
-    const rawWeight = modelInfo.weight ?? litellmParams.weight ?? 1;
-    const weight = Number.isFinite(Number(rawWeight)) ? Number(rawWeight) : 1;
+    const rawWeight = modelInfo.weight ?? litellmParams.weight ?? 0;
+    const weight = Number.isFinite(Number(rawWeight)) ? Number(rawWeight) : 0;
 
     let disabled = false;
     if (modelInfo.disabled !== undefined) {
@@ -154,7 +154,7 @@ export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): Li
         ...(input.channelId ? { id: input.channelId } : {}),
         order: input.order ?? 0,
         priority: input.order ?? 0,
-        weight: input.weight ?? 1,
+        weight: input.weight ?? 0,
         disabled: Boolean(input.disabled),
       };
 
@@ -179,7 +179,7 @@ export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): Li
         baseUrl: input.baseUrl ?? null,
         credentialSecretName: input.credentialSecretName ?? extractSecretName(input.apiKey),
         order: input.order ?? 0,
-        weight: input.weight ?? 1,
+        weight: input.weight ?? 0,
         disabled: Boolean(input.disabled),
         litellmParams,
         modelInfo: {

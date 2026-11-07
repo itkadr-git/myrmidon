@@ -69,6 +69,8 @@ export type ReviewPullRequestCiState =
    * and the reason is logged.
    */
   | "unknown"
+  /** No hosted CI workflows are configured in this repository. */
+  | "not_configured"
   /** The issue has no open pull request work product. */
   | "no_pull_request";
 

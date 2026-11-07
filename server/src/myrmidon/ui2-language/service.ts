@@ -46,9 +46,9 @@ export interface Ui2LanguageServiceDeps {
   upsertLanguage(userId: string, language: Ui2Language): Promise<Ui2LanguagePreference>;
   listCompanyIdsForUser(userId: string): Promise<string[]>;
   logActivity(entry: Ui2LanguageAuditEntry): Promise<unknown>;
-  /** myrmidon(1.6.5-TG-LOCALE-C): the language the bridged Telegram DM answers
-   * this person with, and where it came from (the screen shows the source). */
   resolveBridgeLanguage(userId: string): Promise<BridgeLanguageDecisionView>;
+  getCatalogs(userId: string): Promise<Partial<Record<Ui2Language, Record<string, unknown>>>>;
+  upsertCatalog(userId: string, language: Ui2Language, catalog: Record<string, unknown>): Promise<void>;
 }
 
 /** The effective Telegram-bridge language and its source, for the screen. */
@@ -88,6 +88,21 @@ export function createUi2LanguageService(db: Db): Ui2LanguageServiceDeps {
       return { language: stored, updatedAt: row?.updatedAt ?? now };
     },
 
+    async getCatalogs(userId: string): Promise<Partial<Record<Ui2Language, Record<string, unknown>>>> {
+      const row = await db.query.userUiLanguage.findFirst({ where: eq(userUiLanguage.userId, userId) });
+      const catalogs = row?.customCatalogs;
+      return catalogs && typeof catalogs === "object" && !Array.isArray(catalogs)
+        ? catalogs as Partial<Record<Ui2Language, Record<string, unknown>>>
+        : {};
+    },
+
+    async upsertCatalog(userId: string, language: Ui2Language, catalog: Record<string, unknown>): Promise<void> {
+      const now = new Date();
+      const existing = await this.getCatalogs(userId);
+      const merged: Partial<Record<Ui2Language, Record<string, unknown>>> = { ...existing, [language]: catalog };
+      await db.insert(userUiLanguage).values({ userId, language, customCatalogs: merged, updatedAt: now })
+        .onConflictDoUpdate({ target: [userUiLanguage.userId], set: { customCatalogs: merged, updatedAt: now } });
+    },
     async listCompanyIdsForUser(userId: string): Promise<string[]> {
       const rows = await db
         .select({ companyId: companyMemberships.companyId })

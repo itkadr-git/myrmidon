@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@myrmidon/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -37,7 +37,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DBC1) context compaction in the databas
   }, 120_000);
 
   afterEach(async () => {
-    await db.delete(heartbeatRuns);
+    await db.execute(sql.raw("SET client_min_messages = warning; TRUNCATE TABLE heartbeat_runs CASCADE"));
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -194,4 +194,60 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DBC1) context compaction in the databas
     expect(all.compacted).toBe(3);
     expect(CONTEXT_COMPACT_BATCH_SIZE).toBe(500);
   });
+
+  it("myrmidon(1.6.6 OPE-9967) compacts a large table (100k rows, 60% already compacted) within timeout and advances keyset cursor with progress > 0", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+
+    // 100,000 rows in a single set-oriented INSERT:
+    // 60,000 (60%) are already compacted (have _compactedAt, no heavy keys).
+    // 40,000 (40%) are uncompacted (carry heavy keys).
+    await db.execute(sql`
+      INSERT INTO heartbeat_runs (
+        id, company_id, agent_id, invocation_source, status,
+        context_snapshot, created_at, updated_at
+      )
+      SELECT
+        gen_random_uuid(),
+        ${companyId}::uuid,
+        ${agentId}::uuid,
+        'assignment',
+        'succeeded',
+        CASE
+          WHEN s <= 60000 THEN '{"taskKey": "OPE-1", "_compactedAt": "2026-10-20T00:00:00.000Z"}'::jsonb
+          ELSE '{"taskKey": "OPE-1", "paperclipWake": "wake-data", "executionContinuation": "long-message-history"}'::jsonb
+        END,
+        now() - interval '20 days' + (s || ' seconds')::interval,
+        now() - interval '20 days' + (s || ' seconds')::interval
+      FROM generate_series(1, 100000) AS s;
+    `);
+
+    const cutoff = new Date(Date.now() - 7 * DAY_MS).toISOString();
+    const compactedAt = new Date().toISOString();
+
+    const t0 = Date.now();
+    const pass1 = await compactContextPass(
+      { db, sleep: async () => {}, maxBatches: 2 },
+      { companyIds: [companyId], cutoff, compactedAt },
+    );
+    const durationMs = Date.now() - t0;
+
+    // Progress > 0 and within timeout
+    expect(pass1.timedOut).toBe(false);
+    expect(pass1.compacted).toBeGreaterThan(0);
+    expect(pass1.compacted).toBe(1000); // 2 batches * 500
+    expect(pass1.cursors[companyId]).toBeDefined();
+    expect(pass1.cursors[companyId]?.createdAt).toBeDefined();
+    expect(pass1.cursors[companyId]?.id).toBeDefined();
+    expect(durationMs).toBeLessThan(10000);
+
+    // Pass 2 continues from cursor without re-reading the earlier rows
+    const pass2 = await compactContextPass(
+      { db, sleep: async () => {}, maxBatches: 2 },
+      { companyIds: [companyId], cutoff, compactedAt, cursors: pass1.cursors },
+    );
+    expect(pass2.timedOut).toBe(false);
+    expect(pass2.compacted).toBe(1000);
+    expect(pass2.cursors[companyId]).toBeDefined();
+    expect(pass2.cursors[companyId]).not.toEqual(pass1.cursors[companyId]);
+  }, 60000);
 });

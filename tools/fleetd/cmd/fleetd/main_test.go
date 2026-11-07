@@ -1086,3 +1086,95 @@ func TestRestoreFailsWhenOwnerCannotBeSet(t *testing.T) {
 		t.Fatalf("a failed restore left %d entries in the volume root", len(entries))
 	}
 }
+
+func TestIsImageAllowed(t *testing.T) {
+	allowed := []string{
+		"ghcr.io/itkadr-git/myrmidon-hermes@sha256:*",
+		"example.com/pinned@sha256:abcdef",
+	}
+
+	tests := []struct {
+		name  string
+		image string
+		want  bool
+	}{
+		{"wildcard match 1", "ghcr.io/itkadr-git/myrmidon-hermes@sha256:11223344", true},
+		{"wildcard match 2", "ghcr.io/itkadr-git/myrmidon-hermes@sha256:cb168227", true},
+		{"exact match", "example.com/pinned@sha256:abcdef", true},
+		{"exact match wrong digest", "example.com/pinned@sha256:999999", false},
+		{"foreign repo under wildcard", "ghcr.io/evil/myrmidon-hermes@sha256:11223344", false},
+		{"prefix match without sha256 tag", "ghcr.io/itkadr-git/myrmidon-hermes:latest", false},
+		{"tag without digest", "example.com/pinned:latest", false},
+		{"missing digest value", "ghcr.io/itkadr-git/myrmidon-hermes@sha256:", false},
+		{"empty image", "", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isImageAllowed(tc.image, allowed); got != tc.want {
+				t.Errorf("isImageAllowed(%q) = %v, want %v", tc.image, got, tc.want)
+			}
+		})
+	}
+
+	if isImageAllowed("ghcr.io/itkadr-git/myrmidon-hermes@sha256:11223344", nil) {
+		t.Error("nil allowed list should reject")
+	}
+	if isImageAllowed("ghcr.io/itkadr-git/myrmidon-hermes@sha256:11223344", []string{}) {
+		t.Error("empty allowed list should reject")
+	}
+}
+
+func TestImagePatternAllowedAndRefused(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	key := s.cfg.Bots[0].BotKey
+	s.cfg.Images = []string{"ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"}
+	s.docker.images = s.cfg.Images
+
+	patternImage1 := "ghcr.io/itkadr-git/myrmidon-hermes@sha256:cb1682270001"
+	if !s.imageAllowed(patternImage1) {
+		t.Fatalf("server.imageAllowed rejected %s", patternImage1)
+	}
+	if !s.docker.allowedImage(patternImage1) {
+		t.Fatalf("docker.allowedImage rejected %s", patternImage1)
+	}
+
+	// 1. Create with pattern image passes both checks and reaches Docker
+	bodyCreate := strings.Replace(createBody(key), "example.com/bot@sha256:aa", patternImage1, 1)
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), bodyCreate); rec.Code != http.StatusOK {
+		t.Fatalf("pattern image create: got %d %s", rec.Code, rec.Body.String())
+	}
+	if c, ok := fake.containers["fleet-"+key]; !ok || c["Image"] != patternImage1 {
+		t.Fatalf("container not created with expected image: %v", c)
+	}
+
+	// 2. Recreate with another digest under pattern passes both checks
+	patternImage2 := "ghcr.io/itkadr-git/myrmidon-hermes@sha256:cb1682270002"
+	bodyRecreate := strings.Replace(createBody(key), "example.com/bot@sha256:aa", patternImage2, 1)
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/recreate", fakeBearer(), bodyRecreate); rec.Code != http.StatusOK {
+		t.Fatalf("pattern image recreate: got %d %s", rec.Code, rec.Body.String())
+	}
+	if c, ok := fake.containers["fleet-"+key]; !ok || c["Image"] != patternImage2 {
+		t.Fatalf("container not recreated with expected image: %v", c)
+	}
+
+	// 3. Foreign repository image under pattern is refused (403 image_not_allowed) on create and recreate
+	foreignImage := "ghcr.io/foreign-org/myrmidon-hermes@sha256:cb1682270001"
+	foreignBody := strings.Replace(createBody(key), "example.com/bot@sha256:aa", foreignImage, 1)
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), foreignBody); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "image_not_allowed") {
+		t.Fatalf("foreign image create: got %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/recreate", fakeBearer(), foreignBody); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "image_not_allowed") {
+		t.Fatalf("foreign image recreate: got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 4. Tag without digest is refused (403) on create and recreate
+	tagImage := "ghcr.io/itkadr-git/myrmidon-hermes:latest"
+	tagBody := strings.Replace(createBody(key), "example.com/bot@sha256:aa", tagImage, 1)
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), tagBody); rec.Code != http.StatusForbidden {
+		t.Fatalf("tag without digest create: got %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/recreate", fakeBearer(), tagBody); rec.Code != http.StatusForbidden {
+		t.Fatalf("tag without digest recreate: got %d %s", rec.Code, rec.Body.String())
+	}
+}

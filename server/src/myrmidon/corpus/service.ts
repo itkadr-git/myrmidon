@@ -54,6 +54,7 @@ export const CORPUS_DATASET_DELETED_ACTION = "myrmidon.corpus.dataset_deleted";
 
 /** Code of the 503 a data route answers while the ports of parts A/B are missing. */
 export const CORPUS_NOT_CONFIGURED_ERROR = "corpus_not_configured";
+export const CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR = "corpus_embedder_not_configured";
 
 /** Who called the route, for the activity log (same shape as the runtime limits). */
 export interface CorpusActor {
@@ -422,6 +423,26 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
         maxAttempts: settings.maxParseAttempts,
       });
 
+      if (ports.index.assertEmbedderConfigured) {
+        try {
+          await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
+        } catch (err) {
+          if (err instanceof CorpusRequestError && err.code === CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR) {
+            await ports.store.updateDocument(companyId, document.id, {
+              status: "failed",
+              error: err.code,
+            });
+            throw new CorpusRequestError(
+              err.status,
+              err.code,
+              err.message,
+              { ...err.details, documentId: document.id },
+            );
+          }
+          throw err;
+        }
+      }
+
       try {
         const blob = await ports.blobs.put({
           companyId,
@@ -502,6 +523,9 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
       const query = input.query.trim();
       const limit = Math.min(Math.max(input.limit ?? settings.searchTopK, 1), 50);
       const mode = input.mode ?? "hybrid";
+      if (mode !== "fulltext" && ports.index.assertEmbedderConfigured) {
+        await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
+      }
       const hits = await ports.index.search({
         companyId,
         datasetId,

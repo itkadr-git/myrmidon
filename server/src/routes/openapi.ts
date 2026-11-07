@@ -116,6 +116,8 @@ import {
   updateBudgetSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
+  createProviderUsageReportedEventSchema,
+  updateProviderUsageWarningThresholdSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Announcements
@@ -197,6 +199,10 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
+  // Auto-update settings (OPE-10268)
+  putUpdateSettingsSchema,
+  patchUpdateSettingsSchema,
+  updateSettingsSchema,
   startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
@@ -287,6 +293,8 @@ import {
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
   blockerGraphRootsResponseSchema,
+  validateMaintenanceWindowCronRequestSchema,
+  checkUpdatesRequestSchema,
 } from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -1694,13 +1702,35 @@ function applyDocumentFixups(document: any): any {
             ? { actor: "board" }
             : authLevel === "agent_run"
               ? { actor: "agent", heartbeatBound: true, taskBound: true }
-            : authLevel === "runtime_tools"
-              ? { actor: "runtime_tools", heartbeatBound: true }
-              : authLevel === "authenticated"
-                ? { actor: "board_or_agent" }
-                : { actor: "public" };
+              : authLevel === "runtime_tools"
+                ? { actor: "runtime_tools", heartbeatBound: true }
+                : authLevel === "authenticated"
+                  ? { actor: "board_or_agent" }
+                  : { actor: "public" };
 
       const key = operationKey(method, path);
+      if (
+        key === "GET /api/admin-assistant/cluster-health" ||
+        key === "GET /api/admin-assistant/health" ||
+        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health"
+      ) {
+        operation["x-paperclip-authorization"] = {
+          actor: "board_or_agent",
+          companyScopedQuery: true,
+          unscoped: { actor: "board", instanceAdmin: true },
+        };
+      }
+      if (key === "GET /api/admin-assistant/dry-run") {
+        // The dry-run diagnostics endpoint is intentionally stricter than the
+        // cluster-health routes: instance admin is always required, even when
+        // a companyId query parameter is present, because probes may return
+        // instance-wide results that cross company boundaries.
+        operation["x-paperclip-authorization"] = {
+          actor: "board",
+          instanceAdmin: true,
+        };
+      }
+
       if (authLevel !== "public") {
         const responses = (operation.responses ??= {}) as Record<
           string,
@@ -5184,6 +5214,39 @@ registry.registerPath({
 
 // ─── Costs ───────────────────────────────────────────────────────────────────
 
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/provider-usage-reports",
+  tags: ["costs"],
+  summary: "Record a provider usage report",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createProviderUsageReportedEventSchema),
+  },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/provider-usage",
+  tags: ["costs"],
+  summary: "List aggregated provider usage",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/provider-usage-warning-threshold",
+  tags: ["costs"],
+  summary: "Update provider usage warning threshold",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(updateProviderUsageWarningThresholdSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 const costSummaryPaths = [
   "summary",
   "by-agent",
@@ -5191,6 +5254,7 @@ const costSummaryPaths = [
   "by-provider",
   "by-biller",
   "by-project",
+  "by-issue",
   "finance-summary",
   "finance-by-biller",
   "finance-by-kind",
@@ -5506,7 +5570,7 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     query: z.object({ path: z.string().optional(), diskPath: z.string().optional() }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -5521,7 +5585,7 @@ registry.registerPath({
       diskPath: z.string().optional(),
     }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -5536,7 +5600,22 @@ registry.registerPath({
       diskPath: z.string().optional(),
     }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/dry-run",
+  tags: ["admin-assistant"],
+  summary: "Read-only dry-run diagnostics (instance admin only)",
+  description:
+    "Collects a health summary through strictly read-only probes (SELECT queries and fs.statfs only). " +
+    "Each probe has an independent timeout; a slow or failing probe degrades its own result without " +
+    "hiding the error. The payload is marked with dry_run=true and credential-shaped values are redacted.",
+  request: {
+    query: z.object({}).optional(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Guardrails ──────────────────────────────────────────────────────────────
@@ -6321,6 +6400,25 @@ registry.registerPath({
 
 // ─── Instance settings ────────────────────────────────────────────────────────
 
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): validate maintenance-window cron
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/maintenance-window/validate-cron",
+  tags: ["instance"],
+  summary: "Validate an instance maintenance-window cron schedule",
+  request: { body: jsonBody(validateMaintenanceWindowCronRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance-settings/auto-update/validate-cron",
+  tags: ["instance"],
+  summary: "Validate an auto-update maintenance-window cron schedule",
+  request: { body: jsonBody(validateMaintenanceWindowCronRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/instance/settings",
@@ -6371,6 +6469,68 @@ registry.registerPath({
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268): routes/updates.ts serves one
+// settings document under /updates/settings, /updates and /myrmidon/updates/settings.
+for (const path of ["/api/updates/settings", "/api/updates", "/api/myrmidon/updates/settings"]) {
+  registry.registerPath({
+    method: "get",
+    path,
+    tags: ["instance"],
+    summary: "Get auto-update settings",
+    responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "put",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  if (path !== "/api/myrmidon/updates/settings") {
+    registry.registerPath({
+      method: "patch",
+      path,
+      tags: ["instance"],
+      summary: "Update auto-update settings",
+      request: { body: jsonBody(patchUpdateSettingsSchema) },
+      responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+    });
+  }
+}
+
+registry.registerPath({
+  method: "post",
+  path: "/api/updates/validate",
+  tags: ["instance"],
+  summary: "Validate auto-update settings without saving them",
+  request: { body: jsonBody(updateSettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): manual update availability check routes
+for (const path of [
+  "/api/system/check-updates",
+  "/api/myrmidon/system/check-updates",
+  "/api/instance-settings/check-updates",
+]) {
+  registry.registerPath({
+    method: "get",
+    path,
+    tags: ["instance"],
+    summary: "Check for available system updates",
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "post",
+    path,
+    tags: ["instance"],
+    summary: "Check for available system updates",
+    request: { body: jsonBody(checkUpdatesRequestSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+}
 
 registry.registerPath({
   method: "get",
@@ -6866,7 +7026,18 @@ registry.registerPath({
   path: "/api/companies/{companyId}/heartbeat-runs",
   tags: ["runs"],
   summary: "List heartbeat runs for a company",
-  request: { params: z.object({ companyId: z.string() }) },
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z
+      .object({
+        agentId: z.string().optional(),
+        limit: z.string().optional(),
+        summary: z.string().optional(),
+        wakeReason: z.string().optional(),
+        hasResult: z.string().optional(),
+      })
+      .optional(),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7692,6 +7863,16 @@ registry.registerPath({
   summary: "Apply the Myrmidon Cloud onboarding seed collected at signup",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/ssh-dry-run",
+  tags: ["companies"],
+  summary: "Dry-run SSH credential validation for server onboarding (no persistence)",
+  description: "Validates SSH parameters (host, port, username, private key) by opening a real SSH connection. Does not create a server record and does not persist credentials. Password auth is not supported.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 // myrmidon(1.6.6-HERMES-SKILLS-A): moduleDir for the skills-source resolver.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +26,9 @@ import {
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
+  renderWakeBlockDelta,
   isPaperclipRecoveryWakePayload,
+  resolvePaperclipWakeHistoryMode,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
 } from "@myrmidon/adapter-utils/server-utils";
@@ -114,6 +117,11 @@ type ExecutionState = {
    * args, not anything from the completion event. See
    * formatCompactToolCompletedLine. */
   toolPreviews: Map<string, string[]>;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * (chars and estimated tokens) observed from tool.started previews during
+   * the run. Used to populate toolResultsChars/toolResultsTokens in the trace. */
+  toolResultCharsAccum: number;
+  toolResultTokensAccum: number;
   /** myrmidon(G4): Date.now() of the last throttled onRuntimeProgress call
    * (message.delta only — see RUNTIME_PROGRESS_DELTA_THROTTLE_MS), or null
    * before the first one. */
@@ -279,6 +287,27 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
+/**
+ * The session key strategy a run actually uses.
+ *
+ * Owner decisions: 05.11 isolation applies only to developers, 06.11 developers
+ * do not load previous runs at all. The board sets `developerOnlyTaskSession`
+ * (derived from the agent, never from the card) for developer runs; those get a
+ * fresh Hermes session per run (`run`), never `issue` (a task session that
+ * carries earlier runs' history) or `agent`. A card that already says `run` or
+ * `none` is never upgraded. Every other agent keeps its configured strategy.
+ *
+ * Kept in step with `resolveDeveloperSessionKeyStrategy` in @myrmidon/shared,
+ * which this package deliberately does not import.
+ */
+export function resolveEffectiveSessionKeyStrategy(input: {
+  configuredStrategy: SessionKeyStrategy;
+  developerOnlyTaskSession?: boolean;
+}): SessionKeyStrategy {
+  if (input.developerOnlyTaskSession !== true) return input.configuredStrategy;
+  return input.configuredStrategy === "none" ? "none" : "run";
+}
+
 export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
@@ -393,6 +422,11 @@ function buildHeaders(input: {
   apiKey: string;
   sessionKey: string | null;
   runId: string;
+  // myrmidon(OPE-10602): the board's own run id (always ctx.runId, never
+  // modelAttemptId). The hermes gateway binds this header's value as
+  // $PAPERCLIP_RUN_ID for the run's children, so agents mutate the board
+  // under the heartbeat_runs row this run actually owns.
+  paperclipRunId?: string;
   extraHeaders: Record<string, string>;
   accept: string;
   contentType?: string;
@@ -403,33 +437,67 @@ function buildHeaders(input: {
     Accept: input.accept,
     ...(input.contentType ? { "Content-Type": input.contentType } : {}),
     "Idempotency-Key": input.runId,
+    ...(input.paperclipRunId ? { "X-Paperclip-Run-Id": input.paperclipRunId } : {}),
     ...(input.sessionKey ? { "X-Hermes-Session-Key": input.sessionKey } : {}),
   };
 }
 
-function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): {
+function buildInput(
+  ctx: AdapterExecutionContext,
+  paperclipApiUrl: string | null,
+  idempotencyRunId: string,
+  previousDigests?: Record<string, string> | null,
+): {
   text: string;
   sections: Record<string, string | null | undefined>;
+  wakeBlockDigests: Record<string, string>;
 } {
   // Stable session keys (issue/agent strategy) resume the same remote Hermes
   // conversation across runs; a stored session id from a prior run means that
   // conversation already received the task brief, so pick the compact
   // task-context variant under the shared resume rules.
-  const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const sessionKeyStrategy = resolveEffectiveSessionKeyStrategy({
+    configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
+  });
+  // A developer run (effective strategy "run") never resumes: it gets the full
+  // task brief, whatever session id the board still has stored.
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
     Boolean(nonEmpty(ctx.runtime?.sessionId));
-  const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
+  const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
+  const isCompacted = Boolean(sessionHandoff);
+  const effectivePreviousDigests = resumedSession && !isCompacted ? (previousDigests ?? null) : null;
+  const outDigests: Record<string, string> = {};
+
+  const rawTaskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, {
+    // A compaction handoff starts a fresh provider context: restore the full
+    // task brief even though the transport still reports a resumed session.
+    resumedSession: resumedSession && !isCompacted,
+  }));
+  let taskMarkdown = rawTaskMarkdown;
+  if (rawTaskMarkdown) {
+    const delta = renderWakeBlockDelta({ taskMarkdown: rawTaskMarkdown }, effectivePreviousDigests);
+    taskMarkdown = delta.blocks.taskMarkdown ?? rawTaskMarkdown;
+    Object.assign(outDigests, delta.digests);
+  }
+
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
     conversationMode: ctx.context.conversationMode === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: Boolean(taskMarkdown),
+    suppressIssueDescription: Boolean(rawTaskMarkdown),
+    // myrmidon(WAKE-HISTORY): how much task history the wake carries — the
+    // card's wakeHistory, else by session strategy (run | none: summary only).
+    // The effective strategy decides, so a developer run forced to "run"
+    // (WAKE-9) gets the summary even when its card still says issue/agent.
+    wakeHistory: resolvePaperclipWakeHistoryMode({ ...ctx.config, sessionKeyStrategy }),
+    previousDigests: effectivePreviousDigests,
+    outDigests,
   });
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
-    omitIssueDescription: Boolean(taskMarkdown),
+    omitIssueDescription: Boolean(rawTaskMarkdown),
   });
-  const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   // myrmidon(1.6.5 PROMPT-BUDGET A): the identity/contract head of the input,
   // measured as its own prompt section.
@@ -484,6 +552,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
       taskMarkdown,
       wakePayloadJson: wakePayloadBlock,
     },
+    wakeBlockDigests: outDigests,
   };
 }
 
@@ -626,11 +695,21 @@ function buildRunBody(
   // payloadTemplate — same rule as github_broker (set after the spread;
   // `undefined` deletes a forged value and is dropped by JSON serialization).
   paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined,
-): { body: Record<string, unknown>; promptBreakdown: PromptBreakdown } {
+): {
+  body: Record<string, unknown>;
+  promptBreakdown: PromptBreakdown;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section,
+   * computed from the raw strings before measureSections applies its chars/4
+   * token heuristic. Needed because the trace schema stores both tokens and
+   * chars per section. */
+  sectionChars: Record<string, number>;
+  wakeBlockDigests: Record<string, string>;
+} {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
-  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId);
+  const previousDigests = (ctx.runtime?.sessionParams?.wakeBlockDigests as Record<string, string>) ?? null;
+  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId, previousDigests);
   const input = configuredInput && ctx.context.conversationMode === true
     ? `${configuredInput}\n\n${builtInput.text}`
     : configuredInput ?? builtInput.text;
@@ -702,23 +781,32 @@ function buildRunBody(
   // broker field too; section estimates cover only their own text, so the
   // parts need not sum exactly to `total` (unlike the joined-less contract,
   // where total is the exact parts sum).
-  const promptBreakdown = measureSections(
-    {
-      instructionsBundle: agentInstructionsBundle,
-      cardInstructions,
-      ...(configuredInput && ctx.context.conversationMode === true
-        ? // conversation mode appends the assembled input after the configured
-          // input, so both are on the wire and both are measured.
-          { ...builtInput.sections, configuredInput }
-        : configuredInput
-          ? // a configured input replaces the assembled input text: measuring
-            // both would double-count a prompt only one of which was sent.
-            { configuredInput }
-          : builtInput.sections),
-    },
-    { joined: JSON.stringify(body) },
-  );
-  return { body, promptBreakdown };
+  const sectionsForMeasurement: Record<string, string | null | undefined> = {
+    instructionsBundle: agentInstructionsBundle,
+    cardInstructions,
+    ...(configuredInput && ctx.context.conversationMode === true
+      ? // conversation mode appends the assembled input after the configured
+        // input, so both are on the wire and both are measured.
+        { ...builtInput.sections, configuredInput }
+      : configuredInput
+        ? // a configured input replaces the assembled input text: measuring
+          // both would double-count a prompt only one of which was sent.
+          { configuredInput }
+        : builtInput.sections),
+  };
+  const promptBreakdown = measureSections(sectionsForMeasurement, {
+    joined: JSON.stringify(body),
+  });
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section.
+  // Computed from the raw strings so the trace can store both tokens (from
+  // measureSections' chars/4 heuristic) and actual chars per section.
+  const sectionChars: Record<string, number> = {};
+  for (const [name, value] of Object.entries(sectionsForMeasurement)) {
+    if (typeof value === "string" && value.length > 0) {
+      sectionChars[name] = value.length;
+    }
+  }
+  return { body, promptBreakdown, sectionChars, wakeBlockDigests: builtInput.wakeBlockDigests };
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
@@ -842,6 +930,8 @@ function createExecutionState(runId: string): ExecutionState {
     terminalPromise,
     deltaLineBuffer: "",
     toolPreviews: new Map(),
+    toolResultCharsAccum: 0,
+    toolResultTokensAccum: 0,
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
     modelResponseStarted: false,
@@ -985,8 +1075,11 @@ function popGuardToolArguments(state: ExecutionState, name: string): unknown {
 async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
   if (!ctx.runGuard || state.guardModelTurnObserved) return;
   state.guardModelTurnObserved = true;
+  // myrmidon(RUN-GUARD-LOOPS): a stopped guard keeps answering stop; report the
+  // stop once, on the call that made it.
+  const alreadyStopped = ctx.runGuard.stopped;
   const decision = ctx.runGuard.modelCall();
-  if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+  if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
 }
 
 async function observeRunGuardEvent(input: {
@@ -1007,7 +1100,13 @@ async function observeRunGuardEvent(input: {
     const name = toolNameFromEvent(record);
     const args = record?.input ?? record?.arguments ?? record?.preview;
     if (args !== undefined) pushGuardToolArguments(state, name, args);
-    guard.event();
+    // myrmidon(RUN-GUARD-LOOPS): the call is classified (read-only or not) and
+    // counted; a long read-only streak or a thrice-repeated read stops the run.
+    // The wire event carries only the tool name and a short preview of the
+    // primary argument, which is all the guard hashes or inspects.
+    const alreadyStopped = guard.stopped;
+    const decision = guard.toolStarted(name, args);
+    if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
     return;
   }
   if (eventName === "tool.completed") {
@@ -1017,10 +1116,11 @@ async function observeRunGuardEvent(input: {
     }
     const name = toolNameFromEvent(record);
     const args = popGuardToolArguments(state, name);
+    const alreadyStopped = guard.stopped;
     const decision = toolHasError(record)
       ? guard.toolFailure(name, args)
       : guard.toolSuccess();
-    if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+    if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
     if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
     return;
   }
@@ -1089,11 +1189,23 @@ async function logCompactEvent(input: {
     const name = toolNameFromEvent(record);
     const preview = truncateForLog(toolPreviewFromEvent(record, redactText), COMPACT_TOOL_PREVIEW_MAX_CHARS);
     pushToolPreview(state, name, preview);
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulate tool result sizes
+    // from the preview content. The preview is the tool arguments/result
+    // snippet captured at tool.started time.
+    state.toolResultCharsAccum += preview.length;
+    state.toolResultTokensAccum += Math.ceil(preview.length / 4);
     await ctx.onLog("stdout", formatCompactToolStartedLine(name, preview));
   } else if (eventName === "tool.completed") {
     const name = toolNameFromEvent(record);
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): also accumulate from the
+    // completed event's error/output fields if present.
+    const outputStr = String(record?.output ?? record?.result ?? record?.stdout ?? "").trim();
+    if (outputStr) {
+      state.toolResultCharsAccum += outputStr.length;
+      state.toolResultTokensAccum += Math.ceil(outputStr.length / 4);
+    }
 
     // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
     if (toolHasError(record)) {
@@ -1652,7 +1764,23 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
+// myrmidon(OPE-11947): Hermes' own give-up notice. When the model pool is out of
+// quota (or the model never answers) Hermes retries, then ends the turn with
+// "⚠️ No reply: <model> didn't produce a reply this time, even after retries.
+// Send `continue` to try again, or switch models with /model." as the final
+// response. The turn "completes", so the board recorded a succeeded run whose
+// comment was that notice and re-woke the agent every few minutes (1709 of 5998
+// runs in 24 h). The notice is anchored at the start and bounded in length so a
+// long agent report that merely quotes it is never reclassified.
+export const HERMES_NO_REPLY_SENTINEL_RE =
+  /^\u26A0\uFE0F?\s*No reply:.{0,300}didn['\u2019]t produce a reply.{0,300}$/i;
+
+export function isHermesNoReplySentinel(response: string): boolean {
+  return HERMES_NO_REPLY_SENTINEL_RE.test(response.trim().replace(/\s+/g, " "));
+}
+
 export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  HERMES_NO_REPLY_SENTINEL_RE,
   // myrmidon(OPE-10494): provider maintenance / resource-exhaustion replies.
   // The upstream proxy answers with a bilingual Vietnamese/English notice
   // ("Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to
@@ -1715,10 +1843,50 @@ function parseRetryAfterSeconds(value: unknown): number | null {
   return null;
 }
 
+function extractUsageLimitReset(value: unknown): string | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const absolute =
+    record.resets_at ?? record.resetsAt ?? record.reset_at ?? record.resetAt;
+  const absoluteIso =
+    typeof absolute === "string" ? parseRetryAfterToIso(absolute) : null;
+  if (absoluteIso) return absoluteIso;
+  const seconds =
+    record.resets_in_seconds ?? record.resetsInSeconds ?? record.reset_in_seconds ?? record.resetInSeconds;
+  const resetSeconds = parseRetryAfterSeconds(seconds);
+  return resetSeconds === null
+    ? null
+    : new Date(Date.now() + resetSeconds * 1000).toISOString();
+}
+
+function extractUsageLimitResetFromWindows(value: unknown): string | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const direct = extractUsageLimitReset(record);
+  if (direct) return direct;
+  for (const key of ["windows", "usage_windows", "usageWindows", "wham_usage", "whamUsage"]) {
+    const windows = record[key];
+    if (!Array.isArray(windows)) continue;
+    const resets = windows
+      .map((window) => extractUsageLimitReset(window))
+      .filter((reset): reset is string => reset !== null)
+      .sort();
+    if (resets[0]) return resets[0];
+  }
+  return null;
+}
+
 function extractCooldownRetryNotBefore(
   payload: Record<string, unknown>,
 ): string | null {
   const errorRecord = asRecord(payload.error);
+  const usageLimitReset =
+    extractUsageLimitReset(errorRecord) ??
+    extractUsageLimitReset(payload) ??
+    extractUsageLimitResetFromWindows(payload.usage) ??
+    extractUsageLimitResetFromWindows(payload.wham_usage) ??
+    extractUsageLimitResetFromWindows(payload.whamUsage);
+  if (usageLimitReset) return usageLimitReset;
   const explicitIso = parseRetryAfterToIso(
     nonEmpty(payload.retry_not_before) ??
       nonEmpty(payload.retryNotBefore) ??
@@ -1759,6 +1927,7 @@ function isCooldownOrRateLimit(
     errorCode === 429 ||
     errorCode === "429" ||
     errorCode === "rate_limit_error" ||
+    errorType === "usage_limit_reached" ||
     errorType === "rate_limit_error" ||
     errorType === "cooldown_error" ||
     payload.cooldown === true ||
@@ -1786,6 +1955,215 @@ function parseRetryAfterToIso(value: string | null | undefined): string | null {
   return null;
 }
 
+/**
+ * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): build per-call trace entries for
+ * the server to persist into llm_call_traces. Content-free — only section
+ * sizes (chars/tokens), provider usage, cost, and the tools revision hash.
+ *
+ * A single gateway run may make multiple model calls (multi-turn loop).
+ * When the gateway payload carries a `model_calls` array with per-call usage,
+ * we emit one trace per call. Otherwise we fall back to aggregate usage per
+ * run (callIndex=0) because the per-call breakdown is only available inside
+ * the gateway runtime. When the payload carries explicit call ids
+ * (litellmRequestIds / gatewayCallIds) we attach the first id so the server
+ * can reconcile against litellm_cost_events.
+ */
+function buildLlmCallTraces(input: {
+  promptBreakdown?: PromptBreakdown;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section
+   * from buildRunBody, parallel to promptBreakdown.parts (which holds token
+   * estimates). Keyed by the same section names. */
+  sectionChars?: Record<string, number>;
+  usage: UsageSummary | undefined;
+  costUsd: number | null;
+  payload: Record<string, unknown>;
+  toolsRev: string | null;
+  toolCount: number | null;
+  modelAttemptId?: string | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): estimated tool schema sizes
+   * derived from the paperclip_skills field sent to the gateway. The gateway
+   * builds actual JSON schemas from these skills; we estimate the size from
+   * the skill metadata to give the server a rough sense of tool schema bloat. */
+  toolSchemaChars?: number | null;
+  toolSchemaTokens?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * observed from tool.started/tool.completed events during the run. */
+  toolResultChars?: number | null;
+  toolResultTokens?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): session compaction info from
+   * the server-side session rotation evaluation. Set by the server when
+   * persisting the trace; the adapter leaves this false. */
+  compacted?: boolean;
+  preCompactChars?: number | null;
+  postCompactChars?: number | null;
+}): Array<Record<string, unknown>> {
+  const sections = (input.promptBreakdown?.parts ?? {}) as Record<string, unknown>;
+  const chars = input.sectionChars ?? {};
+  const breakdownTotal = (input.promptBreakdown?.total ?? 0) as number;
+  const breakdownChars = Object.values(chars).reduce((sum, n) => sum + n, 0);
+
+  // Extract per-call ids from the payload when available.
+  // parseGatewayCallIds reads both payload-level and usage-level id arrays, so
+  // we reuse it here instead of only looking at payload.litellm_request_ids.
+  const litellmIds = parseGatewayCallIds(input.payload).litellmRequestIds;
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call usage from gateway
+  // payload. When the gateway emits a `model_calls` array with per-call
+  // usage objects, we build one trace per call. Each element should have:
+  //   - usage: { input_tokens, output_tokens, cached_input_tokens? }
+  //   - litellm_request_id?: string
+  //   - section_chars?: Record<string, number>  (per-call section sizes)
+  //   - model?: string
+  const modelCalls = Array.isArray(input.payload.model_calls)
+    ? (input.payload.model_calls as Array<Record<string, unknown>>)
+    : null;
+
+  const hasAnyData =
+    (input.usage?.inputTokens ?? 0) > 0 ||
+    (input.usage?.outputTokens ?? 0) > 0 ||
+    breakdownTotal > 0 ||
+    breakdownChars > 0;
+
+  if (!hasAnyData && !modelCalls) return [];
+
+  // Section mapping: the adapter's prompt assembly produces these sections:
+  //   instructionsBundle + cardInstructions  → system instructions
+  //   identityContract + wakePrompt + wakePayloadJson  → wake data
+  //   sessionHandoff + taskMarkdown  → history/context
+  // Tool schemas and tool results are NOT available at the adapter level —
+  // they live inside the gateway's LLM request/response, not in the adapter's
+  // prompt assembly. The trace schema allows null for these fields.
+  const systemTokens = (typeof sections.instructionsBundle === "number" ? sections.instructionsBundle : 0)
+    + (typeof sections.cardInstructions === "number" ? sections.cardInstructions : 0);
+  const systemChars = (chars.instructionsBundle ?? 0) + (chars.cardInstructions ?? 0);
+  const wakeTokens = (typeof sections.identityContract === "number" ? sections.identityContract : 0)
+    + (typeof sections.wakePrompt === "number" ? sections.wakePrompt : 0)
+    + (typeof sections.wakePayloadJson === "number" ? sections.wakePayloadJson : 0);
+  const wakeChars = (chars.identityContract ?? 0) + (chars.wakePrompt ?? 0) + (chars.wakePayloadJson ?? 0);
+  const historyTokens = (typeof sections.sessionHandoff === "number" ? sections.sessionHandoff : 0)
+    + (typeof sections.taskMarkdown === "number" ? sections.taskMarkdown : 0);
+  const historyChars = (chars.sessionHandoff ?? 0) + (chars.taskMarkdown ?? 0);
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call trace emission.
+  // When the gateway provides model_calls with per-call usage, emit one
+  // trace per call. This is the "трейс каждого LLM-вызова" requirement.
+  if (modelCalls && modelCalls.length > 0) {
+    return modelCalls.map((callData, idx) => {
+      const callUsage = asRecord(callData.usage) ?? {};
+      const callSections = asRecord(callData.section_chars) ?? {};
+      const callLitellmId = typeof callData.litellm_request_id === "string"
+        ? callData.litellm_request_id
+        : litellmIds[idx] ?? litellmIds[0] ?? null;
+      const callModel = typeof callData.model === "string"
+        ? callData.model
+        : typeof input.payload.model === "string" ? input.payload.model : null;
+
+      // Per-call section sizes: use gateway-provided if available, else adapter-computed
+      const callSystemChars = (typeof callSections.instructionsBundle === "number" ? callSections.instructionsBundle : 0)
+        + (typeof callSections.cardInstructions === "number" ? callSections.cardInstructions : 0)
+        || systemChars;
+      const callWakeChars = (typeof callSections.identityContract === "number" ? callSections.identityContract : 0)
+        + (typeof callSections.wakePrompt === "number" ? callSections.wakePrompt : 0)
+        + (typeof callSections.wakePayloadJson === "number" ? callSections.wakePayloadJson : 0)
+        || wakeChars;
+      const callHistoryChars = (typeof callSections.sessionHandoff === "number" ? callSections.sessionHandoff : 0)
+        + (typeof callSections.taskMarkdown === "number" ? callSections.taskMarkdown : 0)
+        || historyChars;
+
+      return {
+        version: 1,
+        callIndex: idx,
+        langfuseTraceId: null,
+        langfuseObservationId: null,
+        litellmRequestId: callLitellmId,
+        provider: typeof input.payload.provider === "string" ? input.payload.provider : null,
+        model: callModel,
+        toolsRev: input.toolsRev,
+        toolCount: input.toolCount,
+        sections: {
+          systemTokens: systemTokens > 0 ? systemTokens : undefined,
+          systemChars: callSystemChars > 0 ? callSystemChars : undefined,
+          toolsTokens: input.toolSchemaTokens ?? undefined,
+          toolsChars: input.toolSchemaChars ?? undefined,
+          wakeTokens: wakeTokens > 0 ? wakeTokens : undefined,
+          wakeChars: callWakeChars > 0 ? callWakeChars : undefined,
+          historyTokens: historyTokens > 0 ? historyTokens : undefined,
+          historyChars: callHistoryChars > 0 ? callHistoryChars : undefined,
+          toolResultsTokens: input.toolResultTokens ?? undefined,
+          toolResultsChars: input.toolResultChars ?? undefined,
+          totalTokens: breakdownTotal > 0 ? breakdownTotal : undefined,
+          totalChars: breakdownChars > 0 ? breakdownChars : undefined,
+        },
+        usage: {
+          promptTokens: asNumber(callUsage.input_tokens ?? callUsage.inputTokens, 0),
+          cachedPromptTokens: asNumber(callUsage.cached_input_tokens ?? callUsage.cachedInputTokens, 0),
+          completionTokens: asNumber(callUsage.output_tokens ?? callUsage.outputTokens, 0),
+          costMicroUsd: input.costUsd !== null ? Math.round(input.costUsd * 1_000_000) : undefined,
+        },
+        compacted: input.compacted ?? false,
+        preCompactChars: input.preCompactChars ?? undefined,
+        postCompactChars: input.postCompactChars ?? undefined,
+      };
+    });
+  }
+
+  // Fallback: single trace per run when gateway does not provide model_calls
+  const call: Record<string, unknown> = {
+    version: 1,
+    callIndex: 0,
+    langfuseTraceId: null,
+    langfuseObservationId: null,
+    litellmRequestId: litellmIds[0] ?? null,
+    provider: typeof input.payload.provider === "string" ? input.payload.provider : null,
+    model: typeof input.payload.model === "string" ? input.payload.model : null,
+    toolsRev: input.toolsRev,
+    toolCount: input.toolCount,
+    sections: {
+      systemTokens: systemTokens > 0 ? systemTokens : undefined,
+      systemChars: systemChars > 0 ? systemChars : undefined,
+      // Tool schemas: the exact paperclip_skills JSON payload sent to the
+      // gateway. The gateway builds actual JSON tool schemas from these;
+      // the transformed schema size is gateway-internal, not visible here.
+      toolsTokens: input.toolSchemaTokens ?? undefined,
+      toolsChars: input.toolSchemaChars ?? undefined,
+      wakeTokens: wakeTokens > 0 ? wakeTokens : undefined,
+      wakeChars: wakeChars > 0 ? wakeChars : undefined,
+      historyTokens: historyTokens > 0 ? historyTokens : undefined,
+      historyChars: historyChars > 0 ? historyChars : undefined,
+      // Tool results: accumulated from tool.started/tool.completed event
+      // previews observed during the run. The actual result content is
+      // embedded in the conversation history for subsequent provider calls
+      // within the same run; the gateway constructs those payloads and the
+      // per-call breakout is not visible to the adapter.
+      toolResultsTokens: input.toolResultTokens ?? undefined,
+      toolResultsChars: input.toolResultChars ?? undefined,
+      totalTokens: breakdownTotal > 0 ? breakdownTotal : undefined,
+      totalChars: breakdownChars > 0 ? breakdownChars : undefined,
+    },
+    usage: {
+      promptTokens: input.usage?.inputTokens ?? 0,
+      cachedPromptTokens: input.usage?.cachedInputTokens ?? 0,
+      completionTokens: input.usage?.outputTokens ?? 0,
+      costMicroUsd:
+        input.costUsd !== null ? Math.round(input.costUsd * 1_000_000) : undefined,
+    },
+    // Compaction is a server-side decision (session rotation in heartbeat.ts),
+    // not something the adapter can observe. The server sets this flag when
+    // persisting the trace based on sessionCompaction.rotate.
+    compacted: input.compacted ?? false,
+    preCompactChars: input.preCompactChars ?? undefined,
+    postCompactChars: input.postCompactChars ?? undefined,
+  };
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): when the gateway does not provide
+  // model_calls, we emit exactly one trace entry per run (callIndex=0) with
+  // the aggregate usage. This is the fallback for gateways that have not yet
+  // been updated to emit per-call data. The reconcile endpoint joins to
+  // litellm_cost_events on the server side, so per-call usage is recoverable
+  // from spend logs even when the gateway only reports aggregates.
+  return [call];
+}
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -1797,6 +2175,10 @@ export function mapFinalResultForTest(input: {
    * into heartbeat_runs.usageJson.promptBreakdown. Optional so existing test
    * callers that exercise only the result mapping keep their shape. */
   promptBreakdown?: PromptBreakdown;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section
+   * from buildRunBody, parallel to promptBreakdown.parts. Optional so existing
+   * test callers that exercise only the result mapping keep their shape. */
+  sectionChars?: Record<string, number>;
   /** myrmidon(F06-MODEL-TELEMETRY): the model the run was configured with
    * (ctx.config.model). Used only as the last resort when the terminal payload
    * names no model, so usageJson.model stops reading "unknown" for runs whose
@@ -1804,8 +2186,35 @@ export function mapFinalResultForTest(input: {
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
   modelResponseStarted?: boolean;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): hash of the tool-schema set
+   * the gateway will offer for this run. Computed from the sorted
+   * paperclip_skills paths (skills drive the tool catalogue) so the server
+   * can group calls by tools revision without seeing the schemas themselves.
+   * Optional — omitting it yields a null tools_rev in the trace. */
+  toolsRev?: string | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): number of distinct tool
+   * schemas the gateway registered for this run, when known. */
+  toolCount?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): tool schema sizes measured
+   * from the exact paperclip_skills JSON field sent to the gateway. The
+   * gateway transforms these into actual JSON tool schemas; the transformed
+   * size is gateway-internal. */
+  toolSchemaChars?: number | null;
+  toolSchemaTokens?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * observed from tool.started/tool.completed events during the run. */
+  toolResultChars?: number | null;
+  toolResultTokens?: number | null;
+  /** myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): session compaction info from
+   * the server-side session rotation evaluation. Set by the server when
+   * persisting the trace; the adapter leaves this false. */
+  compacted?: boolean;
+  preCompactChars?: number | null;
+  postCompactChars?: number | null;
   /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
   modelAttemptId?: string | null;
+  /** Digests of static wake blocks to persist for delta computation on next turn. */
+  wakeBlockDigests?: Record<string, string>;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1815,8 +2224,14 @@ export function mapFinalResultForTest(input: {
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
   const hasToolCalls = Array.isArray(payload.tool_calls) && payload.tool_calls.length > 0;
+  // myrmidon(OPE-11947): Hermes' "No reply" give-up notice is the gateway's own
+  // text, never a tool result, so it is a provider failure even when the turn
+  // made tool calls earlier. Without tool calls nothing was acted on and the
+  // run is safe to replay (see executionRecovery below).
+  const hermesNoReply = input.terminal.status === "completed" && isHermesNoReplySentinel(output);
   const providerErrorAsContent = Boolean(
-    input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output),
+    hermesNoReply ||
+      (input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output)),
   );
   const mapped = providerErrorAsContent
     ? { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" }
@@ -1906,9 +2321,22 @@ export function mapFinalResultForTest(input: {
     // see extractModel().
     model: extractModel(payload) ?? nonEmptyModel(input.configuredModel),
     ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+    ...(input.sectionChars ? { sectionChars: input.sectionChars } : {}),
+    ...(input.toolSchemaChars != null ? { toolSchemaChars: input.toolSchemaChars } : {}),
+    ...(input.toolSchemaTokens != null ? { toolSchemaTokens: input.toolSchemaTokens } : {}),
+    ...(input.toolResultChars != null ? { toolResultChars: input.toolResultChars } : {}),
+    ...(input.toolResultTokens != null ? { toolResultTokens: input.toolResultTokens } : {}),
+    ...(input.compacted != null ? { compacted: input.compacted } : {}),
+    ...(input.preCompactChars != null ? { preCompactChars: input.preCompactChars } : {}),
+    ...(input.postCompactChars != null ? { postCompactChars: input.postCompactChars } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
+    // myrmidon(OPE-11947): the model returned nothing and no tool ran, so the
+    // retry scheduler may replay the run (absent evidence never authorizes it).
+    ...(hermesNoReply && !hasToolCalls
+      ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } as const }
+      : {}),
     failedBeforeModel,
     retryNotBefore,
     ...(usage ? { usage } : {}),
@@ -1923,6 +2351,9 @@ export function mapFinalResultForTest(input: {
       hermesRunId: input.terminal.runId,
       ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
       strategy: input.strategy,
+      ...(input.wakeBlockDigests && Object.keys(input.wakeBlockDigests).length > 0
+        ? { wakeBlockDigests: input.wakeBlockDigests }
+        : {}),
     },
     sessionDisplayId,
     resultJson: {
@@ -1950,7 +2381,38 @@ export function mapFinalResultForTest(input: {
       ...(isCooldown ? { cooldown: true } : {}),
       ...(retryNotBefore ? { retryNotBefore } : {}),
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+      // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call LLM trace emitted
+      // for the server to persist into llm_call_traces. Content-free — only
+      // sizes, hashes, usage. See server/src/myrmidon/tokens-trace/domain.ts.
+      ...((): Record<string, unknown> => {
+        const traces = buildLlmCallTraces({
+          promptBreakdown: input.promptBreakdown,
+          sectionChars: input.sectionChars,
+          usage,
+          costUsd,
+          payload,
+          toolsRev: input.toolsRev ?? null,
+          toolCount: input.toolCount ?? null,
+          modelAttemptId: input.modelAttemptId,
+          toolSchemaChars: input.toolSchemaChars ?? null,
+          toolSchemaTokens: input.toolSchemaTokens ?? null,
+          toolResultChars: input.toolResultChars ?? null,
+          toolResultTokens: input.toolResultTokens ?? null,
+          compacted: input.compacted ?? false,
+          preCompactChars: input.preCompactChars ?? null,
+          postCompactChars: input.postCompactChars ?? null,
+        });
+        return traces.length > 0 ? { llmCallTraces: { version: 1, calls: traces } } : {};
+      })(),
       ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
+      // myrmidon(OPE-11947): the board defers the retry of a model-unavailable
+      // run by 30 min and up instead of the 30 s transient pair, and auto-resume
+      // returns the agent on the same long schedule. Every provider-error-as-content text
+      // (Hermes' "No reply" notice, an overload, a quota or maintenance reply)
+      // means the model pool did not answer, so the marker follows
+      // providerErrorAsContent, not only the "No reply" sentinel. Replay safety
+      // is a separate question, answered by executionRecovery above.
+      ...(providerErrorAsContent ? { model_unavailable: true } : {}),
     },
   };
 }
@@ -1984,6 +2446,19 @@ async function stopRun(input: {
 }
 
 /**
+ * myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): provenance travels as HTTP header
+ * values, which must be single-line Latin-1. An operator's cancellation reason
+ * is free text (often Russian); one character above U+00FF makes fetch throw
+ * before the request is sent, and the best-effort stop then silently never
+ * reached the gateway. Non-ASCII text is percent-encoded, control characters
+ * dropped, length bounded.
+ */
+function headerSafe(value: string): string {
+  const flat = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 160);
+  return /^[\x20-\x7e]*$/.test(flat) ? flat : encodeURIComponent(flat);
+}
+
+/**
  * myrmidon(HERMES-RUN-REATTACH): board-side stop for a gateway run the board
  * is not actively supervising (no live adapter execution): the heartbeat
  * cancellation path calls this with the run's persisted externalRunId so the
@@ -2010,11 +2485,11 @@ export async function stopGatewayRunForBoard(input: {
         Authorization: `Bearer ${input.apiKey}`,
         ...(input.cancellation
           ? {
-              "x-paperclip-correlation-id": input.cancellation.correlationId,
-              "x-paperclip-cancellation-source": input.cancellation.source.code,
-              ...(input.cancellation.source.endpoint ? { "x-paperclip-cancellation-endpoint": input.cancellation.source.endpoint } : {}),
-              ...(input.cancellation.source.actor ? { "x-paperclip-cancellation-actor": input.cancellation.source.actor } : {}),
-              "x-paperclip-cancellation-reason": input.cancellation.reason,
+              "x-paperclip-correlation-id": headerSafe(input.cancellation.correlationId),
+              "x-paperclip-cancellation-source": headerSafe(input.cancellation.source.code),
+              ...(input.cancellation.source.endpoint ? { "x-paperclip-cancellation-endpoint": headerSafe(input.cancellation.source.endpoint) } : {}),
+              ...(input.cancellation.source.actor ? { "x-paperclip-cancellation-actor": headerSafe(input.cancellation.source.actor) } : {}),
+              "x-paperclip-cancellation-reason": headerSafe(input.cancellation.reason),
             }
           : {}),
       },
@@ -2254,6 +2729,10 @@ export function errorResult(
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
   const errorBody = asRecord(hermesError.body);
   const nestedError = asRecord(errorBody?.error);
+  const usageLimitError =
+    nestedError?.type === "usage_limit_reached" ||
+    errorBody?.error_type === "usage_limit_reached" ||
+    errorBody?.type === "usage_limit_reached";
   const bodyErrorMessage =
     nonEmpty(nestedError?.message) ??
     nonEmpty(errorBody?.message) ??
@@ -2278,6 +2757,7 @@ export function errorResult(
     errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage);
 
   const rawRetryNotBefore =
+    (usageLimitError ? extractCooldownRetryNotBefore(errorBody ?? {}) : null) ??
     hermesError.retryNotBefore ??
     nonEmpty(errorBody?.retry_not_before) ??
     nonEmpty(errorBody?.retryNotBefore) ??
@@ -2293,7 +2773,7 @@ export function errorResult(
   // classification, or every structured cooldown arriving on HTTP 429 would
   // be misfiled as transient_upstream.
   const errorFamily =
-    (isDeploymentCooldown || (isCooldown && !hermesError.status)
+    (isDeploymentCooldown || usageLimitError || (isCooldown && !hermesError.status)
       ? "provider_quota"
       : classified?.family) ??
     (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
@@ -2462,7 +2942,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
-  const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const strategy = resolveEffectiveSessionKeyStrategy({
+    configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
+  });
   // myrmidon(G4): raw debug JSON is opt-in; see handleEvent/logCompactEvent.
   const debugEvents = ctx.config.debugEvents === true;
   // myrmidon(G4): the Idempotency-Key, the "run" session-key strategy, and
@@ -2507,6 +2990,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     apiKey,
     sessionKey,
     runId: idempotencyKey,
+    // myrmidon(OPE-10602): the board's run id for the gateway to bind as
+    // $PAPERCLIP_RUN_ID — always ctx.runId (see buildHeaders note).
+    paperclipRunId: ctx.runId,
     extraHeaders,
     accept: "application/json",
     contentType: "application/json",
@@ -2515,6 +3001,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     apiKey,
     sessionKey,
     runId: idempotencyKey,
+    paperclipRunId: ctx.runId,
     extraHeaders,
     accept: "text/event-stream",
   });
@@ -2625,6 +3112,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // history block below is appended, so `input` sections reflect the prompt
   // as assembled by buildInput — not the post-restore wake text.
   const promptBreakdown = body.promptBreakdown;
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per section,
+  // parallel to promptBreakdown.parts. Passed through to buildLlmCallTraces.
+  const sectionChars = body.sectionChars;
   // myrmidon(MEMORY-CENTRAL-B): the read happens before the run body is
   // consumed — a store failure never blocks a run: the wake proceeds without
   // the restored block, the reason is logged.
@@ -2902,7 +3392,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
       };
     }
-    return errorResult(err, redactText);
+    const createFailure = errorResult(err, redactText);
+    if (createFailure.errorFamily === "provider_quota" && fallbackModels.length > 0) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] provider_quota on run creation; retrying with configured fallback ${fallbackModels[0]}\n`,
+      );
+      const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+      return execute({
+        ...ctx,
+        runId: fallbackAttemptId,
+        config: {
+          ...ctx.config,
+          model: fallbackModels[0],
+          models: { fallbacks: fallbackModels.slice(1) },
+          modelAttemptId: fallbackAttemptId,
+        },
+        onDispatch: undefined,
+        onExternalRunId: undefined,
+        onMeta: undefined,
+      });
+    }
+    return createFailure;
   }
   }
 
@@ -3036,6 +3547,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: {
         hermesRunId: runId,
         strategy,
+        ...(body.wakeBlockDigests && Object.keys(body.wakeBlockDigests).length > 0
+          ? { wakeBlockDigests: body.wakeBlockDigests }
+          : {}),
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
@@ -3079,10 +3593,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: {
         hermesRunId: runId,
         strategy,
+        ...(body.wakeBlockDigests && Object.keys(body.wakeBlockDigests).length > 0
+          ? { wakeBlockDigests: body.wakeBlockDigests }
+          : {}),
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
   }
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): hash the sorted skill paths so
+  // the server can group calls by tools revision. Skills drive the gateway's
+  // tool catalogue; a change in the skill set (or order) changes the hash.
+  const toolsRev = paperclipSkillsField
+    ? createHash("sha256")
+        .update(
+          JSON.stringify(
+            [...paperclipSkillsField]
+              .map((s) => s.path)
+              .sort(),
+          ),
+        )
+        .digest("hex")
+    : null;
+  const toolCount = paperclipSkillsField?.length ?? null;
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): measure tool schema sizes from
+  // the exact paperclip_skills JSON field sent to the gateway. This IS the
+  // actual serialized payload the adapter puts on the wire — not an estimate.
+  // The gateway transforms these skills into JSON tool schemas for the
+  // provider; that transformed size is gateway-internal and not visible here.
+  let toolSchemaChars: number | null = null;
+  let toolSchemaTokens: number | null = null;
+  if (paperclipSkillsField && paperclipSkillsField.length > 0) {
+    const skillsJson = JSON.stringify(paperclipSkillsField);
+    toolSchemaChars = skillsJson.length;
+    // Token estimate: ~4 chars per token for JSON
+    toolSchemaTokens = Math.ceil(skillsJson.length / 4);
+  }
+
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulate tool result sizes from
+  // tool events observed during the run. We track the preview/detail content
+  // sizes from tool.started events (the tool.completed payload doesn't carry
+  // the result content).
+  const toolResultChars = state.toolResultCharsAccum ?? null;
+  const toolResultTokens = state.toolResultTokensAccum ?? null;
 
   const finalResult = mapFinalResultForTest({
     terminal: outcome,
@@ -3091,9 +3645,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
+    sectionChars,
     modelAttemptId: nonEmpty(ctx.config.modelAttemptId),
     configuredModel: nonEmpty(ctx.config.model),
     modelResponseStarted: state.modelResponseStarted,
+    toolsRev,
+    toolCount,
+    toolSchemaChars,
+    toolSchemaTokens,
+    toolResultChars,
+    toolResultTokens,
+    wakeBlockDigests: body.wakeBlockDigests,
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's
@@ -3145,7 +3707,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const shouldTryFallback =
       finalResult.errorCode === "hermes_gateway_run_failed" &&
-      finalResult.errorFamily === "transient_upstream" &&
+      (finalResult.errorFamily === "transient_upstream" ||
+        finalResult.errorFamily === "provider_quota") &&
       fallbackModels.length > 0;
 
     if (shouldTryFallback) {

@@ -6,7 +6,7 @@
 import { REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY, REVIEW_ROUTING_PR_KIND_METADATA_KEY } from "@myrmidon/shared";
 
 /** The per-head CI/review state the github.ts resolver reads off GitHub. */
-export type PullRequestHeadCiState = "green" | "not_green" | "unknown";
+export type PullRequestHeadCiState = "green" | "not_green" | "unknown" | "pending";
 export type PullRequestReviewDecision = "APPROVED" | "CHANGES_REQUESTED" | "BLOCKED" | null;
 
 export interface PrRef {
@@ -24,12 +24,23 @@ export interface PullRequestHeadState extends PrRef {
   ci: PullRequestHeadCiState;
   reviewDecision: PullRequestReviewDecision;
   fetchFailed: boolean;
+  /** GitHub mergeability, null when GitHub cannot determine it. */
+  mergeable?: boolean | null;
   /** Present when the PR body was read (title, link, author, base for the task text). */
   title?: string | null;
   url?: string | null;
   authorLogin?: string | null;
   baseRef?: string | null;
   labels?: readonly string[];
+}
+
+export function shouldHandOffDeliveringPr(head: PullRequestHeadState): boolean {
+  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && head.ci === "green";
+}
+
+/** In-progress work can wait for CI/review once its open PR is conflict-free. */
+export function shouldRouteOpenPrToReview(head: PullRequestHeadState): boolean {
+  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && (head.ci === "pending" || head.ci === "green");
 }
 
 /** The board-side view of an open pr-routing task, for coverage and supersede. */
@@ -54,14 +65,14 @@ export interface PrRoutedTask {
  */
 export function reviewTaskDueForHead(head: PullRequestHeadState): boolean {
   if (!head.open || head.draft) return false;
-  if (head.fetchFailed || head.ci !== "green") return false;
+  if (head.fetchFailed || head.ci !== "green" || head.mergeable !== true) return false;
   return head.reviewDecision === null;
 }
 
 /** The steward trigger: open, green, APPROVED on the current head. */
 export function stewardTaskDueForHead(head: PullRequestHeadState): boolean {
   if (!head.open) return false;
-  if (head.fetchFailed || head.ci !== "green") return false;
+  if (head.fetchFailed || head.ci !== "green" || head.mergeable !== true) return false;
   return head.reviewDecision === "APPROVED";
 }
 
@@ -171,4 +182,133 @@ export function prRoutingTaskDescription(head: PullRequestHeadState, kind: "revi
     );
   }
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// myrmidon(OPE-11767): the board-side merge of an approved pull request.
+//
+// The board's own review stage approved the PR; nothing merged it when CI
+// turned green AFTER the approval (the steward lane only creates a human task,
+// and a conflict after the approval left the task in `in_review`). These are
+// the pure decisions: which head a verdict covers, and what to do with an
+// approved head given what GitHub says about it right now. No clock, no I/O.
+// ---------------------------------------------------------------------------
+
+/** `head <sha>` spelled out in a verdict (the pre-existing convention of the approval propagation). */
+const REVIEWED_HEAD_EXPLICIT_PATTERN = /\bhead\b[^0-9a-fA-F\n]{0,8}([0-9a-fA-F]{7,40})\b/i;
+/** A bare commit sha token: 7-40 hex characters not glued to other word characters. */
+const COMMIT_SHA_TOKEN_PATTERN = /(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])/gi;
+/** Shortest sha prefix that still identifies a head. */
+export const MIN_REVIEWED_HEAD_LENGTH = 7;
+
+/**
+ * The head a review verdict declares it covers. The explicit `head <sha>`
+ * spelling wins; otherwise the FIRST bare sha token that holds at least one
+ * digit and one letter (the reviewers' convention is `APPROVE PR #N <sha>` on
+ * the first line; a hex-only English word has no digit, a plain number no
+ * letter). No sha is null: a verdict that names no head covers no head.
+ */
+export function declaredReviewedHead(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const explicit = REVIEWED_HEAD_EXPLICIT_PATTERN.exec(text);
+  if (explicit?.[1]) return explicit[1];
+  for (const match of text.matchAll(COMMIT_SHA_TOKEN_PATTERN)) {
+    // A sha holds both digits and a-f letters; a plain number or a hex-only word is not one.
+    if (/[0-9]/.test(match[0]) && /[a-f]/i.test(match[0])) return match[0];
+  }
+  return null;
+}
+
+/** Prefix equality in either direction; both sides at least `MIN_REVIEWED_HEAD_LENGTH` long. */
+export function reviewedHeadMatches(declared: string | null | undefined, current: string | null | undefined): boolean {
+  if (!declared || !current) return false;
+  const a = declared.trim().toLowerCase();
+  const b = current.trim().toLowerCase();
+  if (a.length < MIN_REVIEWED_HEAD_LENGTH || b.length < MIN_REVIEWED_HEAD_LENGTH) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+/** The approval covers the PR head exactly when the verdict names that head. */
+export function verdictCoversHead(verdict: string | null | undefined, headSha: string | null | undefined): boolean {
+  return reviewedHeadMatches(declaredReviewedHead(verdict), headSha);
+}
+
+/** What GitHub says about one PR right now (one `GET /pulls/{n}`). */
+export interface BoardMergeFacts {
+  open: boolean;
+  draft: boolean;
+  headSha: string | null;
+  baseRef: string | null;
+  /** The REST `mergeable` flag; null while GitHub is still computing it. */
+  mergeable: boolean | null;
+  /** The REST `mergeable_state`: clean, dirty, blocked, behind, unstable, has_hooks, draft, unknown. */
+  mergeableState: string | null;
+  labels: readonly string[];
+}
+
+/** One required check on the head: the verdict of its LATEST run. */
+export type RequiredCheckVerdict = "success" | "pending" | "failed";
+
+export type BoardMergeSkipReason = "closed" | "draft" | "no_head" | "base_not_allowed" | "head_not_approved";
+export type BoardMergeWaitReason = "mergeability_unknown" | "ci_pending" | "ci_failed" | "blocked";
+export type BoardMergeReturnReason = "conflict" | "behind";
+
+export type BoardMergeDecision =
+  | { kind: "skip"; reason: BoardMergeSkipReason }
+  | { kind: "return"; reason: BoardMergeReturnReason }
+  | { kind: "wait"; reason: BoardMergeWaitReason }
+  /** Everything but the required checks is settled: read them (one GitHub request per check). */
+  | { kind: "read_checks" }
+  /** Blocked only by the missing review marker (the hot-files gate): put it, then wait. */
+  | { kind: "label" }
+  | { kind: "merge" };
+
+/** Merge states GitHub reports for a PR it will merge as it is. */
+const MERGEABLE_AS_IS_STATES: ReadonlySet<string> = new Set(["clean", "unstable", "has_hooks"]);
+
+/**
+ * The decision for one approved PR, in a fixed order:
+ *  1. closed / draft / unreadable head / a base the board does not merge into;
+ *  2. the verdict must name THIS head (an approval is never carried to a new head);
+ *  3. a conflict, or a head behind a base that must be current (GitHub reports
+ *     `behind` only when the repository requires an up-to-date branch), goes
+ *     back to the implementer — before CI, a rebase changes the head anyway;
+ *  4. unknown mergeability waits for the next pass;
+ *  5. the required checks (null = not read yet): any failed or missing waits;
+ *  6. clean / unstable / has_hooks merges as it is — a behind-but-allowed
+ *     branch is never updated here, `update-branch` would move the head and
+ *     void the approval; `blocked` with the review marker missing asks for
+ *     the marker, otherwise waits.
+ */
+export function decideBoardMerge(input: {
+  facts: BoardMergeFacts;
+  baseBranches: readonly string[];
+  verdict: string | null | undefined;
+  checks: Readonly<Record<string, RequiredCheckVerdict>> | null;
+  requiredChecks: readonly string[];
+  approvedLabel?: string;
+}): BoardMergeDecision {
+  const { facts } = input;
+  if (!facts.open) return { kind: "skip", reason: "closed" };
+  if (facts.draft || facts.mergeableState === "draft") return { kind: "skip", reason: "draft" };
+  if (!facts.headSha) return { kind: "skip", reason: "no_head" };
+  const base = (facts.baseRef ?? "").trim();
+  if (!base || !input.baseBranches.includes(base)) return { kind: "skip", reason: "base_not_allowed" };
+  if (!verdictCoversHead(input.verdict, facts.headSha)) return { kind: "skip", reason: "head_not_approved" };
+
+  if (facts.mergeable === false || facts.mergeableState === "dirty") return { kind: "return", reason: "conflict" };
+  if (facts.mergeableState === "behind") return { kind: "return", reason: "behind" };
+  if (facts.mergeable === null || facts.mergeableState === null || facts.mergeableState === "unknown") {
+    return { kind: "wait", reason: "mergeability_unknown" };
+  }
+
+  if (input.checks === null) return { kind: "read_checks" };
+  const verdicts = input.requiredChecks.map((name) => input.checks![name] ?? "pending");
+  if (verdicts.includes("failed")) return { kind: "wait", reason: "ci_failed" };
+  if (verdicts.includes("pending")) return { kind: "wait", reason: "ci_pending" };
+
+  if (MERGEABLE_AS_IS_STATES.has(facts.mergeableState)) return { kind: "merge" };
+  const marker = input.approvedLabel ?? "review-approved";
+  if (facts.mergeableState === "blocked" && !facts.labels.includes(marker)) return { kind: "label" };
+  return { kind: "wait", reason: "blocked" };
 }

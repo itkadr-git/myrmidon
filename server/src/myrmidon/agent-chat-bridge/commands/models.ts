@@ -322,6 +322,7 @@ export async function listModelCandidates(
   adapterType: string,
   cardAdapterConfig: Record<string, unknown>,
   catalog: ChatModelCatalogReader | null = null,
+  companyId?: string,
 ): Promise<ChatModelList> {
   const seen = new Set<string>();
   const candidates: ChatModelCandidate[] = [];
@@ -385,7 +386,7 @@ export async function listModelCandidates(
 
   let discovered: { id: string; label: string }[] = [];
   try {
-    discovered = await listAdapterModels(adapterType);
+    discovered = await listAdapterModels(adapterType, companyId);
   } catch {
     // Model discovery failing must not make /model unusable; fall back to the card's own values.
     discovered = [];

@@ -25,7 +25,10 @@ export interface FleetSiteHealth {
 
 export interface FleetSiteProfile {
   hindsightUrl?: string;
+  /** LLM gateway base URL as seen from this site. */
   llmBaseUrl?: string;
+  /** Board address the site-agent uses for its health probe, as host:port. */
+  boardAddress?: string;
   boardExtraHost?: string;
   volumeRoot?: string;
   network?: string;
@@ -59,6 +62,7 @@ export const myrmidonFleetSites = pgTable(
     clientCert: text("client_cert"),
     clientCertSecretKey: text("client_cert_secret_key"),
     clientCertNotAfter: timestamp("client_cert_not_after", { withTimezone: true }),
+    clientCertFingerprint: text("client_cert_fingerprint"),
     status: text("status").notNull().default("active"),
     capacity: jsonb("capacity").$type<FleetSiteCapacity>().notNull().default({ maxCpus: 8, maxMemoryMb: 32768 }),
     profile: jsonb("profile").$type<FleetSiteProfile>().notNull().default({}),

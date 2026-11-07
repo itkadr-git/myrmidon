@@ -43,6 +43,8 @@ import {
 } from "../../services/index.js";
 // myrmidon(1.6-SKILL-LIFE): the lifecycle decides what reaches this agent.
 import { skillLifecycleService } from "../skill-lifecycle/index.js";
+import { readCorpusModuleSettings } from "../corpus/settings.js";
+import { CORPUS_MCP_SERVER_NAME, CORPUS_MCP_ROUTE } from "../corpus/contract.js";
 import { BOT_AGENT_API_KEY_NAME, ensureBotAgentKey } from "./agent-key.js";
 import { createBotBoardGatewayDeps, releaseStrayBotGateways } from "./board-gateway-ports.js";
 import {
@@ -64,6 +66,7 @@ import {
   type BotProfileCompileOptions,
   type BotProfilePorts,
 } from "./profile-compile.js";
+import type { BotMcpSource } from "./profile-input.js";
 // myrmidon(PERF-DIET-G): the skills half of these ports, kept out of the database
 // glue so the catalogue rules are tested against fake readers.
 import { createBotProfileSkillLoader } from "./profile-skills.js";
@@ -376,6 +379,22 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     },
 
     async listMcpServers(agent, context) {
+      // The corpus endpoint is deliberately a per-bot MCP source rather than a
+      // static instance source: the token is the bot's own API key, so the
+      // endpoint's assertCompanyAccess prevents cross-company use.
+      const servers: BotMcpSource[] = [];
+      if (context.enabled) {
+        const general = await instanceSettings.getGeneral();
+        if (readCorpusModuleSettings(general.corpus).enabled) {
+          const key = await this.ensureAgentApiKey(agent);
+          const base = context.boardUrl.trim().replace(/\/+$/, "").replace(/\/api$/, "");
+          servers.push({
+            name: CORPUS_MCP_SERVER_NAME,
+            url: `${base}/api${CORPUS_MCP_ROUTE.replace(":companyId", agent.companyId)}`,
+            token: key.value,
+          });
+        }
+      }
       const secretName = botGatewaySecretName(agent.id);
       const deps = createBotBoardGatewayDeps(db, agent, {
         async readSecret() {
@@ -404,17 +423,13 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       const ensured = await ensureBotBoardGateway(
         context.enabled ? deps : { ...deps, resolveAssignment: async () => ({ assignment: null, warnings: [] }) },
       );
-      if (!ensured.gateway) return { servers: [], warnings: ensured.warnings };
-      return {
-        servers: [
-          {
-            name: BOT_BOARD_GATEWAY_SERVER_NAME,
-            url: botBoardGatewayUrl(context.boardUrl, ensured.gateway.publicId),
-            token: ensured.gateway.token,
-          },
-        ],
-        warnings: ensured.warnings,
-      };
+      if (!ensured.gateway) return { servers, warnings: ensured.warnings };
+      servers.push({
+        name: BOT_BOARD_GATEWAY_SERVER_NAME,
+        url: botBoardGatewayUrl(context.boardUrl, ensured.gateway.publicId),
+        token: ensured.gateway.token,
+      });
+      return { servers, warnings: ensured.warnings };
     },
 
     // myrmidon(PERF-DIET-G): the rules live in profile-skills.ts (tested with
@@ -598,6 +613,7 @@ export function botProfileWiring(
       tokenSecret: site.tokenSecret ?? "",
       hindsightUrl: site.profile.hindsightUrl,
       llmBaseUrl: site.profile.llmBaseUrl,
+      boardAddress: site.profile.boardAddress,
       boardExtraHost: site.profile.boardExtraHost,
       volumeRoot: site.profile.volumeRoot,
       network: site.profile.network,

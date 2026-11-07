@@ -1,0 +1,11 @@
+[Unit]
+Description=Myrmidon Host GC — Task Clone & Build Cache Cleanup
+Documentation=file:///opt/myrmidon/scripts/myrmidon/host-gc/README.md
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /opt/myrmidon/scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --apply
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

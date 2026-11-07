@@ -11,13 +11,10 @@ import {
   companies,
   createDb,
   heartbeatRuns,
-  agentWakeupRequests,
-  knowledgeItems,
-  knowledgeRevisions,
-  knowledgeSources,
-  issueWorkProducts,
   issueClaims,
+  issueComments,
   issueRecoveryActions,
+  issueRelations,
   issues,
   litellmCostEvents,
 } from "@myrmidon/db";
@@ -25,13 +22,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES, renderMetricsText } from "./metrics.js";
+import { collectMetricsSnapshot, renderMetricsText, runMetricsSelfCheck, METRIC_FAMILIES } from "./metrics.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { createRecoveryFactoryMetrics } from "@myrmidon/shared";
 import type { IssueRecoveryActionKind, RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
 import { recordSwarmClaimSignal, resetSwarmClaimSignals } from "./swarm-signals.js";
 import { resetStaleBlockSignals, recordStaleBlockSignal } from "../../stale-block/attention.js";
 import { resetTracingHealthSignals } from "../../tracing-health/attention.js";
+import { resetAgentSpendWindowsCache } from "../../litellm-keys/key-spend.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -52,15 +50,14 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetSwarmClaimSignals();
     resetStaleBlockSignals();
     resetTracingHealthSignals();
-    await db.delete(agentWakeupRequests);
+    // The per-agent spend read is cached per database handle; every case seeds its own rows.
+    resetAgentSpendWindowsCache();
     await db.delete(litellmCostEvents);
-    await db.delete(knowledgeSources);
-    await db.delete(knowledgeRevisions);
-    await db.delete(knowledgeItems);
-    await db.delete(issueWorkProducts);
     await db.delete(issueClaims);
     await db.delete(issueRecoveryActions);
+    await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -104,6 +101,8 @@ describeEmbeddedPostgres("metrics collector", () => {
       startedAt?: Date;
       finishedAt?: Date;
       createdAt?: Date;
+      livenessState?: string | null;
+      livenessReason?: string | null;
     },
   ) {
     const runId = randomUUID();
@@ -116,23 +115,24 @@ describeEmbeddedPostgres("metrics collector", () => {
       status: input.status,
       startedAt: input.startedAt ?? null,
       finishedAt: input.finishedAt ?? null,
+      livenessState: input.livenessState ?? null,
+      livenessReason: input.livenessReason ?? null,
       ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     });
     return runId;
   }
 
-  it("counts deferred issue executions older than thirty minutes", async () => {
-    const companyId = await seedCompany();
-    const agentId = await seedAgent(companyId, "engineer");
-    await db.insert(agentWakeupRequests).values([
-      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "cancelled", requestedAt: new Date(NOW.getTime() - 40 * 60_000) },
-      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), createdAt: new Date(NOW.getTime() - 31 * 60_000), runId: randomUUID() },
-      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), createdAt: new Date(NOW.getTime() - 31 * 60_000) },
-      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 29 * 60_000), createdAt: new Date(NOW.getTime() - 29 * 60_000) },
-    ]);
-    const snapshot = await collectMetricsSnapshot({ db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600 });
-    expect(snapshot.deferredIssueExecutionOver30m).toBe(1);
-  });
+  async function seedIssue(companyId: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    return issueId;
+  }
 
   it("reads active recovery age and counts manually seeded addressless actions", async () => {
     const companyId = await seedCompany();
@@ -324,6 +324,33 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.scrapeErrors).toBe(0);
   });
 
+  it("exports empty-response run counts by agent to the monitoring scrape", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    const runId = await seedRun(companyId, agentId, {
+      status: "succeeded",
+      finishedAt: NOW,
+    });
+    const issueId = await seedIssue(companyId);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "CI run still in progress",
+      createdByRunId: runId,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+    });
+    const exposition = renderMetricsText(snapshot);
+    expect(exposition).toContain(`myrmidon_empty_runs_total{role="all",agent_id="${agentId}"} 1`);
+  });
+
   it("counts failed runs only inside the error window", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId, "engineer");
@@ -483,6 +510,18 @@ describeEmbeddedPostgres("metrics collector", () => {
       occurredAt: new Date(NOW.getTime() - 10 * 3600 * 1000),
       requestId: randomUUID(),
     });
+    await db.insert(litellmCostEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      provider: "provider-a",
+      model: "model-a",
+      inputTokens: 10,
+      outputTokens: 20,
+      costCents: 400,
+      occurredAt: new Date(NOW.getTime() - 48 * 3600 * 1000),
+      requestId: randomUUID(),
+    });
 
     const snapshot = await collectMetricsSnapshot({
       db,
@@ -491,6 +530,10 @@ describeEmbeddedPostgres("metrics collector", () => {
       latencyWindowSec: 3600,
     });
     expect(snapshot.llmCostCentsWindow).toBe(300);
+    expect(snapshot.llmKeySpend).toEqual([
+      { companyId, agentId, window: "24h", cents: 1299 },
+      { companyId, agentId, window: "7d", cents: 1699 },
+    ]);
   });
 
   it("counts agent error signals from the attention registries", async () => {
@@ -573,121 +616,60 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(JSON.stringify(result)).not.toContain("company-a");
   });
 
-  it("knowledge-on-change share counts only closed tasks with a system change, with and without a wiki revision", async () => {
+  it("collects live engineers, idle engineers, and unblocked todo tasks", async () => {
     const companyId = await seedCompany();
-    const agentId = await seedAgent(companyId, "engineer");
-    const closedAt = new Date(NOW.getTime() - 24 * 3600 * 1000);
+    const activeEngId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, activeEngId, { status: "running", startedAt: new Date(NOW.getTime() - 10 * 60 * 1000) });
 
-    // A knowledge item + revision, created a day after the merge.
-    const itemId = randomUUID();
-    await db.insert(knowledgeItems).values({
-      id: itemId,
-      companyId,
-      nestId: companyId,
-      kind: "note",
-      slug: "device-overview",
-      title: "Device overview",
-    });
-    const revisionId = randomUUID();
-    await db.insert(knowledgeRevisions).values({
-      id: revisionId,
-      companyId,
-      nestId: companyId,
-      itemId,
-      revisionNumber: 1,
-      content: "# Device overview",
-      createdAt: new Date(NOW.getTime() - 12 * 3600 * 1000),
+    const idleEngId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, idleEngId, {
+      status: "completed",
+      createdAt: new Date(NOW.getTime() - 90 * 60 * 1000),
+      startedAt: new Date(NOW.getTime() - 90 * 60 * 1000),
+      finishedAt: new Date(NOW.getTime() - 90 * 60 * 1000),
     });
 
-    // Task 1: closed with a merged PR (a system change) AND a task-linked
-    // knowledge source — counts in both numerator and denominator.
-    const changedCoveredId = randomUUID();
-    const changedCoveredIdentifier = `OPE-AAA${randomUUID().slice(0, 4).toUpperCase()}`;
+    const termEngId = randomUUID();
+    await db.insert(agents).values({
+      id: termEngId,
+      companyId,
+      name: "agent-term",
+      role: "engineer",
+      status: "terminated",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issue1Id = randomUUID();
     await db.insert(issues).values({
-      id: changedCoveredId,
+      id: issue1Id,
       companyId,
-      identifier: changedCoveredIdentifier,
       title: "Task 1",
-      status: "done",
-      priority: "medium",
-      assigneeAgentId: agentId,
-      completedAt: closedAt,
-    });
-    await db.insert(issueWorkProducts).values({
-      id: randomUUID(),
-      companyId,
-      issueId: changedCoveredId,
-      type: "pull_request",
-      provider: "github",
-      externalId: "pr-1",
-      title: "PR 1",
-      status: "merged",
-      updatedAt: closedAt,
-    });
-    await db.insert(knowledgeSources).values({
-      id: randomUUID(),
-      companyId,
-      nestId: companyId,
-      revisionId,
-      kind: "task",
-      ref: changedCoveredIdentifier,
-    });
-    // The same revision is also linked to the merged PR for the delay half.
-    await db.insert(knowledgeSources).values({
-      id: randomUUID(),
-      companyId,
-      nestId: companyId,
-      revisionId,
-      kind: "pr",
-      ref: "pr-1",
+      status: "todo",
     });
 
-    // Task 2: closed with a merged PR but WITHOUT any knowledge source —
-    // denominator only, the gap the metric must expose.
-    const changedBareId = randomUUID();
+    const issue2Id = randomUUID();
     await db.insert(issues).values({
-      id: changedBareId,
+      id: issue2Id,
       companyId,
-      identifier: `OPE-BBB${randomUUID().slice(0, 4).toUpperCase()}`,
       title: "Task 2",
-      status: "done",
-      priority: "medium",
-      assigneeAgentId: agentId,
-      completedAt: closedAt,
+      status: "todo",
     });
-    await db.insert(issueWorkProducts).values({
-      id: randomUUID(),
-      companyId,
-      issueId: changedBareId,
-      type: "pull_request",
-      provider: "github",
-      externalId: "pr-2",
-      title: "PR 2",
-      status: "merged",
-    });
-
-    // Task 3: closed WITHOUT any merged PR — not a system change, so it must
-    // stay out of the denominator entirely.
-    const unchangedId = randomUUID();
-    const unchangedIdentifier = `OPE-CCC${randomUUID().slice(0, 4).toUpperCase()}`;
+    const blockerId = randomUUID();
     await db.insert(issues).values({
-      id: unchangedId,
+      id: blockerId,
       companyId,
-      identifier: unchangedIdentifier,
-      title: "Task 3",
-      status: "done",
-      priority: "medium",
-      assigneeAgentId: agentId,
-      completedAt: closedAt,
+      title: "Blocker",
+      status: "in_progress",
     });
-    // A task-linked source on the unchanged task must NOT lift the share.
-    await db.insert(knowledgeSources).values({
+    await db.insert(issueRelations).values({
       id: randomUUID(),
       companyId,
-      nestId: companyId,
-      revisionId,
-      kind: "task",
-      ref: unchangedIdentifier,
+      issueId: blockerId,
+      relatedIssueId: issue2Id,
+      type: "blocks",
     });
 
     const snapshot = await collectMetricsSnapshot({
@@ -695,36 +677,10 @@ describeEmbeddedPostgres("metrics collector", () => {
       now: () => NOW,
       errorWindowSec: 3600,
       latencyWindowSec: 3600,
+      engineerIdleWindowSec: 3600,
     });
-    // 1 of 2 changed tasks is covered; the unchanged task is excluded.
-    expect(snapshot.knowledgeOnChangeShare).toBe(0.5);
-    // The revision landed 12h after the PR row's updatedAt (seeded NOW),
-    // so the delay p50/p95 sample the same single delay.
-    expect(snapshot.knowledgeRevisionDelaySecondsP50).toBe(12 * 3600);
-    expect(snapshot.knowledgeRevisionDelaySecondsP95).toBe(12 * 3600);
-  });
-
-  it("knowledge-on-change share renders no sample when no changed tasks closed in the window", async () => {
-    const companyId = await seedCompany();
-    // A closed task without any work product: denominator empty.
-    await db.insert(issues).values({
-      id: randomUUID(),
-      companyId,
-      identifier: `OPE-DDD${randomUUID().slice(0, 4).toUpperCase()}`,
-      title: "Task 4",
-      status: "done",
-      priority: "medium",
-      completedAt: new Date(NOW.getTime() - 24 * 3600 * 1000),
-    });
-    const snapshot = await collectMetricsSnapshot({
-      db,
-      now: () => NOW,
-      errorWindowSec: 3600,
-      latencyWindowSec: 3600,
-    });
-    expect(snapshot.knowledgeOnChangeShare).toBeNull();
-    const text = renderMetricsText(snapshot);
-    expect(text).toContain("# HELP myrmidon_knowledge_on_change_share ");
-    expect(text).not.toContain("myrmidon_knowledge_on_change_share{");
+    expect(snapshot.engineersLive).toBe(2);
+    expect(snapshot.engineersIdle).toBe(1);
+    expect(snapshot.todoUnblockedTasks).toBe(1);
   });
 });

@@ -14,8 +14,11 @@
 import { api } from "@/api/client";
 import type {
   LocaleValidationResult,
+  StoredCustomLocale,
+  StoredCustomLocaleSummary,
   Ui2Language,
   Ui2LanguagePreference,
+  UploadLocaleResult,
 } from "@myrmidon/shared";
 
 /**
@@ -37,6 +40,7 @@ export interface TelegramBridgeSourceWire {
 export interface Ui2LanguagePreferenceWire {
   language: Ui2Language;
   updatedAt: string | null;
+  catalogs?: Partial<Record<Ui2Language, Record<string, unknown>>>;
   telegramBridge?: TelegramBridgeSourceWire;
 }
 
@@ -56,6 +60,8 @@ export const ui2LanguageApi = {
   get: () => api.get<Ui2LanguagePreferenceWire>("/myrmidon/ui2/language/me"),
   put: (language: Ui2Language) =>
     api.put<Ui2LanguagePreferenceWire>("/myrmidon/ui2/language/me", { language }),
+  putCatalog: (language: Ui2Language, catalog: Record<string, unknown>) =>
+    api.put<{ catalogs: Partial<Record<Ui2Language, Record<string, unknown>>> }>("/myrmidon/ui2/language/me/catalog", { language, catalog }),
 };
 
 export const bridgeLanguageApi = {
@@ -64,7 +70,7 @@ export const bridgeLanguageApi = {
     api.patch<BridgeLanguageWire>("/myrmidon/bridge-language", { language }),
 };
 
-// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): client API for catalog validation
+// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187, OPE-9646): client API for catalog validation and upload
 export const localeUploadApi = {
   validate: (payload: {
     locale: string;
@@ -72,6 +78,19 @@ export const localeUploadApi = {
     content?: string;
     strict?: boolean;
   }) => api.post<LocaleValidationResult>("/myrmidon/locales/validate", payload),
+  upload: (payload: {
+    locale: string;
+    catalog?: Record<string, unknown>;
+    content?: string;
+    dryRun?: boolean;
+    strict?: boolean;
+  }) => api.post<UploadLocaleResult>("/myrmidon/locales/upload", payload),
+  listCustom: () =>
+    api.get<{ locales: StoredCustomLocaleSummary[]; total: number }>("/myrmidon/locales/custom"),
+  getCustom: (locale: string) =>
+    api.get<StoredCustomLocale>(`/myrmidon/locales/custom/${locale}`),
+  deleteCustom: (locale: string) =>
+    api.delete<{ deleted: boolean; locale: string }>(`/myrmidon/locales/custom/${locale}`),
 };
 
 export function fromWire(preference: Ui2LanguagePreferenceWire): Ui2LanguagePreference {

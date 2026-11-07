@@ -46,6 +46,8 @@ const (
 	A14 = "A14"
 	// A19 is GET /myrmidon/events/oom: transports OOM events (docker events oom / cgroup memory.events oom_kill).
 	A19 = "A19"
+	// A20 updates one enrolled bot's resource ceilings in dockergate config.
+	A20 = "A20"
 )
 
 // A15 is the disk route PUT /myrmidon/disk/<botKey>/quota (contract C5). It is
@@ -165,6 +167,8 @@ type Route struct {
 	LegacyMarker bool
 	// Mount is the container path of an A5 upload.
 	Mount string
+	// ConfigBotKey is the target bot for A20 configuration updates.
+	ConfigBotKey string
 }
 
 // NameOf builds the container name of a bot with a role suffix.
@@ -294,8 +298,27 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 		}
 		return nil, notAllowed()
 	}
+	if method == "PUT" && (target == "/myrmidon/config/update" || strings.HasPrefix(target, "/myrmidon/config/update?")) {
+		return &Route{ID: A20, Method: method}, nil
+	}
+	if rest, ok := strings.CutPrefix(target, "/myrmidon/bots/"); ok {
+		key, hasLimitsSuffix := strings.CutSuffix(rest, "/limits")
+		if hasLimitsSuffix && IsBotKey(key) && method == "PUT" {
+			return &Route{ID: A20, Method: method, ConfigBotKey: key}, nil
+		}
+		return nil, notAllowed()
+	}
+	if rest, ok := strings.CutPrefix(target, "/myrmidon/config/bots/"); ok {
+		if IsBotKey(rest) && method == "PUT" {
+			return &Route{ID: A20, Method: method, ConfigBotKey: rest}, nil
+		}
+		return nil, notAllowed()
+	}
 	if rest, ok := strings.CutPrefix(target, DiskPrefix); ok {
 		return parseDisk(method, rest)
+	}
+	if strings.HasPrefix(target, "/myrmidon/") {
+		return nil, notAllowed()
 	}
 	if strings.HasPrefix(target, diskPrefix) {
 		return nil, notAllowed()
@@ -409,6 +432,12 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A18
+	case "/config/update":
+		if method != "PUT" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A20
+		r.ConfigBotKey = key
 	default:
 		if q, ok := strings.CutPrefix(tail, "/archive?path="); ok {
 			// A5: the path parameter is one of three literals, then the fixed flag.

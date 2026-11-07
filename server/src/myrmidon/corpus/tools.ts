@@ -131,6 +131,7 @@ export const corpusToolDefinitions = [
       "`dataset` or `dataset_ids`. Use it instead of the RAGFlow retrieval tool: same question, " +
       "the answer is already what a shadow run compares.",
     inputSchema: z.toJSONSchema(corpusSearchInput),
+    outputSchema: { type: "object", properties: { query: { type: "string" }, datasets: { type: "array" }, topK: { type: "number" }, hits: { type: "array" } }, required: ["query", "datasets", "topK", "hits"] },
   },
   {
     name: CORPUS_TOOL_NAMES.getDocument,
@@ -139,6 +140,7 @@ export const corpusToolDefinitions = [
       "false) its text assembled from the indexed chunks. Use the document id a search result " +
       "reported.",
     inputSchema: z.toJSONSchema(corpusGetDocumentInput),
+    outputSchema: { type: "object", properties: { document: { type: "object" }, text: { type: ["string", "null"] } }, required: ["document", "text"] },
   },
   {
     name: CORPUS_TOOL_NAMES.listDatasets,
@@ -146,6 +148,7 @@ export const corpusToolDefinitions = [
       "List the datasets of the company's corpus with their document and chunk counts. Use it to " +
       "find the dataset to search in when the question does not name one.",
     inputSchema: z.toJSONSchema(corpusListDatasetsInput),
+    outputSchema: { type: "object", properties: { datasets: { type: "array" } }, required: ["datasets"] },
   },
   {
     name: CORPUS_TOOL_NAMES.listDocuments,
@@ -153,6 +156,7 @@ export const corpusToolDefinitions = [
       "List the documents of a dataset with their parse state (queued, parsing, embedding, ready, " +
       "failed). Use it to check whether a document is ready to be searched before asking for it.",
     inputSchema: z.toJSONSchema(corpusListDocumentsInput),
+    outputSchema: { type: "object", properties: { dataset: { type: ["object", "null"] }, documents: { type: "array" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["dataset", "documents", "offset", "limit"] },
   },
 ] as const;
 

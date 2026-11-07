@@ -34,7 +34,7 @@ vi.mock("@/i18n", () => ({ useTranslation: () => mockT }));
 const SETTINGS: CorpusSettings = {
   enabled: true,
   parsingServiceBaseUrl: "http://parsers.internal:8080",
-  embedderModel: "text-embedding-v4",
+  embedderModel: "hindsight-embed-bge-m3",
   limits: { maxUploadMb: 25, maxDocumentsPerDataset: 500, searchTopK: 5 },
 };
 
@@ -189,7 +189,7 @@ describe("corpusConfig", () => {
     expect(draft).toEqual({
       enabled: true,
       parsingServiceBaseUrl: "http://parsers.internal:8080",
-      embedderModel: "text-embedding-v4",
+      embedderModel: "hindsight-embed-bge-m3",
       maxUploadMb: "25",
       maxDocuments: "500",
       searchTopK: "5",
@@ -246,13 +246,13 @@ describe("CorpusScreenView", () => {
     expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-max-documents")!.value).toBe("500");
     expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-search-top-k")!.value).toBe("5");
 
-    setInput("myrmidon-corpus-embedder-model", "text-embedding-v4-latest");
+    setInput("myrmidon-corpus-embedder-model", "hindsight-embed-bge-m3-latest");
     setInput("myrmidon-corpus-max-upload-mb", "50");
     click("myrmidon-corpus-save");
 
     expect(props.onSave).toHaveBeenCalledWith({
       ...SETTINGS,
-      embedderModel: "text-embedding-v4-latest",
+      embedderModel: "hindsight-embed-bge-m3-latest",
       limits: { maxUploadMb: 50, maxDocumentsPerDataset: 500, searchTopK: 5 },
     });
   });
@@ -286,7 +286,7 @@ describe("CorpusScreenView", () => {
     expect(click("myrmidon-corpus-search-submit").disabled).toBe(true);
 
     // Turning the switch back on is the way out, so the form stays usable.
-    setInput("myrmidon-corpus-embedder-model", "text-embedding-v4");
+    setInput("myrmidon-corpus-embedder-model", "hindsight-embed-bge-m3");
     expect(click("myrmidon-corpus-save").disabled).toBe(false);
   });
 

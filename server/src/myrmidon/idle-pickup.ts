@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
@@ -41,6 +41,13 @@ import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
  * blocks, tree pause holds) are enforced by `enqueueWakeup` itself, so this
  * module reuses them instead of re-implementing them. Wakes over a limit
  * simply stay queued and the normal queued-run sweep starts them later.
+ *
+ * myrmidon(OPE-11947): the per-day caps are the one gate that does not hold a
+ * wake — `enqueueWakeup` records a `skipped` receipt row and returns null. A pass
+ * that kept offering every ready task of a capped agent therefore wrote one
+ * receipt per task per pass until midnight UTC. The pass now asks the cap's own
+ * verdict once per agent (`deps.getDailyCapBlock`) and, once the agent's first
+ * receipt of the day exists, leaves it alone — see `idlePickupForAgentImpl`.
  */
 
 export const IDLE_PICKUP_INTERVAL_SEC_ENV = "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC";
@@ -57,7 +64,8 @@ export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
  */
 export const ORPHAN_WAKE_GRACE_SEC = 600;
 
-/** Default: the sweep runs on every scheduler tick (about 30 s), like the other recovery passes. */
+/** In-flight idle-pickup attempts keyed by company and agent. */
+const idlePickupInFlight = new Map<string, Promise<IdlePickupResult>>();
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
 /**
@@ -235,6 +243,13 @@ export interface IdlePickupIssueCandidate {
   executionState: Record<string, unknown> | null;
 }
 
+/** A per-day heartbeat cap the agent has reached (reason is the gate's own: `heartbeat.daily_run_limit` / `heartbeat.daily_cost_limit`). */
+export interface IdlePickupDailyCapBlock {
+  reason: string;
+  observed: number;
+  limit: number;
+}
+
 export interface IdlePickupDeps {
   db: Db;
   /** Existing wakeup admission path (heartbeat.ts); reuses every limit and gate. */
@@ -250,6 +265,14 @@ export interface IdlePickupDeps {
       contextSnapshot?: Record<string, unknown>;
     },
   ) => Promise<unknown>;
+  /**
+   * myrmidon(OPE-11947): the heartbeat daily-cap gate's verdict for one agent —
+   * `getHeartbeatDailyCapBlock` over the agent's own policy, so the run count, the
+   * failed-before-model exclusion (OPE-9476) and the cost cap are never counted a
+   * second time here. Null means the agent is under its caps. Absent (unit tests
+   * that predate it) means the gate inside `enqueueWakeup` alone decides.
+   */
+  getDailyCapBlock?: (agent: { id: string; companyId: string }) => Promise<IdlePickupDailyCapBlock | null>;
   /**
    * Company-wide wake budget (IDLE-WAKE-BUDGET). One instance is shared by the
    * periodic sweeper and the release-path pickup, so the ceiling holds for the
@@ -286,6 +309,12 @@ export interface IdlePickupResult {
    * picks it up again.
    */
   budgetSkipped: number;
+  /**
+   * myrmidon(OPE-11947): agents left alone because they are over a per-day
+   * heartbeat cap and today's receipt of it is already on the board. Counted once
+   * per agent per pass, whatever the number of its ready tasks.
+   */
+  dailyCapSkipped: number;
   issueIds: string[];
 }
 
@@ -295,6 +324,7 @@ const IDLE_PICKUP_RESULT_ZERO: Omit<IdlePickupResult, "issueIds"> = {
   suppressed: 0,
   considered: 0,
   budgetSkipped: 0,
+  dailyCapSkipped: 0,
 };
 
 /** A fresh zero result; a bare spread of IDLE_PICKUP_RESULT_ZERO would share the issueIds array across calls. */
@@ -512,6 +542,26 @@ export async function idlePickupForAgent(
   agent: { id: string; companyId: string },
   options: {
     excludeIssueId?: string | null;
+    behaviorEnabled?: boolean;
+  } = {},
+): Promise<IdlePickupResult> {
+  const key = `${agent.companyId}:${agent.id}`;
+  const existing = idlePickupInFlight.get(key);
+  if (existing) return existing;
+  const attempt = idlePickupForAgentImpl(deps, agent, options);
+  idlePickupInFlight.set(key, attempt);
+  try {
+    return await attempt;
+  } finally {
+    if (idlePickupInFlight.get(key) === attempt) idlePickupInFlight.delete(key);
+  }
+}
+
+async function idlePickupForAgentImpl(
+  deps: IdlePickupDeps,
+  agent: { id: string; companyId: string },
+  options: {
+    excludeIssueId?: string | null;
     /**
      * myrmidon(TEAM-LIVENESS-SETTINGS): the caller's own decision for this agent
      * — the instance switch AND the agent card switch, already resolved. The
@@ -574,6 +624,27 @@ export async function idlePickupForAgent(
 
   const result: IdlePickupResult = { ...emptyIdlePickupResult(), considered: candidates.length };
   if (candidates.length === 0) return result;
+
+  // myrmidon(OPE-11947): an agent over its per-day cap is not offered work. The
+  // cap gate inside `enqueueWakeup` does not hold a wake, it writes a `skipped`
+  // receipt row — so offering every ready task on every pass wrote one row per
+  // task per pass until midnight UTC (06.11: 4 179 rows in 6 h, 13 591 in 3 days).
+  // The first attempt of the day still goes through `enqueueWakeup`: that one row
+  // is what the attention card for a capped agent is built from. Once it exists
+  // the agent is skipped here, before any per-task lookup and without a write.
+  let dailyCapBlock: IdlePickupDailyCapBlock | null = null;
+  if (deps.getDailyCapBlock) {
+    try {
+      dailyCapBlock = await deps.getDailyCapBlock(agent);
+    } catch (err) {
+      // Fail open: the gate inside enqueueWakeup stays the authority.
+      logger.warn({ err, agentId: agent.id }, "idle-pickup daily cap lookup failed");
+    }
+    if (dailyCapBlock && (await hasDailyCapReceiptToday(deps.db, agent, dailyCapBlock).catch(() => false))) {
+      result.dailyCapSkipped += 1;
+      return result;
+    }
+  }
 
   const liveIssueIds = new Set(
     liveRuns
@@ -773,6 +844,17 @@ export async function idlePickupForAgent(
         // paused agent, admission limits, suppressed scheduling): the gates
         // did their job, this is not an error. The next tick retries.
         result.suppressed += 1;
+        // myrmidon(OPE-11947): over a cap, the gate's receipt for today now exists
+        // and every other ready task would only add one more row: stop here. If the
+        // receipt is still missing (a gate ahead of the cap one refused this task),
+        // the next candidate gets its turn.
+        if (
+          dailyCapBlock &&
+          (await hasDailyCapReceiptToday(deps.db, agent, dailyCapBlock).catch(() => false))
+        ) {
+          result.dailyCapSkipped += 1;
+          break;
+        }
         continue;
       }
       result.woken += 1;
@@ -805,6 +887,39 @@ export async function idlePickupForAgent(
     }
   }
   return result;
+}
+
+/**
+ * myrmidon(OPE-11947): is the cap gate's `skipped` receipt for this agent, this
+ * cap and today (UTC, the gate's own day) already on the board?
+ *
+ * The receipt is matched by the gate's reason and by the limit it recorded: a
+ * limit raised or lowered since the morning is a different cap, and its first
+ * hit should leave its own receipt (the attention card reads observed/limit from
+ * the latest one). The `heartbeatSkip.limit` key is the one the gate writes.
+ */
+async function hasDailyCapReceiptToday(
+  db: Db,
+  agent: { id: string; companyId: string },
+  block: IdlePickupDailyCapBlock,
+): Promise<boolean> {
+  const now = new Date();
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const rows = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, agent.companyId),
+        eq(agentWakeupRequests.agentId, agent.id),
+        eq(agentWakeupRequests.reason, block.reason),
+        eq(agentWakeupRequests.status, "skipped"),
+        gte(agentWakeupRequests.requestedAt, dayStart),
+        sql`${agentWakeupRequests.payload} -> 'heartbeatSkip' ->> 'limit' = ${String(block.limit)}`,
+      ),
+    )
+    .limit(1);
+  return Boolean(rows[0]);
 }
 
 /**
@@ -1109,6 +1224,7 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         totals.alreadyActive += perAgent.alreadyActive;
         totals.suppressed += perAgent.suppressed;
         totals.budgetSkipped += perAgent.budgetSkipped;
+        totals.dailyCapSkipped += perAgent.dailyCapSkipped;
         totals.issueIds.push(...perAgent.issueIds);
       }
       if (totals.woken > 0) {

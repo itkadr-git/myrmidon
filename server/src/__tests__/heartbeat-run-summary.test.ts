@@ -426,6 +426,28 @@ describe("resolveHeartbeatRunResponse", () => {
     });
   });
 
+  // myrmidon(OPE-11947): the resultJson the hermes adapters now emit for the
+  // "No reply" give-up notice carries no text; the notice itself must never
+  // reach a comment, even from an independently captured final event.
+  it("posts no comment for a model-unavailable run, even when the notice was captured as the final message", () => {
+    const notice =
+      "⚠️ No reply: chatgpt-pool/gpt-6-luna didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.";
+    expect(resolveHeartbeatRunResponse({
+      resultJson: {
+        errorFamily: "transient_upstream",
+        provider_error_as_content: true,
+        model_unavailable: true,
+        result: "",
+        output: "",
+        usage: null,
+      },
+      finalAgentMessage: { text: notice, sourceEventId: "event-notice", channel: "final" },
+    })).toMatchObject({
+      text: null,
+      decision: { chosenSource: "none", commentAction: "none", reasonCodes: ["retryable_provider_failure"] },
+    });
+  });
+
   it("suppresses issue comment creation via deliverHeartbeatRunResponseComment for provider error", async () => {
     const addComment = vi.fn(async (_text: string) => ({ id: "should-not-exist", body: _text }));
     const resolved = resolveHeartbeatRunResponse({

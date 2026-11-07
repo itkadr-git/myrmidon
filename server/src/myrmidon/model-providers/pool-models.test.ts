@@ -144,6 +144,100 @@ describe("enrichWithPoolModels (1.6.6 OPE-9932)", () => {
     expect(bannedOnly).toBeUndefined();
   });
 
+  it("excludes quota-exhausted accounts until their reset window", async () => {
+    const mockDb: any = {
+      select: () => ({
+        from: () => ({
+          where: async () => [
+            { id: "prov-1", type: "chatgpt-pool", companyId: "cmp-1" },
+          ],
+        }),
+      }),
+    };
+
+    const mockService: PoolAccountChannelProvider = {
+      listChannels: async () => ({
+        channels: [
+          {
+            n: 1,
+            label: "active-acc",
+            state: "active",
+            isBanned: false,
+            isExhausted: false,
+            limitedUntil: null,
+            lastOk: null,
+            windows: { primary: null, secondary: null },
+            models: ["shared-model", "active-only-model"],
+          },
+          {
+            n: 2,
+            label: "exhausted-acc",
+            state: "rate_limited",
+            isBanned: false,
+            isExhausted: true,
+            limitedUntil: Math.floor(Date.now() / 1000) + 3600,
+            lastOk: null,
+            windows: { primary: null, secondary: null },
+            models: ["shared-model", "exhausted-only-model"],
+          },
+          {
+            n: 3,
+            label: "window-limited-acc",
+            state: "active",
+            isBanned: false,
+            isExhausted: false,
+            limitedUntil: null,
+            lastOk: null,
+            windows: {
+              primary: {
+                usedPct: 100,
+                windowMin: 300,
+                resetsAt: Math.floor(Date.now() / 1000) + 1800,
+                limitReached: true,
+              },
+              secondary: null,
+            },
+            models: ["window-limited-model"],
+          },
+          {
+            n: 4,
+            label: "expired-window-acc",
+            state: "active",
+            isBanned: false,
+            isExhausted: false,
+            limitedUntil: null,
+            lastOk: null,
+            windows: {
+              primary: {
+                usedPct: 100,
+                windowMin: 300,
+                resetsAt: Math.floor(Date.now() / 1000) - 10,
+                limitReached: true,
+              },
+              secondary: null,
+            },
+            models: ["active-only-model"],
+          },
+        ],
+      }),
+    };
+
+    const result = await enrichWithPoolModels(
+      mockDb,
+      "cmp-1",
+      [{ id: "base", label: "base" }],
+      mockService,
+    );
+
+    expect(result.find((m) => m.id === "shared-model")?.accounts).toEqual(["active-acc"]);
+    expect(result.find((m) => m.id === "active-only-model")?.accounts).toEqual([
+      "active-acc",
+      "expired-window-acc",
+    ]);
+    expect(result.find((m) => m.id === "exhausted-only-model")).toBeUndefined();
+    expect(result.find((m) => m.id === "window-limited-model")).toBeUndefined();
+  });
+
   it("handles provider channel listing failure gracefully", async () => {
     const mockDb: any = {
       select: () => ({

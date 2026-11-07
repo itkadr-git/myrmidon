@@ -266,6 +266,44 @@ describe("decideScheduledRetryGate", () => {
   });
 });
 
+// myrmidon(OPE-11947): the retry of a run that ended because the model pool did
+// not answer is queued 30 min and up later, so the issue is re-checked when it
+// falls due and the retry is dropped unless the task is still todo/in_progress
+// and still belongs to the agent.
+describe("decideScheduledRetryGate: model_unavailable_wait", () => {
+  const modelUnavailable = (overrides: Partial<ScheduledRetryFacts> = {}): ScheduledRetryFacts => ({
+    ...baseGateFacts(),
+    retryReasonKind: "model_unavailable_wait",
+    ...overrides,
+  });
+
+  it.each(["todo", "in_progress"])("allows the retry while the issue is %s", (issueStatus) => {
+    expect(decideScheduledRetryGate(modelUnavailable({ issueStatus }), NOW)).toEqual({ allowed: true });
+  });
+
+  it.each(["backlog", "blocked", "in_review"])("drops the retry when the issue is %s", (issueStatus) => {
+    expect(decideScheduledRetryGate(modelUnavailable({ issueStatus }), NOW)).toMatchObject({
+      allowed: false,
+      errorCode: "issue_not_in_progress",
+      details: { currentStatus: issueStatus, requiredStatuses: ["todo", "in_progress"] },
+    });
+  });
+
+  it("keeps the terminal and ownership verdicts for done, cancelled and reassigned issues", () => {
+    expect(decideScheduledRetryGate(modelUnavailable({ issueStatus: "done" }), NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_terminal_status" });
+    expect(decideScheduledRetryGate(modelUnavailable({ issueStatus: "cancelled" }), NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_cancelled" });
+    expect(decideScheduledRetryGate(modelUnavailable({ issueAssigneeAgentId: "agent-2" }), NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_reassigned" });
+  });
+
+  it("does not apply the status rule to ordinary transient retries", () => {
+    expect(decideScheduledRetryGate({ ...baseGateFacts(), retryReasonKind: "other", issueStatus: "backlog" }, NOW))
+      .toEqual({ allowed: true });
+  });
+});
+
 describe("decideQueuedRunStaleness", () => {
   it("is not stale when every rule passes", () => {
     expect(decideQueuedRunStaleness(baseStalenessFacts(), NOW)).toEqual({

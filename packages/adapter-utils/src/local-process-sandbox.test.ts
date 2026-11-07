@@ -46,6 +46,18 @@ describe("local process sandbox", () => {
     expect(() => parseLocalProcessSandboxExtraPaths(["relative"])).toThrow("must be an absolute path");
   });
 
+  it("accepts comma-separated text lists from schema-driven forms", () => {
+    expect(parseLocalProcessSandboxExtraPaths("/opt/cache, /var/lib/tool")).toEqual([
+      { path: "/opt/cache", access: "ro" },
+      { path: "/var/lib/tool", access: "ro" },
+    ]);
+    expect(parseLocalProcessSandboxExtraPaths("")).toEqual([]);
+    expect(() => parseLocalProcessSandboxExtraPaths("/opt/cache, relative")).toThrow("must be an absolute path");
+    expect(parseLocalProcessNetworkAllowlist("api.openai.com, gateway.test:8443"))
+      .toEqual(["api.openai.com", "gateway.test:8443"]);
+    expect(parseLocalProcessNetworkAllowlist(undefined)).toEqual([]);
+  });
+
   it("parses network scopes and exact-host allowlists", () => {
     expect(parseLocalProcessFilesystemScope("workspace")).toBe("workspace");
     expect(parseLocalProcessFilesystemScope(undefined)).toBeNull();

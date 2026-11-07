@@ -85,3 +85,4 @@ This is the mode closest to the pre-1.7 vendor behaviour.
 - `budgetService` callers that do not wire the mode hook (routes that build
   the service bare) keep the vendor semantics — always enforce; the run path
   (the heartbeat service) is the wired one.
+- For LiteLLM virtual key caps and spend anomaly alerts, see [Models and keys](../../wiki/Models-and-keys.md#litellm-virtual-key-budgets-and-spend).

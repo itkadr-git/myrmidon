@@ -56,9 +56,13 @@ export interface ModelProviderModelsView {
 export interface ModelProviderChangeLogEntry {
   id: string;
   at: string;
-  actor: { type: "board" | "agent" | "system"; id: string };
-  action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated";
+  actor: { type: "board" | "agent" | "system" | string; id: string };
+  action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated" | string;
   summary: string;
+  category?: "models" | "fallbacks" | "keys" | string;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  canRollback?: boolean;
 }
 
 export type PoolAccountState =
@@ -107,6 +111,10 @@ export interface PoolAccountChannelView {
   usage?: PoolAccountUsage;
   isBanned: boolean;
   isExhausted: boolean;
+  isDisabled?: boolean;
+  isExcluded?: boolean;
+  oauthState?: string;
+  oauthExpiresAt?: number | null;
 }
 
 export interface PoolAccountRoleSignal {
@@ -133,6 +141,7 @@ export interface ModelProviderChannelsView {
     live: number;
     exhausted: number;
     banned: number;
+    disabled?: number;
     nextResetAt: number | null;
   };
 }
@@ -175,6 +184,36 @@ export interface RotateModelProviderInput {
 export interface UpdateModelsInput {
   /** Full desired state: the models to keep enabled, each with its free flag. */
   models: Array<{ modelName: string; litellmModelName: string; enabled: boolean; free: boolean }>;
+}
+
+export interface PoolAccountOAuthBeginInput {
+  accountNumber?: number;
+  label?: string;
+  plan?: string;
+}
+
+export interface PoolAccountOAuthBeginResult {
+  accountNumber: number;
+  userCode: string;
+  verificationUri: string;
+  expiresInSec: number;
+  intervalSec: number;
+}
+
+export interface PoolAccountOAuthStatusResult {
+  accountNumber: number;
+  status: "pending" | "success" | "expired" | "failed";
+  error?: string | null;
+}
+
+export interface PoolAccountOAuthCompleteInput {
+  accountNumber: number;
+  code?: string;
+  token?: string;
+}
+
+export interface PoolAccountOAuthRefreshInput {
+  accountNumber: number;
 }
 
 const base = (companyId: string) =>
@@ -238,6 +277,47 @@ export const modelProvidersApi = {
   litellmChannels: (companyId: string) =>
     api.get<LitellmChannelsResponse>(
       `${base(companyId)}/litellm/channels`,
+    ),
+
+  /** POST /providers/:pid/oauth/begin — starts OAuth device authorization (OPE-10810). */
+  oauthBegin: (companyId: string, providerId: string, input?: PoolAccountOAuthBeginInput) =>
+    api.post<PoolAccountOAuthBeginResult>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/begin`,
+      input || {},
+    ),
+
+  /** GET /providers/:pid/oauth/status — checks OAuth device authorization status. */
+  oauthStatus: (companyId: string, providerId: string, accountNumber: number) =>
+    api.get<PoolAccountOAuthStatusResult>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/status?accountNumber=${accountNumber}`,
+    ),
+
+  /** POST /providers/:pid/oauth/complete — completes authorization, storing tokens strictly in secret store. */
+  oauthComplete: (companyId: string, providerId: string, input: PoolAccountOAuthCompleteInput) =>
+    api.post<{ ok: true; accountNumber: number }>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/complete`,
+      input,
+    ),
+
+  /** POST /providers/:pid/oauth/refresh — refreshes pool account OAuth token via secret store. */
+  oauthRefresh: (companyId: string, providerId: string, input: PoolAccountOAuthRefreshInput) =>
+    api.post<{ ok: true; accountNumber: number }>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/refresh`,
+      input,
+    ),
+};
+
+export const litellmAuditApi = {
+  list: (companyId: string, category?: string) => {
+    const q = category ? `?category=${encodeURIComponent(category)}` : "";
+    return api.get<{ entries: ModelProviderChangeLogEntry[] }>(
+      `/api/myrmidon/companies/${encodeURIComponent(companyId)}/litellm/audit${q}`,
+    );
+  },
+  rollback: (companyId: string, auditId: string) =>
+    api.post<{ success: boolean; result: unknown }>(
+      `/api/myrmidon/companies/${encodeURIComponent(companyId)}/litellm/audit/${encodeURIComponent(auditId)}/rollback`,
+      {},
     ),
 };
 

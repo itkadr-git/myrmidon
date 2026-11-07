@@ -1,9 +1,7 @@
 // @vitest-environment jsdom
 // myrmidon(1.6.1 VOICE-STT C): view-tier tests for the STT settings screen —
 // layout, field edits, the diff-on-save rule (only changed fields), secret
-// name rendering with the set/unset indicator, and the value-free DOM rule:
-// the screen speaks secret NAMES only, so no secret-shaped value can ever
-// appear in the rendered tree.
+// reference selection with a configured indicator, and the value-free DOM rule.
 import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -19,6 +17,9 @@ function record(overrides: Partial<VoiceSttSettings> = {}): VoiceSttSettings {
     language: "auto",
     diarization: false,
     maxDurationSec: 600,
+    baseUrl: null,
+    keySecretConfigured: false,
+    deepgramKeySecretConfigured: false,
     ...overrides,
   };
 }
@@ -125,6 +126,16 @@ describe("myrmidon(1.6.1 VOICE-STT C) view tier", () => {
     await typeInto(inputByTestId("myrmidon-voice-stt-max-duration"), "1800");
     await click('[data-testid="myrmidon-voice-stt-save"]');
     expect(onSave).toHaveBeenCalledWith({ model: "paraformer-x", maxDurationSec: 1800 });
+  });
+
+  it("offers secret references without echoing selected keys and submits endpoint changes", async () => {
+    render(record({ keySecretConfigured: true, baseUrl: "https://old.example" }));
+    await flushReact();
+    expect(inputByTestId("myrmidon-voice-stt-base-url").value).toBe("https://old.example");
+    expect(inputByTestId("myrmidon-voice-stt-keySecret").value).toBe("");
+    await typeInto(inputByTestId("myrmidon-voice-stt-base-url"), "https://new.example");
+    await click('[data-testid="myrmidon-voice-stt-save"]');
+    expect(onSave).toHaveBeenCalledWith({ baseUrl: "https://new.example" });
   });
 
   it("clearing the model sends null", async () => {

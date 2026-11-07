@@ -263,6 +263,10 @@ describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", 
     expect(yaml).toContain('approvals:\n  mode: "off"');
     expect(yaml).toContain("platforms:\n  api_server:\n    enabled: true");
     expect(yaml).toContain('terminal:\n  cwd: "/workspace"');
+    // myrmidon(OPE-11947): execute_code receives the board key and URL.
+    expect(yaml).toContain("env_passthrough:");
+    expect(yaml).toContain("PAPERCLIP_API_KEY");
+    expect(yaml).toContain("PAPERCLIP_API_URL");
     expect(yaml).toContain('memory:\n  provider: "hindsight"');
     // Empty mappings/lists are omitted by the deterministic YAML writer, so
     // absence of the skills block is the serialized form of no external dirs.
@@ -364,13 +368,151 @@ describe("myrmidon(TOOL-DIET) compileHermesProfile — disabled tools", () => {
   });
 });
 
+// myrmidon(TOOL-DIET-ROLES, OPE-11947): the role defaults the caller resolved, merged with the instance list.
+describe("myrmidon(TOOL-DIET-ROLES) compileHermesProfile — role tool diet", () => {
+  const yamlOf = (input: HermesProfileInput) => fileByPath(compileHermesProfile(input).files, "hermes/config.yaml").content;
+  const roleToolDiet = { disabledTools: ["web_search", "clarify", "browser_exec"], disabledToolsets: ["memory"] };
+
+  it("writes the role tools after the instance tools, once each, and the role toolsets under disabled_toolsets", () => {
+    const yaml = yamlOf(baseInput({ instanceDefaults: { disabledTools: ["vision_analyze", "clarify"] }, roleToolDiet }));
+    expect(yaml).toContain('disabled_tools:\n  - "vision_analyze"\n  - "clarify"\n  - "web_search"\n  - "browser_exec"');
+    expect(yaml.match(/"clarify"/g)).toHaveLength(1);
+    expect(yaml).toContain('disabled_toolsets:\n  - "memory"');
+  });
+
+  it("role defaults work without an instance list", () => {
+    const yaml = yamlOf(baseInput({ roleToolDiet }));
+    expect(yaml).toContain('disabled_tools:\n  - "web_search"\n  - "clarify"\n  - "browser_exec"');
+    expect(yaml).toContain('disabled_toolsets:\n  - "memory"');
+  });
+
+  it("keeps delegation first when the helpers are off", () => {
+    const yaml = yamlOf(
+      baseInput({ parallelHelpers: { enabled: false, maxConcurrent: 4, model: "" }, roleToolDiet }),
+    );
+    expect(yaml).toContain('disabled_toolsets:\n  - "delegation"\n  - "memory"');
+  });
+
+  it("empty or absent role defaults compile to exactly the profile without them", () => {
+    const plain = yamlOf(baseInput({ instanceDefaults: { disabledTools: ["vision_analyze"] } }));
+    for (const empty of [undefined, { disabledTools: [], disabledToolsets: [] }]) {
+      expect(yamlOf(baseInput({ instanceDefaults: { disabledTools: ["vision_analyze"] }, roleToolDiet: empty }))).toBe(plain);
+    }
+    expect(yamlOf(baseInput({ roleToolDiet: { disabledTools: [], disabledToolsets: [] } }))).toBe(yamlOf(baseInput()));
+  });
+
+  it("a card with its own disabledTools list replaces the instance list AND the role defaults, toolsets included", () => {
+    const yaml = yamlOf(
+      baseInput({
+        adapterConfig: { disabledTools: ["web_extract"] },
+        instanceDefaults: { disabledTools: ["vision_analyze"] },
+        roleToolDiet,
+      }),
+    );
+    expect(yaml).toContain('disabled_tools:\n  - "web_extract"');
+    expect(yaml).not.toContain("web_search");
+    expect(yaml).not.toContain("browser_exec");
+    expect(yaml).not.toContain("disabled_toolsets");
+    // An empty card list means "this bot keeps every tool": nothing at all is written.
+    const none = yamlOf(baseInput({ adapterConfig: { disabledTools: [] }, instanceDefaults: { disabledTools: ["vision_analyze"] }, roleToolDiet }));
+    expect(none).not.toContain("disabled_tools");
+    expect(none).not.toContain("disabled_toolsets");
+    // The delegation switch is not a default list: it still applies.
+    const helpersOff = yamlOf(
+      baseInput({
+        adapterConfig: { disabledTools: [] },
+        parallelHelpers: { enabled: false, maxConcurrent: 4, model: "" },
+        roleToolDiet,
+      }),
+    );
+    expect(helpersOff).toContain('disabled_toolsets:\n  - "delegation"');
+    expect(helpersOff).not.toContain('"memory"');
+  });
+
+  it("keepTools re-enables single tools of the instance list and of the role list, and a role toolset", () => {
+    const yaml = yamlOf(
+      baseInput({
+        adapterConfig: { keepTools: ["Clarify", " web_search ", "memory"] },
+        instanceDefaults: { disabledTools: ["vision_analyze", "clarify", "skill_manage"] },
+        roleToolDiet,
+      }),
+    );
+    expect(yaml).toContain('disabled_tools:\n  - "vision_analyze"\n  - "skill_manage"\n  - "browser_exec"');
+    expect(yaml).not.toContain("clarify");
+    expect(yaml).not.toContain("web_search");
+    expect(yaml).not.toContain("disabled_toolsets");
+  });
+
+  it("keepTools is ignored when the card lists disabledTools itself (that list is taken as written)", () => {
+    const yaml = yamlOf(
+      baseInput({ adapterConfig: { disabledTools: ["clarify"], keepTools: ["clarify"] }, roleToolDiet }),
+    );
+    expect(yaml).toContain('disabled_tools:\n  - "clarify"');
+  });
+
+  it("a card with a vision model keeps vision_analyze even if a default list names it", () => {
+    const yaml = yamlOf(
+      baseInput({
+        adapterConfig: { models: { vision: "fleet-vision" } },
+        roleToolDiet: { disabledTools: ["vision_analyze", "web_search"], disabledToolsets: [] },
+      }),
+    );
+    expect(yaml).not.toContain("vision_analyze");
+    expect(yaml).toContain('- "web_search"');
+  });
+
+  it("a role tool that is not a tool name is dropped with a warning, like any other name", () => {
+    const detailed = compileHermesProfileDetailed(
+      baseInput({ roleToolDiet: { disabledTools: ["web_search", "bad name"], disabledToolsets: [] } }),
+    );
+    const yaml = fileByPath(detailed.profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('- "web_search"');
+    expect(yaml).not.toContain("bad name");
+    expect(detailed.warnings.filter((w) => w.includes("agent.disabled_tools"))).toHaveLength(1);
+  });
+});
+
 describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 mapping)", () => {
+  it("maps a card maxOutputTokens value to model.max_tokens in Hermes config", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/thinking", provider: "custom", maxOutputTokens: 16_000 } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 16000');
+  });
+
+  it("defaults to 32000 max_tokens for provider custom when unset", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/nghi-claude-fable-5.1", provider: "custom" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 32000');
+  });
+
+  it("maps models.maxOutputTokens from card models block", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/thinking", provider: "custom", models: { maxOutputTokens: 64_000 } } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 64000');
+  });
+
+  it("drops an out-of-range maxOutputTokens with a warning", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", maxOutputTokens: 999_999 } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("999999");
+    expect(yaml).toMatch(/^  max_tokens: 32000$/m);
+    expect(warnings.join("\n")).toContain("model.max_tokens");
+  });
+
   it("maps model, provider and a valid reasoning effort", () => {
     const profile = compileHermesProfile(
       baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", effort: "High" } }),
     );
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
-    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  provider: "anthropic"');
+    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  max_tokens: 32000\n  provider: "anthropic"');
     expect(yaml).toContain('agent:\n  reasoning_effort: "high"');
   });
 
@@ -1361,6 +1503,29 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
       const yaml = yamlOf(baseInput({ instanceDefaults: { compression: {} } }));
       expect(yaml).not.toContain("compression:");
       expect(yaml).not.toContain("threshold_tokens");
+    });
+  });
+
+  // myrmidon(REASONING-OUTPUT-LIMIT): explicit/default model output ceiling.
+  describe("myrmidon(REASONING-OUTPUT-LIMIT) model.max_tokens", () => {
+    it("compiles the card value, defaults to 32000, and warns on invalid overrides", () => {
+      const configured = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { models: { maxTokens: 64_000 } } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(configured).toContain("max_tokens: 64000");
+
+      const defaulted = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { model: "model-a" } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(defaulted).toContain("max_tokens: 32000");
+
+      const invalid = compileHermesProfileDetailed(
+        baseInput({ adapterConfig: { model: "model-a", models: { maxTokens: 1 } } }),
+      );
+      expect(fileByPath(invalid.profile.files, "hermes/config.yaml").content).toContain("max_tokens: 32000");
+      expect(invalid.warnings.some((warning) => warning.includes("model.max_tokens") && warning.includes("outside the supported range"))).toBe(true);
     });
   });
 

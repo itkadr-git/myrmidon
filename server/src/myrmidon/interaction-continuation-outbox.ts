@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   issueThreadInteractions,
@@ -150,7 +150,7 @@ export function interactionContinuationOutboxKey(
  * only on the positive resolution (accepted / answered).
  */
 export function continuationPolicyWakesOnResolution(
-  policy: string,
+  policy: string | null | undefined,
   status: string,
 ): boolean {
   return (
@@ -669,10 +669,12 @@ export function interactionContinuationOutboxService(
           eq(agentWakeupRequests.requestedByActorId, OUTBOX_ACTOR_ID),
           inArray(agentWakeupRequests.status, ["queued", "claimed"]),
           isNull(agentWakeupRequests.runId),
-          lt(
-            agentWakeupRequests.requestedAt,
-            new Date(now.getTime() - sweepAgeMs),
-          ),
+          sweepAgeMs > 0
+            ? lte(
+                agentWakeupRequests.requestedAt,
+                new Date(now.getTime() - sweepAgeMs),
+              )
+            : undefined,
           or(
             isNull(agentWakeupRequests.claimedAt),
             lt(agentWakeupRequests.claimedAt, new Date(now.getTime() - staleClaimMs)),

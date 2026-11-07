@@ -46,7 +46,12 @@ describe("metrics self-check probe", () => {
     // The continuation and claim counters are process-local too.
     // The five capacity-dashboard metrics remain available without database reads.
     // The guardrail trigger counter (1.6.6 GUARDRAILS OPE-10182) is process-local too.
-    expect(result.families_ok).toBe(34);
+    // OPE-9476: failed_before_model and recovery event counters are process-local.
+    // The scent classifier alarm is process-local as well.
+    // The two datastore retention metrics (1.6.6 OPE-9967) are process-local too.
+    // The LiteLLM key cap utilization gauge (OPE-11776) reads the sweep's last
+    // evaluation from memory: process-local as well.
+    expect(result.families_ok).toBe(38);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -59,6 +64,7 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_continuation_deduped_total" &&
         family !== "swarm_claim_conflicts_total" &&
         family !== "swarm_lease_recovered_total" &&
+        family !== "swarm_scent_classifier_alarm" &&
         family !== "myrmidon_readiness_ratio" &&
         family !== "myrmidon_queue_age_seconds" &&
         family !== "myrmidon_project_share" &&
@@ -68,7 +74,9 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_agent_failed_before_model_total" &&
         family !== "myrmidon_recovery_created_total" &&
         family !== "myrmidon_recovery_deduped_total" &&
-        family !== "myrmidon_recovery_success_total",
+        family !== "myrmidon_recovery_success_total" &&
+        family !== "myrmidon_llm_key_budget_utilization_percent" &&
+        !family.startsWith("myrmidon_datastore_retention_"),
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

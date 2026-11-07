@@ -36,7 +36,32 @@ import {
 } from "@myrmidon/shared";
 
 export const FALLBACK_ATTENTION_DEDUP_PREFIX = "model_fallback:";
+export const FALLBACK_DEADEND_DEDUP_PREFIX = "model_fallback_deadend:";
 export const FALLBACK_ATTENTION_ACTION_TRANSITION = "myrmidon.model_fallback.signal";
+
+export interface ModelFallbackDeadendSignal {
+  agentId: string;
+  requestId: string;
+  model: string;
+  title: string;
+  whyNow: string;
+  summaryExcerpt: string;
+  dedupKey: string;
+  severity: AttentionSeverity;
+  activityAt: string;
+}
+
+const deadendsByCompany = new Map<string, ModelFallbackDeadendSignal[]>();
+
+export function readModelFallbackDeadendSignals(companyId: string): ModelFallbackDeadendSignal[] {
+  return deadendsByCompany.get(companyId) ?? [];
+}
+
+export function recordModelFallbackDeadendSignals(companyId: string, signals: ModelFallbackDeadendSignal[]): void {
+  if (signals.length) deadendsByCompany.set(companyId, signals);
+  else deadendsByCompany.delete(companyId);
+}
+
 
 /** Stable per-agent dedup key: one card per agent regardless of window churn. */
 export function fallbackDedupKey(agentId: string): string {
@@ -279,4 +304,5 @@ export function readModelFallbackSignals(companyId: string): ModelFallbackAttent
 /** Forget every recorded signal: the sweep's switch went off, and tests. */
 export function resetModelFallbackSignals(): void {
   signalByCompany.clear();
+  deadendsByCompany.clear();
 }

@@ -59,24 +59,20 @@ describe("users block API and audit routes", () => {
         };
       }),
     })),
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(() => ({
-            limit: vi.fn().mockResolvedValue(mockAuditEntries),
-          })),
-          then: vi.fn((resolve: (value: any[]) => void) =>
-            resolve([{ id: "company-1" }]),
-          ),
-        })),
-        orderBy: vi.fn(() => ({
-          limit: vi.fn().mockResolvedValue(mockAuditEntries),
-        })),
-        then: vi.fn((resolve: (value: any[]) => unknown) =>
-          Promise.resolve(resolve([{ id: "company-1" }])),
+    select: vi.fn(() => {
+      const query: any = {
+        from: vi.fn(() => query),
+        where: vi.fn(() => query),
+        orderBy: vi.fn(() => query),
+        for: vi.fn(() => query),
+        limit: vi.fn().mockImplementation(() => Promise.resolve(mockAuditEntries)),
+        then: vi.fn((resolve: (value: any[]) => void) =>
+          resolve([{ id: "company-1", general: {} }]),
         ),
-      })),
-    })),
+      };
+      return query;
+    }),
+    transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(mockDb)),
   };
 
   function createApp(actor: any) {

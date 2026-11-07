@@ -22,6 +22,7 @@ import {
   companies,
   externalObjects,
   heartbeatRuns,
+  issueExecutionDecisions,
   issues,
   issueWorkProducts,
   runIdentityContexts,
@@ -39,8 +40,11 @@ import { REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
 import { issueNeedsReviewer } from "./policy.js";
+import { OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "../review-stage-recovery/policy.js";
 
 const activeStatuses = ["queued", "running", "scheduled_retry"] as const;
+// myrmidon(OPE-11947): the escalation row is also read back (reviewWakeState) to write it once per series.
+const REVIEW_WAKE_ESCALATION_ACTION = "issue.review_routing.wake_escalation_required";
 
 export interface InReviewIssueRow extends RoutingIssue {
   companyId: string;
@@ -56,6 +60,9 @@ export interface ReviewerAgentRow {
   role: string;
   model?: string | null;
   metadata?: Record<string, unknown> | null;
+  /** Queue eligibility is checked separately from enabled/role eligibility. */
+  swarmQueueEligible?: boolean;
+  status?: string | null;
   invokable?: boolean;
 }
 
@@ -90,6 +97,8 @@ export interface ReviewRoutingStore {
     lastWakeAt: Date | null;
     attempts: number;
     lastCancelledRunAt?: Date | null;
+    /** Newest wake_escalation_required row of this issue/reviewer/stage, whatever the series. */
+    lastEscalationAt?: Date | null;
   }>;
   recordReviewWake(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }): Promise<void>;
   recordReviewWakeEscalation(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; attempts: number; at: Date }): Promise<void>;
@@ -109,6 +118,9 @@ export interface ReviewRoutingStore {
 
   /** Open GitHub pull requests the company has rows for (webhook-fed). */
   listPrCandidates(companyId: string, limit: number): Promise<PrCandidateRow[]>;
+  /** Existing in-progress issues that already have a GitHub PR work product. */
+  listInProgressPrIssues(companyId: string, limit: number): Promise<InReviewIssueRow[]>;
+  findPrWorkProduct(companyId: string, issueId: string): Promise<PrCandidateRow | null>;
   /** Distinct "owner/repo" the instance has ever seen PRs of (rows + work products). */
   listKnownPrRepositories(companyId: string): Promise<string[]>;
   /** Open board tasks this lane created, with their recorded heads. */
@@ -132,6 +144,63 @@ export interface ReviewRoutingStore {
     number: number;
     headSha: string;
   }): Promise<boolean>;
+
+  // --- Board-side merge (OPE-11767) ------------------------------------------
+
+  /**
+   * Tasks whose board review stage is approved and whose pull request is still
+   * open: one row per (task, pull request), oldest update first. Stored facts
+   * only — no GitHub call.
+   */
+  listApprovedPrIssues(companyId: string, options?: { limit?: number; issueId?: string }): Promise<ApprovedPrIssueRow[]>;
+  /**
+   * Sends an approved task back to its implementer (changes requested, status
+   * in_progress) under a row lock, re-checking that the approval still stands.
+   * null when the guard failed — the task moved on, or was returned already —
+   * which is what makes the return happen once.
+   */
+  returnApprovedPrToImplementer(input: {
+    companyId: string;
+    issueId: string;
+    at: Date;
+  }): Promise<ReturnedApprovedPr | null>;
+}
+
+/** One approved task and its open pull request (stored facts). */
+export interface ApprovedPrIssueRow {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  repository: string;
+  number: number;
+  prUrl: string | null;
+  /** Body of the stage's approving decision — it names the head the reviewer covered. */
+  verdict: string | null;
+  approvedAt: Date | null;
+}
+
+export interface ReturnedApprovedPr {
+  implementerAgentId: string;
+  previousStatus: string;
+  executionState: Record<string, unknown>;
+}
+
+const PULL_REQUEST_URL_PATTERN = /github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/i;
+
+/** `owner/repo` + number of a pull_request work product: its metadata first, its URL second. */
+function pullRequestCoordinates(
+  metadata: Record<string, unknown> | null,
+  url: string | null,
+): { repository: string; number: number } | null {
+  const repo = metadata?.repo ?? metadata?.repository;
+  const repository =
+    typeof repo === "string" && repo.includes("/") ? repo : repositoryFromParts(metadata?.owner, metadata?.repo);
+  const rawNumber = metadata?.number ?? metadata?.pullRequestNumber;
+  const number = typeof rawNumber === "number" && Number.isSafeInteger(rawNumber) && rawNumber > 0 ? rawNumber : null;
+  if (repository && number !== null) return { repository, number };
+  const match = url ? PULL_REQUEST_URL_PATTERN.exec(url) : null;
+  return match ? { repository: `${match[1]}/${match[2]}`, number: Number(match[3]) } : null;
 }
 
 /** Service layer loaded lazily, for the same startup-graph reason as the stale-block sweep. */
@@ -260,6 +329,53 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       }));
     },
 
+    async listInProgressPrIssues(companyId, limit) {
+      const rows = await db
+        .selectDistinct({ issue: issues })
+        .from(issues)
+        .innerJoin(issueWorkProducts, eq(issueWorkProducts.issueId, issues.id))
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_progress"),
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+          eq(issueWorkProducts.status, "open"),
+          isNull(issues.hiddenAt),
+          isNull(issues.conversationAgentId),
+          isNull(issues.conversationUserId),
+        ))
+        .orderBy(desc(issues.updatedAt), issues.id)
+        .limit(limit);
+      return rows.map(({ issue: row }) => ({
+        ...toRoutingIssue(row as typeof issues.$inferSelect),
+        companyId: row.companyId,
+        identifier: row.identifier,
+        title: row.title,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      }));
+    },
+
+    async findPrWorkProduct(companyId, issueId) {
+      const [product] = await db.select({ metadata: issueWorkProducts.metadata, title: issueWorkProducts.title, url: issueWorkProducts.url })
+        .from(issueWorkProducts)
+        .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId),
+          eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github")))
+        .limit(1);
+      const data = product?.metadata;
+      if (!product || !data) return null;
+      const repository = typeof data.repo === "string" && data.repo.includes("/")
+        ? data.repo : repositoryFromParts(data.owner, data.repo);
+      const number = typeof data.number === "number" && Number.isSafeInteger(data.number) ? data.number : null;
+      if (!repository || number === null) return null;
+      return { repository, number, headSha: typeof data[REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY] === "string"
+        ? data[REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY] as string : null,
+        title: product.title, url: product.url,
+        authorLogin: typeof data.authorLogin === "string" ? data.authorLogin : null,
+        baseRef: typeof data.baseRef === "string" ? data.baseRef : null, draft: data.draft === true };
+    },
+
     async listManagerChainReviewerAgents(companyId, engineerId, roles) {
       if (roles.length === 0) return [];
       const rows = await db
@@ -342,9 +458,11 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         id,
         name,
         role,
+        status,
         metadata: (metadata as Record<string, unknown> | null) ?? null,
         model: lastRunModel ?? model,
         invokable: isAgentStatusInvokable(status),
+        swarmQueueEligible: metadata?.swarmQueueEligible !== false,
       }));
     },
 
@@ -376,6 +494,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         id: row.id,
         name: row.name,
         role: row.role,
+        status: row.status,
         metadata: (row.metadata as Record<string, unknown> | null) ?? null,
         invokable: isAgentStatusInvokable(row.status),
       };
@@ -429,6 +548,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
           entityId: activityLog.entityId,
           createdAt: activityLog.createdAt,
           reviewerAgentId: sql<string | null>`${activityLog.details} ->> 'reviewerAgentId'`,
+          previousReviewerAgentId: sql<string | null>`${activityLog.details} ->> 'previousReviewerAgentId'`,
         })
         .from(activityLog)
         .where(
@@ -443,7 +563,12 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       // Newest first: the first row per task is the last routing event.
       for (const row of rows) {
         const entry = history.get(row.entityId) ?? { lastAt: row.createdAt, reviewerAgentIds: [] };
-        if (row.reviewerAgentId) entry.reviewerAgentIds.unshift(row.reviewerAgentId);
+        if (row.previousReviewerAgentId && !entry.reviewerAgentIds.includes(row.previousReviewerAgentId)) {
+          entry.reviewerAgentIds.unshift(row.previousReviewerAgentId);
+        }
+        if (row.reviewerAgentId && !entry.reviewerAgentIds.includes(row.reviewerAgentId)) {
+          entry.reviewerAgentIds.unshift(row.reviewerAgentId);
+        }
         history.set(row.entityId, entry);
       }
       return history;
@@ -483,6 +608,19 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         ))
         .orderBy(desc(activityLog.createdAt))
         .limit(1);
+      const [lastEscalation] = await db
+        .select({ requestedAt: activityLog.createdAt })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, REVIEW_WAKE_ESCALATION_ACTION),
+          sql`${activityLog.details} ->> 'reviewerAgentId' = ${reviewerAgentId}`,
+          sql`${activityLog.details} ->> 'stageId' = ${stageId}`,
+        ))
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
       const [lastCancelledRun] = await db
         .select({ finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt, createdAt: heartbeatRuns.createdAt })
         .from(heartbeatRuns)
@@ -500,13 +638,14 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         lastWakeAt: lastWake?.requestedAt ?? null,
         attempts: lastWake?.attempt ?? 0,
         lastCancelledRunAt: lastCancelledRun ? (lastCancelledRun.finishedAt ?? lastCancelledRun.updatedAt ?? lastCancelledRun.createdAt) : null,
+        lastEscalationAt: lastEscalation?.requestedAt ?? null,
       };
     },
 
     async recordReviewWakeEscalation({ companyId, issueId, reviewerAgentId, stageId, attempts, at }) {
       await db.insert(activityLog).values({
         companyId, actorType: "system", actorId: "review_routing_sweep",
-        action: "issue.review_routing.wake_escalation_required", entityType: "issue", entityId: issueId, agentId: reviewerAgentId,
+        action: REVIEW_WAKE_ESCALATION_ACTION, entityType: "issue", entityId: issueId, agentId: reviewerAgentId,
         details: { reviewerAgentId, stageId, attempts, owner: "ADM", nextAction: "inspect reviewer runtime and manually replay the review wake; preserve stage unless intentionally returned" },
         createdAt: at,
       });
@@ -832,6 +971,153 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       } catch {
         return false;
       }
+    },
+
+    async listApprovedPrIssues(companyId, options = {}) {
+      const rows = await db
+        .select({
+          issueId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          productUrl: issueWorkProducts.url,
+          productMetadata: issueWorkProducts.metadata,
+          verdict: issueExecutionDecisions.body,
+          approvedAt: issueExecutionDecisions.createdAt,
+        })
+        .from(issues)
+        .innerJoin(issueWorkProducts, eq(issueWorkProducts.issueId, issues.id))
+        .leftJoin(
+          issueExecutionDecisions,
+          and(
+            eq(issueExecutionDecisions.issueId, issues.id),
+            sql`${issueExecutionDecisions.id}::text = ${issues.executionState}->>'lastDecisionId'`,
+          ),
+        )
+        .where(and(
+          eq(issues.companyId, companyId),
+          inArray(issues.status, ["in_review", "in_progress"]),
+          isNull(issues.hiddenAt),
+          isNull(issues.conversationAgentId),
+          isNull(issues.conversationUserId),
+          ...(options.issueId ? [eq(issues.id, options.issueId)] : []),
+          sql`${issues.executionState}->>'lastDecisionOutcome' = 'approved'`,
+          sql`${issues.executionState}->>'status' in ('completed', 'in_progress')`,
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+          inArray(issueWorkProducts.status, [...OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES]),
+        ))
+        .orderBy(issues.updatedAt, issues.id)
+        .limit(options.limit ?? 100);
+
+      // A state without `lastDecisionId` still has its approving decision: the latest one of the task.
+      const withoutVerdict = [...new Set(rows.filter((row) => row.verdict === null).map((row) => row.issueId))];
+      const fallback = new Map<string, { body: string | null; createdAt: Date }>();
+      if (withoutVerdict.length > 0) {
+        const decisions = await db
+          .select({
+            issueId: issueExecutionDecisions.issueId,
+            body: issueExecutionDecisions.body,
+            createdAt: issueExecutionDecisions.createdAt,
+          })
+          .from(issueExecutionDecisions)
+          .where(and(
+            eq(issueExecutionDecisions.companyId, companyId),
+            inArray(issueExecutionDecisions.issueId, withoutVerdict),
+            eq(issueExecutionDecisions.outcome, "approved"),
+          ))
+          .orderBy(desc(issueExecutionDecisions.createdAt));
+        for (const decision of decisions) {
+          if (!fallback.has(decision.issueId)) fallback.set(decision.issueId, decision);
+        }
+      }
+
+      const out: ApprovedPrIssueRow[] = [];
+      const seen = new Set<string>();
+      for (const row of rows) {
+        const coordinates = pullRequestCoordinates(row.productMetadata ?? null, row.productUrl ?? null);
+        if (!coordinates) continue;
+        const key = `${row.issueId}|${coordinates.repository.toLowerCase()}#${coordinates.number}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const approved = row.verdict !== null ? { body: row.verdict, createdAt: row.approvedAt } : fallback.get(row.issueId);
+        out.push({
+          issueId: row.issueId,
+          identifier: row.identifier,
+          title: row.title,
+          status: row.status,
+          repository: coordinates.repository,
+          number: coordinates.number,
+          prUrl: row.productUrl ?? null,
+          verdict: approved?.body ?? null,
+          approvedAt: approved?.createdAt ?? null,
+        });
+      }
+      return out;
+    },
+
+    async returnApprovedPrToImplementer({ companyId, issueId, at }) {
+      return db.transaction(async (tx) => {
+        const [locked] = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+          .for("update")
+          .limit(1);
+        if (!locked) return null;
+        if ((locked.status !== "in_review" && locked.status !== "in_progress") || locked.workMode !== "standard") return null;
+        const state = locked.executionState && typeof locked.executionState === "object" && !Array.isArray(locked.executionState)
+          ? (locked.executionState as Record<string, unknown>)
+          : null;
+        // The approval must still stand: a task already sent back, re-reviewed or changed is not ours to move.
+        if (!state || state.lastDecisionOutcome !== "approved") return null;
+        if (state.status !== "completed" && state.status !== "in_progress") return null;
+
+        const returnAssignee =
+          state.returnAssignee && typeof state.returnAssignee === "object" && !Array.isArray(state.returnAssignee)
+            ? (state.returnAssignee as Record<string, unknown>)
+            : null;
+        if (returnAssignee && returnAssignee.type !== "agent") return null;
+        let implementerId = typeof returnAssignee?.agentId === "string" ? returnAssignee.agentId : null;
+        if (!implementerId) {
+          // No recorded return assignee: the agent whose run opened the pull request is its author.
+          const [product] = await tx
+            .select({ createdByRunId: issueWorkProducts.createdByRunId })
+            .from(issueWorkProducts)
+            .where(and(eq(issueWorkProducts.issueId, locked.id), eq(issueWorkProducts.type, "pull_request")))
+            .limit(1);
+          if (product?.createdByRunId) {
+            const [run] = await tx
+              .select({ agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, product.createdByRunId))
+              .limit(1);
+            implementerId = run?.agentId ?? null;
+          }
+        }
+        implementerId = implementerId ?? locked.createdByAgentId ?? locked.assigneeAgentId ?? null;
+        if (!implementerId) return null;
+
+        const nextState: Record<string, unknown> = {
+          ...state,
+          status: "changes_requested",
+          reviewRequest: null,
+          lastDecisionOutcome: "changes_requested",
+        };
+        await tx
+          .update(issues)
+          .set({
+            status: "in_progress",
+            statusVersion: sql`${issues.statusVersion} + 1`,
+            assigneeAgentId: implementerId,
+            assigneeUserId: null,
+            executionState: nextState,
+            updatedAt: at,
+          })
+          .where(and(eq(issues.id, locked.id), eq(issues.companyId, companyId)));
+        return { implementerAgentId: implementerId, previousStatus: locked.status, executionState: nextState };
+      });
     },
   };
 }

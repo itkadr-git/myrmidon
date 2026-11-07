@@ -102,6 +102,9 @@ export function createBoardJanitorSweep(deps: {
         updatedAt: issues.updatedAt,
         lastActivityAt: issues.lastActivityAt,
         metadata: issues.blockerMetadata,
+        blockerMetadata: issues.blockerMetadata,
+        unblockDescriptor: issues.unblockDescriptor,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
       })
       .from(issues)
       .where(
@@ -146,6 +149,9 @@ export function createBoardJanitorSweep(deps: {
     const openIssueCandidates: IssueCandidate[] = rawOpenIssues.map((i) => ({
       ...i,
       metadata: (i.metadata ?? null) as Record<string, unknown> | null,
+      blockerMetadata: (i.blockerMetadata ?? null) as Record<string, unknown> | null,
+      unblockDescriptor: (i.unblockDescriptor ?? null) as Record<string, unknown> | null,
+      monitorNextCheckAt: i.monitorNextCheckAt ?? null,
       identifier: i.identifier ?? i.id,
       labels: issueLabelMap.get(i.id) ?? [],
     }));

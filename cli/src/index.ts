@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { warnIfUnsupportedNodeVersion } from "@myrmidon/shared/node-version";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
+import { geoCheckCommand } from "./commands/geo-check.js";
 import { envCommand } from "./commands/env.js";
 import { channelsCommand } from "./commands/channels.js";
 import { configure } from "./commands/configure.js";
@@ -12,6 +13,7 @@ import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerMyrmidonMigrateCommand } from "./commands/myrmidon-migrate.js";
+import { registerMyrmidonSchemaDiffCommand } from "./commands/myrmidon-schema-diff.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
@@ -152,6 +154,26 @@ program
   });
 
 program
+  .command("geo-check")
+  .description("Validate standby site readiness for HA-GEO deployment")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--pg-host <host>", "PostgreSQL host to check (default: 127.0.0.1)")
+  .option("--pg-port <port>", "PostgreSQL port to check (default: 5432)")
+  .option("--litellm-host <host>", "LiteLLM host to check (default: 127.0.0.1)")
+  .option("--litellm-port <port>", "LiteLLM port to check (default: 4000)")
+  .option("--secrets <secrets>", "Comma-separated required secret names")
+  .option("--mirror-config <path>", "Path to LiteLLM mirror config file")
+  .option("--min-os-major <major>", "Minimum OS major version (default: 22 / debian 12 / ubuntu 22)")
+  .option("--min-docker-major <major>", "Minimum Docker major version (default: 24)")
+  .option("--min-pg-major <major>", "Minimum PostgreSQL major version (default: 14)")
+  .option("--timeout <ms>", "TCP port check timeout in milliseconds (default: 2000)")
+  .option("--json", "Print output in JSON format")
+  .action(async (opts) => {
+    await geoCheckCommand(opts);
+  });
+
+program
   .command("env")
   .description("Print environment variables for deployment")
   .option("-c, --config <path>", "Path to config file")
@@ -263,6 +285,7 @@ registerSkillsCommands(program);
 registerTeamCommands(program);
 registerWorktreeCommands(program);
 registerMyrmidonMigrateCommand(program);
+registerMyrmidonSchemaDiffCommand(program);
 registerEnvLabCommands(program);
 registerPluginCommands(program);
 

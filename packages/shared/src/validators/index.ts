@@ -49,6 +49,10 @@ export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   boardProcessesSettingsSchema,
+  isValidIanaTimeZone,
+  instanceTimeZoneSchema,
+  instanceNumberFormatSchema,
+  instanceDateFormatSchema,
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -344,6 +348,7 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  agentVisibilityAuthorizationPolicySchema,
   assignmentAuthorizationPolicySchema,
   protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
@@ -351,6 +356,7 @@ export {
   sourceTrustMetadataSchema,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
+  type AgentVisibilityAuthorizationPolicyInput,
   type TrustAuthorizationPolicyInput,
   type SourceTrustMetadataInput,
 } from "./trust-policy.js";
@@ -826,6 +832,7 @@ export {
   pluginLauncherDeclarationSchema,
   pluginDatabaseDeclarationSchema,
   pluginModelProviderDeclarationSchema,
+  pluginProviderModelDeclarationSchema,
   pluginManagedSkillFileDeclarationSchema,
   pluginManagedSkillDeclarationSchema,
   pluginApiRouteDeclarationSchema,
@@ -843,6 +850,7 @@ export {
   type PluginToolDeclarationInput,
   type PluginEnvironmentDriverDeclarationInput,
   type PluginModelProviderDeclarationInput,
+  type PluginProviderModelDeclarationInput,
   type SandboxProviderCapabilitiesInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
@@ -1007,6 +1015,7 @@ export * from "./skill-policy.js";
 export * from "./provider-trace.js";
 export * from "./app-definition.js";
 export * from "./chat-channels.js";
+export * from "./geo-check.js";
 
 export * from "./email.js";
 export * from "./foraging.js";
@@ -1014,3 +1023,7 @@ export * from "./ideas.js";
 export * from "./guardrails.js";
 export * from "./user-block.js";
 export * from "./audit.js";
+export * from "./server-onboarding.js";
+export * from "./server-onboard.js";
+export * from "./updates.js";
+export * from "./auto-update-settings.js";

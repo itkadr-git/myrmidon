@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, vi, type Mocked } from "vitest";
 import { createLitellmSyncService } from "./service.js";
-import { parseLitellmChannel, sanitizeErrorMessage } from "./client.js";
+import { createLitellmSyncClient, parseLitellmChannel, sanitizeErrorMessage } from "./client.js";
 import type { LitellmSyncPort } from "./port.js";
 import type { Db } from "@myrmidon/db";
 
@@ -59,8 +59,29 @@ describe("LitellmSyncService", () => {
       listRegisteredModels: vi.fn().mockResolvedValue([]),
       updateDeployment: vi.fn().mockResolvedValue(undefined),
       deleteDeployment: vi.fn().mockResolvedValue(undefined),
+      invalidateCache: vi.fn().mockResolvedValue(undefined),
       listChannels: vi.fn().mockResolvedValue([]),
     };
+  });
+
+  it("preserves LiteLLM's upstream model identifier for plugin registrations", async () => {
+    const service = createLitellmSyncService({ db: scriptedDb([]), litellm: port });
+
+    await service.registerPluginModel({
+      modelName: "chatgpt-pool/gpt-4o",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      credentialSecretName: "pool-key",
+      additionalConfig: { model: "openai/gpt-4o" },
+    });
+
+    expect(port.registerModel).toHaveBeenCalledWith({
+      litellmModelName: "chatgpt-pool/gpt-4o",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      credentialSecretName: "pool-key",
+      additionalConfig: { model: "openai/gpt-4o" },
+    });
   });
 
   it("registers model when enabled", async () => {
@@ -176,6 +197,7 @@ describe("LitellmSyncService", () => {
   function fakeGateway(initial: Array<{ modelId: string; name: string; secret: string }>) {
     const deployments = [...initial];
     const absentAfterCall: string[] = [];
+    let invalidationCount = 0;
     let nextId = 100;
     const names = initial.map((d) => d.name);
     const check = () => {
@@ -199,6 +221,9 @@ describe("LitellmSyncService", () => {
         if (index >= 0) deployments.splice(index, 1);
         check();
       },
+      async invalidateCache() {
+        invalidationCount += 1;
+      },
       async unregisterModel(name) {
         for (let i = deployments.length - 1; i >= 0; i--) if (deployments[i].name === name) deployments.splice(i, 1);
         check();
@@ -216,15 +241,17 @@ describe("LitellmSyncService", () => {
         return [];
       },
     };
-    return { gateway, deployments, absentAfterCall };
+    return { gateway, deployments, absentAfterCall, get invalidationCount() { return invalidationCount; } };
   }
 
   it("rotates credentials in place: one deployment per model, new key, never absent", async () => {
-    const { gateway, deployments, absentAfterCall } = fakeGateway([
+    const fake = fakeGateway([
       { modelId: "id-a", name: "openai/gpt-4o", secret: "old-secret" },
       { modelId: "id-b", name: "openai/gpt-4-turbo", secret: "old-secret" },
       { modelId: "id-other", name: "anthropic/other", secret: "other-secret" },
     ]);
+    const { gateway, deployments, absentAfterCall } = fake;
+
     const service = createLitellmSyncService({
       db: scriptedDb([
         [{ ...OPENAI_PROVIDER, credentialSecretName: "new-secret-name-456", companyId: COMPANY_ID }],
@@ -247,13 +274,15 @@ describe("LitellmSyncService", () => {
     expect(deployments).toHaveLength(3);
     // no gap: no model was ever missing from the registry between calls
     expect(absentAfterCall).toEqual([]);
+    expect(fake.invalidationCount).toBe(1);
   });
 
   it("rotation removes leftover duplicate deployments and registers a model the gateway lacks", async () => {
-    const { gateway, deployments, absentAfterCall } = fakeGateway([
+    const fake = fakeGateway([
       { modelId: "id-a", name: "openai/gpt-4o", secret: "old-secret" },
       { modelId: "id-a-dup", name: "openai/gpt-4o", secret: "old-secret" },
     ]);
+    const { gateway, deployments, absentAfterCall } = fake;
     const service = createLitellmSyncService({
       db: scriptedDb([
         [{ ...OPENAI_PROVIDER, credentialSecretName: "new-secret-name-456", companyId: COMPANY_ID }],
@@ -270,6 +299,7 @@ describe("LitellmSyncService", () => {
     ]);
     expect(deployments.filter((d) => d.name === "openai/missing")).toHaveLength(1);
     expect(absentAfterCall).toEqual([]);
+    expect(fake.invalidationCount).toBe(1);
   });
 
   it("rotation never uses /model/new or unregister for an existing deployment", async () => {
@@ -296,6 +326,7 @@ describe("LitellmSyncService", () => {
       baseUrl: "https://api.openai.com/v1",
       credentialValue: "resolved-secret-value",
     });
+    expect(port.invalidateCache).toHaveBeenCalledTimes(1);
   });
 
   it("registers openai-compatible providers with a LiteLLM prefix and credential value", async () => {
@@ -341,6 +372,7 @@ describe("LitellmSyncService", () => {
         modelId: "id-a", litellmModelName: "openai/gpt-4o", providerType: "openai", baseUrl: null, credentialValue: "resolved-secret-value",
       });
       await client.deleteDeployment("id-dup");
+      await client.invalidateCache!();
     } finally {
       fetchMock.mockRestore();
     }
@@ -348,6 +380,7 @@ describe("LitellmSyncService", () => {
     expect(calls[0]!.body.model_info).toEqual({ id: "id-a" });
     expect(calls[0]!.body.litellm_params.api_key).toBe("resolved-secret-value");
     expect(calls[1]).toEqual({ url: "http://gw.invalid/model/delete", body: { id: "id-dup" } });
+    expect(calls[2]).toEqual({ url: "http://gw.invalid/cache/delete", body: {} });
   });
 
   it("unregisterModels clears a removed provider's gateway registrations", async () => {
@@ -425,6 +458,20 @@ describe("LitellmSyncService", () => {
         order: 2,
         weight: 15,
       });
+
+      const parsedWithoutWeight = parseLitellmChannel({
+        model_name: "gpt-4o",
+        model_info: {
+          id: "deploy-2",
+          custom_llm_provider: "openai",
+        },
+        litellm_params: {
+          model: "openai/gpt-4o-mini",
+          order: 1,
+        },
+      });
+
+      expect(parsedWithoutWeight.weight).toBe(0);
     });
 
     it("sanitizes error messages containing keys and tokens", () => {
@@ -439,5 +486,41 @@ describe("LitellmSyncService", () => {
       expect(clean).not.toContain("custom-bearer-value");
       expect(clean).toContain("<redacted>");
     });
+  });
+});
+
+describe("LitellmSyncClient", () => {
+  it("registers the board alias while routing to the mapped LiteLLM model", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    try {
+      await createLitellmSyncClient({
+        litellmBaseUrl: "http://litellm.test",
+        litellmAdminKey: "admin-key",
+      }).registerModel({
+        litellmModelName: "chatgpt-pool/gpt-4o",
+        providerType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        credentialValue: "secrets/pool-key",
+        additionalConfig: { model: "openai/gpt-4o" },
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith("http://litellm.test/model/new", expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          model_name: "chatgpt-pool/gpt-4o",
+          litellm_params: {
+            model: "openai/gpt-4o",
+            provider: "openai",
+            api_base: "https://api.openai.com/v1",
+            api_key: "secrets/pool-key",
+          },
+          model_info: {},
+        }),
+      }));
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 });

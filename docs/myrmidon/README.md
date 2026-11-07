@@ -44,7 +44,8 @@ Myrmidon — система управления компаниями из ИИ-
 | [ROADMAP.md](ROADMAP.md) | Состав V1.0 с критериями готовности, порядок V1.x, «Потом» |
 | [CONVENTIONS.md](CONVENTIONS.md) | Как мы работаем: ветки, PR, тесты, слияние, открытость, карта файлов по трекам |
 | [DIVERGENCE.md](DIVERGENCE.md) | Реестр наших отличий от вендора |
-| [SETTINGS.md](SETTINGS.md) | Наши настройки (переменные `MYRMIDON_*`) и их значения по умолчанию (русская версия: [SETTINGS.ru.md](SETTINGS.ru.md)) |
+| [SETTINGS.md](SETTINGS.md) | Our settings (`MYRMIDON_*` environment variables; Russian version: [SETTINGS.ru.md](SETTINGS.ru.md)) |
+| [bot-session-retention.md](bot-session-retention.md) | Operator guide to background Hermes session retention in bot containers (Russian version: [bot-session-retention.ru.md](bot-session-retention.ru.md)) |
 | [ci.md](ci.md) | CI: проверки, сканеры, сборка образа |
 | [merge-queue.md](merge-queue.md) | Очередь слияний GitHub: кандидат проверяется поверх свежего main, роли ревьюера и стюарда (русская версия: [merge-queue.ru.md](merge-queue.ru.md)) |
 | [deploy.md](deploy.md) | Выкат, обновление и откат по отпечатку образа (русская версия: [deploy.ru.md](deploy.ru.md)) |
@@ -130,6 +131,10 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/parallel-helpers.md](guides/parallel-helpers.md) | Параллельные помощники (1.6 PARALLEL-HELPERS): секция «Parallel helpers» в карточке агента (вкл/выкл, лимит, модель, бюджет ходов), потолок и умолчание компании с подсказкой о ёмкости в настройках инстанса, секция `delegation` в профиле бота, встроенный навык |
 | [guides/custom-castes.md](guides/custom-castes.md) | Свои касты (CUSTOM-CASTES): справочник ролей компании в базе, двенадцать встроенных каст при первом чтении, поля касты, REST API с переводом агентов при удалении, живое чтение без перезапуска |
 | [guides/issue-list-agent-defaults.md](guides/issue-list-agent-defaults.md) | Умолчания списка задач для агентов (1.6.5 F-16 A): compact без `view`, limit 200 по умолчанию / максимум 500 с 400-подсказкой про пагинацию, без `description` в compact, полный вид только `view=full&limit<=100`, настройка `issuesListAgentDefaults`, доска без изменений |
+| [guides/instance-execution-policy-and-attention.md](guides/instance-execution-policy-and-attention.md) | Политика выполнения и настройки ленты внимания (1.6.6 SETTINGS-UI S): бейдж `general.executionMode` только для чтения, панель настроек окон ленты внимания `attentionFailedRunHorizonDays` и `attentionFeedCacheTtlSeconds` на Instance → General |
+| [guides/instance-users.md](guides/instance-users.md) | Instance users: поиск пользователей по всему инстансу, доступ только администраторам инстанса, состояния загрузки/пустого результата/ошибки и отказ 403 (русская версия: [guides/instance-users.ru.md](guides/instance-users.ru.md)) |
+| [guides/users-admin-ui.md](guides/users-admin-ui.md) | Экран «Пользователи» компании (1.7 USERS-ADMIN-UI B): управление пользователями в настройках компании (`/company/settings/users`), список и создание (пароль или одноразовая ссылка), блокировка, сброс пароля, роли (`instance_admin` / `member`), отключённая саморегистрация |
+| [guides/users-admin-a.md](guides/users-admin-a.md) | Управление пользователями и журнал аудита (1.7 USERS-ADMIN-A): REST API администрирования пользователей, одноразовые токены установки пароля, аудит-лог действий с дедупликацией и фильтрами |
 
 ## Сборка и запуск
 

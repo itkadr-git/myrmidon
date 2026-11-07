@@ -86,21 +86,27 @@ import {
 } from "../myrmidon/pause-guard/attention.js";
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
-import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+import { readModelFallbackSignals, readModelFallbackDeadendSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 // myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
 import { collectDevflowHealth } from "../myrmidon/devflow-health/collector.js";
 import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
-import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
+import { readPoolAccountSignals, readPackageExpirySignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
 // company — the accounting key is misconfigured, not a quiet window.
-import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
+import {
+  readEmptyCatalogSignal,
+  readLitellmBudgetSignals,
+} from "../myrmidon/litellm-costs/attention.js";
 // myrmidon(1.6.5-F11-A): the «media not connected» signals the profile compile records.
 import { readMediaMcpSignals } from "../myrmidon/bot-containers/media-mcp.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
 // volume at/over its quota; the feed turns the registry into cards.
 import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
 import { readBotDiskQuotaSignals } from "../myrmidon/bot-containers/bot-quota.js";
+// myrmidon(OPE-7202): provider-reported warnings surface before reset.
+import { buildProviderUsageAttentionCard } from "../myrmidon/provider-usage/attention.js";
+import { providerUsageService } from "./provider-usage.js";
 
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
 import {
@@ -214,6 +220,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(1.6.5-F-18): the gateway model catalog is empty — the accounting
   // key is misconfigured; one card per company.
   "empty_model_catalog",
+  // myrmidon(OPE-11776): key cap and spend threshold cards.
+  "litellm_budget",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
   // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
@@ -231,6 +239,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "owner_pending_card",
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
   "codex_pool_alert",
+  "provider_usage_warning",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -259,6 +268,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
   // the model picker — a stop, ranked with the other gateway-ops alerts.
   empty_model_catalog: 0,
+  // myrmidon(OPE-11776): budget exhaustion is a critical operational alert.
+  litellm_budget: 3,
   // myrmidon(1.6.5-F11-A): «media not connected» is configuration advice, not
   // an error — ranked with the other advisory sources.
   bot_media_mcp: 13,
@@ -294,6 +305,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5 F-09): a queue stall is a workload notice — advice, ranked
   // with the other capacity signals.
   queue_stall: 14,
+  provider_usage_warning: 19,
   // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
   // extension — visible as advice, never a stop; ranked with the other
   // advisory notices.
@@ -1546,6 +1558,29 @@ async function buildAttentionFeedSnapshot(
         if (!includeDismissed && dismissal?.isActive) return;
         collected.push({ ...item, dismissal });
       };
+
+      for (const aggregate of await providerUsageService(db).list(companyId)) {
+        const warning = aggregate.warning;
+        if (!warning || Date.parse(warning.observedAt) >= Date.parse(warning.resetsAt)) continue;
+        const card = buildProviderUsageAttentionCard(warning);
+        add(createItem({
+          companyId,
+          sourceKind: "provider_usage_warning",
+          subject: { kind: "company", id: companyId, companyId, title: card.title, identifier: null, status: null, href: `/${prefix}/apps`, metadata: card.metadata },
+          whyNow: card.whyNow,
+          decisionVerbs: [],
+          inlineResolvable: false,
+          entryRule: warning.trigger === "usage" ? `provider usage reached ${warning.thresholdPercent}% before reset` : `provider window passed ${warning.thresholdPercent}% of its length before reset`,
+          exitRule: "provider window resets or usage falls below threshold",
+          dedupKey: card.dedupKey,
+          severity: card.severity,
+          activityAt: warning.observedAt,
+          createdAt: warning.observedAt,
+          updatedAt: warning.observedAt,
+          relatedIssue: null,
+          detail: { kind: "provider_usage", provider: warning.provider, windowKind: warning.window === "package" ? "package" : warning.window === "rolling_5h" ? "5h" : "week", usedPercent: warning.limit > 0 ? warning.used / warning.limit * 100 : 0, thresholdPercent: warning.thresholdPercent, resetsAt: warning.resetsAt, credentialRef: warning.credentialRef, images: [] },
+        }));
+      }
 
       const pendingApprovals = await db
         .select({
@@ -3644,6 +3679,34 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      for (const deadend of readModelFallbackDeadendSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "model_fallback_alert",
+          subject: {
+            kind: "agent", id: deadend.agentId, companyId,
+            title: deadend.title, identifier: null, status: null,
+            href: `/${prefix}/agents/${deadend.agentId}`,
+            metadata: { requestId: deadend.requestId, model: deadend.model },
+          },
+          whyNow: deadend.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the failed request and fallback chain." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this fallback alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a live attributed gateway request failed after fallback routing.",
+          exitRule: "no failed attributed gateway request remains in the sweep window or the alert is dismissed.",
+          dedupKey: deadend.dedupKey,
+          severity: deadend.severity,
+          activityAt: deadend.activityAt,
+          createdAt: deadend.activityAt,
+          updatedAt: deadend.activityAt,
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: excerpt(deadend.summaryExcerpt), images: [] },
+        }));
+      }
+
       // myrmidon(1.6.6 OPE-7198): attention cards for banned or exhausted Codex / ChatGPT pool accounts.
       if (serviceOptions.poolSignalsSync) {
         await serviceOptions.poolSignalsSync(companyId).catch(() => {
@@ -3687,6 +3750,49 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(poolSignal.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.6 OPE-7189 part J): attention card when an LLM provider package
+      // is nearing expiration (e.g. 15-day packages like nghimmo) or expired.
+      for (const sig of readPackageExpirySignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "provider_usage_warning",
+          subject: {
+            kind: "company",
+            id: sig.providerId,
+            companyId,
+            title: sig.title,
+            identifier: sig.packageName ?? sig.providerName,
+            status: sig.status,
+            href: `/${prefix}/company/settings/models`,
+            metadata: {
+              providerId: sig.providerId,
+              providerName: sig.providerName,
+              packageName: sig.packageName,
+              expiresAt: sig.expiresAt,
+            },
+          },
+          whyNow: sig.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the provider settings and rotate/extend package." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this package alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: sig.status === "expired" ? "LLM provider package has expired" : "LLM provider package reached expiration warning threshold",
+          exitRule: "the key is rotated, package is renewed, or the alert is dismissed.",
+          dedupKey: sig.dedupKey,
+          severity: sig.severity,
+          activityAt: sig.observedAt,
+          createdAt: sig.observedAt,
+          updatedAt: sig.observedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(sig.whyNow),
             images: [],
           },
         }));
@@ -3773,6 +3879,45 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(emptyCatalogSignal.summary),
+            images: [],
+          },
+        }));
+      }
+
+      for (const budgetSignal of readLitellmBudgetSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "litellm_budget",
+          // The subject id is the stable dedupKey (kind + company + agent), not
+          // the bare agent id: one agent can hold several cards at once and the
+          // triage / queue rows are keyed by (sourceKind, subject id).
+          subject: {
+            kind: "agent",
+            id: budgetSignal.dedupKey,
+            companyId,
+            title: budgetSignal.title,
+            identifier: budgetSignal.agentId,
+            status: null,
+            href: `/${prefix}/costs`,
+            metadata: { litellmBudgetSignal: budgetSignal.kind, agentId: budgetSignal.agentId },
+          },
+          whyNow: budgetSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the Costs page: its Gateway tab lists the cap and spend of every bot key." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a bot's LiteLLM key reaches 80% of its cap, exhausts it, or its 24 h spend is an outlier against the previous six days.",
+          exitRule: "the next evaluation (every 15 minutes) no longer reports this condition.",
+          dedupKey: budgetSignal.dedupKey,
+          severity: budgetSignal.severity,
+          activityAt: budgetSignal.activityAt,
+          createdAt: budgetSignal.activityAt,
+          updatedAt: budgetSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(budgetSignal.summary),
             images: [],
           },
         }));

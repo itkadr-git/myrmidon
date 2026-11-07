@@ -60,6 +60,7 @@ const apiPrefixes: Record<string, string> = {
   "llms.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
+  "servers.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -73,9 +74,12 @@ const apiPrefixes: Record<string, string> = {
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): system update checks mount under /api.
+  "system-updates.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
+  "updates.ts": "/api",
   "user-profiles.ts": "/api",
   "users.ts": "/api",
 };
@@ -117,7 +121,18 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
 // They are documented contract-first in openapi.ts — the deliverable of
 // OPE-5955 — and the handlers exist; only the scanner's directory scope keeps
 // them off the "actual" side.
+// routes/updates.ts is mounted through the app-plugin registry, while its
+// OpenAPI entries are contract-first and are not discovered by this scanner.
 const specOnlyContractFirstRoutes = new Set<string>([
+  "GET /api/myrmidon/updates/settings",
+  "PUT /api/myrmidon/updates/settings",
+  "GET /api/updates",
+  "PUT /api/updates",
+  "PATCH /api/updates",
+  "GET /api/updates/settings",
+  "PUT /api/updates/settings",
+  "PATCH /api/updates/settings",
+  "POST /api/updates/validate",
   "GET /api/myrmidon/companies/{companyId}/knowledge/search",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
@@ -144,6 +159,7 @@ const specOnlyContractFirstRoutes = new Set<string>([
   // scanner's route-file scope; their OpenAPI entries are contract-first here.
   "GET /api/admin-assistant/cluster-health",
   "GET /api/admin-assistant/health",
+  "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
 ]);
 
@@ -310,6 +326,33 @@ describe("openapi routes", () => {
     expect(wake.responses["409"]).toBeDefined();
     expect(wake.description).toContain("durable queued/deferred receipt");
   });
+  it("keeps the legacy OAuth route alias while exposing Myrmidon wording", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    expect(res.status).toBe(200);
+    const legacyCallback =
+      res.body.paths["/api/tools/oauth/paperclip-id/callback"].get;
+    expect(legacyCallback.summary).toBe(
+      "Handle a legacy brokered Myrmidon ID OAuth callback",
+    );
+    expect(res.body.paths["/api/tools/oauth/cloud-connector/callback"].get.summary).toBe(
+      "Handle a brokered Myrmidon Cloud OAuth callback",
+    );
+  });
+
+  it("keeps validation errors documented for the aliased enrollment route", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    expect(res.status).toBe(200);
+    const enrollment =
+      res.body.paths["/api/tools/oauth/cloud-connector/enrollment"].post;
+    expect(enrollment.requestBody.content["application/json"].schema).toMatchObject({
+      required: ["companyId"],
+      additionalProperties: false,
+    });
+    expect(enrollment.responses["422"]).toBeDefined();
+  });
+
   it("serves the generated OpenAPI document", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
 
@@ -793,6 +836,24 @@ describe("openapi routes", () => {
     }
     expect(replacement.requestBody.content["application/json"].schema.required).toContain("repositoryIds");
     expect(replacement.responses["422"]).toBeDefined();
+  });
+
+  it("documents admin-assistant health authorization and error responses", () => {
+    const { spec } = loadSpecRoutes();
+    for (const path of [
+      "/api/companies/{companyId}/admin-assistant/cluster-health",
+      "/api/admin-assistant/cluster-health",
+      "/api/admin-assistant/health",
+    ]) {
+      const operation = spec.paths[path].get;
+      expect(operation.responses["401"]).toBeDefined();
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toMatchObject({
+        actor: "board_or_agent",
+        companyScopedQuery: true,
+        unscoped: { actor: "board", instanceAdmin: true },
+      });
+    }
   });
 
   it("documents auth and reviewed response-code invariants", () => {

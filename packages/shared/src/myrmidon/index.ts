@@ -3,7 +3,6 @@
 // New contracts go here or in packages/shared/src/myrmidon/, sorted alphabetically.
 // Regenerate with: node scripts/generate-shared-exports.mjs
 
-export * from "../validators/audit.js";
 export * from "../blocker-graph.js";
 export * from "../continuation-key.js";
 export * from "../interaction-routing.js";
@@ -16,6 +15,9 @@ export * from "../myrmidon-agent-tool-permissions.js";
 export * from "../myrmidon-alert-recovery.js";
 export * from "../myrmidon-architect-data.js";
 export * from "../myrmidon-attention-feed.js";
+export * from "../myrmidon-auth-noemail.js";
+export * from "../myrmidon-auth-self-signup.js";
+export * from "../myrmidon-auto-update-window-cron.js";
 export * from "../myrmidon-autonomy.js";
 export * from "../myrmidon-base-skills.js";
 export * from "../myrmidon-behavior-settings-registry.js";
@@ -38,6 +40,7 @@ export * from "../myrmidon-capacity-policy-schema.js";
 export * from "../myrmidon-capacity-policy.js";
 export * from "../myrmidon-castes.js";
 export * from "../myrmidon-channel-allowlist.js";
+export * from "../myrmidon-check-updates.js";
 export * from "../myrmidon-cloud-connector.js";
 export * from "../myrmidon-corpus.js";
 export * from "../myrmidon-cto-chat.js";
@@ -85,9 +88,11 @@ export * from "../myrmidon-successful-run-handoff-notices.js";
 export * from "../myrmidon-swarm-claim.js";
 export * from "../myrmidon-swarm-wake.js";
 export * from "../myrmidon-swarm.js";
+export * from "../myrmidon-task-session-and-reviewer-isolation.js";
 export * from "../myrmidon-team-liveness.js";
 export * from "../myrmidon-telegram-dm-progress.js";
 export * from "../myrmidon-telegram-notify.js";
+export * from "../myrmidon-tool-output-limit.js";
 export * from "../myrmidon-tool-policy-cache.js";
 export * from "../myrmidon-ui2-i18n.js";
 export * from "../myrmidon-vendor-name.js";
@@ -95,4 +100,7 @@ export * from "../myrmidon-wip-limit.js";
 export * from "../myrmidon-workspace-hygiene.js";
 export * from "../recovery-factory.js";
 export * from "./ideas.js";
-export * from "../validators/user-block.js";
+export * from "./provider-package-expiry.js";
+export * from "./provider-usage-schema.js";
+export * from "./provider-usage-settings.js";
+export * from "./provider-usage.js";
