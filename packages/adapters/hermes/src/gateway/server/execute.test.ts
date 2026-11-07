@@ -1007,7 +1007,7 @@ describe("execute", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const buildCtx = (config: Record<string, unknown>, storedSessionId: string) => {
-      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: *** timeoutSec: 5, ...config });
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, ...config });
       ctx.context = {
         ...ctx.context,
         issueId: "task-B",
@@ -1065,7 +1065,7 @@ describe("execute", () => {
       taskMarkdown: string,
       handoff?: string,
     ) => {
-      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: *** timeoutSec: 5, sessionKeyStrategy: "issue" });
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, sessionKeyStrategy: "issue" });
       ctx.context = {
         issueId: "issue-delta",
         wakeReason: "issue_monitor_due",
