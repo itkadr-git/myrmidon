@@ -43,6 +43,7 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  MAX_CHILD_ISSUES_CREATED_BY_HELPER,
 } from "../services/issues.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -7517,5 +7518,68 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     });
 
     expect(child.labels?.map((l: any) => l.name)).toEqual(["1.7.0"]);
+  });
+
+  it("createChild ignores done and cancelled child issues when checking MAX_CHILD_ISSUES_CREATED_BY_HELPER limit", async () => {
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue with closed children",
+      status: "in_progress",
+      issueNumber: 1991,
+      identifier: "PAP-1991",
+    });
+
+    const closedChildren = Array.from({ length: MAX_CHILD_ISSUES_CREATED_BY_HELPER }, (_, i) => ({
+      id: randomUUID(),
+      companyId,
+      parentId: parentIssueId,
+      title: `Closed child ${i + 1}`,
+      status: i % 2 === 0 ? "done" : "cancelled",
+      issueNumber: 2000 + i,
+      identifier: `PAP-${2000 + i}`,
+    }));
+    await db.insert(issues).values(closedChildren);
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "26th child after 25 closed",
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.title).toBe("26th child after 25 closed");
+    expect(child.status).toBe("todo");
+  });
+
+  it("createChild enforces MAX_CHILD_ISSUES_CREATED_BY_HELPER limit for active children", async () => {
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue with active children",
+      status: "in_progress",
+      issueNumber: 1992,
+      identifier: "PAP-1992",
+    });
+
+    const activeStatuses = ["todo", "in_progress", "blocked"] as const;
+    const activeChildren = Array.from({ length: MAX_CHILD_ISSUES_CREATED_BY_HELPER }, (_, i) => ({
+      id: randomUUID(),
+      companyId,
+      parentId: parentIssueId,
+      title: `Active child ${i + 1}`,
+      status: activeStatuses[i % activeStatuses.length],
+      issueNumber: 3000 + i,
+      identifier: `PAP-${3000 + i}`,
+    }));
+    await db.insert(issues).values(activeChildren);
+
+    await expect(
+      svc.createChild(parentIssueId, {
+        title: "26th active child",
+      }),
+    ).rejects.toThrow(
+      `Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`,
+    );
   });
 });
