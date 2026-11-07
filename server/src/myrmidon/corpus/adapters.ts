@@ -383,6 +383,17 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
           embedderBaseUrl: settings.embedderBaseUrl,
         });
 
+        // The index returns documentId per hit; resolve real names so bots can
+        // cite sources by book title instead of UUID (OPE-12028).
+        const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
+        const documentNames = new Map<string, string>();
+        await Promise.all(
+          documentIds.map(async (id) => {
+            const document = await ports.store.getDocument(companyId, id);
+            if (document) documentNames.set(id, document.filename);
+          }),
+        );
+
         const filteredHits = hits
           .filter((hit) => request.minScore === null || hit.score >= request.minScore)
           .slice(0, request.topK)
@@ -390,7 +401,7 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
             chunkId: hit.chunkId,
             document: {
               id: hit.documentId,
-              name: hit.documentId,
+              name: documentNames.get(hit.documentId) ?? hit.documentId,
               datasetId: hit.datasetId,
               datasetName: datasets.find((d) => d.id === hit.datasetId)?.name ?? "",
               url: null,
@@ -413,7 +424,10 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         const { ports } = current;
         const document = await ports.store.getDocument(companyId, documentId); if (!document) throw new Error("document not found");
         const dataset = await ports.store.getDataset(companyId, document.datasetId);
-        const chunks = includeText ? await (async () => { const rows = await ports.store.getDocument(companyId, documentId); return rows ? Buffer.from(await ports.blobs.get(rows.blobRef)).toString("utf8") : null; })() : null;
+        // A document can exist without a stored blob (e.g. created but never
+        // uploaded, or the blob key was cleared). Asking for text of such a
+        // document must not crash on "corpus blob: empty key" (OPE-12028).
+        const chunks = includeText && document.blobRef ? Buffer.from(await ports.blobs.get(document.blobRef)).toString("utf8") : null;
         return { document: { id: document.id, name: document.filename, datasetId: document.datasetId, datasetName: dataset?.name ?? "", url: null, status: document.status, sizeBytes: document.byteSize, chunks: document.chunkCount, createdAt: document.createdAt, error: document.error }, text: chunks };
       },
       async listDatasets() {

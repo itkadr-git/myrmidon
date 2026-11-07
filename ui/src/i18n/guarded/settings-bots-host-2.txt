@@ -7,3 +7,4 @@ components/myrmidon/ReplayBlocked.tsx
 components/myrmidon/SessionGenerationsSettingsPanel.tsx
 components/myrmidon/WorkspaceHygieneSettingsPanel.tsx
 components/myrmidon/tracing-health/TracingHealthCard.tsx
+components/myrmidon/SharedMountSettingsPanel.tsx

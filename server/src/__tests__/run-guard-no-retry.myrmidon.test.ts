@@ -410,7 +410,7 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
       }
     });
 
-    it.each(RUN_GUARD_STOP_REASONS.filter((reason) => reason !== "model_call_limit"))(
+    it.each(RUN_GUARD_STOP_REASONS.filter((reason) => reason !== "model_call_limit" && reason !== "no_progress_exploration"))(
       "still blocks the issue for %s, whatever the run changed",
       async (reason) => {
         const { issueId, runId } = await seedRun({
@@ -446,6 +446,61 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
       });
 
       expect(outcome).toMatchObject({ outcome: "not_scheduled", errorCode: "run_guard_stopped" });
+      expect(await successorsOf(runId)).toHaveLength(0);
+    });
+  });
+
+  // myrmidon(OPE-12004): a no_progress_exploration stop gets one automatic retry with a hint.
+  describe("no_progress_exploration stop", () => {
+    it("continues a no_progress_exploration stop once with a hint instruction", async () => {
+      const { issueId, runId } = await seedRun({
+        shape: "retry",
+        status: "cancelled",
+        errorCode: "no_progress_exploration",
+        resultJson: {
+          runGuardStopReason: "no_progress_exploration",
+          runGuardStats: { toolCalls: 80, writeCalls: 0, readOnlyStreak: 80, modelCalls: 81 },
+        },
+      });
+
+      expect(await heartbeat.applyRunGuardStop(runId)).toMatchObject({ outcome: "handled", issue: null });
+
+      const successors = await successorsOf(runId);
+      expect(successors).toHaveLength(1);
+      expect(successors[0]).toMatchObject({
+        status: "scheduled_retry",
+        scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+        scheduledRetryAttempt: 1,
+        retryOfRunId: runId,
+      });
+      const snapshot = successors[0]?.contextSnapshot as Record<string, unknown>;
+      expect(snapshot?.livenessContinuationInstruction).toContain("много чтений без записи");
+      const state = await issueState(issueId);
+      expect(state.status).toBe("in_progress");
+      expect(state.comments).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue?.executionRunId).toBe(successors[0]?.id);
+    });
+
+    it("blocks the issue with the usual comment when the retry ceiling is spent", async () => {
+      const { issueId, runId } = await seedRun({
+        shape: "retry",
+        status: "cancelled",
+        errorCode: "no_progress_exploration",
+        // One retry was already scheduled; this second stop is final.
+        scheduledRetryAttempt: 1,
+        resultJson: {
+          runGuardStopReason: "no_progress_exploration",
+          runGuardStats: { toolCalls: 80, writeCalls: 0, readOnlyStreak: 80, modelCalls: 81 },
+        },
+      });
+
+      await heartbeat.applyRunGuardStop(runId);
+
+      const state = await issueState(issueId);
+      expect(state.status).toBe("blocked");
+      expect(state.comments).toHaveLength(1);
+      expect(state.comments[0]?.body).toContain("только чтение без изменений (80 вызовов без записи)");
       expect(await successorsOf(runId)).toHaveLength(0);
     });
   });

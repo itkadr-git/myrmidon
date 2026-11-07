@@ -228,11 +228,11 @@ function toDocument(record: CorpusDocumentRecord): CorpusDocument {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     parsedAt: record.parsedAt,
-    sourceUrl: record.sourceUrl,
-    refreshIntervalHours: record.refreshIntervalHours,
-    contentHash: record.contentHash,
-    lastFetchedAt: record.lastFetchedAt,
-    sourceError: record.sourceError,
+    sourceUrl: record.sourceUrl ?? null,
+    refreshIntervalHours: record.refreshIntervalHours ?? null,
+    contentHash: record.contentHash ?? null,
+    lastFetchedAt: record.lastFetchedAt ?? null,
+    sourceError: record.sourceError ?? null,
   };
 }
 
@@ -843,7 +843,26 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
         embedderDimensions: settings.embedderDimensions,
         embedderBaseUrl: settings.embedderBaseUrl,
       });
-      return { datasetId, query, mode, limit, hits: hits.map((hit) => ({ ...hit })) };
+      // The index returns documentId per hit; resolve the real filename so the
+      // REST caller can cite sources by name, not by internal UUID (OPE-12028).
+      const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
+      const documentNames = new Map<string, string>();
+      await Promise.all(
+        documentIds.map(async (id) => {
+          const document = await ports.store.getDocument(companyId, id);
+          if (document) documentNames.set(id, document.filename);
+        }),
+      );
+      return {
+        datasetId,
+        query,
+        mode,
+        limit,
+        hits: hits.map((hit) => ({
+          ...hit,
+          documentName: documentNames.get(hit.documentId) ?? hit.documentId,
+        })),
+      };
     },
 
     stats: async (companyId) => {

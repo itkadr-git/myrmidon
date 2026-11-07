@@ -680,6 +680,66 @@ describe('IdleStopService', () => {
 
       expect(mockDriver.start).toHaveBeenCalledWith('b');
     });
+
+    it('deduplicates concurrent ensureStartedAndHealthy calls for the same bot', async () => {
+      const botKey = 'concurrent-bot';
+      let startResolve: () => void;
+      const startPromise = new Promise<void>((resolve) => {
+        startResolve = resolve;
+      });
+      let isStarted = false;
+
+      vi.mocked(mockDriver.status).mockImplementation(async (key: string) => {
+        if (isStarted) {
+          return { botKey: key, state: 'running', idleStopped: false };
+        }
+        return { botKey: key, state: 'stopped', idleStopped: true };
+      });
+
+      vi.mocked(mockDriver.start).mockImplementation(async () => {
+        await startPromise;
+        isStarted = true;
+      });
+
+      const call1 = idleStopService.ensureStartedAndHealthy(botKey);
+      const call2 = idleStopService.ensureStartedAndHealthy(botKey);
+      const call3 = idleStopService.ensureStartedAndHealthy(botKey);
+
+      await vi.waitFor(() => {
+        expect(mockDriver.start).toHaveBeenCalledTimes(1);
+      });
+
+      startResolve!();
+      await Promise.all([call1, call2, call3]);
+
+      expect(mockDriver.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('mass waking N>=5 stopped bots concurrently starts all of them without unhandled errors', async () => {
+      const bots = ['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
+      const started = new Set<string>();
+
+      vi.mocked(mockDriver.status).mockImplementation(async (botKey: string) => {
+        if (started.has(botKey)) {
+          return { botKey, state: 'running', idleStopped: false };
+        }
+        return { botKey, state: 'stopped', idleStopped: true };
+      });
+
+      vi.mocked(mockDriver.start).mockImplementation(async (botKey: string) => {
+        await new Promise((r) => setTimeout(r, 10));
+        started.add(botKey);
+      });
+
+      // Concurrently wake 6 distinct stopped bots
+      await Promise.all(bots.map((b) => idleStopService.ensureStartedAndHealthy(b)));
+
+      for (const b of bots) {
+        expect(mockDriver.start).toHaveBeenCalledWith(b);
+        expect(started.has(b)).toBe(true);
+      }
+      expect(mockDriver.start).toHaveBeenCalledTimes(6);
+    });
   });
 
   describe('disabled functionality', () => {

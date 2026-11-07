@@ -199,7 +199,7 @@ export async function refreshSourceDocument(input: {
   return {
     kind: "updated",
     job,
-    previousHash: document.contentHash,
+    previousHash: document.contentHash ?? null,
     contentHash: fetched.contentHash,
     reparsed: sameContent,
   };

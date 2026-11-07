@@ -7,6 +7,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -121,7 +122,7 @@ func strictDecode(data []byte, out any) error {
 	if err := dec.Decode(out); err != nil {
 		return err
 	}
-	if dec.More() {
+	if err := dec.Decode(new(any)); err != io.EOF {
 		return fmt.Errorf("trailing JSON content")
 	}
 	return nil
@@ -802,8 +803,13 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 				return http.StatusBadRequest, fmt.Errorf("invalid archive: %v", err)
 			}
 			var m snapshotManifest
-			if err := json.Unmarshal(body, &m); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&m); err != nil {
 				return http.StatusBadRequest, fmt.Errorf("invalid manifest: %v", err)
+			}
+			if err := dec.Decode(new(any)); err != io.EOF {
+				return http.StatusBadRequest, fmt.Errorf("invalid manifest: trailing data")
 			}
 			manifest = &m
 			continue
@@ -1061,7 +1067,13 @@ func (s *server) checkSpec(botKey string, sp *spec) error {
 func decodeBody(r *http.Request, out any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	return dec.Decode(out)
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("trailing JSON content")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, body any) {

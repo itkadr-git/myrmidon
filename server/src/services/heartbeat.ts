@@ -69,6 +69,7 @@ import {
 // myrmidon(RUN-GUARD-LOOPS): a run the run guard stopped is not retried; its issue is blocked.
 // myrmidon(RUN-GUARD-CONTINUE): except a call-limit stop of a run that made changes.
 import {
+  NO_PROGRESS_AUTO_RETRY_HINT,
   buildRunGuardStopNotice,
   readRunGuardStopReason,
   readRunGuardWriteCalls,
@@ -16556,9 +16557,15 @@ export function heartbeatService(
       const scheduled = await scheduleBoundedRetryForRun(run, agent, {
         retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
         wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-        maxAttempts: policy.maxAttempts,
+        maxAttempts: reason === "no_progress_exploration" ? 1 : policy.maxAttempts,
         delayMs: policy.delayMs,
         runGuardContinuation: true,
+        ...(reason === "no_progress_exploration"
+          ? {
+              livenessContinuationInstruction: NO_PROGRESS_AUTO_RETRY_HINT,
+              livenessContinuationState: "no_progress_exploration_auto_retry",
+            }
+          : {}),
       });
       if (scheduled.outcome !== "scheduled") return false;
       await appendRunEvent(run, {
@@ -16597,6 +16604,8 @@ export function heartbeatService(
       delayMs?: number;
       // myrmidon(RUN-GUARD-CONTINUE): set by continueRunStoppedAtCallLimit only.
       runGuardContinuation?: boolean;
+      livenessContinuationInstruction?: string;
+      livenessContinuationState?: string;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -16604,16 +16613,18 @@ export function heartbeatService(
     // asks (recovery sweep, process-loss retry, quota monitor, continuation).
     // Maintenance interruptions and transport failures are different error codes
     // and keep their own retry paths.
-    // myrmidon(RUN-GUARD-CONTINUE): the one exception is the continuation of a
-    // call-limit stop that handleRunGuardStop found productive (it passes the
-    // flag); the scheduler still checks the stop reason and the retry reason.
+    // myrmidon(RUN-GUARD-CONTINUE): the exceptions are continuations of:
+    // 1. A call-limit stop that handleRunGuardStop found productive (it passes the flag).
+    // 2. myrmidon(OPE-12004): a no_progress_exploration stop (one auto-retry with a hint).
+    const isAllowedGuardContinuation =
+      opts?.runGuardContinuation === true &&
+      opts.retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
+      (readRunGuardStopReason(run) === "model_call_limit" ||
+        readRunGuardStopReason(run) === "no_progress_exploration");
+
     if (
       readRunGuardStopReason(run) &&
-      !(
-        opts?.runGuardContinuation === true &&
-        opts.retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
-        readRunGuardStopReason(run) === "model_call_limit"
-      )
+      !isAllowedGuardContinuation
     ) {
       await appendRunEvent(run, {
         eventType: "lifecycle",
@@ -16973,6 +16984,17 @@ export function heartbeatService(
         retryOfRunId: run.id,
         wakeReason,
         retryReason,
+        ...(opts?.livenessContinuationInstruction
+          ? {
+              livenessContinuationInstruction:
+                opts.livenessContinuationInstruction,
+            }
+          : {}),
+        ...(opts?.livenessContinuationState
+          ? {
+              livenessContinuationState: opts.livenessContinuationState,
+            }
+          : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {
               failureRetriesBeforeWorkspaceWait:
@@ -23927,6 +23949,7 @@ export function heartbeatService(
       runGuard = new RunGuard(resolveRunGuardOptions({
         agentConfig: agent.adapterConfig,
         teamLiveness: teamLiveness?.settings,
+        role: agent.role,
       }));
 
       // The claimed adapter identity is immutable recovery evidence. Do not

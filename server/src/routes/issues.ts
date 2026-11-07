@@ -8573,6 +8573,14 @@ export function issueRoutes(
       rawOffset !== undefined && /^\d+$/.test(rawOffset)
         ? Number.parseInt(rawOffset, 10)
         : null;
+    // myrmidon(OPE-12027): `page` (1-based) is honoured as offset=(page-1)*limit; an unknown
+    // pagination style used to be ignored silently, and a client paging by `page` looped forever.
+    const rawPage = req.query.page as string | undefined;
+    if (rawPage !== undefined && !/^[1-9]\d*$/.test(rawPage)) {
+      res.status(400).json({ error: "page must be a positive integer; prefer limit+offset" });
+      return;
+    }
+    const pageOffset = rawPage !== undefined ? (Number.parseInt(rawPage, 10) - 1) * limit : null;
     const attention = req.query.attention as string | undefined;
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
@@ -8742,7 +8750,7 @@ export function issueRoutes(
       });
       return;
     }
-    const offset = parsedOffset ?? 0;
+    const offset = parsedOffset ?? pageOffset ?? 0;
 
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,

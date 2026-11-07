@@ -41,6 +41,7 @@ export class IdleStopService {
   private readonly logger: IdleStopLogger;
   private sweepInterval?: NodeJS.Timeout;
   private startupTimes: Map<string, number> = new Map();
+  private inFlightStarts: Map<string, Promise<void>> = new Map();
   private configCache?: { value: IdleStopConfig; expiresAt: number };
 
   constructor(driver: BotContainerDriver, db: Db, config: Partial<IdleStopConfig> = {}, loggerInstance?: IdleStopLogger) {
@@ -467,6 +468,21 @@ export class IdleStopService {
    * within the configured timeout.
    */
   public async ensureStartedAndHealthy(botKey: string): Promise<void> {
+    const existingStart = this.inFlightStarts.get(botKey);
+    if (existingStart) {
+      return await existingStart;
+    }
+
+    const startPromise = this.ensureStartedAndHealthyInternal(botKey);
+    this.inFlightStarts.set(botKey, startPromise);
+    try {
+      await startPromise;
+    } finally {
+      this.inFlightStarts.delete(botKey);
+    }
+  }
+
+  private async ensureStartedAndHealthyInternal(botKey: string): Promise<void> {
     const config = await this.currentConfig();
     const startTime = Date.now();
     const timeoutMs = config.healthTimeoutMs;

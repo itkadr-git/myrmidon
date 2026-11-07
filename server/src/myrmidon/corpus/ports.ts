@@ -68,19 +68,21 @@ export interface CorpusDocumentRecord {
   createdAt: string;
   updatedAt: string;
   parsedAt: string | null;
-  /** OPE-12000: where a URL-sourced document comes from; null for an upload. */
-  sourceUrl: string | null;
-  refreshIntervalHours: number | null;
+  // OPE-12000: the fields below belong to documents added by address. They are optional on purpose:
+  // an adapter or a test double that knows nothing of URL sources reads as "an upload" (absent = null).
+  /** Where a URL-sourced document comes from; null for an upload. */
+  sourceUrl?: string | null;
+  refreshIntervalHours?: number | null;
   /** SHA-256 (hex) of the stored bytes; null for an upload. */
-  contentHash: string | null;
-  lastFetchedAt: string | null;
+  contentHash?: string | null;
+  lastFetchedAt?: string | null;
   /** Why the last fetch failed, or null. */
-  sourceError: string | null;
+  sourceError?: string | null;
   /**
-   * OPE-12000: the bytes the current version replaced. They stay until the new version is `ready`
+   * The bytes the current version replaced. They stay until the new version is `ready`
    * (the parse worker removes them then); null when there is nothing to clean up.
    */
-  previousBlobRef: string | null;
+  previousBlobRef?: string | null;
 }
 
 export interface CorpusJobRecord {
