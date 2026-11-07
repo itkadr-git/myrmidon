@@ -947,6 +947,10 @@ describe("corpus API: upload, parse and search", () => {
     expect(found.body.hits).toHaveLength(1);
     expect(found.body.hits[0]).toMatchObject({ text: "hello corpus", score: 0.9 });
 
+    // REST hits carry the real document name (the filename), not the UUID (OPE-12028).
+    expect(found.body.hits[0].documentName).toBe("notes.txt");
+    expect(found.body.hits[0].documentName).not.toBe(found.body.hits[0].documentId);
+
     // The counters the screen reads follow the same rows.
     const stats = (await request(app).get(`${companyPath()}/stats`)).body.stats;
     expect(stats).toMatchObject({ datasets: 1, documents: 1, ready: 1, pending: 0, failed: 0, chunks: 1, bytes: 12 });
