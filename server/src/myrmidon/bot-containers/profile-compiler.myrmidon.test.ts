@@ -274,6 +274,23 @@ describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", 
     expect(yaml).not.toContain("skills:");
   });
 
+  it("opens the MYRMIDON_* board names to execute_code, with the PAPERCLIP_* aliases kept (REBRAND-ENV, OPE-12052)", () => {
+    const profile = compileHermesProfile(baseInput());
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    const passthrough = yaml.slice(yaml.indexOf("env_passthrough:"));
+    for (const name of ["MYRMIDON_API_KEY", "MYRMIDON_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"]) {
+      expect(passthrough, name).toContain(name);
+    }
+    // The canonical names are listed before the legacy aliases.
+    expect(passthrough.indexOf("MYRMIDON_API_KEY")).toBeLessThan(passthrough.indexOf("PAPERCLIP_API_KEY"));
+    expect(passthrough.indexOf("MYRMIDON_API_URL")).toBeLessThan(passthrough.indexOf("PAPERCLIP_API_URL"));
+    // Every passed-through name is a variable the same profile's .env actually carries.
+    const env = fileByPath(profile.files, "hermes/.env").content;
+    for (const name of ["MYRMIDON_API_KEY", "MYRMIDON_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"]) {
+      expect(env, name).toMatch(new RegExp(`^${name}=`, "m"));
+    }
+  });
+
   it("sets gateway.api_server.max_concurrent_runs from maxConcurrentRuns", () => {
     const profile = compileHermesProfile(baseInput({ maxConcurrentRuns: 7 }));
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;

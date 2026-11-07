@@ -1200,7 +1200,13 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     // (07.11: 8 of 8 bots that tried, ~4% of /api answered 401), and agents work
     // around it by reading /data/hermes/.env into the session history. The board
     // key is the bot's own per-agent key already present in the terminal env.
-    terminal: { cwd: "/workspace", env_passthrough: ["PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"] },
+    // myrmidon(REBRAND-ENV, OPE-12052): the canonical MYRMIDON_* names come first
+    // (the skill tells agents to read those); PAPERCLIP_* stays as the legacy alias
+    // that buildEnvFile writes next to them.
+    terminal: {
+      cwd: "/workspace",
+      env_passthrough: ["MYRMIDON_API_KEY", "MYRMIDON_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"],
+    },
   };
   return writeYamlDocument(root);
 }

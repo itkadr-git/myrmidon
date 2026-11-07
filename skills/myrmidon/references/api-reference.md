@@ -1362,6 +1362,8 @@ Terminal states: `done`, `cancelled`
 
 ### Issues (Tasks)
 
+Задача по идентификатору: `GET /api/issues/OPE-N`; списки — `limit`+`offset`, цикл до `len < limit`.
+
 | Method | Path                               | Description                                                                              |
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |

@@ -115,6 +115,13 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(OPE-11890): the auth-401 burst operator signal registry.
+import {
+  readAuth401BurstSignal,
+  auth401BurstSignalDedupKey,
+  auth401BurstSignalSeverity,
+  auth401BurstSignalWhyNow,
+} from "../myrmidon/auth-401-burst/attention.js";
 // myrmidon(OPE-6011): the held-task card (a settled execution-reconciliation
 // hold silently skipping every wake of the task's assignee).
 import {
@@ -216,6 +223,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "bot_media_mcp",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
+  // myrmidon(OPE-11890): one card while the auth-401 burst latch is tripped.
+  "auth_401_burst",
   "host_disk_alert",
   // myrmidon(1.6.5-F-18): the gateway model catalog is empty — the accounting
   // key is misconfigured; one card per company.
@@ -263,6 +272,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   join_request: 10,
   stack_update: 11,
   stale_block: 12,
+  // myrmidon(OPE-11890): a 401 storm is an active-auth stop — ranked with the
+  // other auth/ops alerts at the top of the feed.
+  auth_401_burst: 0,
   host_disk_alert: 0,
   model_fallback_alert: 13,
   // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
@@ -3044,6 +3056,57 @@ async function buildAttentionFeedSnapshot(
             images: [],
           },
         }));
+      }
+
+      // myrmidon(OPE-11890): one card while the auth-401 burst latch is
+      // tripped. The error handler records every 401 into the in-process
+      // detector (myrmidon/auth-401-burst); when the sliding window crosses
+      // the threshold the latch trips and this registry holds the signal. The
+      // card exists exactly while the latch is set — the operator dismisses
+      // it, ADM (or a process restart) resets the latch. No credential ever
+      // reaches the signal: counts, thresholds, window, trippedAt only.
+      {
+        const signal = readAuth401BurstSignal();
+        if (signal) {
+          add(createItem({
+            companyId,
+            sourceKind: "auth_401_burst",
+            subject: {
+              kind: "agent",
+              id: "auth-401-burst",
+              companyId,
+              title: "Auth 401 burst",
+              identifier: null,
+              status: "alert",
+              href: `/${prefix}/instance`,
+              metadata: {
+                trippedAt: signal.trippedAt,
+                windowTotal: signal.windowTotal,
+                threshold: signal.threshold,
+                windowSeconds: Math.round(signal.windowMs / 1000),
+              },
+            },
+            whyNow: auth401BurstSignalWhyNow(signal),
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the metrics panel and check the auth 401 burst families." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until the latch resets." },
+            ),
+            inlineResolvable: false,
+            entryRule: "the auth-401 sliding window crossed the burst threshold",
+            exitRule: "the detector latch resets or the row is dismissed",
+            dedupKey: auth401BurstSignalDedupKey(signal),
+            severity: auth401BurstSignalSeverity(),
+            activityAt: signal.trippedAt,
+            createdAt: signal.trippedAt,
+            updatedAt: signal.trippedAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(`windowTotal=${signal.windowTotal} threshold=${signal.threshold} windowSeconds=${Math.round(signal.windowMs / 1000)}`),
+              images: [],
+            },
+          }));
+        }
       }
 
       // myrmidon(REVIEW-ROUTING): one card per task whose review has no
