@@ -225,11 +225,17 @@ async function loadIssuePullRequestTarget(
   const product = selectOpenPullRequestWorkProduct(products);
   if (!product) return { kind: "none" };
   const metadata = asRecord(product.metadata) ?? {};
-  const repo = typeof metadata.repo === "string" ? metadata.repo : null;
+  const repo = typeof metadata.repo === "string" ? metadata.repo
+    : typeof metadata.repository === "string" ? metadata.repository
+    : null;
   const number = typeof metadata.number === "number" ? metadata.number : null;
-  const reference = extractGitHubPullRequestReferences([product.url, repo && number ? `${repo}#${number}` : null])[0] ?? null;
-  if (!reference) return { kind: "unreadable", pullRequestUrl: product.url };
-  return { kind: "ok", pullRequestUrl: product.url, reference };
+  const metadataUrl = typeof metadata.url === "string" && metadata.url.trim() !== "" ? metadata.url : null;
+  // OPE-12024: a stored empty string is as good as NULL for readability; the
+  // effective url prefers the column and falls back to metadata.url.
+  const effectiveUrl = (product.url !== null && product.url !== "") ? product.url : metadataUrl;
+  const reference = extractGitHubPullRequestReferences([effectiveUrl, repo && number ? `${repo}#${number}` : null])[0] ?? null;
+  if (!reference) return { kind: "unreadable", pullRequestUrl: effectiveUrl };
+  return { kind: "ok", pullRequestUrl: effectiveUrl, reference };
 }
 
 export function createReviewPullRequestCiResolver(input: {

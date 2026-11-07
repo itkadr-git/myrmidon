@@ -172,6 +172,12 @@ export interface GitHubApprovalClient {
     label: string;
     token: string;
   }): Promise<void>;
+  removeLabel?(input: {
+    repository: string;
+    number: number;
+    label: string;
+    token: string;
+  }): Promise<void>;
   submitReview(input: {
     repository: string;
     number: number;
@@ -239,6 +245,22 @@ export function createDefaultGitHubApprovalClient(
       });
       if (!res.ok) {
         const error = new Error(`GitHub addLabel failed with HTTP ${res.status}`);
+        (error as { status?: number }).status = res.status;
+        throw error;
+      }
+    },
+
+    async removeLabel({ repository, number, label, token }) {
+      const res = await fetchFn(
+        `${apiBase}/repos/${repository}/issues/${number}/labels/${encodeURIComponent(label)}`,
+        {
+          method: "DELETE",
+          headers: ghHeaders(token),
+        },
+      );
+      // 404: the label is not present (idempotent); treat as success.
+      if (!res.ok && res.status !== 404) {
+        const error = new Error(`GitHub removeLabel failed with HTTP ${res.status}`);
         (error as { status?: number }).status = res.status;
         throw error;
       }
@@ -680,6 +702,12 @@ export async function propagateReviewApprovalToPullRequest(
 
   // Check if an approving GitHub review is already submitted on this head
   let alreadyHasApprovedReview = false;
+  // myrmidon(OPE-12024): true when an APPROVED review is pinned to a commit
+  // that is NOT the current head — i.e. the head moved after that approval.
+  // The `review-approved` label event fired on the old head, so the label must
+  // be re-seated for the labeled-triggered hot-files-review workflow to fire
+  // on the current head (OPE-9646, PR #2352).
+  let hasApprovedReviewOnMovedHead = false;
   let canCheckReviews = false;
   if (typeof client.listReviews === "function") {
     canCheckReviews = true;
@@ -691,13 +719,48 @@ export async function propagateReviewApprovalToPullRequest(
       alreadyHasApprovedReview = existingReviews.some(
         (r) => r.state === "APPROVED" && (!r.commitId || headMatches(r.commitId, prDetails.headSha)),
       );
+      hasApprovedReviewOnMovedHead = existingReviews.some(
+        (r) => r.state === "APPROVED" && !!r.commitId && !headMatches(r.commitId, prDetails.headSha),
+      );
     } catch {
       // Best-effort check; proceed to ensure review/label
     }
   }
 
+  // myrmidon(OPE-12024): the `review-approved` label fires the labeled-triggered
+  // `myrmidon-hot-files-review` workflow, which sets a required status on the
+  // commit that carries the label event.  When the PR head moved after an
+  // earlier approval (force-push / rebuild), the label sits on the old head and
+  // the new head never gets the required status — GitHub blocks the merge
+  // (OPE-9646, PR #2352).  Re-seat the label: remove it, then add it again so
+  // the labeled event fires on the current head.  Only re-seat when a review
+  // approval actually exists on an older head — otherwise every propagation
+  // cycle would churn the label (remove+add) even though nothing moved.
+  let labelReseated = false;
+  if (
+    alreadyLabeled &&
+    canCheckReviews &&
+    alreadyHasApprovedReview &&
+    hasApprovedReviewOnMovedHead &&
+    typeof client.removeLabel === "function"
+  ) {
+    try {
+      await executeWithRetry(
+        () => client.removeLabel!({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+        deps.retryOptions,
+      );
+      await executeWithRetry(
+        () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+        deps.retryOptions,
+      );
+      labelReseated = true;
+    } catch (err) {
+      logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to reseat review-approved label on moved head");
+    }
+  }
+
   // If already labeled, and either client cannot inspect reviews or an approving review is already present: complete no-op
-  if (alreadyLabeled && (!canCheckReviews || alreadyHasApprovedReview)) {
+  if (alreadyLabeled && !labelReseated && (!canCheckReviews || alreadyHasApprovedReview)) {
     return {
       success: true,
       action: "noop",
@@ -711,15 +774,20 @@ export async function propagateReviewApprovalToPullRequest(
 
   // Requirement 1: Tag with review-approved and/or submit approving PR review
   let labelAdded = false;
-  if (!alreadyLabeled) {
-    try {
-      await executeWithRetry(
-        () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
-        deps.retryOptions,
-      );
+  if (!alreadyLabeled || labelReseated) {
+    if (!alreadyLabeled) {
+      try {
+        await executeWithRetry(
+          () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+          deps.retryOptions,
+        );
+        labelAdded = true;
+      } catch (err) {
+        logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to add review-approved label to PR");
+      }
+    } else {
+      // The label was just reseated (removed + re-added) on the current head.
       labelAdded = true;
-    } catch (err) {
-      logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to add review-approved label to PR");
     }
   }
 
