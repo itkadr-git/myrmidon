@@ -125,6 +125,22 @@ export function decideStalledReviewRecovery(facts: StalledReviewRecoveryFacts): 
   };
 }
 
+/** Error code of a run the maintenance drain interrupted (myrmidon/maintenance/domain.ts). */
+const MAINTENANCE_INTERRUPTED_ERROR_CODE = "myrmidon_maintenance_interrupted";
+
+/**
+ * myrmidon(OPE-12201): the maintenance drain of a deploy interrupted this run
+ * (cancelled with the maintenance code). That is not a reviewer that failed to
+ * decide: the recovery re-wakes it without spending the decision budget, and
+ * the activity row carries kind "maintenance_retry", which the counter below
+ * does not count.
+ */
+export function isMaintenanceInterruptedRun(
+  run: { status: string; errorCode?: string | null } | null | undefined,
+): boolean {
+  return run?.status === "cancelled" && run.errorCode === MAINTENANCE_INTERRUPTED_ERROR_CODE;
+}
+
 /** Counts the earlier deferrals of one stage from the activity rows this module writes. */
 export function countStalledReviewDeferrals(
   rows: ReadonlyArray<{ details: unknown }>,
