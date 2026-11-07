@@ -380,3 +380,24 @@ export function decideGuardReturn(
     commentBody,
   };
 }
+
+/**
+ * 1.6.7 CASTE-422-HINT (OPE-12142): builds the 422 `issue_requires_engineer`
+ * message. Names the task's caste (issue caste, else project default caste,
+ * else the company default "engineer") and points the caller at `casteKey`
+ * for non-engineer work: lead for planning/splitting, infra/devops for ops.
+ */
+export function buildRequiresEngineerMessage(input: {
+  assigneeRole: string;
+  casteKey?: string | null;
+  projectDefaultCasteKey?: string | null;
+  suggested?: { id: string; name: string } | null;
+}): string {
+  const normalizedCaste = input.casteKey?.trim() ?? "";
+  const normalizedProject = input.projectDefaultCasteKey?.trim() ?? "";
+  const effectiveCaste = normalizedCaste || normalizedProject || "engineer";
+  const suggestedPart = input.suggested
+    ? `Suggested assignee: ${input.suggested.name} (${input.suggested.id}).`
+    : "Suggested assignee: an agent with role engineer.";
+  return `This issue requires an engineer. Cannot assign or keep in progress on non-coding role "${input.assigneeRole}". Task caste is "${effectiveCaste}". ${suggestedPart} For planning or splitting work, set casteKey=lead (or another caste) on the issue; for operator tasks use casteKey=infra or casteKey=devops.`;
+}

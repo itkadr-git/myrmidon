@@ -61,3 +61,19 @@ POST /api/companies/{companyId}/approvals
 ```
 
 `issueIds` links the approval into the issue thread. When approved, Myrmidon wakes the requester with `MYRMIDON_APPROVAL_ID`/`MYRMIDON_APPROVAL_STATUS`. Keep the payload concise and decision-ready.
+
+## Engineer gate 422: naming the caste and re-casting the task
+
+A dev-project code task cannot be put `in_progress` (or assigned) to a
+non-engineer caste: the API refuses with 422 `issue_requires_engineer`. The
+error text names the task's caste — the issue's own `casteKey`, else the
+project's `defaultCasteKey`, else the company default `engineer`.
+
+When you hit this 422 while handing an epic to a **lead for planning or
+splitting** (or any non-engineer work), do not reassign it to an engineer:
+set the task's caste instead — `PATCH /api/issues/{issueId}` with
+`{ "casteKey": "lead" }` (planning/splitting), `"infra"` or `"devops"`
+(operator tasks), or any other non-coding caste key from
+`GET /api/companies/{companyId}/myrmidon/castes`. You can also set
+`casteKey` directly in the create body (`POST /api/companies/{companyId}/issues`).
+Then assign and set `in_progress` as usual.
