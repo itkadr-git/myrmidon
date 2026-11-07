@@ -20663,6 +20663,14 @@ export function heartbeatService(
       return invokability.invokable;
     },
     isAgentUnderMaintenance: (agentId) => isAgentUnderMaintenance(db, agentId),
+    // myrmidon(1.6.6 AUTO-RESUME container): an agent left in "контейнер не поднят" gets its bot
+    // container started first, by the call that starts an idle-stopped container before a run
+    // (claimQueuedRun) - it waits for healthy and throws when the container does not come up.
+    startContainer: async (agentId) => {
+      const idleStop = getIdleStopService();
+      if (!idleStop) throw new Error("IDLE-STOP service is not initialized: no bot container driver to start the container");
+      await idleStop.ensureStartedAndHealthy(agentId);
+    },
   });
 
   // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues.
