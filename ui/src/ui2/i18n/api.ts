@@ -14,8 +14,11 @@
 import { api } from "@/api/client";
 import type {
   LocaleValidationResult,
+  StoredCustomLocale,
+  StoredCustomLocaleSummary,
   Ui2Language,
   Ui2LanguagePreference,
+  UploadLocaleResult,
 } from "@myrmidon/shared";
 
 /**
@@ -67,7 +70,7 @@ export const bridgeLanguageApi = {
     api.patch<BridgeLanguageWire>("/myrmidon/bridge-language", { language }),
 };
 
-// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): client API for catalog validation
+// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187, OPE-9646): client API for catalog validation and upload
 export const localeUploadApi = {
   validate: (payload: {
     locale: string;
@@ -75,6 +78,19 @@ export const localeUploadApi = {
     content?: string;
     strict?: boolean;
   }) => api.post<LocaleValidationResult>("/myrmidon/locales/validate", payload),
+  upload: (payload: {
+    locale: string;
+    catalog?: Record<string, unknown>;
+    content?: string;
+    dryRun?: boolean;
+    strict?: boolean;
+  }) => api.post<UploadLocaleResult>("/myrmidon/locales/upload", payload),
+  listCustom: () =>
+    api.get<{ locales: StoredCustomLocaleSummary[]; total: number }>("/myrmidon/locales/custom"),
+  getCustom: (locale: string) =>
+    api.get<StoredCustomLocale>(`/myrmidon/locales/custom/${locale}`),
+  deleteCustom: (locale: string) =>
+    api.delete<{ deleted: boolean; locale: string }>(`/myrmidon/locales/custom/${locale}`),
 };
 
 export function fromWire(preference: Ui2LanguagePreferenceWire): Ui2LanguagePreference {

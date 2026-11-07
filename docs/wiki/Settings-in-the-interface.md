@@ -27,6 +27,16 @@ the 2.0 "Language and formats" screen. Feature switches that are still
 environment variables (`MYRMIDON_*`, all off by default) are listed in
 [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
 
+## Custom locale catalog in UI 2.0
+
+On **Language and formats**, enter a locale code and select a JSON file or paste
+its catalog. Review the English-catalog coverage and the matched, missing, and
+extra keys in the searchable diff before pressing **Apply**. The chosen language
+changes without a restart. A failed server upload still applies the catalog in
+the current browser session, so the success message does not guarantee server
+persistence. See the [locale upload guide](../myrmidon/guides/locale-upload.md)
+for the complete preview and persistence workflow.
+
 ## Run limits (the instance)
 
 **Instance → General → "Run limits"** — changeable at runtime, without
