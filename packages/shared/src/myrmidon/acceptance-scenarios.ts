@@ -1,8 +1,8 @@
-import { z } from \"zod\";
+import { z } from "zod";
 import {
   ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY,
   type IssueAcceptanceScenariosDocumentKey,
-} from \"../constants.js\";
+} from "../constants.js";
 
 export { ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY, type IssueAcceptanceScenariosDocumentKey };
 
@@ -12,12 +12,14 @@ export { ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY, type IssueAcceptanceScenariosD
  */
 export const acceptanceScenarioTestRefSchema = z.union([
   z.string().min(1),
-  z.object({
-    path: z.string().min(1),
-    testName: z.string().optional(),
-    suite: z.string().optional(),
-    line: z.number().int().positive().optional(),
-  }).strict(),
+  z
+    .object({
+      path: z.string().min(1),
+      testName: z.string().optional(),
+      suite: z.string().optional(),
+      line: z.number().int().positive().optional(),
+    })
+    .strict(),
 ]);
 export type AcceptanceScenarioTestRef = z.infer<typeof acceptanceScenarioTestRefSchema>;
 
@@ -88,11 +90,11 @@ export function parseAcceptanceScenario(raw: unknown): AcceptanceScenario {
  */
 export function parseAcceptanceScenarios(raw: unknown): AcceptanceScenario[] {
   let payload = raw;
-  if (typeof payload === \"string\") {
+  if (typeof payload === "string") {
     try {
       payload = JSON.parse(payload);
     } catch {
-      throw new Error(\"Invalid JSON for acceptance scenarios\");
+      throw new Error("Invalid JSON for acceptance scenarios");
     }
   }
 
@@ -100,12 +102,12 @@ export function parseAcceptanceScenarios(raw: unknown): AcceptanceScenario[] {
     return z.array(acceptanceScenarioSchema).parse(payload);
   }
 
-  if (payload && typeof payload === \"object\") {
+  if (payload && typeof payload === "object") {
     const doc = acceptanceScenariosDocumentSchema.parse(payload);
     return doc.scenarios;
   }
 
-  throw new Error(\"Invalid acceptance scenarios payload: expected array or document object\");
+  throw new Error("Invalid acceptance scenarios payload: expected array or document object");
 }
 
 /**
@@ -113,11 +115,11 @@ export function parseAcceptanceScenarios(raw: unknown): AcceptanceScenario[] {
  */
 export function parseAcceptanceScenariosDocument(raw: unknown): AcceptanceScenariosDocument {
   let payload = raw;
-  if (typeof payload === \"string\") {
+  if (typeof payload === "string") {
     try {
       payload = JSON.parse(payload);
     } catch {
-      throw new Error(\"Invalid JSON for acceptance scenarios document\");
+      throw new Error("Invalid JSON for acceptance scenarios document");
     }
   }
 
