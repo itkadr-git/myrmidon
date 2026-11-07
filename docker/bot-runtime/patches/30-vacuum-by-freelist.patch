@@ -49,7 +49,7 @@ index cfe3a89..af611f4 100644
          (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
          (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
 diff --git a/hermes_state_maintenance.py b/hermes_state_maintenance.py
-index a87b6f5..534d47e 100644
+index a87b6f5..51152be 100644
 --- a/hermes_state_maintenance.py
 +++ b/hermes_state_maintenance.py
 @@ -3,9 +3,11 @@
@@ -261,7 +261,7 @@ index a87b6f5..534d47e 100644
 +                        retry_vacuum = True
 +                        result["vacuum_skipped"] = reason
 +                        if reason.startswith(("only ", "SQLite", "no writable", "could not read")):
-+                            _warn_once(reason[:24], "state.db auto-maintenance: skipping VACUUM, %s", reason)
++                            _warn_once(reason.split()[0], "state.db auto-maintenance: skipping VACUUM, %s", reason)
 +                        else:
 +                            logger.debug("state.db auto-maintenance: skipping VACUUM, %s", reason)
 +                    else:
