@@ -1846,6 +1846,36 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("scheduled_retry");
   });
 
+  it("merges a repeated wake of the same agent for the same task into its waiting run instead of adding another", async () => {
+    const { companyId, agentId, issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit();
+    await heartbeat.resumeQueuedRuns();
+    expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("scheduled_retry");
+
+    // Assignment, status change and idle pickup all wake the same agent for the
+    // same task while the first run still waits for the reset.
+    for (const reason of ["issue_assigned", "issue_status_changed"]) {
+      await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason,
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: reason },
+      });
+    }
+
+    const runsOfTheTask = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .filter((row) => (row.contextSnapshot as { issueId?: string } | null)?.issueId === issueId);
+    expect(runsOfTheTask.map((row) => row.id)).toEqual([queuedRunId]);
+    expect(runsOfTheTask[0]?.status).toBe("scheduled_retry");
+    const merged = await db
+      .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "coalesced"));
+    expect(merged.length).toBeGreaterThan(0);
+    for (const wake of merged) expect(wake.runId).toBe(queuedRunId);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("cancels, with the reason, a queued run of a user's manual wake over the daily run limit instead of deferring it", async () => {
     const { issueId, wakeupRequestId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit({
       manualUserWake: true,

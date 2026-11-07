@@ -32537,9 +32537,12 @@ export function heartbeatService(
                   sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
                   // myrmidon(OPE-11718): a run waiting for its agent's daily run
                   // limit to reset (context key dailyRunLimitDeferral) does not
-                  // become the task's lock holder: the first wake would
-                  // otherwise park every other executor's wakes until midnight.
-                  sql`not (${heartbeatRuns.status} = 'scheduled_retry' and ${heartbeatRuns.contextSnapshot} -> 'dailyRunLimitDeferral' is not null)`,
+                  // become the task's lock holder for ANOTHER agent's wake: the
+                  // first such wake would otherwise park every other executor's
+                  // wakes until midnight. The same agent's wakes still find it,
+                  // so they merge into the waiting run (admitWakeBehindIssueExecution)
+                  // instead of each adding a run that is deferred in turn.
+                  sql`not (${heartbeatRuns.status} = 'scheduled_retry' and ${heartbeatRuns.contextSnapshot} -> 'dailyRunLimitDeferral' is not null and ${heartbeatRuns.agentId} <> ${agentId})`,
                 ),
               )
               .orderBy(
