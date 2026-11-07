@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@myrmidon/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@myrmidon/db";
@@ -32,8 +32,9 @@ function currentUtcMonthWindow(now = new Date()) {
 async function getMonthlySpendTotal(
   db: Db,
   scope: { companyId: string; agentId?: string | null },
+  now = new Date(),
 ) {
-  const { start, end } = currentUtcMonthWindow();
+  const { start, end } = currentUtcMonthWindow(now);
   const conditions = [
     eq(costEvents.companyId, scope.companyId),
     gte(costEvents.occurredAt, start),
@@ -104,7 +105,8 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return event;
     },
 
-    summary: async (companyId: string, range?: CostDateRange) => {
+    // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): add unpricedEvents, unpricedTokens, and forecastCents
+    summary: async (companyId: string, range?: CostDateRange, now = new Date()) => {
       const company = await db
         .select()
         .from(companies)
@@ -117,9 +119,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [{ total, unpricedEvents, unpricedTokens }] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
+          unpricedEvents: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'unpriced' then 1 else 0 end), 0)::integer`,
+          unpricedTokens: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'unpriced' then coalesce(${costEvents.inputTokens}, 0) + coalesce(${costEvents.cachedInputTokens}, 0) + coalesce(${costEvents.outputTokens}, 0) else 0 end), 0)::double precision`,
         })
         .from(costEvents)
         .where(and(...conditions));
@@ -130,11 +134,24 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           ? (spendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      let forecastCents: number | null = null;
+      const passedDays = now.getUTCDate();
+      if (passedDays >= 2) {
+        const currentMonthSpend = await getMonthlySpendTotal(db, { companyId }, now);
+        if (currentMonthSpend > 0) {
+          const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+          forecastCents = Math.round((currentMonthSpend / passedDays) * daysInMonth);
+        }
+      }
+
       return {
         companyId,
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        unpricedEvents: Number(unpricedEvents ?? 0),
+        unpricedTokens: Number(unpricedTokens ?? 0),
+        forecastCents,
       };
     },
 
@@ -600,6 +617,53 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       }
 
       return result;
+    },
+
+    byIssue: async (companyId: string, range?: CostDateRange, limit: number = 20) => {
+      const conditions: SQL[] = [
+        eq(costEvents.companyId, companyId),
+        eq(issues.companyId, companyId),
+        isNotNull(costEvents.issueId),
+      ];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const costCentsExpr = sumAsNumber(costEvents.costCents);
+
+      const rows = await db
+        .select({
+          issueId: costEvents.issueId,
+          identifier: issues.identifier,
+          title: issues.title,
+          costCents: costCentsExpr,
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+          runs: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+        })
+        .from(costEvents)
+        .innerJoin(
+          issues,
+          and(
+            eq(costEvents.issueId, issues.id),
+            eq(issues.companyId, companyId),
+          ),
+        )
+        .where(and(...conditions))
+        .groupBy(costEvents.issueId, issues.identifier, issues.title)
+        .orderBy(desc(costCentsExpr), desc(costEvents.issueId))
+        .limit(limit);
+
+      return rows.map((row) => ({
+        issueId: row.issueId as string,
+        identifier: row.identifier,
+        title: row.title,
+        costCents: Number(row.costCents),
+        inputTokens: Number(row.inputTokens),
+        cachedInputTokens: Number(row.cachedInputTokens),
+        outputTokens: Number(row.outputTokens),
+        runs: Number(row.runs ?? 0),
+      }));
     },
   };
 }

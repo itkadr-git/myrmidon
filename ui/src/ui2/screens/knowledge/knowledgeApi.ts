@@ -36,6 +36,8 @@ interface KnowledgeRevisionDto {
   itemId: string;
   revisionNumber: number;
   status: string;
+  title?: string | null;
+  summary?: string | null;
   content: string;
   changeSummary?: string | null;
   rolledBackFromRevisionId?: string | null;
@@ -48,6 +50,14 @@ interface KnowledgeRevisionDto {
 
 interface KnowledgeItemListResponse {
   items: KnowledgeItemDto[];
+}
+
+interface KnowledgePageResponse {
+  item: KnowledgeItemDto & {
+    deliveredContent?: string | null;
+    revisions?: KnowledgeRevisionDto[];
+    backlinks?: KnowledgeBacklinkDto[];
+  };
 }
 
 function toSummary(item: KnowledgeItemDto): KnowledgeItemSummary {
@@ -156,6 +166,8 @@ export const knowledgeApi = {
         space: params.spaceKey,
         kind: params.kind,
         status: params.status,
+        // The tree needs every live item, not the default page of 50.
+        limit: "1000",
       })}`,
     );
     return { ...response, items: response.items.map(toSummary) };
@@ -169,19 +181,22 @@ export const knowledgeApi = {
     options: { revision?: string | number | null } = {},
   ): Promise<{ item: KnowledgeItemDetail }> => {
     const idOrSlug = slug.includes("/") ? slug : `${spaceKey}/${slug}`;
-    const itemResponse = await api.get<KnowledgeItemDetailResponse>(
+    const itemResponse = await api.get<KnowledgePageResponse>(
       `${base(companyId)}/items/${encodeURIComponent(idOrSlug)}`,
     );
     const item = itemResponse.item;
-    const revisionsResponse = await api.get<{ revisions: KnowledgeRevisionDto[] }>(
-      `${base(companyId)}/items/${encodeURIComponent(idOrSlug)}/revisions`,
-    );
-    const revisions = revisionsResponse.revisions;
-    // Backlinks are an extra read: a failure there must not hide the page.
-    const backlinks = await api
-      .get<{ backlinks: KnowledgeBacklinkDto[] }>(`${base(companyId)}/items/${encodeURIComponent(idOrSlug)}/backlinks`)
-      .then((response) => response.backlinks.map((backlink) => toBacklinkRef(backlink, spaceKey)))
-      .catch(() => [] as KnowledgeSourceRef[]);
+    // The page endpoint includes the complete read model. Keep the legacy
+    // fallback for older servers during a rolling deployment.
+    const revisions = item.revisions ?? (await api
+      .get<{ revisions: KnowledgeRevisionDto[] }>(
+        `${base(companyId)}/items/${encodeURIComponent(idOrSlug)}/revisions`,
+      )).revisions;
+    const backlinks = item.backlinks
+      ? item.backlinks.map((backlink) => toBacklinkRef(backlink, spaceKey))
+      : await api
+        .get<{ backlinks: KnowledgeBacklinkDto[] }>(`${base(companyId)}/items/${encodeURIComponent(idOrSlug)}/backlinks`)
+        .then((response) => response.backlinks.map((backlink) => toBacklinkRef(backlink, spaceKey)))
+        .catch(() => [] as KnowledgeSourceRef[]);
     const selected = options.revision == null
       ? revisions[revisions.length - 1]
       : revisions.find((revision) => revision.revisionNumber === options.revision || revision.id === options.revision);
@@ -189,7 +204,7 @@ export const knowledgeApi = {
       item: {
         ...toSummary(item),
         spaceKey,
-        body: selected?.content ?? "",
+        body: selected?.content ?? item.deliveredContent ?? "",
         revisions: revisions.map(toRevisionSummary),
         sources: selected?.sources ?? [],
         backlinks,

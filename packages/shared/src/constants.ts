@@ -396,6 +396,7 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
   "workspace_myr_ws",
   "devbuild",
   "disk_space",
+  "resource.oom",
   "operator_action",
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
@@ -772,6 +773,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "run",
   "tool_connection",
   "system",
+  "github_actions",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
 

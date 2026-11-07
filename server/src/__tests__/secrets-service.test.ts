@@ -1901,6 +1901,28 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("user-one-secret");
   });
 
+  it("requires an OpenClaw device token secret reference and resolves it for runtime", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `openclaw-device-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "device-token-test-value",
+    });
+    await expect(svc.normalizeAdapterConfigForPersistence(companyId, {
+      deviceToken: "raw-token",
+    }, { adapterType: "openclaw_gateway" })).rejects.toThrow(/company secret reference/);
+    const stored = await svc.normalizeAdapterConfigForPersistence(companyId, {
+      deviceToken: { type: "secret_ref", secretId: secret.id, version: "latest" },
+    }, { adapterType: "openclaw_gateway" });
+    expect(JSON.stringify(stored)).not.toContain("device-token-test-value");
+    const resolved = await svc.resolveAdapterConfigForRuntime(companyId, stored, undefined, {
+      adapterType: "openclaw_gateway",
+    });
+    expect(resolved.config.deviceToken).toBe("device-token-test-value");
+    expect(resolved.secretKeys).toEqual(new Set(["deviceToken"]));
+  });
+
   it("can skip user-secret refs while resolving adapter config for non-runtime skill discovery", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

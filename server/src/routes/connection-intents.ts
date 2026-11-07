@@ -1,8 +1,9 @@
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { Router, type Request } from "express";
 import type { Db } from "@myrmidon/db";
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, issues } from "@myrmidon/db";
+import { and, desc, eq, isNull } from "drizzle-orm";
+import { agentApiKeys, heartbeatRuns, issues } from "@myrmidon/db";
+import { createHash } from "node:crypto";
 import { createPullRequestCiResolver } from "../services/github-pull-request-ci.js";
 import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
@@ -12,6 +13,7 @@ import {
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
 } from "@myrmidon/shared";
+import { recordGitHubRequest } from "../services/github-rate-limit.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { verifyRuntimeToolsToken } from "../runtime-tools-token.js";
 import { connectionIntentService } from "../services/connection-intents.js";
@@ -46,27 +48,89 @@ import {
   RUNTIME_CONNECTION_TOOL_DEFINITIONS,
   RUNTIME_INTENT_TOOL_DEFINITIONS,
 } from "../services/connection-tool-definitions.js";
+import { boardLoadRequestMiddleware } from "../myrmidon/monitoring/board-load/index.js";
 
 /** Public, token-authenticated routes mounted before the general actor middleware. */
 export function runtimeConnectionIntentRoutes(db: Db) {
   const router = Router();
   const service = connectionIntentService(db);
 
-  router.post("/runtime-tools/github/credentials", async (req, res) => {
+  router.post("/runtime-tools/github/credentials", boardLoadRequestMiddleware(), async (req, res) => {
+    recordGitHubRequest("broker", null);
     // This capability is never accepted as board/session authentication.
     // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
     if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");
     const capabilityHeader = req.headers["x-myrmidon-github-capability"] ?? req.headers["x-paperclip-github-capability"];
     const claims = verifyRuntimeToolsToken(typeof capabilityHeader === "string"
       ? capabilityHeader : bearer(req), "github_credentials");
-    if (!claims) throw unauthorized("Invalid GitHub runtime capability");
+
+    let companyId: string;
+    let agentId: string;
+    let runId: string;
+
+    if (claims) {
+      companyId = claims.company_id;
+      agentId = claims.sub;
+      runId = claims.run_id;
+    } else {
+      const token = bearer(req);
+      if (!token) throw unauthorized("Invalid GitHub runtime capability");
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      const [key] = await db
+        .select()
+        .from(agentApiKeys)
+        .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)));
+      if (!key) throw unauthorized("Invalid GitHub runtime capability");
+
+      companyId = key.companyId;
+      agentId = key.agentId;
+
+      const runIdHeader = req.headers["x-paperclip-run-id"] ?? req.headers["x-myrmidon-run-id"];
+      const candidateRunId = typeof runIdHeader === "string" ? runIdHeader.trim() : null;
+
+      if (candidateRunId) {
+        const [targetRun] = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, candidateRunId),
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.agentId, agentId),
+            ),
+          );
+        if (!targetRun || targetRun.status !== "running") {
+          throw forbidden("Credential acquisition requires this agent's active run");
+        }
+        runId = targetRun.id;
+      } else {
+        const activeRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              eq(heartbeatRuns.status, "running"),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.startedAt))
+          .limit(1);
+        const targetRun = activeRuns[0] ?? null;
+        if (!targetRun) {
+          throw forbidden("Credential acquisition requires this agent's active run");
+        }
+        runId = targetRun.id;
+      }
+    }
+
     res.setHeader("Cache-Control", "no-store");
     // myrmidon(GITHUB-SHARED-IDENTITY): the optional `repository` (owner/repo) the
     // git/gh operation targets; a GitHub App token is minted per repository.
     const repository = typeof req.body?.repository === "string" && req.body.repository.length <= 300
       ? req.body.repository : null;
     res.json(await resolveGitHubOperationCredentials(db, {
-      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id, repository,
+      companyId, agentId, runId, repository,
     }));
   });
 

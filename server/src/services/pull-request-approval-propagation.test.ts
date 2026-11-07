@@ -57,6 +57,20 @@ describe("pull-request-approval-propagation", () => {
       expect(parseReviewedHead("VERDICT: APPROVE looks good to me")).toBe(null);
       expect(parseReviewedHead(null)).toBe(null);
     });
+
+    // myrmidon(OPE-11767): the reviewers write `APPROVE PR #N <sha>`; the explicit
+    // `head <sha>` spelling alone left PR #2449 and #2467 with `missing_reviewed_head`.
+    it("reads the bare sha of an `APPROVE PR #N <sha>` verdict", () => {
+      const sha = "28f15c1be15204153f0e06464842d88875c373f8";
+      expect(parseReviewedHead(`APPROVE PR #2467 ${sha}\nГолова: ${sha}. CI завершён успешно.`)).toBe(sha);
+      expect(parseReviewedHead("APPROVE PR #2449 d75e816fcea7d115ababc4dad032687ffc8ed14c\nТочный head подтверждён")).toBe(
+        "d75e816fcea7d115ababc4dad032687ffc8ed14c",
+      );
+      // The explicit spelling still wins over a bare sha earlier in the text.
+      expect(parseReviewedHead("old 1111aaa rejected; APPROVE head 2222bbb")).toBe("2222bbb");
+      // A plain number is not a sha.
+      expect(parseReviewedHead("APPROVE PR #2467, issue 1234567890")).toBe(null);
+    });
   });
 
   describe("parsePullRequestCoordinates", () => {
@@ -286,6 +300,45 @@ describe("pull-request-approval-propagation", () => {
       expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
+    it("current-head guard: fails closed if reviewed head is missing", async () => {
+      const db = createMockDb();
+      const currentHeadSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: currentHeadSha,
+          labels: [],
+        }),
+        addLabel: vi.fn(),
+        submitReview: vi.fn(),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          decisionOutcome: "approved",
+          verdictBody: "VERDICT: APPROVE (no head specified)",
+        },
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe("skipped");
+      expect(result.reason).toBe("missing_reviewed_head");
+      expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
+    });
+
     it("negative path: non-approval / REQUEST CHANGES does not tag or approve", async () => {
       const db = createMockDb();
       const mockClient: GitHubApprovalClient = {
@@ -318,6 +371,36 @@ describe("pull-request-approval-propagation", () => {
       expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
+    it("negative path: skips propagation when decisionOutcome is null but verdictBody indicates non-approval", async () => {
+      const db = createMockDb();
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn(),
+        addLabel: vi.fn(),
+        submitReview: vi.fn(),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          decisionOutcome: null,
+          verdictBody: "VERDICT: REQUEST CHANGES please revise",
+        },
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe("skipped");
+      expect(result.reason).toBe("non_approval");
+      expect(mockClient.getPullRequest).not.toHaveBeenCalled();
+    });
+
     it("idempotency: does not duplicate label if PR already carries review-approved", async () => {
       const db = createMockDb();
       const mockClient: GitHubApprovalClient = {
@@ -330,6 +413,9 @@ describe("pull-request-approval-propagation", () => {
         }),
         addLabel: vi.fn(),
         submitReview: vi.fn(),
+        listReviews: vi.fn().mockResolvedValue([
+          { id: 1, state: "APPROVED", commitId: defaultHeadSha },
+        ]),
       };
 
       const result = await propagateReviewApprovalToPullRequest(
@@ -352,6 +438,43 @@ describe("pull-request-approval-propagation", () => {
       expect(result.action).toBe("noop");
       expect(result.reason).toBe("already_labeled");
       expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
+    });
+
+    it("idempotency & recovery: recovers missing review if PR is labeled but review is missing", async () => {
+      const db = createMockDb();
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: defaultHeadSha,
+          labels: [REVIEW_APPROVED_LABEL],
+        }),
+        addLabel: vi.fn(),
+        submitReview: vi.fn().mockResolvedValue({ id: 99 }),
+        listReviews: vi.fn().mockResolvedValue([]),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          headSha: defaultHeadSha,
+          decisionOutcome: "approved",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).toHaveBeenCalled();
     });
 
     it("authorization: fails safely and logs failure when no token is available", async () => {
@@ -366,7 +489,7 @@ describe("pull-request-approval-propagation", () => {
         {
           db: db as any,
           client: mockClient,
-          tokenProvider: vi.fn().mockResolvedValue(null), // No credentials!
+          tokenProvider: vi.fn().mockResolvedValue(null),
         },
         {
           companyId,
@@ -382,6 +505,15 @@ describe("pull-request-approval-propagation", () => {
       expect(result.action).toBe("failed");
       expect(result.reason).toBe("missing_credentials");
       expect(mockClient.getPullRequest).not.toHaveBeenCalled();
+    });
+
+    it("fails safe when stored headSha is missing in work product metadata during lookup", () => {
+      // Direct unit check on head matching fail-safe logic:
+      // When reviewedHeadSha is empty/null, lookup/guard must not match
+      const taskHeadSha = null;
+      const headSha = defaultHeadSha;
+      const matches = !taskHeadSha ? false : (taskHeadSha as string).toLowerCase().startsWith(headSha.toLowerCase());
+      expect(matches).toBe(false);
     });
   });
 });

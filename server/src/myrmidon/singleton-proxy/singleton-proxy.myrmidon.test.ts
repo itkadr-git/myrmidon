@@ -1,6 +1,7 @@
 // myrmidon(1.6.6 PROCS-1.5 / OPE-5412, design OPE-5394 §7.1): the single-route
 // proxy of an api process. Pins:
-//   * the allowlist: the four route groups forward, everything else is local;
+//   * the allowlist: the four route groups forward (the fleet control of bots on
+//     remote sites rides in the bot-container group, OPE-12032), everything else is local;
 //   * transparent authorization: the worker sees the caller's own headers,
 //     method, path, query and body, and its status/headers/body come back as is;
 //   * the setting `singletonProxy` off, or a non-allowlisted route, serves
@@ -34,6 +35,34 @@ describe("singletonRouteGroup", () => {
     expect(singletonRouteGroup("GET", "/myrmidon/agents/a1/bot-container/status")).toBe("bot_container");
     expect(singletonRouteGroup("POST", "/projects/p/workspaces/w/runtime-services/start")).toBe("workspace_runtime");
     expect(singletonRouteGroup("POST", "/execution-workspaces/e/runtime-commands/run")).toBe("workspace_runtime");
+  });
+
+  it("forwards the fleet control of bots on remote sites (OPE-12032: the mTLS client manager lives in the worker)", () => {
+    const key = "44444444-4444-4444-8444-444444444444";
+    expect(singletonRouteGroup("POST", `/myrmidon/fleet/bots/${key}/restart`)).toBe("bot_container");
+    expect(singletonRouteGroup("POST", `/myrmidon/fleet/bots/${key}/stop`)).toBe("bot_container");
+    expect(singletonRouteGroup("GET", `/myrmidon/fleet/bots/${key}/logs`)).toBe("bot_container");
+    expect(singletonRouteGroup("GET", "/myrmidon/fleet/sites/overview")).toBe("bot_container");
+    expect(singletonRouteGroup("GET", "/myrmidon/fleet/sites/myr-vm1/bots")).toBe("bot_container");
+    expect(singletonRouteGroup("PATCH", "/myrmidon/fleet/sites/myr-vm1")).toBe("bot_container");
+    expect(singletonRouteGroup("POST", "/myrmidon/fleet/sites/myr-vm1/drain")).toBe("bot_container");
+    expect(singletonRouteGroup("POST", "/myrmidon/fleet/sites/myr-vm1/resume")).toBe("bot_container");
+    expect(singletonRouteGroup("POST", `/fleet/bots/${key}/move`)).toBe("bot_container");
+    expect(singletonRouteGroup("GET", `/fleet/bots/${key}/move`)).toBe("bot_container");
+    expect(singletonRouteGroup("GET", `/fleet/bots/${key}/logs`)).toBe("bot_container");
+    expect(singletonRouteGroup("POST", `/api/myrmidon/fleet/bots/${key}/move`)).toBe("bot_container");
+  });
+
+  it("keeps the database-only fleet routes with the api process", () => {
+    expect(singletonRouteGroup("GET", "/myrmidon/fleet/sites")).toBeNull();
+    expect(singletonRouteGroup("GET", "/myrmidon/fleet/servers")).toBeNull();
+    expect(singletonRouteGroup("POST", "/myrmidon/fleet/console-token")).toBeNull();
+    expect(singletonRouteGroup("GET", "/companies/c1/fleet/sites")).toBeNull();
+    expect(singletonRouteGroup("POST", "/companies/c1/fleet/sites")).toBeNull();
+    expect(singletonRouteGroup("DELETE", "/companies/c1/fleet/sites/myr-vm1")).toBeNull();
+    expect(singletonRouteGroup("GET", "/myrmidon/fleet/bots")).toBeNull();
+    expect(singletonRouteGroup("GET", "/myrmidon/fleet/botsx/k/logs")).toBeNull();
+    expect(singletonRouteGroup("GET", "/myrmidon/fleet/sitesx/n/bots")).toBeNull();
   });
 
   it("leaves every other route, method and look-alike path to the api process", () => {

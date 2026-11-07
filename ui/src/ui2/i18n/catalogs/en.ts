@@ -117,6 +117,19 @@ export const en = {
     instanceLanguageSaved: "Instance language for the Telegram bot: {{language}}.",
     instanceLanguageFailed: "Could not save the instance language.",
     instanceLanguageAdminOnly: "Only an instance admin can change the instance language.",
+    uploadTitle: "Upload a custom translation",
+    uploadDescription: "Choose a locale and upload a complete JSON catalog. Keys and placeholders must match English.",
+    uploadLocale: "Locale",
+    uploadFile: "Catalog JSON file",
+    uploadPreview: "Preview",
+    uploadApply: "Apply translation",
+    uploadInvalid: "The catalog does not match the English keys or placeholders.",
+    uploadSaved: "Custom translation saved.",
+    uploadError: "Could not save the catalog. Please try again.",
+    uploadSizeError: "Catalog must be 256 KiB or smaller.",
+    uploadMissingCount: "{{count}} missing keys",
+    uploadUnknownCount: "{{count}} unknown keys",
+    uploadPlaceholderCount: "{{count}} placeholder mismatches",
   },
   status: {
     open: "Open",
@@ -227,6 +240,9 @@ export const en = {
           raiseAndResume: "Raise and resume",
           title: "Cost incidents",
         },
+        forecast: "Forecast through month-end: {{amount}}",
+        unpriced: "Unpriced",
+        unpricedEvents: "{{count}} events without a price",
         policies: {
           amount: "Amount",
           empty: "No cost policies",
@@ -292,6 +308,20 @@ export const en = {
           },
           subtitle: "Interface language",
           title: "Language and formats",
+          formats: {
+            title: "Time zone and formats",
+            timeZone: "Time zone",
+            timeZonePlaceholder: "Search time zones",
+            numberFormat: "Number format",
+            numberFormatEnUs: "English (United States)",
+            numberFormatRuRu: "Russian (Russia)",
+            dateFormat: "Date format",
+            dateFormatYmd: "Year-month-day",
+            dateFormatDmy: "Day-month-year",
+            dateFormatMdy: "Month-day-year",
+            preview: "Preview",
+            source: { default: "Default", settings: "Settings", pending: "Unsaved changes" },
+          },
         },
         runs: {
           drain: {
@@ -433,6 +463,10 @@ export const en = {
           monitoringUnavailable: "Monitoring data is unavailable.",
           hosts: "Hosts",
           services: "Services",
+          oom: "OOM incidents (24h)",
+          oomIncrease: "OOM incidents increased vs previous 24h",
+          oomAgents: "By agent",
+          oomRoles: "By role",
           empty: "No fleet data",
           emptyBody: "No hosts or services were returned for this company.",
           error: "Fleet data is unavailable.",
@@ -575,6 +609,19 @@ export type Ui2Catalog = {
     instanceLanguageSaved: string;
     instanceLanguageFailed: string;
     instanceLanguageAdminOnly: string;
+    uploadTitle: string;
+    uploadDescription: string;
+    uploadLocale: string;
+    uploadFile: string;
+    uploadPreview: string;
+    uploadApply: string;
+    uploadInvalid: string;
+    uploadSaved: string;
+    uploadError: string;
+    uploadSizeError: string;
+    uploadMissingCount: string;
+    uploadUnknownCount: string;
+    uploadPlaceholderCount: string;
   };
   status: Record<
     | "open"
@@ -687,6 +734,9 @@ export type Ui2Catalog = {
           raiseAndResume: string;
           title: string;
         },
+        forecast: string;
+        unpriced: string;
+        unpricedEvents: string;
         policies: {
           amount: string;
           empty: string;
@@ -752,6 +802,20 @@ export type Ui2Catalog = {
           },
           subtitle: string;
           title: string;
+          formats: {
+            title: string;
+            timeZone: string;
+            timeZonePlaceholder: string;
+            numberFormat: string;
+            numberFormatEnUs: string;
+            numberFormatRuRu: string;
+            dateFormat: string;
+            dateFormatYmd: string;
+            dateFormatDmy: string;
+            dateFormatMdy: string;
+            preview: string;
+            source: { default: string; settings: string; pending: string };
+          };
         };
         runs: {
           drain: {
@@ -886,7 +950,7 @@ export type Ui2Catalog = {
       placeholderTitle: string;
       placeholderBody: string;
       placeholderLegacyLink: string;
-      fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; hosts: string; services: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
+      fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; hosts: string; services: string; oom: string; oomIncrease: string; oomAgents: string; oomRoles: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
       more: {
         title: string;
         subtitle: string;

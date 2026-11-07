@@ -54,6 +54,8 @@ export const MAX_FAST_FILES_PER_PACKAGE = 60;
 // affected selection cannot discover them.
 export const SHARED_GUARD_TESTS = [
   "server/src/__tests__/app-private-hostname-gate.test.ts",
+  "server/src/__tests__/openapi-routes.test.ts",
+  "server/src/__tests__/server-startup-feedback-export.test.ts",
   "server/src/myrmidon/channel-connectors/bridge/bridge.myrmidon.test.ts",
   "server/src/myrmidon/flags-killswitch.myrmidon.test.ts",
   "server/src/myrmidon/monitoring/alerts/guard.myrmidon.test.ts",
@@ -70,6 +72,15 @@ const SHARED_GUARD_TRIGGERS = [
   "server/src/myrmidon/app-plugin.ts",
   "docs/myrmidon/FLAGS.md",
   "docs/myrmidon/SETTINGS.md",
+];
+
+const ROUTE_GUARD_TRIGGER = /^server\/src\/routes\//;
+
+// Guard suites that must run whenever a server route file changes without its
+// OpenAPI description: openapi-routes fails on main exactly in this case
+// (OPE-10350), so the fast tier must never skip it for routes changes.
+export const ROUTE_GUARD_TESTS = [
+  "server/src/__tests__/openapi-routes.test.ts",
 ];
 
 /**
@@ -106,7 +117,7 @@ export function applyReleaseFast(
   selection,
   { releaseFast = false, forceFull = false, prLight = false, directSelection = null } = {},
 ) {
-  const releaseFastActive = releaseFast && !forceFull && plan.tier === "full";
+  const releaseFastActive = releaseFast && !forceFull && plan.tier === "full" && !plan.keepFull;
   let loweredReason = null;
   if (releaseFastActive) {
     plan = {
@@ -183,7 +194,85 @@ export function lightLogLines(plan, { listed = 10 } = {}) {
   return lines;
 }
 
-export function classifyChanges(files, { forceFull = false } = {}) {
+export function detectExportOrTypeChangesFromDiff(diffText) {
+  if (!diffText) return [];
+  const changedFiles = new Set();
+  const fileDiffs = diffText.split(/^diff --git a\/.* b\/(.*)$/m);
+
+  for (let i = 1; i < fileDiffs.length; i += 2) {
+    const file = fileDiffs[i].trim();
+    if (!/\.(?:ts|tsx|mts|cts|js|mjs)$/.test(file)) continue;
+    if (/\.(?:test|spec)\.|__tests__\//.test(file)) continue;
+
+    const body = fileDiffs[i + 1] || "";
+    const lines = body.split("\n");
+    let inTypeOrInterface = false;
+
+    for (const line of lines) {
+      if (line.startsWith("@@")) {
+        if (/\b(?:export\s+)?(?:interface|type)\s+\w+/.test(line)) {
+          inTypeOrInterface = true;
+        } else {
+          inTypeOrInterface = false;
+        }
+        continue;
+      }
+      if (line.startsWith("+") || line.startsWith("-")) {
+        const text = line.slice(1).trim();
+        if (/^(\/\/|\/\*|\*)/.test(text)) continue;
+        if (/^export\b/.test(text) || /\b(?:export\s+)?(?:interface|type)\s+\w+/.test(text)) {
+          changedFiles.add(file);
+          break;
+        }
+        if (inTypeOrInterface && text.length > 0) {
+          changedFiles.add(file);
+          break;
+        }
+      }
+    }
+  }
+  return [...changedFiles];
+}
+
+export function isModuleUsedByTests(file, packages, testFiles, rootModules = null) {
+  if (!testFiles || testFiles.length === 0) return true;
+  const targetNorm = stripExtension(file);
+  const pkgMap = packages ? new Map(packages.map((p) => [p.name, p])) : new Map();
+
+  // If server source, check if imported by server root entry points (index.ts / app.ts)
+  if (rootModules) {
+    for (const root of rootModules) {
+      if (file === root.file) return true;
+      for (const spec of importSpecifiers(root.source)) {
+        if (spec.startsWith(".")) {
+          const resolved = stripExtension(path.posix.normalize(path.posix.join(path.posix.dirname(root.file), spec)));
+          if (resolved === targetNorm) return true;
+        }
+      }
+    }
+  }
+
+  for (const { file: testFile, source } of testFiles) {
+    const pkg = ownerOf(testFile, packages ?? []);
+    for (const spec of importSpecifiers(source)) {
+      const target = importTarget(spec, testFile, pkg, pkgMap);
+      if (target === targetNorm) return true;
+    }
+  }
+  return false;
+}
+
+export function classifyChanges(
+  files,
+  {
+    forceFull = false,
+    diffText = null,
+    exportChanges = null,
+    packages = null,
+    testFiles = null,
+    rootModules = null,
+  } = {},
+) {
   if (forceFull) return { tier: "full", reasons: ["full run requested"] };
   if (files.length === 0) return { tier: "docs", reasons: ["no changed files"] };
   const reasons = new Set();
@@ -193,6 +282,21 @@ export function classifyChanges(files, { forceFull = false } = {}) {
     }
   }
   if (reasons.size > 0) return { tier: "full", reasons: [...reasons] };
+
+  const exportChangedFiles = exportChanges ?? detectExportOrTypeChangesFromDiff(diffText);
+  if (exportChangedFiles.length > 0) {
+    const used = exportChangedFiles.filter((f) => isModuleUsedByTests(f, packages, testFiles, rootModules));
+    if (used.length > 0) {
+      return {
+        tier: "full",
+        keepFull: true,
+        reasons: used.map(
+          (f) => `PR changes exported interface, type, or signature in ${f} used by tests: running full server test suite`,
+        ),
+      };
+    }
+  }
+
   if (files.every((file) => LIGHT.some((pattern) => pattern.test(file)))) {
     return { tier: "docs", reasons: ["only Myrmidon docs and scripts"] };
   }
@@ -253,11 +357,14 @@ export function selectTests(changedFiles, packages, testFiles, { selective = SEL
     selected.get(pkg.name).files.set(file, why);
   };
 
-  if (changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file))) {
+  if (changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file) || ROUTE_GUARD_TRIGGER.test(file))) {
     const testFilesByPath = new Set(testFiles.map((testFile) => testFile.file));
     const server = packages.find((pkg) => pkg.name === "@myrmidon/server");
-    for (const file of SHARED_GUARD_TESTS) {
-      if (testFilesByPath.has(file)) add(server, file, "shared-source guard");
+    const routesOnly = changedFiles.some((file) => ROUTE_GUARD_TRIGGER.test(file)) &&
+      !changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file));
+    const guards = routesOnly ? ROUTE_GUARD_TESTS : SHARED_GUARD_TESTS;
+    for (const file of guards) {
+      if (testFilesByPath.has(file)) add(server, file, routesOnly ? "routes guard" : "shared-source guard");
     }
   }
 
@@ -302,7 +409,7 @@ const CODE_FILE = /\.(?:tsx?|mts|cts|mjs|cjs|jsx?)$/;
 const TEST_SUFFIX = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
 // Order in which a package's direct selection is kept when it exceeds the limit.
-const DIRECT_RANK = { changed: 0, "co-located": 1, "shared-guard": 2, imports: 3 };
+const DIRECT_RANK = { changed: 0, "co-located": 1, mock: 2, "type-import": 3, "shared-guard": 4, imports: 5 };
 
 /** First string a package.json `exports` entry resolves to (conditions: import, default, types, require). */
 function exportTarget(value) {
@@ -471,11 +578,28 @@ export function selectDirectTests(
       add(pkg, file, "co-located");
     } else {
       let near = -1;
+      let isMock = false;
+      let isTypeImport = false;
       for (const spec of importSpecifiers(source)) {
         const target = importTarget(spec, file, pkg, packagesByName);
-        if (target && changedModules.has(target)) near = Math.max(near, sharedDepth(file, target));
+        if (target && changedModules.has(target)) {
+          near = Math.max(near, sharedDepth(file, target));
+          const escaped = spec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          if (new RegExp(`\\bvi\\.(?:mock|doMock)\\s*\\(\\s*["'\`]${escaped}["'\`]`).test(source)) {
+            isMock = true;
+          }
+          if (
+            new RegExp(`\\bimport\\s+type\\s+[^;]*from\\s*["'\`]${escaped}["'\`]`).test(source) ||
+            new RegExp(`\\bimport\\s*\\{[^}]*\\btype\\s+[^}]*\\}\\s*from\\s*["'\`]${escaped}["'\`]`).test(source)
+          ) {
+            isTypeImport = true;
+          }
+        }
       }
-      if (near >= 0) add(pkg, file, "imports", near);
+      if (near >= 0) {
+        const kind = isMock ? "mock" : isTypeImport ? "type-import" : "imports";
+        add(pkg, file, kind, near);
+      }
     }
   }
 

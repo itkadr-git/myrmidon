@@ -18,6 +18,12 @@
 // without a review verdict, and a merge-steward task when the current head is
 // approved. The `prWatch` block holds its settings; every field is additive —
 // the pre-existing exports, fields, and defaults above stay byte-identical.
+//
+// myrmidon(OPE-11767): the board-side merge. A pull request whose board review
+// stage was approved for the exact head, whose required check is green on that
+// head and which GitHub reports mergeable is merged by the board itself (the
+// shared GitHub App identity), event-driven and by the periodic sweep as the
+// safety net. The `boardMerge` block holds its settings; it is ON by default.
 
 import { z } from "zod";
 
@@ -36,6 +42,7 @@ export const MAX_REVIEW_ROUTING_QUEUE_THRESHOLD = 100;
 /** Hours without a verdict before the review is signalled and reassigned; 0 = never. */
 export const DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24;
 export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24 * 90;
+export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_MINUTES = 24 * 90 * 60;
 
 /** PR-watch defaults: the lane mirrors the board task it replaced, off only on request. */
 export const DEFAULT_REVIEW_ROUTING_PR_WATCH_ENABLED = true;
@@ -58,6 +65,24 @@ export const DEFAULT_REVIEW_ROUTING_PR_STEWARD_ROLES: readonly string[] = ["devo
 /** Open merge tasks per steward before the PR lane skips them. */
 export const DEFAULT_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD = 3;
 export const MAX_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD = 50;
+
+/** myrmidon(OPE-11767): board-side merge of an approved pull request — ON unless switched off. */
+export const DEFAULT_REVIEW_ROUTING_BOARD_MERGE_ENABLED = true;
+/** GitHub merge methods the board may use; `squash` is the repository's convention. */
+export const REVIEW_ROUTING_BOARD_MERGE_METHODS = ["squash", "merge", "rebase"] as const;
+export type ReviewRoutingBoardMergeMethod = (typeof REVIEW_ROUTING_BOARD_MERGE_METHODS)[number];
+export const DEFAULT_REVIEW_ROUTING_BOARD_MERGE_METHOD: ReviewRoutingBoardMergeMethod = "squash";
+/** Base branches the board merges into: main, plus the release base when one is configured. */
+export const DEFAULT_REVIEW_ROUTING_BOARD_MERGE_BASE_BRANCHES: readonly string[] = ["main"];
+export const MAX_REVIEW_ROUTING_BOARD_MERGE_BASE_BRANCHES = 10;
+export const MAX_REVIEW_ROUTING_BOARD_MERGE_BRANCH_LENGTH = 200;
+/** Check runs that must be `success` on the approved head (latest run per name). */
+export const DEFAULT_REVIEW_ROUTING_BOARD_MERGE_REQUIRED_CHECKS: readonly string[] = ["CI result"];
+export const MAX_REVIEW_ROUTING_BOARD_MERGE_REQUIRED_CHECKS = 5;
+export const MAX_REVIEW_ROUTING_BOARD_MERGE_CHECK_LENGTH = 100;
+/** Merges the board performs for one company per pass; the rest wait for the next pass. */
+export const DEFAULT_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS = 3;
+export const MAX_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS = 20;
 
 /** `owner/repo` shape, GitHub-lean: one slash, non-empty slug-safe segments. */
 export const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -184,6 +209,78 @@ export function normalizeReviewRoutingPrWatch(raw: unknown): ReviewRoutingPrWatc
   };
 }
 
+const reviewRoutingBoardMergeBranchSchema = z.string().trim().min(1).max(MAX_REVIEW_ROUTING_BOARD_MERGE_BRANCH_LENGTH);
+const reviewRoutingBoardMergeBranchesSchema = z
+  .array(reviewRoutingBoardMergeBranchSchema)
+  .min(1)
+  .max(MAX_REVIEW_ROUTING_BOARD_MERGE_BASE_BRANCHES);
+const reviewRoutingBoardMergeChecksSchema = z
+  .array(z.string().trim().min(1).max(MAX_REVIEW_ROUTING_BOARD_MERGE_CHECK_LENGTH))
+  .min(1)
+  .max(MAX_REVIEW_ROUTING_BOARD_MERGE_REQUIRED_CHECKS);
+
+export const reviewRoutingBoardMergeSchema = z
+  .object({
+    enabled: z.boolean().default(DEFAULT_REVIEW_ROUTING_BOARD_MERGE_ENABLED),
+    method: z.enum(REVIEW_ROUTING_BOARD_MERGE_METHODS).default(DEFAULT_REVIEW_ROUTING_BOARD_MERGE_METHOD),
+    baseBranches: reviewRoutingBoardMergeBranchesSchema.default([...DEFAULT_REVIEW_ROUTING_BOARD_MERGE_BASE_BRANCHES]),
+    requiredChecks: reviewRoutingBoardMergeChecksSchema.default([...DEFAULT_REVIEW_ROUTING_BOARD_MERGE_REQUIRED_CHECKS]),
+    repositories: reviewRoutingRepositoryListSchema.default([]),
+    maxMergesPerPass: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS)
+      .default(DEFAULT_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS),
+  })
+  .strict();
+
+export type ReviewRoutingBoardMerge = z.infer<typeof reviewRoutingBoardMergeSchema>;
+
+/**
+ * The board-merge half of the settings: absent or malformed means the
+ * defaults, per field — one bad key never switches the merge off or blanks the
+ * other keys. Lists drop duplicates.
+ */
+export function normalizeReviewRoutingBoardMerge(raw: unknown): ReviewRoutingBoardMerge {
+  const record = asRecord(raw);
+  return {
+    enabled: parseOr(z.boolean(), DEFAULT_REVIEW_ROUTING_BOARD_MERGE_ENABLED, record.enabled),
+    method: parseOr(z.enum(REVIEW_ROUTING_BOARD_MERGE_METHODS), DEFAULT_REVIEW_ROUTING_BOARD_MERGE_METHOD, record.method),
+    baseBranches: [
+      ...new Set(
+        parseOr(
+          reviewRoutingBoardMergeBranchesSchema,
+          [...DEFAULT_REVIEW_ROUTING_BOARD_MERGE_BASE_BRANCHES],
+          record.baseBranches,
+        ),
+      ),
+    ],
+    requiredChecks: [
+      ...new Set(
+        parseOr(
+          reviewRoutingBoardMergeChecksSchema,
+          [...DEFAULT_REVIEW_ROUTING_BOARD_MERGE_REQUIRED_CHECKS],
+          record.requiredChecks,
+        ),
+      ),
+    ],
+    repositories: [...new Set(parseOr(reviewRoutingRepositoryListSchema, [], record.repositories))],
+    maxMergesPerPass: parseOr(
+      z.number().int().min(1).max(MAX_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS),
+      DEFAULT_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS,
+      record.maxMergesPerPass,
+    ),
+  };
+}
+
+const reviewRoutingBoardMergeField = z.preprocess(
+  // Always normalize: absent, malformed or partial — the defaults are the
+  // schema's own, never a literal `{}` passing through a default.
+  (value: unknown) => normalizeReviewRoutingBoardMerge(value),
+  reviewRoutingBoardMergeSchema,
+);
+
 const reviewRoutingPrWatchField = z.preprocess(
   // Always normalize: absent, malformed, or partial — the prWatch defaults are
   // the schema's own defaults, never a literal `{}` passing through a default.
@@ -210,6 +307,12 @@ export const reviewRoutingSettingsSchema = z
       .min(0)
       .max(MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS)
       .default(DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS),
+    reassignAfterMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_REVIEW_ROUTING_REASSIGN_AFTER_MINUTES)
+      .optional(),
     queueThreshold: z
       .number()
       .int()
@@ -217,6 +320,8 @@ export const reviewRoutingSettingsSchema = z
       .max(MAX_REVIEW_ROUTING_QUEUE_THRESHOLD)
       .default(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD),
     prWatch: reviewRoutingPrWatchField,
+    // myrmidon(OPE-11767): the board-side merge block; additive, ON by default.
+    boardMerge: reviewRoutingBoardMergeField,
   })
   .strict();
 
@@ -245,3 +350,12 @@ export const REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION = "issue.review_routing.
 export const REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY = "prRoutingHeadSha";
 export const REVIEW_ROUTING_PR_KIND_METADATA_KEY = "prRoutingKind";
 export type ReviewRoutingPrRoutingKind = "review" | "merge";
+
+/** myrmidon(OPE-11767): the board merged an approved, green pull request head. */
+export const REVIEW_ROUTING_BOARD_MERGED_ACTION = "issue.review_routing.board_merged";
+/** myrmidon(OPE-11767): an approved task went back to its implementer (conflict / behind main). */
+export const REVIEW_ROUTING_BOARD_MERGE_RETURNED_ACTION = "issue.review_routing.board_merge_returned";
+/** myrmidon(OPE-11767): the board put the review-approved marker on a blocked approved head. */
+export const REVIEW_ROUTING_BOARD_MERGE_LABELED_ACTION = "issue.review_routing.board_merge_labeled";
+/** The PR label the hot-files-review gate reads as "reviewed". */
+export const REVIEW_ROUTING_APPROVED_LABEL = "review-approved";

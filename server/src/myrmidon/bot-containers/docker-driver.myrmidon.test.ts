@@ -1,12 +1,15 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import {
   APPLIED_MARKER_CONTAINER_PATH,
   BOT_CONTAINER_UID,
+  BOT_YOLO_ENV,
   BOT_STOP_TIMEOUT_SEC,
   botStateFromInspect,
   buildApplyScript,
@@ -20,6 +23,8 @@ import {
   CONTAINER_TEMPLATE_INSPECT_FIELDS,
   demuxDockerLogs,
   dockerBotContainerDriver,
+  readDockerDriverConfig,
+  BOT_VOLUME_ROOT_ENV,
   parseAppliedMarker,
   serializeAppliedMarker,
   templateDriftFields,
@@ -88,6 +93,32 @@ function testProfile(
 
 const NONCE = "00112233aabbccdd";
 
+describe("readDockerDriverConfig YOLO setting", () => {
+  it("prefers a value saved from the UI to the process environment, and ignores it for an explicit env", () => {
+    const previous = liveBehaviorSettingsView();
+    const priorRoot = process.env[BOT_VOLUME_ROOT_ENV];
+    const priorYolo = process.env[BOT_YOLO_ENV];
+    try {
+      process.env[BOT_VOLUME_ROOT_ENV] = "/var/lib/myrmidon/bots";
+      process.env[BOT_YOLO_ENV] = "true";
+      applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
+      expect(readDockerDriverConfig().yolo).toBe(false);
+      applyLiveBehaviorSettings({ settings: {}, sources: {} });
+      expect(readDockerDriverConfig().yolo).toBe(true);
+      applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
+      const explicit = { [BOT_VOLUME_ROOT_ENV]: "/var/lib/myrmidon/bots" };
+      expect(readDockerDriverConfig(explicit).yolo).toBeUndefined();
+      expect(readDockerDriverConfig({ ...explicit, [BOT_YOLO_ENV]: "0" }).yolo).toBe(false);
+    } finally {
+      if (priorRoot === undefined) delete process.env[BOT_VOLUME_ROOT_ENV];
+      else process.env[BOT_VOLUME_ROOT_ENV] = priorRoot;
+      if (priorYolo === undefined) delete process.env[BOT_YOLO_ENV];
+      else process.env[BOT_YOLO_ENV] = priorYolo;
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+});
+
 describe("buildCreateContainerRequestBody", () => {
   it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
     const withMirror = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", true);
@@ -103,8 +134,14 @@ describe("buildCreateContainerRequestBody", () => {
     ]);
     const without = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", false);
     expect(without.HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
-    // A mirror without a cache path has nowhere to live: no bind.
     expect(buildCreateContainerRequestBody(spec(), CONFIG, undefined, true).HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+  });
+
+  it("adds the operator-selected YOLO mode as a driver-owned runtime env", () => {
+    const enabled = buildCreateContainerRequestBody(spec(), { ...CONFIG, yolo: true });
+    expect(enabled.Env).toContain(`${BOT_YOLO_ENV}=1`);
+    const disabled = buildCreateContainerRequestBody(spec(), { ...CONFIG, yolo: false });
+    expect(disabled.Env).toContain(`${BOT_YOLO_ENV}=0`);
   });
 
   it("builds the fixed template body for an allowed image and the configured network", () => {
@@ -670,12 +707,13 @@ interface FakeContainer {
     Entrypoint?: string[];
     Cmd?: string[];
     Labels?: Record<string, string>;
-    HostConfig: { Binds: string[]; ReadonlyRootfs?: boolean; Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string };
+    HostConfig: { Binds: string[]; ReadonlyRootfs?: boolean; Memory?: number; MemorySwap?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string };
   };
   state: "created" | "running" | "exited" | "dead";
   health?: "starting" | "healthy" | "unhealthy";
   exitCode: number;
   logs: string;
+  enrolledLimits?: { memoryMb: number; cpus?: number; pidsLimit?: number };
 }
 
 interface RecordedRequest {
@@ -933,6 +971,23 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
       // here rather than only in production.
       return send(403, { message: "dockergate: denied (route_not_allowed)" });
     }
+    if ((m = route.match(/^\/containers\/([^/]+)\/config\/update$/))) {
+      const name = decodeURIComponent(m[1]);
+      const container = containers.get(name);
+      if (!container) return send(404, { message: `No such container: ${name}` });
+      if (method !== "PUT") return send(405, { message: "method not allowed" });
+      const update = JSON.parse(raw.toString("utf8"));
+      const CEILING_MB = 3072;
+      if (update.memoryMb && update.memoryMb > CEILING_MB) {
+        return send(400, { message: "dockergate: denied (limit_exceeds_ceiling)" });
+      }
+      container.enrolledLimits = {
+        memoryMb: update.memoryMb,
+        cpus: update.cpus,
+        pidsLimit: update.pidsLimit,
+      };
+      return send(200, { ok: true, botKey: update.botKey, ...container.enrolledLimits });
+    }
     if (!(m = route.match(/^\/containers\/([^/]+)(?:\/([a-z]+))?$/))) return send(404, { message: "no such route" });
     const name = decodeURIComponent(m[1]);
     const action = m[2];
@@ -980,6 +1035,17 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
       container.name = query.name;
       containers.set(query.name, container);
       return send(204);
+    }
+    if (action === "update" && method === "POST") {
+      const body = JSON.parse(raw.toString("utf8"));
+      const enrolledMem = container.enrolledLimits?.memoryMb ?? Math.round((container.body.HostConfig.Memory ?? 1024 * 1024 * 1024) / (1024 * 1024));
+      if (body.Memory && body.Memory > enrolledMem * 1024 * 1024) {
+        return send(403, { message: "dockergate: denied (json_value)" });
+      }
+      if (body.Memory) container.body.HostConfig.Memory = body.Memory;
+      if (body.MemorySwap) container.body.HostConfig.MemorySwap = body.MemorySwap;
+      if (body.PidsLimit) container.body.HostConfig.PidsLimit = body.PidsLimit;
+      return send(200, { Warnings: null });
     }
     if (action === "logs" && method === "GET") {
       const payload = Buffer.from(container.logs, "utf8");
@@ -1389,11 +1455,85 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       expect(bot()?.state).toBe("running");
     });
 
-    it("fails an unhealthy non-developer container without startup grace", async () => {
-      await driver.create(spec());
-      await driver.writeProfile("agent-a", testProfile());
+    it("waits through transient unhealthy for a regular container until healthy", async () => {
+      let elapsed = 0;
       daemon.options.healthOnStart = "unhealthy";
-      await expect(driver.start("agent-a")).rejects.toThrow(/reports unhealthy/);
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            if (elapsed >= 10_000) bot()!.health = "healthy";
+          },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await regularDriver.start("agent-a");
+      expect(elapsed).toBe(10_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("waits through transient unhealthy for a regular container until healthy", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            if (elapsed >= 10_000) bot()!.health = "healthy";
+          },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await regularDriver.start("agent-a");
+      expect(elapsed).toBe(10_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("uses the same unhealthy startup grace for non-dev images as the runtime healthcheck start period", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 420_000,
+          healthPollIntervalMs: 30_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => { elapsed += ms; },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await expect(regularDriver.start("agent-a")).rejects.toThrow(/reports unhealthy after start/);
+      // All bots tolerate unhealthy through the image's 300s start-period; 420s total timeout remains the outer bound.
+      expect(elapsed).toBeGreaterThanOrEqual(300_000);
+    });
+
+    it("fails an unhealthy container after its startup grace expires", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const unhealthyDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => { elapsed += ms; },
+        },
+      );
+      await unhealthyDriver.create(spec());
+      await unhealthyDriver.writeProfile("agent-a", testProfile());
+      await expect(unhealthyDriver.start("agent-a")).rejects.toThrow(/reports unhealthy after start/);
+      expect(elapsed).toBeGreaterThanOrEqual(30_000);
     });
 
     it("waits through transient unhealthy until the configured gateway health check is healthy", async () => {
@@ -1463,6 +1603,79 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await expect(boundedDriver.start("agent-a")).rejects.toThrow(/did not become healthy within 12000ms/);
       expect(elapsed).toBe(12_000);
       expect(bot()?.state).toBe("running");
+    });
+
+    it("does not restart on health timeout while holding an active startup progress lease", async () => {
+      let elapsed = 0;
+      let wallClock = 1_000_000;
+      daemon.options.healthOnStart = "starting";
+      const botsRoot = path.join(tmp, "bots");
+      const boundedDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: botsRoot },
+        {
+          startHealthTimeoutMs: 12_000,
+          healthPollIntervalMs: 5_000,
+          clock: () => wallClock,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            wallClock += ms;
+            if (elapsed < 25_000) {
+              const leaseDir = path.join(botsRoot, "agent-a", "hermes", "state");
+              await mkdir(leaseDir, { recursive: true });
+              await writeFile(
+                path.join(leaseDir, "startup-progress-lease.json"),
+                JSON.stringify({
+                  phase: "state_db_unclean_integrity_check",
+                  renewed_at: wallClock / 1000,
+                  expected_s: 900,
+                }),
+              );
+            } else {
+              const leaseFile = path.join(botsRoot, "agent-a", "hermes", "state", "startup-progress-lease.json");
+              await unlink(leaseFile).catch(() => {});
+              daemon.options.healthOnStart = "healthy";
+              const c = bot();
+              if (c) c.health = "healthy";
+            }
+          },
+        },
+      );
+      await boundedDriver.create(spec());
+      await boundedDriver.writeProfile("agent-a", testProfile());
+      await boundedDriver.start("agent-a");
+      expect(elapsed).toBeGreaterThanOrEqual(25_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("limits concurrent container starts with host semaphore", async () => {
+      let concurrentStarts = 0;
+      let maxConcurrent = 0;
+      const boundedDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          maxConcurrentStarts: 2,
+          sleep: async () => {
+            concurrentStarts++;
+            maxConcurrent = Math.max(maxConcurrent, concurrentStarts);
+            await new Promise((r) => setTimeout(r, 10));
+            concurrentStarts--;
+          },
+        },
+      );
+      await boundedDriver.create(spec({ botKey: "agent-a" }));
+      await boundedDriver.writeProfile("agent-a", testProfile({ botKey: "agent-a" }));
+      await boundedDriver.create(spec({ botKey: "agent-b" }));
+      await boundedDriver.writeProfile("agent-b", testProfile({ botKey: "agent-b" }));
+      await boundedDriver.create(spec({ botKey: "agent-c" }));
+      await boundedDriver.writeProfile("agent-c", testProfile({ botKey: "agent-c" }));
+
+      await Promise.all([
+        boundedDriver.start("agent-a"),
+        boundedDriver.start("agent-b"),
+        boundedDriver.start("agent-c"),
+      ]);
+      expect(maxConcurrent).toBeLessThanOrEqual(2);
     });
 
     it("reports Docker's health verdict", async () => {
@@ -1969,6 +2182,38 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await slowDriver.writeProfile("agent-a", testProfile());
       await slowDriver.start("agent-a");
       expect(waits).toEqual([3_000, 3_000]);
+    });
+
+    it("updates live container resources (1024 MB -> 2048 MB) after updating dockergate ceilings without restart (OPE-10565)", async () => {
+      await driver.create(spec({ memoryMb: 1024, cpus: 1, pidsLimit: 512 }));
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+
+      const before = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(before.state).toBe("running");
+      expect(before.body.HostConfig.Memory).toBe(1024 * 1024 * 1024);
+
+      // Live update from card: 1024 MB -> 2048 MB (2 GB)
+      await driver.updateResources!(spec({ memoryMb: 2048, cpus: 1, pidsLimit: 512 }));
+
+      const after = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(after.state).toBe("running");
+      expect(after.body.HostConfig.Memory).toBe(2048 * 1024 * 1024);
+      expect(after.enrolledLimits?.memoryMb).toBe(2048);
+    });
+
+    it("refuses live resource update when limits exceed dockergate platform ceiling with a clear error (OPE-10565)", async () => {
+      await driver.create(spec({ memoryMb: 1024, cpus: 1, pidsLimit: 512 }));
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+
+      // Platform ceiling in fake daemon is 3072 MB. Requesting 4096 MB must be refused with clear error.
+      await expect(
+        driver.updateResources!(spec({ memoryMb: 4096, cpus: 1, pidsLimit: 512 })),
+      ).rejects.toThrow(/requested resource limits exceed platform ceiling/);
+
+      const after = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(after.body.HostConfig.Memory).toBe(1024 * 1024 * 1024);
     });
   });
 });

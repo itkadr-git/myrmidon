@@ -1,3 +1,4 @@
+import { isRunGuardStopReason } from "@myrmidon/adapter-utils/run-guard";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
@@ -31,8 +32,8 @@ export function legacyExecutionNeedsReconciliation(
     return false;
   // Guard stops are terminal for the current run, but must NOT enter
   // reconciliation hold (no manual hold); normal next wake without auto-replay of the same revision.
-  if (["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(run.errorCode ?? "") ||
-      ["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(String(run.resultJson?.runGuardStopReason ?? ""))) {
+  // myrmidon(RUN-GUARD-LOOPS): the list of guard stop reasons now lives in adapter-utils.
+  if (isRunGuardStopReason(run.errorCode) || isRunGuardStopReason(run.resultJson?.runGuardStopReason)) {
     return false;
   }
   // Maintenance interruption explicitly means retry, including after the
@@ -40,6 +41,12 @@ export function legacyExecutionNeedsReconciliation(
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
+  if (
+    run.errorCode === "hermes_gateway_connect_failed" ||
+    run.scheduledRetryReason === "connect_failed_transient_retry"
+  ) {
+    return false;
+  }
   // myrmidon(OPE-2587): a run woken for a pending interaction addressee killed by process_lost
   // is eligible for bounded retry, not operator reconciliation hold, while attempts remain.
   if (
@@ -151,6 +158,10 @@ export async function terminalizeLegacyExecution(input: {
       review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
     if (
       task &&
+      // A board-restored task may deliberately return to the unassigned ready
+      // queue. A later stranded-run sweep must not recreate a board-owned
+      // reconciliation hold for that task (OPE-10434/OPE-10219).
+      (task.assigneeAgentId !== null || isCurrentReviewer) &&
       !isSupersededConversationRun(task, updated) &&
       (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
       !["done", "cancelled"].includes(task.status)

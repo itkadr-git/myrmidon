@@ -62,6 +62,7 @@ const SETTINGS: GuardrailModesSettings = {
   company: { secret: "mask" },
   castes: { engineer: { injection: "block" } },
   agents: {},
+  injectionConfig: { enabled: false, scoreThreshold: 0.6 },
 };
 
 let container: HTMLDivElement;

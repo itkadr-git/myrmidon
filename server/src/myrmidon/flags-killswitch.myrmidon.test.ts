@@ -255,9 +255,11 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
     "MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS",
     "MYRMIDON_DEVFLOW_APPROVED_NOT_MERGED_MS",
     "MYRMIDON_DEVFLOW_NO_MERGES_MS",
-    // Edge gateway fetcher (OPE-9642)
+    // Edge gateway fetcher (OPE-9642, OPE-9643)
     "MYRMIDON_VMEXEC_URL",
     "MYRMIDON_VMEXEC_TOKEN",
+    "MYRMIDON_FORAGING_FETCHER_URL",
+    "MYRMIDON_FORAGING_FETCHER_TOKEN",
   ]);
 
   function listNonTestTsFiles(dir: string): string[] {

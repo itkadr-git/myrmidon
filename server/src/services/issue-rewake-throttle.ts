@@ -55,8 +55,18 @@ export const ISSUE_REWAKE_FREEZE_THRESHOLD = 6;
  */
 export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_continuation_needed",
+  "issue_state_guard_mismatch",
+  "execution_reconciliation_required",
+  "transient_failure_retry",
+  "task_ticker",
+  "task-ticker",
   "issue_assignment_recovery",
   "issue_graph_liveness_backstop",
+  // myrmidon(OPE-10582 п.2): автоматические пробуждения, которые образуют
+  // холостые петли «агент будится по своей же задаче без прогресса».
+  "swarm_matched",
+  "idle_pickup",
+  "issue_disposition_repair",
 ]);
 
 /**

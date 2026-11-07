@@ -21,7 +21,13 @@ import type { SwarmMatcherPair } from "./matcher.js";
 /** What the heartbeat service installs: one matcher call per event. */
 export interface SwarmEventSink {
   forIssue(issueId: string): Promise<SwarmMatcherPair | null>;
-  forAgent(agentId: string): Promise<SwarmMatcherPair | null>;
+  forAgent(
+    agentId: string,
+    opts?: {
+      pickupAllowed?: boolean;
+      excludeIssueId?: string | null;
+    },
+  ): Promise<SwarmMatcherPair | null>;
 }
 
 let sink: SwarmEventSink | null = null;
@@ -106,9 +112,29 @@ export function notifySwarmIssueEvent(input: SwarmIssueEventInput, opts: { defer
 }
 
 /** The agent was freed by something other than a run end (a pause lifted). */
-export function notifySwarmAgentEvent(agentId: string, opts: { deferMs?: number } = {}): void {
+export function notifySwarmAgentEvent(
+  agentId: string,
+  opts: {
+    deferMs?: number;
+    pickupAllowed?: boolean;
+    excludeIssueId?: string | null;
+  } = {},
+): void {
   try {
-    dispatch("agent event", agentId, (s) => s.forAgent(agentId), opts.deferMs ?? 0);
+    dispatch(
+      "agent event",
+      agentId,
+      (s) => {
+        const matcherOptions = {
+          ...(opts.pickupAllowed !== undefined ? { pickupAllowed: opts.pickupAllowed } : {}),
+          ...(opts.excludeIssueId !== undefined ? { excludeIssueId: opts.excludeIssueId } : {}),
+        };
+        return Object.keys(matcherOptions).length > 0
+          ? s.forAgent(agentId, matcherOptions)
+          : s.forAgent(agentId);
+      },
+      opts.deferMs ?? 0,
+    );
   } catch (err) {
     logger.warn({ err, agentId }, "swarm agent event dropped");
   }

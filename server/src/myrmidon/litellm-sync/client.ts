@@ -3,11 +3,12 @@
 // myrmidon(1.6.1 MODEL-PROVIDERS B): LiteLLM admin API client.
 //
 // Calls LiteLLM's /model/new, /model/update, /model/delete, /model/info endpoints using the
-// admin key. Never sends credential values - only secret name references.
+// admin key. Credential values are sent as values: LiteLLM encrypts them in its own DB
+// (its secret manager is not configured on our deployments, so `secrets/<name>`
+// references would never resolve).
 
 import { unprocessable } from "../../errors.js";
 import { LitellmSyncPort, type LitellmChannelView } from "./port.js";
-
 /**
  * Strips or redacts any sensitive keys or tokens from an error string.
  */
@@ -72,13 +73,13 @@ export function parseLitellmChannel(item: any): LitellmChannelView {
         ? Number(rawOrder)
         : null;
 
-  const rawWeight = litellmParams.weight ?? modelInfo.weight ?? item?.weight;
+  const rawWeight = litellmParams.weight ?? modelInfo.weight ?? item?.weight ?? 0;
   const weight =
     typeof rawWeight === "number" && !Number.isNaN(rawWeight)
       ? rawWeight
       : typeof rawWeight === "string" && !Number.isNaN(Number(rawWeight))
         ? Number(rawWeight)
-        : null;
+        : 0;
 
   return {
     id,
@@ -95,6 +96,16 @@ export interface LitellmSyncClientDeps {
   litellmBaseUrl: string;
   /** The admin key for LiteLLM model management. */
   litellmAdminKey: string;
+}
+
+/** LiteLLM provider prefix for a board connector type. */
+export function litellmProviderPrefix(providerType: string): string {
+  // These board connectors expose OpenAI-compatible APIs. LiteLLM routes them
+  // through its `openai` provider; `openai-compatible` is not a LiteLLM prefix.
+  if (providerType === "openai-compatible" || providerType === "dashscope" || providerType === "google") {
+    return "openai";
+  }
+  return providerType;
 }
 
 export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyncPort {
@@ -143,11 +154,10 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       const payload = {
         model_name: input.litellmModelName,
         litellm_params: {
-          model: input.litellmModelName,
-          provider: input.providerType,
+          model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
+          provider: litellmProviderPrefix(input.providerType),
           api_base: input.baseUrl || undefined,
-          // Pass the secret name reference, not the value
-          api_key: `secrets/${input.credentialSecretName}`,
+          api_key: input.credentialValue ?? "",
           ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
           ...(input.weight !== undefined ? { weight: input.weight } : {}),
           ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
@@ -167,11 +177,10 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       await callLiteLLM("/model/update", {
         model_name: input.litellmModelName,
         litellm_params: {
-          model: input.litellmModelName,
-          provider: input.providerType,
+          model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
+          provider: litellmProviderPrefix(input.providerType),
           api_base: input.baseUrl || undefined,
-          // Pass the secret name reference, not the value
-          api_key: `secrets/${input.credentialSecretName}`,
+          api_key: input.credentialValue ?? "",
           ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
           ...(input.weight !== undefined ? { weight: input.weight } : {}),
           ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
@@ -188,6 +197,10 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
 
     async deleteDeployment(modelId) {
       await callLiteLLM("/model/delete", { id: modelId });
+    },
+
+    async invalidateCache() {
+      await callLiteLLM("/cache/delete", {});
     },
 
     async unregisterModel(litellmModelName) {

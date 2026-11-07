@@ -20,6 +20,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
@@ -35,6 +36,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  authUsers,
 } from "@myrmidon/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -171,6 +173,8 @@ describeEmbeddedPostgres("myrmidon(1.6-AUTONOMY-GW) gateway enforcement", () => 
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
+    await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -183,6 +187,24 @@ describeEmbeddedPostgres("myrmidon(1.6-AUTONOMY-GW) gateway enforcement", () => 
         issuePrefix: `AG${randomUUID().slice(0, 6).toUpperCase()}`,
       })
       .returning();
+    const now = new Date();
+    await db
+      .insert(authUsers)
+      .values({
+        id: "board-user",
+        name: "Board User",
+        email: "board-user@example.com",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId: row!.id,
+      principalType: "user",
+      principalId: "board-user",
+      membershipRole: "owner",
+      status: "active",
+    });
     return row!;
   }
 

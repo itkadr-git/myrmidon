@@ -1,5 +1,18 @@
 // myrmidon(B1c): product name constant, see myrmidon-product.ts.
-export { PRODUCT_NAME } from "./myrmidon-product.js";
+export { PRODUCT_NAME, PRODUCT_DESCRIPTION } from "./myrmidon-product.js";
+export {
+  adminAssistantDryRunDiagnosticsSchema,
+  adminAssistantDryRunProbeResultSchema,
+  adminAssistantDryRunProbeStatusSchema,
+  adminAssistantDryRunSummarySchema,
+  sanitizeDryRunDiagnostics,
+  sanitizeDryRunDiagnosticsDetail,
+  toSafeDryRunDiagnosticsJson,
+  type AdminAssistantDryRunDiagnostics,
+  type AdminAssistantDryRunProbeResult,
+  type AdminAssistantDryRunProbeStatus,
+  type AdminAssistantDryRunSummary,
+} from "./admin-assistant-diagnostics.js";
 export {
   LEGACY_BLOCKED_IMPORT_RULE_VERSION,
   createLegacyBlockedImportKey,
@@ -311,6 +324,7 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AgentVisibilityAuthorizationPolicy,
   type AssignmentAuthorizationPolicy,
   type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
@@ -922,6 +936,8 @@ export type {
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
   InstanceExecutionMode,
+  InstanceNumberFormat,
+  InstanceDateFormat,
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
@@ -934,6 +950,7 @@ export type {
   AgentChainOfCommandEntry,
   // myrmidon(PERF-DIET-G): the slim company list row and the configuration read
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDetail,
   ClearAgentErrorResponse,
@@ -968,6 +985,7 @@ export type {
   SetupTokenTransportAdvisoryCode,
   AssetImage,
   Project,
+  ProjectDevelopmentProcess,
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
@@ -1620,6 +1638,7 @@ export type {
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,
   PluginModelProviderDeclaration,
+  PluginProviderModelDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
@@ -1777,6 +1796,9 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
@@ -1815,6 +1837,10 @@ export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   boardProcessesSettingsSchema,
+  isValidIanaTimeZone,
+  instanceTimeZoneSchema,
+  instanceNumberFormatSchema,
+  instanceDateFormatSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
@@ -1831,6 +1857,7 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  agentVisibilityAuthorizationPolicySchema,
   assignmentAuthorizationPolicySchema,
   protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
@@ -1841,7 +1868,12 @@ export {
   type RecordSmokeRunStep,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
+  type AgentVisibilityAuthorizationPolicyInput,
   type TrustAuthorizationPolicyInput,
+  type HaStandbyStatus,
+  haStandbyStatusSchema,
+  haStandbyCheckSchema,
+  haStandbyCheckStatusSchema,
 } from "./validators/index.js";
 
 export {
@@ -2521,6 +2553,7 @@ export {
   type PluginToolDeclarationInput,
   type PluginEnvironmentDriverDeclarationInput,
   type PluginModelProviderDeclarationInput,
+  type PluginProviderModelDeclarationInput,
   type SandboxProviderCapabilitiesInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
@@ -2537,6 +2570,13 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  blockUserSchema,
+  type BlockUserInput,
+  auditQuerySchema,
+  type AuditQueryInput,
+  sshDryRunInputSchema,
+  type SshDryRunInput,
+  type SshDryRunAuth,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
@@ -2810,6 +2850,7 @@ export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
+export * from "./validators/guardrails.js";
 export * from "./announcements.js";
 // myrmidon(1.6.6 NOTIF-PREFS): per-agent notification preferences for
 // event-shaped wakes (assignment / mention / review), read at wake generation.
@@ -2821,10 +2862,6 @@ export * from "./notification-prefs.js";
 // add them to packages/shared/src/myrmidon/index.ts (or regenerate via
 // `pnpm generate:shared`) to prevent parallel PR merge conflicts.
 export * from "./myrmidon/index.js";
-
-// myrmidon(1.7-BUDGET-CONFIG A): the shared contract of the per-level spend
-// limits — schemas, level semantics, signal-only resolution, window math.
-export * from "./myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-bot-disk-quota.js";
@@ -3013,13 +3050,13 @@ export * from "./myrmidon-tool-policy-cache.js";
 // myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
 // idle gate — the toggle, its storage key and the resolver with sources.
 export * from "./myrmidon-foraging-idle-gate.js";
+export * from "./validators/foraging.js";
 // myrmidon(1.7-AGENT-EXCHANGE-B): owner-facing exchange feed and skill candidates.
 export * from "./myrmidon-agent-exchange-feed.js";
 // myrmidon(1.6.5 LITELLM-WORKERS A): the shared contract of the LiteLLM worker
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.
 export * from "./myrmidon-litellm-workers.js";
-export * from "./myrmidon-capacity-policy-schema.js";
 export * from "./myrmidon-capacity-policy.js";
 export * from "./myrmidon-capacity-policy-order.js";
 export * from "./blocker-graph.js";
@@ -3046,6 +3083,30 @@ export * from "./build-chain.js";
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
 // operator failures ask for a recovery issue with a deterministic dedupe key.
 export * from "./recovery-factory.js";
+
+// myrmidon(1.6.6 ARCH-DATA): read-only product access for the architect role
+// to full operational metrics without secrets.
+export * from "./myrmidon-architect-data.js";
+
+// myrmidon(1.7 LOCALE-UPLOAD): installed locales list and coverage percentage
+export * from "./installed-locales.js";
+
+// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure linter and validator
+export * from "./locale-validator.js";
+export * from "./locale-upload.js";
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator.
+export * from "./myrmidon-auto-update-window-cron.js";
+export * from "./validators/updates.js";
+export * from "./validators/auto-update-settings.js";
+
 // myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
 // mode (ratchet / strict), the baseline and the source of each value.
 export * from "./myrmidon-vendor-name.js";
+
+// myrmidon(1.7 HA-GEO, OPE-10184): site readiness evaluation contract and helpers for geo-check.
+export * from "./geo-check.js";
+export * from "./validators/geo-check.js";
+
+// myrmidon(1.7 WAKE-9, OPE-9501): session-per-task isolation and reviewer containment contracts.
+export * from "./myrmidon-task-session-and-reviewer-isolation.js";

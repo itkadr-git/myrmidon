@@ -62,6 +62,9 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+  CONNECT_FAILED_TRANSIENT_RETRY_REASON,
+  CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS,
+  CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -503,6 +506,78 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
   });
 
+  it("uses exponential capped backoff for hermes_gateway_connect_failed retries", async () => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      resultJson: {
+        error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+        errorCode: "hermes_gateway_connect_failed",
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    // Attempt 1: 60s (1 min)
+    const scheduled1 = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(scheduled1.outcome).toBe("scheduled");
+    if (scheduled1.outcome !== "scheduled") throw new Error("Expected scheduled retry");
+    expect(scheduled1.run.scheduledRetryAttempt).toBe(1);
+    expect(new Date(scheduled1.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(60_000);
+
+    // Attempt 2: 120s (2 min)
+    const runId2 = scheduled1.run.id;
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      finishedAt: now,
+    }).where(eq(heartbeatRuns.id, runId2));
+
+    const scheduled2 = await heartbeat.scheduleBoundedRetry(runId2, { now, random: () => 0 });
+    expect(scheduled2.outcome).toBe("scheduled");
+    if (scheduled2.outcome !== "scheduled") throw new Error("Expected scheduled retry");
+    expect(scheduled2.run.scheduledRetryAttempt).toBe(2);
+    expect(new Date(scheduled2.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(120_000);
+  });
+
+  it("caps exponential delay at 1 hour and sets agent errorReason when retries exhaust", async () => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      scheduledRetryAttempt: CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS - 1,
+      scheduledRetryReason: CONNECT_FAILED_TRANSIENT_RETRY_REASON,
+      finishedAt: now,
+    }).where(eq(heartbeatRuns.id, runId));
+
+    // Attempt 8 (max attempt): capped at 1 hour (3_600_000 ms)
+    const scheduled8 = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(scheduled8.outcome).toBe("scheduled");
+    if (scheduled8.outcome !== "scheduled") throw new Error("Expected scheduled retry");
+    expect(scheduled8.run.scheduledRetryAttempt).toBe(CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS);
+    expect(new Date(scheduled8.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS);
+
+    // After attempt 8: exhausted
+    const runId8 = scheduled8.run.id;
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      finishedAt: now,
+    }).where(eq(heartbeatRuns.id, runId8));
+
+    const exhausted = await heartbeat.scheduleBoundedRetry(runId8, { now, random: () => 0 });
+    expect(exhausted.outcome).toBe("retry_exhausted");
+
+    const updatedAgent = await db.query.agents.findFirst({
+      where: eq(agents.id, agentId),
+    });
+    expect(updatedAgent?.status).toBe("error");
+    expect(updatedAgent?.errorReason).toBe("контейнер не поднят");
+  });
+
   it.each([
     ["interaction", false], ["approval", false], ["interaction", true], ["approval", true],
   ] as const)("waits for a pending %s before continuing (already scheduled: %s)", async (kind, alreadyScheduled) => {
@@ -633,6 +708,161 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.id, scheduled.run.id))
       .then((rows) => rows[0] ?? null);
     expect(promotedRun?.status).toBe("queued");
+  });
+
+  // myrmidon(OPE-11947): a run that ended because the model pool did not answer
+  // ("No reply: ... didn't produce a reply") is a transient failure whose retry
+  // waits 30 min and up, and only while the task is still todo/in_progress.
+  const MODEL_UNAVAILABLE_RESULT_JSON = {
+    errorFamily: "transient_upstream",
+    provider_error_as_content: true,
+    model_unavailable: true,
+    result: "",
+    output: "",
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+  };
+
+  async function seedModelUnavailableRun(input?: { issueStatus?: string }) {
+    const fixture = await seedMaxTurnFixture({ issueStatus: input?.issueStatus });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        errorCode: "hermes_gateway_run_failed",
+        error: "Provider returned an overload or quota error as successful response content",
+        resultJson: MODEL_UNAVAILABLE_RESULT_JSON,
+      })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    return fixture;
+  }
+
+  it("defers the retry of a model-unavailable run by 30 minutes, then 1 h, 2 h, 4 h and 6 h, then stops", async () => {
+    const { runId, now } = await seedModelUnavailableRun();
+
+    let sourceRunId = runId;
+    for (const [index, minutes] of [30, 60, 120, 240, 360].entries()) {
+      const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, { now, random: () => 0 });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") throw new Error("Expected a deferred retry");
+      expect(scheduled.attempt).toBe(index + 1);
+      expect(scheduled.dueAt.getTime() - now.getTime()).toBe(minutes * 60_000);
+
+      const retryRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, scheduled.run.id))
+        .then((rows) => rows[0] ?? null);
+      expect(retryRun).toMatchObject({
+        status: "scheduled_retry",
+        retryOfRunId: sourceRunId,
+        scheduledRetryAttempt: index + 1,
+        scheduledRetryReason: "transient_failure",
+      });
+      expect(retryRun?.contextSnapshot).toMatchObject({ modelUnavailableRetry: true });
+
+      // Not due a minute early; the 30 s pair of an ordinary transient failure never applies.
+      expect(
+        await heartbeat.promoteDueScheduledRetries(new Date(scheduled.dueAt.getTime() - 60_000)),
+      ).toEqual({ promoted: 0, runIds: [] });
+
+      // The retry fails the same way, so the next one waits twice as long.
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          errorCode: "hermes_gateway_run_failed",
+          resultJson: MODEL_UNAVAILABLE_RESULT_JSON,
+          finishedAt: now,
+        })
+        .where(eq(heartbeatRuns.id, scheduled.run.id));
+      sourceRunId = scheduled.run.id;
+    }
+
+    expect(await heartbeat.scheduleBoundedRetry(sourceRunId, { now, random: () => 0 })).toMatchObject({
+      outcome: "retry_exhausted",
+    });
+  });
+
+  it("leaves a model-unavailable run that has no replay evidence on the reconciliation hold", async () => {
+    const { runId, now } = await seedModelUnavailableRun();
+    // A turn that made tool calls reports no bootstrap evidence: replaying could repeat an action.
+    await db
+      .update(heartbeatRuns)
+      .set({ resultJson: { ...MODEL_UNAVAILABLE_RESULT_JSON, executionRecovery: undefined } })
+      .where(eq(heartbeatRuns.id, runId));
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now })).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "legacy_execution_requires_reconciliation",
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it("keeps the 30 second pair for an ordinary transient failure", async () => {
+    const { runId, now } = await seedModelUnavailableRun();
+    await db
+      .update(heartbeatRuns)
+      .set({ resultJson: { ...MODEL_UNAVAILABLE_RESULT_JSON, model_unavailable: undefined } })
+      .where(eq(heartbeatRuns.id, runId));
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.dueAt.getTime() - now.getTime()).toBe(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS[0]);
+    const retryRun = await heartbeat.getRun(scheduled.run.id);
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelUnavailableRetry");
+  });
+
+  it.each(["backlog", "blocked", "in_review", "done", "cancelled"])(
+    "does not schedule a model-unavailable retry for a %s issue",
+    async (issueStatus) => {
+      const { runId, now } = await seedModelUnavailableRun({ issueStatus });
+      expect(await heartbeat.scheduleBoundedRetry(runId, { now })).toMatchObject({
+        outcome: "not_scheduled",
+        errorCode: "issue_not_in_progress",
+      });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    },
+  );
+
+  it("does not schedule a model-unavailable retry once the issue belongs to another agent", async () => {
+    const { runId, issueId, now } = await seedModelUnavailableRun();
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now })).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "issue_reassigned",
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it.each(["blocked", "backlog"])(
+    "drops a queued model-unavailable retry that falls due after the issue became %s",
+    async (issueStatus) => {
+      const { companyId, issueId, runId, now } = await seedModelUnavailableRun();
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+
+      await db.update(issues).set({ status: issueStatus }).where(eq(issues.id, issueId));
+
+      const adapter = createPostgresRunDispatchAdapter(db);
+      expect(
+        await adapter.promoteOrCancelDueRetry({
+          companyId,
+          runId: scheduled.run.id,
+          now: new Date(scheduled.dueAt.getTime() + 1_000),
+        }),
+      ).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_not_in_progress" });
+      expect((await heartbeat.getRun(scheduled.run.id))?.status).toBe("cancelled");
+    },
+  );
+
+  it("promotes a queued model-unavailable retry that falls due while the issue is still in progress", async () => {
+    const { runId, now } = await seedModelUnavailableRun();
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(await heartbeat.promoteDueScheduledRetries(scheduled.dueAt)).toEqual({
+      promoted: 1,
+      runIds: [scheduled.run.id],
+    });
   });
 
   it.each([MAX_TURN_CONTINUATION_RETRY_REASON, INTERACTION_CONTINUATION_INFRA_RETRY_REASON])(

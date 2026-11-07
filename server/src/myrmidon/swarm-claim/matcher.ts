@@ -1334,20 +1334,38 @@ async function openTaskIdsOfAgents(
   companyId: string,
   agentId: string | null,
 ): Promise<Map<string, { assigned: Set<string>; leased: Set<string> }>> {
-  const assignedRows = await db
-    .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, companyId),
-        isNotNull(issues.assigneeAgentId),
-        inArray(issues.status, [...SWARM_LOAD_ISSUE_STATUSES]),
-        isNull(issues.hiddenAt),
-        ...(agentId ? [eq(issues.assigneeAgentId, agentId)] : []),
+  const [assignedRows, leasedRows] = await Promise.all([
+    db
+      .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          isNotNull(issues.assigneeAgentId),
+          inArray(issues.status, [...SWARM_LOAD_ISSUE_STATUSES]),
+          isNull(issues.hiddenAt),
+          ...(agentId ? [eq(issues.assigneeAgentId, agentId)] : []),
+        ),
       ),
-    );
-  const assignedIds = new Set(assignedRows.map((row) => row.issueId));
-  const relatedIds = [...assignedIds];
+    db
+      .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
+      .from(issueClaims)
+      .where(
+        and(
+          eq(issueClaims.companyId, companyId),
+          isNull(issueClaims.releasedAt),
+          ...(agentId ? [eq(issueClaims.agentId, agentId)] : []),
+        ),
+      ),
+  ]);
+  const candidateIds = new Set<string>();
+  for (const row of assignedRows) {
+    if (row.issueId) candidateIds.add(row.issueId);
+  }
+  for (const row of leasedRows) {
+    if (row.issueId) candidateIds.add(row.issueId);
+  }
+  const relatedIds = [...candidateIds];
   const blockedIssueRows: Array<{ issueId: string }> = relatedIds.length === 0
     ? []
     : await db
@@ -1371,16 +1389,6 @@ async function openTaskIdsOfAgents(
             inArray(issueRelations.relatedIssueId, relatedIds),
           ),
         );
-  const leasedRows = await db
-    .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
-    .from(issueClaims)
-    .where(
-      and(
-        eq(issueClaims.companyId, companyId),
-        isNull(issueClaims.releasedAt),
-        ...(agentId ? [eq(issueClaims.agentId, agentId)] : []),
-      ),
-    );
   const blockedIssueIds = new Set(blockedIssueRows.map((row) => row.issueId));
   const out = new Map<string, { assigned: Set<string>; leased: Set<string> }>();
   const slot = (id: string) => {
@@ -1394,7 +1402,9 @@ async function openTaskIdsOfAgents(
   for (const row of assignedRows) {
     if (row.agentId && !blockedIssueIds.has(row.issueId)) slot(row.agentId).assigned.add(row.issueId);
   }
-  for (const row of leasedRows) slot(row.agentId).leased.add(row.issueId);
+  for (const row of leasedRows) {
+    if (row.agentId && !blockedIssueIds.has(row.issueId)) slot(row.agentId).leased.add(row.issueId);
+  }
   return out;
 }
 

@@ -128,6 +128,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
         tokenSecret: "site-token",
         hindsightUrl: "https://site.example.com/hindsight",
         llmBaseUrl: "https://site.example.com/llm/v1",
+        boardAddress: "site-board.example.com:3100",
         boardExtraHost: "board.example.com",
         volumeRoot: "/srv/site-bots",
         network: "site-network",
@@ -138,6 +139,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     const profile = await compile("agent-a", "agent-a");
     expect(fileContent(profile, "hermes/hindsight/config.json")).toContain("https://site.example.com/hindsight");
     expect(fileContent(profile, "hermes/config.yaml")).toContain("https://site.example.com/llm/v1");
+    expect(fileContent(profile, "hermes/.env")).toContain("http://site-board.example.com:3100");
   });
 
   it("rejects a card pinned to an unregistered fleet host before creating secrets", async () => {
@@ -749,6 +751,34 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       expect(signals).toHaveLength(1);
       expect(signals[0].agentId).toBe("agent-a");
       resetMediaMcpSignals();
+    });
+  });
+
+  describe("corpus MCP source", () => {
+    const corpusSource = {
+      name: "corpus",
+      url: "http://board.example.com:3100/api/myrmidon/companies/company-1/corpus/mcp",
+      token: "fake-paperclip-api-key-corpus",
+      header: "Authorization",
+      scheme: "Bearer",
+    };
+
+    it("compiles the corpus MCP source when the module is enabled", async () => {
+      const board = fakeBoard({ listMcpServers: async () => [corpusSource] });
+      const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const config = fileContent(profile, "hermes/config.yaml");
+      expect(config).toContain("corpus:");
+      expect(config).toContain("/api/myrmidon/companies/company-1/corpus/mcp");
+      expect(config).toContain("Bearer ${MYRMIDON_MCP_TOKEN_CORPUS}");
+      expect(fileContent(profile, "hermes/.env")).toContain("MYRMIDON_MCP_TOKEN_CORPUS=");
+    });
+
+    it("compiles no corpus MCP source when the module is disabled", async () => {
+      const board = fakeBoard({ listMcpServers: async () => [] });
+      const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const config = fileContent(profile, "hermes/config.yaml");
+      expect(config).not.toContain("corpus:");
+      expect(config).not.toContain("/corpus/mcp");
     });
   });
 

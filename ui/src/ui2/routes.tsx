@@ -10,6 +10,8 @@
 import type { ReactNode } from "react";
 import { Route } from "@/lib/router";
 import { Ui2PlaceholderScreen } from "./screens/Ui2PlaceholderScreen";
+
+export { Ui2PlaceholderScreen };
 import { Ui2I18nProvider } from "./i18n/Ui2I18n";
 import { Ui2Decisions } from "./screens/decisions/Ui2Decisions";
 import { Ui2Costs } from "./screens/costs/Ui2Costs";
@@ -21,6 +23,7 @@ import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSett
 // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — a real ui2 screen, not
 // a placeholder (see screens/CommanderChatScreen.tsx).
 import { CommanderChatScreen } from "./screens/CommanderChatScreen";
+import { Ui2Commander } from "./screens/commander/Ui2Commander";
 import { Ui2Fleet } from "./screens/fleet/Ui2Fleet";
 // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge module's own screens — the
 // reader of the knowledge store and the regulations of Autonomy.
@@ -36,6 +39,7 @@ export type Ui2ScreenKey =
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
+  | "commander"
   | "commander-chat"
   | "fleet"
   | "knowledge"
@@ -127,6 +131,14 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat — own route under the ui2
   // flag. The legacy entry stays /board-chat (conference room); this screen is
   // the single-owner planning conversation, so it does not shadow it.
+  {
+    key: "commander",
+    path: "commander",
+    titleKey: "ui2.screens.commander",
+    element: ui2Screen(<Ui2Commander />),
+    legacyPath: "/dashboard",
+  },
+  // Commander chat remains the separate planning conversation route.
   {
     key: "commander-chat",
     path: "commander-chat",

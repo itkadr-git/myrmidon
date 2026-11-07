@@ -681,6 +681,19 @@ the outcome commits. Resolution records an answer; every continuation, task
 creation, tool/provider call, execution-policy transition, spend, deployment, or
 other effect independently re-runs its own authorization and approval gates.
 
+A pending interaction cannot outlive its issue. When the issue reaches a
+terminal status (`done` or `cancelled`) through any path — an HTTP status
+update or a direct service-level transition — every still-pending interaction
+expires with outcome `issue_closed` and `expirationReason: "issue_closed"`
+(`connection_intent` cards keep outcome `expired` and record the same
+`expirationReason`). Linked tool actions and secret proposals are revoked or
+expired in the same transaction, `resolvedAt` is stamped, and a later resolve
+attempt on the expired card returns `409 interaction_issue_closed` instead of
+acting on a closed issue. The transition is idempotent: repeated terminal
+transitions and concurrent resolution attempts do not double-write. A
+one-time migration expired pre-existing pending rows on issues that were
+already closed before this rule.
+
 ## 11. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.

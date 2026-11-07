@@ -101,6 +101,8 @@ export type {
 } from "./feedback.js";
 export type {
   InstanceExecutionMode,
+  InstanceNumberFormat,
+  InstanceDateFormat,
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
@@ -129,6 +131,9 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./instance.js";
 export {
@@ -281,6 +286,7 @@ export type {
   AgentChainOfCommandEntry,
   // myrmidon(PERF-DIET-G): the slim company list row and the configuration read
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDetail,
   ClearAgentErrorResponse,
@@ -421,6 +427,7 @@ export type {
   ProjectExecutionWorkspaceDefaultMode,
   IssueExecutionWorkspaceSettings,
 } from "./workspace-runtime.js";
+export type { ProjectDevelopmentProcess } from "./project-development-process.js";
 export type {
   WorkspaceOperation,
   WorkspaceOperationPhase,
@@ -1055,6 +1062,7 @@ export type {
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,
   PluginModelProviderDeclaration,
+  PluginProviderModelDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,

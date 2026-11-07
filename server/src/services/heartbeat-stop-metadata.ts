@@ -13,6 +13,9 @@ export type HeartbeatRunStopReason =
   | "model_call_limit"
   | "idle_timeout"
   | "tool_retry_loop"
+  // myrmidon(RUN-GUARD-LOOPS): stops of the read-only / repeated-call checks.
+  | "no_progress_exploration"
+  | "repeated_tool_call"
   | "adapter_failed";
 
 export interface HeartbeatRunTimeoutPolicy {
@@ -95,7 +98,10 @@ export function inferHeartbeatRunStopReason(input: {
   if (
     input.errorCode === "model_call_limit" ||
     input.errorCode === "idle_timeout" ||
-    input.errorCode === "tool_retry_loop"
+    input.errorCode === "tool_retry_loop" ||
+    // myrmidon(RUN-GUARD-LOOPS): the two new run guard stop reasons.
+    input.errorCode === "no_progress_exploration" ||
+    input.errorCode === "repeated_tool_call"
   ) {
     return input.errorCode;
   }

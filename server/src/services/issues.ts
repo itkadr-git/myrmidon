@@ -110,6 +110,7 @@ import type { IssueScent } from "@myrmidon/shared";
 import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBlockedHasReason, isAutoUnblockCandidate } from "../myrmidon/blocked-reason-guard.js";
+import { extractReleasePrefix } from "../myrmidon/board-janitor/policy.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -2745,10 +2746,16 @@ async function returnReasonlessDependentsToTodo(
   for (const row of eligible) {
     if (stillHeld.has(row.id)) continue;
     const now = new Date();
+    const metadata = (row.blockerMetadata as Record<string, unknown> | null) ?? null;
+    if (metadata?.blockReason || row.unblockDescriptor) {
+      continue;
+    }
+    const restoredStatus: "in_progress" | "todo" =
+      metadata?.previousStatus === "in_progress" ? "in_progress" : "todo";
     const [moved] = await tx
       .update(issues)
       .set({
-        status: "todo",
+        status: restoredStatus,
         blockerMetadata: null,
         unblockDescriptor: null,
         blockedTransitionAt: null,
@@ -2770,7 +2777,7 @@ async function returnReasonlessDependentsToTodo(
       entityId: row.id,
       details: {
         identifier: row.identifier ?? null,
-        status: "todo",
+        status: restoredStatus,
         previousStatus: "blocked",
         source: "blocked_reason_guard.last_blocker_closed",
         resolvedBlockerIssueId: doneBlocker.id,
@@ -2778,6 +2785,61 @@ async function returnReasonlessDependentsToTodo(
     });
   }
   return returned;
+}
+
+async function syncOpenBlockerStatus(
+  tx: any,
+  companyId: string,
+  issue: typeof issues.$inferSelect,
+): Promise<void> {
+  const readiness = (await listIssueDependencyReadinessMap(tx, companyId, [issue.id])).get(issue.id);
+  const metadata = (issue.blockerMetadata as Record<string, unknown> | null) ?? null;
+  if (readiness?.unresolvedBlockerIssueIds.length && (issue.status === "todo" || issue.status === "in_progress")) {
+    const previousStatus = issue.status;
+    const nextMetadata = {
+      ...metadata,
+      previousStatus,
+    };
+    await tx
+      .update(issues)
+      .set({
+        status: "blocked",
+        blockerMetadata: nextMetadata,
+        blockedTransitionAt: new Date(),
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, issue.id), eq(issues.companyId, companyId)));
+    issue.status = "blocked";
+    issue.blockerMetadata = nextMetadata as any;
+    issue.blockedTransitionAt = new Date();
+  } else if (
+    (metadata?.previousStatus === "todo" || metadata?.previousStatus === "in_progress") &&
+    readiness?.isDependencyReady !== false &&
+    !readiness?.unresolvedBlockerIssueIds.length &&
+    issue.status === "blocked" &&
+    !metadata?.blockReason &&
+    !issue.unblockDescriptor &&
+    isAutoUnblockCandidate(issue)
+  ) {
+    const restoredStatus: "in_progress" | "todo" =
+      metadata.previousStatus === "in_progress" ? "in_progress" : "todo";
+    await tx
+      .update(issues)
+      .set({
+        status: restoredStatus,
+        blockerMetadata: null,
+        unblockDescriptor: null,
+        blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null,
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, issue.id), eq(issues.companyId, companyId)));
+    issue.status = restoredStatus;
+    issue.blockerMetadata = null;
+    issue.blockedTransitionAt = null;
+  }
 }
 
 async function listUnresolvedBlockerIssueIds(
@@ -9546,6 +9608,7 @@ export function issueService(db: Db) {
           ],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
         );
+        await syncOpenBlockerStatus(db, parent.companyId, parent);
         [child] = await withIssueRelationSummaries(
           parent.companyId,
           [child],
@@ -9923,7 +9986,7 @@ export function issueService(db: Db) {
     ) => {
       const {
         initialPlan,
-        labelIds: inputLabelIds,
+        labelIds: rawLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
         skipExecutionWorkspaceInheritance,
@@ -9938,6 +10001,7 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      let inputLabelIds = rawLabelIds;
       if (
         issueData.parentId &&
         !parentAssigneeInheritanceResolved &&
@@ -10124,6 +10188,49 @@ export function issueService(db: Db) {
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as
             Record<string, unknown> | null | undefined) ?? null;
+        if (issueData.projectId == null && issueData.parentId) {
+          const parentIssue = await getWorkspaceInheritanceIssue(
+            tx,
+            companyId,
+            issueData.parentId,
+          ).catch(() => null);
+          if (parentIssue?.projectId) {
+            issueData.projectId = parentIssue.projectId;
+          }
+        }
+        if (issueData.parentId) {
+          const existingLabels = inputLabelIds && inputLabelIds.length > 0
+            ? await tx
+                .select({ id: labels.id, name: labels.name })
+                .from(labels)
+                .where(and(eq(labels.companyId, companyId), inArray(labels.id, inputLabelIds)))
+            : [];
+          const hasExplicitReleaseLabel = existingLabels.some((l) => Boolean(extractReleasePrefix(l.name)));
+          if (!hasExplicitReleaseLabel) {
+            const parentLabelRows = await tx
+              .select({ id: labels.id, name: labels.name })
+              .from(issueLabels)
+              .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+              .where(
+                and(
+                  eq(issueLabels.companyId, companyId),
+                  eq(issueLabels.issueId, issueData.parentId),
+                ),
+              );
+            const parentReleaseLabels = parentLabelRows.filter((l) => Boolean(extractReleasePrefix(l.name)));
+            if (parentReleaseLabels.length > 0) {
+              const inheritedReleaseLabelIds = parentReleaseLabels.map((l) => l.id);
+              inputLabelIds = [...new Set([...(inputLabelIds ?? []), ...inheritedReleaseLabelIds])];
+              if (
+                (!issueData.status || issueData.status === "backlog") &&
+                !issueData.assigneeAgentId &&
+                !issueData.assigneeUserId
+              ) {
+                issueData.status = "todo";
+              }
+            }
+          }
+        }
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
@@ -10218,6 +10325,7 @@ export function issueService(db: Db) {
         let projectPolicyCached: ReturnType<
           typeof parseProjectExecutionWorkspacePolicy
         > | null = null;
+        let projectDevelopmentProcessCached: Record<string, unknown> | null = null;
         let projectPolicyLoaded = false;
         const loadProjectPolicyOnce = async () => {
           if (projectPolicyLoaded) return projectPolicyCached;
@@ -10226,6 +10334,7 @@ export function issueService(db: Db) {
           const projectRow = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              developmentProcess: projects.developmentProcess,
             })
             .from(projects)
             .where(
@@ -10238,9 +10347,25 @@ export function issueService(db: Db) {
           projectPolicyCached = parseProjectExecutionWorkspacePolicy(
             projectRow?.executionWorkspacePolicy,
           );
+          projectDevelopmentProcessCached = projectRow?.developmentProcess ?? null;
           return projectPolicyCached;
         };
 
+        await loadProjectPolicyOnce();
+        const developmentProcess = projectDevelopmentProcessCached as {
+          enabled?: boolean;
+          executionPolicy?: Parameters<typeof normalizeIssueExecutionPolicy>[0];
+        } | null;
+        if (
+          issueData.executionPolicy == null &&
+          developmentProcess &&
+          developmentProcess.enabled === true &&
+          developmentProcess.executionPolicy
+        ) {
+          issueData.executionPolicy = normalizeIssueExecutionPolicy(
+            developmentProcess.executionPolicy as Parameters<typeof normalizeIssueExecutionPolicy>[0],
+          ) as unknown as Record<string, unknown> | null;
+        }
         if (
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
@@ -10412,6 +10537,7 @@ export function issueService(db: Db) {
         }
         const values = {
           ...issueData,
+          status: issueData.status ?? "backlog",
           responsibleAgentId,
           ...(issueData.sourceTrust?.disposition === "quarantined"
             ? {
@@ -10547,6 +10673,7 @@ export function issueService(db: Db) {
             },
             tx,
           );
+          await syncOpenBlockerStatus(tx, companyId, issue);
         }
         if (initialPlan?.trim()) {
           await documentService(tx as unknown as Db).upsertIssueDocument({
@@ -10932,6 +11059,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        commentBody?: string;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10959,6 +11087,19 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      if (
+        existing.status !== "done" &&
+        data.status === "done" &&
+        dbOrTx === db
+      ) {
+        const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
+        await assertKnowledgeGateSettled(db, {
+          companyId: existing.companyId,
+          issueId: existing.id,
+          issue: { title: existing.title, description: existing.description },
+          comment: typeof data.commentBody === "string" ? data.commentBody : null,
+        });
+      }
       const donePullRequestSnapshot = existing.status !== "done" && data.status === "done"
         && dbOrTx === db
         ? await (async () => {
@@ -11001,6 +11142,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         companyGuard,
+        commentBody: _commentBody,
         ...issueData
       } = data;
       if (
@@ -11557,6 +11699,12 @@ export function issueService(db: Db) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await returnReasonlessDependentsToTodo(tx, updated);
           }
+          if (
+            (updated.status === "todo" || updated.status === "in_progress") &&
+            blockedByIssueIds === undefined
+          ) {
+            await syncOpenBlockerStatus(tx, existing.companyId, updated);
+          }
           // A status-card generation task that goes done/cancelled/blocked stops
           // making progress; release the card's generation claim so the board tile
           // stops spinning and offers "Run now" again (blocked = stuck on a human).
@@ -11587,6 +11735,8 @@ export function issueService(db: Db) {
             },
             tx,
           );
+          // myrmidon(OPEN-BLOCKER-STATUS): dependency blockers must remove work from wakeable statuses.
+          await syncOpenBlockerStatus(tx, existing.companyId, updated);
         }
         if (
           issueData.executionWorkspaceSettings !== undefined &&

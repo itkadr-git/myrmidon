@@ -153,3 +153,53 @@ export interface OwnerActiveChannelView {
   thresholdMin: number;
   thresholdSource: OwnerActiveChannelSource;
 }
+
+/** Single channel activity item in `GET /api/myrmidon/owner/channels`. */
+export interface OwnerChannelActivityItem {
+  channel: OwnerChannel;
+  lastSeenAt: string | null;
+  active: boolean;
+}
+
+/** Response of `GET /api/myrmidon/owner/channels`. */
+export interface OwnerChannelsView {
+  userId: string;
+  thresholdMin: number;
+  thresholdSource: OwnerActiveChannelSource;
+  channels: OwnerChannelActivityItem[];
+}
+
+/**
+ * Check whether a channel touch is still active given a threshold in minutes.
+ * Boundary: exactly thresholdMin * 60_000 ms difference is active, thresholdMin * 60_000 + 1 is not.
+ */
+export function isOwnerChannelActive(
+  lastSeenAt: string | null | undefined,
+  options: { thresholdMin: number; now?: number },
+): boolean {
+  if (!lastSeenAt) return false;
+  const at = Date.parse(lastSeenAt);
+  if (!Number.isFinite(at)) return false;
+  const now = options.now ?? Date.now();
+  return now - at <= options.thresholdMin * 60_000;
+}
+
+/**
+ * Builds the canonical channels list for an owner.
+ * Preserves the exact order of OWNER_CHANNELS (web, telegram).
+ */
+export function buildOwnerChannelsList(
+  lastActiveAt: Partial<Record<OwnerChannel, string | null | undefined>>,
+  options: { thresholdMin: number; now?: number },
+): OwnerChannelActivityItem[] {
+  const now = options.now ?? Date.now();
+  return OWNER_CHANNELS.map((channel) => {
+    const raw = lastActiveAt[channel];
+    const lastSeenAt = raw ?? null;
+    return {
+      channel,
+      lastSeenAt,
+      active: isOwnerChannelActive(lastSeenAt, { thresholdMin: options.thresholdMin, now }),
+    };
+  });
+}

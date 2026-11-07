@@ -27,9 +27,11 @@ import {
   guardrailForcedModeFromEnv,
   normalizeGuardrailModesSettings,
   resolveGuardrailMode,
+  resolveInjectionConfig,
   type GuardrailMode,
   type GuardrailModesSettings,
   type ResolvedGuardrailMode,
+  type ResolvedInjectionConfig,
 } from "@myrmidon/shared";
 
 const INSTANCE_SETTINGS_SINGLETON_KEY = "default";
@@ -45,8 +47,35 @@ export interface GuardrailModeEnforcement {
 export interface ResolveGuardrailModesInput {
   db: Db;
   companyId: string;
-  agentId: string;
+  agentId?: string | null;
   env?: NodeJS.ProcessEnv;
+}
+
+export interface ResolvedInjectionConfigWithSource extends ResolvedInjectionConfig {}
+
+/** Load the detector configuration with the same raw-document read as modes. */
+export async function resolveInjectionConfigForCompany(
+  input: Pick<ResolveGuardrailModesInput, "db" | "companyId" | "env">,
+): Promise<ResolvedInjectionConfigWithSource> {
+  let rawSettings: unknown;
+  try {
+    const [row] = await input.db
+      .select({ general: instanceSettings.general })
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, INSTANCE_SETTINGS_SINGLETON_KEY))
+      .limit(1);
+    const general = row?.general ?? {};
+    rawSettings = general[GUARDRAIL_MODES_SETTINGS_KEY];
+  } catch {
+    rawSettings = undefined;
+  }
+  const normalized = normalizeGuardrailModesSettings(rawSettings);
+  const hasStoredConfig = typeof rawSettings === "object" && rawSettings !== null &&
+    "injectionConfig" in rawSettings;
+  return resolveInjectionConfig({
+    settings: hasStoredConfig ? normalized : null,
+    env: input.env as Record<string, string | undefined> | undefined,
+  });
 }
 
 /**
@@ -76,12 +105,14 @@ export async function loadGuardrailModes(
     rawSettings = undefined;
   }
   try {
-    const [agentRow] = await input.db
-      .select({ role: agents.role })
-      .from(agents)
-      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
-      .limit(1);
-    agentRole = agentRow?.role ?? null;
+    if (input.agentId) {
+      const [agentRow] = await input.db
+        .select({ role: agents.role })
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+        .limit(1);
+      agentRole = agentRow?.role ?? null;
+    }
   } catch {
     agentRole = null;
   }

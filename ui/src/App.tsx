@@ -97,7 +97,7 @@ import { AgentExchangeFeedScreen } from "./components/myrmidon/AgentExchangeFeed
 import { GuardrailsScreen } from "./components/myrmidon/guardrails/GuardrailsScreenContainer"; // myrmidon(1.7 GRD-MODES)
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
 import { CorpusScreen } from "./components/myrmidon/corpus/CorpusScreenContainer"; // myrmidon(1.6.6 CORPUS E)
-import { KnowledgeReview } from "./ui2/screens/knowledge/KnowledgeReview";
+import { KnowledgeReview } from "./pages/KnowledgeReview";
 import { Ui2KnowledgeCurrentUi } from "./ui2/screens/knowledge/Ui2KnowledgeCurrentUi"; // myrmidon(OPE-9222)
 import { BudgetLimitsScreen } from "./components/myrmidon/budget-limits/BudgetLimitsScreenContainer"; // myrmidon(1.7 BUDGET-CONFIG D)
 
@@ -108,6 +108,7 @@ import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
+import { AdminUsers } from "./pages/AdminUsers";
 import { UsersAdmin } from "./pages/UsersAdmin";
 import { PasswordSetPage } from "./pages/PasswordSet"; // myrmidon(OPE-8985)
 import { InstanceFeatures } from "./pages/InstanceFeatures"; // myrmidon(FEATURES)
@@ -138,7 +139,7 @@ import { useCloudInstance } from "./hooks/useCloudInstance";
 import { useStreamlinedUiEnabled } from "./hooks/useStreamlinedUiEnabled";
 import { useMyrmidonUi2Enabled } from "./ui2/useMyrmidonUi2Enabled"; // myrmidon(UI2-SHELL)
 import { Ui2Root } from "./ui2/Ui2Root"; // myrmidon(UI2-SHELL)
-import { ui2PlaceholderRoutes } from "./ui2/routes"; // myrmidon(UI2-SHELL)
+import { ui2PlaceholderRoutes, Ui2PlaceholderScreen } from "./ui2/routes"; // myrmidon(UI2-SHELL)
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 
@@ -239,7 +240,6 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/guardrails" element={<GuardrailsScreen />} /> {/* myrmidon(1.7 GRD-MODES) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
       <Route path="knowledge/review" element={<KnowledgeReview />} />
-      <Route path="wiki/review" element={<KnowledgeReview />} />
       <Route path="wiki" element={<Ui2KnowledgeCurrentUi />} /> {/* myrmidon(OPE-9222): the Knowledge screen of the current UI */}
       <Route path="wiki/:spaceKey/:slug" element={<Ui2KnowledgeCurrentUi />} />
       <Route path="company/settings/corpus" element={<CorpusScreen />} /> {/* myrmidon(1.6.6 CORPUS E): the knowledge corpus settings screen route */}
@@ -254,6 +254,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/caste-directory" element={<Navigate to="/company/settings/castes" replace />} />
       <Route path="company/settings/voice-stt" element={<VoiceSttScreen />} /> {/* myrmidon(1.6.1 VOICE-STT C) */}
       <Route path="company/settings/clouds" element={<CloudsSettingsPage />} /> {/* myrmidon(CLOUD-CONNECTOR) */}
+      <Route path="company/settings/guards" element={<Ui2PlaceholderScreen />} /> {/* myrmidon(OPE-10138): guardrails settings route */}
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
@@ -309,6 +310,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
         <Route path="company/settings/instance/access" element={<InstanceAccess />} />
+        <Route path="company/settings/instance/users" element={<AdminUsers />} />
         {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
         <Route path="company/settings/instance/board-api-keys" element={<BoardApiKeysPage />} />
       </Route>

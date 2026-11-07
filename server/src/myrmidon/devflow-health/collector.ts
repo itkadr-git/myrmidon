@@ -153,7 +153,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     .select({
       id: issues.id,
       title: issues.title,
-      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = ${issues.companyId} and a.entity_type = 'issue' and a.entity_id = ${issues.id}::text and a.action = 'issue.updated' and a.details->>'status' = 'in_review' and a.details->'_previous'->>'status' is distinct from 'in_review'), ${issues.createdAt})`,
+      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = "issues"."company_id" and a.entity_type = 'issue' and a.entity_id = "issues"."id"::text and a.action = 'issue.updated' and a.details->>'status' = 'in_review' and a.details->'_previous'->>'status' is distinct from 'in_review'), ${issues.createdAt})`,
     })
     .from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), isNull(issues.hiddenAt)));
@@ -178,7 +178,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
       executionPolicy: issues.executionPolicy,
       executionState: issues.executionState,
       reviewPolicy: issues.reviewPolicy,
-      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = ${issues.companyId} and a.entity_type = 'issue' and a.entity_id = ${issues.id}::text and a.action = 'issue.updated' and a.details->>'status' = 'in_review' and a.details->'_previous'->>'status' is distinct from 'in_review'), ${issues.createdAt})`,
+      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = "issues"."company_id" and a.entity_type = 'issue' and a.entity_id = "issues"."id"::text and a.action = 'issue.updated' and a.details->>'status' = 'in_review' and a.details->'_previous'->>'status' is distinct from 'in_review'), ${issues.createdAt})`,
     })
     .from(issues)
     .where(
@@ -457,7 +457,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
       harnessKind: issues.harnessKind,
       executionWorkspacePreference: issues.executionWorkspacePreference,
       executionState: issues.executionState,
-      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = ${issues.companyId} and a.entity_type = 'issue' and a.entity_id = ${issues.id}::text and a.action = 'issue.updated' and a.details->>'assigneeAgentId' = ${issues.assigneeAgentId}::text), ${issues.updatedAt}, ${issues.createdAt})`,
+      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = "issues"."company_id" and a.entity_type = 'issue' and a.entity_id = "issues"."id"::text and a.action = 'issue.updated' and a.details->>'assigneeAgentId' = ${issues.assigneeAgentId}::text), ${issues.updatedAt}, ${issues.createdAt})`,
       updatedAt: issues.updatedAt,
       projectDefaultCasteKey: projects.defaultCasteKey,
       projectName: projects.name,

@@ -1110,9 +1110,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           typeStr = `${quoteQualifiedName(col.udt_schema, col.udt_name)}${modifier}`;
         } else if (col.data_type === "ARRAY") {
           const elementType = col.udt_name.replace(/^_/, "");
-          typeStr = col.udt_schema === "pg_catalog"
-            ? `${elementType}[]`
-            : `${quoteQualifiedName(col.udt_schema, elementType)}[]`;
+          const match = col.formatted_type ? col.formatted_type.match(/\(([^)]+)\)\[\]$/) : null;
+          const elementStr = col.udt_schema === "pg_catalog"
+            ? elementType
+            : (match
+                ? `${quoteQualifiedName(col.udt_schema, elementType)}(${match[1]})`
+                : quoteQualifiedName(col.udt_schema, elementType));
+          typeStr = `${elementStr}[]`;
         } else if (col.data_type === "character varying") {
           typeStr = col.character_maximum_length
             ? `varchar(${col.character_maximum_length})`

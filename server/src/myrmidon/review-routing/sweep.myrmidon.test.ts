@@ -18,9 +18,11 @@ import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRouti
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
-import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
+import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
-import type { PullRequestHeadState } from "./pr-policy.js";
+import type { BoardMergeClient } from "./github-board-merge.js";
+import type { BoardMergeFacts, PullRequestHeadState } from "./pr-policy.js";
+import type { ApprovedPrIssueRow } from "./store.js";
 
 const COMPANY = "company-1";
 const AUTHOR = "aaaaaaaa-0000-4000-8000-000000000001";
@@ -52,11 +54,21 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
 interface Fixture {
   rows: Map<string, InReviewIssueRow>;
   managerChain?: Map<string, Array<{ id: string; role: string; model?: string | null }>>;
-  reviewers: Array<{ id: string; role: string; invokable?: boolean; model?: string | null }>;
+  reviewers: Array<{
+    id: string;
+    role: string;
+    metadata?: Record<string, unknown> | null;
+    status?: string | null;
+    invokable?: boolean;
+    model?: string | null;
+    isIdle?: boolean;
+    activeRuns?: number;
+  }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
+  prWorkProducts?: Map<string, { repository: string; number: number }>;
   activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
-  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null }>;
+  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null; lastEscalationAt?: Date | null }>;
   reviewerActiveRuns?: Map<string, number>;
   escalations: Array<Record<string, unknown>>;
   agentModels?: Map<string, string | null>;
@@ -66,6 +78,8 @@ function makeStore(fx: Fixture) {
   return {
     listActiveCompanyIds: async () => [COMPANY],
     listInReviewIssues: async () => [...fx.rows.values()],
+    listInProgressPrIssues: async () => [...fx.rows.values()].filter((issue) => issue.status === "in_progress"),
+    findPrWorkProduct: async (_company: string, issueId: string) => fx.prWorkProducts?.get(issueId) ?? null,
     listManagerChainReviewerAgents: async (_company: string, engineerId: string, roles: readonly string[]) => {
       return (fx.managerChain?.get(engineerId) ?? []).filter((agent) => roles.includes(agent.role));
     },
@@ -95,7 +109,13 @@ function makeStore(fx: Fixture) {
     reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
       return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
     },
-    recordReviewWakeEscalation: async (entry: Record<string, unknown>) => { fx.escalations?.push(entry); },
+    // Like the Postgres store: a persisted escalation is what reviewWakeState reports as lastEscalationAt.
+    recordReviewWakeEscalation: async (entry: Record<string, unknown>) => {
+      fx.escalations?.push(entry);
+      const issueId = String(entry.issueId);
+      const wake = fx.wakeStates?.get(issueId);
+      if (wake) fx.wakeStates?.set(issueId, { ...wake, lastEscalationAt: entry.at as Date });
+    },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
       const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
       fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
@@ -119,12 +139,17 @@ type SettingsOverride = {
   reviewerRoles?: string[];
   maxLoadPerReviewer?: number;
   reassignAfterHours?: number;
+  reassignAfterMinutes?: number;
   prWatch?: Partial<ReviewRoutingSettings["prWatch"]> & {
     steward?: Partial<ReviewRoutingSettings["prWatch"]["steward"]>;
   };
 };
 
-function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
+function setup(
+  settings: SettingsOverride = {},
+  fx?: Partial<Fixture>,
+  prResolver?: PullRequestHeadResolver,
+) {
   const fixture: Fixture = {
     rows: new Map(),
     reviewers: [
@@ -147,6 +172,7 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
   });
   const sweep = createReviewRoutingSweep({
     store: makeStore(fixture),
+    prResolver,
     readSettings: async () => current,
     addComment: async (issueId, body) => {
       comments.push({ issueId, body });
@@ -319,6 +345,99 @@ describe("review wake liveness", () => {
     expect((await exhausted.sweep.sweep(NOW, { force: true })).woken).toBe(0);
     expect(exhausted.wakes).toHaveLength(0);
     expect(exhausted.fixture.escalations).toEqual([expect.objectContaining({ companyId: COMPANY, issueId: "1", reviewerAgentId: REV_A, attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+  });
+
+  // myrmidon(OPE-11947): an exhausted wake series is escalated once and re-armed after a pause.
+  describe("exhausted wake series", () => {
+    const exhaustedState = (overrides: { lastWakeAt: Date; lastEscalationAt?: Date | null }) => new Map([
+      ["1", { activeRun: false, pendingWake: false, attempts: REVIEW_WAKE_MAX_ATTEMPTS, ...overrides }],
+    ]);
+
+    it("writes one escalation for the whole series, however many passes run", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({ lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000) }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      let woken = 0;
+      for (let pass = 0; pass < 20; pass += 1) {
+        woken += (await t.sweep.sweep(new Date(NOW.getTime() + pass * 60_000), { force: true })).woken;
+      }
+      expect(woken).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", reviewerAgentId: REV_A, attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("neither wakes nor escalates again while an escalation newer than the last wake exists and the pause is short", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 30 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result.woken).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect(t.fixture.escalations).toHaveLength(0);
+    });
+
+    it("escalates a series again when its escalation predates the last wake", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 9 * 60 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true })).woken).toBe(0);
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("re-arms after the pause: the next wake is attempt 1 and the earlier escalation stays", async () => {
+      const escalatedAt = new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 30 * 60_000);
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS),
+        lastEscalationAt: escalatedAt,
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result.woken).toBe(1);
+      expect(t.wakes).toHaveLength(1);
+      expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
+      expect(t.fixture.escalations).toHaveLength(0);
+      expect(t.fixture.wakeStates!.get("1")).toMatchObject({ attempts: 1, lastWakeAt: NOW, lastEscalationAt: escalatedAt });
+    });
+
+    it("counts the backoff of a re-armed series from its start", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - 7 * 60 * 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(1);
+      // The dispatch of the first attempt of the new series is over without a run: only the ten-minute step applies.
+      t.fixture.wakeStates!.set("1", { ...t.fixture.wakeStates!.get("1")!, pendingWake: false });
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + REVIEW_WAKE_RETRY_BACKOFF_MS - 60_000), { force: true })).woken).toBe(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + REVIEW_WAKE_RETRY_BACKOFF_MS), { force: true })).woken).toBe(1);
+      expect(t.wakes.map((wake) => wake.retryAttempt)).toEqual([1, 2]);
+      expect(t.fixture.escalations).toHaveLength(0);
+    });
+
+    it("records the exhausted series once before re-arming when no escalation was persisted", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({ lastWakeAt: new Date(NOW.getTime() - 7 * 60 * 60_000) }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(1);
+      expect(t.wakes[0]).toMatchObject({ issueId: "1", retryAttempt: 1 });
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("stays exhausted until the pause is full", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 1),
+        lastEscalationAt: new Date(NOW.getTime() - 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + 1), { force: true })).woken).toBe(1);
+      expect(t.wakes[0]).toMatchObject({ retryAttempt: 1 });
+    });
   });
   it("retries a failed dispatch after ten minutes despite a fresh issue update", async () => {
     const t = setup({}, { wakeStates: new Map([
@@ -683,6 +802,17 @@ describe("no reviewer available", () => {
     expect(t.comments).toHaveLength(0);
   });
 
+  it("does not select agents explicitly excluded from reviewer routing", async () => {
+    const t = setup({}, { reviewers: [
+      { id: "bbq-video-director", role: "lead", metadata: { swarmQueueEligible: false } },
+    ] });
+    t.fixture.rows.set("1", row("1"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.assigned).toBe(0);
+    expect(result.signaled).toBe(1);
+    expect(t.fixture.rows.get("1")?.executionPolicy).toBeNull();
+  });
+
   it("raises the signal when every reviewer is at the load ceiling", async () => {
     const t = setup({ maxLoadPerReviewer: 2 }, { load: new Map([[REV_A, 2], [REV_B, 5]]) });
     t.fixture.rows.set("1", row("1"));
@@ -784,6 +914,207 @@ describe("overdue review", () => {
     t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
     const result = await t.sweep.sweep(new Date(NOW.getTime() + 500 * 3_600_000), { force: true });
     expect(result).toMatchObject({ reassigned: 0, signaled: 0 });
+  });
+
+  describe("review reassign on green CI without verdict (OPE-10731)", () => {
+    it("reassigns review with green CI when no verdict after configured minutes", async () => {
+      const mockResolver = {
+        resolve: async () => ({
+          repository: "acme/repo",
+          number: 42,
+          open: true,
+          draft: false,
+          headSha: "head123",
+          ci: "green" as const,
+          reviewDecision: null,
+          fetchFailed: false,
+          mergeable: true,
+          title: "Feature",
+          url: "https://github.com/acme/repo/pull/42",
+          authorLogin: "dev",
+          baseRef: "main",
+        }),
+        listOpenPullRequests: async () => [],
+        resetCache: () => undefined,
+      } as unknown as PullRequestHeadResolver;
+
+      const t = setup(
+        { reassignAfterMinutes: 15 },
+        {
+          prWorkProducts: new Map([["task-green", { repository: "acme/repo", number: 42 }]]),
+        },
+        mockResolver,
+      );
+
+      const policy = { stages: [{ id: "s1", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s1",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("task-green", row("task-green", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+        updatedAt: NOW,
+      }));
+
+      // Before 15 minutes: nothing reassigned
+      const before = await t.sweep.sweep(new Date(NOW.getTime() + 10 * 60_000), { force: true });
+      expect(before).toMatchObject({ reassigned: 0 });
+
+      // After 16 minutes: reassigned to REV_B, excluding lapsed REV_A
+      const after = await t.sweep.sweep(new Date(NOW.getTime() + 16 * 60_000), { force: true });
+      expect(after).toMatchObject({ reassigned: 1 });
+      const updated = t.fixture.rows.get("task-green")!;
+      expect(updated.assigneeAgentId).toBe(REV_B);
+      expect((updated.executionState as any).currentParticipant.agentId).toBe(REV_B);
+
+      // Comment posted to task
+      expect(t.comments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            issueId: "task-green",
+            body: expect.stringContaining("Automatic review routing: this review had no verdict for 16 min"),
+          }),
+        ]),
+      );
+      // Activity logged
+      expect(t.activities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: REVIEW_ROUTING_REASSIGNED_ACTION,
+            issueId: "task-green",
+            details: expect.objectContaining({
+              previousReviewerAgentId: REV_A,
+              reviewerAgentId: REV_B,
+              minutesInReview: 16,
+            }),
+          }),
+        ]),
+      );
+    });
+
+    it("excludes lapsed reviewer and prefers idle reviewer during reassignment", async () => {
+      const REV_C = "cccccccc-0000-4000-8000-000000000003";
+      const mockResolver = {
+        resolve: async () => ({
+          repository: "acme/repo",
+          number: 55,
+          open: true,
+          draft: false,
+          headSha: "head55",
+          ci: "green" as const,
+          reviewDecision: null,
+          fetchFailed: false,
+          mergeable: true,
+          title: "Feature 55",
+          url: "https://github.com/acme/repo/pull/55",
+          authorLogin: "dev",
+          baseRef: "main",
+        }),
+        listOpenPullRequests: async () => [],
+        resetCache: () => undefined,
+      } as unknown as PullRequestHeadResolver;
+
+      const t = setup(
+        { reassignAfterMinutes: 10 },
+        {
+          reviewers: [
+            { id: REV_A, role: "reviewer", status: "active" },
+            { id: REV_B, role: "reviewer", status: "active", invokable: true },
+            { id: REV_C, role: "reviewer", status: "idle", invokable: true },
+          ],
+          load: new Map([
+            [REV_B, 1], // active with load 1
+            [REV_C, 2], // idle with load 2
+          ]),
+          prWorkProducts: new Map([["task-idle", { repository: "acme/repo", number: 55 }]]),
+        },
+        mockResolver,
+      );
+
+      const policy = { stages: [{ id: "s1", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s1",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("task-idle", row("task-idle", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+        updatedAt: NOW,
+      }));
+
+      const after = await t.sweep.sweep(new Date(NOW.getTime() + 15 * 60_000), { force: true });
+      expect(after).toMatchObject({ reassigned: 1 });
+      const updated = t.fixture.rows.get("task-idle")!;
+      // REV_A was excluded; REV_C is idle, so REV_C is preferred over active REV_B despite load 2 > 1
+      expect(updated.assigneeAgentId).toBe(REV_C);
+      expect((updated.executionState as any).currentParticipant.agentId).toBe(REV_C);
+    });
+
+    it("does not reassign when CI is pending or review decision is already present", async () => {
+      let ciStatus: "green" | "pending" | "failing" = "pending";
+      let decision: string | null = null;
+      const mockResolver = {
+        resolve: async () => ({
+          repository: "acme/repo",
+          number: 77,
+          open: true,
+          draft: false,
+          headSha: "head77",
+          ci: ciStatus,
+          reviewDecision: decision,
+          fetchFailed: false,
+          mergeable: true,
+          title: "Feature 77",
+          url: "https://github.com/acme/repo/pull/77",
+          authorLogin: "dev",
+          baseRef: "main",
+        }),
+        listOpenPullRequests: async () => [],
+        resetCache: () => undefined,
+      } as unknown as PullRequestHeadResolver;
+
+      const t = setup(
+        { reassignAfterMinutes: 10 },
+        {
+          prWorkProducts: new Map([["task-ci-test", { repository: "acme/repo", number: 77 }]]),
+        },
+        mockResolver,
+      );
+
+      const policy = { stages: [{ id: "s1", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s1",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("task-ci-test", row("task-ci-test", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+        updatedAt: NOW,
+      }));
+
+      // When CI is pending, sweep should NOT reassign
+      const resPending = await t.sweep.sweep(new Date(NOW.getTime() + 20 * 60_000), { force: true });
+      expect(resPending).toMatchObject({ reassigned: 0 });
+
+      // When review decision is already APPROVED, sweep should NOT reassign
+      ciStatus = "green";
+      decision = "APPROVED";
+      const resApproved = await t.sweep.sweep(new Date(NOW.getTime() + 20 * 60_000), { force: true });
+      expect(resApproved).toMatchObject({ reassigned: 0 });
+    });
   });
 
   describe("overload rebalancing and escalation", () => {
@@ -918,6 +1249,8 @@ describe("overdue review", () => {
 describe("PR lane (fake store + fake resolver)", () => {
   interface PrFixture {
     candidates: PrCandidateRow[];
+    existingWork?: InReviewIssueRow[];
+    rows: Map<string, InReviewIssueRow>;
     knownRepos: string[];
     routed: PrRoutedTask[];
     openReviewLoad: Map<string, number>;
@@ -928,7 +1261,7 @@ describe("PR lane (fake store + fake resolver)", () => {
 
   function prStore(fx: PrFixture): ReviewRoutingStore {
     const base = makeStore({
-      rows: new Map(),
+      rows: fx.rows,
       reviewers: [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
       load: new Map(),
       history: new Map(),
@@ -940,6 +1273,8 @@ describe("PR lane (fake store + fake resolver)", () => {
       listPrCandidates: async () => fx.candidates,
       listKnownPrRepositories: async () => fx.knownRepos,
       listOpenPrRoutingTasks: async () => fx.routed,
+      listInProgressPrIssues: async () => [...fx.rows.values()].filter((issue) => issue.status === "in_progress"),
+      findPrWorkProduct: async (_company: string, issueId: string) => fx.existingWork?.some((issue) => issue.id === issueId) ? { repository: "acme/widgets", number: 7, headSha: "aaaaaaaa", title: "Add routing", url: null, authorLogin: "author-a", baseRef: "main", draft: false } : null,
       openPrTaskLoadByAgent: async (_company: string, kind: PrRoutingKind) => (kind === "review" ? fx.openReviewLoad : fx.openMergeLoad),
       findAgentIdsByGitHubLogin: async () => [],
       createPrRoutingTask: async (input: CreatePrRoutingTaskInput) => {
@@ -965,6 +1300,7 @@ describe("PR lane (fake store + fake resolver)", () => {
       ci: "green",
       reviewDecision: null,
       fetchFailed: false,
+      mergeable: true,
       title: "Add routing",
       url: "https://github.com/acme/widgets/pull/7",
       authorLogin: "author-a",
@@ -979,6 +1315,7 @@ describe("PR lane (fake store + fake resolver)", () => {
   ) {
     const fixture: PrFixture = {
       candidates: [{ repository: "acme/widgets", number: 7, headSha: "aaaaaaaa", title: "Add routing", url: null, authorLogin: "author-a", baseRef: "main", draft: false }],
+      rows: new Map(),
       knownRepos: [],
       routed: [],
       openReviewLoad: new Map(),
@@ -1032,6 +1369,38 @@ describe("PR lane (fake store + fake resolver)", () => {
     const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
     expect(second.prTasksCreated).toBe(0);
     expect(t.fixture.created).toHaveLength(1);
+  });
+
+  it("does not hand off an existing task when the PR already has a review decision", async () => {
+    const task = row("existing", { status: "in_progress", assigneeAgentId: AUTHOR, createdByAgentId: AUTHOR });
+    const t = prSetup({}, {
+      rows: new Map([["existing", task]]),
+      existingWork: [task],
+      headState: headState({ reviewDecision: "CHANGES_REQUESTED" }),
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result.assigned).toBe(0);
+    expect(t.fixture.rows.get("existing")?.status).toBe("in_progress");
+    expect(t.wakes).toHaveLength(0);
+    expect(t.fixture.created).toHaveLength(0);
+  });
+
+  it("routes eligible existing PR work to a reviewer and moves it into review", async () => {
+    const task = row("existing", { status: "in_progress", assigneeAgentId: AUTHOR, createdByAgentId: AUTHOR });
+    const t = prSetup({ enabled: true, prWatch: { enabled: true } }, {
+      rows: new Map([["existing", task]]),
+      existingWork: [task],
+      headState: headState({ ci: "pending" }),
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result.assigned).toBe(1);
+    expect(t.fixture.rows.get("existing")).toMatchObject({ status: "in_review", assigneeAgentId: REV_A });
+    expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "existing" })]);
+    expect(t.fixture.created).toHaveLength(0);
   });
 
   it("creates a steward task only on APPROVED", async () => {
@@ -1170,5 +1539,200 @@ describe("settings and pass control", () => {
 
   it("uses the documented default of 24 hours", () => {
     expect(DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS).toBe(24);
+  });
+});
+
+describe("board-side merge in the sweep (OPE-11767)", () => {
+  const HEAD = "28f15c1be15204153f0e06464842d88875c373f8";
+  const IMPLEMENTER = "aaaaaaaa-0000-4000-8000-0000000000aa";
+
+  function approvedRow(number = 7): ApprovedPrIssueRow {
+    return {
+      issueId: `issue-${number}`,
+      identifier: `OPE-${number}`,
+      title: `Task ${number}`,
+      status: "in_review",
+      repository: "acme/widgets",
+      number,
+      prUrl: `https://github.com/acme/widgets/pull/${number}`,
+      verdict: `APPROVE PR #${number} ${HEAD}`,
+      approvedAt: NOW,
+    };
+  }
+
+  function boardSetup(
+    options: {
+      settings?: SettingsOverride & { boardMerge?: Record<string, unknown> };
+      facts?: Partial<BoardMergeFacts>;
+      checks?: "success" | "pending" | "failed";
+      wired?: boolean;
+      underMaintenance?: boolean;
+      readThrows?: boolean;
+    } = {},
+  ) {
+    const fixture: Fixture = {
+      rows: new Map(),
+      reviewers: [],
+      load: new Map(),
+      history: new Map(),
+      activities: [],
+      escalations: [],
+      wakeStates: new Map(),
+    };
+    let pullFacts: BoardMergeFacts = {
+      open: true,
+      draft: false,
+      headSha: HEAD,
+      baseRef: "main",
+      mergeable: true,
+      mergeableState: "clean",
+      labels: [],
+      ...options.facts,
+    };
+    const merges: Array<{ number: number; headSha: string; method: string }> = [];
+    const returned: string[] = [];
+    const comments: Array<{ issueId: string; body: string }> = [];
+    const activities: Array<{ action: string; issueId: string }> = [];
+    const wakes: Array<{ agentId: string; issueId: string; reason: string }> = [];
+    const client: BoardMergeClient = {
+      readPull: async () => {
+        if (options.readThrows) throw new Error("github exploded");
+        return { ok: true, facts: pullFacts };
+      },
+      readChecks: async ({ names }) => ({ ok: true, checks: Object.fromEntries(names.map((name) => [name, options.checks ?? "success"])) }),
+      addApprovedLabel: async () => true,
+      merge: async ({ number, headSha, method }) => {
+        merges.push({ number, headSha, method });
+        pullFacts = { ...pullFacts, open: false };
+        return { status: "merged", sha: "f".repeat(40) };
+      },
+    };
+    const listApprovedPrIssues = vi.fn(async () => [approvedRow()].filter((row) => !returned.includes(row.issueId)));
+    const returnApprovedPrToImplementer = vi.fn(async ({ issueId }: { issueId: string }) => {
+      returned.push(issueId);
+      return {
+        implementerAgentId: IMPLEMENTER,
+        previousStatus: "in_review",
+        executionState: { currentStageId: "s1", currentStageType: "review", returnAssignee: { type: "agent", agentId: IMPLEMENTER } },
+      };
+    });
+    const store = Object.assign(makeStore(fixture), { listApprovedPrIssues, returnApprovedPrToImplementer });
+    const settings = normalizeReviewRoutingSettings(options.settings ?? {});
+    const sweep = createReviewRoutingSweep({
+      store,
+      boardMerge: options.wired === false ? undefined : client,
+      readSettings: async () => settings,
+      isUnderMaintenance: async () => options.underMaintenance === true,
+      addComment: async (issueId, body) => {
+        comments.push({ issueId, body });
+      },
+      wakeReviewer: async (agentId, wake) => {
+        wakes.push({ agentId, issueId: wake.issueId, reason: wake.reason });
+      },
+      logActivity: async (entry) => {
+        activities.push({ action: entry.action, issueId: entry.issueId });
+      },
+      log: { info: vi.fn(), warn: vi.fn() },
+    });
+    return {
+      sweep,
+      merges,
+      returned,
+      comments,
+      activities,
+      wakes,
+      listApprovedPrIssues,
+      setFacts: (next: Partial<BoardMergeFacts>) => {
+        pullFacts = { ...pullFacts, ...next };
+      },
+    };
+  }
+
+  it("the periodic pass merges an approved, green PR and counts it; the PR is not merged twice", async () => {
+    const t = boardSetup();
+    const first = await t.sweep.sweep(NOW, { force: true });
+    expect(first).toMatchObject({ boardMerged: 1, boardReturned: 0, failed: 0 });
+    expect(t.merges).toEqual([{ number: 7, headSha: HEAD, method: "squash" }]);
+    expect(t.activities.map((a) => a.action)).toEqual(["issue.review_routing.board_merged"]);
+
+    const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
+    expect(second.boardMerged).toBe(0);
+    expect(t.merges).toHaveLength(1);
+  });
+
+  it("approved while CI runs: the pass waits, and merges on the first pass after CI is green", async () => {
+    const t = boardSetup({ checks: "pending" });
+    expect((await t.sweep.sweep(NOW, { force: true })).boardMerged).toBe(0);
+    expect(t.merges).toEqual([]);
+
+    const green = boardSetup({ checks: "success" });
+    expect((await green.sweep.sweep(NOW, { force: true })).boardMerged).toBe(1);
+  });
+
+  it("a conflict after the approval sends the task back to its implementer with the rebase reason", async () => {
+    const t = boardSetup({ facts: { mergeable: false, mergeableState: "dirty" } });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ boardReturned: 1, boardMerged: 0 });
+    expect(t.returned).toEqual(["issue-7"]);
+    expect(t.comments[0]?.body).toContain("нужен rebase");
+    expect(t.wakes).toEqual([{ agentId: IMPLEMENTER, issueId: "issue-7", reason: "execution_changes_requested" }]);
+    expect(t.merges).toEqual([]);
+  });
+
+  it("a base other than main is not merged", async () => {
+    const t = boardSetup({ facts: { baseRef: "rel/1.6.6" } });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ boardMerged: 0, boardReturned: 0 });
+    expect(t.merges).toEqual([]);
+  });
+
+  it("is inert without a client, and when boardMerge is switched off or the routing is disabled", async () => {
+    const unwired = boardSetup({ wired: false });
+    await unwired.sweep.sweep(NOW, { force: true });
+    expect(unwired.listApprovedPrIssues).not.toHaveBeenCalled();
+
+    const off = boardSetup({ settings: { boardMerge: { enabled: false } } });
+    expect((await off.sweep.sweep(NOW, { force: true })).boardMerged).toBe(0);
+    expect(off.merges).toEqual([]);
+
+    const disabled = boardSetup({ settings: { enabled: false } });
+    await disabled.sweep.sweep(NOW, { force: true });
+    expect(disabled.merges).toEqual([]);
+  });
+
+  it("is not run during maintenance, and a GitHub fault in the merge step never fails the pass", async () => {
+    const maintenance = boardSetup({ underMaintenance: true });
+    expect((await maintenance.sweep.sweep(NOW, { force: true })).skippedPass).toBe(true);
+    expect(maintenance.listApprovedPrIssues).not.toHaveBeenCalled();
+    expect(await maintenance.sweep.mergeOnEvent({ companyId: COMPANY, issueId: "issue-7", source: "review_approved" })).toBeNull();
+
+    const exploding = boardSetup({ readThrows: true });
+    const result = await exploding.sweep.sweep(NOW, { force: true });
+    expect(result.boardMerged).toBe(0);
+    expect(result.failed).toBe(1);
+  });
+
+  it("the approval event merges at once, without waiting for the pass; the pass then finds nothing left", async () => {
+    const t = boardSetup();
+    const event = await t.sweep.mergeOnEvent({ companyId: COMPANY, issueId: "issue-7", source: "review_approved" });
+    expect(event).toMatchObject({ merged: 1 });
+    expect(t.merges).toHaveLength(1);
+
+    const pass = await t.sweep.sweep(NOW, { force: true });
+    expect(pass.boardMerged).toBe(0);
+    expect(t.merges).toHaveLength(1);
+  });
+
+  it("the CI-completed event looks at that one pull request; an event that names nothing does nothing", async () => {
+    const t = boardSetup();
+    expect(await t.sweep.mergeOnEvent({ companyId: COMPANY, repository: "acme/widgets", number: 99, source: "ci_completed" })).toMatchObject({
+      merged: 0,
+    });
+    expect(t.merges).toEqual([]);
+    expect(await t.sweep.mergeOnEvent({ companyId: COMPANY, repository: "acme/widgets", number: 7, source: "ci_completed" })).toMatchObject({
+      merged: 1,
+    });
+    expect(await t.sweep.mergeOnEvent({ companyId: COMPANY, source: "ci_completed" })).toBeNull();
+    expect(await boardSetup({ wired: false }).sweep.mergeOnEvent({ companyId: COMPANY, issueId: "issue-7", source: "review_approved" })).toBeNull();
   });
 });

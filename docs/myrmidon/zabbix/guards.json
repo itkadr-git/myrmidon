@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "owner": "adm",
+  "delivery": {
+    "mode": "adm_only",
+    "target": "adm",
+    "rollout": "operator_applies_in_zabbix",
+    "liveActions": false
+  },
+  "hostGroups": ["myrmidon-engineers"],
+  "items": [
+    {
+      "id": "eng-idle",
+      "name": "Myrmidon engineers idle count",
+      "key": "myrmidon.eng.idle.count",
+      "type": "zabbix-agent",
+      "valueType": "numeric-unsigned",
+      "interval": "60s",
+      "description": "Number of engineer agents that have been idle long enough for the ADM guard."
+    },
+    {
+      "id": "myrmidon-xfs-free",
+      "name": "Myrmidon XFS free percentage",
+      "key": "vfs.fs.size[/srv/myrmidon-xfs,pfree]",
+      "type": "zabbix-agent",
+      "valueType": "numeric-float",
+      "interval": "60s",
+      "description": "Free percentage of the /srv/myrmidon-xfs filesystem."
+    }
+  ],
+  "triggers": [
+    {
+      "id": "eng-idle-high",
+      "name": "Myrmidon: at least 3 engineers idle",
+      "expression": "last(/myrmidon.eng.idle.count)>=3",
+      "severity": "warning",
+      "operatorAction": "ADM reviews the idle queue; no host script or automatic remediation is invoked.",
+      "description": "Raised when the idle engineer count is greater than or equal to 3."
+    },
+    {
+      "id": "myrmidon-xfs-low",
+      "name": "Myrmidon: /srv/myrmidon-xfs free space below 15%",
+      "expression": "last(/vfs.fs.size[/srv/myrmidon-xfs,pfree])<15",
+      "severity": "high",
+      "operatorAction": "ADM investigates capacity and schedules remediation; no deletion or host script is invoked.",
+      "description": "Raised when /srv/myrmidon-xfs has less than 15 percent free space."
+    }
+  ]
+}

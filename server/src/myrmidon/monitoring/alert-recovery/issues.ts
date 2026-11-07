@@ -74,8 +74,9 @@ export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
       if (!assigneeAgentId) {
         logger.warn(
           { companyId: input.companyId, ownerRole: input.ownerRole },
-          "alert recovery task has no agent of the owner role yet; leaving it unassigned",
+          "alert recovery task has no agent of the owner role; refusing unassigned task",
         );
+        return null;
       }
       try {
         const created = await issueService(db).create(input.companyId, {
@@ -83,7 +84,7 @@ export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
           description: input.body,
           status: "todo",
           priority: input.priority,
-          assigneeAgentId: null,
+          assigneeAgentId,
           originKind: ALERT_RECOVERY_ORIGIN_KIND,
           originId: input.originId,
           // The alert lifecycle is governed by the recovery journal, not by the
@@ -109,33 +110,17 @@ export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
       return current?.originKind === ALERT_RECOVERY_ORIGIN_KIND && current.status === "done";
     },
-    async delayIssueWake(issueId, companyId, delayMinutes) {
-      const issueService = await loadIssueService();
-      await db.transaction(async (tx) => {
-        const [current] = await tx.select().from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-          .limit(1).for("update");
-        if (!current || current.originKind !== ALERT_RECOVERY_ORIGIN_KIND) return;
-        await issueService(tx as unknown as Db).update(issueId, {
-          assigneeAgentId: null,
-        } as never, tx);
-      });
+    async delayIssueWake(_issueId, _companyId, _delayMinutes) {
+      // Keep the owner assigned throughout the hold; clearing assignment makes
+      // the task eligible for the swarm claim queue on every alert event.
     },
 
     async dispatchAlertWake(issueId, companyId) {
       const [task] = await db.select().from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
       if (!task || task.originKind !== ALERT_RECOVERY_ORIGIN_KIND || task.status !== "todo") return;
-      const assigneeAgentId = await ownerAgentId(db, companyId, task.assigneeAgentId ?? "observability");
-      if (!assigneeAgentId) return;
-      await db.transaction(async (tx) => {
-        const [current] = await tx.select().from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-          .limit(1).for("update");
-        if (!current || current.originKind !== ALERT_RECOVERY_ORIGIN_KIND || current.status !== "todo" || current.assigneeAgentId) return;
-        const issueService = await loadIssueService();
-        await issueService(tx as unknown as Db).update(issueId, { assigneeAgentId } as never, tx);
-      });
+      // The task is assigned at creation and stays assigned through the hold.
+      // Dispatching must never clear or replace that role owner.
     },
 
     async addComment(issueId, body) {

@@ -22,7 +22,26 @@ const stubDb = {
   }),
 } as never;
 
-async function createApp() {
+const filteredDb = {
+  select: () => ({
+    from: (table: Record<string, unknown>) => {
+      const isUsers = "email" in table && "name" in table;
+      const isInstanceRoles = "userId" in table && "role" in table;
+      const rows = isUsers
+        ? [{ id: "user-1", name: "Alice", email: "alice@example.com", image: null }]
+        : isInstanceRoles
+          ? [{ userId: "instance-admin-1", role: "instance_admin" }]
+          : [{ principalId: "user-1", status: "active", membershipRole: "owner" }];
+      const chain = {
+        orderBy: async () => rows,
+        where: async () => rows,
+      };
+      return chain;
+    },
+  }),
+} as never;
+
+async function createApp(db = stubDb) {
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/access.js"),
     import("../middleware/index.js"),
@@ -40,7 +59,7 @@ async function createApp() {
     } as Express.Request["actor"];
     next();
   });
-  app.use("/api", accessRoutes(stubDb, {
+  app.use("/api", accessRoutes(db, {
     deploymentMode: "authenticated",
     deploymentExposure: "private",
     bindHost: "127.0.0.1",
@@ -85,6 +104,31 @@ describe("operator-hidden access admin floor", () => {
       expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
     },
   );
+
+  it("filters users by role and status", async () => {
+    const filteredApp = await createApp(filteredDb);
+
+    const res = await request(filteredApp).get("/api/admin/users?role=owner&status=active");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({ id: "user-1", name: "Alice" }),
+    ]);
+  });
+
+  it.each(["invalid", "agent"])("rejects invalid role filter %s", async (role) => {
+    const res = await request(app).get(`/api/admin/users?role=${role}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+  });
+
+  it("rejects invalid status filter in the existing error format", async () => {
+    const res = await request(app).get("/api/admin/users?status=disabled");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+  });
 
   it("keeps the routes reachable when the surface is not hidden", async () => {
     const res = await request(app).get("/api/admin/users");

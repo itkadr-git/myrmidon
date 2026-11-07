@@ -1,6 +1,26 @@
 {
   "area": {
     "skills": {
+      "company-skill-policy": {
+        "title": "Company skill policy",
+        "description": "Edit the policy document (defaultEffect and rules). Validate before saving. Preview evaluates the currently saved policy, not unsaved edits.",
+        "loading": "Loading policy…",
+        "revision": "Revision {{revision}}",
+        "document": "Policy document (JSON)",
+        "invalidJson": "Invalid JSON.",
+        "staleRevision": "Policy changed on the server. Copy your edits before reloading and retry.",
+        "forbidden": "You do not have permission to change this policy.",
+        "readOnly": "Only company administrators can edit this policy.",
+        "validate": "Validate",
+        "save": "Save policy",
+        "reload": "Reload policy",
+        "previewTitle": "Evaluate saved policy",
+        "previewHint": "Choose an agent and action. Unsaved changes cannot be previewed.",
+        "agentId": "Agent ID (UUID)",
+        "action": "Action",
+        "preview": "Preview decision",
+        "previewResult": "Decision"
+      },
       "skills-contextual-sidebar": {
         "title": "Skills",
         "navLabel": "Skills",

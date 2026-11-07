@@ -21,8 +21,7 @@ import {
 import { planClaim } from "./domain.js";
 import { findLiveClaimForIssue, heartbeatClaim, insertClaim, releaseClaim } from "./store.js";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
-import { invalidateFailedRunsCache } from "./effective-pheromone.js";
-import { invalidateLastRunRowsCache } from "./matcher.js";
+import { invalidateFailedRunsCache, PHEROMONE_EVAPORATING_RUN_STATUSES } from "./effective-pheromone.js";
 
 /** Shared ports shape both hooks need. */
 interface HookDeps {
@@ -112,7 +111,6 @@ export async function releaseSwarmClaimsForRunImpl(
   run: { id: string; companyId: string },
   now = new Date(),
 ): Promise<string[]> {
-  invalidateLastRunRowsCache(run.companyId);
   const { settings } = await resolved(deps)();
   if (!settings.enabled) return [];
 
@@ -128,12 +126,7 @@ export async function releaseSwarmClaimsForRunImpl(
     .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
     .limit(1);
   const held = runRow[0];
-  if (
-    held?.status === "failed" ||
-    held?.status === "blocked" ||
-    held?.status === "needs_followup" ||
-    held?.status === "timed_out"
-  ) {
+  if (held && (PHEROMONE_EVAPORATING_RUN_STATUSES as readonly string[]).includes(held.status)) {
     invalidateFailedRunsCache(run.companyId);
   }
   if (!held?.nativeIssueId) return [];

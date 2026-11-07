@@ -36,7 +36,9 @@ import {
   type ModelProviderType,
   type ModelProvidersView,
   type ModelProviderView,
+  type PoolAccountOAuthBeginResult,
 } from "./modelProvidersApi";
+import { HindsightModelGroupsPanel } from "../hindsight-models/HindsightModelGroupsPanel";
 
 export function sanitizeErrorMessage(message: string): string {
   if (!message) return "";
@@ -92,6 +94,9 @@ export function ModelProvidersScreenView({
   removing,
   onToggleModel,
   savingModels,
+  onRollback,
+  rollingBack,
+  rollbackError,
   error,
 }: {
   view: ModelProvidersView;
@@ -118,6 +123,9 @@ export function ModelProvidersScreenView({
     models: Array<{ modelName: string; litellmModelName: string; enabled: boolean; free: boolean }>,
   ) => void;
   savingModels: boolean;
+  onRollback?: (auditId: string) => void;
+  rollingBack?: boolean;
+  rollbackError?: string | null;
   error: string | null;
 }) {
   const { t } = useTranslation();
@@ -126,6 +134,8 @@ export function ModelProvidersScreenView({
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [rotateId, setRotateId] = useState<string | null>(null);
   const [rotateKey, setRotateKey] = useState("");
+  const [confirmRollbackId, setConfirmRollbackId] = useState<string | null>(null);
+  const [expandedDiffId, setExpandedDiffId] = useState<string | null>(null);
 
   const litellmChannelsQueryResult = useQuery({
     queryKey: litellmChannelsQuery
@@ -401,25 +411,124 @@ export function ModelProvidersScreenView({
         )}
       </section>
 
-      {/* 3. Change log */}
+      {/* 3. Hindsight Memory Models (write, summarize, search) */}
+      <HindsightModelGroupsPanel companyId={companyId} />
+
+      {/* 4. Change log */}
       <section className="space-y-2" data-testid="myrmidon-model-providers-changelog">
-        <h2 className="text-sm font-semibold">{t("modelProviders.changeLog.title")}</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold">{t("modelProviders.changeLog.title")}</h2>
+          <span className="text-xs text-muted-foreground">{t("modelProviders.changeLog.secretsRedacted")}</span>
+        </div>
+        {rollbackError && (
+          <p className="text-xs text-destructive" data-testid="myrmidon-model-providers-rollback-error">
+            {rollbackError}
+          </p>
+        )}
         {view.changeLog.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="myrmidon-model-providers-changelog-empty">
             {t("modelProviders.changeLog.empty")}
           </p>
         ) : (
-          <ol className="space-y-1">
+          <ol className="space-y-2">
             {view.changeLog.map((entry) => (
               <li
                 key={entry.id}
-                className="flex flex-col border-b border-border pb-1 last:border-b-0 text-sm"
+                className="flex flex-col gap-1 border-b border-border pb-2 last:border-b-0 text-sm"
                 data-testid="myrmidon-model-providers-changelog-entry"
               >
-                <span className="font-mono text-xs">{entry.action}</span>
-                <span className="text-xs text-muted-foreground">
-                  {formatTime(entry.at)} · {entry.summary}
-                </span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs font-medium">{entry.action}</span>
+                    {entry.category && (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {entry.category.toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  {entry.canRollback && onRollback && (
+                    <div>
+                      {confirmRollbackId === entry.id ? (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs text-muted-foreground">
+                            {t("modelProviders.changeLog.rollbackConfirm")}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="h-7 text-xs"
+                            disabled={rollingBack}
+                            onClick={() => {
+                              onRollback(entry.id);
+                              setConfirmRollbackId(null);
+                            }}
+                            data-testid="myrmidon-model-providers-changelog-rollback-confirm"
+                          >
+                            {rollingBack ? t("modelProviders.changeLog.rollingBack") : t("modelProviders.changeLog.rollback")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-xs"
+                            onClick={() => setConfirmRollbackId(null)}
+                          >
+                            {t("common.cancel")}
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={() => setConfirmRollbackId(entry.id)}
+                          data-testid="myrmidon-model-providers-changelog-rollback"
+                        >
+                          {t("modelProviders.changeLog.rollback")}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>{formatTime(entry.at)}</span>
+                  <span>·</span>
+                  <span>
+                    {t("modelProviders.changeLog.actor")}: {entry.actor?.type ?? "user"}:{entry.actor?.id ?? "board"}
+                  </span>
+                  <span>·</span>
+                  <span>{entry.summary}</span>
+                </div>
+                {(entry.before || entry.after) && (
+                  <div className="mt-1">
+                    <button
+                      type="button"
+                      className="text-[11px] text-muted-foreground underline hover:text-foreground"
+                      onClick={() => setExpandedDiffId((curr) => (curr === entry.id ? null : entry.id))}
+                    >
+                      {expandedDiffId === entry.id ? "Hide diff" : "Show diff"}
+                    </button>
+                    {expandedDiffId === entry.id && (
+                      <div className="mt-1 grid grid-cols-2 gap-2 rounded bg-muted/40 p-2 text-xs font-mono">
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+                            {t("modelProviders.changeLog.before")}
+                          </div>
+                          <pre className="max-h-32 overflow-auto whitespace-pre-wrap">
+                            {entry.before ? JSON.stringify(entry.before, null, 2) : "null"}
+                          </pre>
+                        </div>
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+                            {t("modelProviders.changeLog.after")}
+                          </div>
+                          <pre className="max-h-32 overflow-auto whitespace-pre-wrap">
+                            {entry.after ? JSON.stringify(entry.after, null, 2) : "null"}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ol>
@@ -485,9 +594,57 @@ function ProviderCard({
   const channelsQueryResult = useQuery({
     queryKey: channelsQuery ? channelsQuery(provider.id) : ["channels", provider.id],
     queryFn: () => modelProvidersApi.channels(companyId, provider.id),
-    enabled: provider.type === "chatgpt-pool",
+    enabled:
+      provider.type === "chatgpt-pool" ||
+      provider.type === "antigravity-pool" ||
+      provider.type === "google-ai-pool",
     staleTime: 30_000,
   });
+
+  const [oauthSession, setOauthSession] = useState<PoolAccountOAuthBeginResult | null>(null);
+  const [oauthStarting, setOauthStarting] = useState(false);
+  const [oauthCompleting, setOauthCompleting] = useState(false);
+  const [oauthRefreshingN, setOauthRefreshingN] = useState<number | null>(null);
+
+  const handleOAuthBegin = async () => {
+    setOauthStarting(true);
+    try {
+      const res = await modelProvidersApi.oauthBegin(companyId, provider.id);
+      setOauthSession(res);
+    } catch {
+      // ignore
+    } finally {
+      setOauthStarting(false);
+    }
+  };
+
+  const handleOAuthComplete = async () => {
+    if (!oauthSession) return;
+    setOauthCompleting(true);
+    try {
+      await modelProvidersApi.oauthComplete(companyId, provider.id, {
+        accountNumber: oauthSession.accountNumber,
+      });
+      setOauthSession(null);
+      channelsQueryResult.refetch();
+    } catch {
+      // ignore
+    } finally {
+      setOauthCompleting(false);
+    }
+  };
+
+  const handleOAuthRefresh = async (accountNumber: number) => {
+    setOauthRefreshingN(accountNumber);
+    try {
+      await modelProvidersApi.oauthRefresh(companyId, provider.id, { accountNumber });
+      channelsQueryResult.refetch();
+    } catch {
+      // ignore
+    } finally {
+      setOauthRefreshingN(null);
+    }
+  };
 
   const toggle = (modelName: string) => {
     const next = models.map((model) =>
@@ -528,8 +685,8 @@ function ProviderCard({
         </div>
       </div>
 
-      {/* ChatGPT Pool: Channels & Limit Windows */}
-      {provider.type === "chatgpt-pool" && (
+      {/* Pool providers: per-account quota windows */}
+      {(provider.type === "chatgpt-pool" || provider.type === "antigravity-pool" || provider.type === "google-ai-pool") && (
         <div className="space-y-3" data-testid={`myrmidon-model-provider-channels-${provider.id}`}>
           {/* Active Role Signals Alert Banner */}
           {channelsQueryResult.data?.signals && channelsQueryResult.data.signals.length > 0 && (
@@ -562,12 +719,77 @@ function ProviderCard({
               <span className="text-xs font-semibold text-foreground">
                 {t("modelProviders.channels.title") || "Pool Accounts & Limit Windows"}
               </span>
-              {channelsQueryResult.isFetching && (
-                <span className="text-[11px] text-muted-foreground">
-                  {t("modelProviders.channels.refreshing") || "Updating..."}
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  data-testid={`myrmidon-pool-oauth-begin-btn-${provider.id}`}
+                  onClick={handleOAuthBegin}
+                  disabled={oauthStarting}
+                  className="text-xs h-7 px-2"
+                >
+                  {oauthStarting ? "Starting OAuth..." : "Codex OAuth Login"}
+                </Button>
+                {channelsQueryResult.isFetching && (
+                  <span className="text-xs text-muted-foreground">
+                    {t("modelProviders.channels.refreshing") || "Updating..."}
+                  </span>
+                )}
+              </div>
             </div>
+
+            {oauthSession && (
+              <div
+                className="space-y-2 rounded-md border border-sky-500/40 bg-sky-500/10 p-3"
+                data-testid={`myrmidon-pool-oauth-card-${provider.id}`}
+              >
+                <div className="flex items-center justify-between text-xs font-semibold text-sky-600 dark:text-sky-400">
+                  <span>Codex OAuth Authorization (Account #{oauthSession.accountNumber})</span>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => setOauthSession(null)}
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-xs">
+                  <div>
+                    <span className="text-muted-foreground mr-1">Code:</span>
+                    <span
+                      className="font-mono font-bold px-2 py-0.5 rounded bg-muted border border-border text-foreground"
+                      data-testid={`myrmidon-pool-oauth-code-${provider.id}`}
+                    >
+                      {oauthSession.userCode}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground mr-1">URL:</span>
+                    <a
+                      href={oauthSession.verificationUri}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-sky-600 underline"
+                      data-testid={`myrmidon-pool-oauth-uri-${provider.id}`}
+                    >
+                      {oauthSession.verificationUri}
+                    </a>
+                  </div>
+                </div>
+                <div className="pt-1">
+                  <Button
+                    size="sm"
+                    data-testid={`myrmidon-pool-oauth-complete-btn-${provider.id}`}
+                    onClick={handleOAuthComplete}
+                    disabled={oauthCompleting}
+                    className="text-xs h-7 px-2"
+                  >
+                    {oauthCompleting ? "Completing..." : "Complete Authorization"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {channelsQueryResult.isLoading ? (
               <p className="text-xs text-muted-foreground">
                 {t("modelProviders.channels.loading") || "Loading accounts..."}
@@ -581,16 +803,40 @@ function ProviderCard({
                 {t("modelProviders.channels.empty") || "No accounts found in pool."}
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-md border border-border">
+              <>
+                {channelsQueryResult.data.summary && (
+                  <div className="flex flex-wrap gap-2 text-xs" data-testid="myrmidon-pool-summary">
+                    <span className="rounded border border-border px-2 py-1">
+                      {channelsQueryResult.data.summary.live} live / {channelsQueryResult.data.summary.total} total
+                    </span>
+                    <span className="rounded border border-border px-2 py-1">
+                      {channelsQueryResult.data.summary.exhausted} exhausted
+                    </span>
+                    {channelsQueryResult.data.summary.disabled !== undefined && channelsQueryResult.data.summary.disabled > 0 && (
+                      <span className="rounded border border-border px-2 py-1 text-muted-foreground" data-testid="myrmidon-pool-summary-disabled">
+                        {channelsQueryResult.data.summary.disabled} disabled
+                      </span>
+                    )}
+                    {channelsQueryResult.data.summary.nextResetAt && (
+                      <span className="rounded border border-border px-2 py-1 text-muted-foreground">
+                        next reset {new Date(channelsQueryResult.data.summary.nextResetAt * 1000).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="overflow-x-auto rounded-md border border-border">
                 <table className="w-full text-left text-xs">
                   <thead className="border-b border-border bg-muted/40 font-medium text-muted-foreground">
                     <tr>
                       <th className="p-2">#</th>
                       <th className="p-2">{t("modelProviders.channels.account") || "Account"}</th>
+                      <th className="p-2">{t("modelProviders.channels.plan") || "Plan"}</th>
                       <th className="p-2">{t("modelProviders.channels.state") || "State"}</th>
                       <th className="p-2">{t("modelProviders.channels.window5h") || "5h Limit Window"}</th>
                       <th className="p-2">{t("modelProviders.channels.window7d") || "7d Limit Window"}</th>
                       <th className="p-2">{t("modelProviders.channels.lastOk") || "Last OK"}</th>
+                      <th className="p-2">{t("modelProviders.channels.lastError") || "Last error"}</th>
+                      <th className="p-2">{t("modelProviders.channels.actions") || "Actions"}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -599,42 +845,69 @@ function ProviderCard({
                       const sWin = ch.windows?.secondary;
                       const isBanned = ch.isBanned;
                       const isExhausted = ch.isExhausted;
+                      const isDisabled = ch.isDisabled;
 
                       const stateBadgeClass = isBanned
                         ? "bg-destructive/15 text-destructive border-destructive/30"
                         : isExhausted
                           ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30"
-                          : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30";
+                          : isDisabled
+                            ? "bg-muted text-muted-foreground border-border"
+                            : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30";
 
                       return (
                         <tr
                           key={ch.n}
                           data-testid={`myrmidon-pool-channel-${ch.n}`}
-                          className="hover:bg-muted/20"
+                          className={isDisabled ? "opacity-60 hover:bg-muted/20" : "hover:bg-muted/20"}
                         >
                           <td className="p-2 font-mono font-medium">{ch.n}</td>
                           <td className="p-2">
                             <div className="font-medium">{ch.label}</div>
                             {ch.email && (
-                              <div className="text-[10px] text-muted-foreground">{ch.email}</div>
+                              <div className="text-xs text-muted-foreground">{ch.email}</div>
                             )}
                             {ch.models && ch.models.length > 0 && (
-                              <div className="text-[10px] text-muted-foreground/80 mt-0.5" data-testid={`myrmidon-pool-channel-models-${ch.n}`}>
+                              <div className="text-xs text-muted-foreground/80 mt-0.5" data-testid={`myrmidon-pool-channel-models-${ch.n}`}>
                                 {ch.models.join(", ")}
                               </div>
                             )}
                           </td>
                           <td className="p-2">
+                            {ch.plan ? (
+                              <span
+                                data-testid={`myrmidon-pool-channel-plan-${ch.n}`}
+                                className={`inline-block rounded border px-1.5 py-0.5 text-xs font-medium ${
+                                  ch.plan.toLowerCase().includes("k-12") || ch.plan.toLowerCase().includes("k12")
+                                    ? "border-muted-foreground/30 bg-muted text-muted-foreground"
+                                    : ch.plan.toLowerCase() === "pro"
+                                      ? "border-purple-500/30 bg-purple-500/15 text-purple-600 dark:text-purple-400"
+                                      : "border-sky-500/30 bg-sky-500/15 text-sky-600 dark:text-sky-400"
+                                }`}
+                              >
+                                {ch.plan.toUpperCase()}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </td>
+                          <td className="p-2">
                             <span
-                              className={`inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium ${stateBadgeClass}`}
+                              className={`inline-block rounded border px-1.5 py-0.5 text-xs font-medium ${stateBadgeClass}`}
                             >
                               {ch.stateRu || ch.state}
                             </span>
+                            {ch.limitedUntil && (
+                              <div className="mt-1 text-xs text-muted-foreground" data-testid={`myrmidon-pool-channel-reset-${ch.n}`}>
+                                {t("modelProviders.channels.resetIn") || "Resets in"}{" "}
+                                {new Date(ch.limitedUntil * 1000).toLocaleString()}
+                              </div>
+                            )}
                           </td>
                           <td className="p-2">
                             {pWin && pWin.usedPct !== null ? (
                               <div className="space-y-1">
-                                <div className="flex justify-between text-[11px]">
+                                <div className="flex justify-between text-xs">
                                   <span>{pWin.usedPct}%</span>
                                   {pWin.resetsAt && (
                                     <span className="text-muted-foreground">
@@ -665,7 +938,7 @@ function ProviderCard({
                           <td className="p-2">
                             {sWin && sWin.usedPct !== null ? (
                               <div className="space-y-1">
-                                <div className="flex justify-between text-[11px]">
+                                <div className="flex justify-between text-xs">
                                   <span>{sWin.usedPct}%</span>
                                   {sWin.resetsAt && (
                                     <span className="text-muted-foreground">
@@ -701,12 +974,28 @@ function ProviderCard({
                                 })
                               : "—"}
                           </td>
+                          <td className="p-2 text-muted-foreground" title={ch.error || undefined} data-testid={`myrmidon-pool-channel-error-${ch.n}`}>
+                            {ch.error ? ch.error.slice(0, 120) : "—"}
+                          </td>
+                          <td className="p-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              data-testid={`myrmidon-pool-oauth-refresh-${ch.n}`}
+                              onClick={() => handleOAuthRefresh(ch.n)}
+                              disabled={oauthRefreshingN === ch.n || isDisabled}
+                              className="text-xs h-6 px-1.5"
+                            >
+                              {oauthRefreshingN === ch.n ? "..." : "Refresh"}
+                            </Button>
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </div>
         </div>

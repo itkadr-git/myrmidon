@@ -14,7 +14,7 @@ import {
   toolApplications,
   toolConnections,
 } from "@myrmidon/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
@@ -429,15 +429,15 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "GitHub", uid: `github-${randomUUID()}`, transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", status: "active", enabled: true, config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {} });
     await db.insert(connectionGrants).values({ id: grantId, companyId, connectionId, kind: "user", subjectUserId: `github-owner-${randomUUID()}`, status: "active", isDefault: false, providerTenant: { oauth: { strategy: "paperclip_cloud_connector", accessTokenExpiresAt: null }, github: { userId: "42", login: "octocat", installationCount: 1, repositoryCount: 1, repositorySelection: "selected", installationIds: ["101"], installationOwnerLogins: ["paperclipai"], repositories: [], webhookHealth: "pending" } } });
     const headSha = "a".repeat(40);
-    const events = ["workflow_run", "check_suite"].map((event, i) => ({
+    const events = ["workflow_run", "check_suite", "check_run"].map((event, i) => ({
       id: `ci-delivery-${i}`, provider: "github" as const, event, action: "completed", installationId: "101", repositoryId: "99", createdAt: "2026-09-04T12:00:00.000Z", bindingIds: [`${grantId}_101`],
       payload: { repository: "paperclipai/paperclip", workflowRun: { pullRequests: [{ number: 123 }] }, pullRequest: { number: 123 }, number: 123, status: "completed", conclusion, headSha, runId: "456", htmlUrl: "https://github.com/paperclipai/paperclip/actions/runs/456", checkSuiteId: "789", accessToken: "must-be-dropped" },
     }));
-    const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events })), acknowledgeEvents: vi.fn(async () => 2) } as unknown as PaperclipCloudConnector;
+    const connector = { getCapabilities: vi.fn(async () => ["github.code"] as const), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events })), acknowledgeEvents: vi.fn(async () => 3) } as unknown as PaperclipCloudConnector;
     const wakeup = vi.fn(async () => undefined);
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, assignmentWakeup: wakeup, now: () => currentTime });
-    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 2, failed: 0 });
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 3, failed: 0 });
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(wakeup).toHaveBeenCalledWith(returnsToExecutor ? agentId : reviewerId, expect.objectContaining({ reason: "ci_completed", payload: expect.objectContaining({ conclusion, headSha, pullRequestNumber: 123 }) }));
     const [updated] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -454,7 +454,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(wakeup.mock.calls[0]?.[1].idempotencyKey).toContain(headSha);
     expect(wakeup.mock.calls[0]?.[1].payload).not.toHaveProperty("accessToken");
     currentTime = new Date(currentTime.getTime() + 5_000);
-    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 2, failed: 0 });
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 3, failed: 0 });
     expect(wakeup).toHaveBeenCalledTimes(1);
   });
 
@@ -760,4 +760,71 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(wakeup).toHaveBeenCalledTimes(1);
   });
 
+  it("raises alarm on GitHub event silence when active PRs exist and resolves when healthy", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const connectionId = randomUUID();
+    const grantId = randomUUID();
+    const applicationId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Watchdog Corp", issuePrefix: "WDC" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "worker", role: "engineer" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Active PR Task", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github",
+      externalId: "corp/repo#pull/42", title: "PR #42", status: "open", metadata: { repository: "corp/repo", number: 42 },
+    });
+    await db.insert(toolApplications).values({ id: applicationId, companyId, applicationKey: `github-${randomUUID()}`, name: "GitHub", type: "mcp_server", status: "active" });
+    await db.insert(toolConnections).values({
+      id: connectionId, companyId, applicationId, name: "GitHub", uid: `github-${randomUUID()}`,
+      transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", status: "active", enabled: true,
+      config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {},
+    });
+    await db.insert(connectionGrants).values({
+      id: grantId, companyId, connectionId, kind: "user", subjectUserId: `user-${randomUUID()}`, status: "active", isDefault: false,
+      providerTenant: { oauth: { strategy: "paperclip_cloud_connector", accessTokenExpiresAt: null }, github: { userId: "42", login: "octocat", installationCount: 1, repositoryCount: 1, repositorySelection: "selected", installationIds: ["201"], installationOwnerLogins: ["corp"], repositories: [], webhookHealth: "pending", lastWebhookAt: "2026-11-03T00:00:00.000Z" } },
+    });
+
+    const connector = { getCapabilities: vi.fn(async () => ["github.code"] as const), leaseEvents: vi.fn(async () => null), acknowledgeEvents: vi.fn() } as unknown as PaperclipCloudConnector;
+    const now = new Date("2026-11-03T01:00:00.000Z"); // 60 minutes after lastWebhookAt -> silence!
+    const service = githubConnectionEventService(db, { connector, now: () => now });
+
+    // First sweep: active PR exists + 60m silence (>15m threshold) -> raises alarm
+    const sweep1 = await service.sweepWatchdog(now);
+    expect(sweep1.activePrCount).toBe(1);
+    expect(sweep1.alarmsCreated).toBe(1);
+
+    const [alarmIssue] = await db.select().from(issues).where(and(
+      eq(issues.companyId, companyId),
+      eq(issues.originKind, "github_events_silence"),
+      eq(issues.originId, companyId),
+    ));
+    expect(alarmIssue).toBeDefined();
+    expect(alarmIssue?.status).toBe("todo");
+    expect(alarmIssue?.priority).toBe("high");
+    expect(alarmIssue?.title).toContain("ALARM: события GitHub не поступают");
+
+    // Second sweep with healthy event timestamp (now - 2 minutes) -> resolves alarm
+    const healthyTime = new Date("2026-11-03T01:05:00.000Z");
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "tool_connection.webhook_processed",
+      entityType: "tool_connection",
+      entityId: connectionId,
+      createdAt: new Date("2026-11-03T01:03:00.000Z"),
+      details: {},
+    });
+
+    const sweep2 = await service.sweepWatchdog(healthyTime);
+    expect(sweep2.alarmsResolved).toBe(1);
+
+    const [resolvedAlarm] = await db.select().from(issues).where(and(
+      eq(issues.companyId, companyId),
+      eq(issues.originKind, "github_events_silence"),
+      eq(issues.originId, companyId),
+    ));
+    expect(resolvedAlarm?.status).toBe("done");
+  });
 });

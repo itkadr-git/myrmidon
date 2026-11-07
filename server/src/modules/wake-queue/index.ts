@@ -10,6 +10,8 @@ import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-po
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 // myrmidon(1.7-GRD-MODES): per-agent injection mode for the queue payload
 import { resolveGuardrailModeForAgent } from "../../myrmidon/guardrails/modes.js";
+// myrmidon(1.6.6 OPE-8319): effective injection detector config (env > settings > default)
+import { resolveInjectionConfigForCompany } from "../../myrmidon/guardrails/modes.js";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./application/use-cases.js";
 import {
   createDiscardQueuedComment,
@@ -129,6 +131,8 @@ export function createQueuedCommentQueue(db: Db, deps: QueuedCommentQueuePostgre
       issueLock,
       resolveInjectionMode: async (input) =>
         (await resolveGuardrailModeForAgent({ db, ...input, rule: "injection" })).mode,
+      resolveInjectionConfig: (input) =>
+        resolveInjectionConfigForCompany({ db, ...input, env: process.env }),
     }),
     reorderQueuedComments: createReorderQueuedComments({ issueLock }),
     discardQueuedComment: createDiscardQueuedComment({ issueLock }),

@@ -109,6 +109,7 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 ]);
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
+  openclaw_gateway: ["deviceToken"],
 };
 const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
@@ -2095,6 +2096,9 @@ export function secretService(db: Db | DbTransaction) {
       throw unprocessable(`${input.key} must be a string, plain binding, or secret reference`);
     }
     const binding = canonicalizeBinding(parsed.data as EnvBinding);
+    if (input.adapterType === "openclaw_gateway" && input.key === "deviceToken" && binding.type !== "secret_ref") {
+      throw unprocessable("deviceToken must be a company secret reference");
+    }
     if (binding.type === "secret_ref") {
       await assertSecretInCompany(companyId, binding.secretId);
       return {
@@ -2829,6 +2833,15 @@ export function secretService(db: Db | DbTransaction) {
   }
 
   function fallbackBindingTarget(binding: typeof companySecretBindings.$inferSelect): CompanySecretBindingTarget {
+    if (binding.targetType === "github_actions") {
+      return {
+        type: "github_actions",
+        id: binding.targetId,
+        label: `GitHub Actions: ${binding.targetId}`,
+        href: `https://github.com/${binding.targetId}/settings/secrets/actions`,
+        status: "active",
+      };
+    }
     return {
       type: binding.targetType as SecretBindingTargetType,
       id: binding.targetId,
@@ -2973,6 +2986,17 @@ export function secretService(db: Db | DbTransaction) {
           status: row.status,
         });
       }
+    }
+
+    const ghBindings = bindings.filter((b) => b.targetType === "github_actions");
+    for (const b of ghBindings) {
+      setTarget({
+        type: "github_actions",
+        id: b.targetId,
+        label: `GitHub Actions: ${b.targetId}`,
+        href: `https://github.com/${b.targetId}/settings/secrets/actions`,
+        status: "active",
+      });
     }
 
     return targetMap;

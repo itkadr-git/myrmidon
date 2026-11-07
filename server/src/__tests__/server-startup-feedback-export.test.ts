@@ -60,7 +60,9 @@ const {
   existingSettingsRows,
   connectionDeliverySweepPendingMock,
   questionResponseDeliverySweepPendingMock,
+  providerUsageDeliverySweepMock,
 } = vi.hoisted(() => {
+  const providerUsageDeliverySweepMock = vi.fn(async () => ({ delivered: 0, failed: 0 }));
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
       toolGateway: { sweepActionReviews: vi.fn(async () => ({ scanned: 0 })) },
@@ -213,6 +215,7 @@ const {
     existingSettingsRows,
     connectionDeliverySweepPendingMock,
     questionResponseDeliverySweepPendingMock,
+    providerUsageDeliverySweepMock,
   };
 });
 
@@ -330,6 +333,9 @@ vi.mock("../myrmidon/browser-bridge/index.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  providerUsageService: vi.fn(() => ({
+    deliverPendingWarnings: providerUsageDeliverySweepMock,
+  })),
   backfillLegacyToolOAuthTokens: vi.fn(async () => ({
     scannedConnections: 0,
     migratedConnections: 0,
@@ -455,6 +461,8 @@ vi.mock("../services/secret-proposals.js", () => ({
 
 vi.mock("../storage/index.js", () => ({
   createStorageServiceFromConfig: vi.fn(() => ({ id: "storage-service" })),
+  // #2296 wired retention runtime gitBundleCleanup to getStorageService
+  getStorageService: vi.fn(() => ({ id: "storage-service" })),
 }));
 
 vi.mock("../services/feedback-share-client.js", () => ({
@@ -507,6 +515,7 @@ describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     existingSettingsRows.length = 0;
+    providerUsageDeliverySweepMock.mockClear();
     delete process.env.MYRMIDON_PROCESS_ROLE;
     delete process.env.PAPERCLIP_PROCESS_ROLE;
     delete process.env.DATABASE_URL;
@@ -759,16 +768,72 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(reconcileSafeNativeReplacements).not.toHaveBeenCalled();
       expect(intervals).not.toContain(EXECUTION_RECONCILIATION_INTERVAL_MS);
+      expect(intervals).not.toContain(5000); // maintenance tick (MYRMIDON_MAINTENANCE_TICK_SEC default)
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).not.toHaveBeenCalled();
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).not.toHaveBeenCalled();
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).not.toHaveBeenCalled();
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(connectionDeliverySweepPendingMock).not.toHaveBeenCalled();
       expect(questionResponseDeliverySweepPendingMock).not.toHaveBeenCalled();
+      expect(providerUsageDeliverySweepMock).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
       if (originalRole === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
       else process.env.PAPERCLIP_PROCESS_ROLE = originalRole;
+    }
+  });
+
+  it("does not deliver provider usage warnings on heartbeat ticks for API-only roles", async () => {
+    process.env.MYRMIDON_PROCESS_ROLE = "api";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | undefined;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+    ) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+
+    try {
+      await startServer();
+      expect(providerUsageDeliverySweepMock).not.toHaveBeenCalled();
+      expect(intervalCallback).toBeDefined();
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(providerUsageDeliverySweepMock).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.MYRMIDON_PROCESS_ROLE;
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("delivers provider usage warnings from heartbeat ticks for background role", async () => {
+    process.env.MYRMIDON_PROCESS_ROLE = "worker";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | undefined;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+    ) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+
+    try {
+      await startServer();
+      expect(providerUsageDeliverySweepMock).not.toHaveBeenCalled();
+      expect(intervalCallback).toBeDefined();
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(providerUsageDeliverySweepMock).toHaveBeenCalledTimes(1);
+    } finally {
+      delete process.env.MYRMIDON_PROCESS_ROLE;
+      setIntervalSpy.mockRestore();
     }
   });
 

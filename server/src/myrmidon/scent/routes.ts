@@ -33,6 +33,7 @@ import {
   resolveScentSecret,
   type ScentQueuePorts,
 } from "./queue.js";
+import { checkScentHealth } from "./health.js";
 
 async function buildService(
   db: Db,
@@ -203,6 +204,7 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
       const env = process.env;
       const baseUrl =
         env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
+      const health = await checkScentHealth(db, companyId, ports);
       res.json({
         enabled: settings.enabled,
         model: settings.model,
@@ -212,6 +214,12 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
         pendingIssues: slice.issueIds.length,
         pendingAgents: slice.agentIds.length,
         totalPending: slice.totalPending,
+        lastSuccessAt: health.lastSuccessAt,
+        successRateHour: health.successRateHour,
+        hourlySuccessRate: health.hourlySuccessRate,
+        attemptsLastHour: health.attemptsLastHour,
+        successesLastHour: health.successesLastHour,
+        alarm: health.alarm,
       });
     },
   );

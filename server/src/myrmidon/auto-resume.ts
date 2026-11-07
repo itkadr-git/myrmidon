@@ -1,10 +1,17 @@
-import { and, eq, gte, sql } from "drizzle-orm";
-import { activityLog, agents, companies, type Db } from "@myrmidon/db";
+import { and, desc, eq, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { activityLog, agents, companies, heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this sweep obeys, so the switch can be changed without a restart.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { liveAutoResumeSettings } from "./runs-queue-settings/live.js";
+// myrmidon(OPE-11947): a run the model pool could not answer is retried by its
+// own long policy; auto-resume must not wake the agent's work in the meantime.
+import {
+  MODEL_UNAVAILABLE_RETRY_MAX_DELAY_MS,
+  computeModelUnavailableRetryDelayMs,
+  isModelUnavailableRun,
+} from "./run-retry-policy/model-unavailable.js";
 
 /**
  * AUTO-RESUME (Myrmidon 1.4).
@@ -24,9 +31,24 @@ import { liveAutoResumeSettings } from "./runs-queue-settings/live.js";
  * State lives in the existing `agents.metadata` JSON column under the key
  * `myrmidon_auto_resume` (no migration, no new table): the failed-resume
  * counter of the current streak, when the streak last failed, when the next
- * resume is due, and when the module gave up. An agent record change after the
- * give-up point (`agents.updated_at` becomes newer than `exhaustedAt`) is how
- * an operator action re-arms the streak.
+ * resume is due, and when the module gave up.
+ *
+ * Two cases differ from the ordinary backoff (OPE-11947):
+ *  - An agent whose last finished run is model-unavailable (`resultJson.model_unavailable`:
+ *    the model pool is out of quota or down) is resumed on the long model-unavailable
+ *    schedule, not the 1/5/15 min one: 30 min, 1 h, 2 h, 4 h, then every 6 h after
+ *    that run finished (`computeModelUnavailableRetryDelayMs`). A resume wakes
+ *    every task the agent is stranded on and each new run fails on the same quota
+ *    again, so it must not be quick; but the quota resets some day, so these
+ *    resumes never count towards the attempt cap and never give up. The agent is
+ *    back within 6 h of the reset. The series counter lives in the same state
+ *    (`modelUnavailableResumes`) and starts over once the last run is not
+ *    model-unavailable: the ordinary backoff and the cap apply again.
+ *  - A give-up is re-armed only by an operator action: an `agent.resumed`,
+ *    `agent.updated` or `agent.error_cleared` activity row written by a user
+ *    for this agent after `exhaustedAt`. A bare `agents.updated_at` change is
+ *    not an operator action, because runs and status changes move it too; it
+ *    used to re-arm the streak a few minutes after every give-up.
  */
 
 export const AUTO_RESUME_ENABLED_ENV = "MYRMIDON_AUTO_RESUME_ENABLED";
@@ -51,6 +73,17 @@ export const AUTO_RESUME_METADATA_KEY = "myrmidon_auto_resume";
 export const AUTO_RESUME_ACTIVITY_ACTION = "agent.auto_resume_issued";
 /** Activity-log action for giving up on an agent after the attempt cap. */
 export const AUTO_RESUME_EXHAUSTED_ACTIVITY_ACTION = "agent.auto_resume_exhausted";
+/**
+ * Activity-log actions (written by `routes/agents.ts` with `actor_type = 'user'`,
+ * entity `agent`) that count as an operator acting on an agent after a give-up.
+ * The same `agent.updated` is also written by the system (`actor_type = 'system'`),
+ * so the actor type is part of the match.
+ */
+export const AUTO_RESUME_OPERATOR_ACTIVITY_ACTIONS: readonly string[] = [
+  "agent.resumed",
+  "agent.updated",
+  "agent.error_cleared",
+];
 
 const AUTO_RESUME_ACTOR_ID = "auto_resume";
 
@@ -103,6 +136,11 @@ export interface AutoResumeState {
   exhaustedAt: string | null;
   /** ISO timestamp of the last automatic resume. */
   lastResumeAt: string | null;
+  /**
+   * myrmidon(OPE-11947): resumes issued in the current model-unavailable series
+   * (absent or 0: no series). They do not count towards the attempt cap.
+   */
+  modelUnavailableResumes?: number;
 }
 
 function readIsoString(value: unknown): string | null {
@@ -128,6 +166,11 @@ export function readAutoResumeState(metadata: unknown): AutoResumeState | null {
     nextAttemptAt: readIsoString(value.nextAttemptAt),
     exhaustedAt: readIsoString(value.exhaustedAt),
     lastResumeAt: readIsoString(value.lastResumeAt),
+    ...(typeof value.modelUnavailableResumes === "number" &&
+    Number.isFinite(value.modelUnavailableResumes) &&
+    value.modelUnavailableResumes > 0
+      ? { modelUnavailableResumes: Math.floor(value.modelUnavailableResumes) }
+      : {}),
   };
 }
 
@@ -172,6 +215,7 @@ export interface AutoResumeDecision {
 
 export interface AutoResumePolicyAgent {
   status: string;
+  errorReason?: string | null;
   /** `agents.updated_at`: the agent error entry (or the last operator/system touch). */
   updatedAt: Date;
 }
@@ -187,8 +231,23 @@ export function decideAutoResume(params: {
   now: Date;
   invokable: boolean;
   underMaintenance: boolean;
+  /**
+   * myrmidon(OPE-11947): the agent's last finished run is model-unavailable
+   * (`isModelUnavailableRun`); the agent returns on the long model-unavailable
+   * schedule, outside the attempt cap.
+   */
+  lastRunModelUnavailable?: boolean;
+  /** When that last finished run ended; the long schedule counts from it. */
+  lastRunFinishedAt?: Date | null;
+  /**
+   * When an operator last resumed, updated or cleared this agent (a user
+   * activity row), or null. Only an action after `exhaustedAt` re-arms a give-up.
+   */
+  lastOperatorActionAt?: Date | null;
 }): AutoResumeDecision {
   const { agent, settings, now, invokable, underMaintenance } = params;
+  const lastRunModelUnavailable = params.lastRunModelUnavailable ?? false;
+  const lastOperatorActionAt = params.lastOperatorActionAt ?? null;
   let state = params.state;
 
   if (!settings.enabled) return { action: "skip", reason: "disabled", nextState: state };
@@ -198,11 +257,65 @@ export function decideAutoResume(params: {
   if (!invokable) return { action: "skip", reason: "not_invokable", nextState: state };
   if (underMaintenance) return { action: "skip", reason: "maintenance", nextState: state };
 
-  // Re-arm after an operator acted: the record changed after we gave up, so
-  // this is a new episode and the attempt counter starts over.
+  // If container retry ceiling was reached and agent marked "контейнер не поднят",
+  // do not auto-resume without operator action or container start.
+  if (agent.errorReason === "контейнер не поднят") {
+    return { action: "skip", reason: "container_not_started", nextState: state };
+  }
+
+  // myrmidon(OPE-11947): the model pool could not answer the last run. Resuming
+  // wakes every task the agent is stranded on, and each new run fails on the
+  // same quota, so the agent returns on the long model-unavailable schedule
+  // (30 min, 1 h, 2 h, 4 h, then every 6 h after that run ended). These resumes
+  // are outside the attempt cap and never give up: the quota resets some day.
+  let modelUnavailableResumes = state?.modelUnavailableResumes ?? 0;
+  if (lastRunModelUnavailable) {
+    const lastRunFinishedAtMs = (params.lastRunFinishedAt ?? agent.updatedAt).getTime();
+    const lastResumeAtMs = state?.lastResumeAt ? Date.parse(state.lastResumeAt) : Number.NaN;
+    // A series continues only while the failing run followed the last resume
+    // closely; a run that ended much later, after a healthy stretch, starts over.
+    if (
+      modelUnavailableResumes > 0 &&
+      Number.isFinite(lastResumeAtMs) &&
+      lastRunFinishedAtMs - lastResumeAtMs > MODEL_UNAVAILABLE_RETRY_MAX_DELAY_MS
+    ) {
+      modelUnavailableResumes = 0;
+    }
+    // Never sooner than one step after the last resume either, whatever the run's age.
+    const baseMs =
+      modelUnavailableResumes > 0 && Number.isFinite(lastResumeAtMs)
+        ? Math.max(lastRunFinishedAtMs, lastResumeAtMs)
+        : lastRunFinishedAtMs;
+    const dueAtMs = baseMs + computeModelUnavailableRetryDelayMs(modelUnavailableResumes + 1);
+    if (now.getTime() < dueAtMs) {
+      return { action: "skip", reason: "model_unavailable_wait", nextState: state };
+    }
+    const nextResumes = modelUnavailableResumes + 1;
+    return {
+      action: "resume",
+      reason: "model_unavailable_due",
+      nextState: {
+        // The ordinary streak is not touched by the quota: it starts clean once the model is back.
+        failures: 0,
+        lastFailureAt: now.toISOString(),
+        nextAttemptAt: null,
+        exhaustedAt: null,
+        lastResumeAt: now.toISOString(),
+        modelUnavailableResumes: nextResumes,
+      },
+    };
+  }
+  // The last run is not model-unavailable (the model is back, or the error is another one):
+  // the series is over and the ordinary 1/5/15 min backoff with its cap applies again.
+  if (modelUnavailableResumes > 0) state = null;
+
+  // Re-arm after an operator acted: a resume, update or error clear by a user
+  // after we gave up is a new episode and the attempt counter starts over.
+  // `agents.updated_at` is deliberately not read: runs and status changes move
+  // it, which re-armed a give-up a few minutes after it was written.
   if (state?.exhaustedAt) {
     const exhaustedAtMs = Date.parse(state.exhaustedAt);
-    if (Number.isFinite(exhaustedAtMs) && agent.updatedAt.getTime() > exhaustedAtMs + 1_000) {
+    if (Number.isFinite(exhaustedAtMs) && lastOperatorActionAt && lastOperatorActionAt.getTime() > exhaustedAtMs) {
       state = null;
     }
   }
@@ -347,8 +460,7 @@ async function claimAutoResume(db: Db, agent: AutoResumeAgentRow, nextState: Aut
 
 /**
  * Marks the agent as given up: writes `exhaustedAt` and deliberately leaves
- * `updated_at` untouched, because the re-arm rule compares a later operator
- * touch against that timestamp.
+ * `updated_at` untouched, so the give-up does not look like a fresh error entry.
  */
 async function markAutoResumeExhausted(
   db: Db,
@@ -361,6 +473,55 @@ async function markAutoResumeExhausted(
     .where(and(eq(agents.id, agent.id), eq(agents.status, "error")))
     .returning({ id: agents.id });
   return Boolean(rows[0]);
+}
+
+/**
+ * myrmidon(OPE-11947): whether the agent's last finished run is model-unavailable,
+ * and when it ended. Newest run by creation time (the company/agent/created index), skipping runs
+ * that have not finished (queued, running, a scheduled retry waiting its time).
+ */
+async function readLastRunModelUnavailable(
+  db: Db,
+  agent: AutoResumeAgentRow,
+): Promise<{ modelUnavailable: boolean; finishedAt: Date | null }> {
+  const rows = await db
+    .select({ resultJson: heartbeatRuns.resultJson, finishedAt: heartbeatRuns.finishedAt })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, agent.companyId),
+        eq(heartbeatRuns.agentId, agent.id),
+        isNotNull(heartbeatRuns.finishedAt),
+      ),
+    )
+    .orderBy(desc(heartbeatRuns.createdAt))
+    .limit(1);
+  const last = rows[0];
+  return { modelUnavailable: last ? isModelUnavailableRun(last) : false, finishedAt: last?.finishedAt ?? null };
+}
+
+/**
+ * myrmidon(OPE-11947): the newest operator action on this agent after `since`
+ * (a user's `agent.resumed` / `agent.updated` / `agent.error_cleared` row), or
+ * null. `entity_id` is the agent acted on; `agent_id` would be the acting agent.
+ */
+async function readLastOperatorActionAt(db: Db, agent: AutoResumeAgentRow, since: Date): Promise<Date | null> {
+  const rows = await db
+    .select({ createdAt: activityLog.createdAt })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.entityType, "agent"),
+        eq(activityLog.entityId, agent.id),
+        eq(activityLog.companyId, agent.companyId),
+        eq(activityLog.actorType, "user"),
+        inArray(activityLog.action, [...AUTO_RESUME_OPERATOR_ACTIVITY_ACTIONS]),
+        gt(activityLog.createdAt, since),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(1);
+  return rows[0]?.createdAt ?? null;
 }
 
 export interface AutoResumeSweeper {
@@ -424,13 +585,28 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
         }
         const invokable = await deps.isAgentInvokable(agent);
         const underMaintenance = await deps.isAgentUnderMaintenance(agent.id);
+        const state = readAutoResumeState(agent.metadata);
+        // myrmidon(OPE-11947): the two facts the policy reads from the database.
+        const lastRun = await readLastRunModelUnavailable(deps.db, agent);
+        const exhaustedAt = state?.exhaustedAt ? new Date(state.exhaustedAt) : null;
+        const lastOperatorActionAt =
+          exhaustedAt && Number.isFinite(exhaustedAt.getTime())
+            ? await readLastOperatorActionAt(deps.db, agent, exhaustedAt)
+            : null;
         const decision = decideAutoResume({
-          agent: { status: agent.status, updatedAt: agent.updatedAt },
-          state: readAutoResumeState(agent.metadata),
+          agent: {
+            status: agent.status,
+            errorReason: agent.errorReason,
+            updatedAt: agent.updatedAt,
+          },
+          state,
           settings,
           now,
           invokable,
           underMaintenance,
+          lastRunModelUnavailable: lastRun.modelUnavailable,
+          lastRunFinishedAt: lastRun.finishedAt,
+          lastOperatorActionAt,
         });
 
         if (decision.action === "skip") {
@@ -491,6 +667,10 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
             attempt: decision.nextState!.failures,
             errorReason: agent.errorReason,
             nextAttemptAt: decision.nextState!.nextAttemptAt,
+            // myrmidon(OPE-11947): a long-schedule resume is not an attempt of the capped streak.
+            ...(decision.reason === "model_unavailable_due"
+              ? { modelUnavailable: true, modelUnavailableResumes: decision.nextState!.modelUnavailableResumes }
+              : {}),
           },
         });
       }

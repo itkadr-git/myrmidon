@@ -40,10 +40,18 @@ import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { listGuardrailEvents } from "./events.js";
 import {
+  redactText,
+  restoreText,
+  drizzleRedactionStore,
+  type DetectedRedactionEntity,
+  type RedactionMode,
+  type RedactionStore,
+} from "./entities/redaction.js";
+import {
   readGuardrailModesSettings,
   writeGuardrailModesSettings,
 } from "./modes-settings.js";
-import { loadGuardrailModes } from "./modes.js";
+import { loadGuardrailModes, resolveInjectionConfigForCompany } from "./modes.js";
 import { resolveGuardrailMode } from "@myrmidon/shared";
 import { GUARDRAIL_RULES } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
@@ -51,21 +59,73 @@ import { badRequest } from "../../errors.js";
 
 export interface GuardrailRoutesDeps {
   db: Db;
+  store?: RedactionStore;
 }
 
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
-export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesDeps> = {}) {
+export function myrmidonGuardrailsRoutes(db: Db, deps: Partial<GuardrailRoutesDeps> = {}) {
   const router = Router();
+  const store = deps.store ?? drizzleRedactionStore(db);
   const settings = instanceSettingsService(db);
+
+  // --- redaction (1.7-REDACT, OPE-8659) -------------------------------------
+
+  router.post("/myrmidon/guardrails/redact", async (req, res) => {
+    const { text, entities, mode, ttlMs } = req.body as {
+      text?: unknown;
+      entities?: unknown;
+      mode?: unknown;
+      ttlMs?: unknown;
+    };
+    if (typeof text !== "string" || !Array.isArray(entities) || !["reversible", "irreversible", "flag"].includes(mode as string)) {
+      res.status(400).json({ error: "text, entities, and a supported mode are required" });
+      return;
+    }
+    const normalized = entities.filter((entity): entity is DetectedRedactionEntity => {
+      if (!entity || typeof entity !== "object") return false;
+      const value = entity as Record<string, unknown>;
+      return typeof value.type === "string" && typeof value.value === "string" && typeof value.start === "number" && typeof value.end === "number";
+    });
+    if (normalized.length !== entities.length) {
+      res.status(400).json({ error: "entities must contain type, value, start, and end" });
+      return;
+    }
+    if (normalized.some((entity) => !Number.isInteger(entity.start) || !Number.isInteger(entity.end) ||
+      entity.start < 0 || entity.end <= entity.start || entity.end > text.length ||
+      text.slice(entity.start, entity.end) !== entity.value)) {
+      res.status(400).json({ error: "entity value must match its valid text range" });
+      return;
+    }
+    const ttl = ttlMs === undefined ? undefined : Number(ttlMs);
+    if (ttl !== undefined && (!Number.isFinite(ttl) || ttl <= 0)) {
+      res.status(400).json({ error: "ttlMs must be a positive number" });
+      return;
+    }
+    const result = await redactText(text, normalized, mode as RedactionMode, store, { ttlMs: ttl });
+    res.json(result);
+  });
+
+  router.post("/myrmidon/guardrails/restore", async (req, res) => {
+    const { redactionId, text } = req.body as { redactionId?: unknown; text?: unknown };
+    if (typeof redactionId !== "string" || typeof text !== "string") {
+      res.status(400).json({ error: "redactionId and text are required" });
+      return;
+    }
+    res.json({ text: await restoreText(store, redactionId, text) });
+  });
 
   // --- settings (1.7-GRD-MODES) --------------------------------------------
 
   router.get("/myrmidon/companies/:companyId/guardrails/settings", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await readGuardrailModesSettings(settings));
+    const [stored, injection] = await Promise.all([
+      readGuardrailModesSettings(settings),
+      resolveInjectionConfigForCompany({ db, companyId, env: process.env }),
+    ]);
+    res.json({ ...stored, injectionConfigResolved: injection });
   });
 
   router.put(
@@ -76,6 +136,7 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
       assertCompanyAccess(req, companyId);
       assertBoard(req);
       const stored = await writeGuardrailModesSettings(settings, req.body as GuardrailModesSettings);
+      const injectionConfigResolved = await resolveInjectionConfigForCompany({ db, companyId, env: process.env });
       const info = getActorInfo(req);
       await logActivity(db, {
         companyId,
@@ -91,7 +152,7 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
           agentCount: Object.keys(stored.agents).length,
         },
       });
-      res.json(stored);
+      res.json({ ...stored, injectionConfigResolved });
     },
   );
 
@@ -130,13 +191,28 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
       rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0
         ? Math.min(Math.floor(rawLimit), MAX_LIMIT)
         : DEFAULT_LIMIT;
-    const events = await listGuardrailEvents(db, companyId, limit, {
+    const rawOffset = typeof req.query.offset === "string" ? Number(req.query.offset) : undefined;
+    const offset =
+      rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset >= 0
+        ? Math.floor(rawOffset)
+        : 0;
+
+    const filters = {
+      rule: typeof req.query.rule === "string" ? req.query.rule : undefined,
       kind: typeof req.query.kind === "string" ? req.query.kind : undefined,
+      mode: typeof req.query.mode === "string" ? req.query.mode : undefined,
+      level: typeof req.query.level === "string" ? req.query.level : undefined,
+      agentId: typeof req.query.agentId === "string" ? req.query.agentId : undefined,
+      agent: typeof req.query.agent === "string" ? req.query.agent : undefined,
+      decision: typeof req.query.decision === "string" ? req.query.decision : undefined,
       severity: typeof req.query.severity === "string" ? req.query.severity : undefined,
       surface: typeof req.query.surface === "string" ? req.query.surface : undefined,
       runId: typeof req.query.runId === "string" ? req.query.runId : undefined,
-    });
-    res.json({ events, count: events.length, limit });
+      issueId: typeof req.query.issueId === "string" ? req.query.issueId : undefined,
+    };
+
+    const events = await listGuardrailEvents(db, companyId, { limit, offset, filters });
+    res.json({ events, count: events.length, limit, offset });
   });
 
   // myrmidon(1.7 GUARDRAILS, OPE-10181): regex rule validator & ReDoS safety check

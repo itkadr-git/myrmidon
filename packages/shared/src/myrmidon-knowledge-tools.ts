@@ -112,6 +112,7 @@ export const knowledgeProposeSchema = z.object({
   folderPath: z.string().max(500).optional(),
   lang: z.string().max(16).optional(),
   sources: z.array(knowledgeSourceInputSchema).min(1, "knowledge_propose requires at least one source").max(50),
+  idempotencyKey: z.string().min(1).max(200).optional(),
 });
 export type KnowledgeProposeInput = z.infer<typeof knowledgeProposeSchema>;
 
@@ -134,7 +135,8 @@ export const knowledgeListQuerySchema = z.object({
   kind: z.enum(["note", "wiki", "answer", "task_outcome", "rule"]).optional(),
   status: z.enum(["draft", "in_review", "published", "archived", "superseded"]).optional(),
   q: z.string().max(500).optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  // The UI tree asks for the whole catalog (254 items on 01.11); agents keep the default page of 50.
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
 });
 export type KnowledgeListQuery = z.infer<typeof knowledgeListQuerySchema>;
 

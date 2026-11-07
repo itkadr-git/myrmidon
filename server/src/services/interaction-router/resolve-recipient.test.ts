@@ -93,6 +93,25 @@ describe("resolveInteractionRecipient", () => {
     })).toThrow(/Code review/);
   });
 
+  it("routes an unaddressed agent question to its direct manager, not a project lead or owner", () => {
+    expect(resolveInteractionRecipient({
+      ...base,
+      kind: "ask_user_questions",
+      manager: { agentId: "direct-manager" },
+      projectRoles: { lead: { type: "user", userId: "owner" } },
+      recipient: null,
+    })).toEqual({ agentId: "direct-manager" });
+  });
+
+  it("does not silently route an agent question to the owner when no manager exists", () => {
+    expect(() => resolveInteractionRecipient({
+      ...base,
+      kind: "ask_user_questions",
+      manager: null,
+      projectRoles: { lead: { type: "user", userId: "owner" } },
+    })).toThrow(InteractionRecipientUnresolvedError);
+  });
+
   it("uses the first eligible technical review role", () => {
     expect(resolveInteractionRecipient({
       ...base,

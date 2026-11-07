@@ -17,6 +17,7 @@ import { logger } from "../../middleware/logger.js";
 import { computeBaselineMetrics, type BaselineMetricsResponse } from "./service.js";
 import type { BaselineWindow } from "./metrics.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+import { liveSavedSetting } from "../behavior-settings/live.js";
 
 export const BASELINE_INTERVAL_ENV = "MYRMIDON_BASELINE_INTERVAL_SEC";
 export const BASELINE_WINDOW_DAYS = 14;
@@ -37,8 +38,9 @@ export interface BaselineSettings {
  * not silently turn a deliberate opt-in back off.
  */
 export function readBaselineSettings(env: NodeJS.ProcessEnv): BaselineSettings {
-  const raw = env[BASELINE_INTERVAL_ENV];
-  if (raw === undefined || raw.trim() === "") {
+  const saved = env === process.env ? liveSavedSetting<number>("baseline_interval_sec") : undefined;
+  const raw = saved !== undefined ? String(saved) : env[BASELINE_INTERVAL_ENV];
+  if (raw === undefined || raw.trim() === "" || raw.trim() === "0") {
     return { enabled: false, intervalSec: DEFAULT_INTERVAL_SEC, intervalMs: DEFAULT_INTERVAL_SEC * 1000 };
   }
   const parsed = Number(raw);

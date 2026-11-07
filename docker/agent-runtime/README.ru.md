@@ -1,6 +1,6 @@
 # Семейство образов среды агента
 
-Контейнерные образы для запуска harness-клиентов кодирующих агентов в изолированной среде. Имена образов имеют вид `agent-runtime-{harness}:{version}`. В этой директории описаны bake-цели и автоматизированная публикация; наличие CI lane само по себе не подтверждает, что тег уже опубликован. Для OMP используется отдельный образ `ghcr.io/paperclipai/agent-runtime-omp`, не основанный на базовом образе и не запускающий `paperclip-agent-shim`.
+Контейнерные образы для запуска harness-клиентов кодирующих агентов в изолированной среде. Имена образов имеют вид `agent-runtime-{harness}:{version}`. В этой директории описаны bake-цели и автоматизированная публикация; наличие CI lane само по себе не подтверждает, что тег уже опубликован. Для OMP используется отдельный образ `ghcr.io/itkadr-git/agent-runtime-omp`, не основанный на базовом образе и не запускающий `paperclip-agent-shim`.
 
 ## Набор образов
 
@@ -21,7 +21,7 @@
 
 ## Сборка и проверка
 
-Цель `omp` объявлена в `docker/agent-runtime/buildx-bake.hcl` для `linux/amd64`. Переменные bake по умолчанию: `REGISTRY=ghcr.io/paperclipai`, `VERSION=dev`.
+Цель `omp` объявлена в `docker/agent-runtime/buildx-bake.hcl` для `linux/amd64`. Переменные bake по умолчанию: `REGISTRY=ghcr.io/itkadr-git`, `VERSION=dev`.
 
 Локальная проверка сборочного графа/образа (не публикация):
 
@@ -30,7 +30,7 @@ docker buildx bake -f docker/agent-runtime/buildx-bake.hcl omp --load
 docker run --rm --user 1000:1000 \
   --mount type=bind,src=<session-dir>,dst=/home/paperclip/.local/share/omp/sessions \
   --mount type=bind,src=<workspace-dir>,dst=/workspace \
-  ghcr.io/paperclipai/agent-runtime-omp:dev --help
+  ghcr.io/itkadr-git/agent-runtime-omp:dev --help
 ```
 
 Замените `<session-dir>` и `<workspace-dir>` реальными каталогами хоста; образу нужен доступ на запись к ним. Для проверки уже опубликованного образа используйте подтверждённый тег или digest из CI, а не предполагайте, что `dev` существует:
@@ -39,11 +39,11 @@ docker run --rm --user 1000:1000 \
 docker run --rm --user 1000:1000 \
   --mount type=bind,src=<session-dir>,dst=/home/paperclip/.local/share/omp/sessions \
   --mount type=bind,src=<workspace-dir>,dst=/workspace \
-  ghcr.io/paperclipai/agent-runtime-omp:<verified-tag-or-digest> --help
+  ghcr.io/itkadr-git/agent-runtime-omp:<verified-tag-or-digest> --help
 ```
 
 ## Публикация и подпись
 
-Workflow `.github/workflows/agent-runtime-images.yml` запускается при push в `master` с затрагивающими его путями изменениями либо вручную через `workflow_dispatch`. При ручном запуске задаётся версия; иначе тег строится как `git-<commit-sha>`. В bake-публикацию явно входят `base`, `opencode`, `pi`, `codex`, `gemini`, `claude` и `omp` (`linux/amd64`; `hermes` не включён в scope). Workflow получает дайджесты опубликованных образов и подписывает их через cosign keyless OIDC с GitHub Actions identity.
+Workflow `.github/workflows/agent-runtime-images.yml` запускается при push в `main` и релизных тегах `myr-v*` с затрагивающими его путями изменениями либо вручную через `workflow_dispatch`. При ручном запуске задаётся версия; иначе тег строится как `git-<commit-sha>`. В bake-публикацию явно входят `base`, `opencode`, `pi`, `codex`, `gemini`, `claude` и `omp` (`linux/amd64`; `hermes` не включён в scope). Workflow получает дайджесты опубликованных образов и подписывает их через cosign keyless OIDC с GitHub Actions identity.
 
 Для этого изменения пока не проверены успешный запуск workflow и опубликованные OMP-тег/digest. Перед использованием образа проверьте успешный запуск workflow, фактический digest в GHCR и подпись.

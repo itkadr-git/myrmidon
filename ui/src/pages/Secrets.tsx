@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { InstanceSecretSettingsPanel } from "@/components/myrmidon/InstanceSecretSettingsPanel";
+import type { ProviderUsageAggregate } from "@myrmidon/shared";
 import type {
   CompanySecret,
   CompanySecretUsageBinding,
@@ -66,6 +67,7 @@ import {
   type UpdateSecretProviderConfigInput,
 } from "../api/secrets";
 import { ApiError } from "../api/client";
+import { costsApi } from "../api/costs";
 import { accessApi, type CompanyUserDirectoryEntry } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { envKeyFromSecretName } from "../components/environment-variables-editor/model";
@@ -800,6 +802,14 @@ export function Secrets() {
     retry: false,
   });
 
+  const providerUsageQuery = useQuery({
+    queryKey: ["provider-usage", selectedCompanyId],
+    queryFn: () => costsApi.providerUsage(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    refetchInterval: 60_000,
+    retry: false,
+  });
+
   const proposalsQuery = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
@@ -814,6 +824,18 @@ export function Secrets() {
   const myUserSecrets = myUserSecretsQuery.data ?? EMPTY_MY_USER_SECRETS;
   const providers = providersQuery.data ?? EMPTY_SECRET_PROVIDERS;
   const providerConfigs = providerConfigsQuery.data ?? EMPTY_PROVIDER_CONFIGS;
+  const usageByCredential = useMemo(
+    () => {
+      const usage = new Map<string, ProviderUsageAggregate[]>();
+      for (const aggregate of providerUsageQuery.data?.usage ?? []) {
+        const entries = usage.get(aggregate.credentialRef) ?? [];
+        entries.push(aggregate);
+        usage.set(aggregate.credentialRef, entries);
+      }
+      return usage;
+    },
+    [providerUsageQuery.data],
+  );
   const selectedSecret = useMemo(
     () => secrets.find((secret) => secret.id === selectedSecretId) ?? null,
     [secrets, selectedSecretId],
@@ -1675,6 +1697,32 @@ export function Secrets() {
     return <span className="truncate font-medium text-foreground">{name}</span>;
   }
 
+  function renderProviderUsage(secret: CompanySecret) {
+    // Adapters report usage under an opaque credentialRef. A secret is matched by an
+    // explicit providerMetadata.usageCredentialRef when one is set, otherwise by its own
+    // key or id — so the widget works without any extra configuration step.
+    const metadata = secret.providerMetadata as Record<string, unknown> | null | undefined;
+    const explicitRef = metadata?.usageCredentialRef;
+    const candidates = [typeof explicitRef === "string" ? explicitRef : "", secret.key, secret.id].filter(Boolean);
+    const usageEntries = candidates.flatMap((ref) => usageByCredential.get(ref) ?? []);
+    if (usageEntries.length === 0) return null;
+    return (
+      <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+        {usageEntries.map((usage) => {
+          const metric = usage.warning?.metric ?? (typeof usage.remainingPercent.requests === "number" ? "requests" : "tokens");
+          const remainingPercent = usage.remainingPercent[metric];
+          const remaining = usage.remaining[metric];
+          if (typeof remainingPercent !== "number" || typeof remaining !== "number") return null;
+          return (
+            <div key={`${usage.provider}:${usage.credentialRef}:${usage.window}:${usage.startedAt}`} data-testid="provider-usage-remaining">
+              {usage.window}: {metric}: {remaining} remaining ({Math.round(remainingPercent)}%) · resets {formatRelative(usage.resetsAt)}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function renderFolderTableRow(folder: SecretPathFolder) {
     return (
       <Link
@@ -2105,6 +2153,7 @@ export function Secrets() {
                                 </Tooltip>
                               )}
                             </div>
+                            {row.kind === "company" ? renderProviderUsage(row.secret) : null}
                             <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
                               {row.kind === "company" ? row.secret.key : row.definition.key}
                             </code>
@@ -2166,6 +2215,7 @@ export function Secrets() {
                             <div className="min-w-0 truncate">
                               {renderSecretName(row.kind === "company" ? row.secret.name : row.definition.name)}
                             </div>
+                            {row.kind === "company" ? renderProviderUsage(row.secret) : null}
                             <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
                               {row.kind === "company" ? row.secret.key : row.definition.key}
                             </code>
@@ -2298,6 +2348,32 @@ export function Secrets() {
                   <MetaChip>{providerLabel(providers, selectedSecret.provider)}</MetaChip>
                   <MetaChip>v{selectedSecret.latestVersion}</MetaChip>
                 </div>
+                {(() => {
+                  const patExpires = (selectedSecret.providerMetadata as Record<string, any> | undefined)?.githubPatExpiresAt;
+                  if (!patExpires) return null;
+                  const expDate = new Date(patExpires);
+                  const daysLeft = Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                  const isExpiringSoon = daysLeft <= 7;
+                  return (
+                    <div
+                      className={cn(
+                        "flex items-center gap-2 rounded-md border p-2 text-xs",
+                        isExpiringSoon
+                          ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                          : "border-border bg-muted/20 text-muted-foreground",
+                      )}
+                    >
+                      <AlertTriangle
+                        className={cn("h-4 w-4 shrink-0", isExpiringSoon ? "text-amber-500" : "text-muted-foreground")}
+                      />
+                      <span>
+                        {isExpiringSoon
+                          ? `Warning: GitHub PAT expires in ${daysLeft <= 0 ? "less than a day" : `${daysLeft} days`} (${expDate.toISOString().slice(0, 10)})`
+                          : `GitHub PAT expires on ${expDate.toISOString().slice(0, 10)}`}
+                      </span>
+                    </div>
+                  );
+                })()}
               </SheetHeader>
               <div className="flex items-center gap-2 px-4 pb-2">
                 <Button
@@ -4776,28 +4852,43 @@ export function SecretUsageTab({ loading, bindings }: { loading: boolean; bindin
           >
             <div className="flex items-center justify-between gap-2">
               <span className="flex items-center gap-1.5">
-                <span className="font-medium capitalize">{binding.target.type}</span>
+                <span className="font-medium capitalize">
+                  {binding.target.type === "github_actions" ? "GitHub Actions CI" : binding.target.type}
+                </span>
                 <Badge
                   variant="outline"
                   className={cn(
                     "h-5 px-1.5 text-(length:--text-nano) font-normal",
-                    deliveryMode === "api"
-                      ? "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300"
-                      : deliveryMode === "env"
-                        ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-                        : null,
+                    binding.target.type === "github_actions"
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                      : deliveryMode === "api"
+                        ? "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                        : deliveryMode === "env"
+                          ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                          : null,
                   )}
                 >
-                  {deliveryModeLabel(deliveryMode)}
+                  {binding.target.type === "github_actions" ? "CI Secret" : deliveryModeLabel(deliveryMode)}
                 </Badge>
               </span>
               <span className="font-mono text-muted-foreground">v{binding.versionSelector}</span>
             </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-2">
               {binding.target.href ? (
-                <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
-                  {binding.target.label}
-                </Link>
+                binding.target.href.startsWith("http") ? (
+                  <a
+                    href={binding.target.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate font-medium text-primary hover:underline"
+                  >
+                    {binding.target.label}
+                  </a>
+                ) : (
+                  <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
+                    {binding.target.label}
+                  </Link>
+                )
               ) : (
                 <span className="truncate font-medium">{binding.target.label}</span>
               )}

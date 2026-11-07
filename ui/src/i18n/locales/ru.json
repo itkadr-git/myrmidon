@@ -131,6 +131,7 @@
       "status": "Владелец · Web"
     },
     "screens": {
+      "commander": "Командный центр",
       "decisions": "Решения",
       "costs": "Расходы",
       "agentOverview": "Обзор агента",
@@ -419,7 +420,9 @@
       "state": "Состояние",
       "window5h": "Окно 5ч",
       "window7d": "Окно 7д",
-      "lastOk": "Последний OK"
+      "lastOk": "Последний OK",
+      "lastError": "Последняя ошибка",
+      "resetIn": "Сброс через"
     },
     "litellmChannels": {
       "title": "Группы моделей и каналы LiteLLM",
@@ -575,6 +578,12 @@
     "diarization": "Разделение говорящих (diarization)",
     "maxDuration": "Лимит длительности, секунд",
     "maxDurationHint": "Более длинные записи отклоняются с audio_too_long.",
+    "baseUrl": "Адрес операторского STT endpoint",
+    "baseUrlHint": "Только операторский HTTP(S) endpoint; пустое поле наследует настройку экземпляра.",
+    "keySecret": "Ключ DashScope (секрет компании)",
+    "deepgramKeySecret": "Ключ Deepgram (секрет компании)",
+    "keepSecret": "Оставить текущий выбор секрета",
+    "noSecret": "Секрет не выбран",
     "save": "Сохранить настройки",
     "saving": "Сохранение..."
   },

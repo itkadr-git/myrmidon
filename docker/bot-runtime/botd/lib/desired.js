@@ -38,6 +38,9 @@ export function parseDesiredState(body) {
   for (const k of ["closingMinutes", "scratchTtlHours", "orphanHours"]) {
     if (!isPosInt(grace[k])) return bad(`grace.${k} is not a positive integer`);
   }
+  for (const k of ["npmCacheTtlHours", "uvCacheTtlHours", "terminalOutputTtlHours"]) {
+    if (grace[k] !== undefined && !isPosInt(grace[k])) return bad(`grace.${k} is not a positive integer`);
+  }
   if (grace.legacyPressureIdleDays !== undefined && !(isPosInt(grace.legacyPressureIdleDays) && grace.legacyPressureIdleDays <= 90)) {
     return bad("grace.legacyPressureIdleDays is not 1..90");
   }
