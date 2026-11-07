@@ -117,8 +117,8 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     ]);
 
     await ctx.db.insert(issueThreadInteractions).values([
-      { id: randomUUID(), companyId, issueId, kind: "ask_user_questions", status: "pending" },
-      { id: randomUUID(), companyId, issueId, kind: "ask_user_questions", status: "resolved" },
+      { id: randomUUID(), companyId, issueId, kind: "ask_user_questions", status: "pending", payload: {} },
+      { id: randomUUID(), companyId, issueId, kind: "ask_user_questions", status: "resolved", payload: {} },
     ]);
 
     await ctx.db.insert(inboxDismissals).values([
