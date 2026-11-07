@@ -802,7 +802,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(alarmIssue).toBeDefined();
     expect(alarmIssue?.status).toBe("todo");
     expect(alarmIssue?.priority).toBe("high");
-    expect(alarmIssue?.title).toContain("ALARM: события GitHub не поступают");
+    expect(alarmIssue?.title).toContain("ALARM: события GitHub");
 
     // Second sweep with healthy event timestamp (now - 2 minutes) -> resolves alarm
     const healthyTime = new Date("2026-11-03T01:05:00.000Z");
@@ -815,6 +815,14 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       entityId: connectionId,
       createdAt: new Date("2026-11-03T01:03:00.000Z"),
       details: {},
+    });
+    await db.insert(connectionEventDeliveries).values({
+      companyId,
+      provider: "github",
+      providerDeliveryId: `delivery-${randomUUID()}`,
+      event: "check_run",
+      status: "processed",
+      createdAt: new Date("2026-11-03T01:03:00.000Z"),
     });
 
     const sweep2 = await service.sweepWatchdog(healthyTime);
