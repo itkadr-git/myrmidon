@@ -154,10 +154,11 @@ describeEmbeddedPostgres("corpus MCP endpoint over the settings row", () => {
     // Scoped search by dataset name resolves correctly
     const byName = await request(app)
       .post(URL)
-      .send({ id: 5, method: "tools/call", params: { name: "corpus_search", arguments: { query: "сроки", dataset: "Договоры" } } })
+      .send({ id: 5, method: "tools/call", params: { name: "corpus_search", arguments: { query: "сроки поставки товара", dataset: "Договоры" } } })
       .expect(200);
     expect(byName.body.result.isError).toBeUndefined();
     expect(byName.body.result.structuredContent.hits.length).toBeGreaterThan(0);
+    expect(byName.body.result.structuredContent.hits[0].document.datasetName).toBe("Договоры");
 
     // The operator's ceiling is the operator's: a bot cannot raise it.
     const over = await request(app)

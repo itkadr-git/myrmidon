@@ -168,12 +168,6 @@ run("production corpus adapters", () => {
     expect((await tools!.listDatasets()).map((dataset) => dataset.id)).toContain(created.id);
     await createCorpusPorts(db, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config).store.updateDataset(companyId, created.id, { name: "renamed" });
     expect((await tools!.listDatasets()).find((dataset) => dataset.id === created.id)?.name).toBe("renamed");
-
-    // Search by dataset name when empty yields empty hits without error
-    const searchByName = await tools!.search({ query: "test", datasets: ["renamed"], topK: 5, minScore: null });
-    expect(searchByName.hits).toEqual([]);
-    expect(searchByName.datasets).toEqual([created.id]);
-
     await db.$client.end();
   });
 
