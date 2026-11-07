@@ -9,7 +9,7 @@
  * Zero DB, network or process dependencies — pure functions only.
  */
 
-export const MYRMIDON_SELF_CHECK_REJECT_CODES = {
+export const SELF_CHECK_REJECT_CODES = {
   EMPTY_DIFF: "EMPTY_DIFF",
   TEST_FAILED: "TEST_FAILED",
   LINT_FAILED: "LINT_FAILED",
@@ -19,8 +19,9 @@ export const MYRMIDON_SELF_CHECK_REJECT_CODES = {
   LINT_MISSING: "LINT_MISSING",
 } as const;
 
-export type MyrmidonSelfCheckRejectCode =
-  (typeof MYRMIDON_SELF_CHECK_REJECT_CODES)[keyof typeof MYRMIDON_SELF_CHECK_REJECT_CODES];
+export type SelfCheckRejectCode =
+  (typeof SELF_CHECK_REJECT_CODES)[keyof typeof SELF_CHECK_REJECT_CODES];
+export type MyrmidonSelfCheckRejectCode = SelfCheckRejectCode;
 
 export interface MyrmidonDiffStats {
   readonly changedFiles: number;
@@ -51,7 +52,7 @@ export interface SelfCheckGateReject {
 
 export type SelfCheckGateDecision = SelfCheckGateAdmit | SelfCheckGateReject;
 
-export const MYRMIDON_SELF_CHECK_MESSAGES: Record<
+export const SELF_CHECK_MESSAGES: Record<
   MyrmidonSelfCheckRejectCode,
   (detail?: Record<string, unknown>) => string
 > = {
@@ -89,7 +90,7 @@ export function rejectSelfCheckGate(
   customMessage?: string,
   detail?: Record<string, unknown>,
 ): SelfCheckGateReject {
-  const message = customMessage ?? MYRMIDON_SELF_CHECK_MESSAGES[code](detail);
+  const message = customMessage ?? SELF_CHECK_MESSAGES[code](detail);
   return {
     kind: "reject",
     admitted: false,
@@ -206,7 +207,7 @@ export class SelfCheckGateError extends Error {
     const message = decision.kind === "reject" ? decision.message : "Self-check gate admitted";
     super(message);
     this.name = "SelfCheckGateError";
-    this.code = decision.kind === "reject" ? decision.code : MYRMIDON_SELF_CHECK_REJECT_CODES.TEST_FAILED;
+    this.code = decision.kind === "reject" ? decision.code : SELF_CHECK_REJECT_CODES.TEST_FAILED;
     this.decision = decision;
   }
 }
@@ -220,7 +221,7 @@ export function evaluateSelfCheckGate(
   // 1. Diff verification: empty diff is always rejected
   if (isMyrmidonDiffEmpty(input.diff)) {
     return rejectSelfCheckGate(
-      MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF,
+      SELF_CHECK_REJECT_CODES.EMPTY_DIFF,
       undefined,
       { currentHeadSha },
     );
@@ -235,14 +236,14 @@ export function evaluateSelfCheckGate(
   // 2. Test run verification
   if (!input.test) {
     const code = options?.distinguishMissing
-      ? MYRMIDON_SELF_CHECK_REJECT_CODES.TEST_MISSING
-      : MYRMIDON_SELF_CHECK_REJECT_CODES.TEST_FAILED;
+      ? SELF_CHECK_REJECT_CODES.TEST_MISSING
+      : SELF_CHECK_REJECT_CODES.TEST_FAILED;
     return rejectSelfCheckGate(code, undefined, { currentHeadSha });
   }
 
   if (input.test.status !== "success") {
     return rejectSelfCheckGate(
-      MYRMIDON_SELF_CHECK_REJECT_CODES.TEST_FAILED,
+      SELF_CHECK_REJECT_CODES.TEST_FAILED,
       undefined,
       { currentHeadSha, testStatus: input.test.status },
     );
@@ -250,7 +251,7 @@ export function evaluateSelfCheckGate(
 
   if (isCheckResultStale(input.test, currentHeadSha, freshnessOpts)) {
     return rejectSelfCheckGate(
-      MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_TEST,
+      SELF_CHECK_REJECT_CODES.STALE_TEST,
       undefined,
       { currentHeadSha, headSha: input.test.headSha },
     );
@@ -259,14 +260,14 @@ export function evaluateSelfCheckGate(
   // 3. Lint run verification
   if (!input.lint) {
     const code = options?.distinguishMissing
-      ? MYRMIDON_SELF_CHECK_REJECT_CODES.LINT_MISSING
-      : MYRMIDON_SELF_CHECK_REJECT_CODES.LINT_FAILED;
+      ? SELF_CHECK_REJECT_CODES.LINT_MISSING
+      : SELF_CHECK_REJECT_CODES.LINT_FAILED;
     return rejectSelfCheckGate(code, undefined, { currentHeadSha });
   }
 
   if (input.lint.status !== "success") {
     return rejectSelfCheckGate(
-      MYRMIDON_SELF_CHECK_REJECT_CODES.LINT_FAILED,
+      SELF_CHECK_REJECT_CODES.LINT_FAILED,
       undefined,
       { currentHeadSha, lintStatus: input.lint.status },
     );
@@ -274,7 +275,7 @@ export function evaluateSelfCheckGate(
 
   if (isCheckResultStale(input.lint, currentHeadSha, freshnessOpts)) {
     return rejectSelfCheckGate(
-      MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_LINT,
+      SELF_CHECK_REJECT_CODES.STALE_LINT,
       undefined,
       { currentHeadSha, headSha: input.lint.headSha },
     );

@@ -3,7 +3,8 @@
  */
 
 export {
-  MYRMIDON_SELF_CHECK_REJECT_CODES,
+  SELF_CHECK_REJECT_CODES,
+  type SelfCheckRejectCode,
   type MyrmidonSelfCheckRejectCode,
   type MyrmidonDiffStats,
   type MyrmidonCheckStatus,
@@ -23,5 +24,5 @@ export {
   isCheckResultStale,
   evaluateSelfCheckGate,
   assertSelfCheckGate,
-  MYRMIDON_SELF_CHECK_MESSAGES,
+  SELF_CHECK_MESSAGES,
 } from "./domain.js";
