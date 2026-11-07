@@ -1,0 +1,74 @@
+diff --git a/agent/opencode_affinity.py b/agent/opencode_affinity.py
+index d61ff46..328a345 100644
+--- a/agent/opencode_affinity.py
++++ b/agent/opencode_affinity.py
+@@ -128,6 +128,20 @@ def custom_provider_session_affinity_headers(
+     return {header: key} if key else {}
+ 
+ 
++def custom_provider_affinity_cache_key(
++    base_url: Optional[str],
++    session_id: Optional[str] = None,
++) -> str:
++    """The conversation key of the route's ``session_affinity_header``, else "".
++
++    myrmidon(G1): the value the header carries (same resolution, so the two cannot drift), for the
++    request body's ``prompt_cache_key``. A provider entry that asks for the conversation key in a
++    header is a session-aware endpoint; the same key in the body is what a ChatGPT-backed pool routes
++    its prompt cache on. Empty for every route that did not opt in.
++    """
++    return next(iter(custom_provider_session_affinity_headers(base_url, session_id).values()), "")
++
++
+ def merge_session_affinity_headers(
+     kwargs: dict[str, Any],
+     provider: Optional[str],
+diff --git a/agent/transports/chat_completions.py b/agent/transports/chat_completions.py
+index 76782c8..4d26d04 100644
+--- a/agent/transports/chat_completions.py
++++ b/agent/transports/chat_completions.py
+@@ -71,7 +71,7 @@ def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
+ def _add_prompt_cache_key(
+     api_kwargs: dict[str, Any], *, messages: list[dict[str, Any]],
+     tools: list[dict[str, Any]] | None, supports_prompt_cache_key: bool,
+-    session_id: str | None = None, cache_scope_id: str | None = None,
++    session_id: str | None = None, cache_scope_id: str | None = None, base_url: str | None = None,
+ ) -> None:
+     """Add a content-addressed ``prompt_cache_key`` only for a capable endpoint.
+ 
+@@ -93,7 +93,7 @@ def _add_prompt_cache_key(
+     # key in extra_body (not top-level) and GitHub/Copilot Responses opts out of cache-key routing entirely
+     # — for those hosts, skip it here.
+     from agent.transports.codex import (
+-        _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key
++        _bound_prompt_cache_key_field, _bounded_prompt_cache_key, _cache_scope_from_session_id, _content_cache_key
+     )
+ 
+     containers = [c for c in (api_kwargs, api_kwargs.get("extra_body")) if isinstance(c, dict) and "prompt_cache_key" in c]
+@@ -101,6 +101,18 @@ def _add_prompt_cache_key(
+         for c in containers:
+             _bound_prompt_cache_key_field(c)
+         return
++    # myrmidon(G1): an endpoint whose providers entry names a session_affinity_header asks for the
++    # conversation key, and gets it in the body too: the header's own value, so one conversation is
++    # one key on both. The pool of ChatGPT accounts behind such a gateway spreads its prompt cache
++    # by this key; without it the key is absent and a conversation's requests land on any account.
++    # Routes that did not opt in (every other endpoint) are untouched.
++    if base_url:
++        from agent.opencode_affinity import custom_provider_affinity_cache_key
++
++        affinity_key = _bounded_prompt_cache_key(custom_provider_affinity_cache_key(base_url, session_id))
++        if affinity_key:
++            api_kwargs["prompt_cache_key"] = affinity_key
++            return
+     if not supports_prompt_cache_key:
+         return
+     cache_key = _content_cache_key(
+@@ -368,6 +380,7 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
+     _add_prompt_cache_key(
+         api_kwargs, messages=sanitized, tools=api_kwargs.get("tools"), supports_prompt_cache_key=supports_prompt_cache_key,
+         session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
++        base_url=params.get("base_url"),
+     )
+     return api_kwargs
+ 
