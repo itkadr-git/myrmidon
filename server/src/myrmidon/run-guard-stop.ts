@@ -8,9 +8,17 @@
 // `blocked` through the stranded-recovery escalation with a comment that says
 // why and what is needed (a new input: clarify or split the task).
 //
-// This module holds the pure parts: recognising a guard-stopped run and the
-// comment text. The wiring is in services/heartbeat.ts (stop handling and the
-// retry scheduler) and services/recovery/service.ts (the stranded sweep).
+// One stop is not final: `model_call_limit` also trips on productive work. A
+// run that hit the call limit after making changes (patch, write_file, a
+// terminal command that writes: `writeCalls` in the guard statistics) is a run
+// that was working, not looping, so the board continues it the way it continues
+// a run that ran out of turns (RUN-GUARD-CONTINUE), within the same attempt
+// ceiling. When that ceiling is spent the stop is final again.
+//
+// This module holds the pure parts: recognising a guard-stopped run, whether it
+// continues, and the comment text. The wiring is in services/heartbeat.ts (stop
+// handling and the retry scheduler) and services/recovery/service.ts (the
+// stranded sweep).
 
 import { isRunGuardStopReason, type RunGuardStopReason } from "@myrmidon/adapter-utils/run-guard";
 
@@ -60,6 +68,35 @@ function callsWord(count: number): string {
 export interface RunGuardStopStats {
   readOnlyStreak?: number;
   modelCalls?: number;
+  /** Calls that were not read-only (myrmidon(RUN-GUARD-CONTINUE)). */
+  writeCalls?: number;
+}
+
+/**
+ * How many calls that change something the stopped run made, from the guard
+ * statistics (passed in, or stored by heartbeat next to the stop reason).
+ * 0 when unknown: a run stored before the counter existed, or one whose adapter
+ * does not feed the guard tool calls.
+ */
+export function readRunGuardWriteCalls(
+  run: RunGuardStopRunShape | null | undefined,
+  statsOverride?: RunGuardStopStats | null,
+): number {
+  const stats = statsOverride ?? asRecord(asRecord(run?.resultJson)?.runGuardStats);
+  return readCount(stats?.writeCalls);
+}
+
+/**
+ * True when a guard stop is not final: the call limit tripped on a run that
+ * made changes. Loops (`no_progress_exploration`, `repeated_tool_call`,
+ * `tool_retry_loop`, `idle_timeout`) and a call-limit stop without a single
+ * change stay final: another run would repeat the same behaviour.
+ */
+export function shouldContinueAfterRunGuardStop(
+  run: RunGuardStopRunShape | null | undefined,
+  stats?: RunGuardStopStats | null,
+): boolean {
+  return readRunGuardStopReason(run) === "model_call_limit" && readRunGuardWriteCalls(run, stats) > 0;
 }
 
 /**

@@ -80,11 +80,15 @@ The hermes gateway `tool.started` event carries only the tool name and a short `
 
 ## 6. After a Guard Stop: No Automatic Retry
 
-A run stopped by any guard reason is never retried by the board:
+A run stopped by any guard reason is never retried by the board, with one exception (below, "Call limit with changes"):
 
 - the five reasons are listed as permanent failures in the run retry taxonomy (`PERMANENT_RUN_FAILURE_ERROR_CODES`), so the stranded-issue sweep escalates instead of continuing;
 - `scheduleBoundedRetryForRun` and the stranded-recovery enqueue refuse a guard-stopped predecessor, whoever asks;
 - when the run ends, the assignee's `todo` / `in_progress` / `in_review` issue is moved to `blocked` through the stranded-recovery escalation with a system comment: why the run was stopped, the number of calls made without a write, that a new input (clarify or split the task) is needed, and that no automatic retry follows.
 
 Maintenance interruptions (`myrmidon_maintenance_interrupted`) and transport failures (`hermes_gateway_connect_failed`, rate limits) are not guard stops and keep their own retry paths.
+
+### Call limit with changes (RUN-GUARD-CONTINUE)
+
+`model_call_limit` also trips on productive work, so it is not final when the run was changing things. `RunGuard.stats()` carries `writeCalls`: the tool calls the classifier above does not take for read-only (`patch`, `write_file`, terminal commands that write, any other tool). It is stored with the run next to `readOnlyStreak` and `modelCalls` (`runGuardStats` in the run result). When a run stops with `model_call_limit` and `writeCalls > 0`, the board does not block the issue; it continues the work the way it continues a run that ran out of turns: a follow-up run with the `max_turns_continuation` retry reason, bounded by the same ceiling (`runtimeConfig.heartbeat.maxTurnContinuation.maxAttempts`, default 2, counted along the chain of follow-ups) and gated by the same issue checks (the issue must still be `in_progress` and assigned to the agent). When the ceiling is spent, the continuation policy is off, or the issue has moved on, the stop is final as described above. A call-limit stop with `writeCalls == 0` and every other reason (`no_progress_exploration`, `repeated_tool_call`, `tool_retry_loop`, `idle_timeout`) stay final. Adapters that do not feed `toolStarted` report `writeCalls: 0`, so their call-limit stops stay final.
 
