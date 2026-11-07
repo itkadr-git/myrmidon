@@ -437,10 +437,10 @@ func TestValidateGatewayBindIPTable(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:      "valid private network IP with port range",
+			name:      "valid alternate remote site interface IP with port range",
 			portStart: 18700,
 			portEnd:   18799,
-			bindIP:    "192.168.1.10",
+			bindIP:    "198.51.100.10",
 			wantErr:   false,
 		},
 		{
