@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
+import {
+  SELF_WAKE_SKIPPED_REASON,
+  isSelfWake,
+  queueIssueAssignmentWakeup,
+} from "./issue-assignment-wakeup.js";
 
 function heartbeatSpy() {
   const wakeup = vi.fn().mockResolvedValue(undefined);
@@ -144,5 +148,92 @@ describe("queueIssueAssignmentWakeup", () => {
       contextSource: "issue.update",
     });
     expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+});
+
+// myrmidon(1.6.6 OPE-12049, TOKEN-BURN H): the assignee's own write never wakes
+// the assignee; every other actor still does.
+describe("queueIssueAssignmentWakeup: an agent does not wake itself", () => {
+  const issue = { id: "issue-s", assigneeAgentId: "agent-a", status: "todo" };
+  const base = {
+    issue,
+    reason: "issue_assigned",
+    mutation: "update",
+    contextSource: "issue.update",
+  };
+
+  it("skips the wake when the acting agent is the assignee", async () => {
+    const { heartbeat, wakeup } = heartbeatSpy();
+    const result = await queueIssueAssignmentWakeup({
+      ...base,
+      heartbeat,
+      requestedByActorType: "agent",
+      requestedByActorId: "agent-a",
+    });
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(result).toBeNull();
+    expect(SELF_WAKE_SKIPPED_REASON).toBe("self_wake_skipped");
+  });
+
+  it("skips the swarm_matched reason too when the assignee is the acting agent", async () => {
+    const { heartbeat, wakeup } = heartbeatSpy();
+    await queueIssueAssignmentWakeup({
+      ...base,
+      heartbeat,
+      reason: "swarm_matched",
+      mutation: "swarm_matched",
+      contextSource: "swarm_matched",
+      requestedByActorType: "agent",
+      requestedByActorId: "agent-a",
+    });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes the assignee when another agent made the change", async () => {
+    const { heartbeat, wakeup } = heartbeatSpy();
+    await queueIssueAssignmentWakeup({
+      ...base,
+      heartbeat,
+      requestedByActorType: "agent",
+      requestedByActorId: "agent-b",
+    });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup.mock.calls[0][0]).toBe("agent-a");
+    expect(wakeup.mock.calls[0][1]).toMatchObject({
+      requestedByActorType: "agent",
+      requestedByActorId: "agent-b",
+    });
+  });
+
+  it("wakes the assignee when a user made the change, even with the same id string", async () => {
+    const { heartbeat, wakeup } = heartbeatSpy();
+    await queueIssueAssignmentWakeup({
+      ...base,
+      heartbeat,
+      requestedByActorType: "user",
+      requestedByActorId: "agent-a",
+    });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("wakes the assignee for a system actor and for a caller that reports no actor", async () => {
+    const { heartbeat, wakeup } = heartbeatSpy();
+    await queueIssueAssignmentWakeup({ ...base, heartbeat, requestedByActorType: "system" });
+    await queueIssueAssignmentWakeup({ ...base, heartbeat });
+    await queueIssueAssignmentWakeup({
+      ...base,
+      heartbeat,
+      requestedByActorType: "agent",
+      requestedByActorId: null,
+    });
+    expect(wakeup).toHaveBeenCalledTimes(3);
+  });
+
+  it("isSelfWake needs an agent actor whose id is the assignee", () => {
+    expect(isSelfWake({ assigneeAgentId: "a", requestedByActorType: "agent", requestedByActorId: "a" })).toBe(true);
+    expect(isSelfWake({ assigneeAgentId: "a", requestedByActorType: "agent", requestedByActorId: "b" })).toBe(false);
+    expect(isSelfWake({ assigneeAgentId: "a", requestedByActorType: "user", requestedByActorId: "a" })).toBe(false);
+    expect(isSelfWake({ assigneeAgentId: null, requestedByActorType: "agent", requestedByActorId: null })).toBe(false);
+    expect(isSelfWake({ assigneeAgentId: "a" })).toBe(false);
   });
 });

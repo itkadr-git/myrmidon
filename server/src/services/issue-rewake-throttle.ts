@@ -116,6 +116,71 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   "myrmidon.task_pr_sync.returned",
 ];
 
+/** One issue activity row, as the throttle's progress and new-input reads see it. */
+export interface IssueActivitySample {
+  action: string;
+  actorType?: string | null;
+  actorId?: string | null;
+  details?: unknown;
+}
+
+/**
+ * myrmidon(1.6.6 OPE-12049, TOKEN-BURN H): the agent's own write is never "new
+ * input" for that agent. A comment the server posts for the agent's run after
+ * the run closed (`run_presentation_resolver`), its own PATCH, its own release:
+ * all land after `finishedAt` and used to re-open the throttle, so a task the
+ * agent keeps re-waking itself on never cooled down.
+ */
+export function isOwnAgentActivity(row: IssueActivitySample, agentId: string): boolean {
+  return row.actorType === "agent" && Boolean(row.actorId) && row.actorId === agentId;
+}
+
+const ASSIGNMENT_BOOKKEEPING_FIELDS: ReadonlySet<string> = new Set([
+  "assigneeAgentId",
+  "assigneeUserId",
+  "responsibleUserId",
+]);
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** `issue.updated` that only gave the task back to the agent that holds it (release, then assign to itself). */
+function isSelfReassignment(row: IssueActivitySample, agentId: string): boolean {
+  if (row.action !== "issue.updated") return false;
+  const changes = readRecord(readRecord(row.details)?.changes);
+  if (!changes) return false;
+  const fields = Object.keys(changes);
+  if (fields.length === 0 || !fields.every((field) => ASSIGNMENT_BOOKKEEPING_FIELDS.has(field))) {
+    return false;
+  }
+  return readRecord(changes.assigneeAgentId)?.to === agentId;
+}
+
+/**
+ * Does this activity, attributed to a run of `agentId`, count as issue-visible
+ * progress of that run? The listed actions do, except the run's own bookkeeping:
+ * the echo of its final text (`run_presentation_resolver` comment), the release
+ * of the task and the assignment back to itself. The 07.11 adm loop was exactly
+ * that: every run released the task, assigned it to itself and got its answer
+ * echoed as a comment, so every run looked like progress and the streak never
+ * started.
+ */
+export function isIssueProgressActivity(row: IssueActivitySample, agentId: string): boolean {
+  if (!ISSUE_PROGRESS_ACTIVITY_ACTIONS.includes(row.action)) return false;
+  if (row.action === "issue.released") return false;
+  if (
+    row.action === "issue.comment_added" &&
+    readRecord(row.details)?.source === "run_presentation_resolver"
+  ) {
+    return false;
+  }
+  if (isSelfReassignment(row, agentId)) return false;
+  return true;
+}
+
 export interface IssueRewakeCandidateInput {
   reason: string | null;
   wakeCommentId: string | null;

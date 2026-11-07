@@ -37,6 +37,35 @@ function isClosedIssueStatus(
   return status === "done" || status === "cancelled";
 }
 
+/** Why a wake was not queued: the agent that made the change is the assignee. */
+export const SELF_WAKE_SKIPPED_REASON = "self_wake_skipped";
+
+// myrmidon(1.6.6 OPE-12049, TOKEN-BURN H): an agent never wakes itself with its
+// own write. The agent that PATCHes, creates or comments on a task is, by
+// definition, inside a run: it already holds the context the wake would build,
+// so the wake only pays one more empty session (07.11: the adm bot burned ten
+// empty runs an hour on "Wake from own PATCH (issue_assigned)"). The actor the
+// caller reports is compared with the assignee here, in the one shared
+// service, so every call point is covered at once. A user, a system actor or
+// another agent still wakes the assignee as before.
+export function isSelfWake(input: {
+  assigneeAgentId: string | null | undefined;
+  requestedByActorType?: "user" | "agent" | "system" | null;
+  requestedByActorId?: string | null;
+}): boolean {
+  return (
+    input.requestedByActorType === "agent" &&
+    Boolean(input.requestedByActorId) &&
+    input.requestedByActorId === input.assigneeAgentId
+  );
+}
+
+/**
+ * Queues the assignee's wake. Returns `undefined` when the issue cannot be woken
+ * (no assignee, backlog, closed), `null` when the wake was skipped because the
+ * assignee made the change itself (`SELF_WAKE_SKIPPED_REASON`, logged) or could
+ * not be queued, and the wake's promise otherwise.
+ */
 export function queueIssueAssignmentWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
   issue: {
@@ -74,6 +103,26 @@ export function queueIssueAssignmentWakeup(input: {
     isClosedIssueStatus(input.issue.status)
   ) {
     return;
+  }
+
+  if (
+    isSelfWake({
+      assigneeAgentId: input.issue.assigneeAgentId,
+      requestedByActorType: input.requestedByActorType,
+      requestedByActorId: input.requestedByActorId,
+    })
+  ) {
+    logger.info(
+      {
+        issueId: input.issue.id,
+        agentId: input.issue.assigneeAgentId,
+        reason: input.reason,
+        mutation: input.mutation,
+        skipped: SELF_WAKE_SKIPPED_REASON,
+      },
+      "issue assignment wake skipped: the actor is the assignee",
+    );
+    return null;
   }
 
   // myrmidon(X8a): an Agent Chat conversation keeps one provider session

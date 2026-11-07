@@ -5,6 +5,8 @@ import {
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
+  isIssueProgressActivity,
+  isOwnAgentActivity,
   isThrottleCandidateIssueRewake,
 } from "../services/issue-rewake-throttle.ts";
 
@@ -259,6 +261,106 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(evaluateIssueRewakeThrottle({
       now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: new Set(),
       hasNewIssueInputSinceLastRun: true,
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+});
+
+// myrmidon(1.6.6 OPE-12049, TOKEN-BURN H): the swarm_matched / idle_pickup loop
+// of 07.11. Every adm run released its task, assigned it to itself and got its
+// final text echoed as a comment by the server AFTER the run closed. Those
+// writes looked like progress and like new input, so the throttle never
+// started. The agent's own writes are not new input for itself, and its own
+// bookkeeping is not progress.
+describe("agent's own writes in the rewake throttle", () => {
+  const AGENT = "agent-adm";
+  const OTHER = "agent-other";
+
+  const echoComment = {
+    action: "issue.comment_added",
+    actorType: "agent",
+    actorId: AGENT,
+    details: { source: "run_presentation_resolver", commentId: "c1" },
+  };
+  const release = { action: "issue.released", actorType: "agent", actorId: AGENT, details: null };
+  const reassignToSelf = {
+    action: "issue.updated",
+    actorType: "agent",
+    actorId: AGENT,
+    details: {
+      changes: {
+        assigneeAgentId: { from: null, to: AGENT },
+        responsibleUserId: { from: "user-1", to: null },
+      },
+    },
+  };
+
+  it("recognises the agent's own activity by actor type and id only", () => {
+    expect(isOwnAgentActivity(echoComment, AGENT)).toBe(true);
+    expect(isOwnAgentActivity(echoComment, OTHER)).toBe(false);
+    expect(isOwnAgentActivity({ action: "issue.comment_added", actorType: "user", actorId: AGENT }, AGENT)).toBe(false);
+    expect(isOwnAgentActivity({ action: "issue.comment_added", actorType: "agent", actorId: null }, AGENT)).toBe(false);
+  });
+
+  it("does not count release, self re-assignment or the echo of the final text as progress", () => {
+    expect(isIssueProgressActivity(release, AGENT)).toBe(false);
+    expect(isIssueProgressActivity(reassignToSelf, AGENT)).toBe(false);
+    expect(isIssueProgressActivity(echoComment, AGENT)).toBe(false);
+  });
+
+  it("still counts a real comment, a status change, a hand-off to another agent and a document as progress", () => {
+    expect(isIssueProgressActivity({
+      action: "issue.comment_added", actorType: "agent", actorId: AGENT,
+      details: { source: "agent_comment" },
+    }, AGENT)).toBe(true);
+    expect(isIssueProgressActivity({
+      action: "issue.updated", actorType: "agent", actorId: AGENT,
+      details: { changes: { status: { from: "todo", to: "in_review" } } },
+    }, AGENT)).toBe(true);
+    expect(isIssueProgressActivity({
+      action: "issue.updated", actorType: "agent", actorId: AGENT,
+      details: { changes: { assigneeAgentId: { from: AGENT, to: OTHER } } },
+    }, AGENT)).toBe(true);
+    expect(isIssueProgressActivity({
+      action: "issue.updated", actorType: "agent", actorId: AGENT,
+      details: { changes: { assigneeAgentId: { from: null, to: AGENT }, status: { from: "backlog", to: "todo" } } },
+    }, AGENT)).toBe(true);
+    expect(isIssueProgressActivity({
+      action: "issue.document_upserted", actorType: "agent", actorId: AGENT, details: {},
+    }, AGENT)).toBe(true);
+    // not a progress action at all
+    expect(isIssueProgressActivity({ action: "issue.checkout", actorType: "agent", actorId: AGENT }, AGENT)).toBe(false);
+  });
+
+  it("starts the throttle on runs whose only activity is the agent's own bookkeeping", () => {
+    const runs = [0, 1, 2].map((i) => runSample({ id: `r${i}`, finishedSecondsAgo: 60 + i * 120 }));
+    const ownRows = [
+      ...[release, reassignToSelf, echoComment].map((row) => ({ ...row, runId: "r0" })),
+      ...[release, reassignToSelf, echoComment].map((row) => ({ ...row, runId: "r1" })),
+      ...[release, reassignToSelf, echoComment].map((row) => ({ ...row, runId: "r2" })),
+    ];
+    const withProgress = new Set(
+      ownRows.filter((row) => isIssueProgressActivity(row, AGENT)).map((row) => row.runId),
+    );
+    expect(withProgress.size).toBe(0);
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: withProgress,
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision).toMatchObject({ blocked: true, frozen: false, noProgressStreak: 3 });
+  });
+
+  it("does not throttle when the latest run really moved the task", () => {
+    const runs = [0, 1, 2].map((i) => runSample({ id: `r${i}`, finishedSecondsAgo: 60 + i * 120 }));
+    const real = {
+      action: "issue.updated", actorType: "agent", actorId: AGENT, runId: "r0",
+      details: { changes: { status: { from: "todo", to: "in_review" } } },
+    };
+    const withProgress = new Set(
+      [real, { ...release, runId: "r0" }].filter((row) => isIssueProgressActivity(row, AGENT)).map((row) => row.runId),
+    );
+    expect(evaluateIssueRewakeThrottle({
+      now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: withProgress,
+      hasNewIssueInputSinceLastRun: false,
     })).toEqual({ blocked: false, noProgressStreak: 0 });
   });
 });

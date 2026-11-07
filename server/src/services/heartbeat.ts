@@ -514,6 +514,7 @@ import {
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   ISSUE_REWAKE_FREEZE_THRESHOLD,
   evaluateIssueRewakeThrottle,
+  isIssueProgressActivity,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 
@@ -33251,8 +33252,14 @@ export function heartbeatService(
               const sampleRunIds = recentTerminalRuns.map(
                 (sampleRun) => sampleRun.id,
               );
-              const progressRows = await tx
-                .select({ runId: activityLog.runId })
+              const progressActivityRows = await tx
+                .select({
+                  runId: activityLog.runId,
+                  action: activityLog.action,
+                  actorType: activityLog.actorType,
+                  actorId: activityLog.actorId,
+                  details: activityLog.details,
+                })
                 .from(activityLog)
                 .where(
                   and(
@@ -33266,6 +33273,11 @@ export function heartbeatService(
                     ),
                   ),
                 );
+              // myrmidon(1.6.6 OPE-12049): a run's own bookkeeping (release,
+              // assign to itself, the echo of its final text) is not progress.
+              const progressRows = progressActivityRows.filter((row) =>
+                isIssueProgressActivity(row, agentId),
+              );
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
               const latestRevision = readNonEmptyString(
@@ -33288,6 +33300,9 @@ export function heartbeatService(
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
                           : undefined,
+                        // myrmidon(1.6.6 OPE-12049): the woken agent's own
+                        // writes are not new input for itself.
+                        sql`(${activityLog.actorType} is distinct from 'agent' or ${activityLog.actorId} is distinct from ${agentId})`,
                       ),
                     )
                     .limit(1)
