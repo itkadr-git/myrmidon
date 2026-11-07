@@ -70,9 +70,15 @@ import {
 // myrmidon(RUN-GUARD-CONTINUE): except a call-limit stop of a run that made changes.
 import {
   NO_PROGRESS_AUTO_RETRY_HINT,
+  RUN_GUARD_CONTINUATION_CONTEXT_KEY,
+  buildRunGuardStopComment,
   buildRunGuardStopNotice,
+  maxTurnContinuationSchedulerCeiling,
+  parseRunGuardContinuationPolicy,
+  readRunGuardContinuationCount,
   readRunGuardStopReason,
   readRunGuardWriteCalls,
+  runGuardContinuationSchedulerCeiling,
   shouldContinueAfterRunGuardStop,
   type RunGuardStopStats,
 } from "../myrmidon/run-guard-stop.js";
@@ -16486,8 +16492,14 @@ export function heartbeatService(
   // myrmidon(RUN-GUARD-CONTINUE): one stop is not final. `model_call_limit` also
   // trips on productive work, so a call-limit stop of a run that made changes
   // (`writeCalls` > 0) continues the work like a max-turn stop does and leaves
-  // the issue as it is; only when the continuation cannot be scheduled (attempt
+  // the issue as it is; only when the continuation cannot be scheduled (its own
   // ceiling spent, policy off, issue moved on) does the stop become final here.
+  //
+  // myrmidon(RUN-GUARD-ESCALATE): a final stop blocks the issue and nobody was
+  // told. The assignee's manager (reports_to, else the agent `adm`) is woken with
+  // `run_guard_stop_needs_input`, once per issue per 30 minutes, to give the task
+  // a new input and put it back to todo. The assignee and the status stay as the
+  // escalation left them.
   async function handleRunGuardStop(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -16527,21 +16539,39 @@ export function heartbeatService(
     ) {
       return null;
     }
-    return recovery.escalateStrandedAssignedIssue({
+    const escalated = await recovery.escalateStrandedAssignedIssue({
       issue,
       previousStatus: issue.status,
       latestRun: run,
       notice: buildRunGuardStopNotice(run, guardStats),
     });
+    if (escalated) {
+      await recovery
+        .wakeManagerForRunGuardStop({
+          issue,
+          latestRun: run,
+          stopText: buildRunGuardStopComment(run, guardStats),
+        })
+        .catch((err) => {
+          logger.warn(
+            { err, runId: run.id, issueId: issue.id },
+            "failed to wake the manager after a run guard stop",
+          );
+        });
+    }
+    return escalated;
   }
 
   // myrmidon(RUN-GUARD-CONTINUE): continue the work of a run the run guard
   // stopped at the model call limit after it made changes. The same machinery as
-  // the max-turn continuation: the same retry reason, the same attempt ceiling
-  // (`heartbeat.maxTurnContinuation.maxAttempts`, counted along the chain of
-  // continuations), the same issue gate. Returns true when a continuation run
-  // is scheduled (the caller then leaves the issue alone), false when it is not:
-  // the caller falls back to the final stop (block + comment).
+  // the max-turn continuation (the same retry reason, the same issue gate), but
+  // with its own ceiling: `heartbeat.runGuardContinuation.maxAttempts` (default
+  // 6, at most 20), counted along the chain of such continuations only. The
+  // max-turn ceiling (`heartbeat.maxTurnContinuation.maxAttempts`) is not spent
+  // by them: three productive runs of 150 calls each are work, not a loop.
+  // Returns true when a continuation run is scheduled (the caller then leaves
+  // the issue alone), false when it is not: the caller falls back to the final
+  // stop (block + comment).
   async function continueRunStoppedAtCallLimit(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -16549,14 +16579,39 @@ export function heartbeatService(
   ): Promise<boolean> {
     const reason = readRunGuardStopReason(run);
     const writeCalls = readRunGuardWriteCalls(run, guardStats);
-    const policy = parseMaxTurnContinuationPolicy(agent);
-    if (!policy.enabled || policy.maxAttempts <= 0) {
+    const isNoProgress = reason === "no_progress_exploration";
+    const maxTurnPolicy = parseMaxTurnContinuationPolicy(agent);
+    const guardPolicy = parseRunGuardContinuationPolicy(agent.runtimeConfig);
+    if (!maxTurnPolicy.enabled || (!isNoProgress && (!guardPolicy.enabled || guardPolicy.maxAttempts <= 0))) {
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run guard continuation suppressed because the max-turn continuation policy is disabled",
-        payload: { runGuardStopReason: reason, writeCalls, policy },
+        message: "Run guard continuation suppressed because the continuation policy is disabled",
+        payload: { runGuardStopReason: reason, writeCalls, maxTurnPolicy, runGuardContinuation: guardPolicy },
+      });
+      return false;
+    }
+    const continuationsMade = readRunGuardContinuationCount(run);
+    const schedulerCeiling = isNoProgress
+      ? 1
+      : runGuardContinuationSchedulerCeiling({
+          scheduledRetryAttempt: run.scheduledRetryAttempt,
+          continuationsMade,
+          maxAttempts: guardPolicy.maxAttempts,
+        });
+    if (schedulerCeiling === null) {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Run guard continuation ceiling spent after ${continuationsMade} continuations; the stop is final`,
+        payload: {
+          runGuardStopReason: reason,
+          writeCalls,
+          runGuardContinuationAttempts: continuationsMade,
+          runGuardContinuationMaxAttempts: guardPolicy.maxAttempts,
+        },
       });
       return false;
     }
@@ -16564,10 +16619,10 @@ export function heartbeatService(
       const scheduled = await scheduleBoundedRetryForRun(run, agent, {
         retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
         wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-        maxAttempts: reason === "no_progress_exploration" ? 1 : policy.maxAttempts,
-        delayMs: policy.delayMs,
+        maxAttempts: schedulerCeiling,
+        delayMs: maxTurnPolicy.delayMs,
         runGuardContinuation: true,
-        ...(reason === "no_progress_exploration"
+        ...(isNoProgress
           ? {
               livenessContinuationInstruction: NO_PROGRESS_AUTO_RETRY_HINT,
               livenessContinuationState: "no_progress_exploration_auto_retry",
@@ -16586,7 +16641,12 @@ export function heartbeatService(
           modelCalls: guardStats.modelCalls ?? null,
           retryRunId: scheduled.run.id,
           scheduledRetryAttempt: scheduled.attempt,
-          maxAttempts: scheduled.maxAttempts,
+          ...(isNoProgress
+            ? { maxAttempts: scheduled.maxAttempts }
+            : {
+                runGuardContinuationAttempt: continuationsMade + 1,
+                runGuardContinuationMaxAttempts: guardPolicy.maxAttempts,
+              }),
         },
       });
       return true;
@@ -17036,6 +17096,11 @@ export function heartbeatService(
         ...(isModelUnavailable ? { modelUnavailableRetry: true } : {}),
         scheduledRetryAttempt: schedule.attempt,
         scheduledRetryAt: schedule.dueAt.toISOString(),
+        // myrmidon(RUN-GUARD-CONTINUE): the chain's own count of call-limit
+        // continuations, so they spend their ceiling and not the max-turn one.
+        ...(opts?.runGuardContinuation === true
+          ? { [RUN_GUARD_CONTINUATION_CONTEXT_KEY]: readRunGuardContinuationCount(run) + 1 }
+          : {}),
         // myrmidon(1.6.6 RUN-RETRY-POLICY): what the schedule decided about the
         // failure, persisted so the board can show "attempt N of M" with the
         // class of the failure instead of a bare attempt number (read back by
@@ -29486,7 +29551,9 @@ export function heartbeatService(
               await scheduleBoundedRetryForRun(livenessRun, agent, {
                 retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
                 wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-                maxAttempts: policy.maxAttempts,
+                // myrmidon(RUN-GUARD-CONTINUE): the call-limit continuations of
+                // the chain share the counter but do not spend this ceiling.
+                maxAttempts: maxTurnContinuationSchedulerCeiling(policy.maxAttempts, livenessRun),
                 delayMs: policy.delayMs,
               });
             } else {
