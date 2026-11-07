@@ -38,6 +38,17 @@ Run a merge-back pass before publishing or creating the graph. Require every pro
 
 After creating the tasks, re-fetch the created issues or otherwise verify the issue graph before marking the source planning issue done. Confirm that every separate issue still has its qualifying reason, each dependent task has the expected `blockedByIssueIds`, each independent task has an explicit "can start now" reason, review tasks respect the reviewer's write boundary, and the parent/child hierarchy is only being used for traceability. If the graph contains an unjustified split or expected blockers are missing, correct it or report the mismatch and leave the planning issue in `in_review` or `blocked` until the graph is fixed.
 
+## Анализ покрытия (обязательный последний шаг, read-only)
+
+После того как граф задач сформирован и до того, как план опубликован или задачи переданы исполнителям, выполни анализ покрытия «требования ↔ задачи». Этот шаг **только на чтение**: он не создаёт, не переименовывает, не переназначает и не закрывает задачи и не редактирует план. Его результат — отчёт с находками, а правки выполняются отдельно, уже после анализа.
+
+Проверь три вещи:
+- **Двустороннее покрытие:** у каждого требования эпика есть хотя бы одна задача, и каждая задача покрывает хотя бы одно требование. Нет требований без задач и задач вне требований.
+- **Нет дублей:** нет двух задач на одно и то же требование без явной причины (намеренный вариант, этапность, исследование + внедрение).
+- **Нет конфликтов:** задачи не противоречат друг другу и принятому плану.
+
+Каждая находка получает уровень серьёзности **CRITICAL / HIGH / MEDIUM / LOW**. Подробные определения уровней и примеры — в `references/coverage-analysis.md`. Правило блокировки: **любая находка CRITICAL блокирует публикацию плана и старт задач** — до её разбора граф не публикуется. Находки HIGH/MEDIUM/LOW фиксируются в отчёте, но публикацию сами по себе не останавливают.
+
 ## Quick checklist before you publish a plan
 
 - [ ] Enough detail that assignees can act without re-asking.
@@ -52,6 +63,7 @@ After creating the tasks, re-fetch the created issues or otherwise verify the is
 - [ ] Created issues were re-fetched or otherwise verified before closing the source planning issue.
 - [ ] Qualifying independent branches can start in parallel.
 - [ ] Gaps (missing skills, hires, decisions, external inputs) are surfaced, not hidden.
+- [ ] Пройден анализ покрытия «требования ↔ задачи» (read-only, см. `references/coverage-analysis.md`): двустороннее покрытие, нет дублей и конфликтов; находки CRITICAL отсутствуют или закрыты — без этого план не публикуется.
 
 ## What this skill is not
 
