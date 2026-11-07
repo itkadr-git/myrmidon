@@ -77,6 +77,29 @@ schedule, counted from the moment its last run ended:
 - The activity row `agent.auto_resume_issued` of such a resume carries
   `modelUnavailable: true` and the series counter in its details.
 
+## A stopped bot container
+
+An agent whose runs could not reach the gateway, with the retries spent, is
+left in `error` with the reason "контейнер не поднят". The sweep does not
+resume it onto the stopped container. It starts the bot container first,
+through the board's own start path (`IdleStopService.ensureStartedAndHealthy`:
+the driver's start, then a check that the container is running and healthy),
+and resumes the agent only when the container is up.
+
+- The first start is tried at once. A start that fails is retried no sooner
+  than 15 minutes after the previous attempt, 4 attempts in all; each failure
+  is an `agent.auto_resume_container_start_failed` row. After the fourth the
+  board gives up once (`agent.auto_resume_exhausted`, the critical operator
+  card below) and skips the agent until an operator acts.
+- The attempt is written to the state (`containerStartFailures`,
+  `lastContainerStartAt`) before the start, so a crash or an overlapping pass
+  cannot repeat it. A series whose last attempt is older than 30 minutes starts
+  over.
+- A resume after a healthy start counts in the ordinary streak and its cap, so
+  a container that starts and still refuses the gateway ends in the ordinary
+  give-up. The start can take minutes, so these starts run beside the other
+  agents of the pass.
+
 ## The operator card after the give-up
 
 While the board is still retrying, the errored agent has the usual
@@ -108,6 +131,7 @@ Every automatic action writes an activity log row:
 |---|---|
 | `agent.auto_resume_issued` | The board resumed the agent (attempt number and the next due time are in the details). |
 | `agent.auto_resume_exhausted` | The board reached the attempt cap and gave up (the attempts count and the error reason are in the details). |
+| `agent.auto_resume_container_start_failed` | The bot container of an agent in "контейнер не поднят" did not start (attempt number, next attempt time and the error are in the details). |
 
 The module exposes `autoResumeMetrics` / `countAutoResumesSince`, read-only
 counts over the activity log (24 hours by convention) that feed the health

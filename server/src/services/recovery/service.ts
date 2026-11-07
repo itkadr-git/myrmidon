@@ -2,7 +2,9 @@ import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 // myrmidon(B1): product name in the notice bodies below; see product.ts.
 import { productSaid } from "../../myrmidon/product.js";
 // myrmidon(RUN-GUARD-LOOPS): runs stopped by the run guard are never retried.
-import { buildRunGuardStopNotice, readRunGuardStopReason } from "../../myrmidon/run-guard-stop.js";
+import { buildRunGuardStopComment, buildRunGuardStopNotice, readRunGuardStopReason } from "../../myrmidon/run-guard-stop.js";
+// myrmidon(RUN-GUARD-ESCALATE): a task blocked by a final guard stop wakes its manager.
+import { wakeManagerForRunGuardStop as wakeManagerForRunGuardStopImpl } from "../../myrmidon/run-guard-escalation.js";
 // myrmidon(1.6.6 RUN-RETRY-POLICY): transient/permanent classification, the
 // exponential backoff and the attempt ceiling of a failed run's retry.
 import {
@@ -7297,6 +7299,15 @@ export function recoveryService(
             },
           });
           if (updated) {
+            // myrmidon(RUN-GUARD-ESCALATE): the sweep blocks a guard-stopped run's task too.
+            if (latestRun && readRunGuardStopReason(latestRun)) {
+              await wakeManagerForRunGuardStop({ issue, latestRun }).catch((error) => {
+                logger.warn(
+                  { error: error instanceof Error ? error.message : String(error), issueId: issue.id },
+                  "run guard stop: could not wake the manager",
+                );
+              });
+            }
             result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
@@ -8093,11 +8104,39 @@ export function recoveryService(
     return result;
   }
 
+  // myrmidon(RUN-GUARD-ESCALATE): after the escalation blocked a task whose run the
+  // run guard stopped, wake the assignee's manager (reports_to, else `adm`) with
+  // `run_guard_stop_needs_input`, once per issue per 30 minutes. Callers: the guard
+  // stop handling in heartbeat.ts and the stranded sweep below.
+  async function wakeManagerForRunGuardStop(input: {
+    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    latestRun: { id: string; errorCode?: string | null; resultJson?: unknown };
+    stopText?: string | null;
+  }) {
+    const stopReason = readRunGuardStopReason(input.latestRun);
+    if (!stopReason) return null;
+    // Only a task the escalation actually blocked is worth the manager's attention: a
+    // deferred review stage or a rerouted task keeps its status and its own path.
+    const current = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
+      .then((rows) => rows[0] ?? null);
+    if (current?.status !== "blocked") return null;
+    return wakeManagerForRunGuardStopImpl(db, deps.enqueueWakeup, {
+      issue: input.issue,
+      latestRun: input.latestRun,
+      stopReason,
+      stopText: input.stopText ?? buildRunGuardStopComment(input.latestRun),
+    });
+  }
+
   return {
     buildRunOutputSilence,
     deferReviewParticipantReleaseForCi,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
+    wakeManagerForRunGuardStop,
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,

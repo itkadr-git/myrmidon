@@ -99,6 +99,38 @@ describe("decideQueuedRunStaleness: productive continuation recovery", () => {
   });
 });
 
+// myrmidon(RUN-GUARD-ESCALATE): the manager woken after a final run guard stop is not the
+// assignee, and the issue is blocked: the wake must still start.
+describe("decideQueuedRunStaleness: run guard stop needs input (RUN-GUARD-ESCALATE)", () => {
+  const managerWake = (overrides: Partial<QueuedRunFacts> = {}) =>
+    facts({
+      runAgentId: "manager",
+      issueAssigneeAgentId: "agent-a",
+      issueStatus: "blocked",
+      wakeReason: "run_guard_stop_needs_input",
+      ...overrides,
+    });
+
+  it("lets the wake of a non-assignee manager start on the blocked issue", () => {
+    expect(decideQueuedRunStaleness(managerWake({ isRunGuardStopNeedsInputWake: true }), NOW)).toEqual({
+      stale: false,
+    });
+  });
+
+  it("still cancels the same wake when it does not carry the run guard signal", () => {
+    expect(decideQueuedRunStaleness(managerWake(), NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_assignee_changed",
+    });
+  });
+
+  it("still cancels it once the issue reached a terminal status", () => {
+    expect(
+      decideQueuedRunStaleness(managerWake({ isRunGuardStopNeedsInputWake: true, issueStatus: "done" }), NOW),
+    ).toMatchObject({ stale: true, errorCode: "issue_terminal_status" });
+  });
+});
+
 // myrmidon(OPE-11948): a queued automatic continuation dies when the issue was
 // parked or sent to review after the wake was created.
 describe("decideQueuedRunStaleness: automatic continuation wake (OPE-11948)", () => {

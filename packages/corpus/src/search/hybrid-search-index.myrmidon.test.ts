@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { CorpusVectorSearchUnavailableError, createPostgresSearchIndex, escapeLikePattern, type SqlExecutor } from "./hybrid-search-index.js";
+import {
+  CorpusVectorSearchUnavailableError,
+  createPostgresSearchIndex,
+  escapeLikePattern,
+  pgvectorHasIterativeScan,
+  toFullTextQuery,
+  type SqlExecutor,
+} from "./hybrid-search-index.js";
 import { CORPUS_EMBEDDING_DIMENSIONS } from "./vector.js";
 
 const companyId = "aaaaaaaa-0000-0000-0000-000000000001";
@@ -45,6 +52,7 @@ function createRecordingSql(rows: { vector: ChunkRow[]; fullText: ChunkRow[]; do
   const handle = async (text: string, values: readonly unknown[] = []): Promise<unknown[]> => {
     calls.push({ text, values });
     if (/set local hnsw\.ef_search/i.test(text)) return [];
+    if (/pg_extension/.test(text)) return [{ extversion: "0.8.7" }];
     if (/ts_rank/.test(text)) return rows.fullText;
     if (/<=>/.test(text)) return rows.vector;
     if (/select d\.id/.test(text)) return rows.documents ?? [];
@@ -108,11 +116,24 @@ describe("hybrid search index", () => {
     expect(vectorCall?.text).toContain("c.company_id = $2::uuid");
     expect(vectorCall?.text).toContain("($3::uuid[] is null or d.dataset_id = any($3::uuid[]))");
     expect(vectorCall?.text).toContain("d.status = 'ready'");
+    expect(vectorCall?.text).toContain('order by c."embedding" <=> $1::vector');
     expect(vectorCall?.values).toEqual([expect.stringContaining("["), companyId, [datasetId], 100]);
     expect(textCall?.text).toContain('c."fts"');
+    // The question as a whole (every word mandatory) joined with the OR of its significant words.
     expect(textCall?.text).toContain("plainto_tsquery($5::regconfig, $1)");
+    expect(textCall?.text).toContain("to_tsquery($5::regconfig, $7)");
+    expect(textCall?.text).toContain("case when $7 = ''");
+    expect(textCall?.text).toContain("similarity(c.\"content\", $1)");
     expect(textCall?.text).toContain('c."content" ilike $4');
-    expect(textCall?.values).toEqual(["supply agreement", companyId, [datasetId], "%supply agreement%", "english", 100]);
+    expect(textCall?.values).toEqual([
+      "supply agreement",
+      companyId,
+      [datasetId],
+      "%supply agreement%",
+      "english",
+      100,
+      "supply | agreement",
+    ]);
   });
 
   it("merges the rankings with RRF and returns score, chunk and document", async () => {
@@ -264,6 +285,21 @@ describe("hybrid search index", () => {
     expect(calls.find((call) => /ts_rank/.test(call.text))?.values[3]).toBe("%50\\% off%");
   });
 
+  it("builds a bounded OR of significant words for the full-text query", () => {
+    // The `|` of the OR and the dictionary come together in the statement; the builder only
+    // tokenizes, so no `to_tsquery` operator from the user text can leak into the query.
+    expect(toFullTextQuery("Какой гриль лучше для стейка?")).toBe("гриль | лучше | стейка");
+    expect(toFullTextQuery("supply agreement")).toBe("supply | agreement");
+    // Short words and stop words are dropped; duplicates collapse.
+    expect(toFullTextQuery("Как say: what is the data in the data of the data?")).toBe("data");
+    // At most 8 terms keep the GIN scan bounded.
+    expect(toFullTextQuery("один два три четыре пять шесть семь восемь девять десять").split(" | ")).toHaveLength(8);
+    // Only whitespace or stop words — an empty query, the leg is skipped downstream.
+    expect(toFullTextQuery("как что и")).toBe("");
+    // tsquery operators and quotes in the user text cannot survive tokenization.
+    expect(toFullTextQuery("a & b | c ! (d)")).toBe("");
+  });
+
   it("rejects a query embedding of the wrong shape and a bad limit", async () => {
     const { sql } = createRecordingSql({ vector: [], fullText: [] });
     const index = createPostgresSearchIndex({ sql });
@@ -317,6 +353,13 @@ describe("hybrid search index", () => {
     expect((error as Error).message).toMatch(/deadlock/);
   });
 
+  it("refuses an ilike limit that is not a non-negative integer", () => {
+    const { sql } = createRecordingSql({ vector: [], fullText: [] });
+    expect(() => createPostgresSearchIndex({ sql, ilikeMaxLength: -1 })).toThrow(RangeError);
+    expect(() => createPostgresSearchIndex({ sql, ilikeMaxLength: 1.5 })).toThrow(RangeError);
+    expect(() => createPostgresSearchIndex({ sql, exactSetMaxChunks: -1 })).toThrow(RangeError);
+  });
+
   it("refuses schema names and settings that are not valid identifiers", () => {
     const { sql } = createRecordingSql({ vector: [], fullText: [] });
     expect(() => createPostgresSearchIndex({ sql, schema: { chunksTable: "corpus_chunks; drop table x" } as never })).toThrow(
@@ -324,5 +367,336 @@ describe("hybrid search index", () => {
     );
     expect(() => createPostgresSearchIndex({ sql, efSearch: 0 })).toThrow(RangeError);
     expect(() => createPostgresSearchIndex({ sql, ftsLanguage: "english'--" })).toThrow(RangeError);
+  });
+});
+
+// OPE-12034: the vector ranking runs with the HNSW iterative scan (a small dataset is ranked exactly);
+// the full-text ranking adds the substring match only for short query texts.
+interface ScriptedCall {
+  readonly text: string;
+  readonly values: readonly unknown[];
+}
+
+/** Executor that records every statement and lets the test answer, or fail, each one. */
+function createScriptedSql(respond: (call: ScriptedCall) => unknown[]): { sql: SqlExecutor; calls: ScriptedCall[] } {
+  const calls: ScriptedCall[] = [];
+  const executor: SqlExecutor = {
+    query: async <Row extends Record<string, unknown>>(text: string, values: readonly unknown[] = []) => {
+      const call = { text, values };
+      calls.push(call);
+      return respond(call) as Row[];
+    },
+    withTransaction: (callback) => callback(executor),
+  };
+  return { sql: executor, calls };
+}
+
+function manyChunkRows(count: number, prefix: string): ChunkRow[] {
+  return Array.from({ length: count }, (_, position) => chunkRow(`${prefix}${position}`, position, 1 - position / 1000));
+}
+
+const isSizeProbe = (call: ScriptedCall) => /count\(\*\)::int as chunks/.test(call.text);
+const isExact = (call: ScriptedCall) => /<=>/.test(call.text) && /\+ 0/.test(call.text);
+const isIndexRanking = (call: ScriptedCall) => /<=>/.test(call.text) && !isExact(call);
+const isIterativeScan = (call: ScriptedCall) => /set local hnsw\.iterative_scan/.test(call.text);
+
+/** Answers like a database with pgvector `version`; `index` and `exact` are the rows of the rankings. */
+function scripted(answers: {
+  version?: string | null;
+  /** Chunks the size probe of the requested datasets counts; omitted, the probe answers no row. */
+  size?: number;
+  index?: ChunkRow[];
+  exact?: ChunkRow[];
+}): (call: ScriptedCall) => unknown[] {
+  const version = answers.version === undefined ? "0.8.7" : answers.version;
+  return (call) => {
+    if (/pg_extension/.test(call.text)) return version === null ? [] : [{ extversion: version }];
+    if (isSizeProbe(call)) return answers.size === undefined ? [] : [{ chunks: answers.size }];
+    if (isExact(call)) return answers.exact ?? [];
+    if (isIndexRanking(call)) return answers.index ?? [];
+    if (/select d\.id/.test(call.text)) return documents;
+    return [];
+  };
+}
+
+describe("vector ranking through the HNSW iterative scan", () => {
+  it("reads the pgvector version, turns the iterative scan on, sizes the dataset, then ranks through the index", async () => {
+    const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
+    await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetId, embedding: embedding() });
+
+    expect(calls.map((call) => call.text).slice(0, 6)).toEqual([
+      "set local hnsw.ef_search = 64",
+      "select extversion from pg_extension where extname = 'vector'",
+      "set local hnsw.iterative_scan = relaxed_order",
+      "set local hnsw.max_scan_tuples = 100000",
+      expect.stringContaining("select count(*)::int as chunks"),
+      expect.stringContaining('order by c."embedding" <=> $1::vector'),
+    ]);
+    expect(calls.filter(isExact)).toHaveLength(0);
+    expect(calls.find(isIndexRanking)?.values).toEqual([expect.any(String), companyId, [datasetId], 100]);
+  });
+
+  it("keeps a positive pgvector answer for the life of the index", async () => {
+    const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
+    const index = createPostgresSearchIndex({ sql });
+    await index.search({ text: "", companyId, datasetId, embedding: embedding() });
+    await index.search({ text: "", companyId, datasetId, embedding: embedding() });
+
+    expect(calls.filter((call) => /pg_extension/.test(call.text))).toHaveLength(1);
+    expect(calls.filter(isIterativeScan)).toHaveLength(2);
+    expect(calls.filter(isIndexRanking)).toHaveLength(2);
+  });
+
+  it("does not keep a negative pgvector answer: an extension installed later is seen by the next search", async () => {
+    let version: string | null = null;
+    const { sql, calls } = createScriptedSql((call) => scripted({ version, size: 50_000, index: manyChunkRows(100, "v") })(call));
+    const index = createPostgresSearchIndex({ sql });
+
+    await index.search({ text: "", companyId, datasetId, embedding: embedding() });
+    expect(calls.filter(isIterativeScan)).toHaveLength(0);
+    expect(calls.filter(isIndexRanking)).toHaveLength(1);
+
+    version = "0.8.7";
+    await index.search({ text: "", companyId, datasetId, embedding: embedding() });
+    expect(calls.filter((call) => /pg_extension/.test(call.text))).toHaveLength(2);
+    expect(calls.filter(isIterativeScan)).toHaveLength(1);
+    expect(calls.filter(isSizeProbe)).toHaveLength(1);
+  });
+
+  it("orders the rows of the relaxed scan by score before the fusion ranks them", async () => {
+    // The relaxed iterative scan returns the rows slightly out of order: b is nearer than a.
+    const rows = [chunkRow("a", 0, 0.8), chunkRow("b", 1, 0.9, secondDocumentId), chunkRow("c", 2, 0.7, "cccccccc-0000-0000-0000-000000000005")];
+    const { sql } = createScriptedSql(scripted({ size: 50_000, index: rows }));
+    const hits = await createPostgresSearchIndex({ sql }).search({
+      text: "",
+      companyId,
+      datasetId,
+      embedding: embedding(),
+      limit: 3,
+    });
+
+    expect(hits.map((hit) => hit.fusion.vectorRank)).toEqual([1, 2, 3].slice(0, hits.length));
+    expect(hits[0]?.chunkId).toBe("b");
+  });
+
+  it("returns what a large dataset has, with no exact ranking, when the scan fills fewer than kCandidates", async () => {
+    const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: [chunkRow("only", 0, 0.9)], exact: manyChunkRows(100, "x") }));
+    const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetIds: [datasetId], embedding: embedding() });
+
+    expect(calls.filter(isExact)).toHaveLength(0);
+    expect(calls.filter(isIndexRanking)).toHaveLength(1);
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["only"]);
+  });
+
+  it("probes the company of a search without a dataset: a large company goes through the index", async () => {
+    const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: [chunkRow("only", 0, 0.9)] }));
+    const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, embedding: embedding() });
+
+    expect(calls.find(isSizeProbe)?.values).toEqual([companyId, null, 10_001]);
+    expect(calls.find(isSizeProbe)?.text).toContain("($2::uuid[] is null or d.dataset_id = any($2::uuid[]))");
+    expect(calls.filter(isExact)).toHaveLength(0);
+    expect(calls.filter(isIterativeScan)).toHaveLength(1);
+    expect(calls.find(isIndexRanking)?.values[2]).toBeNull();
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["only"]);
+  });
+
+  it("ranks a small company exactly when the search names no dataset", async () => {
+    const { sql, calls } = createScriptedSql(
+      scripted({ size: 2_000, index: manyChunkRows(100, "index"), exact: [chunkRow("exact-1", 0, 0.8)] }),
+    );
+    const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, embedding: embedding() });
+
+    expect(calls.filter(isIndexRanking)).toHaveLength(0);
+    expect(calls.find(isExact)?.values).toEqual([expect.any(String), companyId, null, 100]);
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["exact-1"]);
+  });
+
+  it("ranks a small dataset exactly at once, through the exact statement", async () => {
+    const { sql, calls } = createScriptedSql(
+      scripted({ size: 500, index: manyChunkRows(100, "index"), exact: [chunkRow("exact-1", 0, 0.8), chunkRow("exact-2", 1, 0.7, secondDocumentId)] }),
+    );
+    const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetIds: [datasetId], embedding: embedding() });
+
+    const probe = calls.find(isSizeProbe);
+    expect(probe?.text).toContain("d.dataset_id = any($2::uuid[])");
+    expect(probe?.text).toContain("limit $3");
+    expect(probe?.values).toEqual([companyId, [datasetId], 10_001]);
+    expect(calls.filter(isIndexRanking)).toHaveLength(0);
+    const exact = calls.find(isExact);
+    expect(exact?.text).toContain('order by (c."embedding" <=> $1::vector) + 0');
+    expect(exact?.text).toContain("($3::uuid[] is null or d.dataset_id = any($3::uuid[]))");
+    expect(exact?.values).toEqual([expect.any(String), companyId, [datasetId], 100]);
+    expect(calls.findIndex(isExact)).toBeGreaterThan(calls.findIndex(isSizeProbe));
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["exact-1", "exact-2"]);
+  });
+
+  it("sends a dataset through the index when it is larger than exactSetMaxChunks", async () => {
+    for (const [size, small] of [
+      [10_000, true],
+      [10_001, false],
+    ] as const) {
+      const { sql, calls } = createScriptedSql(scripted({ size, index: manyChunkRows(100, "v") }));
+      await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetIds: [datasetId], embedding: embedding() });
+      expect(calls.filter(isIndexRanking)).toHaveLength(small ? 0 : 1);
+      expect(calls.filter(isExact)).toHaveLength(small ? 1 : 0);
+    }
+  });
+
+  it("honours exactSetMaxChunks, and 0 sends every dataset through the index without a probe", async () => {
+    const custom = createScriptedSql(scripted({ size: 300, index: manyChunkRows(100, "v") }));
+    await createPostgresSearchIndex({ sql: custom.sql, exactSetMaxChunks: 200 }).search({
+      text: "",
+      companyId,
+      datasetIds: [datasetId],
+      embedding: embedding(),
+    });
+    expect(custom.calls.find(isSizeProbe)?.values[2]).toBe(201);
+    expect(custom.calls.filter(isIndexRanking)).toHaveLength(1);
+
+    const off = createScriptedSql(scripted({ size: 5, index: manyChunkRows(100, "v") }));
+    await createPostgresSearchIndex({ sql: off.sql, exactSetMaxChunks: 0 }).search({
+      text: "",
+      companyId,
+      datasetIds: [datasetId],
+      embedding: embedding(),
+    });
+    expect(off.calls.filter(isSizeProbe)).toHaveLength(0);
+    expect(off.calls.filter(isExact)).toHaveLength(0);
+    expect(off.calls.filter(isIndexRanking)).toHaveLength(1);
+  });
+
+  it("sets hnsw.max_scan_tuples right after the iterative scan: 100 000 by default, the option otherwise", async () => {
+    const byDefault = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
+    await createPostgresSearchIndex({ sql: byDefault.sql }).search({ text: "", companyId, datasetId, embedding: embedding() });
+    const defaultTexts = byDefault.calls.map((call) => call.text);
+    expect(defaultTexts.indexOf("set local hnsw.max_scan_tuples = 100000")).toBe(
+      defaultTexts.indexOf("set local hnsw.iterative_scan = relaxed_order") + 1,
+    );
+
+    const withLimit = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
+    await createPostgresSearchIndex({ sql: withLimit.sql, maxScanTuples: 60_000 }).search({
+      text: "",
+      companyId,
+      datasetId,
+      embedding: embedding(),
+    });
+    expect(withLimit.calls.some((call) => call.text === "set local hnsw.max_scan_tuples = 60000")).toBe(true);
+
+    const { sql } = createScriptedSql(scripted({}));
+    expect(() => createPostgresSearchIndex({ sql, maxScanTuples: 0 })).toThrow(RangeError);
+  });
+
+  for (const version of ["0.7.4", "0.5.1", null]) {
+    it(`uses the plain statement where pgvector has no iterative scan (${version ?? "no vector extension"})`, async () => {
+      const { sql, calls } = createScriptedSql(scripted({ version, size: 5, index: [chunkRow("plain", 0, 0.9)] }));
+      const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetId, embedding: embedding() });
+
+      // No statement the old extension would refuse: the settings are never sent, so the transaction
+      // is never aborted and nothing has to be rolled back. No probe either: the plain statement is
+      // what these versions always ran.
+      expect(calls.some((call) => /hnsw\.(iterative_scan|max_scan_tuples)/.test(call.text))).toBe(false);
+      expect(calls.filter(isSizeProbe)).toHaveLength(0);
+      expect(calls.filter(isExact)).toHaveLength(0);
+      const plain = calls.find(isIndexRanking);
+      expect(plain?.text).toContain("d.dataset_id = any($3::uuid[])");
+      expect(plain?.text).toContain('order by c."embedding" <=> $1::vector');
+      expect(plain?.values).toEqual([expect.any(String), companyId, [datasetId], 100]);
+      expect(calls.map((call) => call.text)[0]).toBe("set local hnsw.ef_search = 64");
+      expect(hits.map((hit) => hit.chunkId)).toEqual(["plain"]);
+    });
+  }
+
+  it("does not hide a failed iterative scan setting behind the fallback", async () => {
+    const answer = scripted({});
+    const { sql } = createScriptedSql((call) => {
+      if (isIterativeScan(call)) {
+        throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      }
+      return answer(call);
+    });
+    const error = await createPostgresSearchIndex({ sql })
+      .search({ text: "", companyId, datasetId, embedding: embedding() })
+      .then(() => null, (thrown: unknown) => thrown);
+
+    expect((error as Error).message).toMatch(/deadlock/);
+    expect(error).not.toBeInstanceOf(CorpusVectorSearchUnavailableError);
+  });
+
+  it("reads the iterative scan from pgvector 0.8.0 on", () => {
+    for (const version of ["0.8.0", "0.8.7", "0.9.1", "1.0.0", " 0.8.2 "]) {
+      expect(pgvectorHasIterativeScan(version)).toBe(true);
+    }
+    for (const version of ["0.7.4", "0.7.0", "0.4.4", "", "garbage", null, undefined]) {
+      expect(pgvectorHasIterativeScan(version)).toBe(false);
+    }
+  });
+});
+
+describe("substring match of the full-text ranking", () => {
+  /** A text of exactly `length` characters made of words separated by single spaces. */
+  const phrase = (length: number) => "aaaaaaa ".repeat(Math.ceil(length / 8)).slice(0, length).trimEnd().padEnd(length, "b");
+  const ilikeUsed = async (text: string, options: { ilikeMaxLength?: number } = {}) => {
+    const { sql, calls } = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
+    await createPostgresSearchIndex({ sql, ...options }).search({ companyId, datasetId, text });
+    return /ilike/.test(calls.find((call) => /ts_rank/.test(call.text))?.text ?? "");
+  };
+
+  it("adds the ilike match up to the limit and drops it for a longer text with spaces", async () => {
+    expect(phrase(16)).toHaveLength(16);
+    expect(phrase(17)).toHaveLength(17);
+    expect(await ilikeUsed(phrase(16))).toBe(true);
+    expect(await ilikeUsed(phrase(17))).toBe(false);
+    expect(await ilikeUsed("как оформить командировку и авансовый отчёт")).toBe(false);
+  });
+
+  it("keeps the ilike match for an identifier: a single token without whitespace of up to 64 characters", async () => {
+    // File names, versions and task codes: the tsvector does not find `litellm_proxy_config` in
+    // `litellm_proxy_config.yaml`, the ilike does.
+    for (const identifier of [
+      "litellm_proxy_config",
+      "rq002_is_camp_chef_explorer",
+      "docker-compose-override",
+      "v1.6.6-rc.45-build",
+      "x".repeat(64),
+    ]) {
+      expect(await ilikeUsed(identifier)).toBe(true);
+    }
+    expect(await ilikeUsed("x".repeat(65))).toBe(false);
+    // A question of 40 characters with spaces stays without it, and so does a token with a tab or a line break.
+    expect(await ilikeUsed(phrase(40))).toBe(false);
+    expect(await ilikeUsed("litellm_proxy_config\tyaml_file_name")).toBe(false);
+    expect(await ilikeUsed("litellm_proxy_config\nyaml_file_name")).toBe(false);
+  });
+
+  it("escapes the wildcards of an identifier in the ilike pattern", async () => {
+    const { sql, calls } = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
+    await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, text: "rq002_is_camp_chef_explorer" });
+    expect(calls.find((call) => /ts_rank/.test(call.text))?.values[3]).toBe("%rq002\\_is\\_camp\\_chef\\_explorer%");
+  });
+
+  it("runs the text-only statement with renumbered parameters", async () => {
+    const { sql, calls } = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
+    const longText = "how do I light the charcoal in the grill";
+    await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, text: `  ${longText}  ` });
+
+    const textCall = calls.find((call) => /ts_rank/.test(call.text));
+    expect(textCall?.text).toContain("plainto_tsquery($4::regconfig, $1)");
+    expect(textCall?.text).toContain("to_tsquery($4::regconfig, $6)");
+    expect(textCall?.text).toContain("limit $5");
+    expect(textCall?.text).not.toMatch(/ilike|\$7/);
+    // Every parameter the text names is bound, and no other: a driver rejects a gap.
+    expect(textCall?.values).toEqual([longText, companyId, [datasetId], "english", 100, "light | charcoal | grill"]);
+    const named = new Set([...(textCall?.text.matchAll(/\$(\d+)/g) ?? [])].map((match) => Number(match[1])));
+    expect([...named].sort()).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("honours ilikeMaxLength, and 0 switches the match off", async () => {
+    const wide = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
+    await createPostgresSearchIndex({ sql: wide.sql, ilikeMaxLength: 40 }).search({ companyId, datasetId, text: phrase(30) });
+    expect(wide.calls.find((call) => /ts_rank/.test(call.text))?.text).toContain("ilike");
+
+    // 0 switches the match off for every text, identifiers too.
+    expect(await ilikeUsed("a", { ilikeMaxLength: 0 })).toBe(false);
+    expect(await ilikeUsed("litellm_proxy_config", { ilikeMaxLength: 0 })).toBe(false);
   });
 });
