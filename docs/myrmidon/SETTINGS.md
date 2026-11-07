@@ -41,6 +41,11 @@ A successful write returns the updated effective values. A malformed value, unkn
 |---|---|---|---|---|
 | `MYRMIDON_CLOUD_TENANT_SERVER_TOKEN` | 1.6.6 DEBRAND | unset | Credential used by cloud tenant routes | Unset disables token-authenticated tenant routes |
 | `MYRMIDON_PROCESS_ROLE` | 1.6.6 DEBRAND | `all` | API, worker, or combined server process role | Unset defaults to `all`; accepted values are `all`, `worker`, and `api` |
+| `MYRMIDON_DEVFLOW_CODE_TASKS_NONCODING_MS` | 1.6.6 DEVFLOW-HEALTH | stored threshold, then built-in | Threshold (ms) after which a code task held by a non-coding role raises the development-flow health signal | Unset uses `general.devflowHealth.codeTasksOnNoncodingRolesMs`, then the built-in default |
+| `MYRMIDON_DEV_PROCESS_PROJECT_IDS` | 1.6.6 REVIEW-CONTINUATION | unset | Comma-separated project ids that opt in to the development-process review continuation | Unset: no project opts in; other projects keep their existing release path |
+| `MYRMIDON_DISTILL_ENABLED` | 1.6.6 KNOWLEDGE-2.0 K-5 | unset (off) | `1` turns the knowledge distiller v2 pass on when the distill setting is not set | Unset: the pass is a no-op unless the distill setting is on |
+| `MYRMIDON_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS` | 1.6.5 DBC-1 | `7` | Days of heartbeat run context kept by the datastore-care retention sweep when `general.datastoreCare.retention` has no value | Unset: 7 days; the stored setting wins and needs no restart |
+| `MYRMIDON_QUEUED_RESWEEP` | 1.6.6 RUN-DISPATCH | on in worker processes | `0` disables the queued-run re-sweep timer of worker processes | Unset: on in worker processes; never armed in api processes or under a test runner |
 | `MYRMIDON_RUN_SCRATCH_DIR` | 1.6.6 DEBRAND | TMPDIR or OS temp directory | Directory for ephemeral SSH operation files | Unset falls back to TMPDIR then OS temp directory |
 | `MYRMIDON_SCRATCH_DIR` | 1.6.6 DEBRAND | home scratch fallback | Approved directory for ephemeral site-agent PKI files | Unset uses MYRMIDON_RUN_SCRATCH_DIR then home scratch |
 | `MYRMIDON_RUNNER_API_TOOLS_ENABLED` | 1.6.6 DEBRAND | `false` | Operator opt-in for native runner API tools | Unset disables the API tools; canonical name takes precedence over legacy alias |
