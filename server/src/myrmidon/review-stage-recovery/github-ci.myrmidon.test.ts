@@ -385,6 +385,95 @@ describe("createReviewPullRequestCiResolver", () => {
       headSha: "abc123",
     });
   });
+
+  // myrmidon(OPE-12024): a PR work product with empty url but metadata carrying
+  // repository + number must still be readable — the CI resolver falls back to
+  // the metadata fields instead of answering pull_request_reference_unreadable.
+  it("falls back to metadata.repository and metadata.number when url is empty", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{
+        ...openProduct,
+        url: "",
+        metadata: { repository: "acme/app", number: 7 },
+      }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "pending",
+      // OPE-12024: пустая строка в url трактуется как отсутствие url —
+      // effectiveUrl=null, т.к. metadata.url не задан.
+      pullRequestUrl: null,
+      headSha: "abc123",
+    });
+  });
+
+  it("falls back to metadata.repo (shorthand) when url is empty", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{
+        ...openProduct,
+        url: "",
+        metadata: { repo: "acme/app", number: 7 },
+      }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "pending",
+      pullRequestUrl: null,
+      headSha: "abc123",
+    });
+  });
+
+  it("still answers pull_request_reference_unreadable when url and metadata are both empty", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{ ...openProduct, url: "", metadata: {} }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({}),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "unknown",
+      pullRequestUrl: null,
+      headSha: null,
+      reason: "pull_request_reference_unreadable",
+    });
+  });
+
+  // myrmidon(OPE-12024): a stored '' url with metadata.url present must resolve
+  // to the metadata address (the 107-record class the migration backfills).
+  it("falls back to metadata.url when the stored url is an empty string", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{
+        ...openProduct,
+        url: "",
+        metadata: { url: "https://github.com/acme/app/pull/7" },
+      }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "pending",
+      pullRequestUrl: "https://github.com/acme/app/pull/7",
+      headSha: "abc123",
+    });
+  });
+
+  it("prefers the stored url over metadata.url when both are present", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{
+        ...openProduct,
+        url: "https://github.com/acme/app/pull/7",
+        metadata: { url: "https://github.com/acme/other/pull/9" },
+      }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "pending",
+      pullRequestUrl: "https://github.com/acme/app/pull/7",
+      headSha: "abc123",
+    });
+  });
 });
 
 // myrmidon(OPE-11970): the names of the checks that failed on a head, for the
