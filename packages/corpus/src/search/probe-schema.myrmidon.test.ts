@@ -46,6 +46,7 @@ function recordingSql(): { sql: SqlExecutor; calls: RecordedCall[] } {
   const handle = async (text: string, values: readonly unknown[] = []): Promise<unknown[]> => {
     calls.push({ text, values });
     if (/set local hnsw\.ef_search/i.test(text)) return [];
+    if (/pg_extension/.test(text)) return [{ extversion: "0.8.7" }];
     if (/ts_rank/.test(text)) return chunkRows;
     if (/<=>/.test(text)) return chunkRows;
     // The document hydration runs per matched chunk; answering it keeps the third statement visible.
