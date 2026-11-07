@@ -2704,6 +2704,13 @@
       "when": 1762334717000,
       "tag": "0460_chubby_doctor_spectrum",
       "breakpoints": true
+    },
+    {
+      "idx": 461,
+      "version": "7",
+      "when": 1794015575893,
+      "tag": "0461_knowledge_settings",
+      "breakpoints": true
     }
   ]
 }

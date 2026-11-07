@@ -11947,3 +11947,18 @@ registerCurrentRoute({
   }),
   responses: { 200: r.ok(), 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
+
+// --- myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge ---------------
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/settings",
+  tags: ["knowledge"], summary: "Read the company knowledge settings (effective values with ui/env/default source badges)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/settings",
+  tags: ["knowledge"], summary: "Patch the company knowledge settings (instance admin; journaled as knowledge.settings_updated)",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
