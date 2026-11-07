@@ -26,6 +26,11 @@ import {
   type BudgetLimitView,
 } from "./myrmidon-budget-limits.js";
 
+// Re-exported so consumers of the config projection can reference the row
+// shape without importing from two modules; the TS2459 in the projection
+// test (importing BudgetLimitView from this module) is fixed by this.
+export type { BudgetLimitView };
+
 /** The four levels the config tree exposes, outermost first. */
 export const BUDGET_CONFIG_LEVELS = ["nest", "caste", "foraging", "ticket"] as const;
 export type BudgetConfigLevel = (typeof BUDGET_CONFIG_LEVELS)[number];
