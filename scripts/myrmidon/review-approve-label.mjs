@@ -9,15 +9,18 @@
 // (and optionally enables native `gh pr merge --auto --squash`) on a pull request
 // only when ALL of this holds:
 //   1. the main branch CI is green right now: the newest `CI result` check run on
-//      the main head is `completed success`. If main is red, pending, running, or
-//      has no registered run, merge / auto-merge is held and backoff is applied;
+//      the main head that is a verdict (not `skipped`) is `completed success`. If
+//      main is red, pending, running, or has no registered run, merge / auto-merge
+//      is held and backoff is applied;
 //   2. the newest verdict line about that PR is an approval (a later RETURN,
 //      DEFERRED, or an unclear line cancels it);
 //   3. the PR is open and not a draft;
 //   4. the head did not move after the verdict: a verdict that names a head sha
 //      must match the current head; a verdict without one must be newer than the
 //      head commit;
-//   5. the check run `CI result` of the head commit is `success`;
+//   5. the check run `CI result` of the head commit is `success`: the newest run
+//      that is a verdict; a `skipped` run (the label-event runs of the workflow
+//      skip `CI result`) is passed over and never hides an earlier result;
 //   6. the PR base is not behind main: the PR's `base.sha` equals the current
 //      main head. A stale base never merges — the script asks GitHub to
 //      update-branch and waits for a fresh green CI on the new head;
@@ -52,6 +55,41 @@ const execFileAsync = promisify(execFile);
 
 export const APPROVED_LABEL = "review-approved";
 export const CI_CHECK_NAME = "CI result";
+/** Check runs are read in pages of 100; one head never has anywhere near this many `CI result` runs. */
+const CHECK_RUNS_MAX_PAGES = 10;
+/**
+ * Conclusions of a completed `CI result` run that say nothing about the head.
+ * The workflow skips `CI result` on label events (all but `full-ci`), so a
+ * `skipped` run is always newer than the real one after a label is put on the
+ * pull request; it is not a verdict and must never hide the real result.
+ * `cancelled` / `timed_out` / `neutral` are NOT listed: they are real outcomes
+ * and are never read as `success`.
+ */
+export const NOT_A_VERDICT_CONCLUSIONS = new Set(["skipped"]);
+
+/**
+ * The state of the `CI result` check from ITS check runs of one commit.
+ * Runs are walked newest first (`started_at`, then the run id): a completed
+ * `skipped` run is passed over; the first other run decides, a run still
+ * queued / in progress answers its status (pending for the caller). A commit
+ * with no `CI result` run is "missing"; one whose runs are all skipped has no
+ * verdict yet and is "pending".
+ */
+export function selectCiResultConclusion(checkRuns, name = CI_CHECK_NAME) {
+  const named = (Array.isArray(checkRuns) ? checkRuns : []).filter((item) => item && item.name === name);
+  if (named.length === 0) return "missing";
+  const newestFirst = [...named].sort(
+    (a, b) =>
+      String(b.started_at ?? "").localeCompare(String(a.started_at ?? "")) || Number(b.id ?? 0) - Number(a.id ?? 0),
+  );
+  for (const run of newestFirst) {
+    if (run.status !== "completed") return run.status ?? "pending";
+    const conclusion = run.conclusion ?? "unknown";
+    if (NOT_A_VERDICT_CONCLUSIONS.has(conclusion)) continue;
+    return conclusion;
+  }
+  return "pending";
+}
 export const MIGRATION_SQL_RE = /^packages\/db\/src\/migrations\/(\d{4})_[^/]*\.sql$/;
 export const MIGRATION_SNAPSHOT_RE = /^packages\/db\/src\/migrations\/meta\/(\d{4})_snapshot\.json$/;
 
@@ -438,11 +476,21 @@ export function createGitHubPort(repo, options = {}) {
       return value ? new Date(value) : null;
     },
     async ciConclusion(sha) {
-      const data = await run([`repos/${repo}/commits/${sha}/check-runs?per_page=100`]);
-      const runs = (data.check_runs ?? []).filter((item) => item.name === CI_CHECK_NAME);
-      if (runs.length === 0) return "missing";
-      const newest = runs.sort((a, b) => String(b.started_at ?? "").localeCompare(String(a.started_at ?? "")))[0];
-      return newest.status === "completed" ? (newest.conclusion ?? "unknown") : newest.status;
+      // `filter=all`, as the board-side merge reader does: the default
+      // `filter=latest` keeps only the newest run of every check suite, so a
+      // rerun inside one suite would hide the attempt before it. The selection
+      // of the verdict among the runs is selectCiResultConclusion's.
+      const runs = [];
+      for (let page = 1; page <= CHECK_RUNS_MAX_PAGES; page += 1) {
+        const data = await run([
+          `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(CI_CHECK_NAME)}&filter=all&per_page=100&page=${page}`,
+        ]);
+        const batch = data.check_runs ?? [];
+        runs.push(...batch);
+        const total = typeof data.total_count === "number" ? data.total_count : batch.length;
+        if (batch.length === 0 || runs.length >= total) break;
+      }
+      return selectCiResultConclusion(runs);
     },
     async mainHeadSha(baseBranch = DEFAULT_BASE_BRANCH) {
       const data = await run([`repos/${repo}/commits/${baseBranch}`]);
