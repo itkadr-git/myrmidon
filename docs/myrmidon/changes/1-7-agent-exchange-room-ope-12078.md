@@ -1,34 +1,27 @@
-# 1.7 AGENT-EXCHANGE: схема комнат обмена опытом внутри карточки агента (OPE-12078)
+## changelog-en
 
-## Контекст и цель
-По roadmap-v1 §3.3 OPE-3965: обмен опытом между агентами вне тикетов (подзадача OPE-12078).
-Реализованы типы, Zod-схема валидации и чистые функции жизненного цикла для комнаты обсуждений `ExchangeRoom`, сообщений `ExchangeMessage`, завершителя `ExchangeFinisher` и механизма стоп-крана (stop-valve).
+### AGENT-EXCHANGE: experience exchange rooms in the agent card (OPE-12078)
 
-## Что добавлено
-1. `server/src/myrmidon/agent-exchange/types.ts`:
-   - Состояния комнаты: `ExchangeRoomState` (`open` | `finalizing` | `closed`);
-   - Границы участников: `MIN_EXCHANGE_PARTICIPANTS = 2`, `MAX_EXCHANGE_PARTICIPANTS = 4`;
-   - Доменные сущности `ExchangeParticipant`, `ExchangeFinisher`, `ExchangeMessage`, `ExchangeRoom`;
-   - Ошибки домена `ExchangeRoomError` с типизированными кодами.
+- Domain foundation for agent-to-agent experience exchange outside tickets
+  (roadmap-v1 §3.3, OPE-3965): types and Zod validation for `ExchangeRoom`
+  (2–4 agent participants, topic, cost_limit_cents, state
+  open|finalizing|closed), `ExchangeMessage` (agent_id, content, tokens_used),
+  the finisher and the stop valve (`server/src/myrmidon/agent-exchange/`).
+- Pure lifecycle operations: room creation enforces 2–4 participants (a 5th is
+  rejected with `too_many_participants`), participant/message addition,
+  finalizing and orderly close; pulling the stop valve instantly transitions
+  the room to `closed` (as does exceeding cost_limit_cents).
 
-2. `server/src/myrmidon/agent-exchange/schema.ts`:
-   - Zod-схемы с валидацией инвариантов: 2–4 уникальных участника, обязательная тема, лимит расходов, флаг `stop_valve === true` требует немедленного перехода состояния в `closed`;
-   - Валидация сообщений `ExchangeMessage` (`agent_id`, `content`, `tokens_used`);
-   - Хелперы `validateExchangeRoom`, `validateExchangeMessage`, `safeValidateExchangeRoom`, `validateParticipants`.
+## changelog-ru
 
-3. `server/src/myrmidon/agent-exchange/room.ts`:
-   - Чистые функции управления состоянием: `createExchangeRoom`, `addParticipant`, `pullStopValve`, `finalizeExchangeRoom`, `closeExchangeRoom`, `addExchangeMessage`;
-   - Защита от 5-го участника (`too_many_participants`);
-   - Немедленный перевод в `closed` при вызове стоп-крана `pullStopValve` или превышении `cost_limit_cents`.
+### AGENT-EXCHANGE: комнаты обмена опытом внутри карточки агента (OPE-12078)
 
-4. `server/src/myrmidon/agent-exchange/index.ts` и `domain/`:
-   - Полный реэкспорт контрактов для потребителей.
-
-5. `server/src/myrmidon/agent-exchange/exchange-room.myrmidon.test.ts`:
-   - Модульные тесты Vitest, покрывающие все критерии приёмки:
-     * Комната с 2, 3, 4 участниками создаётся успешно;
-     * Попытка создания с 5 участниками или добавления 5-го участника выбрасывает ошибку;
-     * Попытка создания с менее чем 2 участниками отклоняется;
-     * Вызов стоп-крана немедленно переводит статус в `closed`;
-     * Схема отклоняет несогласованное состояние `stop_valve: true` при `state !== 'closed'`;
-     * Проверка сообщений, аккумуляция токенов и завершитель.
+- Фундамент обмена опытом между агентами вне тикетов (roadmap-v1 §3.3,
+  OPE-3965): типы и Zod-валидация `ExchangeRoom` (2–4 участника-агента, тема,
+  cost_limit_cents, состояние open|finalizing|closed), `ExchangeMessage`
+  (agent_id, content, tokens_used), завершитель и стоп-кран
+  (`server/src/myrmidon/agent-exchange/`).
+- Чистые операции жизненного цикла: создание комнаты требует 2–4 участника
+  (пятый отклоняется с `too_many_participants`), добавление участника и
+  сообщения, финализация и штатное закрытие; стоп-кран мгновенно переводит
+  комнату в `closed` (как и превышение cost_limit_cents).

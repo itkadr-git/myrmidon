@@ -18,6 +18,7 @@ import {
   type ExchangeMessage,
   type ExchangeParticipant,
   type ExchangeRoom,
+  type ExchangeRoomState,
 } from "./types.js";
 import { validateExchangeRoom } from "./schema.js";
 
@@ -277,8 +278,11 @@ export function addExchangeMessage(
   const newTotalTokens = (room.total_tokens ?? 0) + tokens;
   const newTotalCost = (room.total_cost_cents ?? 0) + cost;
 
-  let nextState = room.state;
-  let stopValve = room.stop_valve;
+  // Explicitly widened types: the guard above narrows room.state to
+  // "open" | "finalizing" and room.stop_valve to false, but the auto-stop
+  // branch below must be able to assign "closed" / true (TS2322 without).
+  let nextState: ExchangeRoomState = room.state;
+  let stopValve: boolean = room.stop_valve;
   let stopReason = room.stop_reason;
   let closedAt = room.closed_at;
 
