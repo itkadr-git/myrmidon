@@ -68,7 +68,6 @@ function defaultDeps(db: Db): DeployJobServiceDeps {
         return null;
       }
     },
-    settings,
     notifyUpdate: createUpdateNotifier(db),
   };
 }

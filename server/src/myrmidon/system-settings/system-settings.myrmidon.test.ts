@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SYSTEM_SETTING_KEYS,
-} from "@paperclipai/shared/myrmidon-system-settings";
+} from "@myrmidon/shared/myrmidon-system-settings";
 import { liveBehaviorSetting, applyLiveBehaviorSettings } from "../behavior-settings/live.js";
 import {
   liveDeploySettings,

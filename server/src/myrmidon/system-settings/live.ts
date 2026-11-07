@@ -4,7 +4,7 @@
 // argument only provides the forced-override layer so consumers that already
 // hold a specific env (tests, startup probes) keep working unchanged.
 
-import "@paperclipai/shared/myrmidon-system-settings"; // registers the keys
+import "@myrmidon/shared/myrmidon-system-settings"; // registers the keys
 import { liveBehaviorSetting } from "../behavior-settings/live.js";
 
 function envOverride<T>(env: NodeJS.ProcessEnv, envName: string, parse: (raw: string) => T | null): T | null {

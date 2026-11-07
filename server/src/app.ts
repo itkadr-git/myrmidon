@@ -264,21 +264,7 @@ import { updatesRoutes } from "./routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE
 import { systemUpdatesRoutes } from "./routes/system-updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186)
 // myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
-import { myrmidonBridgeLanguageRoutes } from "./myrmidon/bridge-language/index.js";
-import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index.js"; // myrmidon(1.7-SETTINGS-TO-UI)
-import { channelAllowlistRoutes } from "./myrmidon/channel-allowlist/routes.js"; // myrmidon(CA-A)
-import { channelAllowlistService } from "./myrmidon/channel-allowlist/service.js"; // myrmidon(CA-A)
-
-import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
-import { myrmidonTeamLivenessRoutes } from "./myrmidon/team-liveness/index.js"; // myrmidon(TEAM-LIVENESS-SETTINGS)
-import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
-import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
-import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { systemDeploymentRoutes } from "./myrmidon/system-settings/routes.js"; // myrmidon(1.7, OPE-4101)
-import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
-import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
-import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
-import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; // myrmidon(M2-B)
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
 import { myrmidonLitellmAuditRoutes } from "./myrmidon/litellm-audit/wiring.js"; // myrmidon(OPE-9857)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
