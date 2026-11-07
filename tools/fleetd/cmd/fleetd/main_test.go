@@ -62,6 +62,10 @@ type fakeDocker struct {
 	calls           []string
 	startStopStatus int
 	logsBody        []byte
+	// missingImage makes the first create answer 404 "No such image" until an
+	// images/create (pull) arrives — OPE-12194.
+	missingImage bool
+	pullError    string
 }
 
 func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,11 +76,23 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = path[i:]
 	} else if i := strings.Index(path, "/_ping"); i >= 0 {
 		path = path[i:]
+	} else if i := strings.Index(path, "/images/"); i >= 0 {
+		path = path[i:]
 	}
 	f.calls = append(f.calls, r.Method+" "+path)
 	switch {
 	case path == "/_ping":
 		_, _ = w.Write([]byte("OK"))
+	case r.Method == http.MethodPost && path == "/images/create":
+		if f.pullError != "" {
+			_, _ = w.Write([]byte(`{"status":"Pulling"}` + "\n" + `{"error":"` + f.pullError + `"}` + "\n"))
+			return
+		}
+		f.missingImage = false
+		_, _ = w.Write([]byte(`{"status":"Pulling from bot"}` + "\n" + `{"status":"Digest: sha256:aa"}` + "\n"))
+	case r.Method == http.MethodPost && path == "/containers/create" && f.missingImage:
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"No such image: example.com/bot@sha256:aa"}`))
 	case r.Method == http.MethodPost && path == "/containers/create":
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -762,6 +778,37 @@ func TestCreateFailsClosedWhenGatewayBindIPIsEmpty(t *testing.T) {
 	}
 	if _, ok := fake.containers["fleet-"+key]; ok {
 		t.Fatalf("container must not be created when gatewayBindIP is empty")
+	}
+}
+
+// myrmidon(OPE-12194): a site without the release image pulls it and creates.
+func TestCreatePullsMissingImageThenCreates(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	fake.missingImage = true
+	key := "bot-example-one"
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
+	if rec.Code >= 300 {
+		t.Fatalf("create failed: %d %s (calls %v)", rec.Code, rec.Body.String(), fake.calls)
+	}
+	joined := strings.Join(fake.calls, ",")
+	if !strings.Contains(joined, "POST /images/create") {
+		t.Fatalf("no pull, calls: %v", fake.calls)
+	}
+	if _, ok := fake.containers["fleet-"+key]; !ok {
+		t.Fatalf("container not created after pull, calls: %v", fake.calls)
+	}
+}
+
+func TestCreateReportsAFailedPull(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	fake.missingImage = true
+	fake.pullError = "manifest unknown"
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody("bot-example-one"))
+	if rec.Code < 300 {
+		t.Fatalf("create must fail when the pull fails: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "manifest unknown") {
+		t.Fatalf("pull error not reported: %s", rec.Body.String())
 	}
 }
 

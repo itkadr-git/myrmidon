@@ -110,7 +110,60 @@ func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) erro
 	}
 	body := map[string]any{"Image": sp.Image, "User": "10001", "Labels": labels, "HostConfig": host}
 	var out any
-	return d.request(ctx, http.MethodPost, "/"+d.prefix()+"/containers/create?name="+url.QueryEscape(d.name(sp.BotKey)), body, &out)
+	path := "/" + d.prefix() + "/containers/create?name=" + url.QueryEscape(d.name(sp.BotKey))
+	err := d.request(ctx, http.MethodPost, path, body, &out)
+	if err != nil && strings.Contains(err.Error(), "No such image") {
+		// myrmidon(OPE-12194): the bot image rollout pre-pulls release images
+		// only on the hosts it reaches by ssh; a fleet site got its first
+		// container of a new release image refused with 404 (prod 07.11:
+		// work-qa on myr-vm1 never switched). The image is allowlisted above.
+		if perr := d.pull(ctx, sp.Image); perr != nil {
+			return fmt.Errorf("%v (pull: %v)", err, perr)
+		}
+		return d.request(ctx, http.MethodPost, path, body, &out)
+	}
+	return err
+}
+
+// pull fetches an image the daemon does not have. No registry auth is sent:
+// the release bot images are public packages. The pull is detached from the
+// caller's context, so a board request that gives up waiting does not abort
+// it; the next apply then finds the image. The Engine answers 200 and streams
+// progress, reporting a failed pull as an {"error": ...} line, so the stream
+// is read to its end.
+func (d *dockerClient) pull(ctx context.Context, image string) error {
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(pctx, http.MethodPost, "http://docker/"+d.prefix()+"/images/create?fromImage="+url.QueryEscape(image), nil)
+	if err != nil {
+		return err
+	}
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return net.DialTimeout("unix", d.socket, 5*time.Second)
+	}}
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("docker pull %s: %s", resp.Status, string(b))
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var m struct {
+			Error string `json:"error"`
+		}
+		if err := dec.Decode(&m); err == io.EOF {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if m.Error != "" {
+			return fmt.Errorf("docker pull: %s", m.Error)
+		}
+	}
 }
 func (d *dockerClient) action(ctx context.Context, bot, action string) error {
 	if action == "restart" {

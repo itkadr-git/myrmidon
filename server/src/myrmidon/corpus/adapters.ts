@@ -338,7 +338,12 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     },
     parser: {
       async parse(input) {
-        const client = createHttpDocumentParser({ baseUrl: input.baseUrl, parserTimeoutMs: input.timeoutMs });
+        const client = createHttpDocumentParser({
+          baseUrl: input.baseUrl,
+          parserTimeoutMs: input.timeoutMs,
+          maxRunMs: input.maxRunMs,
+          queueTimeoutMs: input.queueTimeoutMs,
+        });
         const result = await client.parse({ sourceUri: null, content: input.bytes, contentType: input.mimeType, title: input.filename, parserVersion: "v1" }, input.signal ? { signal: input.signal } : {});
         return { text: result.chunks.map((chunk) => chunk.content).join("\n"), chunks: result.chunks.map((chunk) => ({ text: chunk.content, index: chunk.chunkIndex, metadata: chunk.metadata })) };
       },
