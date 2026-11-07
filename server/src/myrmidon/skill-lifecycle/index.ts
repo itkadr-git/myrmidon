@@ -13,6 +13,7 @@ import { createDbSkillLifecycleStore } from "./store.js";
 import { readCompanySkillPilotAgents, setCompanySkillPilotAgents } from "./pilot-agents-store.js";
 import { SKILL_PROMOTION_APPROVAL_TYPE } from "./domain.js";
 import { skillLifecycleRoutes } from "./routes.js";
+import { configuredGitSkillRecord } from "../skill-git-record/port.js";
 
 export { SKILL_PILOT_AGENTS_ENV, BOT_BACKIMPORT_ORIGIN_METADATA_KEY, SKILL_PROMOTION_APPROVAL_TYPE, SKILL_LIFECYCLE_STATES } from "./domain.js";
 export type { SkillLifecycleState, SkillDeliveryState } from "./domain.js";
@@ -36,6 +37,9 @@ export function skillLifecycleService(db: Db): SkillLifecycleService {
     // lives in domain.resolveSkillPilotAgents).
     readStoredPilotAgents: (companyId) => readCompanySkillPilotAgents(db, companyId),
     writeStoredPilotAgents: (companyId, agentIds) => setCompanySkillPilotAgents(db, companyId, agentIds),
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-13): verified snapshots are committed before
+    // promotion becomes deliverable; disabled unless the operator configures git.
+    gitRecord: configuredGitSkillRecord(),
   });
 }
 
