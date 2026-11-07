@@ -148,6 +148,7 @@ describe("workProductService", () => {
       type: "pull_request",
       provider: "github",
       title: "PR 1",
+      url: "https://github.com/acme/app/pull/7",
       status: "open",
       reviewState: "draft",
       isPrimary: true,
@@ -196,10 +197,13 @@ describe("workProductService", () => {
   // or fail with a clear 422 — never write a silently unreadable record.
   describe("createForIssue pull_request validation (OPE-12024)", () => {
     function makeTx() {
+      const updatedWhere = vi.fn(async () => undefined);
+      const updateSet = vi.fn(() => ({ where: updatedWhere }));
+      const txUpdate = vi.fn(() => ({ set: updateSet }));
       const insertReturning = vi.fn(async () => [createWorkProductRow()]);
       const insertValues = vi.fn(() => ({ returning: insertReturning }));
       const txInsert = vi.fn(() => ({ values: insertValues }));
-      const tx = { insert: txInsert };
+      const tx = { insert: txInsert, update: txUpdate };
       const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
       return { tx, transaction, txInsert, insertValues };
     }
@@ -302,6 +306,47 @@ describe("workProductService", () => {
         }),
       ).rejects.toMatchObject({ status: 422 });
       expect(transaction).not.toHaveBeenCalled();
+    });
+
+    it("prefers metadata.url over a synthesized repo+number url", async () => {
+      const { transaction, insertValues } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", {
+        type: "pull_request",
+        provider: "github",
+        title: "PR 1",
+        status: "open",
+        reviewState: "draft",
+        isPrimary: true,
+        metadata: {
+          url: "https://github.com/acme/app/pull/42",
+          repository: "acme/app",
+          number: 7,
+        },
+      });
+
+      const insertArg = insertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertArg.url).toBe("https://github.com/acme/app/pull/42");
+      expect(insertArg.externalId).toBe("acme/app#pull/7");
+    });
+
+    it("accepts metadata.url alone (no repo/number) without 422", async () => {
+      const { transaction, insertValues } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", {
+        type: "pull_request",
+        provider: "github",
+        title: "PR 1",
+        status: "open",
+        reviewState: "draft",
+        isPrimary: true,
+        metadata: { url: "https://github.com/acme/app/pull/42" },
+      });
+
+      const insertArg = insertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertArg.url).toBe("https://github.com/acme/app/pull/42");
     });
 
     it("does not touch non-pull_request types", async () => {

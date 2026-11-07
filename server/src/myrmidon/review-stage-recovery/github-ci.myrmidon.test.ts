@@ -436,6 +436,42 @@ describe("createReviewPullRequestCiResolver", () => {
       reason: "pull_request_reference_unreadable",
     });
   });
+
+  // myrmidon(OPE-12024): a stored '' url with metadata.url present must resolve
+  // to the metadata address (the 107-record class the migration backfills).
+  it("falls back to metadata.url when the stored url is an empty string", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{
+        ...openProduct,
+        url: "",
+        metadata: { url: "https://github.com/acme/app/pull/7" },
+      }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "pending",
+      pullRequestUrl: "https://github.com/acme/app/pull/7",
+      headSha: "abc123",
+    });
+  });
+
+  it("prefers the stored url over metadata.url when both are present", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{
+        ...openProduct,
+        url: "https://github.com/acme/app/pull/7",
+        metadata: { url: "https://github.com/acme/other/pull/9" },
+      }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "pending",
+      pullRequestUrl: "https://github.com/acme/app/pull/7",
+      headSha: "abc123",
+    });
+  });
 });
 
 // myrmidon(OPE-11970): the names of the checks that failed on a head, for the

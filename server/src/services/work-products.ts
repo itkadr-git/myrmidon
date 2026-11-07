@@ -251,21 +251,28 @@ export function workProductService(
       // top-level fields nor the metadata carry enough information.
       if (data.type === "pull_request" && data.provider === "github") {
         const metadata = (data.metadata ?? {}) as Record<string, unknown>;
+        // myrmidon(OPE-12024): prefer an explicit metadata.url (the address the
+        // agent recorded) over a synthesized one; fall back to repo + number.
+        const metadataUrl = typeof metadata.url === "string" && metadata.url.trim() !== "" ? metadata.url : null;
         const repo = typeof metadata.repo === "string" ? metadata.repo
           : typeof metadata.repository === "string" ? metadata.repository
           : null;
         const number = typeof metadata.number === "number" && Number.isSafeInteger(metadata.number) && metadata.number > 0
           ? metadata.number
           : null;
-        if (!data.url && !data.externalId && !(repo && number)) {
+        if (!data.url && !data.externalId && !metadataUrl && !(repo && number)) {
           throw new HttpError(
             422,
-            "pull_request work product requires url or externalId, or metadata with repo/repository and number",
+            "pull_request work product requires url or externalId, or metadata with url or repo/repository and number",
           );
         }
         // Fill missing url/externalId from metadata.
-        if (!data.url && repo && number) {
-          data = { ...data, url: `https://github.com/${repo}/pull/${number}` };
+        if (!data.url) {
+          if (metadataUrl) {
+            data = { ...data, url: metadataUrl };
+          } else if (repo && number) {
+            data = { ...data, url: `https://github.com/${repo}/pull/${number}` };
+          }
         }
         if (!data.externalId && repo && number) {
           data = { ...data, externalId: `${repo}#pull/${number}` };

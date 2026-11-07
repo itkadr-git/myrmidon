@@ -229,8 +229,10 @@ async function loadIssuePullRequestTarget(
     : typeof metadata.repository === "string" ? metadata.repository
     : null;
   const number = typeof metadata.number === "number" ? metadata.number : null;
-  const metadataUrl = typeof metadata.url === "string" ? metadata.url : null;
-  const effectiveUrl = product.url ?? metadataUrl;
+  const metadataUrl = typeof metadata.url === "string" && metadata.url.trim() !== "" ? metadata.url : null;
+  // OPE-12024: a stored empty string is as good as NULL for readability; the
+  // effective url prefers the column and falls back to metadata.url.
+  const effectiveUrl = (product.url !== null && product.url !== "") ? product.url : metadataUrl;
   const reference = extractGitHubPullRequestReferences([effectiveUrl, repo && number ? `${repo}#${number}` : null])[0] ?? null;
   if (!reference) return { kind: "unreadable", pullRequestUrl: effectiveUrl };
   return { kind: "ok", pullRequestUrl: effectiveUrl, reference };
