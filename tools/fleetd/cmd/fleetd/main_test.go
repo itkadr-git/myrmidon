@@ -398,6 +398,152 @@ func TestValidateConfig(t *testing.T) {
 	}
 }
 
+func TestValidateGatewayBindIPTable(t *testing.T) {
+	tests := []struct {
+		name        string
+		portStart   int
+		portEnd     int
+		bindIP      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:      "valid IPv4 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "127.0.0.1",
+			wantErr:   false,
+		},
+		{
+			name:      "valid alternate IPv4 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "127.0.0.2",
+			wantErr:   false,
+		},
+		{
+			name:      "valid IPv6 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "::1",
+			wantErr:   false,
+		},
+		{
+			name:        "missing gatewayBindIp when port range configured",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "whitespace gatewayBindIp when port range configured",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "   ",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "invalid IP format",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "not-an-ip",
+			wantErr:     true,
+			errContains: "not a valid IP address",
+		},
+		{
+			name:        "0.0.0.0 rejected as non-loopback",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "0.0.0.0",
+			wantErr:     true,
+			errContains: "not a loopback address",
+		},
+		{
+			name:        "private network IP rejected as non-loopback",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "192.168.1.10",
+			wantErr:     true,
+			errContains: "not a loopback address",
+		},
+		{
+			name:        "public network IP rejected as non-loopback",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "192.0.2.10",
+			wantErr:     true,
+			errContains: "not a loopback address",
+		},
+		{
+			name:        "non-loopback IPv6 rejected",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "2001:db8::1",
+			wantErr:     true,
+			errContains: "not a loopback address",
+		},
+		{
+			name:        "only portStart set without gatewayBindIp",
+			portStart:   18700,
+			portEnd:     0,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "only portEnd set without gatewayBindIp",
+			portStart:   0,
+			portEnd:     18799,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:      "no port range and empty bind IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "",
+			wantErr:   false,
+		},
+		{
+			name:      "no port range and loopback bind IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "127.0.0.1",
+			wantErr:   false,
+		},
+		{
+			name:        "no port range but non-loopback bind IP rejected",
+			portStart:   0,
+			portEnd:     0,
+			bindIP:      "192.0.2.10",
+			wantErr:     true,
+			errContains: "not a loopback address",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.GatewayPortStart = tt.portStart
+			cfg.GatewayPortEnd = tt.portEnd
+			cfg.GatewayBindIP = tt.bindIP
+
+			err := validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && tt.errContains != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("validate() error = %v, want containing %q", err, tt.errContains)
+				}
+			}
+		})
+	}
+}
+
 func TestValidSiteId(t *testing.T) {
 	for _, ok := range []string{"a", "myr-vm1", "site-01", "fleetd-local"} {
 		if !validSiteId(ok) {
@@ -510,7 +656,7 @@ func createBody(key string) string {
 func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	s, _, fake := newServerWithDocker(t)
 	s.cfg.GatewayPortStart, s.cfg.GatewayPortEnd = 18801, 18810
-	s.cfg.GatewayBindIP = "192.0.2.10"
+	s.cfg.GatewayBindIP = "127.0.0.1"
 	s.docker.gatewayBindIP = s.cfg.GatewayBindIP
 	key := s.cfg.Bots[0].BotKey
 	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
@@ -548,7 +694,7 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 		t.Fatalf("gateway port not bound: %v", host["PortBindings"])
 	}
 	port := ports.([]any)[0].(map[string]any)
-	if port["HostIp"] != "192.0.2.10" {
+	if port["HostIp"] != "127.0.0.1" {
 		t.Fatalf("gateway bind IP is %v", port["HostIp"])
 	}
 	// The profile volumes are mounted, so what writeProfile writes reaches the bot.
@@ -569,6 +715,24 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.cfg.VolumeRoot, key, "hermes")); err != nil {
 		t.Fatalf("volume directory not prepared: %v", err)
+	}
+}
+
+func TestCreateFailsClosedWhenGatewayBindIPIsEmpty(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	s.cfg.GatewayPortStart, s.cfg.GatewayPortEnd = 18801, 18810
+	s.cfg.GatewayBindIP = ""
+	s.docker.gatewayBindIP = ""
+	key := s.cfg.Bots[0].BotKey
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "gateway_bind_ip_required") {
+		t.Fatalf("expected gateway_bind_ip_required in body, got: %s", rec.Body.String())
+	}
+	if _, ok := fake.containers["fleet-"+key]; ok {
+		t.Fatalf("container must not be created when gatewayBindIP is empty")
 	}
 }
 

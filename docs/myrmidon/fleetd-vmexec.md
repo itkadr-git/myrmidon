@@ -13,6 +13,7 @@ It executes the board's `BotContainerDriver` interface locally against the Docke
 3. **Digest-Only Images**: Only pinned digests (`image@sha256:...`) matching `imageAllowlist` are accepted. Tags such as `:latest` are rejected at admission.
 4. **Zero-Secret Visibility**: Secrets are delivered in profile payloads and written directly to files with mode `0600`. Secrets are never echoed back in inspect, status, or log streams.
 5. **Epoch Fencing**: Leases are acquired with explicit lease epochs, preventing duplicate task executions when network partitioning occurs.
+6. **Loopback-Only Gateway Binding**: When publishing gateway ports (`gatewayPortStart`/`gatewayPortEnd`), `gatewayBindIp` is mandatory and must be a valid loopback IP address (`127.0.0.1` or `::1`). Binding to `0.0.0.0` or external addresses is strictly rejected. If a container requests a gateway port but `gatewayBindIp` is empty, container creation fails closed with `gateway_bind_ip_required`.
 
 ## Wire Contract
 

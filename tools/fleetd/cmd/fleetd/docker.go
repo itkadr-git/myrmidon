@@ -97,6 +97,9 @@ func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) erro
 		host["NetworkMode"] = d.network
 	}
 	if sp.GatewayPort > 0 {
+		if strings.TrimSpace(d.gatewayBindIP) == "" {
+			return fmt.Errorf("gateway_bind_ip_required")
+		}
 		host["PortBindings"] = map[string][]map[string]string{"8642/tcp": {{"HostIp": d.gatewayBindIP, "HostPort": fmt.Sprint(sp.GatewayPort)}}}
 	}
 	if sp.BoardExtraHost != "" {
