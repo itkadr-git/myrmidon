@@ -214,6 +214,7 @@ import {
   REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
   REVIEW_STAGE_RECOVERY_WINDOW_MS,
   countStalledReviewDeferrals,
+  isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
   type ReviewPullRequestCiFacts,
 } from "../../myrmidon/review-stage-recovery/policy.js";
@@ -4450,7 +4451,11 @@ export function recoveryService(
     const latestRun = input.latestRun;
     // Only a reviewer run that ended normally without a decision. Failed or
     // cancelled runs keep their own retry budget and escalation.
-    if (!latestRun || latestRun.status !== "succeeded") return false;
+    // myrmidon(OPE-12201): except a run the maintenance drain interrupted (a
+    // deploy draining the board or the bot): the reviewer is woken again without
+    // spending the decision budget instead of the stage moving to `blocked`.
+    const interruptedByMaintenance = isMaintenanceInterruptedRun(latestRun);
+    if (!latestRun || (latestRun.status !== "succeeded" && !interruptedByMaintenance)) return false;
     const state = parseIssueExecutionState(input.issue.executionState);
     if (state?.status !== "pending") return false;
     const participant = state.currentParticipant;
@@ -4485,17 +4490,19 @@ export function recoveryService(
       companyId: input.issue.companyId,
       issueId: input.issue.id,
     });
-    const decision = decideStalledReviewRecovery({
-      ci: ci.state,
-      ciWaitsUsed: deferrals.ciWaits,
-      // The release tail's own review-participant retry was the first re-wake.
-      decisionRewakesUsed: 1 + deferrals.decisionRetries,
-    });
+    const decision: ReturnType<typeof decideStalledReviewRecovery> = interruptedByMaintenance
+      ? { kind: "retry_decision", attempt: 1 + deferrals.decisionRetries, maxAttempts: 1 + deferrals.decisionRetries }
+      : decideStalledReviewRecovery({
+          ci: ci.state,
+          ciWaitsUsed: deferrals.ciWaits,
+          // The release tail's own review-participant retry was the first re-wake.
+          decisionRewakesUsed: 1 + deferrals.decisionRetries,
+        });
     if (decision.kind === "escalate") return false;
 
     const activityDetails = {
       identifier: input.issue.identifier,
-      kind: decision.kind === "wait_for_ci" ? "ci_wait" : "decision_retry",
+      kind: decision.kind === "wait_for_ci" ? "ci_wait" : interruptedByMaintenance ? "maintenance_retry" : "decision_retry",
       attempt: decision.attempt,
       maxAttempts: decision.maxAttempts,
       stageId,
