@@ -69,6 +69,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   bot_media_mcp: { label: "Media not connected" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
+  // myrmidon(OPE-11890): label for the auth-401 burst detector source.
+  auth_401_burst: { label: "Auth 401 burst" },
   host_disk_alert: { label: "Host disk" },
   // myrmidon(1.6.1-WIP-LIMIT-A): label for the WIP-limit source added with the per-agent WIP limit.
   wip_limit: { label: "WIP limit" },
@@ -177,6 +179,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "replay_blocked":
     case "budget_alert":
     case "host_disk_alert":
+    case "auth_401_burst":
     case "foraging_limit":
     case "litellm_budget":
       return "blocking";
