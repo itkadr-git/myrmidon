@@ -110,6 +110,15 @@ describe("users block API and audit routes", () => {
   });
 
   describe("POST /api/users/:userId/block", () => {
+    it("rejects unauthenticated requests with 401 Unauthorized", async () => {
+      const app = createApp(null);
+      const res = await request(app)
+        .post("/api/users/user-123/block")
+        .send({ reason: "Policy violation" });
+
+      expect(res.status).toBe(401);
+    });
+
     it("rejects non-admin users with 403 Forbidden", async () => {
       const app = createApp(nonAdminActor);
       const res = await request(app)
@@ -124,6 +133,16 @@ describe("users block API and audit routes", () => {
       const res = await request(app)
         .post("/api/users/user-123/block")
         .send({ reason: "" });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("reason");
+    });
+
+    it("rejects whitespace-only reason with 400 Bad Request", async () => {
+      const app = createApp(adminActor);
+      const res = await request(app)
+        .post("/api/users/user-123/block")
+        .send({ reason: "    " });
 
       expect(res.status).toBe(400);
       expect(res.body.error).toContain("reason");
@@ -182,6 +201,15 @@ describe("users block API and audit routes", () => {
   });
 
   describe("PATCH /api/users/:userId/block (OPE-12116)", () => {
+    it("rejects unauthenticated requests with 401 Unauthorized", async () => {
+      const app = createApp(null);
+      const res = await request(app)
+        .patch("/api/users/user-123/block")
+        .send({ blocked: true });
+
+      expect(res.status).toBe(401);
+    });
+
     it("rejects non-admin users with 403 Forbidden", async () => {
       const app = createApp(nonAdminActor);
       const res = await request(app)
@@ -244,6 +272,14 @@ describe("users block API and audit routes", () => {
   });
 
   describe("POST /api/users/:userId/reset-password (OPE-12116)", () => {
+    it("rejects unauthenticated requests with 401 Unauthorized", async () => {
+      const app = createApp(null);
+      const res = await request(app)
+        .post("/api/users/user-123/reset-password");
+
+      expect(res.status).toBe(401);
+    });
+
     it("rejects non-admin users with 403 Forbidden", async () => {
       const app = createApp(nonAdminActor);
       const res = await request(app)
