@@ -489,6 +489,24 @@
         "path": "agent/conversation_compression.py",
         "upstreamMarker": "keep_prefix|keep_system_prompt"
       }
+    },
+    {
+      "id": "28-session-affinity-prompt-cache-key",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/28-session-affinity-prompt-cache-key.patch",
+      "files": [
+        "agent/opencode_affinity.py",
+        "agent/transports/chat_completions.py"
+      ],
+      "reason": "Upstream's providers.<id>.session_affinity_header puts the conversation key in a request header. The pool of ChatGPT accounts behind the LiteLLM gateway also routes its prompt cache on the request body's prompt_cache_key, which the chat-completions transport sends only to api.openai.com and to provider profiles that declare support, never to a custom endpoint, so the body key was absent. An endpoint whose providers entry names the option now gets the same key (the header's own value) in the body, bounded to 64 characters like every key; a key the caller pinned stays, and every endpoint without the option is untouched.",
+      "dropCondition": "Upstream sends the conversation key as prompt_cache_key for an endpoint that opted in with session_affinity_header.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/transports/chat_completions.py",
+        "upstreamMarker": "session_affinity|affinity_cache_key"
+      }
     }
   ]
 }

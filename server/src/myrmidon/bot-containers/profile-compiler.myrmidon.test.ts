@@ -4,6 +4,7 @@ import { classifyProfileChange } from "./types.js";
 import {
   compileHermesProfile,
   compileHermesProfileDetailed,
+  LLM_GATEWAY_SESSION_AFFINITY_HEADER,
   type HermesProfileInput,
 } from "./profile-compiler.js";
 
@@ -743,6 +744,94 @@ describe("myrmidon(G2) compileHermesProfile — LLM gateway (instance-level base
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
     expect(yaml).not.toContain("fallback_model");
     expect(warnings.some((w) => w.startsWith("fallback_model:"))).toBe(true);
+  });
+});
+
+// myrmidon(OPE-11966): the ChatGPT pool behind the gateway caches a prompt only when the requests of
+// one conversation carry one stable key. The gateway reads it from `x-litellm-session-id`; Hermes
+// sends a header of that name when the providers entry that serves the request's base URL names it as
+// `session_affinity_header` (agent/opencode_affinity.py). Without the entry no key is sent, the pool
+// sees a new session id per call and its cache hit only 25-47% of the input.
+describe("myrmidon(OPE-11966) compileHermesProfile — conversation key for the LLM gateway", () => {
+  const gatewayLlm = { baseUrl: "https://example.com/llm/v1", apiKeyEnv: "LLM_GATEWAY_API_KEY" };
+
+  it("names the header the gateway reads on a providers entry that serves the gateway URL", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(
+        baseInput({ adapterConfig: { model: "chatgpt-pool/gpt-6.1-sol", provider: "custom" }, llm: gatewayLlm }),
+      ).files,
+      "hermes/config.yaml",
+    ).content;
+    expect(LLM_GATEWAY_SESSION_AFFINITY_HEADER).toBe("x-litellm-session-id");
+    expect(yaml).toContain(
+      'providers:\n  myrmidon-gateway:\n    api: "https://example.com/llm/v1"\n    key_env: "LLM_GATEWAY_API_KEY"\n' +
+        '    session_affinity_header: "x-litellm-session-id"',
+    );
+  });
+
+  it("matches the endpoint of model.base_url and of every fallback_model entry (Hermes matches the entry by URL)", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(
+        baseInput({
+          adapterConfig: { model: "chatgpt-pool/gpt-6.1-sol", provider: "custom", models: { fallbacks: ["model-b"] } },
+          llm: gatewayLlm,
+        }),
+      ).files,
+      "hermes/config.yaml",
+    ).content;
+    const urls = [...yaml.matchAll(/^\s*(?:- )?(?:base_url|api): "([^"]+)"$/gm)].map((m) => m[1]);
+    // model.base_url, the fallback entry, and the providers entry: one URL, three places.
+    expect(urls).toEqual(["https://example.com/llm/v1", "https://example.com/llm/v1", "https://example.com/llm/v1"]);
+    expect(yaml.match(/session_affinity_header/g)).toHaveLength(1);
+  });
+
+  it("does not depend on the card: a card with no provider, or auto, gets the same entry", () => {
+    const entry =
+      'providers:\n  myrmidon-gateway:\n    api: "https://example.com/llm/v1"\n    key_env: "LLM_GATEWAY_API_KEY"\n' +
+      '    session_affinity_header: "x-litellm-session-id"';
+    for (const adapterConfig of [{}, { provider: "auto" }, { provider: "custom" }, { provider: "xai", model: "grok-4" }]) {
+      const yaml = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig, llm: gatewayLlm })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain(entry);
+    }
+  });
+
+  it("writes only the variable name of the key, never its value", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({
+        adapterConfig: { provider: "custom" },
+        llm: gatewayLlm,
+        env: { LLM_GATEWAY_API_KEY: { value: "sk-fake-llm-gateway-key-0001", secret: true } },
+      }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("sk-fake-llm-gateway-key-0001");
+    expect(yaml).not.toMatch(/providers:[\s\S]*api_key/);
+    expect(warnings).toEqual([]);
+  });
+
+  it("leaves key_env out of the entry when the instance names no key variable", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(baseInput({ adapterConfig: { provider: "custom" }, llm: { baseUrl: "https://example.com/llm/v1" } }))
+        .files,
+      "hermes/config.yaml",
+    ).content;
+    expect(yaml).toContain(
+      'providers:\n  myrmidon-gateway:\n    api: "https://example.com/llm/v1"\n    session_affinity_header: "x-litellm-session-id"',
+    );
+    expect(yaml).not.toContain("key_env");
+  });
+
+  it("sends no conversation key anywhere when the instance has no gateway endpoint", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(baseInput({ adapterConfig: { provider: "xai", model: "grok-4" } })).files,
+      "hermes/config.yaml",
+    ).content;
+    expect(yaml).not.toContain("providers");
+    expect(yaml).not.toContain("session_affinity_header");
+    expect(yaml).not.toContain("x-litellm-session-id");
   });
 });
 
