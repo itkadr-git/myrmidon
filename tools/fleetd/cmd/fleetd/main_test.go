@@ -34,12 +34,13 @@ func testClientTLS() *tls.ConnectionState {
 
 func testConfig() *config {
 	cfg := &config{
-		SiteId:  "myr-vm1",
-		Epoch:   1,
-		Listen:  "127.0.0.1:0",
-		Token:   fakeBearer(),
-		Network: "net-a",
-		Images:  []string{"example.com/bot@sha256:aa"},
+		SiteId:        "myr-vm1",
+		Epoch:         1,
+		Listen:        "127.0.0.1:0",
+		Token:         fakeBearer(),
+		Network:       "net-a",
+		GatewayBindIP: "127.0.0.1",
+		Images:        []string{"example.com/bot@sha256:aa"},
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
