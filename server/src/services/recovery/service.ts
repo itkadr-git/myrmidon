@@ -7300,7 +7300,7 @@ export function recoveryService(
           });
           if (updated) {
             // myrmidon(RUN-GUARD-ESCALATE): the sweep blocks a guard-stopped run's task too.
-            if (readRunGuardStopReason(latestRun)) {
+            if (latestRun && readRunGuardStopReason(latestRun)) {
               await wakeManagerForRunGuardStop({ issue, latestRun }).catch((error) => {
                 logger.warn(
                   { error: error instanceof Error ? error.message : String(error), issueId: issue.id },
