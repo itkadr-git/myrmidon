@@ -267,7 +267,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         vectorRows.map((row) => row.id),
         fullTextRows.map((row) => row.id),
         fusion,
-      ).slice(0, limit);
+      );
       if (fused.length === 0) return [];
 
       const chunksById = new Map<string, ChunkRow>();
@@ -276,14 +276,28 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (!chunksById.has(row.id)) chunksById.set(row.id, row);
       }
 
-      const documentIds = [...new Set([...chunksById.values()].map((row) => row.document_id))];
+      // A document often contributes several adjacent chunks. Keep only its best fused chunk
+      // in the public result so one long document cannot consume the whole top-k and hide other
+      // relevant documents. Candidate retrieval remains wide (kCandidates per leg), so this is
+      // diversification rather than a recall-reducing post-filter.
+      const diversified = [] as typeof fused;
+      const seenDocuments = new Set<string>();
+      for (const candidate of fused) {
+        const documentId = chunksById.get(candidate.id)?.document_id;
+        if (!documentId || seenDocuments.has(documentId)) continue;
+        seenDocuments.add(documentId);
+        diversified.push(candidate);
+        if (diversified.length >= limit) break;
+      }
+
+      const documentIds = [...new Set(diversified.map((candidate) => chunksById.get(candidate.id)?.document_id).filter((id): id is string => !!id))];
       const documentRows = documentIds.length
         ? await options.sql.query<DocumentRow>(documentsSql, [query.companyId, documentIds])
         : [];
       const documentsById = new Map(documentRows.map((row) => [row.id, row]));
 
       const hits: CorpusSearchHitDetail[] = [];
-      for (const candidate of fused) {
+      for (const candidate of diversified) {
         const row = chunksById.get(candidate.id);
         if (!row) continue;
         const document = documentsById.get(row.document_id);

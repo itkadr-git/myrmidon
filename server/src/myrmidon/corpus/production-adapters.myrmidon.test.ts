@@ -346,9 +346,10 @@ run("production corpus adapters", () => {
   });
 
   it("indexes document chunks by calling the embeddings endpoint with corpus-embed-pplx-0.6b", async () => {
-    const captured: { body: { model?: string; input?: string[]; dimensions?: number } | null } = { body: null };
+    const captured: { body: { model?: string; input?: string[]; dimensions?: number } | null; calls: number } = { body: null, calls: 0 };
     const server = http.createServer((req, res) => {
       if (req.method === "POST" && req.url === "/embeddings") {
+        captured.calls += 1;
         let raw = "";
         req.on("data", (c) => { raw += c; });
         req.on("end", () => {
@@ -417,6 +418,12 @@ run("production corpus adapters", () => {
       expect(captured.body?.model).toBe("corpus-embed-pplx-0.6b");
       expect(captured.body?.input).toEqual(["hello bge-m3 world"]);
       expect(captured.body?.dimensions).toBe(1024);
+
+      const search = { companyId, datasetId: dataset.id, query: "hello bge-m3 world", limit: 5, mode: "hybrid" as const, embedderModel: settings.embedderModel, embedderDimensions: settings.embedderDimensions, embedderBaseUrl: baseUrl };
+      const secondPorts = createCorpusPorts(dbInstance, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+      await Promise.all([ports.index.search(search), secondPorts.index.search(search)]);
+      await secondPorts.index.search(search);
+      expect(captured.calls).toBe(2); // one ingestion request, one shared query embedding
 
       await dbInstance.$client.end();
     } finally {
