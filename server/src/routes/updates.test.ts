@@ -284,6 +284,48 @@ describe("updates routes (OPE-10268)", () => {
       expect(paths.some((p) => p.includes("cron"))).toBe(true);
     });
 
+    it("POST /api/updates/settings accepts valid maintenanceWindow cron and rejects invalid (OPE-12087)", async () => {
+      const app = createApp();
+      const validRes = await request(app)
+        .post("/api/updates/settings")
+        .send({
+          maintenanceWindow: "30 3 * * 0",
+        });
+
+      expect(validRes.status).toBe(200);
+      expect(validRes.body.cron).toBe("30 3 * * 0");
+
+      const invalidRes = await request(app)
+        .post("/api/updates/settings")
+        .send({
+          maintenanceWindow: "not-a-valid-cron",
+        });
+
+      expect(invalidRes.status).toBe(400);
+      expect(invalidRes.body.error).toBe("Validation error");
+    });
+
+    it("PUT /api/updates/settings accepts valid maintenanceWindow cron and rejects invalid (OPE-12087)", async () => {
+      const app = createApp();
+      const validRes = await request(app)
+        .put("/api/updates/settings")
+        .send({
+          maintenanceWindow: "15 4 * * 1-5",
+        });
+
+      expect(validRes.status).toBe(200);
+      expect(validRes.body.cron).toBe("15 4 * * 1-5");
+
+      const invalidRes = await request(app)
+        .put("/api/updates/settings")
+        .send({
+          maintenanceWindow: "0 25 * * 0",
+        });
+
+      expect(invalidRes.status).toBe(400);
+      expect(invalidRes.body.error).toBe("Validation error");
+    });
+
     it("supports /api/updates alias", async () => {
       const app = createApp();
       const res = await request(app).get("/api/updates");

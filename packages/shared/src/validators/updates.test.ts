@@ -273,6 +273,35 @@ describe("updates validators (OPE-10268)", () => {
         expect(parsed.cron).toBe("15 4 * * 1-5");
       });
 
+      it("accepts valid maintenanceWindow cron alias (string or object)", () => {
+        const parsedStr = updateSettingsSchema.parse({
+          maintenanceWindow: "30 3 * * 0",
+        });
+        expect(parsedStr.maintenanceWindow).toBe("30 3 * * 0");
+
+        const parsedObj = updateSettingsSchema.parse({
+          maintenanceWindow: {
+            cron: "30 3 * * 0",
+            durationMinutes: 120,
+          },
+        });
+        expect((parsedObj.maintenanceWindow as any)?.cron).toBe("30 3 * * 0");
+      });
+
+      it("rejects invalid maintenanceWindow cron", () => {
+        for (const bad of ["invalid-cron", "60 3 * * 0", "0 3 * * 0 extra"]) {
+          const resStr = updateSettingsSchema.safeParse({
+            maintenanceWindow: bad,
+          });
+          expect(resStr.success).toBe(false);
+
+          const resObj = updateSettingsSchema.safeParse({
+            maintenanceWindow: { cron: bad },
+          });
+          expect(resObj.success).toBe(false);
+        }
+      });
+
       it("rejects a cron with wrong field count", () => {
         for (const bad of ["0 3 * * 0 extra", "0 3 * *", ""]) {
           const windowResult = updateSettingsSchema.safeParse({
