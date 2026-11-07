@@ -119,9 +119,21 @@ describe("hybrid search index", () => {
     expect(vectorCall?.text).toContain('order by c."embedding" <=> $1::vector');
     expect(vectorCall?.values).toEqual([expect.stringContaining("["), companyId, [datasetId], 100]);
     expect(textCall?.text).toContain('c."fts"');
-    expect(textCall?.text).toContain("to_tsquery($5::regconfig, $1)");
+    // The question as a whole (every word mandatory) joined with the OR of its significant words.
+    expect(textCall?.text).toContain("plainto_tsquery($5::regconfig, $1)");
+    expect(textCall?.text).toContain("to_tsquery($5::regconfig, $7)");
+    expect(textCall?.text).toContain("case when $7 = ''");
+    expect(textCall?.text).toContain("similarity(c.\"content\", $1)");
     expect(textCall?.text).toContain('c."content" ilike $4');
-    expect(textCall?.values).toEqual(["supply | agreement", companyId, [datasetId], "%supply agreement%", "english", 100]);
+    expect(textCall?.values).toEqual([
+      "supply agreement",
+      companyId,
+      [datasetId],
+      "%supply agreement%",
+      "english",
+      100,
+      "supply | agreement",
+    ]);
   });
 
   it("merges the rankings with RRF and returns score, chunk and document", async () => {
@@ -476,15 +488,27 @@ describe("vector ranking through the HNSW iterative scan", () => {
     expect(hits.map((hit) => hit.chunkId)).toEqual(["only"]);
   });
 
-  it("does not probe or rank exactly a search without a dataset", async () => {
-    const { sql, calls } = createScriptedSql(scripted({ size: 5, index: [chunkRow("only", 0, 0.9)] }));
+  it("probes the company of a search without a dataset: a large company goes through the index", async () => {
+    const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: [chunkRow("only", 0, 0.9)] }));
     const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, embedding: embedding() });
 
-    expect(calls.filter(isSizeProbe)).toHaveLength(0);
+    expect(calls.find(isSizeProbe)?.values).toEqual([companyId, null, 10_001]);
+    expect(calls.find(isSizeProbe)?.text).toContain("($2::uuid[] is null or d.dataset_id = any($2::uuid[]))");
     expect(calls.filter(isExact)).toHaveLength(0);
     expect(calls.filter(isIterativeScan)).toHaveLength(1);
     expect(calls.find(isIndexRanking)?.values[2]).toBeNull();
     expect(hits.map((hit) => hit.chunkId)).toEqual(["only"]);
+  });
+
+  it("ranks a small company exactly when the search names no dataset", async () => {
+    const { sql, calls } = createScriptedSql(
+      scripted({ size: 2_000, index: manyChunkRows(100, "index"), exact: [chunkRow("exact-1", 0, 0.8)] }),
+    );
+    const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, embedding: embedding() });
+
+    expect(calls.filter(isIndexRanking)).toHaveLength(0);
+    expect(calls.find(isExact)?.values).toEqual([expect.any(String), companyId, null, 100]);
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["exact-1"]);
   });
 
   it("ranks a small dataset exactly at once, through the exact statement", async () => {
@@ -656,13 +680,14 @@ describe("substring match of the full-text ranking", () => {
     await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, text: `  ${longText}  ` });
 
     const textCall = calls.find((call) => /ts_rank/.test(call.text));
-    expect(textCall?.text).toContain("to_tsquery($4::regconfig, $1)");
+    expect(textCall?.text).toContain("plainto_tsquery($4::regconfig, $1)");
+    expect(textCall?.text).toContain("to_tsquery($4::regconfig, $6)");
     expect(textCall?.text).toContain("limit $5");
-    expect(textCall?.text).not.toMatch(/ilike|\$6/);
+    expect(textCall?.text).not.toMatch(/ilike|\$7/);
     // Every parameter the text names is bound, and no other: a driver rejects a gap.
-    expect(textCall?.values).toEqual(["light | charcoal | grill", companyId, [datasetId], "english", 100]);
+    expect(textCall?.values).toEqual([longText, companyId, [datasetId], "english", 100, "light | charcoal | grill"]);
     const named = new Set([...(textCall?.text.matchAll(/\$(\d+)/g) ?? [])].map((match) => Number(match[1])));
-    expect([...named].sort()).toEqual([1, 2, 3, 4, 5]);
+    expect([...named].sort()).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it("honours ilikeMaxLength, and 0 switches the match off", async () => {

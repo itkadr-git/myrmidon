@@ -8,15 +8,17 @@
 //     so a plain `order by embedding <=> $query limit k` keeps whatever survives the filter of the
 //     first 64 rows (about half of the candidates on production). With pgvector 0.8 the ranking runs
 //     with the HNSW iterative scan (`hnsw.iterative_scan = relaxed_order`), which keeps scanning
-//     until the limit is filled; a small dataset (up to `exactSetMaxChunks` chunks) is ranked exactly,
-//     over its own chunks, instead. Without the iterative scan (pgvector before 0.8) the ranking is
+//     until the limit is filled; a small dataset (up to `exactSetMaxChunks` chunks, the company's own
+//     chunks when a search names no dataset) is ranked exactly, over its own chunks, instead. Without the iterative scan (pgvector before 0.8) the ranking is
 //     the plain statement;
-//   * full text: `fts @@ to_tsquery(...)` — a small OR of the question's significant words (see
-//     `toFullTextQuery`); the GIN index over the generated tsvector serves it. The former
-//     `plainto_tsquery` + whole-question `ILIKE` shape matched nothing on natural-language
-//     questions (AND of all words / exact substring): the full-text leg was dead on the
-//     production corpus (empty_rate 0.986 in the 07.11 golden bench). An `ILIKE` fallback
-//     still serves short query texts.
+//   * full text: `fts @@ (plainto_tsquery(...) || to_tsquery(...))` — the question as a whole (every
+//     word mandatory, which is what finds a chunk that holds all of them) or a small OR of its
+//     significant words (see `toFullTextQuery`); the GIN index over the generated tsvector serves
+//     both. The OR alone matched nothing precise: it drops numbers and short words, so a question
+//     that names a chunk by its number or code lost the chunk to the many that share the other
+//     words. The `plainto_tsquery` alone matched nothing on natural-language questions (AND of all
+//     words): the full-text leg was dead on the production corpus (empty_rate 0.986 in the 07.11
+//     golden bench). An `ILIKE` fallback still serves short query texts and identifiers.
 // The two rankings are merged with RRF (k0 = 60, k_candidates = 100) and the top-k hits are
 // returned with their chunk and document rows.
 //
@@ -88,7 +90,7 @@ export interface PostgresSearchIndexOptions {
   /** `hnsw.ef_search` of the vector ranking; the pilot value is 64. */
   readonly efSearch?: number;
   /**
-   * Text search configuration of `to_tsquery`. It must be the configuration the generated
+   * Text search configuration of `plainto_tsquery` and `to_tsquery`. It must be the configuration the generated
    * `fts` column was built with — the corpus migration uses `english`.
    */
   readonly ftsLanguage?: string;
@@ -100,8 +102,9 @@ export interface PostgresSearchIndexOptions {
    */
   readonly ilikeMaxLength?: number;
   /**
-   * Largest dataset, in embedded chunks, that the vector ranking reads and sorts exactly instead of
-   * scanning the HNSW index. `0` sends every dataset search through the index.
+   * Largest dataset, in embedded chunks (the whole company when a search names no dataset), that the
+   * vector ranking reads and sorts exactly instead of scanning the HNSW index. `0` sends every search
+   * through the index.
    */
   readonly exactSetMaxChunks?: number;
   /**
@@ -313,35 +316,47 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     `    from ${chunks} c`,
     `    join ${documents} d on d.id = c.document_id and d.company_id = c.company_id`,
     `   where c.company_id = $1::uuid`,
-    `     and d.dataset_id = any($2::uuid[])`,
+    `     and ($2::uuid[] is null or d.dataset_id = any($2::uuid[]))`,
     `     and d.status = 'ready'`,
     `     and c.${embedding} is not null`,
     `   limit $3`,
     `) sized`,
   ].join("\n");
 
+  // The tsquery of the full-text ranking: the question as a whole (`plainto_tsquery`, every word
+  // mandatory) or the bounded OR of its significant words (`$or`, built by `toFullTextQuery`). The
+  // first finds what the question names exactly — a number, a code, a rare word next to common ones —
+  // and ranks it first, because `ts_rank` sums over the distinct terms a chunk holds; the second finds
+  // what a natural-language question only paraphrases. An empty OR (all words short or stop words)
+  // leaves the question alone, so `to_tsquery` never sees an empty string: it raises a notice each time.
+  const fullTextQuery = (lang: string, or: string) =>
+    `(case when ${or} = '' then plainto_tsquery(${lang}::regconfig, $1)` +
+    ` else plainto_tsquery(${lang}::regconfig, $1) || to_tsquery(${lang}::regconfig, ${or}) end)`;
+
+  // `$1` is the question as the user wrote it: it feeds `plainto_tsquery`, the trigram `ilike` pattern
+  // is built from it, and `similarity` breaks the ties of `ts_rank` with it.
   const fullTextSql = [
     `select`,
     chunkColumns,
-    `       ts_rank(c.${fullText}, to_tsquery($5::regconfig, $1)) as score`,
+    `       ts_rank(c.${fullText}, ${fullTextQuery("$5", "$7")}) as score`,
     scope,
-    `   and (c.${fullText} @@ to_tsquery($5::regconfig, $1) or c.${content} ilike $4)`,
-    ` order by ts_rank(c.${fullText}, to_tsquery($5::regconfig, $1)) desc,`,
+    `   and (c.${fullText} @@ ${fullTextQuery("$5", "$7")} or c.${content} ilike $4)`,
+    ` order by ts_rank(c.${fullText}, ${fullTextQuery("$5", "$7")}) desc,`,
     `          similarity(c.${content}, $1) desc`,
     ` limit $6`,
   ].join("\n");
 
-  // The same ranking without the substring match, for a query text longer than `ilikeMaxLength`.
-  // Not the same statement with a null pattern: a generic plan could not drop the `or` branch and
-  // would lose the index for the `tsvector` match too. The parameters are renumbered, because a
-  // driver rejects a parameter that the text never mentions.
+  // The same ranking without the substring match, for a query text longer than `ilikeMaxLength` that
+  // is not an identifier. Not the same statement with a null pattern: a generic plan could not drop the
+  // `or` branch and would lose the index for the `tsvector` match too. The parameters are renumbered,
+  // because a driver rejects a parameter that the text never mentions.
   const fullTextOnlySql = [
     `select`,
     chunkColumns,
-    `       ts_rank(c.${fullText}, to_tsquery($4::regconfig, $1)) as score`,
+    `       ts_rank(c.${fullText}, ${fullTextQuery("$4", "$6")}) as score`,
     scope,
-    `   and c.${fullText} @@ to_tsquery($4::regconfig, $1)`,
-    ` order by ts_rank(c.${fullText}, to_tsquery($4::regconfig, $1)) desc,`,
+    `   and c.${fullText} @@ ${fullTextQuery("$4", "$6")}`,
+    ` order by ts_rank(c.${fullText}, ${fullTextQuery("$4", "$6")}) desc,`,
     `          similarity(c.${content}, $1) desc`,
     ` limit $5`,
   ].join("\n");
@@ -365,8 +380,15 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   // version is read on every request in practice; one `pg_extension` lookup is cheap.
   let iterativeScanSupported = false;
 
-  /** Whether the requested datasets hold at most `exactSetMaxChunks` embedded chunks. */
-  async function isSmallSet(transaction: SqlExecutor, companyId: string, datasetIds: readonly string[]): Promise<boolean> {
+  /**
+   * Whether the requested datasets (the whole company when there are none) hold at most
+   * `exactSetMaxChunks` embedded chunks.
+   */
+  async function isSmallSet(
+    transaction: SqlExecutor,
+    companyId: string,
+    datasetIds: readonly string[] | null,
+  ): Promise<boolean> {
     const rows = await transaction.query<{ chunks?: unknown }>(setSizeSql, [companyId, datasetIds, exactSetMaxChunks + 1]);
     const chunkCount = Number(rows[0]?.chunks);
     return Number.isFinite(chunkCount) && chunkCount <= exactSetMaxChunks;
@@ -395,9 +417,8 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
 
       const kCandidates = Math.max(limit, fusion.kCandidates);
       const text = useFullText ? query.text.trim() : "";
-      // The full-text query is the bounded OR of significant words (see `toFullTextQuery`); the
-      // unmodified text still feeds the trigram `ilike` and the `similarity` ranking.
-      const fullTextQuery = useFullText ? toFullTextQuery(text) : "";
+      // The bounded OR of significant words (see `toFullTextQuery`) joins the question as a whole.
+      const orQuery = useFullText ? toFullTextQuery(text) : "";
       // The substring match is for short texts and for identifiers (a single token without whitespace).
       const useIlike =
         ilikeMaxLength > 0 &&
@@ -414,11 +435,10 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
           try {
             await transaction.query(efSearchSql);
             const iterativeScan = await enableIterativeScan(transaction);
-            // A small dataset is cheaper to read and sort than to find in the index.
+            // A small dataset, or a small company when the search names no dataset, is cheaper to read
+            // and sort than to find in the index.
             const smallSet =
-              iterativeScan && datasetIds !== null && exactSetMaxChunks > 0
-                ? await isSmallSet(transaction, query.companyId, datasetIds)
-                : false;
+              iterativeScan && exactSetMaxChunks > 0 ? await isSmallSet(transaction, query.companyId, datasetIds) : false;
             vectorRows = await transaction.query<ChunkRow>(smallSet ? exactSetSql : vectorSql, [
               embeddingLiteral,
               query.companyId,
@@ -439,19 +459,21 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (useFullText) {
           fullTextRows = useIlike
             ? await transaction.query<ChunkRow>(fullTextSql, [
-                fullTextQuery,
+                text,
                 query.companyId,
                 datasetIds,
                 likePattern,
                 language,
                 kCandidates,
+                orQuery,
               ])
             : await transaction.query<ChunkRow>(fullTextOnlySql, [
-                fullTextQuery,
+                text,
                 query.companyId,
                 datasetIds,
                 language,
                 kCandidates,
+                orQuery,
               ]);
         }
         return { vectorRows, fullTextRows };
