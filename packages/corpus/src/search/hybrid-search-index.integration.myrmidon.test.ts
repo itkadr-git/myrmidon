@@ -311,7 +311,12 @@ async function seedSmallDataset(client: PgClient): Promise<StandChunk[]> {
   const small: StandChunk[] = [];
   for (let position = 0; position < SMALL_DATASET_CHUNKS; position += 1) {
     const index = SMALL_INDEX_BASE + position;
-    const chunk = { id: chunkId(index), vector: randomVector(random), content: `Small dataset note ${position}.` };
+    // The first note carries identifiers: file names and codes are what the substring match is kept for.
+    const content =
+      position === 0
+        ? "Small dataset note 0. Settings live in litellm_proxy_config.yaml and docker-compose-override.yml, see rq002_is_camp_chef_explorer."
+        : `Small dataset note ${position}.`;
+    const chunk = { id: chunkId(index), vector: randomVector(random), content };
     small.push(chunk);
     await client.unsafe(
       `insert into ${schema.documentsTable} (id, company_id, dataset_id, title, source_uri, status) values ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, $6::text)`,
@@ -557,6 +562,32 @@ suite("hybrid search over postgres with the vector extension", () => {
     expect(recorded.some((query) => /hnsw\.iterative_scan/.test(query.text))).toBe(false);
     expect(hits[0]?.chunk.id).toBe(source.id);
     for (const hit of hits) expect(hit.chunk.datasetId).toBe(DATASET_ID);
+  });
+
+  it("finds an identifier of 20 and more characters through the ilike match, which the tsvector does not", async () => {
+    const withoutIlike = createPostgresSearchIndex({
+      sql: executor,
+      schema,
+      ftsLanguage: FTS_LANGUAGE,
+      ilikeMaxLength: 0,
+    });
+    // File names are one lexeme in the tsvector, so the name without its extension is not in it.
+    for (const [identifier, tsvectorMisses] of [
+      ["litellm_proxy_config", true],
+      ["docker-compose-override", true],
+      ["rq002_is_camp_chef_explorer", false],
+    ] as const) {
+      expect(identifier.length).toBeGreaterThanOrEqual(20);
+      recorded.length = 0;
+      const hits = await index.search({ companyId: COMPANY_ID, datasetIds: [SMALL_DATASET_ID], text: identifier, limit: 5 });
+      expect(recorded.filter((query) => /ts_rank/.test(query.text) && /ilike/.test(query.text))).toHaveLength(1);
+      expect(hits.map((hit) => hit.chunk.id)).toEqual([smallChunks[0].id]);
+
+      if (tsvectorMisses) {
+        const missed = await withoutIlike.search({ companyId: COMPANY_ID, datasetIds: [SMALL_DATASET_ID], text: identifier, limit: 5 });
+        expect(missed).toEqual([]);
+      }
+    }
   });
 
   it("leaves a long question to the tsvector: no substring match, same answer", async () => {

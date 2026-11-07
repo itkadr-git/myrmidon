@@ -26,6 +26,14 @@ export const MAX_SEARCH_LIMIT = 100;
 export const DEFAULT_ILIKE_MAX_LENGTH = 16;
 
 /**
+ * Longest query text that gets the `ILIKE` match whatever `ilikeMaxLength` says, when it is a single
+ * token without whitespace. Such a text is an identifier — a file name, a version, a task code — which
+ * the `tsvector` match does not find (`litellm_proxy_config` against `litellm_proxy_config.yaml`), while
+ * a single token has few trigrams to read and is likely a verbatim substring of a chunk.
+ */
+export const ILIKE_SINGLE_TOKEN_MAX_LENGTH = 64;
+
+/**
  * Largest dataset (in embedded chunks) that is ranked exactly, straight away, instead of through the
  * HNSW index. Reading and sorting the chunks of a dataset this size takes milliseconds to a few tenths
  * of a second, while the HNSW scan, cut by company only, has to walk a large part of the graph to find

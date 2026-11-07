@@ -39,7 +39,8 @@ One `search()` call runs these statements inside one transaction:
    the dataset lives on `corpus_documents`), and the dataset and `ready` filters run after the index
    scan. Without the iterative scan the scan stops after `ef_search = 64` rows, so the filter leaves
    whatever of them belongs to the dataset: on production about half of the 100 candidates. The
-   ranking therefore reads the pgvector version once per index and then, on pgvector 0.8 and later:
+   ranking therefore reads the pgvector version from `pg_extension` (on every search, since the product
+   builds the index for every request; one cheap lookup) and then, on pgvector 0.8 and later:
    - `set local hnsw.iterative_scan = relaxed_order` with `hnsw.max_scan_tuples = 100000` (the
      `maxScanTuples` option; pgvector's own limit is 20 000, which a question far from a dataset of
      13 % of the corpus reached with 47 to 67 of the 100 candidates), and the plain
@@ -65,7 +66,10 @@ One `search()` call runs these statements inside one transaction:
    by the `tsvector` alone: the trigram index reads one posting list per trigram of the pattern, so
    the cost of the match grows with the length of the text (a 40-character question read from 150 ms
    to 1.2 s on a cold index in production), while a long question is almost never a verbatim
-   substring of a chunk.
+   substring of a chunk. The exception is a single token without whitespace of up to 64 characters:
+   it is an identifier (a file name, a version, a task code), which the `tsvector` does not find
+   (`litellm_proxy_config` against `litellm_proxy_config.yaml`) and the `ilike` does, so it keeps the
+   match. `ilikeMaxLength: 0` switches the match off for every text.
 
 Both rankings take `kCandidates = 100` rows, and the fusion (`k0 = 60`) turns them into one
 ranked list by rank, never by score: cosine distance and `ts_rank` are not comparable. Ties

@@ -34,6 +34,7 @@ import {
   DEFAULT_ILIKE_MAX_LENGTH,
   DEFAULT_MAX_SCAN_TUPLES,
   DEFAULT_SEARCH_LIMIT,
+  ILIKE_SINGLE_TOKEN_MAX_LENGTH,
   MAX_SEARCH_LIMIT,
   type CorpusSearchChunkRef,
   type CorpusSearchDocumentRef,
@@ -89,8 +90,9 @@ export interface PostgresSearchIndexOptions {
   readonly ftsLanguage?: string;
   /**
    * Longest query text (characters) that still adds the `ILIKE '%…%'` substring match to the
-   * full-text ranking; a longer text is matched by the `tsvector` alone. `0` switches the substring
-   * match off.
+   * full-text ranking; a longer text is matched by the `tsvector` alone, except a single token
+   * without whitespace of up to `ILIKE_SINGLE_TOKEN_MAX_LENGTH` characters (an identifier: a file
+   * name, a version, a task code), which keeps the match. `0` switches the substring match off.
    */
   readonly ilikeMaxLength?: number;
   /**
@@ -323,10 +325,12 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const maxScanTuplesSql = `set local hnsw.max_scan_tuples = ${maxScanTuples}`;
   const pgvectorVersionSql = `select extversion from pg_extension where extname = 'vector'`;
 
-  // The version of the installed pgvector does not change under a running process, so it is read
-  // once per index. No `vector` extension at all reads as "no iterative scan": the plain statement
-  // then fails the way it always did and is reported as `CorpusVectorSearchUnavailableError`.
-  let iterativeScanSupported: boolean | undefined;
+  // A positive answer is kept for the life of the index: pgvector is not downgraded under a running
+  // process. A negative one is not: "no `vector` extension" may change when the extension is
+  // installed, and the plain statement it leads to fails the way it always did and is reported as
+  // `CorpusVectorSearchUnavailableError`. The product builds the index for every request, so the
+  // version is read on every request in practice; one `pg_extension` lookup is cheap.
+  let iterativeScanSupported = false;
 
   /** Whether the requested datasets hold at most `exactSetMaxChunks` embedded chunks. */
   async function isSmallSet(transaction: SqlExecutor, companyId: string, datasetIds: readonly string[]): Promise<boolean> {
@@ -337,7 +341,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
 
   /** Turns the HNSW iterative scan on for the transaction; `false` where pgvector is older than 0.8. */
   async function enableIterativeScan(transaction: SqlExecutor): Promise<boolean> {
-    if (iterativeScanSupported === undefined) {
+    if (!iterativeScanSupported) {
       const rows = await transaction.query<{ extversion?: unknown }>(pgvectorVersionSql);
       iterativeScanSupported = pgvectorHasIterativeScan(rows[0]?.extversion);
     }
@@ -358,7 +362,10 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
 
       const kCandidates = Math.max(limit, fusion.kCandidates);
       const text = useFullText ? query.text.trim() : "";
-      const useIlike = text.length <= ilikeMaxLength;
+      // The substring match is for short texts and for identifiers (a single token without whitespace).
+      const useIlike =
+        ilikeMaxLength > 0 &&
+        (text.length <= ilikeMaxLength || (text.length <= ILIKE_SINGLE_TOKEN_MAX_LENGTH && !/\s/.test(text)));
       const likePattern = `%${escapeLikePattern(text)}%`;
       const embeddingLiteral = hasEmbedding
         ? toPgVectorLiteral(assertEmbeddingVector(query.embedding ?? []))

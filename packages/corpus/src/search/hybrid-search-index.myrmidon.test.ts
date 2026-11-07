@@ -408,7 +408,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
     expect(calls.find(isIndexRanking)?.values).toEqual([expect.any(String), companyId, [datasetId], 100]);
   });
 
-  it("reads the pgvector version once per index, not once per search", async () => {
+  it("keeps a positive pgvector answer for the life of the index", async () => {
     const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
     const index = createPostgresSearchIndex({ sql });
     await index.search({ companyId, datasetId, embedding: embedding() });
@@ -417,6 +417,22 @@ describe("vector ranking through the HNSW iterative scan", () => {
     expect(calls.filter((call) => /pg_extension/.test(call.text))).toHaveLength(1);
     expect(calls.filter(isIterativeScan)).toHaveLength(2);
     expect(calls.filter(isIndexRanking)).toHaveLength(2);
+  });
+
+  it("does not keep a negative pgvector answer: an extension installed later is seen by the next search", async () => {
+    let version: string | null = null;
+    const { sql, calls } = createScriptedSql((call) => scripted({ version, size: 50_000, index: manyChunkRows(100, "v") })(call));
+    const index = createPostgresSearchIndex({ sql });
+
+    await index.search({ companyId, datasetId, embedding: embedding() });
+    expect(calls.filter(isIterativeScan)).toHaveLength(0);
+    expect(calls.filter(isIndexRanking)).toHaveLength(1);
+
+    version = "0.8.7";
+    await index.search({ companyId, datasetId, embedding: embedding() });
+    expect(calls.filter((call) => /pg_extension/.test(call.text))).toHaveLength(2);
+    expect(calls.filter(isIterativeScan)).toHaveLength(1);
+    expect(calls.filter(isSizeProbe)).toHaveLength(1);
   });
 
   it("orders the rows of the relaxed scan by score before the fusion ranks them", async () => {
@@ -573,18 +589,45 @@ describe("vector ranking through the HNSW iterative scan", () => {
 });
 
 describe("substring match of the full-text ranking", () => {
-  const textFor = (length: number) => "a".repeat(length);
+  /** A text of exactly `length` characters made of words separated by single spaces. */
+  const phrase = (length: number) => "aaaaaaa ".repeat(Math.ceil(length / 8)).slice(0, length).trimEnd().padEnd(length, "b");
+  const ilikeUsed = async (text: string, options: { ilikeMaxLength?: number } = {}) => {
+    const { sql, calls } = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
+    await createPostgresSearchIndex({ sql, ...options }).search({ companyId, datasetId, text });
+    return /ilike/.test(calls.find((call) => /ts_rank/.test(call.text))?.text ?? "");
+  };
 
-  it("adds the ilike match up to the limit and drops it for a longer text", async () => {
-    for (const [length, withIlike] of [
-      [16, true],
-      [17, false],
-    ] as const) {
-      const { sql, calls } = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
-      await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, text: textFor(length) });
-      const textCall = calls.find((call) => /ts_rank/.test(call.text));
-      expect(/ilike/.test(textCall?.text ?? "")).toBe(withIlike);
+  it("adds the ilike match up to the limit and drops it for a longer text with spaces", async () => {
+    expect(phrase(16)).toHaveLength(16);
+    expect(phrase(17)).toHaveLength(17);
+    expect(await ilikeUsed(phrase(16))).toBe(true);
+    expect(await ilikeUsed(phrase(17))).toBe(false);
+    expect(await ilikeUsed("как оформить командировку и авансовый отчёт")).toBe(false);
+  });
+
+  it("keeps the ilike match for an identifier: a single token without whitespace of up to 64 characters", async () => {
+    // File names, versions and task codes: the tsvector does not find `litellm_proxy_config` in
+    // `litellm_proxy_config.yaml`, the ilike does.
+    for (const identifier of [
+      "litellm_proxy_config",
+      "rq002_is_camp_chef_explorer",
+      "docker-compose-override",
+      "v1.6.6-rc.45-build",
+      "x".repeat(64),
+    ]) {
+      expect(await ilikeUsed(identifier)).toBe(true);
     }
+    expect(await ilikeUsed("x".repeat(65))).toBe(false);
+    // A question of 40 characters with spaces stays without it, and so does a token with a tab or a line break.
+    expect(await ilikeUsed(phrase(40))).toBe(false);
+    expect(await ilikeUsed("litellm_proxy_config\tyaml_file_name")).toBe(false);
+    expect(await ilikeUsed("litellm_proxy_config\nyaml_file_name")).toBe(false);
+  });
+
+  it("escapes the wildcards of an identifier in the ilike pattern", async () => {
+    const { sql, calls } = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
+    await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, text: "rq002_is_camp_chef_explorer" });
+    expect(calls.find((call) => /ts_rank/.test(call.text))?.values[3]).toBe("%rq002\\_is\\_camp\\_chef\\_explorer%");
   });
 
   it("runs the text-only statement with renumbered parameters", async () => {
@@ -604,11 +647,11 @@ describe("substring match of the full-text ranking", () => {
 
   it("honours ilikeMaxLength, and 0 switches the match off", async () => {
     const wide = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
-    await createPostgresSearchIndex({ sql: wide.sql, ilikeMaxLength: 40 }).search({ companyId, datasetId, text: textFor(30) });
+    await createPostgresSearchIndex({ sql: wide.sql, ilikeMaxLength: 40 }).search({ companyId, datasetId, text: phrase(30) });
     expect(wide.calls.find((call) => /ts_rank/.test(call.text))?.text).toContain("ilike");
 
-    const off = createRecordingSql({ vector: [], fullText: [chunkRow("t", 0, 0.3)], documents });
-    await createPostgresSearchIndex({ sql: off.sql, ilikeMaxLength: 0 }).search({ companyId, datasetId, text: "a" });
-    expect(off.calls.find((call) => /ts_rank/.test(call.text))?.text).not.toContain("ilike");
+    // 0 switches the match off for every text, identifiers too.
+    expect(await ilikeUsed("a", { ilikeMaxLength: 0 })).toBe(false);
+    expect(await ilikeUsed("litellm_proxy_config", { ilikeMaxLength: 0 })).toBe(false);
   });
 });
