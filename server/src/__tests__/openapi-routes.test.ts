@@ -161,6 +161,8 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "GET /api/admin-assistant/health",
   "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/stuck-runs",
+  "GET /api/companies/{companyId}/admin-assistant/stuck-runs",
 ]);
 
 function createApp() {
@@ -844,6 +846,8 @@ describe("openapi routes", () => {
       "/api/companies/{companyId}/admin-assistant/cluster-health",
       "/api/admin-assistant/cluster-health",
       "/api/admin-assistant/health",
+      "/api/companies/{companyId}/admin-assistant/stuck-runs",
+      "/api/admin-assistant/stuck-runs",
     ]) {
       const operation = spec.paths[path].get;
       expect(operation.responses["401"]).toBeDefined();
