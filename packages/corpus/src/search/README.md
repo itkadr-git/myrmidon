@@ -32,14 +32,36 @@ an older image; the guard turns a missing extension into a named error instead o
 
 ## Query shape
 
-One `search()` call runs three statements inside one transaction:
+One `search()` call runs these statements inside one transaction:
 
 1. `set local hnsw.ef_search = 64` — the pilot's recall/latency balance; configurable.
-2. Vector ranking: `order by embedding <=> $1::vector` over the dataset's chunks, with
-   `embedding` passed as a pgvector literal.
-3. Full-text ranking: `ts_rank` over the same rows with `plainto_tsquery($5, $1)` and an
-   `ilike '%…%'` trigram prefilter; `%` and `_` in the query text are escaped before they
-   reach the pattern.
+2. Vector ranking. The HNSW index knows the company, not the dataset (a chunk has no dataset column,
+   the dataset lives on `corpus_documents`), so a dataset filter placed after `order by embedding <=>
+   … limit k` would cut the 64 rows the index scan reaches and return whatever survives, a few
+   dozen candidates or none. The ranking therefore reads the pgvector version once per index and
+   then, on pgvector 0.8 and later:
+   - `set local hnsw.iterative_scan = relaxed_order`, and a pool: a `MATERIALIZED` CTE of the
+     `poolSize = clamp(kCandidates * 8, 400, 2000)` nearest chunks of the company (the index keeps
+     scanning until the pool is full), then the dataset and `ready` filters on the pool and the top
+     `kCandidates` of what is left. The relaxed scan returns the pool slightly out of order, so the
+     outer sort is `order by dist + 0`, as the pgvector documentation prescribes;
+   - if datasets were requested and fewer than `kCandidates` chunks survived the filter (a dataset
+     that holds a small part of the company), the dataset is ranked exactly: the same statement
+     without the index, `order by (embedding <=> $1) + 0`, over the chunks of the requested datasets
+     only. That is cheap for a small dataset;
+   - a search without a dataset takes the pool as it is.
+
+   On pgvector before 0.8 (no `hnsw.iterative_scan`) the ranking is the plain `order by embedding <=>
+   $1::vector limit k` statement. The version is read from `pg_extension` and not tried with a
+   `SET`, because a refused `SET` aborts the transaction and the product's driver rethrows it at the
+   end of the transaction even when the caller caught it.
+3. Full-text ranking: `ts_rank` over the same rows with `plainto_tsquery($5, $1)`. A query text of
+   at most `ilikeMaxLength` characters (16 by default) also gets an `ilike '%…%'` trigram match;
+   `%` and `_` in the query text are escaped before they reach the pattern. A longer text is matched
+   by the `tsvector` alone: the trigram index reads one posting list per trigram of the pattern, so
+   the cost of the match grows with the length of the text (a 40-character question read from 150 ms
+   to 1.2 s on a cold index in production), while a long question is almost never a verbatim
+   substring of a chunk.
 
 Both rankings take `kCandidates = 100` rows, and the fusion (`k0 = 60`) turns them into one
 ranked list by rank, never by score: cosine distance and `ts_rank` are not comparable. Ties

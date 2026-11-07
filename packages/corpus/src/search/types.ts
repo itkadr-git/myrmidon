@@ -17,6 +17,33 @@ export const DEFAULT_EF_SEARCH = 64;
 /** Largest `limit` the search accepts; keeps a caller from streaming a whole dataset. */
 export const MAX_SEARCH_LIMIT = 100;
 
+/**
+ * Size of the pool of nearest chunks the vector ranking takes from the HNSW index before the
+ * dataset and status filters: `clamp(kCandidates * VECTOR_POOL_FACTOR, VECTOR_POOL_MIN, VECTOR_POOL_MAX)`.
+ * The pool is cut by company only (chunks carry no dataset), so it has to be several times wider than
+ * the candidates the fusion needs for a dataset that holds a part of the company's chunks to still
+ * fill the list.
+ */
+export const VECTOR_POOL_FACTOR = 8;
+export const VECTOR_POOL_MIN = 400;
+export const VECTOR_POOL_MAX = 2000;
+
+/**
+ * Longest query text, in characters, that still adds the `ILIKE '%…%'` substring match to the
+ * full-text ranking. The trigram index reads one posting list per trigram of the pattern, so the cost
+ * of the match grows with the length of the text, while a long question is almost never a verbatim
+ * substring of a chunk — the `tsvector` match already covers it.
+ */
+export const DEFAULT_ILIKE_MAX_LENGTH = 16;
+
+/**
+ * Largest dataset (in embedded chunks) that is ranked exactly, straight away, instead of through the
+ * HNSW pool. Reading and sorting the chunks of a dataset this size takes milliseconds to a few tenths
+ * of a second, while the HNSW pool of the company costs a second or two on a cold index and, cut
+ * by company, hardly holds any chunk of a small dataset.
+ */
+export const DEFAULT_EXACT_SET_MAX_CHUNKS = 10_000;
+
 /** The chunk row behind a hit. */
 export interface CorpusSearchChunkRef {
   readonly id: string;

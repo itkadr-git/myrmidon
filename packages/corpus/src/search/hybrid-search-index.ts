@@ -3,9 +3,14 @@
 // One search runs up to two rankings over `corpus_chunks`, both scoped by company and by dataset
 // (the dataset lives on `corpus_documents`, and only chunks of `ready` documents are searchable):
 //   * vector: `embedding <=> $query` (cosine over the HNSW index), with `hnsw.ef_search` set for
-//     the transaction, because the pilot measured its recall with ef_search = 64;
+//     the transaction, because the pilot measured its recall with ef_search = 64. The index knows
+//     the company only, not the dataset, so the ranking takes a pool of the nearest chunks of the
+//     company with the HNSW iterative scan (`hnsw.iterative_scan = relaxed_order`, pgvector 0.8) and
+//     filters the pool by dataset and status afterwards; a small dataset, and a dataset that the
+//     pool could not fill, are ranked exactly, over their own chunks. Without the iterative scan
+//     (pgvector before 0.8) the ranking is the plain `order by embedding <=> $query` statement;
 //   * full text: `fts @@ plainto_tsquery(...)` (the GIN index over the generated tsvector) plus an
-//     `ILIKE` fallback that the trigram GIN index serves.
+//     `ILIKE` fallback that the trigram GIN index serves for short query texts.
 // The two rankings are merged with RRF (k0 = 60, k_candidates = 100) and the top-k hits are
 // returned with their chunk and document rows.
 //
@@ -23,8 +28,13 @@ import type { CorpusSearchQuery, SearchIndex } from "../ports.js";
 import { reciprocalRankFusion, type FusionParameters, DEFAULT_FUSION_PARAMETERS } from "./rrf.js";
 import {
   DEFAULT_EF_SEARCH,
+  DEFAULT_EXACT_SET_MAX_CHUNKS,
+  DEFAULT_ILIKE_MAX_LENGTH,
   DEFAULT_SEARCH_LIMIT,
   MAX_SEARCH_LIMIT,
+  VECTOR_POOL_FACTOR,
+  VECTOR_POOL_MAX,
+  VECTOR_POOL_MIN,
   type CorpusSearchChunkRef,
   type CorpusSearchDocumentRef,
   type CorpusSearchHitDetail,
@@ -77,6 +87,17 @@ export interface PostgresSearchIndexOptions {
    * `fts` column was built with — the corpus migration uses `english`.
    */
   readonly ftsLanguage?: string;
+  /**
+   * Longest query text (characters) that still adds the `ILIKE '%…%'` substring match to the
+   * full-text ranking; a longer text is matched by the `tsvector` alone. `0` switches the substring
+   * match off.
+   */
+  readonly ilikeMaxLength?: number;
+  /**
+   * Largest dataset, in embedded chunks, that the vector ranking reads and sorts exactly instead of
+   * taking the HNSW pool of the company. `0` sends every dataset search through the pool.
+   */
+  readonly exactSetMaxChunks?: number;
 }
 
 interface ChunkRow extends Record<string, unknown> {
@@ -159,12 +180,40 @@ function isMissingPgvectorObjects(error: unknown): boolean {
   return typeof code === "string" && MISSING_PGVECTOR_CODES.has(code);
 }
 
+/**
+ * Whether a pgvector version (`pg_extension.extversion`, e.g. `0.8.7`) has the HNSW iterative scan:
+ * `hnsw.iterative_scan` appeared in 0.8.0. The version is read instead of the setting being tried,
+ * because a refused `SET` is a statement error: it aborts a PostgreSQL transaction, and the driver
+ * of the product (postgres.js) rethrows it at the end of the transaction even when the caller caught
+ * it, so there is no way to try the setting and carry on.
+ */
+export function pgvectorHasIterativeScan(version: unknown): boolean {
+  const match = /^(\d+)\.(\d+)/.exec(String(version ?? "").trim());
+  if (match === null) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 0 || minor >= 8;
+}
+
+/** Rows the HNSW pass takes before the dataset filter: wide enough to fill `kCandidates` afterwards. */
+export function vectorPoolSize(kCandidates: number): number {
+  return Math.min(VECTOR_POOL_MAX, Math.max(VECTOR_POOL_MIN, kCandidates * VECTOR_POOL_FACTOR));
+}
+
 export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): PostgresSearchIndex {
   const schema = options.schema ?? DEFAULT_SEARCH_INDEX_SCHEMA;
   const fusion = options.fusion ?? DEFAULT_FUSION_PARAMETERS;
   const efSearch = options.efSearch ?? DEFAULT_EF_SEARCH;
   if (!Number.isInteger(efSearch) || efSearch < 1) throw new RangeError("ef_search must be a positive integer");
   const language = sqlLanguage(options.ftsLanguage ?? "english");
+  const ilikeMaxLength = options.ilikeMaxLength ?? DEFAULT_ILIKE_MAX_LENGTH;
+  if (!Number.isInteger(ilikeMaxLength) || ilikeMaxLength < 0) {
+    throw new RangeError("ilike max length must be a non-negative integer");
+  }
+  const exactSetMaxChunks = options.exactSetMaxChunks ?? DEFAULT_EXACT_SET_MAX_CHUNKS;
+  if (!Number.isInteger(exactSetMaxChunks) || exactSetMaxChunks < 0) {
+    throw new RangeError("exact set max chunks must be a non-negative integer");
+  }
 
   const chunks = sqlIdentifier(schema.chunksTable, "chunks table");
   const documents = sqlIdentifier(schema.documentsTable, "documents table");
@@ -187,6 +236,8 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     `       c.token_count, c.metadata,`,
   ].join("\n");
 
+  // The statement as it was before the pool: the planner decides how to rank. Used where the
+  // iterative scan does not exist (pgvector before 0.8).
   const vectorSql = [
     `select`,
     chunkColumns,
@@ -195,6 +246,66 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     `   and c.${embedding} is not null`,
     ` order by c.${embedding} <=> $1::vector`,
     ` limit $4`,
+  ].join("\n");
+
+  // Exact ranking of the chunks of the requested datasets. `+ 0` hides the distance from the index
+  // ordering, so the planner cannot answer from the HNSW index and filter afterwards (it does that
+  // for a dataset it takes for large, and returns whatever the scan reached): it reads the chunks of
+  // the datasets and sorts them. Cheap for a small dataset; for a large one it is the slow path,
+  // reached only when the pool holds too few of its chunks.
+  const exactSetSql = [
+    `select`,
+    chunkColumns,
+    `       1 - (c.${embedding} <=> $1::vector) as score`,
+    scope,
+    `   and c.${embedding} is not null`,
+    ` order by (c.${embedding} <=> $1::vector) + 0`,
+    ` limit $4`,
+  ].join("\n");
+
+  // The HNSW pass: the `$5` nearest chunks of the company (the index serves the company filter by
+  // iterating), then the dataset and status filters on that pool and the top `$4` of what is left.
+  // MATERIALIZED keeps the planner from folding the pool into the join. The relaxed iterative scan
+  // returns the pool slightly out of order, and the planner takes a CTE ordered by `dist` for sorted,
+  // so the outer `order by` goes through `dist + 0` to be a real sort (pgvector documentation).
+  const poolSql = [
+    `with pool as materialized (`,
+    `  select c.id, c.document_id, c.${embedding} <=> $1::vector as dist`,
+    `    from ${chunks} c`,
+    `   where c.company_id = $2::uuid`,
+    `     and c.${embedding} is not null`,
+    `   order by c.${embedding} <=> $1::vector`,
+    `   limit $5`,
+    `), picked as (`,
+    `  select p.id, p.dist`,
+    `    from pool p`,
+    `    join ${documents} d on d.id = p.document_id and d.company_id = $2::uuid`,
+    `   where ($3::uuid[] is null or d.dataset_id = any($3::uuid[]))`,
+    `     and d.status = 'ready'`,
+    `   order by p.dist + 0`,
+    `   limit $4`,
+    `)`,
+    `select`,
+    chunkColumns,
+    `       1 - k.dist as score`,
+    `  from picked k`,
+    `  join ${chunks} c on c.id = k.id`,
+    ` order by k.dist`,
+  ].join("\n");
+
+  // Size of the requested datasets in embedded chunks, counted up to `$3` rows: the count stops there,
+  // so asking about a large dataset costs a few thousand index reads, not a scan of the dataset.
+  const setSizeSql = [
+    `select count(*)::int as chunks from (`,
+    `  select 1`,
+    `    from ${chunks} c`,
+    `    join ${documents} d on d.id = c.document_id and d.company_id = c.company_id`,
+    `   where c.company_id = $1::uuid`,
+    `     and d.dataset_id = any($2::uuid[])`,
+    `     and d.status = 'ready'`,
+    `     and c.${embedding} is not null`,
+    `   limit $3`,
+    `) sized`,
   ].join("\n");
 
   const fullTextSql = [
@@ -208,6 +319,21 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     ` limit $6`,
   ].join("\n");
 
+  // The same ranking without the substring match, for a query text longer than `ilikeMaxLength`.
+  // Not the same statement with a null pattern: a generic plan could not drop the `or` branch and
+  // would lose the index for the `tsvector` match too. The parameters are renumbered, because a
+  // driver rejects a parameter that the text never mentions.
+  const fullTextOnlySql = [
+    `select`,
+    chunkColumns,
+    `       ts_rank(c.${fullText}, plainto_tsquery($4::regconfig, $1)) as score`,
+    scope,
+    `   and c.${fullText} @@ plainto_tsquery($4::regconfig, $1)`,
+    ` order by ts_rank(c.${fullText}, plainto_tsquery($4::regconfig, $1)) desc,`,
+    `          similarity(c.${content}, $1) desc`,
+    ` limit $5`,
+  ].join("\n");
+
   const documentsSql = [
     `select d.id, d.dataset_id, d.title, d.source_uri`,
     `  from ${documents} d`,
@@ -216,6 +342,30 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   ].join("\n");
 
   const efSearchSql = `set local hnsw.ef_search = ${efSearch}`;
+  const iterativeScanSql = `set local hnsw.iterative_scan = relaxed_order`;
+  const pgvectorVersionSql = `select extversion from pg_extension where extname = 'vector'`;
+
+  // The version of the installed pgvector does not change under a running process, so it is read
+  // once per index. No `vector` extension at all reads as "no iterative scan": the plain statement
+  // then fails the way it always did and is reported as `CorpusVectorSearchUnavailableError`.
+  let iterativeScanSupported: boolean | undefined;
+
+  /** Whether the requested datasets hold at most `exactSetMaxChunks` embedded chunks. */
+  async function isSmallSet(transaction: SqlExecutor, companyId: string, datasetIds: readonly string[]): Promise<boolean> {
+    const rows = await transaction.query<{ chunks?: unknown }>(setSizeSql, [companyId, datasetIds, exactSetMaxChunks + 1]);
+    const chunkCount = Number(rows[0]?.chunks);
+    return Number.isFinite(chunkCount) && chunkCount <= exactSetMaxChunks;
+  }
+
+  /** Turns the HNSW iterative scan on for the transaction; `false` where pgvector is older than 0.8. */
+  async function enableIterativeScan(transaction: SqlExecutor): Promise<boolean> {
+    if (iterativeScanSupported === undefined) {
+      const rows = await transaction.query<{ extversion?: unknown }>(pgvectorVersionSql);
+      iterativeScanSupported = pgvectorHasIterativeScan(rows[0]?.extversion);
+    }
+    if (iterativeScanSupported) await transaction.query(iterativeScanSql);
+    return iterativeScanSupported;
+  }
 
   return {
     async search(query: CorpusSearchQuery) {
@@ -226,7 +376,9 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
       if (!hasEmbedding && !useFullText) return [];
 
       const kCandidates = Math.max(limit, fusion.kCandidates);
-      const likePattern = `%${escapeLikePattern(useFullText ? query.text.trim() : "")}%`;
+      const text = useFullText ? query.text.trim() : "";
+      const useIlike = text.length <= ilikeMaxLength;
+      const likePattern = `%${escapeLikePattern(text)}%`;
       const embeddingLiteral = hasEmbedding
         ? toPgVectorLiteral(assertEmbeddingVector(query.embedding ?? []))
         : null;
@@ -237,12 +389,39 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (embeddingLiteral !== null) {
           try {
             await transaction.query(efSearchSql);
-            vectorRows = await transaction.query<ChunkRow>(vectorSql, [
-              embeddingLiteral,
-              query.companyId,
-              datasetIds,
-              kCandidates,
-            ]);
+            if (await enableIterativeScan(transaction)) {
+              // A small dataset is cheaper to read and sort than to find in the company's pool.
+              const smallSet =
+                datasetIds !== null && exactSetMaxChunks > 0
+                  ? await isSmallSet(transaction, query.companyId, datasetIds)
+                  : false;
+              if (!smallSet) {
+                vectorRows = await transaction.query<ChunkRow>(poolSql, [
+                  embeddingLiteral,
+                  query.companyId,
+                  datasetIds,
+                  kCandidates,
+                  vectorPoolSize(kCandidates),
+                ]);
+              }
+              // The pool is cut by company: a dataset that holds a small part of the company's chunks
+              // gets few of them, or none. Rank such a dataset exactly, over its own chunks.
+              if (datasetIds !== null && (smallSet || vectorRows.length < kCandidates)) {
+                vectorRows = await transaction.query<ChunkRow>(exactSetSql, [
+                  embeddingLiteral,
+                  query.companyId,
+                  datasetIds,
+                  kCandidates,
+                ]);
+              }
+            } else {
+              vectorRows = await transaction.query<ChunkRow>(vectorSql, [
+                embeddingLiteral,
+                query.companyId,
+                datasetIds,
+                kCandidates,
+              ]);
+            }
           } catch (error) {
             // A cluster migrated without pgvector has neither the embedding column nor the HNSW
             // setting; report that as the module's own error instead of a driver detail.
@@ -251,14 +430,22 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
           }
         }
         if (useFullText) {
-          fullTextRows = await transaction.query<ChunkRow>(fullTextSql, [
-            query.text.trim(),
-            query.companyId,
-            datasetIds,
-            likePattern,
-            language,
-            kCandidates,
-          ]);
+          fullTextRows = useIlike
+            ? await transaction.query<ChunkRow>(fullTextSql, [
+                text,
+                query.companyId,
+                datasetIds,
+                likePattern,
+                language,
+                kCandidates,
+              ])
+            : await transaction.query<ChunkRow>(fullTextOnlySql, [
+                text,
+                query.companyId,
+                datasetIds,
+                language,
+                kCandidates,
+              ]);
         }
         return { vectorRows, fullTextRows };
       });
