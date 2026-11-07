@@ -50,6 +50,7 @@ import { registerManagedAgentCommands } from "./commands/managed-agent.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
 import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
+import { warnIfLegacyBinaryName } from "./legacy-bin.js";
 import { installCommand } from "./commands/install.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { updateCommand } from "./commands/update.js";
@@ -63,6 +64,9 @@ import {
   type TestDriveOptions,
 } from "./commands/test-drive.js";
 
+// myrmidon(DB4): the "paperclipai" binary stays as a deprecated synonym.
+warnIfLegacyBinaryName();
+
 const program = new Command();
 // myrmidon(B1b): help text shows the product name; the vendor path stays.
 const DATA_DIR_OPTION_HELP = `${PRODUCT_NAME} data directory root (isolates state from ~/.paperclip)`;
@@ -70,7 +74,7 @@ const DATA_DIR_OPTION_HELP = `${PRODUCT_NAME} data directory root (isolates stat
 program.enablePositionalOptions();
 
 program
-  .name("paperclipai")
+  .name("myrmidon")
   .description(`${PRODUCT_NAME} CLI — setup, diagnose, and configure your instance`)
   .version(cliVersion);
 
