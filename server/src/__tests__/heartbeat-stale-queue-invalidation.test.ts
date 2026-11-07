@@ -28,6 +28,7 @@ import {
 } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { recoveryService } from "../services/recovery/service.ts";
+import { executionFailureRetryCount } from "../services/execution-recovery-attempt.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -1491,10 +1492,21 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   });
 
-  it("skips already queued issue runs at the daily run cap and releases the execution lock", async () => {
+  // OPE-11718: a queued issue run refused by the daily run limit (the agent has
+  // already used its quota today) holds the issue lock the way a run queued by
+  // the wake path does.
+  async function seedQueuedIssueRunOverDailyRunLimit(input: {
+    maxDailyRuns?: number;
+    /** Context `retryReason` and the run's own `scheduled_retry_reason` (an advanced retry carries both). */
+    retryReason?: string;
+    scheduledRetryAttempt?: number;
+    contextExtras?: Record<string, unknown>;
+    /** The wake was requested by a user through the board (payload marker `manualUserWake`). */
+    manualUserWake?: boolean;
+  } = {}) {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
-        maxDailyRuns: 1,
+        maxDailyRuns: input.maxDailyRuns ?? 1,
       },
     });
     const issueId = randomUUID();
@@ -1519,7 +1531,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       source: "on_demand",
       triggerDetail: "manual",
       reason: "manual",
-      payload: { issueId },
+      payload: { issueId, ...(input.manualUserWake ? { manualUserWake: true } : {}) },
       status: "queued",
     });
     await db.insert(heartbeatRuns).values({
@@ -1530,7 +1542,17 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       triggerDetail: "manual",
       status: "queued",
       wakeupRequestId,
-      contextSnapshot: { issueId },
+      ...(input.retryReason
+        ? {
+            scheduledRetryReason: input.retryReason,
+            scheduledRetryAttempt: input.scheduledRetryAttempt ?? 1,
+          }
+        : {}),
+      contextSnapshot: {
+        issueId,
+        ...(input.retryReason ? { retryReason: input.retryReason } : {}),
+        ...(input.contextExtras ?? {}),
+      },
     });
     await db.insert(issues).values({
       id: issueId,
@@ -1545,36 +1567,360 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .update(agentWakeupRequests)
       .set({ runId: queuedRunId })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    return { companyId, agentId, issueId, wakeupRequestId, queuedRunId };
+  }
+
+  async function readRunOfDailyRunLimitTest(runId: string) {
+    const [run] = await db
+      .select({
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        finishedAt: heartbeatRuns.finishedAt,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    return run;
+  }
+
+  const nextUtcMidnight = () => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  };
+
+  it("defers an already queued issue run at the daily run limit until the reset instead of cancelling it", async () => {
+    const { issueId, wakeupRequestId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit();
 
     await heartbeat.resumeQueuedRuns();
 
     expect(mockAdapterExecute).not.toHaveBeenCalled();
 
-    const [run] = await db
-      .select({
-        status: heartbeatRuns.status,
-        errorCode: heartbeatRuns.errorCode,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, queuedRunId));
+    const run = await readRunOfDailyRunLimitTest(queuedRunId);
     const [wakeup] = await db
       .select({ status: agentWakeupRequests.status })
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
     const [issue] = await db
-      .select({ executionRunId: issues.executionRunId })
+      .select({ executionRunId: issues.executionRunId, status: issues.status })
       .from(issues)
       .where(eq(issues.id, issueId));
 
+    // Waits for the reset: not cancelled, not failed, no error, not finished.
     expect(run).toMatchObject({
-      status: "cancelled",
-      errorCode: "heartbeat.daily_run_limit",
+      status: "scheduled_retry",
+      // The wait leaves the run's retry identity alone; only the context says it waits.
+      scheduledRetryReason: null,
+      error: null,
+      errorCode: null,
+      finishedAt: null,
     });
-    expect(wakeup).toMatchObject({ status: "skipped" });
+    // Due at the UTC midnight that resets the limit, plus a jitter of under 5 min.
+    const resetAt = nextUtcMidnight();
+    expect(run?.scheduledRetryAt).toBeInstanceOf(Date);
+    expect(run!.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(resetAt.getTime());
+    expect(run!.scheduledRetryAt!.getTime() - resetAt.getTime()).toBeLessThan(5 * 60 * 1000);
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      dailyRunLimitDeferral: {
+        count: 1,
+        resetAt: resetAt.toISOString(),
+        observed: 1,
+        limit: 1,
+      },
+    });
+    // The wake is still wanted: it is served when the run starts after the reset.
+    expect(wakeup).toMatchObject({ status: "queued" });
+    // The lock is free, the task stays where it was.
+    expect(issue).toMatchObject({ executionRunId: null, status: "in_progress" });
+  });
+
+  it("does not leave the issue of a run deferred by the daily run limit to the stranded recovery", async () => {
+    const { issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit();
+    await heartbeat.resumeQueuedRuns();
+    expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("scheduled_retry");
+
+    const enqueueWakeup = vi.fn();
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 0, issueIds: [] });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const [issue] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_progress");
+    expect(await db.select().from(issueComments)).toHaveLength(0);
+    expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("scheduled_retry");
+  });
+
+  it("defers the same run again when the limit still holds at the due time and never adds a second one", async () => {
+    const { companyId, issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit();
+    await heartbeat.resumeQueuedRuns();
+    const firstDueAt = (await readRunOfDailyRunLimitTest(queuedRunId))!.scheduledRetryAt!;
+
+    // A second claim pass finds nothing queued: the deferred run is not touched.
+    await heartbeat.resumeQueuedRuns();
+    expect(await readRunOfDailyRunLimitTest(queuedRunId)).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAt: firstDueAt,
+    });
+
+    // The due time arrives while the agent is still at its limit (here the
+    // quota is still spent): the sweep promotes the run, the claim gate refuses
+    // it again and puts the very same row back to wait.
+    await db
+      .update(heartbeatRuns)
+      .set({ scheduledRetryAt: new Date(Date.now() - 1_000) })
+      .where(eq(heartbeatRuns.id, queuedRunId));
+    const promotion = await heartbeat.promoteDueScheduledRetries();
+    expect(promotion).toMatchObject({ promoted: 1, runIds: [queuedRunId] });
+    await heartbeat.resumeQueuedRuns();
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const run = await readRunOfDailyRunLimitTest(queuedRunId);
+    expect(run).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: null,
+      error: null,
+      errorCode: null,
+      finishedAt: null,
+      contextSnapshot: { dailyRunLimitDeferral: { count: 2 } },
+    });
+    expect(run!.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now());
+
+    // Still one run for the task besides the finished one that spent the quota,
+    // and no wake of the task was turned into another run.
+    const runsOfTheTask = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .filter((row) => (row.contextSnapshot as { issueId?: string } | null)?.issueId === issueId);
+    expect(runsOfTheTask.map((row) => row.id)).toEqual([queuedRunId]);
+  });
+
+  it("starts the deferred run once the daily limit has reset", async () => {
+    const { agentId, issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit();
+    await heartbeat.resumeQueuedRuns();
+    expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("scheduled_retry");
+
+    // The UTC day changes: the runs the agent started "today" no longer count
+    // (moved a day back; the clock itself stays real so run leases stay valid)
+    // and the deferred run falls due.
+    const dayAgo = new Date(Date.now() - 36 * 60 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({ startedAt: dayAgo, finishedAt: dayAgo })
+      .where(sql`${heartbeatRuns.agentId} = ${agentId} and ${heartbeatRuns.id} <> ${queuedRunId}`);
+    await db
+      .update(heartbeatRuns)
+      .set({ scheduledRetryAt: new Date(Date.now() - 1_000) })
+      .where(eq(heartbeatRuns.id, queuedRunId));
+
+    const promotion = await heartbeat.promoteDueScheduledRetries();
+    expect(promotion).toMatchObject({ promoted: 1, runIds: [queuedRunId] });
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => countExecuteCallsForRun(queuedRunId) > 0, 10_000);
+    await waitForCondition(async () => {
+      const run = await readRunOfDailyRunLimitTest(queuedRunId);
+      return run?.status === "succeeded";
+    }, 10_000);
+
+    expect(countExecuteCallsForRun(queuedRunId)).toBe(1);
+    expect(await readRunOfDailyRunLimitTest(queuedRunId)).toMatchObject({
+      status: "succeeded",
+      error: null,
+      errorCode: null,
+    });
+    const [issue] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("keeps the retry identity of an advanced max-turn continuation across the wait, with its issue lock", async () => {
+    const { issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit({
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      scheduledRetryAttempt: 3,
+    });
+    const before = await readRunOfDailyRunLimitTest(queuedRunId);
+    expect(executionFailureRetryCount(before!)).toBe(0);
+
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await readRunOfDailyRunLimitTest(queuedRunId);
+    expect(run).toMatchObject({
+      status: "scheduled_retry",
+      // Not overwritten: a failure after the reset must still count 0 failed
+      // attempts for a productive continuation, not the attempt number 3.
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      scheduledRetryAttempt: 3,
+      contextSnapshot: { retryReason: MAX_TURN_CONTINUATION_RETRY_REASON, dailyRunLimitDeferral: { count: 1 } },
+    });
+    expect(executionFailureRetryCount(run!)).toBe(0);
+    // Valid only while it owns the lock, so the lock stays with it...
+    const [issue] = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue?.executionRunId).toBe(queuedRunId);
+
+    // ...and the promote gate still sees a max-turn continuation (it enforces
+    // that lock and the in_progress status), so the due sweep brings it back.
+    await db
+      .update(heartbeatRuns)
+      .set({ scheduledRetryAt: new Date(Date.now() - 1_000) })
+      .where(eq(heartbeatRuns.id, queuedRunId));
+    expect(await heartbeat.promoteDueScheduledRetries()).toMatchObject({ promoted: 1, runIds: [queuedRunId] });
+    expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("queued");
+  });
+
+  it("keeps the workspace-busy ladder and failure count of a deferred workspace_busy retry", async () => {
+    const { issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit({
+      retryReason: "workspace_busy",
+      scheduledRetryAttempt: 2,
+      contextExtras: { failureRetriesBeforeWorkspaceWait: 1 },
+    });
+    const before = await readRunOfDailyRunLimitTest(queuedRunId);
+    expect(executionFailureRetryCount(before!)).toBe(1);
+
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await readRunOfDailyRunLimitTest(queuedRunId);
+    expect(run).toMatchObject({
+      status: "scheduled_retry",
+      // deferralAttempt of the next workspace deferral is read from these two.
+      scheduledRetryReason: "workspace_busy",
+      scheduledRetryAttempt: 2,
+      contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1, dailyRunLimitDeferral: { count: 1 } },
+    });
+    expect(executionFailureRetryCount(run!)).toBe(1);
+    const [issue] = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("promotes deferred issue wakes when a queued holder is cancelled by the daily run cap", async () => {
+  it("does not park another executor's wake of the task behind a run waiting for the daily limit", async () => {
+    const { companyId, issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit();
+    const peerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: peerAgentId,
+      companyId,
+      name: "PeerAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await heartbeat.resumeQueuedRuns();
+    expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("scheduled_retry");
+
+    const peerRun = await heartbeat.wakeup(peerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_commented" },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+    });
+
+    // The peer gets its own run; the waiting run did not take the lock back.
+    expect(peerRun).not.toBeNull();
+    expect(peerRun?.agentId).toBe(peerAgentId);
+    const parked = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "deferred_issue_execution"));
+    expect(parked).toEqual([]);
+    const [issue] = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue?.executionRunId).not.toBe(queuedRunId);
+    expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("scheduled_retry");
+  });
+
+  it("merges a repeated wake of the same agent for the same task into its waiting run instead of adding another", async () => {
+    const { companyId, agentId, issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit();
+    await heartbeat.resumeQueuedRuns();
+    expect((await readRunOfDailyRunLimitTest(queuedRunId))?.status).toBe("scheduled_retry");
+
+    // Assignment, status change and idle pickup all wake the same agent for the
+    // same task while the first run still waits for the reset.
+    for (const reason of ["issue_assigned", "issue_status_changed"]) {
+      await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason,
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: reason },
+      });
+    }
+
+    const runsOfTheTask = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .filter((row) => (row.contextSnapshot as { issueId?: string } | null)?.issueId === issueId);
+    expect(runsOfTheTask.map((row) => row.id)).toEqual([queuedRunId]);
+    expect(runsOfTheTask[0]?.status).toBe("scheduled_retry");
+    const merged = await db
+      .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "coalesced"));
+    expect(merged.length).toBeGreaterThan(0);
+    for (const wake of merged) expect(wake.runId).toBe(queuedRunId);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("cancels, with the reason, a queued run of a user's manual wake over the daily run limit instead of deferring it", async () => {
+    const { issueId, wakeupRequestId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit({
+      manualUserWake: true,
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await readRunOfDailyRunLimitTest(queuedRunId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "heartbeat.daily_run_limit",
+      error: expect.stringContaining("per-day heartbeat budget cap"),
+      scheduledRetryAt: null,
+    });
+    const [wakeup] = await db
+      .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    expect(wakeup).toMatchObject({ status: "skipped", error: expect.stringContaining("per-day heartbeat budget cap") });
+    const [issue] = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("still cancels a queued run when the daily run limit is zero, which no reset can free", async () => {
+    const { issueId, queuedRunId } = await seedQueuedIssueRunOverDailyRunLimit({ maxDailyRuns: 0 });
+
+    await heartbeat.resumeQueuedRuns();
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await readRunOfDailyRunLimitTest(queuedRunId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "heartbeat.daily_run_limit",
+      scheduledRetryReason: null,
+    });
+    const [issue] = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("promotes deferred issue wakes when a queued holder is deferred by the daily run limit", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         maxDailyRuns: 1,

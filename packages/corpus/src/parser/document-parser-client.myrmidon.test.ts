@@ -554,6 +554,37 @@ describe("document parser client: time limit from the start of the job, cancella
     expect(deleteRequests().at(-1)?.url).toBe("/v1/parse/aborted-job");
   });
 
+  it("reports an abort as an abort: no retries, the job still cancelled (OPE-12057)", async () => {
+    // The board's shutdown aborts the parse; the call must end at once with a kind of its own, not
+    // spend the retry policy (sleeps and requests) on a caller that has left.
+    const controller = new AbortController();
+    service.setHandler((request, response) => {
+      if (request.method === "POST") {
+        json(response, 202, { jobId: "abort-kind-job", status: "pending" });
+        return;
+      }
+      if (request.method === "DELETE") {
+        json(response, 200, { jobId: "abort-kind-job", cancelled: true, status: "cancelled" });
+        return;
+      }
+      controller.abort();
+      setTimeout(() => json(response, 200, { jobId: "abort-kind-job", status: "running" }), 20);
+    });
+    const before = deleteRequests().length;
+    let sleeps = 0;
+
+    const outcome = await client({ retry: fastRetries, sleep: async () => { sleeps += 1; } }).parseDocument(submission, {
+      signal: controller.signal,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.error).toMatchObject({ kind: "aborted", retryable: false });
+    expect(outcome.jobId).toBe("abort-kind-job");
+    expect(sleeps).toBe(1); // the pause before the first poll; an abort is not retried
+    expect(deleteRequests().length - before).toBe(1);
+  });
+
   it("leaves a finished job alone: no cancel after a result or a permanent failure", async () => {
     const before = deleteRequests().length;
     service.setHandler((request, response) => {

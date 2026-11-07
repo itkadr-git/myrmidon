@@ -21,10 +21,12 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import multer from "multer";
 import type { Db } from "@myrmidon/db";
 import {
+  addCorpusUrlDocumentSchema,
   corpusSearchBodySchema,
   createCorpusDatasetSchema,
   patchCorpusSettingsSchema,
   updateCorpusDatasetSchema,
+  type AddCorpusUrlDocumentInput,
   type CorpusSettingsPatch,
 } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
@@ -100,6 +102,9 @@ function handle(
       await run(req, res);
     } catch (err) {
       if (err instanceof CorpusRequestError) {
+        if (err.status === 429 && typeof err.details.retryAfterSeconds === "number") {
+          res.setHeader("Retry-After", String(err.details.retryAfterSeconds));
+        }
         res.status(err.status).json({ error: err.code, message: err.message, ...err.details });
         return;
       }
@@ -279,6 +284,40 @@ export function myrmidonCorpusRoutes(db: Db, deps: CorpusRoutesDeps) {
         bytes: file.buffer,
         actor: actorOf(req),
       });
+      res.status(202).json(result);
+    }),
+  );
+
+  // OPE-12000: a document by address. The download, the byte ceiling and the SSRF guard live in
+  // the service (./source-fetch.ts); the answer is the one an upload gets: 202, the document and its job.
+  router.post(
+    "/myrmidon/companies/:companyId/corpus/datasets/:datasetId/documents/url",
+    validate(addCorpusUrlDocumentSchema),
+    handle(async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const body = req.body as AddCorpusUrlDocumentInput;
+      const result = await service.addDocumentFromUrl({
+        companyId,
+        datasetId: req.params.datasetId as string,
+        url: body.url,
+        refreshIntervalHours: body.refreshIntervalHours,
+        name: body.name,
+        actor: actorOf(req),
+      });
+      res.status(202).json(result);
+    }),
+  );
+
+  // OPE-12000: start fetching the URL-sourced documents of the dataset now, whatever their interval.
+  // The answer comes at once (202 {started}); the run is one per dataset at a time (409), with a
+  // pause between runs (429), and its counters land in the audit log.
+  router.post(
+    "/myrmidon/companies/:companyId/corpus/datasets/:datasetId/refresh-urls",
+    handle(async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await service.refreshDatasetUrls(companyId, req.params.datasetId as string, actorOf(req));
       res.status(202).json(result);
     }),
   );
