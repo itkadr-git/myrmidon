@@ -395,22 +395,6 @@ export const en = {
           },
           denied: "Access denied",
           deniedHint: "You do not have permission to view this screen.",
-          // myrmidon(OPE-12046): SWEEP-2 read-only view of the first-wave
-          // behavior settings ("тонкие настройки") on the System screen.
-          fine: {
-            denied: "Access denied",
-            deniedHint: "You do not have permission to view these settings.",
-            empty: "No behavior settings resolved by the server",
-            env: "Environment variable",
-            footer: "Read-only: values come from the behavior settings API; editing arrives with the next slice.",
-            name: "Setting",
-            source: "Source",
-            sourceDefault: "Default",
-            sourceEnv: "Environment",
-            sourceUi: "Saved",
-            title: "Fine settings (read-only)",
-            value: "Value",
-          },
           keys: {
             created: "Created",
             empty: "No keys",
@@ -905,21 +889,6 @@ export type Ui2Catalog = {
           },
           denied: string;
           deniedHint: string;
-          // myrmidon(OPE-12046): SWEEP-2 read-only behavior-settings block.
-          fine: {
-            denied: string;
-            deniedHint: string;
-            empty: string;
-            env: string;
-            footer: string;
-            name: string;
-            source: string;
-            sourceDefault: string;
-            sourceEnv: string;
-            sourceUi: string;
-            title: string;
-            value: string;
-          };
           keys: {
             created: string;
             empty: string;
