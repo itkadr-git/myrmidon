@@ -7548,7 +7548,9 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
 
     expect(child.parentId).toBe(parentIssueId);
     expect(child.title).toBe("26th child after 25 closed");
-    expect(child.status).toBe("todo");
+    // Parent fixture has no assignee, so nothing is inherited and create()
+    // keeps its default status "backlog" (server/src/services/issues.ts).
+    expect(child.status).toBe("backlog");
   });
 
   it("createChild enforces MAX_CHILD_ISSUES_CREATED_BY_HELPER limit for active children", async () => {
