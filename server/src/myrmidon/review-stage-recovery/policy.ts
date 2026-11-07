@@ -190,6 +190,28 @@ const FINISHED_CHECK_RUN_STATUS = "completed";
 const NOT_A_VERDICT_CONCLUSIONS: ReadonlySet<string> = new Set(["cancelled", "skipped", "stale"]);
 
 /**
+ * CI state of one head commit from ALL of its check runs (the latest run of
+ * every check name). Repositories without the aggregate `CI result` check
+ * (anything that is not the Myrmidon workflow) still have a finished CI: it is
+ * the moment when no check of the head is queued, in progress or waiting
+ * anymore. Whatever the conclusions, a finished CI is a verdict the reviewer
+ * may act on; zero check runs means CI has not started yet.
+ * A missing check list means the read failed: "unknown".
+ */
+export function pullRequestHeadCiStateFromAllChecks(input: {
+  checkRuns: readonly unknown[] | null;
+}): "pending" | "complete" | "unknown" {
+  if (!input.checkRuns) return "unknown";
+  if (input.checkRuns.length === 0) return "pending";
+  const allFinished = input.checkRuns.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const run = entry as Record<string, unknown>;
+    return run.status === FINISHED_CHECK_RUN_STATUS;
+  });
+  return allFinished ? "complete" : "pending";
+}
+
+/**
  * CI state of one head commit from its check runs. CI of the head is finished
  * only when the final `CI result` check exists and is completed: the other
  * checks are ignored, so a failed `checks` or `freeze` with `typecheck` and

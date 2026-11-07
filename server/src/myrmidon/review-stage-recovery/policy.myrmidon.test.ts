@@ -5,6 +5,7 @@ import {
   REVIEW_DECISION_RECOVERY_INSTRUCTION,
   countStalledReviewDeferrals,
   decideStalledReviewRecovery,
+  pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
   selectOpenPullRequestWorkProduct,
 } from "./policy.js";
@@ -156,6 +157,49 @@ describe("pullRequestHeadCiStateFromChecks", () => {
 
   it("is unknown when the read failed", () => {
     expect(pullRequestHeadCiStateFromChecks({ checkRuns: null })).toBe("unknown");
+  });
+});
+
+describe("pullRequestHeadCiStateFromAllChecks", () => {
+  const done = (name: string, conclusion: string) => ({ name, status: "completed", conclusion });
+
+  it("is complete when every check of the head has completed, whatever the conclusions", () => {
+    // OPE-12048: BastionPrime/wellboard PR #43 — six lanes, no aggregate `CI result` check.
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [
+          done("build (x86_64)", "success"),
+          done("lint-and-test", "success"),
+          done("build (mipsel_24kc)", "failure"),
+        ],
+      }),
+    ).toBe("complete");
+  });
+
+  it("is pending while any check is queued, in progress or waiting", () => {
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "in_progress", conclusion: null }],
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "queued", conclusion: null }],
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "waiting", conclusion: null }],
+      }),
+    ).toBe("pending");
+  });
+
+  it("is pending while CI has not started at all", () => {
+    expect(pullRequestHeadCiStateFromAllChecks({ checkRuns: [] })).toBe("pending");
+  });
+
+  it("is unknown when the read failed", () => {
+    expect(pullRequestHeadCiStateFromAllChecks({ checkRuns: null })).toBe("unknown");
   });
 });
 
