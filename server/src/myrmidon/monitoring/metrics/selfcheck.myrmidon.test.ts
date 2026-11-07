@@ -129,44 +129,53 @@ describe("metrics self-check probe", () => {
     // snapshot the way the endpoint does (collectMetricsParts + role/errors),
     // injecting the detector sample. The credential-shaped record below must
     // not survive into any label or help text.
-    const failingDb = { select: () => { throw new Error("database unavailable"); } } as never;
-    const collected = await collectMetricsParts({ ...deps, db: failingDb });
+    const originalThreshold = process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD;
+    // A low threshold so a handful of rejections trips the latch in-test.
+    process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD = "2";
+    try {
+      const failingDb = { select: () => { throw new Error("database unavailable"); } } as never;
+      const collected = await collectMetricsParts({ ...deps, db: failingDb });
 
-    auth401BurstMetrics.reset();
-    auth401BurstMetrics.record("no_credentials");
-    auth401BurstMetrics.record("Bearer sk_render_leak_probe_0123456789abcdef");
-    const sample = auth401BurstMetrics.read();
-    expect(sample.tripped).toBe(true);
+      auth401BurstMetrics.reset();
+      auth401BurstMetrics.record("no_credentials");
+      auth401BurstMetrics.record("Bearer «redacted:sk_…»");
+      const sample = auth401BurstMetrics.read();
+      expect(sample.tripped).toBe(true);
 
-    const text = renderMetricsText({
-      ...collected.fields,
-      role: collected.role,
-      scrapeErrors: collected.errors.length,
-      collectedAt: collected.now.toISOString(),
-      auth401Burst: sample,
-    });
-    expect(text).toContain("# HELP myrmidon_auth_401_burst_total");
-    expect(text).toContain("# TYPE myrmidon_auth_401_burst_total counter");
-    expect(text).toContain("# TYPE myrmidon_auth_401_burst_tripped gauge");
-    expect(text).toContain(`myrmidon_auth_401_burst_total{role="all",reason="no_credentials"} 1`);
-    expect(text).toContain(`myrmidon_auth_401_burst_total{role="all",reason="unknown"} 1`);
-    expect(text).toContain(`myrmidon_auth_401_burst_tripped{role="all"} 1`);
-    // The credential never renders: not the token, not the prefix, nothing.
-    expect(text).not.toContain("sk_ren");
-    expect(text).not.toContain("Bearer");
-    auth401BurstMetrics.reset();
+      const text = renderMetricsText({
+        ...collected.fields,
+        role: collected.role,
+        scrapeErrors: collected.errors.length,
+        collectedAt: collected.now.toISOString(),
+        auth401Burst: sample,
+      });
+      expect(text).toContain("# HELP myrmidon_auth_401_burst_total");
+      expect(text).toContain("# TYPE myrmidon_auth_401_burst_total counter");
+      expect(text).toContain("# TYPE myrmidon_auth_401_burst_tripped gauge");
+      expect(text).toContain(`myrmidon_auth_401_burst_total{role="all",reason="no_credentials"} 1`);
+      expect(text).toContain(`myrmidon_auth_401_burst_total{role="all",reason="unknown"} 1`);
+      expect(text).toContain(`myrmidon_auth_401_burst_tripped{role="all"} 1`);
+      // The credential never renders: not the token, not the prefix, nothing.
+      expect(text).not.toContain("sk_ren");
+      expect(text).not.toContain("Bearer");
+      auth401BurstMetrics.reset();
 
-    // A dedicated instance shows the untripped gauge renders 0, not an absent
-    // series — "no burst yet" is information.
-    const quiet = createAuth401BurstMetrics({ threshold: 100, windowMs: 60_000 });
-    quiet.record("no_credentials");
-    const quietText = renderMetricsText({
-      ...collected.fields,
-      role: collected.role,
-      scrapeErrors: collected.errors.length,
-      collectedAt: collected.now.toISOString(),
-      auth401Burst: quiet.read(),
-    });
-    expect(quietText).toContain(`myrmidon_auth_401_burst_tripped{role="all"} 0`);
+      // A dedicated instance shows the untripped gauge renders 0, not an absent
+      // series — "no burst yet" is information.
+      const quiet = createAuth401BurstMetrics({ threshold: 100, windowMs: 60_000 });
+      quiet.record("no_credentials");
+      const quietText = renderMetricsText({
+        ...collected.fields,
+        role: collected.role,
+        scrapeErrors: collected.errors.length,
+        collectedAt: collected.now.toISOString(),
+        auth401Burst: quiet.read(),
+      });
+      expect(quietText).toContain(`myrmidon_auth_401_burst_tripped{role="all"} 0`);
+    } finally {
+      if (originalThreshold === undefined) delete process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD;
+      else process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD = originalThreshold;
+      auth401BurstMetrics.reset();
+    }
   });
 });
