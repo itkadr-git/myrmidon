@@ -5,6 +5,7 @@ import {
   createPostgresSearchIndex,
   escapeLikePattern,
   pgvectorHasIterativeScan,
+  toFullTextQuery,
   type SqlExecutor,
 } from "./hybrid-search-index.js";
 import { CORPUS_EMBEDDING_DIMENSIONS } from "./vector.js";
@@ -118,9 +119,9 @@ describe("hybrid search index", () => {
     expect(vectorCall?.text).toContain('order by c."embedding" <=> $1::vector');
     expect(vectorCall?.values).toEqual([expect.stringContaining("["), companyId, [datasetId], 100]);
     expect(textCall?.text).toContain('c."fts"');
-    expect(textCall?.text).toContain("plainto_tsquery($5::regconfig, $1)");
+    expect(textCall?.text).toContain("to_tsquery($5::regconfig, $1)");
     expect(textCall?.text).toContain('c."content" ilike $4');
-    expect(textCall?.values).toEqual(["supply agreement", companyId, [datasetId], "%supply agreement%", "english", 100]);
+    expect(textCall?.values).toEqual(["supply | agreement", companyId, [datasetId], "%supply agreement%", "english", 100]);
   });
 
   it("merges the rankings with RRF and returns score, chunk and document", async () => {
@@ -270,6 +271,21 @@ describe("hybrid search index", () => {
     const index = createPostgresSearchIndex({ sql });
     await index.search({ companyId, datasetId, text: "50% off", embedding: embedding() });
     expect(calls.find((call) => /ts_rank/.test(call.text))?.values[3]).toBe("%50\\% off%");
+  });
+
+  it("builds a bounded OR of significant words for the full-text query", () => {
+    // The `|` of the OR and the dictionary come together in the statement; the builder only
+    // tokenizes, so no `to_tsquery` operator from the user text can leak into the query.
+    expect(toFullTextQuery("Какой гриль лучше для стейка?")).toBe("гриль | лучше | стейка");
+    expect(toFullTextQuery("supply agreement")).toBe("supply | agreement");
+    // Short words and stop words are dropped; duplicates collapse.
+    expect(toFullTextQuery("Как say: what is the data in the data of the data?")).toBe("data");
+    // At most 8 terms keep the GIN scan bounded.
+    expect(toFullTextQuery("один два три четыре пять шесть семь восемь девять десять").split(" | ")).toHaveLength(8);
+    // Only whitespace or stop words — an empty query, the leg is skipped downstream.
+    expect(toFullTextQuery("как что и")).toBe("");
+    // tsquery operators and quotes in the user text cannot survive tokenization.
+    expect(toFullTextQuery("a & b | c ! (d)")).toBe("");
   });
 
   it("rejects a query embedding of the wrong shape and a bad limit", async () => {
@@ -640,11 +656,11 @@ describe("substring match of the full-text ranking", () => {
     await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, text: `  ${longText}  ` });
 
     const textCall = calls.find((call) => /ts_rank/.test(call.text));
-    expect(textCall?.text).toContain("plainto_tsquery($4::regconfig, $1)");
+    expect(textCall?.text).toContain("to_tsquery($4::regconfig, $1)");
     expect(textCall?.text).toContain("limit $5");
     expect(textCall?.text).not.toMatch(/ilike|\$6/);
     // Every parameter the text names is bound, and no other: a driver rejects a gap.
-    expect(textCall?.values).toEqual([longText, companyId, [datasetId], "english", 100]);
+    expect(textCall?.values).toEqual(["light | charcoal | grill", companyId, [datasetId], "english", 100]);
     const named = new Set([...(textCall?.text.matchAll(/\$(\d+)/g) ?? [])].map((match) => Number(match[1])));
     expect([...named].sort()).toEqual([1, 2, 3, 4, 5]);
   });

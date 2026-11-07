@@ -60,8 +60,13 @@ One `search()` call runs these statements inside one transaction:
    probe. The version is read from `pg_extension` and not tried with a `SET`, because a refused `SET`
    aborts the transaction and the product's driver rethrows it at the end of the transaction even when
    the caller caught it.
-3. Full-text ranking: `ts_rank` over the same rows with `plainto_tsquery($5, $1)`. A query text of
-   at most `ilikeMaxLength` characters (16 by default) also gets an `ilike '%…%'` trigram match;
+3. Full-text ranking: `ts_rank` over the same rows with `to_tsquery($5, $1)`, where `$1` is a
+   bounded OR of the question's significant words (`toFullTextQuery`: tokens of 4+ characters,
+   stop words dropped, at most 8 terms, joined with ` | `). `plainto_tsquery` made every word
+   mandatory, so a natural-language question matched nothing on the RU corpus: in the 07.11
+   golden bench the full-text leg returned 0 rows for 98.6% of the questions and the hybrid
+   search degraded to vector-only. A query text of at most `ilikeMaxLength` characters (16 by
+   default) also gets an `ilike '%…%'` trigram match;
    `%` and `_` in the query text are escaped before they reach the pattern. A longer text is matched
    by the `tsvector` alone: the trigram index reads one posting list per trigram of the pattern, so
    the cost of the match grows with the length of the text (a 40-character question read from 150 ms

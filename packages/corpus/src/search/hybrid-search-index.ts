@@ -11,8 +11,12 @@
 //     until the limit is filled; a small dataset (up to `exactSetMaxChunks` chunks) is ranked exactly,
 //     over its own chunks, instead. Without the iterative scan (pgvector before 0.8) the ranking is
 //     the plain statement;
-//   * full text: `fts @@ plainto_tsquery(...)` (the GIN index over the generated tsvector) plus an
-//     `ILIKE` fallback that the trigram GIN index serves for short query texts.
+//   * full text: `fts @@ to_tsquery(...)` — a small OR of the question's significant words (see
+//     `toFullTextQuery`); the GIN index over the generated tsvector serves it. The former
+//     `plainto_tsquery` + whole-question `ILIKE` shape matched nothing on natural-language
+//     questions (AND of all words / exact substring): the full-text leg was dead on the
+//     production corpus (empty_rate 0.986 in the 07.11 golden bench). An `ILIKE` fallback
+//     still serves short query texts.
 // The two rankings are merged with RRF (k0 = 60, k_candidates = 100) and the top-k hits are
 // returned with their chunk and document rows.
 //
@@ -84,7 +88,7 @@ export interface PostgresSearchIndexOptions {
   /** `hnsw.ef_search` of the vector ranking; the pilot value is 64. */
   readonly efSearch?: number;
   /**
-   * Text search configuration of `plainto_tsquery`. It must be the configuration the generated
+   * Text search configuration of `to_tsquery`. It must be the configuration the generated
    * `fts` column was built with — the corpus migration uses `english`.
    */
   readonly ftsLanguage?: string;
@@ -152,6 +156,35 @@ function clampLimit(limit: number | undefined): number {
 /** A query text of whitespace only cannot rank anything, so the full-text leg is skipped. */
 function hasText(text: string | undefined): boolean {
   return typeof text === "string" && text.trim().length > 0;
+}
+
+/**
+ * `plainto_tsquery` makes every term mandatory. That is unusable for natural-language questions
+ * (and especially for a mixed RU/EN corpus): one absent term empties the whole full-text leg, so
+ * on the production corpus the leg answered 0 rows for 98.6% of the golden questions (07.11 bench)
+ * and the hybrid search degraded to vector-only. Build a bounded OR of the question's significant
+ * words instead; the generated fts column uses the same configured dictionary (english), so
+ * stemming stays consistent with the index. Words shorter than 4 characters are dropped (RU
+ * prepositions and conjunctions, EN articles) along with frequent question words; the OR is capped
+ * at 8 terms, so a GIN scan over the query keeps a bounded cost.
+ */
+const SEARCH_STOP_WORDS = new Set([
+  "about", "after", "also", "and", "are", "does", "how", "that", "the", "this", "what", "when", "which", "with", "say",
+  "для", "как", "какие", "какой", "книг", "книги", "про", "это", "этом", "чем",
+  "в", "во", "и", "на", "о", "об", "из", "у", "по", "за", "то", "же", "ли", "что", "какой-то",
+]);
+
+export function toFullTextQuery(text: string): string {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  for (const word of text.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) {
+    if (word.length < 4 || SEARCH_STOP_WORDS.has(word) || seen.has(word)) continue;
+    seen.add(word);
+    // The tokenizer only accepts letters and digits, so no to_tsquery operator can leak in.
+    terms.push(word);
+    if (terms.length >= 8) break;
+  }
+  return terms.join(" | ");
 }
 
 /**
@@ -290,10 +323,10 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const fullTextSql = [
     `select`,
     chunkColumns,
-    `       ts_rank(c.${fullText}, plainto_tsquery($5::regconfig, $1)) as score`,
+    `       ts_rank(c.${fullText}, to_tsquery($5::regconfig, $1)) as score`,
     scope,
-    `   and (c.${fullText} @@ plainto_tsquery($5::regconfig, $1) or c.${content} ilike $4)`,
-    ` order by ts_rank(c.${fullText}, plainto_tsquery($5::regconfig, $1)) desc,`,
+    `   and (c.${fullText} @@ to_tsquery($5::regconfig, $1) or c.${content} ilike $4)`,
+    ` order by ts_rank(c.${fullText}, to_tsquery($5::regconfig, $1)) desc,`,
     `          similarity(c.${content}, $1) desc`,
     ` limit $6`,
   ].join("\n");
@@ -305,10 +338,10 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const fullTextOnlySql = [
     `select`,
     chunkColumns,
-    `       ts_rank(c.${fullText}, plainto_tsquery($4::regconfig, $1)) as score`,
+    `       ts_rank(c.${fullText}, to_tsquery($4::regconfig, $1)) as score`,
     scope,
-    `   and c.${fullText} @@ plainto_tsquery($4::regconfig, $1)`,
-    ` order by ts_rank(c.${fullText}, plainto_tsquery($4::regconfig, $1)) desc,`,
+    `   and c.${fullText} @@ to_tsquery($4::regconfig, $1)`,
+    ` order by ts_rank(c.${fullText}, to_tsquery($4::regconfig, $1)) desc,`,
     `          similarity(c.${content}, $1) desc`,
     ` limit $5`,
   ].join("\n");
@@ -362,6 +395,9 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
 
       const kCandidates = Math.max(limit, fusion.kCandidates);
       const text = useFullText ? query.text.trim() : "";
+      // The full-text query is the bounded OR of significant words (see `toFullTextQuery`); the
+      // unmodified text still feeds the trigram `ilike` and the `similarity` ranking.
+      const fullTextQuery = useFullText ? toFullTextQuery(text) : "";
       // The substring match is for short texts and for identifiers (a single token without whitespace).
       const useIlike =
         ilikeMaxLength > 0 &&
@@ -403,7 +439,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (useFullText) {
           fullTextRows = useIlike
             ? await transaction.query<ChunkRow>(fullTextSql, [
-                text,
+                fullTextQuery,
                 query.companyId,
                 datasetIds,
                 likePattern,
@@ -411,7 +447,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
                 kCandidates,
               ])
             : await transaction.query<ChunkRow>(fullTextOnlySql, [
-                text,
+                fullTextQuery,
                 query.companyId,
                 datasetIds,
                 language,
