@@ -32,6 +32,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
+  "issue_write_private_flag_rejected",
 ] as const;
 
 export type IssueWriteDenialCode = (typeof ISSUE_WRITE_DENIAL_CODES)[number];
@@ -290,6 +291,24 @@ export function describeIssueWriteDenial(
         sanctionedPath:
           `Remove \`onBehalfOfUserId\` from the request and retry; the server fills in ` +
           `${responsible} from your run.`,
+      };
+
+    case "issue_write_private_flag_rejected":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Issue privacy flag",
+        title: "Only board actors can change the privacy flag",
+        description:
+          `\`isPrivate\` marks a task as hidden from agent swarm matching and ` +
+          `agent-facing read paths. Agents cannot set or clear it, no matter who they ` +
+          `act for — the flag is a board-only control.`,
+        whoCanAct:
+          `A board member (or any board actor).`,
+        sanctionedPath:
+          `Ask a board member to toggle the flag, or file a child issue describing the ` +
+          `privacy need so the board can decide.`,
       };
   }
 }
