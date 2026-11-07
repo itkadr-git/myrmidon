@@ -80,6 +80,7 @@ export { projectTokenQuotaRoutes } from "./project-token-quota/index.js"; // myr
 export { myrmidonPromptBudgetRoutes } from "./prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 export { modelFallbackSignalRoutes } from "./litellm-fallback-signal/routes.js"; // myrmidon(BOT-RUNTIME-TUNING D2)
 export { myrmidonOwnerDeliveryRoutes } from "./owner-delivery/index.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
+export { toolComplaintRoutes } from "./tool-complaints/routes.js"; // myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228)
 export { reviewRoutingRoutes } from "./review-routing/routes.js"; // myrmidon(REVIEW-ROUTING)
 export { reviewReworkRoutes } from "./review-rework/routes.js"; // myrmidon(REVIEW-REWORK)
 export { pluginEntitlementRoutes } from "./plugin-entitlement/index.js";
