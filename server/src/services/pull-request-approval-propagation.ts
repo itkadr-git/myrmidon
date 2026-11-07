@@ -702,6 +702,12 @@ export async function propagateReviewApprovalToPullRequest(
 
   // Check if an approving GitHub review is already submitted on this head
   let alreadyHasApprovedReview = false;
+  // myrmidon(OPE-12024): true when an APPROVED review is pinned to a commit
+  // that is NOT the current head — i.e. the head moved after that approval.
+  // The `review-approved` label event fired on the old head, so the label must
+  // be re-seated for the labeled-triggered hot-files-review workflow to fire
+  // on the current head (OPE-9646, PR #2352).
+  let hasApprovedReviewOnMovedHead = false;
   let canCheckReviews = false;
   if (typeof client.listReviews === "function") {
     canCheckReviews = true;
@@ -712,6 +718,9 @@ export async function propagateReviewApprovalToPullRequest(
       );
       alreadyHasApprovedReview = existingReviews.some(
         (r) => r.state === "APPROVED" && (!r.commitId || headMatches(r.commitId, prDetails.headSha)),
+      );
+      hasApprovedReviewOnMovedHead = existingReviews.some(
+        (r) => r.state === "APPROVED" && !!r.commitId && !headMatches(r.commitId, prDetails.headSha),
       );
     } catch {
       // Best-effort check; proceed to ensure review/label
@@ -724,9 +733,17 @@ export async function propagateReviewApprovalToPullRequest(
   // earlier approval (force-push / rebuild), the label sits on the old head and
   // the new head never gets the required status — GitHub blocks the merge
   // (OPE-9646, PR #2352).  Re-seat the label: remove it, then add it again so
-  // the labeled event fires on the current head.
+  // the labeled event fires on the current head.  Only re-seat when a review
+  // approval actually exists on an older head — otherwise every propagation
+  // cycle would churn the label (remove+add) even though nothing moved.
   let labelReseated = false;
-  if (alreadyLabeled && canCheckReviews && alreadyHasApprovedReview && typeof client.removeLabel === "function") {
+  if (
+    alreadyLabeled &&
+    canCheckReviews &&
+    alreadyHasApprovedReview &&
+    hasApprovedReviewOnMovedHead &&
+    typeof client.removeLabel === "function"
+  ) {
     try {
       await executeWithRetry(
         () => client.removeLabel!({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),

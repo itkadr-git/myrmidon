@@ -401,7 +401,9 @@ describe("createReviewPullRequestCiResolver", () => {
     });
     expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
       state: "pending",
-      pullRequestUrl: "",
+      // OPE-12024: пустая строка в url трактуется как отсутствие url —
+      // effectiveUrl=null, т.к. metadata.url не задан.
+      pullRequestUrl: null,
       headSha: "abc123",
     });
   });
@@ -418,7 +420,7 @@ describe("createReviewPullRequestCiResolver", () => {
     });
     expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
       state: "pending",
-      pullRequestUrl: "",
+      pullRequestUrl: null,
       headSha: "abc123",
     });
   });
@@ -431,7 +433,7 @@ describe("createReviewPullRequestCiResolver", () => {
     });
     expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
       state: "unknown",
-      pullRequestUrl: "",
+      pullRequestUrl: null,
       headSha: null,
       reason: "pull_request_reference_unreadable",
     });

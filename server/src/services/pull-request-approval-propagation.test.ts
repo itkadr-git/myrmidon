@@ -486,6 +486,7 @@ describe("pull-request-approval-propagation", () => {
     // current head.
     it("reseats review-approved when the PR head moved after an earlier approval", async () => {
       const db = createMockDb();
+      const oldHeadSha = "old-head-sha";
       const mockClient: GitHubApprovalClient = {
         getPullRequest: vi.fn().mockResolvedValue({
           state: "open",
@@ -498,6 +499,9 @@ describe("pull-request-approval-propagation", () => {
         removeLabel: vi.fn(),
         submitReview: vi.fn(),
         listReviews: vi.fn().mockResolvedValue([
+          // Approval pinned to the pre-rebuild head — the head moved after it.
+          { id: 0, state: "APPROVED", commitId: oldHeadSha },
+          // Re-approval on the current head after the rebuild.
           { id: 1, state: "APPROVED", commitId: defaultHeadSha },
         ]),
       };
