@@ -435,6 +435,11 @@ export interface CorpusSearchHit {
   text: string;
   /** Structured fields the parse service attached to the chunk, if any. */
   metadata: Record<string, unknown>;
+  /**
+   * Name of the document as it was uploaded (the filename), not its internal
+   * UUID. A bot that cites a search hit can quote this directly (OPE-12028).
+   */
+  documentName: string;
 }
 
 export interface CorpusSearchResponse {
