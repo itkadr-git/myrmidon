@@ -1958,8 +1958,8 @@ export function dockerBotContainerDriver(
     const release = await startSemaphore.acquire();
     try {
       await startByName(name); // 304 (already running) is not an error
-      await writeIdleStopped(botKey, false);
       await waitForHealthy(botKey);
+      await writeIdleStopped(botKey, false);
     } finally {
       release();
     }

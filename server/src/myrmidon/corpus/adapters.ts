@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { and, count, eq, sql as drizzleSql } from "drizzle-orm";
+import { and, asc, count, eq, isNotNull, sql as drizzleSql, type SQL } from "drizzle-orm";
 import { companySecrets, corpusChunks, corpusDatasets, corpusDocuments, corpusParseJobs, type Db } from "@myrmidon/db";
 import { createHttpDocumentParser, createPostgresSearchIndex, LocalBlobStore, PostgresCorpusStore, PostgresWorkQueue } from "@myrmidon/corpus";
 import type { SqlExecutor } from "@myrmidon/corpus";
@@ -60,6 +60,25 @@ export function createSqlExecutor(db: DbOrTx): SqlExecutor {
   return over(db);
 }
 
+/**
+ * OPE-12000: what makes a document "added by address". `source_uri` alone is not enough — the
+ * RAGFlow importer keeps its provenance there too — so the refresh interval in `metadata` is the
+ * marker; the address itself stays in `source_uri`, the hash in `content_hash`.
+ */
+function sourceFields(row: { sourceUri: string | null; contentHash: string | null; metadata: unknown }): Pick<CorpusDocumentRecord, "sourceUrl" | "refreshIntervalHours" | "contentHash" | "lastFetchedAt" | "sourceError" | "previousBlobRef"> {
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  const interval = typeof meta.sourceRefreshIntervalHours === "number" ? meta.sourceRefreshIntervalHours : null;
+  const isUrlSource = interval !== null && !!row.sourceUri;
+  return {
+    sourceUrl: isUrlSource ? row.sourceUri : null,
+    refreshIntervalHours: isUrlSource ? interval : null,
+    contentHash: row.contentHash,
+    lastFetchedAt: isUrlSource && typeof meta.sourceFetchedAt === "string" ? meta.sourceFetchedAt : null,
+    sourceError: isUrlSource && typeof meta.sourceError === "string" ? meta.sourceError : null,
+    previousBlobRef: typeof meta.sourcePreviousBlobRef === "string" ? meta.sourcePreviousBlobRef : null,
+  };
+}
+
 // Port objects are created per request; keep the bounded query cache across requests.
 const queryVectors = new Map<string, { expiresAt: number; value: Promise<number[]> }>();
 
@@ -93,14 +112,14 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       );
     }
   };
-  const embedder = async (companyId: string, baseUrl: string | null, model: string, dimensions: number, input: string[]): Promise<number[][]> => {
+  const embedder = async (companyId: string, baseUrl: string | null, model: string, dimensions: number, input: string[], signal?: AbortSignal): Promise<number[][]> => {
     await checkEmbedderConfigured(companyId, baseUrl);
     const secretRow = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"), eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"), eq(companySecrets.status, "active"))).then((rows) => rows[0] ?? null);
     const apiKey = secretRow ? await secretService(db).resolveSecretValue(companyId, secretRow.id, "latest", { accessContext: { consumerType: "system", consumerId: "myrmidon-corpus" } }) : undefined;
     const endpoint = baseUrl ?? context.env.MYRMIDON_LLM_GATEWAY_BASE_URL ?? "http://127.0.0.1:3000/v1";
     // The key is resolved once per call; the batches below reuse it.
     const embedBatch = async (batch: readonly string[]): Promise<number[][]> => {
-      const response = await fetch(`${endpoint.replace(/\/+$/, "")}/embeddings`, { method: "POST", headers: { "content-type": "application/json", ...(apiKey ? { authorization: "Bearer " + apiKey } : {}) }, body: JSON.stringify({ model, input: batch, dimensions }), signal: AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS) });
+      const response = await fetch(`${endpoint.replace(/\/+$/, "")}/embeddings`, { method: "POST", headers: { "content-type": "application/json", ...(apiKey ? { authorization: "Bearer " + apiKey } : {}) }, body: JSON.stringify({ model, input: batch, dimensions }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS) });
       if (!response.ok) throw new Error(`corpus embeddings request failed (${response.status})`);
       const result = await response.json() as { data?: Array<{ index?: number; embedding?: number[] }> };
       const vectorResults = result.data?.sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((item) => item.embedding);
@@ -127,8 +146,8 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
   };
   const index = {
     assertEmbedderConfigured: checkEmbedderConfigured,
-    async indexDocument(input: { companyId: string; datasetId: string; documentId: string; chunks: Array<{ text: string; index: number; metadata?: Record<string, unknown> }>; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
-      const vectors = await embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.chunks.map((c) => c.text));
+    async indexDocument(input: { companyId: string; datasetId: string; documentId: string; chunks: Array<{ text: string; index: number; metadata?: Record<string, unknown> }>; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null; signal?: AbortSignal }) {
+      const vectors = await embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.chunks.map((c) => c.text), input.signal);
       await store.replaceDocumentChunks({ companyId: input.companyId, documentId: input.documentId, chunks: input.chunks.map((c, i) => ({ chunkIndex: c.index, content: c.text, embedding: vectors[i]!, metadata: c.metadata })) });
       return input.chunks.length;
     },
@@ -148,7 +167,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     const [jobs, chunks] = await Promise.all([
       queue.listJobsForDocument(companyId, row.id), store.listDocumentChunks(companyId, row.id),
     ]);
-    return { id: row.id, companyId, datasetId: row.datasetId, filename: row.title, mimeType: row.contentType, byteSize: row.byteSize ?? 0, blobRef: row.blobKey ?? "", status: row.status === "embedding" ? "parsing" : row.status, chunkCount: chunks.length, error: row.parseError, attempts: jobs[0]?.attempts ?? 0, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), parsedAt: row.parsedAt?.toISOString() ?? null };
+    return { id: row.id, companyId, datasetId: row.datasetId, filename: row.title, mimeType: row.contentType, byteSize: row.byteSize ?? 0, blobRef: row.blobKey ?? "", status: row.status === "embedding" ? "parsing" : row.status, chunkCount: chunks.length, error: row.parseError, attempts: jobs[0]?.attempts ?? 0, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), parsedAt: row.parsedAt?.toISOString() ?? null, ...sourceFields(row) };
   };
   const datasetRecord = async (companyId: string, row: Awaited<ReturnType<typeof store.getDataset>>): Promise<CorpusDatasetRecord | null> => {
     if (!row) return null;
@@ -184,7 +203,14 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       async listDocuments(companyId, datasetId, options) { const rows = await store.listDocuments({ companyId, datasetId: datasetId!, limit: options?.limit, offset: options?.offset }); const mapped: CorpusDocumentRecord[] = []; for (const item of rows) { const record = await documentRecord(companyId, item); if (record) mapped.push(record); } return mapped; },
       getDocument,
       async createDocument(input) {
-        const row = await store.createDocument({ companyId: input.companyId, datasetId: input.datasetId, title: input.filename, blobKey: input.blobRef, contentType: input.mimeType, byteSize: input.byteSize });
+        const row = await store.createDocument({
+          companyId: input.companyId, datasetId: input.datasetId, title: input.filename, blobKey: input.blobRef, contentType: input.mimeType, byteSize: input.byteSize,
+          ...(input.source ? {
+            sourceUri: input.source.url,
+            contentHash: input.source.contentHash,
+            metadata: { sourceRefreshIntervalHours: input.source.refreshIntervalHours, sourceFetchedAt: input.source.fetchedAt },
+          } : {}),
+        });
         return (await documentRecord(input.companyId, row))!;
       },
       async updateDocument(companyId, id, patch) {
@@ -195,10 +221,50 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
           if (patch.status === "ready" && row.status === "parsing") await store.updateDocumentStatus(companyId, id, "embedding", { parserVersion: "v1" });
           await store.updateDocumentStatus(companyId, id, patch.status, { parseError: patch.error, parserVersion: "v1" });
         }
-        const updated = await db.update(corpusDocuments).set({ ...(patch.blobRef !== undefined ? { blobKey: patch.blobRef } : {}), ...(patch.status ? { status: patch.status === "parsing" ? "parsing" : patch.status } : {}), ...(patch.error !== undefined ? { parseError: patch.error } : {}), ...(patch.parsedAt ? { parsedAt: new Date(patch.parsedAt) } : {}) }).where(and(eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.id, id))).returning({ id: corpusDocuments.id });
+        // OPE-12000: the fetch bookkeeping of a URL source lives in `metadata`; merge it, never replace it.
+        const metadataPatch: Record<string, unknown> = {
+          ...(patch.lastFetchedAt !== undefined ? { sourceFetchedAt: patch.lastFetchedAt } : {}),
+          ...(patch.sourceError !== undefined ? { sourceError: patch.sourceError } : {}),
+          ...(patch.previousBlobRef !== undefined ? { sourcePreviousBlobRef: patch.previousBlobRef } : {}),
+        };
+        const updated = await db.update(corpusDocuments).set({
+          updatedAt: new Date(),
+          ...(patch.blobRef !== undefined ? { blobKey: patch.blobRef } : {}),
+          ...(patch.byteSize !== undefined ? { byteSize: patch.byteSize } : {}),
+          ...(patch.mimeType !== undefined ? { contentType: patch.mimeType } : {}),
+          ...(patch.contentHash !== undefined ? { contentHash: patch.contentHash } : {}),
+          ...(patch.status ? { status: patch.status === "parsing" ? "parsing" : patch.status } : {}),
+          ...(patch.error !== undefined ? { parseError: patch.error } : {}),
+          ...(patch.parsedAt !== undefined ? { parsedAt: patch.parsedAt ? new Date(patch.parsedAt) : null } : {}),
+          ...(Object.keys(metadataPatch).length > 0
+            ? { metadata: drizzleSql`coalesce(${corpusDocuments.metadata}, '{}'::jsonb) || ${JSON.stringify(metadataPatch)}::jsonb` }
+            : {}),
+        }).where(and(eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.id, id))).returning({ id: corpusDocuments.id });
         return updated.length ? getDocument(companyId, id) : null;
       },
       async deleteDocument(companyId, id) { const d = await getDocument(companyId, id); if (!d) return false; await store.deleteDocument(companyId, id); await blobs.delete(d.blobRef); return true; },
+      // OPE-12000. Rows are mapped without the per-document job and chunk reads `documentRecord`
+      // does: the refresh needs the source fields and the bytes' handle, and a pass over
+      // every page of a dataset must not load every chunk embedding. `chunkCount` and `attempts`
+      // are therefore 0 here — nothing in the refresh reads them.
+      async listSourceDocuments({ companyId, datasetId, dueAt, limit }) {
+        const fetchedAt = drizzleSql`coalesce((${corpusDocuments.metadata} ->> 'sourceFetchedAt')::timestamptz, ${corpusDocuments.createdAt})`;
+        const conditions: SQL[] = [
+          isNotNull(corpusDocuments.sourceUri),
+          drizzleSql`(${corpusDocuments.metadata} ->> 'sourceRefreshIntervalHours') is not null`,
+        ];
+        if (companyId) conditions.push(eq(corpusDocuments.companyId, companyId));
+        if (datasetId) conditions.push(eq(corpusDocuments.datasetId, datasetId));
+        if (dueAt) {
+          conditions.push(drizzleSql`${fetchedAt} + ((${corpusDocuments.metadata} ->> 'sourceRefreshIntervalHours')::int * interval '1 hour') <= ${dueAt.toISOString()}::timestamptz`);
+        }
+        const rows = await db.select().from(corpusDocuments).where(and(...conditions)).orderBy(asc(fetchedAt)).limit(limit);
+        return rows.map((row): CorpusDocumentRecord => ({
+          id: row.id, companyId: row.companyId, datasetId: row.datasetId, filename: row.title, mimeType: row.contentType, byteSize: row.byteSize ?? 0, blobRef: row.blobKey ?? "",
+          status: (row.status === "embedding" ? "parsing" : row.status) as CorpusDocumentRecord["status"], chunkCount: 0, error: row.parseError, attempts: 0,
+          createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), parsedAt: row.parsedAt?.toISOString() ?? null, ...sourceFields(row),
+        }));
+      },
       async countDocuments(companyId, datasetId) { return (await store.listDocuments({ companyId, datasetId })).length; },
       async getJob(companyId, jobId) { return jobRecord(companyId, await queue.getJob(companyId, jobId)); },
       async counters(companyId: string) { const datasets = await store.listDatasets(companyId); const docs = await store.listDocuments({ companyId }); const bytes = docs.reduce((sum, doc) => sum + (doc.byteSize ?? 0), 0); return { datasets: datasets.length, documents: docs.length, ready: docs.filter((d) => d.status === "ready").length, pending: docs.filter((d) => d.status === "queued" || d.status === "parsing").length, failed: docs.filter((d) => d.status === "failed").length, chunks: countValue((await db.select({ value: count() }).from(corpusChunks).where(eq(corpusChunks.companyId, companyId)))[0]), bytes }; },
@@ -260,11 +326,25 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       },
       async complete(companyId, id) { await queue.complete(companyId, id); },
       async fail(companyId, id, reason) { const row = await queue.fail(companyId, id, reason); return jobRecord(companyId, row); },
+      async release(companyId, id, reason) { const row = await queue.release(companyId, id, reason); return row ? jobRecord(companyId, row) : null; },
+      async releaseRunning() {
+        const settled: CorpusJobRecord[] = [];
+        for (const row of await queue.releaseRunning()) {
+          const mapped = await jobRecord(row.companyId, row);
+          if (mapped) settled.push(mapped);
+        }
+        return settled;
+      },
     },
     parser: {
       async parse(input) {
-        const client = createHttpDocumentParser({ baseUrl: input.baseUrl, parserTimeoutMs: input.timeoutMs });
-        const result = await client.parse({ sourceUri: null, content: input.bytes, contentType: input.mimeType, title: input.filename, parserVersion: "v1" });
+        const client = createHttpDocumentParser({
+          baseUrl: input.baseUrl,
+          parserTimeoutMs: input.timeoutMs,
+          maxRunMs: input.maxRunMs,
+          queueTimeoutMs: input.queueTimeoutMs,
+        });
+        const result = await client.parse({ sourceUri: null, content: input.bytes, contentType: input.mimeType, title: input.filename, parserVersion: "v1" }, input.signal ? { signal: input.signal } : {});
         return { text: result.chunks.map((chunk) => chunk.content).join("\n"), chunks: result.chunks.map((chunk) => ({ text: chunk.content, index: chunk.chunkIndex, metadata: chunk.metadata })) };
       },
     },
@@ -317,6 +397,17 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
           embedderBaseUrl: settings.embedderBaseUrl,
         });
 
+        // The index returns documentId per hit; resolve real names so bots can
+        // cite sources by book title instead of UUID (OPE-12028).
+        const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
+        const documentNames = new Map<string, string>();
+        await Promise.all(
+          documentIds.map(async (id) => {
+            const document = await ports.store.getDocument(companyId, id);
+            if (document) documentNames.set(id, document.filename);
+          }),
+        );
+
         const filteredHits = hits
           .filter((hit) => request.minScore === null || hit.score >= request.minScore)
           .slice(0, request.topK)
@@ -324,7 +415,7 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
             chunkId: hit.chunkId,
             document: {
               id: hit.documentId,
-              name: hit.documentId,
+              name: documentNames.get(hit.documentId) ?? hit.documentId,
               datasetId: hit.datasetId,
               datasetName: datasets.find((d) => d.id === hit.datasetId)?.name ?? "",
               url: null,
@@ -347,7 +438,10 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         const { ports } = current;
         const document = await ports.store.getDocument(companyId, documentId); if (!document) throw new Error("document not found");
         const dataset = await ports.store.getDataset(companyId, document.datasetId);
-        const chunks = includeText ? await (async () => { const rows = await ports.store.getDocument(companyId, documentId); return rows ? Buffer.from(await ports.blobs.get(rows.blobRef)).toString("utf8") : null; })() : null;
+        // A document can exist without a stored blob (e.g. created but never
+        // uploaded, or the blob key was cleared). Asking for text of such a
+        // document must not crash on "corpus blob: empty key" (OPE-12028).
+        const chunks = includeText && document.blobRef ? Buffer.from(await ports.blobs.get(document.blobRef)).toString("utf8") : null;
         return { document: { id: document.id, name: document.filename, datasetId: document.datasetId, datasetName: dataset?.name ?? "", url: null, status: document.status, sizeBytes: document.byteSize, chunks: document.chunkCount, createdAt: document.createdAt, error: document.error }, text: chunks };
       },
       async listDatasets() {

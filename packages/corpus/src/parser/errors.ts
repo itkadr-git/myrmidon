@@ -14,7 +14,9 @@ export type DocumentParserErrorKind =
   /** The service accepted the job and reported that the document cannot be parsed. */
   | "parse-failed"
   /** The service answered with a body that does not match the contract. */
-  | "invalid-response";
+  | "invalid-response"
+  /** The caller aborted the call (its `AbortSignal` fired); nothing to retry. */
+  | "aborted";
 
 export interface DocumentParserErrorOptions {
   readonly kind: DocumentParserErrorKind;

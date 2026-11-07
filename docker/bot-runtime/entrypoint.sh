@@ -171,7 +171,21 @@ if [ ! -w "$(pwd)" ]; then
   fail "workspace $(pwd) is not writable by $(id -u):$(id -g) — the /workspace volume must be owned by uid 10001"
 fi
 
+# myrmidon(BOT-DISK): SQLite's temporary files go to the data volume. hermes' automatic VACUUM of state.db
+# writes a copy of the live data (about 1.5 GB for the largest database) to SQLite's temp directory, which
+# defaults to /tmp: tmpfs in this container, i.e. RAM charged to the container's memory limit. The patched
+# hermes refuses to VACUUM while that directory is RAM (patches/30-vacuum-by-freelist.patch), so without this
+# line the state.db of a bot would never be compacted. SQLite unlinks a temp file as soon as it is open, so a
+# killed process leaves nothing behind; umask 077 makes the directory owner-only.
+export SQLITE_TMPDIR="${HERMES_HOME}/.sqlite-tmp"
+if mkdir -p "${SQLITE_TMPDIR}" 2>/dev/null && [ -w "${SQLITE_TMPDIR}" ]; then
+  chmod 700 "${SQLITE_TMPDIR}" 2>/dev/null || true
+else
+  log "WARNING: cannot create SQLITE_TMPDIR=${SQLITE_TMPDIR}; the state.db VACUUM will not run"
+  unset SQLITE_TMPDIR
+fi
 log "HERMES_HOME=${HERMES_HOME}"
+log "SQLITE_TMPDIR=${SQLITE_TMPDIR:-<unset>}"
 log "workspace=$(pwd)"
 log "API_SERVER_HOST=${API_SERVER_HOST} API_SERVER_PORT=${API_SERVER_PORT}"
 # Set by the image (see the Dockerfile's runtime ENV block) so a lazy

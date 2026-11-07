@@ -180,6 +180,49 @@
       "foraging": {
         "rolePlaceholder": "engineer",
         "urlPlaceholder": "https://example.com/changelog"
+      },
+      "run-priority-settings-panel": {
+        "title": "Run queue priority",
+        "sourceLine": "Source: {{source}}. Changes apply to the live queue without restart.",
+        "sources": {
+          "settings": "saved here",
+          "env": "set by the server environment",
+          "loading": "loading"
+        },
+        "loading": "Loading priority settings...",
+        "loadFailed": "Failed to load the queue priority settings.",
+        "saveFailed": "Save failed",
+        "releaseTooLong": "Release must be at most 64 characters.",
+        "invalidNumber": "{{field}}: enter an integer between 0 and {{max}}.",
+        "enabled": "Enabled",
+        "roleWeight": "{{role}} role weight",
+        "issueWeight": "{{priority}} issue weight",
+        "roles": {
+          "review": "review",
+          "release": "release",
+          "lead": "lead",
+          "engineer": "engineer",
+          "docs": "docs"
+        },
+        "priorities": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "none": "none"
+        },
+        "fields": {
+          "defaultRoleWeight": "Default role weight",
+          "releaseBonus": "Release bonus",
+          "agingStepMinutes": "Aging step (minutes)",
+          "agingStepWeight": "Aging step weight",
+          "agingMaxBonus": "Aging bonus cap",
+          "starvationLimitMinutes": "Starvation limit (minutes)",
+          "starvationTopWeight": "Starvation top weight",
+          "pheromoneWeight": "Pheromone weight"
+        },
+        "currentRelease": "Current release",
+        "save": "Save queue priority"
       }
     }
   }

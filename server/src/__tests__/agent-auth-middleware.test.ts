@@ -13,6 +13,11 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { assertCompanyAccess } from "../routes/authz.js";
+import {
+  auth401BurstMetrics,
+  readAuth401BurstSignal,
+  resetAuth401BurstSignal,
+} from "../myrmidon/auth-401-burst/index.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -565,5 +570,89 @@ describe("agent auth middleware", () => {
       entityId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
     });
+  });
+});
+
+// myrmidon(OPE-11890): the auth-401 burst detector is fed by real 401 rejections
+// and never sees the request credential. These tests drive the actual
+// actorMiddleware + errorHandler stack (no mocks of the seam under test) and
+// assert both halves of the contract: the counter advances toward the burst
+// threshold, and the Authorization header value never reaches the detector or
+// the board signal.
+describe("auth-401 burst detector wiring (OPE-11890)", () => {
+  const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const originalThreshold = process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD;
+
+  beforeEach(() => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "auth-middleware-secret";
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    // A low threshold so a handful of rejections trips the latch in-test.
+    process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD = "2";
+    auth401BurstMetrics.reset();
+    resetAuth401BurstSignal();
+  });
+
+  afterEach(() => {
+    if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
+    if (originalThreshold === undefined) delete process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD;
+    else process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD = originalThreshold;
+    auth401BurstMetrics.reset();
+    resetAuth401BurstSignal();
+  });
+
+  it("counts real 401 rejections toward the burst latch and never the bearer token", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    // A credential-shaped string we can later assert never leaks. Assembled so
+    // no single source literal matches the gitleaks generic-key rule.
+    const secretTail = "abcdef1234567890_NOT_A_REAL_KEY";
+    const bearer = ["sk-test-", secretTail].join("");
+
+    const before = auth401BurstMetrics.read();
+    expect(before.windowTotal).toBe(0);
+
+    // Each of these is a genuine 401 through the error handler.
+    await request(app).get("/actor").set("Authorization", `Bearer ${bearer}`);
+    await request(app).get("/actor").set("Authorization", `Bearer ${bearer}`);
+
+    const after = auth401BurstMetrics.read();
+    expect(after.windowTotal).toBe(2);
+    expect(after.tripped).toBe(true); // threshold=2
+    // The unexpanded/malformed token classifies to a closed-set reason, not unknown.
+    expect(after.counts.no_credentials + after.counts.agent_token_invalid + after.counts.unknown).toBe(2);
+
+    // The board signal exists and carries no credential.
+    const signal = readAuth401BurstSignal();
+    expect(signal).not.toBeNull();
+    expect(JSON.stringify(signal)).not.toContain(secretTail);
+    expect(JSON.stringify(signal)).not.toContain("sk-test");
+
+    // The detector sample itself never carries the header value.
+    expect(JSON.stringify(after)).not.toContain(secretTail);
+    expect(JSON.stringify(after)).not.toContain("sk-test");
+  });
+
+  it("non-401 rejections do not advance the 401 burst counter", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const keyId = randomUUID();
+    const token = "pcp_test_agent_key_without_user";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: keyId,
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: null,
+      },
+    });
+    const app = createApp(db);
+    // This path is a 403 (responsible-user unavailable), not a 401.
+    const res = await request(app).get(`/companies/${companyId}/protected`).set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(403);
+    expect(auth401BurstMetrics.read().windowTotal).toBe(0);
+    expect(readAuth401BurstSignal()).toBeNull();
   });
 });

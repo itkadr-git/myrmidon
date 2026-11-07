@@ -216,13 +216,14 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 # tools.run_skills (also api_server_runs/local): 14; agent.session_persistence (also
 # api_server_runs): 15; agent.redact: 12; tools.delegation_live_log: 13;
 # hermes_state_registry, gateway.session_db_recovery/session(_persistence/_recovery/_lifecycle/_transcript),
-# run/run_startup/run_shutdown: 18; agent.opencode_affinity and agent.transports.chat_completions: 28)
+# run/run_startup/run_shutdown: 18; agent.opencode_affinity and agent.transports.chat_completions: 28;
+# hermes_state_maintenance: 30)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, hermes_state_maintenance, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -306,10 +307,20 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # prompt_cache_key (the header's own value, bounded to 64 characters), a pinned key and every endpoint
 # without the option are untouched, and api.openai.com keeps its content-addressed key.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/session_affinity_prompt_cache_key.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 29-gateway-outage-keeps-primary.patch: a lost connection to
+# the model gateway is retried against the primary for the outage budget instead of moving the run to a
+# fallback, model/provider errors still move it at once, and a run on a fallback tries the primary again
+# every few model calls.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/gateway_outage_fallback.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 30-vacuum-by-freelist.patch: the automatic state.db VACUUM runs on the
+# freelist share alone (no prune of the same pass needed), and waits for room (twice the live data free on the
+# volume, a temp directory that is not RAM), for a store and a gateway without a running turn, and for
+# min_vacuum_interval_days.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/vacuum_by_freelist.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills agent.session_persistence agent.context_economy tools.stale_result_tool agent.turn_request_assembly model_tools
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills agent.session_persistence agent.context_economy tools.stale_result_tool agent.turn_request_assembly model_tools agent.gateway_outage agent.turn_recovery agent.turn_api_error agent.turn_retry_state agent.conversation_loop hermes_state_maintenance
 # myrmidon(OPE-10755): statically verify no undefined names (pyflakes F821 / NameError
 # on start) in any module touched by patches/*.patch (#1381 / rc.31 incident where
 # missing SessionStore in gateway/run_startup.py passed top-level import checks but

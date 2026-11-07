@@ -175,6 +175,19 @@ export function assertDocumentStatusTransition(
 }
 
 /**
+ * `last_error` of a job whose worker is gone: the process that claimed it was killed or restarted
+ * while the job was `running`, and the next worker settled it (`WorkQueue.releaseRunning`).
+ */
+export const PARSE_JOB_INTERRUPTED_ERROR =
+  "the board stopped or restarted while the document was being parsed";
+
+/**
+ * `last_error` of a job its own worker gave back because the board is shutting down
+ * (`WorkQueue.release`). The attempt it used is refunded.
+ */
+export const PARSE_JOB_RELEASED_ERROR = "the board is shutting down; the parse starts over after the restart";
+
+/**
  * Backoff for parse-job retries: 5s, 25s, 125s, ... capped at 30 minutes.
  * `attempts` is the number of attempts already made (>= 1 after a failure).
  */

@@ -87,6 +87,7 @@ import {
   githubConnectionEventService,
   issueService,
   instanceSettingsService,
+  logActivity, // myrmidon(1.6.6 OPE-12000)
   reconcileBuiltInAgentsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -221,9 +222,14 @@ import { buildRunsReconnectingWatchdog } from "./myrmidon/monitoring/metrics/ind
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — one pass per gate,
 // a no-op while the module is off or its ports (parts A/B) are not wired.
 import {
+  CORPUS_DOCUMENT_REFRESHED_ACTION,
   CORPUS_PARSE_SWEEP_INTERVAL_MS,
+  CORPUS_SOURCE_REFRESH_INTERVAL_MS,
   corpusService,
   createCorpusParseWorker,
+  createCorpusSourceRefresher,
+  createCorpusUrlFetcher,
+  corpusShutdownGraceMs,
   configureCorpusAdapters,
   resolveCorpusPorts,
 } from "./myrmidon/corpus/index.js";
@@ -2067,7 +2073,13 @@ async function startServerWithDatabaseTeardown(
   // a restart. While the module is off — or while its ports (parts A/B of
   // OPE-6165) are not wired into this build — the pass returns immediately and
   // no port, connection or table is touched.
-  const scheduleCorpusParseSweep = (() => {
+  //
+  // myrmidon(OPE-12057): the pass is NOT tracked by the heartbeat scheduler's idle wait
+  // (`trackHeartbeatSchedulerWork`): that wait has no timeout, and a pass lasts as long as its
+  // slowest parse (a scanned book takes the better part of an hour), so a board restart would wait
+  // for the whole book. The worker tracks its own passes; `stopCorpusParseSweep` waits for them
+  // for a bounded grace period (MYRMIDON_CORPUS_SHUTDOWN_GRACE_MS, 30 s) and then aborts them.
+  const corpusParseSweep = (() => {
     const service = corpusService(db as any, { ports: resolveCorpusPorts });
     const worker = createCorpusParseWorker({
       ports: resolveCorpusPorts,
@@ -2076,21 +2088,82 @@ async function startServerWithDatabaseTeardown(
         return { settings: view.settings, enabled: view.enabled };
       },
     });
+    // myrmidon(1.6.6 OPE-12000): documents added by address are fetched again when their interval
+    // has passed — once an hour on the same tick, same switch, same ports. This is the product
+    // replacement of the weekly host script that re-downloaded the platform documentation pages.
+    const sourceRefresher = createCorpusSourceRefresher({
+      ports: resolveCorpusPorts,
+      resolveSettings: async () => {
+        const view = await service.readSettings();
+        return { settings: view.settings, enabled: view.enabled };
+      },
+      fetcher: createCorpusUrlFetcher(),
+      onUpdated: async (document, outcome) => {
+        await logActivity(db as any, {
+          companyId: document.companyId,
+          actorType: "system",
+          actorId: "corpus-source-refresh",
+          agentId: null,
+          runId: null,
+          agentApiKeyId: null,
+          action: CORPUS_DOCUMENT_REFRESHED_ACTION,
+          entityType: "corpus_document",
+          entityId: document.id,
+          details: {
+            datasetId: document.datasetId,
+            filename: document.filename,
+            sourceUrl: document.sourceUrl,
+            previousHash: outcome.previousHash,
+            contentHash: outcome.contentHash,
+            jobId: outcome.job.id,
+            reparsed: outcome.reparsed,
+          },
+        });
+      },
+    });
     let lastPassAt = 0;
-    return () => {
-      if (heartbeatSchedulerStopped) return;
-      const now = Date.now();
-      if (lastPassAt !== 0 && now - lastPassAt < CORPUS_PARSE_SWEEP_INTERVAL_MS) return;
-      lastPassAt = now;
-      trackHeartbeatSchedulerWork(worker.sweep().then((result) => {
-        if (result.parsed > 0 || result.failed > 0 || result.requeued > 0) {
-          logger.info(result, "Corpus parse sweep completed");
+    let lastSourceRefreshAt = 0;
+    return {
+      schedule: () => {
+        if (heartbeatSchedulerStopped) return;
+        const now = Date.now();
+        // myrmidon(1.6.6 OPE-12000): like the parse pass, a source refresh is not tracked by the
+        // scheduler's idle wait — it can take minutes on a slow site, and a restart must not wait for it.
+        if (lastSourceRefreshAt === 0 || now - lastSourceRefreshAt >= CORPUS_SOURCE_REFRESH_INTERVAL_MS) {
+          lastSourceRefreshAt = now;
+          void sourceRefresher.sweep().then((result) => {
+            if (result.updated > 0 || result.failed > 0) {
+              logger.info(result, "Corpus source refresh completed");
+            }
+          }).catch((err) => {
+            logger.error({ err }, "Corpus source refresh failed");
+          });
         }
-      }).catch((err) => {
-        logger.error({ err }, "Corpus parse sweep failed");
-      }));
+        if (lastPassAt !== 0 && now - lastPassAt < CORPUS_PARSE_SWEEP_INTERVAL_MS) return;
+        lastPassAt = now;
+        void worker.sweep().then((result) => {
+          if (result.parsed > 0 || result.failed > 0 || result.requeued > 0 || result.released > 0) {
+            logger.info(result, "Corpus parse sweep completed");
+          }
+        }).catch((err) => {
+          logger.error({ err }, "Corpus parse sweep failed");
+        });
+      },
+      stop: async (): Promise<void> => {
+        try {
+          const graceMs = corpusShutdownGraceMs();
+          const outcome = await worker.stop({ graceMs });
+          if (outcome.aborted || outcome.unsettled > 0) {
+            logger.warn({ ...outcome, graceMs }, "Corpus parse worker stopped by shutdown");
+          }
+        } catch (err) {
+          logger.error({ err }, "Corpus parse worker did not stop cleanly");
+        }
+      },
     };
   })();
+  const scheduleCorpusParseSweep = corpusParseSweep.schedule;
+  const stopCorpusParseSweep = corpusParseSweep.stop;
   // myrmidon(1.6.6 MONITORING E): the periodic "is every linking component
   // still alive" pass. A link (Zabbix aggregator, Alertmanager webhook,
   // collector) is its own minimal-rights board key, so this pass reads those
@@ -3149,6 +3222,9 @@ async function startServerWithDatabaseTeardown(
     logger.info({ signal }, `myrmidon(OPE-9107): shutdown started (runtime pid ${process.pid})`);
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
+    // myrmidon(OPE-12057): the grace clock of the corpus parse worker starts with the shutdown and
+    // runs next to the other steps; it is awaited below, before the database goes away.
+    const corpusParseStopped = stopCorpusParseSweep();
     scheduleTaskPrSyncSweep.stop();
     clearInterval(closedTaskReconcileInterval);
     if (executionControlInterval) clearInterval(executionControlInterval);
@@ -3193,6 +3269,9 @@ async function startServerWithDatabaseTeardown(
       prepareHotRestartShutdown,
       waitForHeartbeatSchedulerIdle,
     });
+    // The corpus parse worker gave its jobs back (or the grace period ran out) in the time the steps
+    // above took; wait for the rest of it. Bounded: grace + abort settle time, never a whole book.
+    await corpusParseStopped;
     // myrmidon(PROCS-1.3): the bus stops with the rest of the background work —
     // its postgres.js client and the LISTEN connections go before the shared
     // pool closes.

@@ -28,6 +28,11 @@
 //      `packages/db/src/migrations/NNNN_*.sql` or `meta/NNNN_snapshot.json` file,
 //      or adds a snapshot numbered below the newest one already on main, is
 //      refused (no label, no auto-merge; an armed auto-merge is disabled).
+//   8. exact-head arm (OPE-12186): the arm command is
+//      `gh pr merge --auto --squash --match-head-commit <headSha>` — GitHub may
+//      only merge the head the verdict approved, never a commit that lands
+//      between the arm and the merge. Without a head sha auto-merge is not
+//      armed (the label is still applied).
 // A PR whose head moved after an approval is reported as `needs-rereview` (the
 // reviewer must look at the new commits only); the script never labels it.
 //
@@ -533,8 +538,9 @@ export function createGitHubPort(repo, options = {}) {
     async addLabel(number) {
       await run(["-X", "POST", `repos/${repo}/issues/${number}/labels`, "-f", `labels[]=${APPROVED_LABEL}`]);
     },
-    async enableAutoMerge(number) {
-      await runPr(["merge", String(number), "-R", repo, "--auto", "--squash"]);
+    async enableAutoMerge(number, headSha) {
+      if (!headSha) throw new Error(`enableAutoMerge(${number}): head sha is required — refusing to arm auto-merge without --match-head-commit`);
+      await runPr(["merge", String(number), "-R", repo, "--auto", "--squash", "--match-head-commit", headSha]);
     },
     async disableAutoMerge(number) {
       await runPr(["merge", String(number), "-R", repo, "--disable-auto"]);
@@ -779,7 +785,13 @@ export async function runOnce({
           await github.addLabel(prNumber);
         }
         if (decision.autoMerge) {
-          await github.enableAutoMerge(prNumber);
+          if (pr.headSha) {
+            await github.enableAutoMerge(prNumber, pr.headSha);
+          } else {
+            // Fail closed (OPE-12186): without a head sha the merge could land a
+            // commit newer than the approved one — arm nothing, keep the label.
+            log(`PR #${prNumber}: head sha unknown — auto-merge not armed (label kept).`);
+          }
         }
       }
       if (decision.action === "refuse" && !dryRun) {

@@ -261,6 +261,9 @@ run("corpus end to end over the production adapters", () => {
     expect(found.body.hits.length).toBeGreaterThan(0);
     expect(found.body.hits[0].documentId).toBe(documentId);
     expect(found.body.hits[0].text).toContain("espresso machine");
+    // REST hits carry the real document name, not the internal UUID (OPE-12028).
+    expect(found.body.hits[0].documentName).toBe("warranty.txt");
+    expect(found.body.hits[0].documentName).not.toBe(documentId);
 
     // MCP: tools/list shows the four tools, corpus_search answers with the same document.
     const tools = await request(app).post(mcpUrl(COMPANY)).send({ id: 2, method: "tools/list" }).expect(200);

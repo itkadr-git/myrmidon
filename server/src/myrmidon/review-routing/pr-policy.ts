@@ -92,9 +92,17 @@ export function stewardUpdateBranchCommand(head: PullRequestHeadState): string {
  * myrmidon(UPDATE-BRANCH-STEWARD): the landing command, run only after the
  * refreshed head went green. The refresh happens here, in the open, by the
  * steward itself — the lane never hands the wait over to GitHub.
+ *
+ * myrmidon(MERGE-EXACT-HEAD): when the PR head sha is known, append
+ * `--match-head-commit <headSha>` so that if the head moves before the command
+ * executes, GitHub rejects the merge rather than merging an unverified head.
  */
 export function stewardMergeCommand(head: PullRequestHeadState): string {
-  return `gh pr merge ${head.repository}#${head.number} --merge`;
+  const base = `gh pr merge ${head.repository}#${head.number} --merge`;
+  if (head.headSha) {
+    return `${base} --match-head-commit ${head.headSha}`;
+  }
+  return base;
 }
 
 /**
