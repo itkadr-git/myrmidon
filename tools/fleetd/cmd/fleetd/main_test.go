@@ -429,6 +429,27 @@ func TestValidateGatewayBindIPTable(t *testing.T) {
 			wantErr:   false,
 		},
 		{
+			name:      "valid remote site interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "192.0.2.10",
+			wantErr:   false,
+		},
+		{
+			name:      "valid private network IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "192.168.1.10",
+			wantErr:   false,
+		},
+		{
+			name:      "valid non-loopback IPv6 interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "2001:db8::1",
+			wantErr:   false,
+		},
+		{
 			name:        "missing gatewayBindIp when port range configured",
 			portStart:   18700,
 			portEnd:     18799,
@@ -453,36 +474,28 @@ func TestValidateGatewayBindIPTable(t *testing.T) {
 			errContains: "not a valid IP address",
 		},
 		{
-			name:        "0.0.0.0 rejected as non-loopback",
+			name:        "0.0.0.0 rejected as unspecified",
 			portStart:   18700,
 			portEnd:     18799,
 			bindIP:      "0.0.0.0",
 			wantErr:     true,
-			errContains: "not a loopback address",
+			errContains: "unspecified",
 		},
 		{
-			name:        "private network IP rejected as non-loopback",
+			name:        ":: rejected as unspecified",
 			portStart:   18700,
 			portEnd:     18799,
-			bindIP:      "192.168.1.10",
+			bindIP:      "::",
 			wantErr:     true,
-			errContains: "not a loopback address",
+			errContains: "unspecified",
 		},
 		{
-			name:        "public network IP rejected as non-loopback",
+			name:        "0:0:0:0:0:0:0:0 rejected as unspecified",
 			portStart:   18700,
 			portEnd:     18799,
-			bindIP:      "192.0.2.10",
+			bindIP:      "0:0:0:0:0:0:0:0",
 			wantErr:     true,
-			errContains: "not a loopback address",
-		},
-		{
-			name:        "non-loopback IPv6 rejected",
-			portStart:   18700,
-			portEnd:     18799,
-			bindIP:      "2001:db8::1",
-			wantErr:     true,
-			errContains: "not a loopback address",
+			errContains: "unspecified",
 		},
 		{
 			name:        "only portStart set without gatewayBindIp",
@@ -515,12 +528,27 @@ func TestValidateGatewayBindIPTable(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:        "no port range but non-loopback bind IP rejected",
+			name:      "no port range and remote site interface IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "192.0.2.10",
+			wantErr:   false,
+		},
+		{
+			name:        "no port range but 0.0.0.0 rejected as unspecified",
 			portStart:   0,
 			portEnd:     0,
-			bindIP:      "192.0.2.10",
+			bindIP:      "0.0.0.0",
 			wantErr:     true,
-			errContains: "not a loopback address",
+			errContains: "unspecified",
+		},
+		{
+			name:        "no port range but :: rejected as unspecified",
+			portStart:   0,
+			portEnd:     0,
+			bindIP:      "::",
+			wantErr:     true,
+			errContains: "unspecified",
 		},
 	}
 
@@ -656,7 +684,7 @@ func createBody(key string) string {
 func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	s, _, fake := newServerWithDocker(t)
 	s.cfg.GatewayPortStart, s.cfg.GatewayPortEnd = 18801, 18810
-	s.cfg.GatewayBindIP = "127.0.0.1"
+	s.cfg.GatewayBindIP = "192.0.2.10"
 	s.docker.gatewayBindIP = s.cfg.GatewayBindIP
 	key := s.cfg.Bots[0].BotKey
 	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
@@ -694,7 +722,7 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 		t.Fatalf("gateway port not bound: %v", host["PortBindings"])
 	}
 	port := ports.([]any)[0].(map[string]any)
-	if port["HostIp"] != "127.0.0.1" {
+	if port["HostIp"] != "192.0.2.10" {
 		t.Fatalf("gateway bind IP is %v", port["HostIp"])
 	}
 	// The profile volumes are mounted, so what writeProfile writes reaches the bot.

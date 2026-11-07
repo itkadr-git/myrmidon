@@ -269,8 +269,8 @@ func validate(cfg *config) error {
 		if ip == nil {
 			return fmt.Errorf("gatewayBindIp %q is not a valid IP address", cfg.GatewayBindIP)
 		}
-		if !ip.IsLoopback() {
-			return fmt.Errorf("gatewayBindIp %q is not a loopback address (must be 127.0.0.1 or ::1)", cfg.GatewayBindIP)
+		if ip.IsUnspecified() {
+			return fmt.Errorf("gatewayBindIp %q is unspecified (0.0.0.0 or :: is not allowed; must be a specific interface IP or loopback)", cfg.GatewayBindIP)
 		}
 	}
 	if len(cfg.Bots) == 0 {
