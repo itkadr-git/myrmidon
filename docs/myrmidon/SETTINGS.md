@@ -405,23 +405,6 @@ in force. The document of every runbook is the operator's reference:
 | `MYRMIDON_ALERT_RECOVERY_WINDOW_MINUTES` / `recurrenceWindowMinutes` | 1.6.6-MONITORING-D | `60` | The recurrence window: an alarm of the same trigger (source + trigger + hosts) that fires again within this window after the automatic close comes back into the same task instead of opening a new one. A record outlives the window by this much and is then dropped by the sweep | A non-integer or a value outside 1–10080 — the default. The minimum (`1`) is as close to «never group a repeat» as the setting goes: only an alarm of the same trigger inside one minute rejoins |
 | `owners` (stored only) | 1.6.6-MONITORING-D | the runbook's role | Per-trigger owner role: `{ "disk /data": "devops" }` names the role the task is opened for, overriding the role the runbook carries. The role must exist as a caste key of the company; the task is assigned to an agent of that role | A patch merges into the map, so an owner is redirected by sending another role, not removed; send the runbook's own role to go back. A role with no agent in the company leaves the task unassigned and the task body says so |
 
-## 1.6.6 — AUTH-401-BURST: product-side burst metric and board signal (OPE-11890)
-
-The product-side replacement for the host `paperclip-auth-401-watch` timer:
-the error handler records every 401 it emits into an in-process sliding-window
-detector (`server/src/myrmidon/auth-401-burst/metrics.ts`); when the per-window
-count crosses the threshold the detector latches `tripped`, which the metrics
-self-check renders as the `myrmidon_auth_401_burst_*` Prometheus families and
-the attention registry surfaces as a board signal
-(`server/src/myrmidon/auth-401-burst/attention.ts`). Only the closed
-`req.actorNoneReason` taxonomy becomes a label — the raw Authorization header,
-token or key never enters the counter, the latch, or any log line.
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `MYRMIDON_AUTH_401_BURST_THRESHOLD` | 1.6.6-AUTH-401-BURST | `20` | How many 401 responses inside one sliding window trip the burst latch (the `myrmidon_auth_401_burst_tripped` gauge goes to 1 and the board signal opens) | A non-integer, `0`, negative or above 100000 — the default |
-| `MYRMIDON_AUTH_401_BURST_WINDOW_SEC` | 1.6.6-AUTH-401-BURST | `60` | Width of the sliding window in seconds: 401s older than the window are pruned before the count is compared with the threshold | A non-numeric, `0`, negative value or above 3600 — the default |
-
 ## 1.6.6 — PROCS-0.3A: board load instrumentation
 
 Settings of `server/src/myrmidon/monitoring/board-load/` — the operator surface
