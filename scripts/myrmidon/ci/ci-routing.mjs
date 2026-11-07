@@ -97,7 +97,7 @@ export function computeCancelInProgress({
   ref = '',
 }) {
   if (eventName === 'push' && ref === 'refs/heads/main') {
-    return false;
+    return true;
   }
   if (eventName === 'merge_group') {
     return false;
