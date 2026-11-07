@@ -91,8 +91,8 @@ import { createBoardMerger, type BoardMergePassResult } from "./board-merge.js";
 import type { BoardMergeClient } from "./github-board-merge.js";
 import type { BoardMergeTriggerEvent } from "./merge-trigger.js";
 import type { InReviewIssueRow, ReviewRoutingStore } from "./store.js";
-import { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
-export { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+import { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+export { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 
 export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
@@ -312,10 +312,23 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           stageId: review.stageId,
         });
         if (wakeState.activeRun || wakeState.pendingWake) continue;
-        if (wakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
-          await deps.store.recordReviewWakeEscalation({ companyId, issueId: row.id, reviewerAgentId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts, at: now });
-          log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; escalation persisted for ADM");
-          continue;
+        // myrmidon(OPE-11947): an exhausted series is escalated once (a
+        // wake_escalation_required row newer than the last wake means it was),
+        // not on every pass, and it is re-armed after REVIEW_WAKE_REARM_AFTER_MS
+        // since its last attempt: the next wake then opens a new series at
+        // attempt 1 with the backoff counted from the start.
+        let seriesAttempts = wakeState.attempts;
+        if (seriesAttempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
+          const escalated = wakeState.lastEscalationAt != null
+            && (!wakeState.lastWakeAt || wakeState.lastEscalationAt.getTime() > wakeState.lastWakeAt.getTime());
+          if (!escalated) {
+            await deps.store.recordReviewWakeEscalation({ companyId, issueId: row.id, reviewerAgentId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts, at: now });
+            log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; escalation persisted for ADM");
+          }
+          const rearmed = wakeState.lastWakeAt != null
+            && now.getTime() - wakeState.lastWakeAt.getTime() >= REVIEW_WAKE_REARM_AFTER_MS;
+          if (!rearmed) continue;
+          seriesAttempts = 0;
         }
         // Cancelled runs for the same reviewer/task are direct evidence of a
         // failed dispatch: retry on bounded backoff, without the initial stale delay.
@@ -323,13 +336,13 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           ? wakeState.lastCancelledRunAt
           : wakeState.lastWakeAt;
         if (retryAnchor) {
-          const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, wakeState.attempts - 1));
+          const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, seriesAttempts - 1));
           if (now.getTime() - retryAnchor.getTime() < backoffMs) continue;
         } else {
           const lastActivity = row.updatedAt ?? row.createdAt;
           if (now.getTime() - lastActivity.getTime() < REVIEW_WAKE_STALE_AFTER_MS) continue;
         }
-        const attempt = wakeState.attempts + 1;
+        const attempt = seriesAttempts + 1;
         const wakeContext = buildReviewRoutingWakeContext(
           (row.executionState ?? {}) as Record<string, unknown>,
         );
