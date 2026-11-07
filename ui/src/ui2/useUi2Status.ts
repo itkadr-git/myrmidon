@@ -29,7 +29,9 @@ export function useUi2StatusStrip(companyId: string | null | undefined): Ui2Stat
   const strip = statusStrip.data;
   if (!strip?.waiting) return null;
   const colonyActive = strip.colony.running;
-  const colonyTotal = strip.colony.running + strip.colony.idle + strip.colony.paused + strip.colony.error;
+  // Legacy denominator is idle+paused+error (dashboard "active" counts
+  // idle only); running agents are the numerator, not the total.
+  const colonyTotal = strip.colony.idle + strip.colony.paused + strip.colony.error;
 
   return {
     colonyActive,

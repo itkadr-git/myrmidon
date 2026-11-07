@@ -11,6 +11,7 @@ import {
 import { costService } from "../services/costs.js";
 import { accessService } from "../services/access.js";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
+import { getUtcMonthStart } from "../services/dashboard.js";
 import { assertCompanyAccess } from "./authz.js";
 
 const ACTIVE_RUN_STATUSES = ["running"] as const;
@@ -94,7 +95,11 @@ export function statusStripRoutes(db: Db) {
           eq(issueThreadInteractions.status, "pending"),
         ))
         .then((rows) => Number(rows[0]?.count ?? 0)),
-      costs.summary(companyId, undefined, now),
+      // Month basis is intentional: monthSpendCents, unpricedEvents and
+      // forecastCents share the monthly budget context of the header chip.
+      // Dashboard computes monthSpendCents from the UTC month start (gte
+      // only), so pass the same floor here to match dashboard monthly spend.
+      costs.summary(companyId, { from: getUtcMonthStart(now) }, now),
     ]);
     const colony = { running: 0, idle: 0, paused: 0, error: 0 };
     for (const row of agentRows) {

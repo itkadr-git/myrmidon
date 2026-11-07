@@ -80,6 +80,11 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     await createAgent("agent-error-1", "error");
 
     const baseTime = Date.now();
+    // Prior-month event to verify month-window filtering (past month must be excluded from monthSpendCents)
+    const priorMonthDate = new Date(baseTime);
+    priorMonthDate.setUTCMonth(priorMonthDate.getUTCMonth() - 1);
+    priorMonthDate.setUTCDate(15);
+
     const createRun = async (agentId: string, status: string, offsetMs = 0) => {
       const id = randomUUID();
       const createdAt = new Date(baseTime + offsetMs);
@@ -103,6 +108,8 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     await ctx.db.insert(costEvents).values([
       { id: randomUUID(), companyId, agentId: agent1, provider: "test", biller: "test", billingType: "api", model: "test-model", costStatus: "reported", costCents: 1500, occurredAt: new Date(baseTime) },
       { id: randomUUID(), companyId, agentId: agent2, provider: "test", biller: "test", billingType: "api", model: "test-model", costStatus: "unpriced", costCents: 0, occurredAt: new Date(baseTime) },
+      // Prior-month event: must be ignored by both dashboard and status-strip
+      { id: randomUUID(), companyId, agentId: agent1, provider: "test", biller: "test", billingType: "api", model: "test-model", costStatus: "reported", costCents: 9999, occurredAt: priorMonthDate },
     ]);
 
     const createApproval = async (type: string, status: string) => {
