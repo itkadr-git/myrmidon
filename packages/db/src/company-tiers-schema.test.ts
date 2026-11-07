@@ -22,7 +22,7 @@ function columnDefault(table: PgTable, columnName: string): string | undefined {
   return config.default === undefined ? undefined : String(config.default);
 }
 
-const BACKFILL_NUMBER = "0463";
+const BACKFILL_NUMBER = "0464";
 
 function backfillSql(): string {
   const migrationsDir = fileURLToPath(new URL("./migrations/", import.meta.url));
@@ -57,7 +57,7 @@ describe("company tiers schema (OPE-12091)", () => {
     expect(indexes).toContain("company_tiers_company_id_uq");
   });
 
-  it("migration 0463 backfills every existing company with free/5", () => {
+  it("migration 0464 backfills every existing company with free/5", () => {
     const sql = backfillSql();
     expect(sql).toContain('INSERT INTO "company_tiers" ("company_id", "tier", "agent_quota")');
     expect(sql.toUpperCase()).toContain("ON CONFLICT");
