@@ -580,4 +580,94 @@ run("production corpus adapters", () => {
       server.close();
     }
   });
+
+  // myrmidon(1.6.6 OPE-12000): the SQL of the URL-source bookkeeping, against a real database.
+  it("keeps the address and fetch bookkeeping of a URL source and lists only the documents that are due", async () => {
+    const db = createDb(database!.connectionString);
+    const companyId = randomUUID();
+    await db.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'url-source', 'URS')`);
+    const settings: CorpusPortContext["settings"] = {
+      enabled: true,
+      parserBaseUrl: "http://parser.invalid",
+      parserTimeoutMs: 1000,
+      embedderModel: "corpus-embed-pplx-0.6b",
+      embedderDimensions: 3,
+      embedderBaseUrl: null,
+      maxDocumentBytes: 1024,
+      maxDocumentsPerDataset: 10,
+      parseConcurrency: 1,
+      maxParseAttempts: 2,
+      searchTopK: 5,
+    };
+    const ports = createCorpusPorts(db, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+    const dataset = await ports.store.createDataset({ companyId, name: "urls", description: null });
+    const twoDaysAgo = new Date(Date.now() - 48 * 3_600_000).toISOString();
+    const base = { companyId, datasetId: dataset.id, mimeType: "text/html", byteSize: 5, blobRef: "b", maxAttempts: 2 };
+    const daily = await ports.store.createDocument({
+      ...base,
+      filename: "daily.html",
+      source: { url: "https://docs.example.com/a", refreshIntervalHours: 24, contentHash: "h1", fetchedAt: twoDaysAgo },
+    });
+    const weekly = await ports.store.createDocument({
+      ...base,
+      filename: "weekly.html",
+      source: { url: "https://docs.example.com/b", refreshIntervalHours: 168, contentHash: "h2", fetchedAt: twoDaysAgo },
+    });
+    const upload = await ports.store.createDocument({ ...base, filename: "upload.txt" });
+    // The RAGFlow importer keeps its provenance in the same column; it must not look like a URL source.
+    await db.execute(sql`update corpus_documents set source_uri = 'http://ragflow:9380/api/v1/datasets/x/documents/y' where id = ${upload.id}`);
+
+    expect(daily).toMatchObject({
+      sourceUrl: "https://docs.example.com/a",
+      refreshIntervalHours: 24,
+      contentHash: "h1",
+      lastFetchedAt: twoDaysAgo,
+      sourceError: null,
+    });
+    expect((await ports.store.getDocument(companyId, upload.id))?.sourceUrl).toBeNull();
+
+    const due = await ports.store.listSourceDocuments({ companyId, dueAt: new Date(), limit: 10 });
+    expect(due.map((document) => document.id)).toEqual([daily.id]);
+    expect(due[0]).toMatchObject({ sourceUrl: "https://docs.example.com/a", blobRef: "b", status: "queued" });
+    const everything = await ports.store.listSourceDocuments({ companyId, datasetId: dataset.id, limit: 10 });
+    expect(everything.map((document) => document.id).sort()).toEqual([daily.id, weekly.id].sort());
+    expect(await ports.store.listSourceDocuments({ companyId: randomUUID(), limit: 10 })).toEqual([]);
+
+    // The bookkeeping is merged into `metadata`: the interval survives, the rest moves.
+    const fetchedAt = new Date().toISOString();
+    const updated = await ports.store.updateDocument(companyId, daily.id, {
+      lastFetchedAt: fetchedAt,
+      sourceError: "boom",
+      contentHash: "h3",
+      byteSize: 77,
+      mimeType: "text/plain",
+    });
+    expect(updated).toMatchObject({
+      refreshIntervalHours: 24,
+      lastFetchedAt: fetchedAt,
+      sourceError: "boom",
+      contentHash: "h3",
+      byteSize: 77,
+      mimeType: "text/plain",
+    });
+    expect(await ports.store.listSourceDocuments({ companyId, dueAt: new Date(), limit: 10 })).toEqual([]);
+    // ...and it is due again once the interval has passed.
+    const later = new Date(Date.now() + 25 * 3_600_000);
+    expect((await ports.store.listSourceDocuments({ companyId, dueAt: later, limit: 10 })).map((document) => document.id)).toEqual([daily.id]);
+
+    // The bytes a refresh replaced are remembered until the new version is ready, then forgotten; the
+    // bookkeeping around them is merged, not replaced.
+    expect((await ports.store.updateDocument(companyId, daily.id, { previousBlobRef: "old-blob" }))?.previousBlobRef).toBe("old-blob");
+    const touched = await ports.store.updateDocument(companyId, daily.id, { lastFetchedAt: new Date().toISOString() });
+    expect(touched).toMatchObject({ previousBlobRef: "old-blob", refreshIntervalHours: 24 });
+    expect((await ports.store.updateDocument(companyId, daily.id, { previousBlobRef: null }))?.previousBlobRef).toBeNull();
+
+    // A parsed document goes back to `queued` with its parse state cleared, the way a refresh does it.
+    await ports.store.updateDocument(companyId, daily.id, { status: "parsing" });
+    await ports.store.updateDocument(companyId, daily.id, { status: "ready", chunkCount: 0, error: null, parsedAt: new Date().toISOString() });
+    expect((await ports.store.getDocument(companyId, daily.id))?.parsedAt).not.toBeNull();
+    const requeued = await ports.store.updateDocument(companyId, daily.id, { status: "queued", error: null, attempts: 0, parsedAt: null });
+    expect(requeued).toMatchObject({ status: "queued", parsedAt: null, refreshIntervalHours: 24, sourceUrl: "https://docs.example.com/a" });
+    await db.$client.end();
+  });
 });
