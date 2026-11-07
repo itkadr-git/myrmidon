@@ -263,6 +263,10 @@ describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", 
     expect(yaml).toContain('approvals:\n  mode: "off"');
     expect(yaml).toContain("platforms:\n  api_server:\n    enabled: true");
     expect(yaml).toContain('terminal:\n  cwd: "/workspace"');
+    // myrmidon(OPE-11947): execute_code receives the board key and URL.
+    expect(yaml).toContain("env_passthrough:");
+    expect(yaml).toContain("PAPERCLIP_API_KEY");
+    expect(yaml).toContain("PAPERCLIP_API_URL");
     expect(yaml).toContain('memory:\n  provider: "hindsight"');
     // Empty mappings/lists are omitted by the deterministic YAML writer, so
     // absence of the skills block is the serialized form of no external dirs.
