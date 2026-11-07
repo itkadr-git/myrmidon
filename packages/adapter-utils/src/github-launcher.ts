@@ -41,7 +41,7 @@ function sanitizePrCreateBase(args) {
     if (arg === "-B" || arg === "--base") {
       const val = args[i + 1];
       if (val && val.startsWith("bot/")) {
-        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
         result.push(arg, "main");
         i++;
       } else {
@@ -50,7 +50,7 @@ function sanitizePrCreateBase(args) {
     } else if (arg.startsWith("--base=")) {
       const val = arg.slice("--base=".length);
       if (val.startsWith("bot/")) {
-        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
         result.push("--base=main");
       } else {
         result.push(arg);
@@ -58,7 +58,7 @@ function sanitizePrCreateBase(args) {
     } else if (arg.startsWith("-B=")) {
       const val = arg.slice("-B=".length);
       if (val.startsWith("bot/")) {
-        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
         result.push("-B=main");
       } else {
         result.push(arg);

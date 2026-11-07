@@ -6,6 +6,7 @@ MIN_NODE_MINOR=11
 MIN_NODE_PATCH=0
 MIN_NODE_VERSION="${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}.${MIN_NODE_PATCH}"
 DEFAULT_NODE_MAJOR=24
+PRODUCT_NAME="Myrmidon"
 PAPERCLIP_PACKAGE="paperclipai"
 PUBLIC_NPM_REGISTRY="https://registry.npmjs.org"
 HOMEBREW_INSTALL_COMMIT="99e13e96cbbdc1ac1ac09c0a40b450bf219ef3aa"
@@ -31,8 +32,8 @@ if [ -z "${BASH_SOURCE[0]:-}" ] || [ ! -f "${BASH_SOURCE[0]}" ]; then
 fi
 
 usage() {
-  cat <<'EOF'
-Install Paperclip on macOS, Linux, or WSL2.
+  cat <<EOF
+Install $PRODUCT_NAME on macOS, Linux, or WSL2.
 
 Usage:
   curl -fsSLO https://paperclip.ing/install.sh
@@ -44,7 +45,7 @@ Options:
   --version <version>      Install an exact published version
   --no-onboard             Do not start onboarding after installation
   --no-prompt              Run non-interactively
-  --install-service        Install the per-user Paperclip service
+  --install-service        Install the per-user $PRODUCT_NAME service
   --dry-run                Print the install plan without changing files
   --verbose                Enable verbose installer output
   -h, --help               Show this help
@@ -52,17 +53,17 @@ Options:
 Every option also has a PAPERCLIP_INSTALL_* environment equivalent, for example
 PAPERCLIP_INSTALL_VERSION=2026.722.0 and PAPERCLIP_INSTALL_NO_PROMPT=1.
 
-To install from a git branch, tag, or commit, use the Paperclip CLI directly:
+To install from a git branch, tag, or commit, use the $PRODUCT_NAME CLI directly:
 npx paperclipai install --ref <ref>
 EOF
 }
 
 log() {
-  printf '[paperclip] %s\n' "$*"
+  printf '[%s] %s\n' "$PRODUCT_NAME" "$*"
 }
 
 fail() {
-  printf '[paperclip] error: %s\n' "$*" >&2
+  printf '[%s] error: %s\n' "$PRODUCT_NAME" "$*" >&2
   exit 1
 }
 
@@ -211,7 +212,7 @@ has_supported_node() {
 }
 
 print_command() {
-  printf '[paperclip] +'
+  printf '[%s] +' "$PRODUCT_NAME"
   printf ' %q' "$@"
   printf '\n'
 }
@@ -223,7 +224,7 @@ confirm_command() {
   fi
 
   local answer
-  printf '[paperclip] Run this command? [y/N] ' >/dev/tty
+  printf '[%s] Run this command? [y/N] ' "$PRODUCT_NAME" >/dev/tty
   IFS= read -r answer </dev/tty || answer=""
   case "$answer" in
     y|Y|yes|YES|Yes) ;;
@@ -248,7 +249,7 @@ run_privileged() {
 
 ensure_temp_dir() {
   if [ -z "$TEMP_DIR" ]; then
-    TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-install.XXXXXX")"
+    TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/myrmidon-install.XXXXXX")"
   fi
 }
 
@@ -378,7 +379,7 @@ chmod 600 "$NPM_USERCONFIG"
 NPM_ENV=(env "NPM_CONFIG_REGISTRY=$PUBLIC_NPM_REGISTRY" "npm_config_registry=$PUBLIC_NPM_REGISTRY" "NPM_CONFIG_USERCONFIG=$NPM_USERCONFIG" "npm_config_userconfig=$NPM_USERCONFIG")
 INSTALL_COMMAND=("${NPM_ENV[@]}" npx --yes "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}")
 
-log "Delegating to the Paperclip CLI"
+log "Delegating to the $PRODUCT_NAME CLI"
 if [ "$DRY_RUN" = "1" ]; then
   print_command "${INSTALL_COMMAND[@]}"
   exit 0
@@ -388,7 +389,7 @@ print_command "${INSTALL_COMMAND[@]}"
 "${INSTALL_COMMAND[@]}"
 
 if [ "$INSTALL_SERVICE" = "1" ]; then
-  log "Installing the Paperclip service"
+  log "Installing the $PRODUCT_NAME service"
   print_command "${NPM_ENV[@]}" npx --yes "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC" service install
   "${NPM_ENV[@]}" npx --yes "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC" service install
 fi
@@ -399,7 +400,7 @@ if [ "$NO_ONBOARD" = "0" ] && [ -t 0 ] && [ -t 1 ]; then
   elif [ -x "${HOME:-}/.local/bin/paperclipai" ]; then
     exec "${HOME}/.local/bin/paperclipai" onboard
   else
-    fail "Paperclip was installed, but 'paperclipai' is not available on PATH. Open a new shell and run 'paperclipai onboard'."
+    fail "$PRODUCT_NAME was installed, but 'paperclipai' is not available on PATH. Open a new shell and run 'paperclipai onboard'."
   fi
 fi
 
