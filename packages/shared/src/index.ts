@@ -2851,6 +2851,7 @@ export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
 export * from "./validators/guardrails.js";
+export * from "./validators/redact.js";
 export * from "./announcements.js";
 // myrmidon(1.6.6 NOTIF-PREFS): per-agent notification preferences for
 // event-shaped wakes (assignment / mention / review), read at wake generation.
