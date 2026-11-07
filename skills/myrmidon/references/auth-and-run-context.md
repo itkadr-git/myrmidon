@@ -22,8 +22,10 @@ If `MYRMIDON_API_KEY` is empty or missing in `execute_code`, do not send the req
 import os
 import requests
 
-headers = {"Authorization": f"Bearer {os.environ['MYRMIDON_API_KEY']}"}
-response = requests.get(f"{os.environ['MYRMIDON_API_URL']}/api/health", headers=headers)
+key = os.environ.get("MYRMIDON_API_KEY") or os.environ["PAPERCLIP_API_KEY"]
+url = os.environ.get("MYRMIDON_API_URL") or os.environ["PAPERCLIP_API_URL"]
+headers = {"Authorization": f"Bearer {key}"}
+response = requests.get(f"{url}/api/health", headers=headers)
 ```
 
 For `401 did not verify` or `agent_token_unexpanded_variable`, first verify that the bearer token was expanded from the environment; do not assume the board is broken. A literal `$MYRMIDON_API_KEY` usually means shell quoting prevented expansion.
