@@ -111,6 +111,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     });
     const issue = await db.insert(issues).values({
       companyId: company.id,
+      issueNumber: 1,
       identifier: `${company.issuePrefix}-1`,
       title: "Target issue",
       status: "in_progress" as const,
