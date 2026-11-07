@@ -16,6 +16,7 @@ import {
   main,
   parseVerdictLines,
   runOnce,
+  selectCiResultConclusion,
 } from "./review-approve-label.mjs";
 
 const REPO = "owner/name";
@@ -903,6 +904,230 @@ describe("createGitHubPort", () => {
     assert.deepEqual(prCalls[0], ["merge", "42", "-R", REPO, "--auto", "--squash"]);
     await port.disableAutoMerge(42);
     assert.deepEqual(prCalls[1], ["merge", "42", "-R", REPO, "--disable-auto"]);
+  });
+});
+
+// OPE-10461: the workflow skips `CI result` on label events, so after the
+// `review-approved` label (or any other) the newest `CI result` run of a head is a
+// `skipped` one. It is not a verdict; the real result of the head is the run before.
+describe("selectCiResultConclusion", () => {
+  const ci = (id, startedAt, status, conclusion = null, name = "CI result") => ({
+    id,
+    name,
+    status,
+    conclusion,
+    started_at: startedAt,
+  });
+  const T1 = "2026-11-06T10:00:00Z";
+  const T2 = "2026-11-06T10:30:00Z";
+  const T3 = "2026-11-06T11:00:00Z";
+
+  it("a skipped run newer than a success gives success", () => {
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "completed", "skipped")]), "success");
+    // whatever order GitHub lists them in
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", "skipped"), ci(1, T1, "completed", "success")]), "success");
+  });
+
+  it("a skipped run newer than a failure gives failure", () => {
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "failure"), ci(2, T2, "completed", "skipped")]), "failure");
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", "skipped"), ci(1, T1, "completed", "failure")]), "failure");
+  });
+
+  it("several skipped runs on top of the real one are all passed over", () => {
+    const runs = [ci(1, T1, "completed", "success"), ci(2, T2, "completed", "skipped"), ci(3, T3, "completed", "skipped")];
+    assert.equal(selectCiResultConclusion(runs), "success");
+  });
+
+  it("a head with only skipped runs has no verdict yet: pending, never success", () => {
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", "skipped")]), "pending");
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", "skipped"), ci(3, T3, "completed", "skipped")]), "pending");
+  });
+
+  it("no CI result run at all stays missing, other checks are not a CI result", () => {
+    assert.equal(selectCiResultConclusion([]), "missing");
+    assert.equal(selectCiResultConclusion(undefined), "missing");
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success", "tests")]), "missing");
+  });
+
+  it("the newest real run decides: a later failure beats an earlier success and the other way round", () => {
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "completed", "failure")]), "failure");
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "failure"), ci(2, T2, "completed", "success")]), "success");
+    assert.equal(
+      selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "completed", "failure"), ci(3, T3, "completed", "skipped")]),
+      "failure",
+    );
+  });
+
+  it("cancelled, timed_out, neutral, action_required are never success", () => {
+    for (const conclusion of ["cancelled", "timed_out", "neutral", "action_required", "stale", "startup_failure"]) {
+      const alone = selectCiResultConclusion([ci(2, T2, "completed", conclusion)]);
+      assert.equal(alone, conclusion);
+      assert.notEqual(alone, "success");
+      // an older success does not rescue a newer real outcome; a skipped run on top changes nothing
+      const withOlderSuccess = selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "completed", conclusion), ci(3, T3, "completed", "skipped")]);
+      assert.equal(withOlderSuccess, conclusion);
+    }
+    // a completed run without any conclusion is not success either
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", null)]), "unknown");
+  });
+
+  it("a run still going on top is pending, also behind a skipped one; an older running run does not block a newer verdict", () => {
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "in_progress")]), "in_progress");
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "queued")]), "queued");
+    assert.equal(
+      selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "in_progress"), ci(3, T3, "completed", "skipped")]),
+      "in_progress",
+    );
+    assert.equal(selectCiResultConclusion([ci(1, T1, "in_progress"), ci(2, T2, "completed", "success")]), "success");
+  });
+
+  it("falls back to the run id when two runs start in the same second", () => {
+    const runs = [ci(7, T1, "completed", "success"), ci(9, T1, "completed", "failure")];
+    assert.equal(selectCiResultConclusion(runs), "failure");
+  });
+});
+
+describe("createGitHubPort CI result with skipped label-event runs", () => {
+  /**
+   * A GitHub that behaves like the real check-runs endpoint: the default
+   * `filter=latest` returns the newest run of every check name within a check
+   * suite (a rerun inside one suite hides the attempt before it), `filter=all`
+   * returns every run; `check_name` and paging are honoured.
+   */
+  function fakeCheckRunsApi(runsBySha, calls = []) {
+    return async (args) => {
+      calls.push(args);
+      const path = args[0];
+      const match = /\/commits\/([^/]+)\/check-runs\?(.*)$/.exec(path);
+      if (!match) return {};
+      const query = new URLSearchParams(match[2]);
+      const all = runsBySha[match[1]] ?? [];
+      let runs = query.get("check_name") ? all.filter((r) => r.name === query.get("check_name")) : all;
+      if ((query.get("filter") ?? "latest") === "latest") {
+        const newest = new Map();
+        for (const r of runs) {
+          const key = `${r.name}|${r.check_suite?.id ?? r.id}`;
+          const seen = newest.get(key);
+          if (!seen || String(r.started_at).localeCompare(String(seen.started_at)) > 0) newest.set(key, r);
+        }
+        runs = [...newest.values()];
+      }
+      const perPage = Number(query.get("per_page") ?? 30);
+      const page = Number(query.get("page") ?? 1);
+      return { total_count: runs.length, check_runs: runs.slice((page - 1) * perPage, page * perPage) };
+    };
+  }
+  const run = (id, startedAt, status, conclusion, suite = id) => ({
+    id,
+    name: "CI result",
+    status,
+    conclusion,
+    started_at: startedAt,
+    check_suite: { id: suite },
+  });
+  const T1 = "2026-11-06T10:00:00Z";
+  const T2 = "2026-11-06T10:30:00Z";
+
+  it("reads the real result of the head under a newer skipped label-event run", async () => {
+    const port = createGitHubPort(REPO, {
+      run: fakeCheckRunsApi({ [HEAD]: [run(1, T1, "completed", "success"), run(2, T2, "completed", "skipped")] }),
+    });
+    assert.equal(await port.ciConclusion(HEAD), "success");
+  });
+
+  it("keeps a failure when a skipped run came after it", async () => {
+    const port = createGitHubPort(REPO, {
+      run: fakeCheckRunsApi({ [HEAD]: [run(1, T1, "completed", "failure"), run(2, T2, "completed", "skipped")] }),
+    });
+    assert.equal(await port.ciConclusion(HEAD), "failure");
+  });
+
+  it("a head with only a skipped run is pending", async () => {
+    const port = createGitHubPort(REPO, { run: fakeCheckRunsApi({ [HEAD]: [run(2, T2, "completed", "skipped")] }) });
+    assert.equal(await port.ciConclusion(HEAD), "pending");
+  });
+
+  it("cancelled and timed_out heads are not success", async () => {
+    for (const conclusion of ["cancelled", "timed_out"]) {
+      const port = createGitHubPort(REPO, {
+        run: fakeCheckRunsApi({ [HEAD]: [run(1, T1, "completed", "success"), run(2, T2, "completed", conclusion)] }),
+      });
+      assert.equal(await port.ciConclusion(HEAD), conclusion);
+    }
+  });
+
+  it("asks GitHub for the CI result runs of the head only, all of them, and follows the pages", async () => {
+    const calls = [];
+    // 120 skipped runs on top of the one real success: the success is on page 2 of the listing
+    const runs = [];
+    for (let i = 0; i < 120; i += 1) {
+      runs.push(run(100 + i, `2026-11-06T10:${String(i % 60).padStart(2, "0")}:00Z`, "completed", "skipped"));
+    }
+    runs.push(run(1, "2026-11-06T09:00:00Z", "completed", "success"));
+    const port = createGitHubPort(REPO, { run: fakeCheckRunsApi({ [HEAD]: runs }, calls) });
+    assert.equal(await port.ciConclusion(HEAD), "success");
+    assert.equal(calls.length, 2);
+    for (const [url] of calls) {
+      assert.match(url, /check_name=CI%20result/);
+      assert.match(url, /filter=all/);
+    }
+    assert.match(calls[1][0], /page=2/);
+  });
+
+  it("main with a skipped-only head is not green, the last completed run before it is used", async () => {
+    const OLDER = "9".repeat(40);
+    const port = createGitHubPort(REPO, {
+      run: async (args) => {
+        if (args[0].includes("/commits/main")) return { sha: MAIN_HEAD };
+        if (args[0].includes("commits?sha=")) return [{ sha: MAIN_HEAD }, { sha: OLDER }];
+        return fakeCheckRunsApi({
+          [MAIN_HEAD]: [run(2, T2, "completed", "skipped")],
+          [OLDER]: [run(1, T1, "completed", "success")],
+        })(args);
+      },
+    });
+    const details = await port.mainCiDetails("main");
+    assert.equal(details.status, "pending");
+    assert.equal(details.lastCompleted, "success");
+  });
+
+  it("runOnce labels an approved PR whose real CI result is older than a skipped label-event run", async () => {
+    const posted = [];
+    const checkRuns = fakeCheckRunsApi({
+      [HEAD]: [run(1, T1, "completed", "success"), run(2, T2, "completed", "skipped")],
+      [MAIN_HEAD]: [run(3, T1, "completed", "success")],
+    });
+    const github = createGitHubPort(REPO, {
+      run: async (args) => {
+        const path = args[0];
+        if (args[1] === "-X" || args.includes("-X")) {
+          posted.push(args);
+          return {};
+        }
+        if (path.endsWith("/commits/main")) return { sha: MAIN_HEAD };
+        if (path.includes("/check-runs")) return checkRuns(args);
+        if (path.endsWith("/pulls/2447")) {
+          return {
+            state: "open",
+            draft: false,
+            merged: false,
+            head: { sha: HEAD },
+            base: { sha: MAIN_HEAD, ref: "main", repo: { default_branch: "main" } },
+            labels: [],
+          };
+        }
+        if (path.includes("/pulls/2447/files")) return [{ filename: "scripts/myrmidon/review-approve-label.mjs" }];
+        if (path.includes("/contents/")) return MAIN_MIGRATIONS.map((file) => ({ type: "file", path: file }));
+        throw new Error(`unexpected request ${path}`);
+      },
+    });
+    const { results } = await runOnce({
+      comments: [comment(`VERDICT #2447: APPROVE (head ${HEAD})`, "2026-11-06T09:30:00Z")],
+      repo: REPO,
+      github,
+    });
+    assert.deepEqual(results.map((r) => [r.prNumber, r.action, r.reason]), [[2447, "label", "approved-head-green"]]);
+    assert.deepEqual(posted.at(-1), ["-X", "POST", `repos/${REPO}/issues/2447/labels`, "-f", `labels[]=${APPROVED_LABEL}`]);
   });
 });
 

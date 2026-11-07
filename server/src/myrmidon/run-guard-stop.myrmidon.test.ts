@@ -168,9 +168,20 @@ describe("shouldContinueAfterRunGuardStop", () => {
 
   it("never continues the other stops, whatever the run changed", () => {
     for (const reason of RUN_GUARD_STOP_REASONS) {
-      if (reason === "model_call_limit") continue;
+      if (reason === "model_call_limit" || reason === "no_progress_exploration") continue;
       expect(shouldContinueAfterRunGuardStop({ errorCode: reason }, { modelCalls: 60, writeCalls: 50 })).toBe(false);
     }
+  });
+
+  // myrmidon(OPE-12004): no_progress_exploration gets one auto-retry with a hint
+  it("continues a no_progress_exploration stop", () => {
+    expect(shouldContinueAfterRunGuardStop({ errorCode: "no_progress_exploration" })).toBe(true);
+    expect(
+      shouldContinueAfterRunGuardStop({
+        errorCode: "cancelled",
+        resultJson: { runGuardStopReason: "no_progress_exploration" },
+      }),
+    ).toBe(true);
   });
 
   it("is false for a run the guard did not stop", () => {

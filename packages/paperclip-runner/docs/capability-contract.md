@@ -197,13 +197,13 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/api-reference.md:full-api-reference:1340 | optional_agent_tool | skills/paperclip/references/api-reference.md:1340 |
 | skill:skills/paperclip/references/api-reference.md:agents:1342 | optional_agent_tool | skills/paperclip/references/api-reference.md:1342 |
 | skill:skills/paperclip/references/api-reference.md:issues-tasks:1363 | optional_agent_tool | skills/paperclip/references/api-reference.md:1363 |
-| skill:skills/paperclip/references/api-reference.md:companies-projects-goals:1404 | optional_agent_tool | skills/paperclip/references/api-reference.md:1404 |
-| skill:skills/paperclip/references/api-reference.md:routines:1428 | optional_agent_tool | skills/paperclip/references/api-reference.md:1428 |
-| skill:skills/paperclip/references/api-reference.md:approvals-costs-activity-dashboard:1444 | optional_agent_tool | skills/paperclip/references/api-reference.md:1444 |
-| skill:skills/paperclip/references/api-reference.md:secrets:1466 | optional_agent_tool | skills/paperclip/references/api-reference.md:1466 |
-| skill:skills/paperclip/references/api-reference.md:agent-secret-proposals:1479 | optional_agent_tool | skills/paperclip/references/api-reference.md:1479 |
-| skill:skills/paperclip/references/api-reference.md:agent-secret-access:1593 | optional_agent_tool | skills/paperclip/references/api-reference.md:1593 |
-| skill:skills/paperclip/references/api-reference.md:common-mistakes:1633 | optional_agent_tool | skills/paperclip/references/api-reference.md:1633 |
+| skill:skills/paperclip/references/api-reference.md:companies-projects-goals:1406 | optional_agent_tool | skills/paperclip/references/api-reference.md:1406 |
+| skill:skills/paperclip/references/api-reference.md:routines:1430 | optional_agent_tool | skills/paperclip/references/api-reference.md:1430 |
+| skill:skills/paperclip/references/api-reference.md:approvals-costs-activity-dashboard:1446 | optional_agent_tool | skills/paperclip/references/api-reference.md:1446 |
+| skill:skills/paperclip/references/api-reference.md:secrets:1468 | optional_agent_tool | skills/paperclip/references/api-reference.md:1468 |
+| skill:skills/paperclip/references/api-reference.md:agent-secret-proposals:1481 | optional_agent_tool | skills/paperclip/references/api-reference.md:1481 |
+| skill:skills/paperclip/references/api-reference.md:agent-secret-access:1595 | optional_agent_tool | skills/paperclip/references/api-reference.md:1595 |
+| skill:skills/paperclip/references/api-reference.md:common-mistakes:1635 | optional_agent_tool | skills/paperclip/references/api-reference.md:1635 |
 
 ## Legacy MCP Alias Index
 

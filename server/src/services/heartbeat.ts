@@ -69,6 +69,7 @@ import {
 // myrmidon(RUN-GUARD-LOOPS): a run the run guard stopped is not retried; its issue is blocked.
 // myrmidon(RUN-GUARD-CONTINUE): except a call-limit stop of a run that made changes.
 import {
+  NO_PROGRESS_AUTO_RETRY_HINT,
   RUN_GUARD_CONTINUATION_CONTEXT_KEY,
   buildRunGuardStopComment,
   buildRunGuardStopNotice,
@@ -520,6 +521,7 @@ import {
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   ISSUE_REWAKE_FREEZE_THRESHOLD,
   evaluateIssueRewakeThrottle,
+  isIssueProgressActivity,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 
@@ -16571,9 +16573,10 @@ export function heartbeatService(
   ): Promise<boolean> {
     const reason = readRunGuardStopReason(run);
     const writeCalls = readRunGuardWriteCalls(run, guardStats);
+    const isNoProgress = reason === "no_progress_exploration";
     const maxTurnPolicy = parseMaxTurnContinuationPolicy(agent);
     const guardPolicy = parseRunGuardContinuationPolicy(agent.runtimeConfig);
-    if (!maxTurnPolicy.enabled || !guardPolicy.enabled || guardPolicy.maxAttempts <= 0) {
+    if (!maxTurnPolicy.enabled || (!isNoProgress && (!guardPolicy.enabled || guardPolicy.maxAttempts <= 0))) {
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",
@@ -16584,11 +16587,13 @@ export function heartbeatService(
       return false;
     }
     const continuationsMade = readRunGuardContinuationCount(run);
-    const schedulerCeiling = runGuardContinuationSchedulerCeiling({
-      scheduledRetryAttempt: run.scheduledRetryAttempt,
-      continuationsMade,
-      maxAttempts: guardPolicy.maxAttempts,
-    });
+    const schedulerCeiling = isNoProgress
+      ? 1
+      : runGuardContinuationSchedulerCeiling({
+          scheduledRetryAttempt: run.scheduledRetryAttempt,
+          continuationsMade,
+          maxAttempts: guardPolicy.maxAttempts,
+        });
     if (schedulerCeiling === null) {
       await appendRunEvent(run, {
         eventType: "lifecycle",
@@ -16611,6 +16616,12 @@ export function heartbeatService(
         maxAttempts: schedulerCeiling,
         delayMs: maxTurnPolicy.delayMs,
         runGuardContinuation: true,
+        ...(isNoProgress
+          ? {
+              livenessContinuationInstruction: NO_PROGRESS_AUTO_RETRY_HINT,
+              livenessContinuationState: "no_progress_exploration_auto_retry",
+            }
+          : {}),
       });
       if (scheduled.outcome !== "scheduled") return false;
       await appendRunEvent(run, {
@@ -16624,8 +16635,12 @@ export function heartbeatService(
           modelCalls: guardStats.modelCalls ?? null,
           retryRunId: scheduled.run.id,
           scheduledRetryAttempt: scheduled.attempt,
-          runGuardContinuationAttempt: continuationsMade + 1,
-          runGuardContinuationMaxAttempts: guardPolicy.maxAttempts,
+          ...(isNoProgress
+            ? { maxAttempts: scheduled.maxAttempts }
+            : {
+                runGuardContinuationAttempt: continuationsMade + 1,
+                runGuardContinuationMaxAttempts: guardPolicy.maxAttempts,
+              }),
         },
       });
       return true;
@@ -16650,6 +16665,8 @@ export function heartbeatService(
       delayMs?: number;
       // myrmidon(RUN-GUARD-CONTINUE): set by continueRunStoppedAtCallLimit only.
       runGuardContinuation?: boolean;
+      livenessContinuationInstruction?: string;
+      livenessContinuationState?: string;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -16657,16 +16674,18 @@ export function heartbeatService(
     // asks (recovery sweep, process-loss retry, quota monitor, continuation).
     // Maintenance interruptions and transport failures are different error codes
     // and keep their own retry paths.
-    // myrmidon(RUN-GUARD-CONTINUE): the one exception is the continuation of a
-    // call-limit stop that handleRunGuardStop found productive (it passes the
-    // flag); the scheduler still checks the stop reason and the retry reason.
+    // myrmidon(RUN-GUARD-CONTINUE): the exceptions are continuations of:
+    // 1. A call-limit stop that handleRunGuardStop found productive (it passes the flag).
+    // 2. myrmidon(OPE-12004): a no_progress_exploration stop (one auto-retry with a hint).
+    const isAllowedGuardContinuation =
+      opts?.runGuardContinuation === true &&
+      opts.retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
+      (readRunGuardStopReason(run) === "model_call_limit" ||
+        readRunGuardStopReason(run) === "no_progress_exploration");
+
     if (
       readRunGuardStopReason(run) &&
-      !(
-        opts?.runGuardContinuation === true &&
-        opts.retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
-        readRunGuardStopReason(run) === "model_call_limit"
-      )
+      !isAllowedGuardContinuation
     ) {
       await appendRunEvent(run, {
         eventType: "lifecycle",
@@ -17026,6 +17045,17 @@ export function heartbeatService(
         retryOfRunId: run.id,
         wakeReason,
         retryReason,
+        ...(opts?.livenessContinuationInstruction
+          ? {
+              livenessContinuationInstruction:
+                opts.livenessContinuationInstruction,
+            }
+          : {}),
+        ...(opts?.livenessContinuationState
+          ? {
+              livenessContinuationState: opts.livenessContinuationState,
+            }
+          : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {
               failureRetriesBeforeWorkspaceWait:
@@ -23985,6 +24015,7 @@ export function heartbeatService(
       runGuard = new RunGuard(resolveRunGuardOptions({
         agentConfig: agent.adapterConfig,
         teamLiveness: teamLiveness?.settings,
+        role: agent.role,
       }));
 
       // The claimed adapter identity is immutable recovery evidence. Do not
@@ -33311,8 +33342,15 @@ export function heartbeatService(
               const sampleRunIds = recentTerminalRuns.map(
                 (sampleRun) => sampleRun.id,
               );
-              const progressRows = await tx
-                .select({ runId: activityLog.runId })
+              const progressActivityRows = await tx
+                .select({
+                  runId: activityLog.runId,
+                  action: activityLog.action,
+                  // Only the two JSON paths the progress read looks at, not
+                  // the whole (possibly large) `details` of every row.
+                  changes: sql<unknown>`${activityLog.details} -> 'changes'`,
+                  source: sql<string | null>`${activityLog.details} ->> 'source'`,
+                })
                 .from(activityLog)
                 .where(
                   and(
@@ -33326,6 +33364,11 @@ export function heartbeatService(
                     ),
                   ),
                 );
+              // myrmidon(1.6.6 OPE-12049): a run's own bookkeeping (release,
+              // assign to itself, the echo of its final text) is not progress.
+              const progressRows = progressActivityRows.filter((row) =>
+                isIssueProgressActivity(row, agentId),
+              );
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
               const latestRevision = readNonEmptyString(
@@ -33348,6 +33391,9 @@ export function heartbeatService(
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
                           : undefined,
+                        // myrmidon(1.6.6 OPE-12049): the woken agent's own
+                        // writes are not new input for itself.
+                        sql`(${activityLog.actorType} is distinct from 'agent' or ${activityLog.actorId} is distinct from ${agentId})`,
                       ),
                     )
                     .limit(1)

@@ -184,6 +184,27 @@ export interface WorkQueue {
    * `failed` and stays failed until re-armed via `enqueue`.
    */
   fail(companyId: string, jobId: string, error: string): Promise<CorpusParseJob>;
+
+  /**
+   * Gives a claimed job back unfinished, through no fault of its own: the worker holding it is
+   * shutting down. The job returns to `pending` at once (no backoff) and the attempt the claim
+   * used is refunded, so a deploy never eats into `maxAttempts`. Only a `running` job moves;
+   * resolves `null` for any other (already settled, unknown, another company's).
+   */
+  release(companyId: string, jobId: string, reason?: string): Promise<CorpusParseJob | null>;
+
+  /**
+   * Settles the jobs a dead worker left `running` (the process was killed or lost, so nobody will
+   * ever `complete` or `fail` them): back to `pending` at once, to be claimed again. The claim
+   * already counted the attempt and it stays counted - a document that takes the process down
+   * every time must not loop forever - so a job whose attempts are used up (`attempts >=
+   * maxAttempts`) is settled `failed` instead. Returns the settled jobs (`status` tells which
+   * way each went). `companyId` limits it to one company; without it, the whole queue.
+   *
+   * For the single worker that starts up: it must run before that worker claims anything, or it
+   * would take the worker's own live jobs for orphans.
+   */
+  releaseRunning(options?: { companyId?: string }): Promise<CorpusParseJob[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,12 +256,20 @@ export type DocumentParseResult = {
   metadata: Record<string, unknown>;
 };
 
+export type DocumentParseOptions = {
+  /**
+   * Aborts the parse: the call gives up at once and, when it already holds a job in the parse
+   * service, cancels it there (`DELETE /v1/parse/{jobId}`) instead of leaving it to run.
+   */
+  signal?: AbortSignal;
+};
+
 export interface DocumentParser {
   /**
    * Parses a document into chunks via the external HTTP parse service.
    * Implementations carry their own base URL/credentials; the port is pure.
    */
-  parse(request: DocumentParseRequest): Promise<DocumentParseResult>;
+  parse(request: DocumentParseRequest, options?: DocumentParseOptions): Promise<DocumentParseResult>;
 }
 
 // ---------------------------------------------------------------------------

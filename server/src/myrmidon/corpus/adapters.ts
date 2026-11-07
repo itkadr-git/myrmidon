@@ -93,14 +93,14 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       );
     }
   };
-  const embedder = async (companyId: string, baseUrl: string | null, model: string, dimensions: number, input: string[]): Promise<number[][]> => {
+  const embedder = async (companyId: string, baseUrl: string | null, model: string, dimensions: number, input: string[], signal?: AbortSignal): Promise<number[][]> => {
     await checkEmbedderConfigured(companyId, baseUrl);
     const secretRow = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"), eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"), eq(companySecrets.status, "active"))).then((rows) => rows[0] ?? null);
     const apiKey = secretRow ? await secretService(db).resolveSecretValue(companyId, secretRow.id, "latest", { accessContext: { consumerType: "system", consumerId: "myrmidon-corpus" } }) : undefined;
     const endpoint = baseUrl ?? context.env.MYRMIDON_LLM_GATEWAY_BASE_URL ?? "http://127.0.0.1:3000/v1";
     // The key is resolved once per call; the batches below reuse it.
     const embedBatch = async (batch: readonly string[]): Promise<number[][]> => {
-      const response = await fetch(`${endpoint.replace(/\/+$/, "")}/embeddings`, { method: "POST", headers: { "content-type": "application/json", ...(apiKey ? { authorization: "Bearer " + apiKey } : {}) }, body: JSON.stringify({ model, input: batch, dimensions }), signal: AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS) });
+      const response = await fetch(`${endpoint.replace(/\/+$/, "")}/embeddings`, { method: "POST", headers: { "content-type": "application/json", ...(apiKey ? { authorization: "Bearer " + apiKey } : {}) }, body: JSON.stringify({ model, input: batch, dimensions }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS) });
       if (!response.ok) throw new Error(`corpus embeddings request failed (${response.status})`);
       const result = await response.json() as { data?: Array<{ index?: number; embedding?: number[] }> };
       const vectorResults = result.data?.sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((item) => item.embedding);
@@ -127,8 +127,8 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
   };
   const index = {
     assertEmbedderConfigured: checkEmbedderConfigured,
-    async indexDocument(input: { companyId: string; datasetId: string; documentId: string; chunks: Array<{ text: string; index: number; metadata?: Record<string, unknown> }>; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
-      const vectors = await embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.chunks.map((c) => c.text));
+    async indexDocument(input: { companyId: string; datasetId: string; documentId: string; chunks: Array<{ text: string; index: number; metadata?: Record<string, unknown> }>; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null; signal?: AbortSignal }) {
+      const vectors = await embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.chunks.map((c) => c.text), input.signal);
       await store.replaceDocumentChunks({ companyId: input.companyId, documentId: input.documentId, chunks: input.chunks.map((c, i) => ({ chunkIndex: c.index, content: c.text, embedding: vectors[i]!, metadata: c.metadata })) });
       return input.chunks.length;
     },
@@ -260,11 +260,20 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       },
       async complete(companyId, id) { await queue.complete(companyId, id); },
       async fail(companyId, id, reason) { const row = await queue.fail(companyId, id, reason); return jobRecord(companyId, row); },
+      async release(companyId, id, reason) { const row = await queue.release(companyId, id, reason); return row ? jobRecord(companyId, row) : null; },
+      async releaseRunning() {
+        const settled: CorpusJobRecord[] = [];
+        for (const row of await queue.releaseRunning()) {
+          const mapped = await jobRecord(row.companyId, row);
+          if (mapped) settled.push(mapped);
+        }
+        return settled;
+      },
     },
     parser: {
       async parse(input) {
         const client = createHttpDocumentParser({ baseUrl: input.baseUrl, parserTimeoutMs: input.timeoutMs });
-        const result = await client.parse({ sourceUri: null, content: input.bytes, contentType: input.mimeType, title: input.filename, parserVersion: "v1" });
+        const result = await client.parse({ sourceUri: null, content: input.bytes, contentType: input.mimeType, title: input.filename, parserVersion: "v1" }, input.signal ? { signal: input.signal } : {});
         return { text: result.chunks.map((chunk) => chunk.content).join("\n"), chunks: result.chunks.map((chunk) => ({ text: chunk.content, index: chunk.chunkIndex, metadata: chunk.metadata })) };
       },
     },
@@ -317,6 +326,17 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
           embedderBaseUrl: settings.embedderBaseUrl,
         });
 
+        // The index returns documentId per hit; resolve real names so bots can
+        // cite sources by book title instead of UUID (OPE-12028).
+        const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
+        const documentNames = new Map<string, string>();
+        await Promise.all(
+          documentIds.map(async (id) => {
+            const document = await ports.store.getDocument(companyId, id);
+            if (document) documentNames.set(id, document.filename);
+          }),
+        );
+
         const filteredHits = hits
           .filter((hit) => request.minScore === null || hit.score >= request.minScore)
           .slice(0, request.topK)
@@ -324,7 +344,7 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
             chunkId: hit.chunkId,
             document: {
               id: hit.documentId,
-              name: hit.documentId,
+              name: documentNames.get(hit.documentId) ?? hit.documentId,
               datasetId: hit.datasetId,
               datasetName: datasets.find((d) => d.id === hit.datasetId)?.name ?? "",
               url: null,
@@ -347,7 +367,10 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         const { ports } = current;
         const document = await ports.store.getDocument(companyId, documentId); if (!document) throw new Error("document not found");
         const dataset = await ports.store.getDataset(companyId, document.datasetId);
-        const chunks = includeText ? await (async () => { const rows = await ports.store.getDocument(companyId, documentId); return rows ? Buffer.from(await ports.blobs.get(rows.blobRef)).toString("utf8") : null; })() : null;
+        // A document can exist without a stored blob (e.g. created but never
+        // uploaded, or the blob key was cleared). Asking for text of such a
+        // document must not crash on "corpus blob: empty key" (OPE-12028).
+        const chunks = includeText && document.blobRef ? Buffer.from(await ports.blobs.get(document.blobRef)).toString("utf8") : null;
         return { document: { id: document.id, name: document.filename, datasetId: document.datasetId, datasetName: dataset?.name ?? "", url: null, status: document.status, sizeBytes: document.byteSize, chunks: document.chunkCount, createdAt: document.createdAt, error: document.error }, text: chunks };
       },
       async listDatasets() {

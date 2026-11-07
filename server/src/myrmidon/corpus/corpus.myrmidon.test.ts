@@ -337,6 +337,27 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
         state.jobs.set(jobId, settled);
         return settled;
       },
+      async release(companyId, jobId, reason) {
+        const job = jobOf(companyId, jobId);
+        if (!job || job.state !== "running") return null;
+        const given: CorpusJobRecord = { ...job, state: "queued", attempts: Math.max(job.attempts - 1, 0), lastError: reason };
+        state.jobs.set(jobId, given);
+        return given;
+      },
+      async releaseRunning() {
+        const settled: CorpusJobRecord[] = [];
+        for (const job of state.jobs.values()) {
+          if (job.state !== "running") continue;
+          const next: CorpusJobRecord = {
+            ...job,
+            state: job.attempts >= job.maxAttempts ? "failed" : "queued",
+            lastError: "the board stopped or restarted while the document was being parsed",
+          };
+          state.jobs.set(job.id, next);
+          settled.push(next);
+        }
+        return settled;
+      },
     },
     parser: {
       async parse() {
@@ -946,6 +967,10 @@ describe("corpus API: upload, parse and search", () => {
     expect(found.body).toMatchObject({ datasetId: DATASET_ID, query: "corpus", mode: "hybrid", limit: 5 });
     expect(found.body.hits).toHaveLength(1);
     expect(found.body.hits[0]).toMatchObject({ text: "hello corpus", score: 0.9 });
+
+    // REST hits carry the real document name (the filename), not the UUID (OPE-12028).
+    expect(found.body.hits[0].documentName).toBe("notes.txt");
+    expect(found.body.hits[0].documentName).not.toBe(found.body.hits[0].documentId);
 
     // The counters the screen reads follow the same rows.
     const stats = (await request(app).get(`${companyPath()}/stats`)).body.stats;

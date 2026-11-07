@@ -83,6 +83,11 @@ export interface CorpusSearchHit {
   chunkIndex: number;
   score: number;
   text: string;
+  /**
+   * Name of the document as it was uploaded, resolved by the server from the
+   * document row — not the internal UUID (OPE-12028).
+   */
+  documentName?: string;
 }
 
 export interface CorpusSearchResult {

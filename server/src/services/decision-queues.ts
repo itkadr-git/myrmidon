@@ -30,6 +30,8 @@ import { notFound, unprocessable } from "../errors.js";
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(OPE-11776): the key budget card id prefix
 import { LITELLM_BUDGET_ATTENTION_DEDUP_PREFIX } from "../myrmidon/litellm-costs/attention.js";
+// myrmidon(OPE-11890): the auth-401 burst signal registry (process-level latch).
+import { readAuth401BurstSignal } from "../myrmidon/auth-401-burst/index.js";
 import { logActivity } from "./activity-log.js";
 import {
   authorizationService,
@@ -300,6 +302,12 @@ async function sourceIssueId(
     // while the board runs (the row is dismissable, never stale-checked).
     case "host_disk_alert": {
       return { exists: true, issueId: null };
+    }
+    // myrmidon(OPE-11890): the auth-401 burst signal is process-level state;
+    // the source id is the fixed "auth-401-burst" subject, so existence is the
+    // live latch — the card disappears when the latch resets.
+    case "auth_401_burst": {
+      return { exists: readAuth401BurstSignal() !== null, issueId: null };
     }
     // myrmidon(1.6.5-PAUSE-GUARD): the leftover-pauses signal subject is the
     // company itself (one card per company), so existence is always true while

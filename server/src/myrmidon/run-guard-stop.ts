@@ -90,17 +90,28 @@ export function readRunGuardWriteCalls(
   return readCount(stats?.writeCalls);
 }
 
+export const NO_PROGRESS_AUTO_RETRY_HINT =
+  "Предыдущий прогон остановлен: много чтений без записи. Перейди к записи (правка кода, тест, коммит) или опиши блокер в комментарии.";
+
 /**
- * True when a guard stop is not final: the call limit tripped on a run that
- * made changes. Loops (`no_progress_exploration`, `repeated_tool_call`,
- * `tool_retry_loop`, `idle_timeout`) and a call-limit stop without a single
- * change stay final: another run would repeat the same behaviour.
+ * True when a guard stop is not final:
+ * 1. The call limit tripped on a run that made changes.
+ * 2. myrmidon(OPE-12004): `no_progress_exploration` gets one automatic retry with a hint.
+ * Loops (`repeated_tool_call`, `tool_retry_loop`, `idle_timeout`) and a call-limit
+ * stop without a single change stay final: another run would repeat the same behaviour.
  */
 export function shouldContinueAfterRunGuardStop(
   run: RunGuardStopRunShape | null | undefined,
   stats?: RunGuardStopStats | null,
 ): boolean {
-  return readRunGuardStopReason(run) === "model_call_limit" && readRunGuardWriteCalls(run, stats) > 0;
+  const reason = readRunGuardStopReason(run);
+  if (reason === "model_call_limit" && readRunGuardWriteCalls(run, stats) > 0) {
+    return true;
+  }
+  if (reason === "no_progress_exploration") {
+    return true;
+  }
+  return false;
 }
 
 /** Default ceiling of call-limit continuations along one chain (RUN-GUARD-CONTINUE). */

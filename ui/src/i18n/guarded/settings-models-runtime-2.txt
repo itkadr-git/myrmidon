@@ -7,3 +7,4 @@ components/myrmidon/ToolPolicyCacheSettingsPanel.tsx
 components/myrmidon/castes/CastesScreen.tsx
 components/myrmidon/corpus/CorpusScreen.tsx
 pages/Foraging.tsx
+components/myrmidon/RunPrioritySettingsPanel.tsx
