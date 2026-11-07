@@ -22,7 +22,7 @@ In Myrmidon, **task** and **issue** refer to the same work item. The UI may use 
 
 ## Auth and run context
 
-Env (auto-injected): `MYRMIDON_AGENT_ID`, `MYRMIDON_COMPANY_ID`, `MYRMIDON_API_URL`, `MYRMIDON_RUN_ID`, `MYRMIDON_API_KEY` (short-lived run JWT). Wake context may add `MYRMIDON_TASK_ID`, `MYRMIDON_WAKE_REASON`, `MYRMIDON_WAKE_COMMENT_ID`, `MYRMIDON_APPROVAL_ID`, `MYRMIDON_APPROVAL_STATUS`, `MYRMIDON_LINKED_ISSUE_IDS` (legacy `PAPERCLIP_*` names also work). Requests: `Authorization: Bearer $MYRMIDON_API_KEY`, JSON, under `/api`. **Every request that modifies issues (checkout, update, comment, create subtask, release) MUST send `-H "X-Paperclip-Run-Id: $MYRMIDON_RUN_ID"`.** Never hard-code the API URL; never paste the key or bridge token into prompts, comments, documents, files or logs.
+Env (auto-injected): `MYRMIDON_AGENT_ID`, `MYRMIDON_COMPANY_ID`, `MYRMIDON_API_URL`, `MYRMIDON_RUN_ID`, `MYRMIDON_API_KEY` (short-lived run JWT). Wake context may add `MYRMIDON_TASK_ID`, `MYRMIDON_WAKE_REASON`, `MYRMIDON_WAKE_COMMENT_ID`, `MYRMIDON_APPROVAL_ID`, `MYRMIDON_APPROVAL_STATUS`, `MYRMIDON_LINKED_ISSUE_IDS`. Requests: `Authorization: Bearer $MYRMIDON_API_KEY`, JSON, under `/api`. **Every request that modifies issues (checkout, update, comment, create subtask, release) MUST send `-H "X-Paperclip-Run-Id: $MYRMIDON_RUN_ID"`.** Never hard-code the API URL; never paste the key or bridge token into prompts, comments, documents, files or logs.
 
 Read the wake payload in the run prompt first. On a comment wake, acknowledge the latest comment and how it changes your next action before broad exploration; fetch the thread only if `fallbackFetchNeeded` is true or you need more.
 
@@ -74,7 +74,7 @@ Other hot routes: `POST /api/issues/{id}/comments` `{"body":"..."}`; `POST /api/
 
 ## Where to read more (`references/`; open once, only for a matching situation)
 
-- `heartbeat-procedure.md` full steps, wake reasons, delegating; `disposition-and-monitors.md` status, work products, monitors; `artifacts.md` file uploads; `chat-turns.md` chat tasks, verified chat turns; `auth-and-run-context.md` 401, Python, CLI safety.
+- `heartbeat-procedure.md` full steps, wake reasons, delegating; `review-discipline.md` review discipline; `disposition-and-monitors.md` status, work products, monitors; `artifacts.md` file uploads; `chat-turns.md` chat tasks, verified chat turns; `auth-and-run-context.md` 401, Python, CLI safety.
 - `tasks-blockers-approvals.md` blockers, inbox, board approval, caste; `interactions-and-decisions.md` and `owner-dialogue.md` cards, decisions, MCP approval gates; `comments-and-planning.md`; `critical-rules.md`; `hot-routes-and-search.md`; `secrets.md`.
-- `workflows.md`, `cases.md`, `company-skills.md`, `routines.md`, `issue-workspaces.md` (pointers: `topic-pointers.md`). Hiring: skill `myrmidon-create-agent`; plan to tasks: skill `myrmidon-converting-plans-to-tasks`.
+- `workflows.md`, `cases.md`, `company-skills.md`, `routines.md`, `issue-workspaces.md` (pointers: `topic-pointers.md`). Hiring: `myrmidon-create-agent`; plan to tasks: `myrmidon-converting-plans-to-tasks`.
 - `api-reference.md`: any endpoint, schema or error code; search it, never read it whole.

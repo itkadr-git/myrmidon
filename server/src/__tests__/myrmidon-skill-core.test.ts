@@ -95,4 +95,27 @@ describe("myrmidon skill core", () => {
       expect(holders, `${heading} must live in exactly one reference`).toHaveLength(1);
     }
   });
+
+  it("enforces review discipline reference rules, indexing, and key markers", () => {
+    const disciplineFile = "review-discipline.md";
+    const disciplinePath = path.join(referencesDir, disciplineFile);
+    expect(existsSync(disciplinePath), `${disciplineFile} must exist`).toBe(true);
+    expect(indexedReferences()).toContain(disciplineFile);
+
+    const content = readFileSync(disciplinePath, "utf8");
+    // Reference exists and indexed; contains key rule markers:
+    // 1. Current head / текущая голова
+    expect(content).toMatch(/current head|текущ(ая|ей) голов/i);
+    // 2. Proof / evidence / доказательство
+    expect(content).toMatch(/proof|evidence|доказательств/i);
+    // 3. Nit / non-blocking suggestions
+    expect(content).toMatch(/\bnit\b/i);
+    // 4. APPROVE rule / APPROVE-правило
+    expect(content).toMatch(/APPROVE/);
+
+    // Links to api-reference and heartbeat-procedure, and status PATCH mechanism
+    expect(content).toContain("api-reference.md");
+    expect(content).toContain("heartbeat-procedure.md");
+    expect(content).toContain("PATCH /api/issues/");
+  });
 });
