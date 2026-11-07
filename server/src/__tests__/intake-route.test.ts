@@ -98,7 +98,8 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
       .send({ seq: 3 })
       .expect(429);
 
-    expect(res429.headers["retry-after"]).toBeDefined();
+    expect(typeof res429.headers["retry-after"]).toBe("string");
+    expect(Number.parseInt(res429.headers["retry-after"], 10)).toBeGreaterThan(0);
     expect(res429.body.error).toContain("Rate limit exceeded");
 
     // Other source still works fine
@@ -113,6 +114,28 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
       .post("/api/intake/limited_source")
       .send({ seq: 4 })
       .expect(202);
+  });
+
+  it("does not expose queue inspection endpoints on the public router", async () => {
+    const app = createTestApp();
+
+    await request(app)
+      .post("/api/intake/srv1")
+      .send({ msg: "hello" })
+      .expect(202);
+
+    // Queue listing/inspection must not be reachable on the public intake
+    // router: it exposes payload, headers and clientIp of accepted webhooks.
+    const listRes = await request(app).get("/api/intake/queue?source=srv1");
+    expect([401, 403, 404]).toContain(listRes.status);
+    expect(listRes.body.items).toBeUndefined();
+
+    const id = (await queue.size()) > 0 ? [...(await queue.list())][0]?.id : null;
+    if (id) {
+      const itemRes = await request(app).get(`/api/intake/queue/${id}`);
+      expect([401, 403, 404]).toContain(itemRes.status);
+      expect(itemRes.body.payload).toBeUndefined();
+    }
   });
 
   it("returns 400 on invalid source names", async () => {
@@ -191,7 +214,7 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
       .expect(202);
   });
 
-  it("can inspect and list queued items", async () => {
+  it("enqueues and updates items in the queue", async () => {
     const app = createTestApp();
     const res = await request(app)
       .post("/api/intake/srv1")
@@ -199,16 +222,14 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
       .expect(202);
 
     const id = res.body.id;
+    const queuedItem = await queue.get(id);
+    expect(queuedItem).not.toBeNull();
+    expect(queuedItem?.payload).toEqual({ msg: "hello" });
+    expect(queuedItem?.source).toBe("srv1");
+    expect(await queue.size()).toBe(1);
 
-    const listRes = await request(app)
-      .get("/api/intake/queue?source=srv1")
-      .expect(200);
-    expect(listRes.body.count).toBe(1);
-    expect(listRes.body.items[0].id).toBe(id);
-
-    const itemRes = await request(app)
-      .get(`/api/intake/queue/${id}`)
-      .expect(200);
-    expect(itemRes.body.payload).toEqual({ msg: "hello" });
+    await queue.updateStatus(id, "processed");
+    const updated = await queue.get(id);
+    expect(updated?.status).toBe("processed");
   });
 });

@@ -5,7 +5,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
-import { badRequest, forbidden, tooManyRequests, unauthorized } from "../errors.js";
+import { badRequest, forbidden, unauthorized } from "../errors.js";
 import {
   type IntakeConfig,
   readIntakeConfig,
@@ -96,11 +96,16 @@ export function intakeRoutes(options: IntakeRouteOptions = {}) {
     res.setHeader("X-RateLimit-Limit", String(limitResult.limit));
     res.setHeader("X-RateLimit-Remaining", String(limitResult.remaining));
     if (!limitResult.allowed) {
-      res.setHeader("Retry-After", String(limitResult.retryAfterSeconds));
-      throw tooManyRequests(`Rate limit exceeded for source '${sourceParam}'`, {
+      // myrmidon(1.7 WEBHOOK-INTAKE): respond 429 directly so the Retry-After
+      // header survives (a thrown HttpError is re-rendered by the central
+      // error handler, which drops headers already set on the response).
+      res.status(429).json({
+        error: `Rate limit exceeded for source '${sourceParam}'`,
+        code: "rate_limit_exceeded",
         source: sourceParam,
         retryAfterSeconds: limitResult.retryAfterSeconds,
       });
+      return;
     }
 
     // Token authentication if tokenRef configured for this source
@@ -155,29 +160,12 @@ export function intakeRoutes(options: IntakeRouteOptions = {}) {
   router.post("/api/intake/:source", handlePost);
   router.post("/intake/:source", handlePost);
 
-  const handleGetQueueItem = async (req: Request, res: Response) => {
-    const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const id = typeof rawId === "string" ? rawId.trim() : "";
-    const item = await queue.get(id);
-    if (!item) {
-      res.status(404).json({ error: "Not found", id: req.params.id });
-      return;
-    }
-    res.json(item);
-  };
-
-  router.get("/api/intake/queue/:id", handleGetQueueItem);
-  router.get("/intake/queue/:id", handleGetQueueItem);
-
-  const handleListQueue = async (req: Request, res: Response) => {
-    const source = typeof req.query.source === "string" ? req.query.source : undefined;
-    const limit = typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : undefined;
-    const items = await queue.list({ source, limit });
-    res.json({ count: items.length, items });
-  };
-
-  router.get("/api/intake/queue", handleListQueue);
-  router.get("/intake/queue", handleListQueue);
+  // myrmidon(1.7 WEBHOOK-INTAKE): this router is mounted as public webhook
+  // ingress next to the provider webhooks and the auth middleware's
+  // intake bypass treats any /intake/<name> path as webhook ingress, so the
+  // router intentionally exposes POST-only routes. Queue inspection (listing
+  // or reading accepted payloads, headers, client IPs) must not live here;
+  // it belongs to authenticated, board-facing tooling if it is ever needed.
 
   return router;
 }
