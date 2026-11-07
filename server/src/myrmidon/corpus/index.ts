@@ -18,7 +18,13 @@ export {
 } from "./routes.js";
 export {
   CORPUS_PARSE_SWEEP_INTERVAL_MS,
+  CORPUS_SHUTDOWN_ABORT_SETTLE_MS,
+  CORPUS_SHUTDOWN_GRACE_ENV,
+  CORPUS_SHUTDOWN_GRACE_MS,
+  corpusShutdownGraceMs,
   createCorpusParseWorker,
+  type CorpusParseStopOptions,
+  type CorpusParseStopResult,
   type CorpusParseSweepResult,
   type CorpusParseWorker,
   type CorpusParseWorkerDeps,

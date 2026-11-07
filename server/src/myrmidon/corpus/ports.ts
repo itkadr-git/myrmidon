@@ -160,6 +160,17 @@ export interface WorkQueuePort {
   complete(companyId: string, jobId: string): Promise<void>;
   /** Release the job for another attempt; the store settles it `failed` at `maxAttempts`. */
   fail(companyId: string, jobId: string, reason: string): Promise<CorpusJobRecord | null>;
+  /**
+   * Give a claimed job back unfinished because this process is stopping: `queued` again at once,
+   * the attempt it used refunded. `null` when the job is not `running` any more.
+   */
+  release(companyId: string, jobId: string, reason: string): Promise<CorpusJobRecord | null>;
+  /**
+   * Settle every job a dead process left `running` (the board was killed or restarted mid-parse):
+   * `queued` again at once, or `failed` when its attempts are used up. For the one worker of the
+   * process, at its start, before its first claim.
+   */
+  releaseRunning(): Promise<CorpusJobRecord[]>;
 }
 
 export interface ParsedChunk {
@@ -185,6 +196,8 @@ export interface DocumentParsePort {
     mimeType: string | null;
     baseUrl: string;
     timeoutMs: number;
+    /** Aborts the parse and cancels its job in the parse service (the board is shutting down). */
+    signal?: AbortSignal;
   }): Promise<ParsedDocument>;
 }
 
@@ -207,6 +220,8 @@ export interface SearchIndexPort {
     embedderModel: string;
     embedderDimensions: number;
     embedderBaseUrl: string | null;
+    /** Aborts the embedding requests (the board is shutting down). */
+    signal?: AbortSignal;
   }): Promise<number>;
   deleteDocument(companyId: string, documentId: string): Promise<void>;
   search(input: {
