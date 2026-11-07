@@ -163,6 +163,12 @@ export type QueuedRunFacts = {
   isAuthorizedSourceScopedRecovery: boolean;
   isProductiveContinuationRecovery?: boolean;
   /**
+   * myrmidon(RUN-GUARD-ESCALATE): the run is the wake of the assignee's manager
+   * after a final run guard stop (`run_guard_stop_needs_input`). The manager is
+   * not the assignee and must stay woken: the assignee does not change.
+   */
+  isRunGuardStopNeedsInputWake?: boolean;
+  /**
    * myrmidon(OPE-11948): the run is an automatic `issue_continuation_needed`
    * wake of the system — no comment, no resume intent, no interaction. It is
    * only worth starting while the issue is todo or in_progress.
@@ -194,6 +200,8 @@ type OwnershipFacts = {
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
   isProductiveContinuationRecovery?: boolean;
+  // myrmidon(RUN-GUARD-ESCALATE): the manager's wake after a final run guard stop
+  isRunGuardStopNeedsInputWake?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -212,6 +220,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isCurrentReviewParticipant) return "current_owner";
   if (facts.isProductiveContinuationRecovery) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
+  if (facts.isRunGuardStopNeedsInputWake) return "current_owner";
   return "reassigned";
 }
 
@@ -616,6 +625,7 @@ export function decideQueuedRunStaleness(
       facts.reviewParticipant.participantAgentId === facts.runAgentId,
     isAuthorizedSourceScopedRecovery: facts.isAuthorizedSourceScopedRecovery,
     isProductiveContinuationRecovery: facts.isProductiveContinuationRecovery,
+    isRunGuardStopNeedsInputWake: facts.isRunGuardStopNeedsInputWake,
   });
   if (ownership === "reassigned") {
     return {

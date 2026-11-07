@@ -346,6 +346,7 @@ describe("detectMigrationViolation", () => {
 function fakeGitHub(prs, { mainCi = 'success', mainHeadSha = MAIN_HEAD, lastCompletedMain = null, basePrs = {} } = {}) {
   const labeled = [];
   const autoMerged = [];
+  const autoMergeCalls = [];
   const autoDisabled = [];
   const removedLabels = [];
   const updatedBranches = [];
@@ -353,6 +354,7 @@ function fakeGitHub(prs, { mainCi = 'success', mainHeadSha = MAIN_HEAD, lastComp
   return {
     labeled,
     autoMerged,
+    autoMergeCalls,
     autoDisabled,
     removedLabels,
     updatedBranches,
@@ -403,8 +405,9 @@ function fakeGitHub(prs, { mainCi = 'success', mainHeadSha = MAIN_HEAD, lastComp
     async addLabel(n) {
       labeled.push(n);
     },
-    async enableAutoMerge(n) {
+    async enableAutoMerge(n, headSha) {
       autoMerged.push(n);
+      autoMergeCalls.push({ number: n, headSha: headSha ?? null });
     },
     async disableAutoMerge(n) {
       autoDisabled.push(n);
@@ -610,6 +613,45 @@ describe("runOnce with green main protection and auto-merge", () => {
     const r1 = results.find((r) => r.prNumber === 1);
     assert.equal(r1.action, "noop");
     assert.equal(r1.reason, "already-labeled");
+  });
+
+  // OPE-12186: the arm command must be pinned to the approved head. (а) A verdict
+  // naming head A while the PR head is already B is the existing п.4 gate — no
+  // label, no auto-merge. (б) When the verdict head and the PR head are both A,
+  // the arm call carries that head so GitHub can only merge exactly it.
+  it("does not label or arm auto-merge when the head moved after the verdict (race)", async () => {
+    const moved = "c".repeat(40);
+    const github = fakeGitHub({
+      1: { pr: open(moved), ci: "success" },
+    }, { mainCi: "success" });
+    const { results, failed } = await runOnce({
+      comments: [comment(`VERDICT #1: APPROVE (head ${HEAD})`, "2026-10-08T07:00:00Z", "adm-dev-review", "r1")],
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+    assert.equal(failed, 0);
+    assert.equal(results[0].action, "needs-rereview");
+    assert.deepEqual(github.labeled, [], "a moved head must not be labeled");
+    assert.deepEqual(github.autoMerged, [], "a moved head must not arm auto-merge");
+    assert.deepEqual(github.autoMergeCalls, []);
+  });
+
+  it("arms auto-merge pinned to the approved head (--match-head-commit <head>)", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD), ci: "success" },
+    }, { mainCi: "success" });
+    const { results, failed } = await runOnce({
+      comments: [comment(`VERDICT #1: APPROVE (head ${HEAD})`, "2026-10-08T07:00:00Z", "adm-dev-review", "r2")],
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+    assert.equal(failed, 0);
+    assert.equal(results[0].action, "label");
+    assert.equal(results[0].autoMerge, true);
+    assert.deepEqual(github.autoMerged, [1]);
+    assert.deepEqual(github.autoMergeCalls, [{ number: 1, headSha: HEAD }], "the arm call must carry the approved head sha");
   });
 
   it("skips auto-merge during active backoff window while still labeling PRs", async () => {
@@ -900,10 +942,22 @@ describe("createGitHubPort", () => {
         return "";
       },
     });
-    await port.enableAutoMerge(42);
-    assert.deepEqual(prCalls[0], ["merge", "42", "-R", REPO, "--auto", "--squash"]);
+    await port.enableAutoMerge(42, HEAD);
+    assert.deepEqual(prCalls[0], ["merge", "42", "-R", REPO, "--auto", "--squash", "--match-head-commit", HEAD]);
     await port.disableAutoMerge(42);
     assert.deepEqual(prCalls[1], ["merge", "42", "-R", REPO, "--disable-auto"]);
+  });
+
+  it("refuses to arm auto-merge without a head sha (fail closed, OPE-12186)", async () => {
+    const prCalls = [];
+    const port = createGitHubPort(REPO, {
+      runPr: async (args) => {
+        prCalls.push(args);
+        return "";
+      },
+    });
+    await assert.rejects(port.enableAutoMerge(42), /head sha is required/);
+    assert.deepEqual(prCalls, [], "no gh pr merge command may run without --match-head-commit");
   });
 });
 

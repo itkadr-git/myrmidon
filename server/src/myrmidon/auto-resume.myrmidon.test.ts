@@ -433,3 +433,106 @@ describe("decideAutoResume policy", () => {
     });
   });
 });
+// 1.6.6: an agent left in "контейнер не поднят" is no longer skipped: the sweep starts the
+// bot container (15 min between failed starts, 4 attempts), then resumes the agent.
+describe("decideAutoResume: reason 'контейнер не поднят'", () => {
+  const MIN = 60_000;
+  const containerAgent = { status: "error", errorReason: "контейнер не поднят", updatedAt: ENTRY };
+  const decideContainer = (overrides: Partial<Parameters<typeof decideAutoResume>[0]> = {}) =>
+    decide({ agent: containerAgent, canStartContainer: true, ...overrides });
+
+  it("keeps the old skip when the sweep cannot start a container", () => {
+    expect(decide({ agent: containerAgent })).toMatchObject({ action: "skip", reason: "container_not_started" });
+  });
+
+  it("starts the container at once, recording the attempt as a failure and the resume as its follow-up", () => {
+    const first = decideContainer({ now: at(0) });
+    expect(first).toMatchObject({ action: "start_container", reason: "container_not_started" });
+    expect(first.nextState).toMatchObject({
+      failures: 0,
+      exhaustedAt: null,
+      containerStartFailures: 1,
+      lastContainerStartAt: at(0).toISOString(),
+      nextAttemptAt: at(15 * MIN).toISOString(),
+    });
+    // After a healthy start: an ordinary resume, counted in the ordinary streak, no start marks.
+    expect(first.stateAfterStart).toMatchObject({ failures: 1, exhaustedAt: null, lastResumeAt: at(0).toISOString() });
+    expect(first.stateAfterStart?.containerStartFailures).toBeUndefined();
+  });
+
+  it("retries a failed start no sooner than 15 minutes, 4 attempts in all, then gives up once", () => {
+    let state = decideContainer({ now: at(0) }).nextState;
+    expect(state?.containerStartFailures).toBe(1);
+
+    expect(decideContainer({ state, now: at(15 * MIN - 1) })).toMatchObject({ action: "skip", reason: "container_start_wait" });
+    for (const attempt of [2, 3, 4]) {
+      const due = decideContainer({ state, now: at((attempt - 1) * 15 * MIN) });
+      expect(due.action, `attempt ${attempt}`).toBe("start_container");
+      state = due.nextState;
+      expect(state?.containerStartFailures).toBe(attempt);
+    }
+
+    // Four failed starts: the give-up needs no further wait, and carries the attempts count.
+    const gaveUp = decideContainer({ state, now: at(45 * MIN + 1) });
+    expect(gaveUp).toMatchObject({ action: "exhaust", reason: "container_start_failed" });
+    expect(gaveUp.nextState).toMatchObject({ failures: 4, exhaustedAt: at(45 * MIN + 1).toISOString() });
+
+    // Given up: skipped for ever, until an operator acts.
+    expect(decideContainer({ state: gaveUp.nextState, now: at(24 * 60 * MIN) })).toMatchObject({
+      action: "skip",
+      reason: "exhausted",
+    });
+    expect(
+      decideContainer({ state: gaveUp.nextState, now: at(24 * 60 * MIN), lastOperatorActionAt: at(60 * MIN) }).action,
+    ).toBe("start_container");
+    // An action from before the give-up does not re-arm it.
+    expect(
+      decideContainer({ state: gaveUp.nextState, now: at(24 * 60 * MIN), lastOperatorActionAt: at(10 * MIN) }).action,
+    ).toBe("skip");
+  });
+
+  it("treats a series whose last attempt is older than two retry steps as a new episode", () => {
+    const stale = decideContainer({ now: at(0) }).nextState;
+    const later = decideContainer({ state: stale, now: at(30 * MIN + 1) });
+    expect(later.action).toBe("start_container");
+    expect(later.nextState?.containerStartFailures).toBe(1);
+  });
+
+  it("stops starting containers when resumes after a healthy start keep failing (ordinary cap)", () => {
+    // Three ordinary resumes inside the window, the last one 5 minutes ago: the container
+    // starts every time and still refuses the gateway.
+    const state: AutoResumeState = {
+      failures: 3,
+      lastFailureAt: at(0).toISOString(),
+      nextAttemptAt: null,
+      exhaustedAt: null,
+      lastResumeAt: at(0).toISOString(),
+    };
+    expect(decideContainer({ state, now: at(5 * MIN) })).toMatchObject({ action: "exhaust", reason: "max_attempts" });
+    // Two resumes: one more start is allowed, and it counts as the third.
+    const two = decideContainer({ state: { ...state, failures: 2 }, now: at(5 * MIN) });
+    expect(two.action).toBe("start_container");
+    expect(two.stateAfterStart?.failures).toBe(3);
+    // The window passed: a new episode.
+    expect(decideContainer({ state, now: at(61 * MIN) }).action).toBe("start_container");
+  });
+
+  it("still obeys the gates and leaves every other reason alone", () => {
+    expect(decideContainer({ invokable: false })).toMatchObject({ action: "skip", reason: "not_invokable" });
+    expect(decideContainer({ underMaintenance: true })).toMatchObject({ action: "skip", reason: "maintenance" });
+    expect(decideContainer({ settings: { ...SETTINGS, enabled: false } })).toMatchObject({ action: "skip", reason: "disabled" });
+    // Another reason takes the ordinary path, with or without the ability to start a container.
+    const other = decide({ agent: { status: "error", errorReason: "gateway 500", updatedAt: ENTRY }, canStartContainer: true, now: at(MIN) });
+    expect(other).toMatchObject({ action: "resume", reason: "due" });
+    expect(other.stateAfterStart).toBeUndefined();
+  });
+
+  it("round-trips the start-attempt marks through the metadata codec", () => {
+    const state = decideContainer({ now: at(0) }).nextState!;
+    expect(state.containerStartFailures).toBe(1);
+    expect(readAutoResumeState(mergeAutoResumeState({ keep: 1 }, state))).toEqual(state);
+    // A counter without its time is not a series.
+    const broken = { [AUTO_RESUME_METADATA_KEY]: { ...state, lastContainerStartAt: "garbage" } };
+    expect(readAutoResumeState(broken)?.containerStartFailures).toBeUndefined();
+  });
+});

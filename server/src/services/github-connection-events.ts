@@ -968,6 +968,7 @@ export function githubConnectionEventService(
       const rawThreshold = Number(process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN ?? process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN);
       const thresholdMin = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : 15;
       const staleThresholdMs = thresholdMin * 60 * 1000;
+      const ciStaleThresholdMs = Math.max(staleThresholdMs, 30 * 60 * 1000);
 
       const result: GitHubEventsWatchdogResult = {
         scannedCompanies: companyIds.length,
@@ -1041,33 +1042,58 @@ export function githubConnectionEventService(
           }
         }
 
-        const isSilent = !lastEventAtMs || (currentTime.getTime() - lastEventAtMs > staleThresholdMs);
+        const [lastCiDelivery] = await db.select({ createdAt: connectionEventDeliveries.createdAt })
+          .from(connectionEventDeliveries)
+          .where(and(
+            eq(connectionEventDeliveries.companyId, companyId),
+            eq(connectionEventDeliveries.provider, "github"),
+            inArray(connectionEventDeliveries.event, ["check_run", "check_suite", "workflow_run", "status"]),
+          ))
+          .orderBy(desc(connectionEventDeliveries.createdAt))
+          .limit(1);
+
+        const lastCiEventAtMs: number | null = lastCiDelivery?.createdAt
+          ? new Date(lastCiDelivery.createdAt).getTime()
+          : null;
+
+        const isGeneralSilent = !lastEventAtMs || (currentTime.getTime() - lastEventAtMs > staleThresholdMs);
+        const isCiSilent = !lastCiEventAtMs || (currentTime.getTime() - lastCiEventAtMs > ciStaleThresholdMs);
+        const isSilent = isGeneralSilent || isCiSilent;
 
         if (isSilent) {
           const silenceMin = lastEventAtMs
             ? Math.max(thresholdMin, Math.round((currentTime.getTime() - lastEventAtMs) / 60000))
             : thresholdMin;
+          const ciSilenceMin = lastCiEventAtMs
+            ? Math.round((currentTime.getTime() - lastCiEventAtMs) / 60000)
+            : null;
+          const silenceReason = isGeneralSilent
+            ? `события GitHub не поступают ${silenceMin} мин`
+            : `события CI (check_run/workflow_run) не поступают ${ciSilenceMin ?? "∞"} мин`;
           const description = [
-            "## Тревога: события GitHub не поступают на доску",
+            `## Тревога: ${silenceReason} на доску`,
             "",
             `- Активных PR в работе: ${nonClosedPrs.length}`,
-            `- Последнее обработанное событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "никогда"} (${silenceMin} мин назад)`,
-            `- Порог тишины: ${thresholdMin} мин`,
+            `- Последнее общее событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "никогда"} (${silenceMin} мин назад)`,
+            `- Последнее событие CI: ${lastCiEventAtMs ? new Date(lastCiEventAtMs).toISOString() : "никогда"} (${ciSilenceMin !== null ? `${ciSilenceMin} мин назад` : "события CI отсутствуют"})`,
+            `- Порог тишины общих событий: ${thresholdMin} мин`,
+            `- Порог тишины событий CI: ${Math.round(ciStaleThresholdMs / 60000)} мин`,
             "",
-            "События GitHub необходимы для автоматического возврата задач при красном CI и обновления PR.",
+            "События GitHub CI необходимы для автоматического снятия гейта Review CI wait и возврата задач инженерам при сбоях.",
             "",
             "### Что проверить:",
-            "1. Статус webhook в GitHub App и облачного коннектора.",
-            "2. Ответы leaseEvents коннектора и логи сервера.",
-            "3. Значение webhookHealth в подключениях компании.",
+            "1. Подписку GitHub App на события check_run, check_suite, workflow_run, status.",
+            "2. Статус webhook в GitHub App и облачного коннектора.",
+            "3. Ответы leaseEvents коннектора и логи сервера.",
+            "4. Значение webhookHealth в подключениях компании.",
             "",
-            "_Сторож закроет эту задачу автоматически, когда события GitHub снова начнут обрабатываться доской._",
+            "_Сторож закроет эту задачу автоматически, когда события GitHub и CI снова начнут обрабатываться доской._",
           ].join("\n");
 
           if (!existingAlarm) {
             await db.insert(issues).values({
               companyId,
-              title: `1.6.6 P1 ALARM: события GitHub не поступают ${silenceMin} мин при открытых PR`,
+              title: `1.6.6 P1 ALARM: ${silenceReason} при открытых PR`,
               description,
               status: "todo",
               priority: "high",
@@ -1087,7 +1113,7 @@ export function githubConnectionEventService(
               companyId,
               issueId: existingAlarm.id,
               authorType: "system",
-              body: `Тревога возобновлена: события GitHub по-прежнему не поступают (${silenceMin} мин тишины при ${nonClosedPrs.length} активных PR).`,
+              body: `Тревога возобновлена: ${silenceReason} при ${nonClosedPrs.length} активных PR.`,
               createdAt: currentTime,
               updatedAt: currentTime,
             });
@@ -1103,7 +1129,7 @@ export function githubConnectionEventService(
               companyId,
               issueId: existingAlarm.id,
               authorType: "system",
-              body: `События GitHub снова поступают. Последнее событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "неизвестно"}. Тревога снята.`,
+              body: `События GitHub и CI снова поступают. Последнее общее событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "неизвестно"}, последнее событие CI: ${lastCiEventAtMs ? new Date(lastCiEventAtMs).toISOString() : "неизвестно"}. Тревога снята.`,
               createdAt: currentTime,
               updatedAt: currentTime,
             });

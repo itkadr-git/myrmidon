@@ -4,6 +4,7 @@ import {
   REVIEW_DECISION_MAX_REWAKES,
   REVIEW_DECISION_RECOVERY_INSTRUCTION,
   countStalledReviewDeferrals,
+  isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
   pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
@@ -241,5 +242,24 @@ describe("pre-merge approval", () => {
       pullRequestUrl: "https://github.com/acme/app/pull/7",
     });
     expect(notice.message).toContain("Одобрение записано, задача закроется после слияния");
+  });
+});
+
+describe("maintenance-interrupted reviewer run (OPE-12201)", () => {
+  it("recognises only a run cancelled by the maintenance drain", () => {
+    expect(isMaintenanceInterruptedRun({ status: "cancelled", errorCode: "myrmidon_maintenance_interrupted" })).toBe(true);
+    expect(isMaintenanceInterruptedRun({ status: "cancelled", errorCode: "cancelled" })).toBe(false);
+    expect(isMaintenanceInterruptedRun({ status: "failed", errorCode: "myrmidon_maintenance_interrupted" })).toBe(false);
+    expect(isMaintenanceInterruptedRun({ status: "succeeded", errorCode: null })).toBe(false);
+    expect(isMaintenanceInterruptedRun(null)).toBe(false);
+  });
+
+  it("does not spend the decision budget: maintenance_retry rows are not counted", () => {
+    const rows = [
+      { details: { stageId: "s1", kind: "maintenance_retry" } },
+      { details: { stageId: "s1", kind: "maintenance_retry" } },
+      { details: { stageId: "s1", kind: "decision_retry" } },
+    ];
+    expect(countStalledReviewDeferrals(rows, "s1")).toEqual({ ciWaits: 0, decisionRetries: 1 });
   });
 });
