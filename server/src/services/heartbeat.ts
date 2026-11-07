@@ -16834,10 +16834,30 @@ export function heartbeatService(
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
     if (isGatewayConnectFailed && !baseSchedule) {
-      await db
-        .update(agents)
-        .set({ status: "error", errorReason: "контейнер не поднят", updatedAt: now })
-        .where(eq(agents.id, agent.id));
+      // myrmidon(OPE-12150): the stranded-issue sweep re-schedules the last run of
+      // an in_progress issue every pass, so an old run whose connect retries ran
+      // out flipped a healthy agent back to error minutes after an operator
+      // cleared it. A run of this agent that succeeded after this one proves the
+      // container came up since; the exhausted budget then belongs to the old run
+      // only and must not mark the agent.
+      const laterSucceededRun = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agent.id),
+            eq(heartbeatRuns.status, "succeeded"),
+            gt(heartbeatRuns.createdAt, run.createdAt),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!laterSucceededRun) {
+        await db
+          .update(agents)
+          .set({ status: "error", errorReason: "контейнер не поднят", updatedAt: now })
+          .where(eq(agents.id, agent.id));
+      }
     }
     if (!baseSchedule) {
       const exhaustion = {
