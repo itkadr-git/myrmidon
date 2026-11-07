@@ -16,14 +16,14 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 From Python `execute_code`, read the bearer value directly from the environment; do not build a shell/curl command:
 
-If `PAPERCLIP_API_KEY` is empty or missing in `execute_code`, do not send the request without it and do not read `/data/hermes/.env` (that copies the secret into the session history): use the terminal (curl with `$PAPERCLIP_API_KEY` in double quotes) instead. A 401 is not a transient error — do not retry it.
+If `MYRMIDON_API_KEY` is empty or missing in `execute_code`, do not send the request without it and do not read `/data/hermes/.env` (that copies the secret into the session history): use the terminal (curl with `$MYRMIDON_API_KEY` in double quotes) instead. A 401 is not a transient error — do not retry it. `PAPERCLIP_API_KEY` / `PAPERCLIP_API_URL` are the deprecated aliases of the same two values; read the `MYRMIDON_*` names, and fall back to the alias only if the `MYRMIDON_*` one is missing.
 
 ```python
 import os
 import requests
 
-headers = {"Authorization": f"Bearer {os.environ['PAPERCLIP_API_KEY']}"}
-response = requests.get(f"{os.environ['PAPERCLIP_API_URL']}/api/health", headers=headers)
+headers = {"Authorization": f"Bearer {os.environ['MYRMIDON_API_KEY']}"}
+response = requests.get(f"{os.environ['MYRMIDON_API_URL']}/api/health", headers=headers)
 ```
 
-For `401 did not verify` or `agent_token_unexpanded_variable`, first verify that the bearer token was expanded from the environment; do not assume the board is broken. A literal `$PAPERCLIP_API_KEY` usually means shell quoting prevented expansion.
+For `401 did not verify` or `agent_token_unexpanded_variable`, first verify that the bearer token was expanded from the environment; do not assume the board is broken. A literal `$MYRMIDON_API_KEY` usually means shell quoting prevented expansion.
