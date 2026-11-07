@@ -261,4 +261,40 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
       .expect(200);
     void conditional;
   });
+
+  it("myrmidon(OPE-12027): honours page parameter as (page-1)*limit, rejects non-positive page, and gives offset priority", async () => {
+    const { companyId, company } = await seedCompanyWithIssues(5);
+    const app = routeApp(ctx.db, company.actor as never, issueRoutes);
+
+    // page=0 -> 400
+    const resPage0 = await request(app)
+      .get(`/api/companies/${companyId}/issues?page=0`)
+      .expect(400);
+    expect(resPage0.body).toHaveProperty("error");
+    expect(resPage0.body.error).toContain("page must be a positive integer");
+
+    // page=1 and page=2 at limit=2 return different issues
+    const resPage1 = await request(app)
+      .get(`/api/companies/${companyId}/issues?limit=2&page=1`)
+      .expect(200);
+    expect(resPage1.body).toHaveLength(2);
+
+    const resPage2 = await request(app)
+      .get(`/api/companies/${companyId}/issues?limit=2&page=2`)
+      .expect(200);
+    expect(resPage2.body).toHaveLength(2);
+
+    const idsPage1 = resPage1.body.map((i: { id: string }) => i.id);
+    const idsPage2 = resPage2.body.map((i: { id: string }) => i.id);
+    expect(idsPage1[0]).not.toEqual(idsPage2[0]);
+    expect(idsPage1[1]).not.toEqual(idsPage2[1]);
+    expect(idsPage1).not.toEqual(idsPage2);
+
+    // offset has priority over page
+    const resOffsetPriority = await request(app)
+      .get(`/api/companies/${companyId}/issues?limit=2&page=2&offset=0`)
+      .expect(200);
+    const idsOffsetPriority = resOffsetPriority.body.map((i: { id: string }) => i.id);
+    expect(idsOffsetPriority).toEqual(idsPage1);
+  });
 });
