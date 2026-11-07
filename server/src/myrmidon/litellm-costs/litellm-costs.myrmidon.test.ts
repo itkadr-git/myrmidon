@@ -257,4 +257,39 @@ describe("myrmidon(M2-A) gateway client (/spend/logs/v2)", () => {
     vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ data: [], total: 0, page: 1, page_size: 1000, total_pages: 5000 }), { status: 200 }));
     await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listSpendLogs(span)).rejects.toThrow(/too large/);
   });
+
+  // myrmidon(OPE-11776): the cap and spend of every key — one /key/list read per 100 keys.
+  it("reads the key caps with GET /key/list, a page per 100 keys, authorized by the accounting key", async () => {
+    const seen: Array<{ url: string; method: string; authorization: string }> = [];
+    vi.stubGlobal("fetch", async (input: string, init?: { method?: string; headers?: Record<string, string> }) => {
+      seen.push({ url: input, method: init?.method ?? "GET", authorization: init?.headers?.Authorization ?? "" });
+      const page = Number(new URL(input).searchParams.get("page"));
+      return new Response(
+        JSON.stringify({
+          keys: [{ token: `hash-${page}`, max_budget: page === 1 ? 10 : null, spend: 2.5 * page }],
+          total_count: 2,
+          current_page: page,
+          total_pages: 2,
+        }),
+        { status: 200 },
+      );
+    });
+    const rows = await createLitellmGatewayClient("http://gateway.test/", "sk-test").listKeyBudgets!();
+    expect(rows).toEqual([
+      { tokenHash: "hash-1", maxBudgetUsd: 10, spendUsd: 2.5 },
+      { tokenHash: "hash-2", maxBudgetUsd: null, spendUsd: 5 },
+    ]);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]!.url).toBe("http://gateway.test/key/list?return_full_object=true&size=100&page=1");
+    expect(seen[0]!.authorization).toBe("Bearer sk-test");
+  });
+
+  it("fails loudly on a key list that is not a key list, or that is too large", async () => {
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ detail: "Not Found" }), { status: 200 }));
+    await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!()).rejects.toThrow(/unexpected shape/);
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ keys: [], total_pages: 500 }), { status: 200 }));
+    await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!()).rejects.toThrow(/too large/);
+    vi.stubGlobal("fetch", async () => new Response("denied", { status: 401 }));
+    await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!()).rejects.toThrow(/answered 401/);
+  });
 });

@@ -49,7 +49,9 @@ describe("metrics self-check probe", () => {
     // OPE-9476: failed_before_model and recovery event counters are process-local.
     // The scent classifier alarm is process-local as well.
     // The two datastore retention metrics (1.6.6 OPE-9967) are process-local too.
-    expect(result.families_ok).toBe(37);
+    // The LiteLLM key cap utilization gauge (OPE-11776) reads the sweep's last
+    // evaluation from memory: process-local as well.
+    expect(result.families_ok).toBe(38);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -73,6 +75,7 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_recovery_created_total" &&
         family !== "myrmidon_recovery_deduped_total" &&
         family !== "myrmidon_recovery_success_total" &&
+        family !== "myrmidon_llm_key_budget_utilization_percent" &&
         !family.startsWith("myrmidon_datastore_retention_"),
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);

@@ -11,6 +11,11 @@
 // stop the others, and the next tick tries again. A sweep that overlaps the
 // previous one (slow gateway) waits: the timer skips a tick whose sweep is
 // still running instead of stacking them.
+//
+// myrmidon(OPE-11776): the same tick also refreshes the key budget report
+// (key-budgets.ts: caps and spend of the bot keys, the attention signals, the
+// metrics gauges) every BUDGET_SIGNAL_INTERVAL_MS per company, so the signals
+// exist without anyone opening a page.
 
 import type { Db } from "@myrmidon/db";
 import { companies } from "@myrmidon/db";
@@ -19,11 +24,15 @@ import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";
 import { createLitellmGatewayClient, readLitellmCostSettings, sweepLitellmCosts } from "./litellm-costs.js";
 import { listGatewayBotKeys } from "./bot-keys.js";
+import { refreshKeyUsageReport } from "./key-budgets.js"; // myrmidon(OPE-11776)
 // myrmidon(1.6.5-F-18): the empty-catalog signal registry (see attention.ts).
 import { resetEmptyCatalogSignals } from "./attention.js";
 import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 import { COST_ATTRIBUTION_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+
+/** How often a company's key budget report is re-evaluated (one /key/list read per 100 keys). */
+export const BUDGET_SIGNAL_INTERVAL_MS = 15 * 60_000;
 
 export interface LitellmSweepPorts {
   listCompanyIds(db: Db): Promise<string[]>;
@@ -66,6 +75,7 @@ export function startLitellmCostSweep(
 
   let sweeping = false;
   let stopped = false;
+  const budgetEvaluatedAt = new Map<string, number>();
   const tick = async () => {
     if (sweeping || stopped) return;
     sweeping = true;
@@ -94,6 +104,28 @@ export function startLitellmCostSweep(
         } catch (err) {
           failures.push(err instanceof Error ? err.message : String(err));
           ports.log.warn({ err, companyId }, "litellm cost sweep failed for one company");
+        }
+        // myrmidon(OPE-11776): the key budget signals; a failure here is logged
+        // and never fails the cost sweep (the spend collection is the main job).
+        const nowMs = ports.now().getTime();
+        if (nowMs - (budgetEvaluatedAt.get(companyId) ?? Number.NEGATIVE_INFINITY) >= BUDGET_SIGNAL_INTERVAL_MS) {
+          budgetEvaluatedAt.set(companyId, nowMs);
+          try {
+            await refreshKeyUsageReport(
+              {
+                db,
+                settings,
+                readGatewayKey: (id, name) => ports.readGatewayKey(db, id, name),
+                listBotKeys: (id) => listGatewayBotKeys(db, id, env),
+                client: createLitellmGatewayClient,
+                now: ports.now,
+                log: ports.log,
+              },
+              companyId,
+            );
+          } catch (err) {
+            ports.log.warn({ err, companyId }, "litellm key budget signal evaluation failed for one company");
+          }
         }
       }
       // One company without the key is that company's choice; every company without it
