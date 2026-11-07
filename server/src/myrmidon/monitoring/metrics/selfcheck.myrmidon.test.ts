@@ -9,8 +9,11 @@ import { describe, expect, it } from "vitest";
 import {
   METRIC_FAMILIES,
   collectMetricsParts,
+  renderMetricsText,
   runMetricsSelfCheck,
 } from "./metrics.js";
+import { auth401BurstMetrics } from "../../auth-401-burst/index.js";
+import { createAuth401BurstMetrics } from "../../auth-401-burst/metrics.js";
 
 const NOW = new Date("2026-10-06T12:00:00.000Z");
 
@@ -49,7 +52,8 @@ describe("metrics self-check probe", () => {
     // OPE-9476: failed_before_model and recovery event counters are process-local.
     // The scent classifier alarm is process-local as well.
     // The two datastore retention metrics (1.6.6 OPE-9967) are process-local too.
-    expect(result.families_ok).toBe(37);
+    // The auth-401 burst detector (OPE-11890) is process-local too.
+    expect(result.families_ok).toBe(39);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -69,6 +73,8 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_starvation_total" &&
         family !== "myrmidon_claim_rejection_total" &&
         family !== "myrmidon_guardrail_triggers_total" &&
+        family !== "myrmidon_auth_401_burst_total" &&
+        family !== "myrmidon_auth_401_burst_tripped" &&
         family !== "myrmidon_agent_failed_before_model_total" &&
         family !== "myrmidon_recovery_created_total" &&
         family !== "myrmidon_recovery_deduped_total" &&
@@ -116,5 +122,51 @@ describe("metrics self-check probe", () => {
     // The snapshot shape the endpoint renders is intact even on a broken read.
     expect(collected.fields.runsActive).toBe(0);
     expect(collected.fields.roleQueueTasks).toEqual([]);
+  });
+
+  it("renders both 401-burst families and never leaks a credential as a label", async () => {
+    // Drive the process-global detector into a tripped state, then build the
+    // snapshot the way the endpoint does (collectMetricsParts + role/errors),
+    // injecting the detector sample. The credential-shaped record below must
+    // not survive into any label or help text.
+    const failingDb = { select: () => { throw new Error("database unavailable"); } } as never;
+    const collected = await collectMetricsParts({ ...deps, db: failingDb });
+
+    auth401BurstMetrics.reset();
+    auth401BurstMetrics.record("no_credentials");
+    auth401BurstMetrics.record("Bearer sk_render_leak_probe_0123456789abcdef");
+    const sample = auth401BurstMetrics.read();
+    expect(sample.tripped).toBe(true);
+
+    const text = renderMetricsText({
+      ...collected.fields,
+      role: collected.role,
+      scrapeErrors: collected.errors.length,
+      collectedAt: collected.now.toISOString(),
+      auth401Burst: sample,
+    });
+    expect(text).toContain("# HELP myrmidon_auth_401_burst_total");
+    expect(text).toContain("# TYPE myrmidon_auth_401_burst_total counter");
+    expect(text).toContain("# TYPE myrmidon_auth_401_burst_tripped gauge");
+    expect(text).toContain(`myrmidon_auth_401_burst_total{role="all",reason="no_credentials"} 1`);
+    expect(text).toContain(`myrmidon_auth_401_burst_total{role="all",reason="unknown"} 1`);
+    expect(text).toContain(`myrmidon_auth_401_burst_tripped{role="all"} 1`);
+    // The credential never renders: not the token, not the prefix, nothing.
+    expect(text).not.toContain("sk_ren");
+    expect(text).not.toContain("Bearer");
+    auth401BurstMetrics.reset();
+
+    // A dedicated instance shows the untripped gauge renders 0, not an absent
+    // series — "no burst yet" is information.
+    const quiet = createAuth401BurstMetrics({ threshold: 100, windowMs: 60_000 });
+    quiet.record("no_credentials");
+    const quietText = renderMetricsText({
+      ...collected.fields,
+      role: collected.role,
+      scrapeErrors: collected.errors.length,
+      collectedAt: collected.now.toISOString(),
+      auth401Burst: quiet.read(),
+    });
+    expect(quietText).toContain(`myrmidon_auth_401_burst_tripped{role="all"} 0`);
   });
 });
