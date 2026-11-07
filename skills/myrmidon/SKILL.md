@@ -18,7 +18,7 @@ In Myrmidon, **task** and **issue** refer to the same work item. The UI may use 
 ## Context discipline (every run)
 
 - **Load this skill once per run, under one name.** It stays in your context. Do not call `skill_view` on it again under any alias (`myrmidon`, `paperclip-managed:myrmidon`, `paperclip-managed/myrmidon`). Never re-open it after context compaction, or when it shows up as a "stale tool result left out" note: continue from your compaction summary and notes. Open a `references/` file only for a situation in the index below, once.
-- **Never print full board JSON.** Use one-line `curl -sS ... | jq` filters, not multi-line `python3 -` scripts that print whole responses: `jq '{id,identifier,status,title}'`, `jq -r '.[]|[.identifier,.status,.title]|@tsv'`. There is no `fields=` parameter; bound output with `?limit=N` (issues, comments), `?view=compact` (issue list, the agent default), `comments?after=<id>&order=asc&limit=N`, and `Prefer: return=minimal` on `PATCH /api/issues/{id}`.
+- **Never print full board JSON.** Use one-line `curl -sS ... | jq` filters, not multi-line `python3 -` scripts that print whole responses: `jq '{id,identifier,status,title}'`, `jq -r '.[]|[.identifier,.status,.title]|@tsv'`. There is no `fields=` parameter; bound output with `?limit=N` (issues, comments), `?view=compact` (issue list, the agent default), `comments?after=<id>&order=asc&limit=N`, and `Prefer: return=minimal` on `PATCH /api/issues/{id}`. Задача по идентификатору: `GET /api/issues/OPE-N` одним запросом; списки — только `limit`+`offset`, цикл до `len < limit`.
 
 ## Auth and run context
 
