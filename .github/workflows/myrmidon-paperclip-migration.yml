@@ -159,6 +159,9 @@ jobs:
           $PSQL -1 -d paperclip_source -f "$FIX/seed-paperclip-$R.sql" > /dev/null
           pg_dump -h localhost -U postgres --format=plain --no-owner --no-privileges paperclip_source > "$W/dumps/source.dump.sql"
           test -s "$W/dumps/source.dump.sql"
+          # Runner images may ship a newer pg_dump than the postgres:16 service; strip
+          # server-version-specific SET directives the target server does not know.
+          sed -i -e '/^SET transaction_timeout/d' "$W/dumps/source.dump.sql"
 
           # Source evidence, taken from the database itself.
           $LIVE snapshot --url "$SRC" --out "$W/source-before.json"
