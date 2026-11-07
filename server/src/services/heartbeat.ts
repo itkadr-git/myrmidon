@@ -57,7 +57,14 @@ import {
   readInputOverflowMaxFailures,
 } from "../myrmidon/input-overflow-guard.js";
 // myrmidon(RUN-GUARD-LOOPS): a run the run guard stopped is not retried; its issue is blocked.
-import { buildRunGuardStopNotice, readRunGuardStopReason } from "../myrmidon/run-guard-stop.js";
+// myrmidon(RUN-GUARD-CONTINUE): except a call-limit stop of a run that made changes.
+import {
+  buildRunGuardStopNotice,
+  readRunGuardStopReason,
+  readRunGuardWriteCalls,
+  shouldContinueAfterRunGuardStop,
+  type RunGuardStopStats,
+} from "../myrmidon/run-guard-stop.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 // myrmidon(B1c): short alias for template literals below.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -16455,14 +16462,28 @@ export function heartbeatService(
   // stranded-recovery escalation, with a comment that says why and that a new
   // input is needed. Without it the issue would sit in its status with no run
   // and no retry for the sweep to act on.
+  //
+  // myrmidon(RUN-GUARD-CONTINUE): one stop is not final. `model_call_limit` also
+  // trips on productive work, so a call-limit stop of a run that made changes
+  // (`writeCalls` > 0) continues the work like a max-turn stop does and leaves
+  // the issue as it is; only when the continuation cannot be scheduled (attempt
+  // ceiling spent, policy off, issue moved on) does the stop become final here.
   async function handleRunGuardStop(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
-    guardStats: { readOnlyStreak: number; modelCalls: number },
+    guardStats: RunGuardStopStats,
   ) {
     const reason = readRunGuardStopReason(run);
     if (!reason) return null;
     const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    // Only a run of an issue continues: a run without one has no task to resume.
+    if (
+      issueId &&
+      shouldContinueAfterRunGuardStop(run, guardStats) &&
+      (await continueRunStoppedAtCallLimit(run, agent, guardStats))
+    ) {
+      return null;
+    }
     await appendRunEvent(run, {
       eventType: "lifecycle",
       stream: "system",
@@ -16494,6 +16515,64 @@ export function heartbeatService(
     });
   }
 
+  // myrmidon(RUN-GUARD-CONTINUE): continue the work of a run the run guard
+  // stopped at the model call limit after it made changes. The same machinery as
+  // the max-turn continuation: the same retry reason, the same attempt ceiling
+  // (`heartbeat.maxTurnContinuation.maxAttempts`, counted along the chain of
+  // continuations), the same issue gate. Returns true when a continuation run
+  // is scheduled (the caller then leaves the issue alone), false when it is not:
+  // the caller falls back to the final stop (block + comment).
+  async function continueRunStoppedAtCallLimit(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    guardStats: RunGuardStopStats,
+  ): Promise<boolean> {
+    const reason = readRunGuardStopReason(run);
+    const writeCalls = readRunGuardWriteCalls(run, guardStats);
+    const policy = parseMaxTurnContinuationPolicy(agent);
+    if (!policy.enabled || policy.maxAttempts <= 0) {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Run guard continuation suppressed because the max-turn continuation policy is disabled",
+        payload: { runGuardStopReason: reason, writeCalls, policy },
+      });
+      return false;
+    }
+    try {
+      const scheduled = await scheduleBoundedRetryForRun(run, agent, {
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+        wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+        maxAttempts: policy.maxAttempts,
+        delayMs: policy.delayMs,
+        runGuardContinuation: true,
+      });
+      if (scheduled.outcome !== "scheduled") return false;
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: `Run stopped by the run guard (${reason}) after ${writeCalls} calls that changed things; the work continues in a follow-up run`,
+        payload: {
+          runGuardStopReason: reason,
+          writeCalls,
+          modelCalls: guardStats.modelCalls ?? null,
+          retryRunId: scheduled.run.id,
+          scheduledRetryAttempt: scheduled.attempt,
+          maxAttempts: scheduled.maxAttempts,
+        },
+      });
+      return true;
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id },
+        "failed to schedule the continuation of a run stopped at the call limit",
+      );
+      return false;
+    }
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -16504,6 +16583,8 @@ export function heartbeatService(
       wakeReason?: string;
       maxAttempts?: number;
       delayMs?: number;
+      // myrmidon(RUN-GUARD-CONTINUE): set by continueRunStoppedAtCallLimit only.
+      runGuardContinuation?: boolean;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -16511,7 +16592,17 @@ export function heartbeatService(
     // asks (recovery sweep, process-loss retry, quota monitor, continuation).
     // Maintenance interruptions and transport failures are different error codes
     // and keep their own retry paths.
-    if (readRunGuardStopReason(run)) {
+    // myrmidon(RUN-GUARD-CONTINUE): the one exception is the continuation of a
+    // call-limit stop that handleRunGuardStop found productive (it passes the
+    // flag); the scheduler still checks the stop reason and the retry reason.
+    if (
+      readRunGuardStopReason(run) &&
+      !(
+        opts?.runGuardContinuation === true &&
+        opts.retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
+        readRunGuardStopReason(run) === "model_call_limit"
+      )
+    ) {
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",
@@ -35306,6 +35397,7 @@ export function heartbeatService(
       const issue = await handleRunGuardStop(run, agent, {
         readOnlyStreak: Number(stored.readOnlyStreak) || 0,
         modelCalls: Number(stored.modelCalls) || 0,
+        writeCalls: Number(stored.writeCalls) || 0,
       });
       return { outcome: "handled" as const, issue };
     },

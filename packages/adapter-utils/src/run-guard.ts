@@ -170,7 +170,12 @@ export class RunGuard {
   // myrmidon(RUN-GUARD-LOOPS): tool calls seen, the current run of consecutive
   // read-only calls, and how often each read-only call (hash of tool + argument)
   // was made since the last write. Arguments themselves are never kept.
+  // myrmidon(RUN-GUARD-CONTINUE): `writeCalls` counts the calls the classifier does
+  // not take for read-only (patch, write_file, terminal commands that change
+  // something, ...) over the whole run. It tells a call-limit stop of a run that
+  // was changing things (work, continued by the board) from one that only looked.
   private toolCalls = 0;
+  private writeCalls = 0;
   private readOnlyStreak = 0;
   private readonly readCallCounts = new Map<string, number>();
   private stoppedReason: RunGuardStopReason | null = null;
@@ -272,6 +277,7 @@ export class RunGuard {
     modelCallCount: number;
     toolRetryCount: number;
     toolCalls: number;
+    writeCalls: number;
     readOnlyStreak: number;
   } {
     return {
@@ -279,6 +285,7 @@ export class RunGuard {
       modelCallCount: this.modelCalls,
       toolRetryCount: this.toolFailureCount,
       toolCalls: this.toolCalls,
+      writeCalls: this.writeCalls,
       readOnlyStreak: this.readOnlyStreak,
     };
   }
@@ -297,6 +304,7 @@ export class RunGuard {
     if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
     this.toolCalls += 1;
     if (classifyToolCall(name, args) === "write") {
+      this.writeCalls += 1;
       this.readOnlyStreak = 0;
       this.readCallCounts.clear();
       return this.event();

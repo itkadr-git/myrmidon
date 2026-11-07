@@ -5,6 +5,8 @@ import {
   buildRunGuardStopComment,
   buildRunGuardStopNotice,
   readRunGuardStopReason,
+  readRunGuardWriteCalls,
+  shouldContinueAfterRunGuardStop,
 } from "./run-guard-stop.js";
 import {
   PERMANENT_RUN_FAILURE_ERROR_CODES,
@@ -110,6 +112,73 @@ describe("buildRunGuardStopNotice", () => {
     expect(notice).toMatchObject({ title: "Прогон остановлен защитой", tone: "danger" });
     expect(notice?.body).toBe(buildRunGuardStopComment({ errorCode: "no_progress_exploration" }, { readOnlyStreak: 40 }));
     expect(notice?.nextAction).toContain("новую вводную");
+  });
+});
+
+// myrmidon(RUN-GUARD-CONTINUE): a call-limit stop of a run that made changes is work, not a loop.
+describe("readRunGuardWriteCalls", () => {
+  it("reads the count from the passed statistics, else from the ones stored with the run", () => {
+    expect(readRunGuardWriteCalls({ errorCode: "model_call_limit" }, { writeCalls: 27 })).toBe(27);
+    expect(
+      readRunGuardWriteCalls({
+        errorCode: "model_call_limit",
+        resultJson: { runGuardStopReason: "model_call_limit", runGuardStats: { writeCalls: 5, modelCalls: 150 } },
+      }),
+    ).toBe(5);
+    // Passed statistics win over the stored ones.
+    expect(
+      readRunGuardWriteCalls(
+        { errorCode: "model_call_limit", resultJson: { runGuardStats: { writeCalls: 5 } } },
+        { writeCalls: 9 },
+      ),
+    ).toBe(9);
+  });
+
+  it("is 0 when the count is missing or not a positive number", () => {
+    expect(readRunGuardWriteCalls({ errorCode: "model_call_limit" })).toBe(0);
+    expect(readRunGuardWriteCalls(null)).toBe(0);
+    expect(readRunGuardWriteCalls({ errorCode: "model_call_limit" }, { modelCalls: 150 })).toBe(0);
+    for (const writeCalls of [0, -3, Number.NaN, "7", null]) {
+      expect(readRunGuardWriteCalls({ errorCode: "model_call_limit" }, { writeCalls } as never)).toBe(0);
+    }
+  });
+});
+
+describe("shouldContinueAfterRunGuardStop", () => {
+  it("continues a call-limit stop of a run that made changes", () => {
+    expect(shouldContinueAfterRunGuardStop({ errorCode: "model_call_limit" }, { modelCalls: 150, writeCalls: 27 })).toBe(true);
+    expect(
+      shouldContinueAfterRunGuardStop({
+        errorCode: "cancelled",
+        resultJson: { runGuardStopReason: "model_call_limit", runGuardStats: { writeCalls: 1 } },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not continue a call-limit stop of a run that changed nothing, or that has no count", () => {
+    expect(shouldContinueAfterRunGuardStop({ errorCode: "model_call_limit" }, { modelCalls: 150, writeCalls: 0 })).toBe(false);
+    expect(shouldContinueAfterRunGuardStop({ errorCode: "model_call_limit" }, { modelCalls: 150, readOnlyStreak: 33 })).toBe(false);
+    expect(shouldContinueAfterRunGuardStop({ errorCode: "model_call_limit" })).toBe(false);
+  });
+
+  it("never continues the other stops, whatever the run changed", () => {
+    for (const reason of RUN_GUARD_STOP_REASONS) {
+      if (reason === "model_call_limit") continue;
+      expect(shouldContinueAfterRunGuardStop({ errorCode: reason }, { modelCalls: 60, writeCalls: 50 })).toBe(false);
+    }
+  });
+
+  it("is false for a run the guard did not stop", () => {
+    expect(shouldContinueAfterRunGuardStop(null, { writeCalls: 50 })).toBe(false);
+    expect(shouldContinueAfterRunGuardStop({ errorCode: "adapter_failed" }, { writeCalls: 50 })).toBe(false);
+    expect(shouldContinueAfterRunGuardStop({ errorCode: "hermes_gateway_connect_failed" }, { writeCalls: 50 })).toBe(false);
+  });
+
+  it("leaves the final-stop comment of an exhausted continuation as it was", () => {
+    expect(buildRunGuardStopComment({ errorCode: "model_call_limit" }, { readOnlyStreak: 0, modelCalls: 150, writeCalls: 27 })).toBe(
+      "Прогон остановлен защитой: лимит вызовов модели (150 вызовов модели). " +
+        "Нужна новая вводная: уточнить задачу или разбить её; автоповтора не будет.",
+    );
   });
 });
 
