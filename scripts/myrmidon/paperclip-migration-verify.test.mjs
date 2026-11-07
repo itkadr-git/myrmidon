@@ -100,6 +100,13 @@ describe("Paperclip Migration Verification Suite (Multi-Release)", () => {
             const seedText = fs.readFileSync(seedPath, "utf8");
             assert.ok(seedText.includes(`INSERT INTO "mcp_oauth_tokens"`));
           });
+
+          it(`seeds 10 rows into resource_lifecycle_events for ${rel.tag}`, () => {
+            const seedText = fs.readFileSync(seedPath, "utf8");
+            assert.ok(seedText.includes(`INSERT INTO "resource_lifecycle_events"`));
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+            assert.equal(manifest.vendorGapCounts?.resource_lifecycle_events, 10);
+          });
         }
 
         it(`has manifest matching entity counts and spot checks`, () => {
