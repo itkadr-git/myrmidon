@@ -31,6 +31,7 @@ export {
   type DebateService,
   type DebateServiceDeps,
 } from "./service.js";
+export * from "./domain/index.js";
 
 /** Router for app.ts; a service override lets tests drive the whole API with fakes. */
 export function myrmidonDebateRoutes(db: Db, overrides: { service?: ReturnType<typeof debateServiceForDb>; env?: NodeJS.ProcessEnv } = {}) {
