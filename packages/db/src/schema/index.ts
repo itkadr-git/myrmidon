@@ -1,4 +1,6 @@
 export { companies } from "./companies.js";
+// myrmidon(1.7 TIER-SCHEMA OPE-12091): company subscription plan + agent quota.
+export { companyTiers } from "./company_tiers.js";
 export { companyLogos } from "./company_logos.js";
 export { companyTransferRuns } from "./company_transfer_runs.js";
 export { companyOnboardingSeeds } from "./company_onboarding_seeds.js";
