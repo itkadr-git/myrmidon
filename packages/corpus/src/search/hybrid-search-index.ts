@@ -173,12 +173,12 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const embedding = sqlIdentifier(schema.embeddingColumn, "embedding column");
 
   // `$3` is the optional dataset: `$3::uuid is null` keeps one statement for both a dataset-scoped
-  // and a company-wide search.
+  // and a company-wide search. `$3::uuid[] is null` supports filtering by multiple datasets.
   const scope = [
     `  from ${chunks} c`,
     `  join ${documents} d on d.id = c.document_id and d.company_id = c.company_id`,
     ` where c.company_id = $2::uuid`,
-    `   and ($3::uuid is null or d.dataset_id = $3::uuid)`,
+    `   and ($3::uuid[] is null or d.dataset_id = any($3::uuid[]))`,
     `   and d.status = 'ready'`,
   ].join("\n");
 
@@ -220,7 +220,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   return {
     async search(query: CorpusSearchQuery) {
       const limit = clampLimit(query.limit);
-      const datasetId = query.datasetId ?? null;
+      const datasetIds = query.datasetIds ?? (query.datasetId ? [query.datasetId] : null);
       const hasEmbedding = query.embedding !== undefined;
       const useFullText = hasText(query.text);
       if (!hasEmbedding && !useFullText) return [];
@@ -240,7 +240,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
             vectorRows = await transaction.query<ChunkRow>(vectorSql, [
               embeddingLiteral,
               query.companyId,
-              datasetId,
+              datasetIds,
               kCandidates,
             ]);
           } catch (error) {
@@ -254,7 +254,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
           fullTextRows = await transaction.query<ChunkRow>(fullTextSql, [
             query.text.trim(),
             query.companyId,
-            datasetId,
+            datasetIds,
             likePattern,
             language,
             kCandidates,
@@ -267,7 +267,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         vectorRows.map((row) => row.id),
         fullTextRows.map((row) => row.id),
         fusion,
-      ).slice(0, limit);
+      );
       if (fused.length === 0) return [];
 
       const chunksById = new Map<string, ChunkRow>();
@@ -276,14 +276,28 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (!chunksById.has(row.id)) chunksById.set(row.id, row);
       }
 
-      const documentIds = [...new Set([...chunksById.values()].map((row) => row.document_id))];
+      // A document often contributes several adjacent chunks. Keep only its best fused chunk
+      // in the public result so one long document cannot consume the whole top-k and hide other
+      // relevant documents. Candidate retrieval remains wide (kCandidates per leg), so this is
+      // diversification rather than a recall-reducing post-filter.
+      const diversified = [] as typeof fused;
+      const seenDocuments = new Set<string>();
+      for (const candidate of fused) {
+        const documentId = chunksById.get(candidate.id)?.document_id;
+        if (!documentId || seenDocuments.has(documentId)) continue;
+        seenDocuments.add(documentId);
+        diversified.push(candidate);
+        if (diversified.length >= limit) break;
+      }
+
+      const documentIds = [...new Set(diversified.map((candidate) => chunksById.get(candidate.id)?.document_id).filter((id): id is string => !!id))];
       const documentRows = documentIds.length
         ? await options.sql.query<DocumentRow>(documentsSql, [query.companyId, documentIds])
         : [];
       const documentsById = new Map(documentRows.map((row) => [row.id, row]));
 
       const hits: CorpusSearchHitDetail[] = [];
-      for (const candidate of fused) {
+      for (const candidate of diversified) {
         const row = chunksById.get(candidate.id);
         if (!row) continue;
         const document = documentsById.get(row.document_id);

@@ -1103,6 +1103,37 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   });
 
+  it("allows manual user wake to bypass per-agent daily run cap", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        maxDailyRuns: 1,
+      },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "succeeded",
+      createdAt: new Date(),
+      startedAt: new Date(),
+      finishedAt: new Date(),
+      contextSnapshot: {},
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      manualUserWake: true,
+      requestedByActorType: "user",
+      requestedByActorId: "adm-user-1",
+    });
+
+    expect(run).not.toBeNull();
+    expect(run?.status).toBe("queued");
+  });
+
   it("does not repeat assignment wakes after a daily cap skip", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: { maxDailyRuns: 0 },

@@ -24,9 +24,7 @@ the local Docker socket only, and executes container lifecycle requests
 strictly within the pre-enrolled per-bot quotas (memory, CPU, pids) and the
 image allowlist.
 
-Every request carries a bearer authorization header; production deployments
-add mTLS with a client certificate issued by the site CA. Request and
-response bodies are JSON (`Content-Type: application/json; charset=utf-8`).
+Every request uses HTTPS with mutual TLS (mTLS) and a bearer authorization header. Before creating the transport, the registry validates the HTTPS URL, CA certificate, client certificate, and client key; missing or invalid material produces a clear configuration error and no request is sent. The enrolled CA fingerprint must match the client certificate chain. The bearer token remains required by site-agent after the TLS handshake. Request and response bodies are JSON (`Content-Type: application/json; charset=utf-8`).
 
 ## Site-agent API
 

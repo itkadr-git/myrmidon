@@ -59,11 +59,19 @@ export interface CorpusRoutesDeps {
   serviceDeps?: Partial<CorpusServiceDeps>;
 }
 
-/** Multipart upload of one document; the field name is the vendor one, `file`. */
+/**
+ * Multipart upload of one document; the field name is the vendor one, `file`.
+ *
+ * `defParamCharset: "utf8"`: browsers and HTTP clients put the file name into
+ * `Content-Disposition` as raw UTF-8 bytes. Multer hands the header parameters to
+ * busboy, whose default charset is `latin1`, so a non-ASCII name (for example a
+ * Cyrillic one) would reach the service as mojibake and be stored as the title.
+ */
 function singleFileUpload(req: Request, res: Response, maxBytes: number): Promise<void> {
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: maxBytes, files: 1 },
+    defParamCharset: "utf8",
   }).single("file");
   return new Promise<void>((resolve, reject) => {
     upload(req, res, (err: unknown) => {
@@ -282,6 +290,21 @@ export function myrmidonCorpusRoutes(db: Db, deps: CorpusRoutesDeps) {
       assertCompanyAccess(req, companyId);
       const document = await service.getDocument(companyId, req.params.documentId as string);
       res.json({ document });
+    }),
+  );
+
+  // A failed document is parsed again from the bytes already stored — no delete and re-upload.
+  router.post(
+    "/myrmidon/companies/:companyId/corpus/documents/:documentId/reparse",
+    handle(async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await service.reparseDocument(
+        companyId,
+        req.params.documentId as string,
+        actorOf(req),
+      );
+      res.status(202).json(result);
     }),
   );
 

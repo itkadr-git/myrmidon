@@ -216,6 +216,40 @@ describe("run liveness classifier", () => {
     expect(classification.livenessReason).toBe("unmanaged background task stopped; no durable live path");
   });
 
+  // myrmidon(OPE-11947): a model-unavailable run is a failure; the workspace
+  // operation and activity event every run leaves behind must not make it
+  // "advanced", or recovery re-wakes the agent as if it had made progress.
+  it("never counts a model-unavailable run as progress, whatever evidence it left behind", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "hermes_gateway_run_failed",
+      error: "Provider returned an overload or quota error as successful response content",
+      resultJson: {
+        errorFamily: "transient_upstream",
+        provider_error_as_content: true,
+        model_unavailable: true,
+        result: "",
+        output: "",
+      },
+      evidence: { workspaceOperationsCreated: 1, activityEventsCreated: 1, latestEvidenceAt: new Date("2026-11-06T00:00:00Z") },
+    });
+
+    expect(classification.livenessState).toBe("failed");
+    expect(classification.livenessReason).toBe("Run ended with failed (hermes_gateway_run_failed)");
+    expect(classification.lastUsefulActionAt).toBeNull();
+  });
+
+  it("still counts a succeeded run with the same evidence as progress", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: { summary: "Updated implementation." },
+      evidence: { workspaceOperationsCreated: 1, activityEventsCreated: 1, latestEvidenceAt: new Date("2026-11-06T00:00:00Z") },
+    });
+
+    expect(classification.livenessState).toBe("advanced");
+  });
+
   it("marks unclear useful output as unknown actionability", () => {
     const classification = classifyRunLiveness({
       ...baseInput,

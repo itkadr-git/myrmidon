@@ -1,5 +1,5 @@
 {
-  "id": "4beddd1e-b13a-449b-8af2-a0284036bce0",
+  "id": "20084129-d97b-4670-b2b3-4ad51c0dc750",
   "prevId": "a90c0131-6075-4e2c-bc24-9e667df14957",
   "version": "7",
   "dialect": "postgresql",
@@ -29526,6 +29526,139 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.interaction_escalations": {
+      "name": "interaction_escalations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "interaction_id": {
+          "name": "interaction_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "level": {
+          "name": "level",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "from_recipient": {
+          "name": "from_recipient",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "to_recipient": {
+          "name": "to_recipient",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "interaction_escalations_interaction_level_uq": {
+          "name": "interaction_escalations_interaction_level_uq",
+          "columns": [
+            {
+              "expression": "interaction_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "level",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "interaction_escalations_company_created_at_idx": {
+          "name": "interaction_escalations_company_created_at_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "interaction_escalations_company_id_companies_id_fk": {
+          "name": "interaction_escalations_company_id_companies_id_fk",
+          "tableFrom": "interaction_escalations",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "interaction_escalations_interaction_id_issue_thread_interactions_id_fk": {
+          "name": "interaction_escalations_interaction_id_issue_thread_interactions_id_fk",
+          "tableFrom": "interaction_escalations",
+          "tableTo": "issue_thread_interactions",
+          "columnsFrom": [
+            "interaction_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.invites": {
       "name": "invites",
       "schema": "",
@@ -39320,176 +39453,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.myrmidon_fleet_onboard_jobs": {
-      "name": "myrmidon_fleet_onboard_jobs",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server_id": {
-          "name": "server_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'onboard'"
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "step": {
-          "name": "step",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "step_log": {
-          "name": "step_log",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "secret_consumed_at": {
-          "name": "secret_consumed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "finished_at": {
-          "name": "finished_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "myrmidon_fleet_onboard_jobs_company_idx": {
-          "name": "myrmidon_fleet_onboard_jobs_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "myrmidon_fleet_onboard_jobs_server_idx": {
-          "name": "myrmidon_fleet_onboard_jobs_server_idx",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "myrmidon_fleet_onboard_jobs_company_id_companies_id_fk": {
-          "name": "myrmidon_fleet_onboard_jobs_company_id_companies_id_fk",
-          "tableFrom": "myrmidon_fleet_onboard_jobs",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "myrmidon_fleet_onboard_jobs_server_id_myrmidon_fleet_servers_id_fk": {
-          "name": "myrmidon_fleet_onboard_jobs_server_id_myrmidon_fleet_servers_id_fk",
-          "tableFrom": "myrmidon_fleet_onboard_jobs",
-          "tableTo": "myrmidon_fleet_servers",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "myrmidon_fleet_onboard_jobs_kind_check": {
-          "name": "myrmidon_fleet_onboard_jobs_kind_check",
-          "value": "\"myrmidon_fleet_onboard_jobs\".\"kind\" in ('onboard', 'recheck', 'decommission')"
-        },
-        "myrmidon_fleet_onboard_jobs_status_check": {
-          "name": "myrmidon_fleet_onboard_jobs_status_check",
-          "value": "\"myrmidon_fleet_onboard_jobs\".\"status\" in ('pending', 'claimed', 'running', 'succeeded', 'failed', 'expired')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.myrmidon_fleet_servers": {
       "name": "myrmidon_fleet_servers",
       "schema": "",
@@ -39551,13 +39514,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "keep_password": {
-          "name": "keep_password",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "description": {
           "name": "description",
           "type": "text",
@@ -39570,50 +39526,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
-        },
-        "role": {
-          "name": "role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'generic'"
-        },
-        "onboard_state": {
-          "name": "onboard_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'new'"
-        },
-        "host_key_fingerprint": {
-          "name": "host_key_fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "access_key_secret_key": {
-          "name": "access_key_secret_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "bootstrap_version": {
-          "name": "bootstrap_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_check_at": {
-          "name": "last_check_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_check_ok": {
-          "name": "last_check_ok",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -39686,16 +39598,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "myrmidon_fleet_servers_role_check": {
-          "name": "myrmidon_fleet_servers_role_check",
-          "value": "\"myrmidon_fleet_servers\".\"role\" in ('generic', 'build-runner', 'sandbox', 'bot-host')"
-        },
-        "myrmidon_fleet_servers_onboard_state_check": {
-          "name": "myrmidon_fleet_servers_onboard_state_check",
-          "value": "\"myrmidon_fleet_servers\".\"onboard_state\" in ('new', 'onboarding', 'ready', 'needs_attention', 'decommissioned')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.myrmidon_install_identity": {

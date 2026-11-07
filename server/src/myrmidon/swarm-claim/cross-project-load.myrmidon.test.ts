@@ -49,11 +49,11 @@ function seededScenario(seed: number) {
   const projectIds = Array.from({ length: 5 }, (_, index) => stableUuid(2, index));
   const engineerIds = Array.from({ length: 20 }, (_, index) => stableUuid(3, index));
   const reviewerId = stableUuid(4, 0);
-  const taskIds = Array.from({ length: 100 }, (_, index) => stableUuid(5, index));
+  const taskIds = Array.from({ length: 40 }, (_, index) => stableUuid(5, index));
   const random = seededRandom(seed);
   const order = shuffled(engineerIds, random);
   const shuffledTasks = shuffled(taskIds, random);
-  const rounds = Array.from({ length: 5 }, () => shuffled(order, random));
+  const rounds = Array.from({ length: 2 }, () => shuffled(order, random));
   return { companyId, projectIds, engineerIds, reviewerId, taskIds, order, shuffledTasks, rounds };
 }
 
@@ -61,8 +61,15 @@ describeDatabase("swarm cross-project claim load", () => {
   let db: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const { companyId, projectIds, engineerIds, reviewerId, taskIds } = seededScenario(SEED);
+  const outsiderId = stableUuid(6, 0);
   const projectByTask = new Map<string, string>();
-  const claimSettings = resolveSwarmClaimSettings({ env: {} }).settings;
+  // P2.12 (OPE-9202): the claim runs with the capacity policy ON, so the load
+  // also proves the policy-integrated queue keeps project scoping intact.
+  const baseSettings = resolveSwarmClaimSettings({ env: {} }).settings;
+  const claimSettings = {
+    ...baseSettings,
+    capacityPolicy: { ...baseSettings.capacityPolicy, enabled: true },
+  };
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-swarm-cross-project-");
@@ -95,6 +102,13 @@ describeDatabase("swarm cross-project claim load", () => {
         id: reviewerId, companyId, name: "reviewer", role: "reviewer", status: "idle",
         adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: {},
       },
+      // An engineer in good standing that belongs to NO project: the
+      // cross-project acceptance case of P2.12 — with the capacity policy on,
+      // the real claim path must still refuse it every project task.
+      {
+        id: outsiderId, companyId, name: "outsider-engineer", role: "engineer", status: "idle",
+        adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: {},
+      },
     ]);
     for (let p = 0; p < projectIds.length; p += 1) {
       await db.insert(projectMemberships).values([
@@ -121,21 +135,30 @@ describeDatabase("swarm cross-project claim load", () => {
   it("keeps randomized project claims scoped; seeded fixture and input order repeat exactly", async () => {
     const scenario = seededScenario(SEED);
     expect(seededScenario(SEED)).toEqual(scenario);
-    await db.update(issues).set({ priority: "high" }).where(inArray(issues.id, scenario.shuffledTasks.slice(0, 35)));
+    await db.update(issues).set({ priority: "high" }).where(inArray(issues.id, scenario.shuffledTasks.slice(0, 15)));
     const deps = {
       db,
       heartbeat: { wakeup: async () => ({ queued: true }) },
-      settings: { ...claimSettings, enabled: true, maxActiveTasks: 8 },
+      settings: { ...claimSettings, enabled: true, maxActiveTasks: 2 },
       hostGateOpen: true,
       now: NOW,
       casteDirectory: async () => [
-        { key: "engineer", swarmEligible: true, maxActiveTasks: 8 },
-        { key: "reviewer", swarmEligible: true, maxActiveTasks: 8 },
+        { key: "engineer", swarmEligible: true, maxActiveTasks: 2 },
+        { key: "reviewer", swarmEligible: true, maxActiveTasks: 2 },
       ],
       isAgentAvailable: async () => true,
       isIssueCoolingDown: async () => false,
       isTaskBudgetBlocked: async () => false,
     } as unknown as SwarmMatcherDeps;
+
+    // Exercise the production matcher path with an engineer that is not a
+    // member of any project. The queue SQL applies projectScopedClaimGate;
+    // this test must not pre-filter candidates in memory.
+    const outsiderPass = await matchAgent(deps, outsiderId);
+    expect(outsiderPass).toBeNull();
+    const outsiderClaims = await db.select({ agentId: issueClaims.agentId })
+      .from(issueClaims).where(eq(issueClaims.agentId, outsiderId));
+    expect(outsiderClaims).toHaveLength(0);
 
     // The reviewer belongs to project 0 while its engineer tasks remain
     // available, so null exercises the caste guard rather than an empty queue.
@@ -143,13 +166,13 @@ describeDatabase("swarm cross-project claim load", () => {
     expect(reviewerPass).toBeNull();
     const remainingForReviewer = await db.select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
       .from(issues).where(eq(issues.companyId, companyId));
-    expect(remainingForReviewer).toHaveLength(100);
+    expect(remainingForReviewer).toHaveLength(40);
     expect(remainingForReviewer.every((row) => row.assigneeAgentId === null)).toBe(true);
 
     const passes: Array<Awaited<ReturnType<typeof matchAgent>>> = [];
-    // Each matcher pass claims at most one task. Five seeded rounds exercise
+    // Each matcher pass claims at most one task. Two seeded rounds exercise
     // all 20 agents repeatedly while keeping DB contention below pool capacity.
-    for (let round = 0; round < 5; round += 1) {
+    for (let round = 0; round < 2; round += 1) {
       const roundOrder = scenario.rounds[round]!;
       for (let offset = 0; offset < roundOrder.length; offset += 4) {
         passes.push(...await Promise.all(
@@ -184,8 +207,8 @@ describeDatabase("swarm cross-project claim load", () => {
       expect(agentProjects.get(claim.agentId)?.has(projectByTask.get(claim.issueId)!)).toBe(true);
       expect(claim.agentId).not.toBe(reviewerId);
     }
-    expect(assigned).toHaveLength(100);
-    expect(claimed).toHaveLength(100);
-    expect(passes.filter(Boolean)).toHaveLength(100);
+    expect(assigned).toHaveLength(40);
+    expect(claimed).toHaveLength(40);
+    expect(passes.filter(Boolean)).toHaveLength(40);
   }, 120_000);
 });

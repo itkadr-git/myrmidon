@@ -159,6 +159,7 @@ function casteSeedColor(key: AgentRole): CasteColor {
     devops: 9,
     researcher: 10,
     general: 11,
+    architect: 12,
   };
   const palette: CasteColor[] = [
     "violet",

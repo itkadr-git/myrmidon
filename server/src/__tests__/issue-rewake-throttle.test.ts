@@ -34,9 +34,20 @@ describe("isThrottleCandidateIssueRewake", () => {
   it("throttles state-poll reasons and reason-less invokes", () => {
     expect(isThrottleCandidateIssueRewake(base)).toBe(false);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_continuation_needed" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_state_guard_mismatch" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "execution_reconciliation_required" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "transient_failure_retry" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "task_ticker" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "task-ticker" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_assignment_recovery" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_graph_liveness_backstop" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: null })).toBe(true);
+  });
+
+  it("throttles automatic loop-forming wake reasons (OPE-10582 п.2)", () => {
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "swarm_matched" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "idle_pickup" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_disposition_repair" })).toBe(true);
   });
 
   it("keeps agent comments throttle-eligible without granting human comment privileges", () => {
@@ -181,6 +192,34 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
   });
 
+  it("blocks repeated swarm and continuation loop wakes during the cooldown", () => {
+    const recentTerminalRuns = [
+      runSample({ id: "r2", finishedSecondsAgo: 10 }),
+      runSample({ id: "r1", finishedSecondsAgo: 40 }),
+    ];
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns,
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.blocked).toBe(true);
+    expect(isThrottleCandidateIssueRewake({
+      reason: "swarm_matched",
+      wakeCommentId: null,
+      requestedByActorType: "system",
+      forceFreshSession: false,
+      hasExplicitResume: false,
+    })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({
+      reason: "issue_continuation_needed",
+      wakeCommentId: null,
+      requestedByActorType: "system",
+      forceFreshSession: false,
+      hasExplicitResume: false,
+    })).toBe(true);
+  });
+
   it("does not delay recovery after a failed run", () => {
     const decision = evaluateIssueRewakeThrottle({
       now: NOW,
@@ -205,5 +244,21 @@ describe("evaluateIssueRewakeThrottle", () => {
       hasNewIssueInputSinceLastRun: true,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+
+  it("freezes after six empty runs without a time-based escape", () => {
+    const runs = Array.from({ length: 6 }, (_, i) =>
+      runSample({ id: `r${i}`, finishedSecondsAgo: 3600 + i * 30 }));
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision).toEqual({
+      blocked: true, frozen: true, noProgressStreak: 6, frozenAt: runs[0]!.finishedAt,
+    });
+    expect(evaluateIssueRewakeThrottle({
+      now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: true,
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
   });
 });

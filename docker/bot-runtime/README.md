@@ -241,6 +241,28 @@ to the `devbuild` skill and exits 1. The ssh key is read from `/opt/devbuild-ssh
 mounted by the runtime template (part C); key authorization and the remote resource limits are
 the fleet operator's part (D). The image adds `rsync` to the apt set for the transport.
 
+**Env-delivered key, start self-check, local heavy-run heap cap (1.6.5 DEVBUILD-IN-BOTS).**
+Three additions relax the mount requirement and keep stray local heavy runs survivable:
+
+- When the key file is absent or unreadable and the secret env `DEVBUILD_SSH_KEY_DATA`
+  (the OpenSSH private key text) is set, `devbuild` materializes it into a per-process
+  private directory (0700 dir, 0600 file) under the run scratch — never into `/workspace` —
+  and removes it on exit. A readable key file still wins over the env key, and the
+  missing-everything error is unchanged. This is how the board hands the key to a bot whose
+  container has no `/opt/devbuild-ssh` mount.
+- The bot entrypoint runs a devbuild self-check at start: with `DEVBUILD_HOST` set it probes
+  `devbuild 'true'`, logs one line (`devbuild self-check ok: …` or
+  `ERROR: devbuild self-check failed: …`) and writes a machine-readable
+  `${HERMES_HOME}/.myrmidon/devbuild-check.json` for the board. The check never stops the
+  gateway; bots without `DEVBUILD_HOST` stay silent; `MYRMIDON_DEVBUILD_CHECK=0` disables
+  the probe.
+- Heavy commands that pass the devbuild gate (a build container, or a direct binary path in
+  an ordinary bot container) run with a container-safe heap cap: the wrappers append
+  `--max-old-space-size=2048` (override `MYRMIDON_LOCAL_NODE_HEAP_MB`, `0` disables) to the
+  child's `NODE_OPTIONS` — a caller's own `--max-old-space-size` wins — and print one stderr
+  warning pointing at `devbuild`. Version/help probes skip both. The cap is a rollout-period
+  fallback; the fleet target stays 0 local tsc/vitest runs.
+
 ### Shared git objects and the clone report (1.6.2 BOT-DISK-C)
 
 - `/opt/paperclip/bin/git` (`git-reference/git`, a Node script like the other wrappers) shadows

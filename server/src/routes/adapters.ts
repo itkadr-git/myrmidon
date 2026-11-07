@@ -282,6 +282,7 @@ export function adapterRoutes(options: {
     const disabledSet = new Set(getDisabledAdapterTypes());
     const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
     if (!nativeRunnerEnabled) disabledSet.add("paperclip_runner");
+    if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabledSet.add("hermes_local");
 
     const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
       buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),
@@ -437,6 +438,8 @@ export function adapterRoutes(options: {
 
     const externalRecord = getAdapterPluginByType(adapterType);
     const disabledSet = new Set(getDisabledAdapterTypes());
+    const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
+    if (!nativeRunnerEnabled) disabledSet.add("paperclip_runner");
     if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabledSet.add("hermes_local");
     res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
   });

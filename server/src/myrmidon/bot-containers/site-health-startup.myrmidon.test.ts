@@ -63,4 +63,20 @@ describe("startSiteHealth", () => {
       vi.useRealTimers();
     }
   });
+
+  it("passes clientManager closure to createFleetMoveContext when health monitoring is started", async () => {
+    const fleetMoveWiring = await import("./fleet-move-wiring.js");
+    const spy = vi.spyOn(fleetMoveWiring, "createFleetMoveContext").mockReturnValue({} as any);
+    registerSiteLostRunFinalizer(async () => ({ outcome: "finalized", retryRunId: null }));
+    const m = manager();
+    const stop = startSiteHealth(DB, {
+      env: { [BOT_CONTAINERS_ENV]: "1", [SITE_HEALTH_ENV]: "1" },
+      clientManager: m,
+    });
+    expect(spy).toHaveBeenCalledWith(DB, expect.any(Function));
+    const passedFn = spy.mock.calls[0][1] as () => FleetClientManager | null;
+    expect(passedFn()).toBe(m);
+    stop();
+    spy.mockRestore();
+  });
 });

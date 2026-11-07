@@ -12,9 +12,10 @@
 //     ports are not even built, so a fleet that never enables the corpus neither
 //     opens a connection nor logs anything;
 //   * a no-op while the ports are not wired (parts A/B not merged yet);
-//   * one job at a time inside a pass — `parseConcurrency` bounds how many jobs
-//     one pass takes, not how many requests the parse service sees at once, so a
-//     slow parser cannot multiply itself. The next tick picks up the rest;
+//   * bounded parallel jobs — `parseConcurrency` caps simultaneous parser and
+//     indexing work ACROSS passes: a pass can outlive many scheduler ticks (a big
+//     scanned book takes the better part of an hour), so a pass claims only as
+//     many jobs as are free right now; the next tick picks up the rest;
 //   * forgiving — any parser, indexer or blob failure settles the job through
 //     `queue.fail`, which retries it until `maxParseAttempts` and then keeps the
 //     reason on the document. Nothing in this pass throws into the board.
@@ -22,6 +23,7 @@
 import { logger } from "../../middleware/logger.js";
 import type { CorpusSettings } from "@myrmidon/shared";
 import type { CorpusJobRecord, CorpusPorts, CorpusPortsResolver, ParsedChunk } from "./ports.js";
+import { CorpusRequestError, CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR } from "./service.js";
 
 /**
  * How often a pass is worth running on the board's scheduler tick. The tick
@@ -29,7 +31,7 @@ import type { CorpusJobRecord, CorpusPorts, CorpusPortsResolver, ParsedChunk } f
  * here: an idle corpus costs one settings read every 30 s, and a document that
  * was just uploaded reaches `ready` within about half a minute.
  */
-export const CORPUS_PARSE_SWEEP_INTERVAL_MS = 30_000;
+export const CORPUS_PARSE_SWEEP_INTERVAL_MS = 150_000;
 
 /** Counters of one pass; the sweep logs them and the tests assert them. */
 export interface CorpusParseSweepResult {
@@ -62,6 +64,13 @@ function message(err: unknown): string {
 
 export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusParseWorker {
   const env = deps.env ?? process.env;
+
+  // Jobs this worker holds right now: claimed and not yet settled, whichever pass took them.
+  // The scheduler starts a pass every CORPUS_PARSE_SWEEP_INTERVAL_MS no matter whether the
+  // previous one has finished, and a pass lasts as long as its slowest parse. Counting per pass
+  // would let every new pass claim another `parseConcurrency` jobs on top of the ones still
+  // running, and the parser would be handed more documents than it can work on at once.
+  let inFlight = 0;
 
   async function runJob(
     ports: CorpusPorts,
@@ -127,12 +136,16 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
       return "parsed";
     } catch (err) {
       const reason = message(err);
+      const isEmbedderConfigError =
+        (err instanceof CorpusRequestError && err.code === CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR) ||
+        reason.includes(CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR);
       const settled = await ports.queue
         .fail(job.companyId, job.id, reason)
         .catch(() => null);
       // The store owns the retry policy; if it did not answer, the attempts we
       // counted are the fallback. Anything else keeps the document queued.
-      const exhausted = settled ? settled.state === "failed" : job.attempts + 1 >= job.maxAttempts;
+      // Configuration errors are unretryable: fail the document immediately.
+      const exhausted = isEmbedderConfigError || (settled ? settled.state === "failed" : job.attempts + 1 >= job.maxAttempts);
       await ports.store
         .updateDocument(job.companyId, job.documentId, {
           status: exhausted ? "failed" : "queued",
@@ -174,15 +187,36 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
       if (!ports) return result; // on, but this process has no ports
       result.available = true;
 
-      const jobs = await ports.queue.claim({ limit: resolved.settings.parseConcurrency });
+      const free = resolved.settings.parseConcurrency - inFlight;
+      if (free <= 0) return result; // every slot is busy with a job of an earlier pass
+
+      // The slots are reserved before the claim is awaited: two passes asking at the same
+      // moment must not both see them free.
+      inFlight += free;
+      let jobs: CorpusJobRecord[];
+      try {
+        jobs = await ports.queue.claim({ limit: free });
+      } catch (err) {
+        inFlight -= free;
+        throw err;
+      }
+      inFlight -= free - jobs.length;
       result.claimed = jobs.length;
 
-      for (const job of jobs) {
-        const outcome = await runJob(ports, resolved.settings, job);
-        if (outcome === "parsed") result.parsed += 1;
-        else if (outcome === "requeued") result.requeued += 1;
-        else result.failed += 1;
-      }
+      await Promise.all(jobs.map(async (job) => {
+        try {
+          const outcome = await runJob(ports, resolved.settings, job);
+          if (outcome === "parsed") result.parsed += 1;
+          else if (outcome === "requeued") result.requeued += 1;
+          else result.failed += 1;
+        } catch (err) {
+          // A failed persistence operation must not abandon the other claimed jobs.
+          result.failed += 1;
+          logger.error({ err, companyId: job.companyId, jobId: job.id }, "corpus: could not settle a claimed job");
+        } finally {
+          inFlight -= 1;
+        }
+      }));
 
       return result;
     },

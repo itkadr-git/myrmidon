@@ -24,6 +24,7 @@ import type {
 } from "@myrmidon/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import type { BudgetLimitAdmissionBlock } from "../myrmidon/budget-limits/admission.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -78,6 +79,18 @@ export type BudgetServiceHooks = {
     amountLimit: number;
     amountObserved: number;
   }) => Promise<void>;
+  // myrmidon(1.7-BUDGET-CONFIG): the hierarchy spend limits of A
+  // (`budget_limits` rows) on run admission — the queue-side leg of the
+  // "a limit change acts in the queue within a minute" acceptance. Resolved
+  // fresh on every admission (no restart), gated by the global signal-only
+  // flag and the limit row's own hard/soft mode; only a hard, active, over
+  // limit refuses. An absent hook keeps the vendor behaviour (never blocks),
+  // so a caller without myrmidon wiring is unchanged.
+  resolveBudgetLimitAdmissionBlock?: (input: {
+    companyId: string;
+    agentId: string;
+    context?: { issueId?: string | null; projectId?: string | null };
+  }) => Promise<BudgetLimitAdmissionBlock | null>;
 };
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -1181,6 +1194,23 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .where(eq(agents.id, agentId))
         .then((rows) => rows[0] ?? null);
       if (!agent || agent.companyId !== companyId) throw notFound("Agent not found");
+
+      // myrmidon(1.7-BUDGET-CONFIG): the hierarchy limits of A refuse first —
+      // the deepest level wins (issue → foraging → caste → project nest →
+      // company nest), resolved fresh from `budget_limits` on every admission.
+      // The hook is optional wiring: absent means no hierarchy limits apply
+      // (vendor behaviour, e.g. in unwired unit tests of this service).
+      const limitBlock = hooks.resolveBudgetLimitAdmissionBlock
+        ? await hooks.resolveBudgetLimitAdmissionBlock({ companyId, agentId, context })
+        : null;
+      if (limitBlock) {
+        return {
+          scopeType: limitBlock.scopeType,
+          scopeId: limitBlock.scopeId,
+          scopeName: limitBlock.scopeRef ?? limitBlock.scopeId,
+          reason: limitBlock.reason,
+        };
+      }
 
       const company = await db
         .select({

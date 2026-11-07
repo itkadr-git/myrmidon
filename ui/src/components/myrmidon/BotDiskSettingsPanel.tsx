@@ -210,6 +210,8 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
   const [error, setError] = useState<string | null>(null);
   const [reposDraft, setReposDraft] = useState<string | null>(null);
   const [reposError, setReposError] = useState<string | null>(null);
+  const [defaultRepoDraft, setDefaultRepoDraft] = useState<string | null>(null);
+  const [defaultRepoError, setDefaultRepoError] = useState<string | null>(null);
   const [runtimeDraft, setRuntimeDraft] = useState<string | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
@@ -220,6 +222,9 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
   useEffect(() => {
     if (view && reposDraft === null) setReposDraft((view.settings.gitMirrorRepos ?? []).join("\n"));
   }, [view, reposDraft]);
+  useEffect(() => {
+    if (view && defaultRepoDraft === null) setDefaultRepoDraft(view.settings.defaultRepo ?? "");
+  }, [view, defaultRepoDraft]);
   useEffect(() => {
     if (view && runtimeDraft === null) setRuntimeDraft(view.settings.sharedBotRuntimePath ?? "");
   }, [view, runtimeDraft]);
@@ -306,6 +311,25 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
 
   const reposUnchanged =
     view !== undefined && parseRepos(reposDraft ?? "").join("\n") === (view.settings.gitMirrorRepos ?? []).join("\n");
+
+  const saveDefaultRepo = useMutation({
+    mutationFn: (repo: string) => botDiskApi.setFields({ defaultRepo: repo === "" ? null : repo }),
+    onSuccess: (saved) => {
+      setDefaultRepoError(null);
+      setDefaultRepoDraft(saved.settings.defaultRepo ?? "");
+      queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
+    },
+    onError: (err) => setDefaultRepoError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errDefaultRepoSave")),
+  });
+  const submitDefaultRepo = () => {
+    const repo = (defaultRepoDraft ?? "").trim();
+    if (repo !== "" && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+      setDefaultRepoError(t("area.settings-bots-host-1.bot-disk-settings-panel.errDefaultRepo"));
+      return;
+    }
+    saveDefaultRepo.mutate(repo);
+  };
+  const defaultRepoUnchanged = view !== undefined && (defaultRepoDraft ?? "").trim() === (view.settings.defaultRepo ?? "");
 
   // myrmidon(1.6.5-BOT-DISK-H11): the host directory whose bin, lazy-packages
   // and lsp subdirectories every bot mounts read-only over its own runtime.
@@ -402,6 +426,26 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
         </p>
         {reposError && <p className="text-xs text-red-600">{reposError}</p>}
         {saveRepos.isSuccess && !reposError && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-disk-settings-panel.saved")}</p>}
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="bot-disk-default-repo">{t("area.settings-bots-host-1.bot-disk-settings-panel.defaultRepoLabel")}</Label>
+        <div className="flex items-center gap-2">
+          <Input
+            id="bot-disk-default-repo"
+            placeholder={t("area.settings-bots-host-1.bot-disk-settings-panel.defaultRepoPlaceholder")}
+            value={defaultRepoDraft ?? ""}
+            onChange={(event) => { setDefaultRepoDraft(event.target.value); setDefaultRepoError(null); }}
+            aria-invalid={!!defaultRepoError}
+            aria-describedby={defaultRepoError ? "bot-disk-default-repo-error" : undefined}
+            data-testid="bot-disk-default-repo-input"
+          />
+          <Button size="sm" onClick={submitDefaultRepo} disabled={saveDefaultRepo.isPending || defaultRepoDraft === null || defaultRepoUnchanged}>
+            {saveDefaultRepo.isPending ? t("area.settings-bots-host-1.bot-disk-settings-panel.saving") : t("common.save")}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">{t("area.settings-bots-host-1.bot-disk-settings-panel.defaultRepoHelp")}</p>
+        {defaultRepoError && <p id="bot-disk-default-repo-error" className="text-xs text-red-600">{defaultRepoError}</p>}
+        {saveDefaultRepo.isSuccess && !defaultRepoError && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-disk-settings-panel.saved")}</p>}
       </div>
       <div className="space-y-2">
         <Label htmlFor="bot-disk-runtime-path">{t("area.settings-bots-host-1.bot-disk-settings-panel.runtimeLabel")}</Label>

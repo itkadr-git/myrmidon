@@ -47,13 +47,15 @@ import type {
 
 /** `instance.corpus.settings_updated` — the audit action of a settings change. */
 export const CORPUS_SETTINGS_ACTION = "instance.corpus.settings_updated";
-/** `myrmidon.corpus.document_uploaded` / `…document_deleted` / `…dataset_deleted`. */
+/** `myrmidon.corpus.document_uploaded` / `…document_reparsed` / `…document_deleted` / `…dataset_deleted`. */
 export const CORPUS_DOCUMENT_UPLOADED_ACTION = "myrmidon.corpus.document_uploaded";
+export const CORPUS_DOCUMENT_REPARSED_ACTION = "myrmidon.corpus.document_reparsed";
 export const CORPUS_DOCUMENT_DELETED_ACTION = "myrmidon.corpus.document_deleted";
 export const CORPUS_DATASET_DELETED_ACTION = "myrmidon.corpus.dataset_deleted";
 
 /** Code of the 503 a data route answers while the ports of parts A/B are missing. */
 export const CORPUS_NOT_CONFIGURED_ERROR = "corpus_not_configured";
+export const CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR = "corpus_embedder_not_configured";
 
 /** Who called the route, for the activity log (same shape as the runtime limits). */
 export interface CorpusActor {
@@ -145,6 +147,12 @@ export interface CorpusService {
   ): Promise<CorpusDocument[]>;
   uploadDocument(input: CorpusUploadInput): Promise<CorpusUploadResult>;
   getDocument(companyId: string, documentId: string): Promise<CorpusDocument>;
+  /**
+   * Parses a failed document again from the bytes already stored: the document goes back to
+   * `queued` with its error cleared and its job starts over with no attempts used. Refused (409)
+   * for a document that is not `failed` or has no stored bytes.
+   */
+  reparseDocument(companyId: string, documentId: string, actor: CorpusActor): Promise<CorpusUploadResult>;
   deleteDocument(companyId: string, documentId: string, actor: CorpusActor): Promise<void>;
   getJob(companyId: string, jobId: string): Promise<CorpusParseJob>;
   search(
@@ -422,6 +430,26 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
         maxAttempts: settings.maxParseAttempts,
       });
 
+      if (ports.index.assertEmbedderConfigured) {
+        try {
+          await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
+        } catch (err) {
+          if (err instanceof CorpusRequestError && err.code === CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR) {
+            await ports.store.updateDocument(companyId, document.id, {
+              status: "failed",
+              error: err.code,
+            });
+            throw new CorpusRequestError(
+              err.status,
+              err.code,
+              err.message,
+              { ...err.details, documentId: document.id },
+            );
+          }
+          throw err;
+        }
+      }
+
       try {
         const blob = await ports.blobs.put({
           companyId,
@@ -477,6 +505,69 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
       return toDocument(document);
     },
 
+    reparseDocument: async (companyId, documentId, actor) => {
+      const { settings, ports } = await requirePorts();
+      const document = await ports.store.getDocument(companyId, documentId);
+      if (!document) throw notFound("document");
+      if (document.status !== "failed") {
+        throw new CorpusRequestError(
+          409,
+          "document_not_failed",
+          `only a failed document can be parsed again (this one is ${document.status})`,
+          { status: document.status },
+        );
+      }
+      if (!document.blobRef) {
+        throw new CorpusRequestError(
+          409,
+          "document_has_no_stored_bytes",
+          "the document has no stored bytes to parse again: upload it again",
+        );
+      }
+      // Not worth a new attempt while the embedder is missing: the answer is the same 422 an
+      // upload gets, and the document stays failed with its reason.
+      if (ports.index.assertEmbedderConfigured) {
+        await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
+      }
+
+      // failed -> queued is the one move a failed document has; the job is armed right after it.
+      const previousError = document.error;
+      let queued = await ports.store.updateDocument(companyId, documentId, {
+        status: "queued",
+        error: null,
+        attempts: 0,
+      });
+      if (!queued) throw notFound("document");
+
+      let job: CorpusJobRecord;
+      try {
+        job = await ports.queue.enqueue({
+          companyId,
+          datasetId: document.datasetId,
+          documentId,
+          maxAttempts: settings.maxParseAttempts,
+          reset: true,
+        });
+      } catch (err) {
+        logger.error({ err, companyId, documentId }, "corpus reparse: the enqueue failed");
+        await ports.store
+          .updateDocument(companyId, documentId, { status: "failed", error: previousError ?? "queue_unavailable" })
+          .catch(() => undefined);
+        throw new CorpusRequestError(502, "enqueue_failed", "the document could not be queued for parsing");
+      }
+
+      // Read it back: the attempts the row shows come from the job, which has just started over.
+      queued = (await ports.store.getDocument(companyId, documentId)) ?? queued;
+      await audit(actor, CORPUS_DOCUMENT_REPARSED_ACTION, companyId, "corpus_document", documentId, {
+        datasetId: document.datasetId,
+        filename: document.filename,
+        byteSize: document.byteSize,
+        jobId: job.id,
+        previousError,
+      });
+      return { document: toDocument(queued), job: toJob(job) };
+    },
+
     deleteDocument: async (companyId, documentId, actor) => {
       const { ports } = await requirePorts();
       const document = await ports.store.getDocument(companyId, documentId);
@@ -502,6 +593,9 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
       const query = input.query.trim();
       const limit = Math.min(Math.max(input.limit ?? settings.searchTopK, 1), 50);
       const mode = input.mode ?? "hybrid";
+      if (mode !== "fulltext" && ports.index.assertEmbedderConfigured) {
+        await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
+      }
       const hits = await ports.index.search({
         companyId,
         datasetId,

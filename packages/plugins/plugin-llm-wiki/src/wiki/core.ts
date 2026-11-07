@@ -384,6 +384,14 @@ type WritePageInput = {
    * rejected by default so a request that merely omits its body can never truncate a page.
    */
   allowEmpty?: boolean;
+  /**
+   * Bypass probe marker and severe truncation write protection checks.
+   */
+  force?: boolean;
+  /**
+   * Required justification when force is true.
+   */
+  reason?: string | null;
 };
 
 type FileQueryAnswerInput = {
@@ -1838,8 +1846,18 @@ async function upsertPageMetadata(ctx: PluginContext, input: {
   await ctx.db.execute(
     `INSERT INTO ${tableName(ctx.db.namespace, "wiki_page_revisions")}
        (id, company_id, wiki_id, space_id, page_id, operation_id, path, content_hash, summary, metadata)
-     VALUES ($1, $2, $3, $8, (SELECT id FROM ${tableName(ctx.db.namespace, "wiki_pages")} WHERE company_id = $2 AND wiki_id = $3 AND space_id = $8 AND path = $4), $7, $4, $5, $6, '{}'::jsonb)`,
-    [revisionId, input.companyId, input.wikiId, input.path, hash, input.summary ?? null, input.operationId ?? null, input.spaceId],
+     VALUES ($1, $2, $3, $8, (SELECT id FROM ${tableName(ctx.db.namespace, "wiki_pages")} WHERE company_id = $2 AND wiki_id = $3 AND space_id = $8 AND path = $4), $7, $4, $5, $6, $9::jsonb)`,
+    [
+      revisionId,
+      input.companyId,
+      input.wikiId,
+      input.path,
+      hash,
+      input.summary ?? null,
+      input.operationId ?? null,
+      input.spaceId,
+      jsonParam({ contents: input.contents }),
+    ],
   );
 
   return { title, pageType, backlinks, hash, revisionId };
@@ -1856,6 +1874,32 @@ function assertPageContentsPresent(path: string, contents: unknown, allowEmpty: 
   }
 }
 
+export function isWikiProbeOrTruncation(
+  newContents: string,
+  existingContents: string | null,
+  options?: { allowEmpty?: boolean | null },
+): { blocked: boolean; cause?: string } {
+  if (options?.allowEmpty && newContents.trim().length === 0) {
+    return { blocked: false };
+  }
+  const trimmed = newContents.trim();
+  if (newContents.includes("__probe")) {
+    return { blocked: true, cause: "probe marker '__probe' detected" };
+  }
+  if (existingContents !== null && existingContents.length > 0) {
+    if (!trimmed.includes("\n") && trimmed.length < 20) {
+      return { blocked: true, cause: "content is a single line shorter than 20 characters (probe marker pattern)" };
+    }
+    if (newContents.length < existingContents.length * 0.2) {
+      return {
+        blocked: true,
+        cause: `new content length (${newContents.length}) is less than 20% of previous revision (${existingContents.length})`,
+      };
+    }
+  }
+  return { blocked: false };
+}
+
 export async function writeWikiPage(ctx: PluginContext, input: WritePageInput) {
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
@@ -1864,7 +1908,33 @@ export async function writeWikiPage(ctx: PluginContext, input: WritePageInput) {
   assertPageContentsPresent(path, input.contents, input.allowEmpty);
   const current = await readCurrentWithHash(ctx, input.companyId, path, space);
   assertExpectedHash(input.expectedHash, current.hash, path);
-  await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path), input.contents);
+
+  const protection = isWikiProbeOrTruncation(input.contents, current.contents, { allowEmpty: input.allowEmpty });
+  if (protection.blocked) {
+    const hasForceAndReason = input.force === true && typeof input.reason === "string" && input.reason.trim().length > 0;
+    if (!hasForceAndReason) {
+      const alertMsg = `Blocked overwrite of ${path}: ${protection.cause}. Force and reason required.`;
+      console.warn(`[WIKI_WRITE_ALERT] ${alertMsg}`);
+      try {
+        let logCurrent = "";
+        try {
+          logCurrent = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, "wiki/log.md"));
+        } catch {
+          logCurrent = "# Log\n\nAppend-only chronological record of wiki operations.\n";
+        }
+        const nextLog = `${logCurrent.trimEnd()}\n\n- ${new Date().toISOString()} [ALERT] ${alertMsg}\n`;
+        await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, "wiki/log.md"), nextLog);
+      } catch {
+        // best effort alert log
+      }
+      throw new Error(
+        `Refusing to write to ${path}: write rejected because ${protection.cause}. To override, pass force: true and a valid reason.`,
+      );
+    }
+  }
+
+  const relPath = spaceRelativePath(space, path);
+  await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, relPath, input.contents);
   const metadata = await upsertPageMetadata(ctx, {
     companyId: input.companyId,
     wikiId,
@@ -1875,6 +1945,11 @@ export async function writeWikiPage(ctx: PluginContext, input: WritePageInput) {
     sourceRefs: input.sourceRefs,
     operationId: input.operationId,
   });
+
+  // Preserve versioned file for rollback and file versioning
+  const versionedRelPath = `.revisions/${relPath}/${metadata.revisionId}.md`;
+  await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, versionedRelPath, input.contents).catch(() => {});
+
   await upsertWikiInstance(ctx, { companyId: input.companyId, wikiId });
   return { status: "ok", wikiId, spaceSlug: space.slug, path, previousHash: current.hash, ...metadata };
 }
@@ -4148,7 +4223,7 @@ export async function registerWikiTools(ctx: PluginContext) {
     const space = await resolveSpace(ctx, { companyId, wikiId, spaceSlug: input.spaceSlug as string | null | undefined });
     const path = assertPagePath(requireString(input.path, "path"));
     const contents = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
-    return { content: contents, data: { companyId, wikiId, spaceSlug: space.slug, path, hash: contentHash(contents) } };
+    return { content: contents, data: { companyId, wikiId, spaceSlug: space.slug, path, contents, hash: contentHash(contents) } };
   });
 
   ctx.tools.register("wiki_write_page", {
@@ -4166,6 +4241,8 @@ export async function registerWikiTools(ctx: PluginContext) {
       expectedHash: stringField(input.expectedHash),
       summary: stringField(input.summary),
       sourceRefs: input.sourceRefs,
+      force: input.force === true,
+      reason: stringField(input.reason),
     });
     return { content: `Wrote ${result.path}`, data: result };
   });
@@ -4322,6 +4399,44 @@ export async function registerWikiTools(ctx: PluginContext) {
     return {
       content: rows.length ? rows.map((row) => `${row.path}${row.title ? ` - ${row.title}` : ""}`).join("\n") : "No pages indexed yet.",
       data: { companyId, wikiId, spaceSlug: space.slug, pages: rows },
+    };
+  });
+
+  ctx.tools.register("wiki_rollback_page", {
+    displayName: "Rollback Wiki Page",
+    description: "Roll back a wiki page to a prior revision by creating a new revision with the target revision's contents.",
+    parametersSchema: ctx.manifest.tools?.find((tool) => tool.name === "wiki_rollback_page")?.parametersSchema ?? { type: "object" },
+  }, async (params: unknown): Promise<ToolResult> => {
+    const input = params as ToolParams;
+    const result = await rollbackWikiPage(ctx, {
+      companyId: requireString(input.companyId, "companyId"),
+      wikiId: stringField(input.wikiId),
+      spaceSlug: stringField(input.spaceSlug),
+      path: requireString(input.path, "path"),
+      revisionId: requireString(input.revisionId, "revisionId"),
+      reason: stringField(input.reason),
+    });
+    return { content: `Rolled back ${result.path} to revision ${input.revisionId}`, data: result };
+  });
+
+  ctx.tools.register("wiki_list_revisions", {
+    displayName: "List Wiki Page Revisions",
+    description: "List recorded revision history for a wiki page.",
+    parametersSchema: ctx.manifest.tools?.find((tool) => tool.name === "wiki_list_revisions")?.parametersSchema ?? { type: "object" },
+  }, async (params: unknown): Promise<ToolResult> => {
+    const input = params as ToolParams;
+    const result = await listPageRevisions(ctx, {
+      companyId: requireString(input.companyId, "companyId"),
+      wikiId: stringField(input.wikiId),
+      spaceSlug: stringField(input.spaceSlug),
+      path: requireString(input.path, "path"),
+      limit: typeof input.limit === "number" ? input.limit : null,
+    });
+    return {
+      content: result.revisions.length
+        ? result.revisions.map((r) => `${r.id} (${r.created_at}): ${r.summary ?? "no summary"}`).join("\n")
+        : "No revisions found.",
+      data: result,
     };
   });
 }
@@ -4493,6 +4608,89 @@ export async function readWikiPage(ctx: PluginContext, input: { companyId: strin
     updatedAt: row?.updated_at ?? null,
     hash: contentHash(contents),
   };
+}
+
+export async function listPageRevisions(ctx: PluginContext, input: {
+  companyId: string;
+  wikiId?: string | null;
+  spaceSlug?: string | null;
+  path: string;
+  limit?: number | null;
+}) {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
+  const path = assertPagePath(input.path);
+  const limit = Math.max(1, Math.min(100, input.limit ?? 20));
+  const rows = await ctx.db.query<{
+    id: string;
+    path: string;
+    content_hash: string;
+    summary: string | null;
+    created_at: string;
+  }>(
+    `SELECT id, path, content_hash, summary, created_at::text AS created_at
+       FROM ${tableName(ctx.db.namespace, "wiki_page_revisions")}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3 AND path = $4
+      ORDER BY created_at DESC
+      LIMIT $5`,
+    [input.companyId, wikiId, space.id, path, limit],
+  );
+  return {
+    companyId: input.companyId,
+    wikiId,
+    spaceSlug: space.slug,
+    path,
+    revisions: rows,
+  };
+}
+
+export async function rollbackWikiPage(ctx: PluginContext, input: {
+  companyId: string;
+  wikiId?: string | null;
+  spaceSlug?: string | null;
+  path: string;
+  revisionId: string;
+  reason?: string | null;
+}) {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
+  const path = assertPagePath(input.path);
+  const rows = await ctx.db.query<{
+    id: string;
+    path: string;
+    content_hash: string;
+    summary: string | null;
+    metadata: Record<string, unknown> | null;
+  }>(
+    `SELECT id, path, content_hash, summary, metadata
+       FROM ${tableName(ctx.db.namespace, "wiki_page_revisions")}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3 AND path = $4 AND id = $5
+      LIMIT 1`,
+    [input.companyId, wikiId, space.id, path, input.revisionId],
+  );
+  if (!rows.length) {
+    throw new Error(`Revision ${input.revisionId} for page ${path} not found`);
+  }
+  const rev = rows[0];
+  let targetContents = typeof rev.metadata?.contents === "string" ? rev.metadata.contents : null;
+  if (targetContents === null) {
+    const versionedRelPath = `.revisions/${spaceRelativePath(space, path)}/${rev.id}.md`;
+    targetContents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, versionedRelPath).catch(() => null);
+  }
+  if (targetContents === null) {
+    throw new Error(`Contents for revision ${input.revisionId} could not be retrieved`);
+  }
+  const reason = input.reason ? `Rollback to ${input.revisionId}: ${input.reason}` : `Rollback to revision ${input.revisionId}`;
+  return writeWikiPage(ctx, {
+    companyId: input.companyId,
+    wikiId,
+    spaceSlug: space.slug,
+    path,
+    contents: targetContents,
+    summary: reason,
+    force: true,
+    reason,
+  });
 }
 
 export async function readTemplate(ctx: PluginContext, input: { companyId: string; path: string }) {

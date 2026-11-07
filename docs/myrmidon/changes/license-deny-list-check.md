@@ -13,6 +13,8 @@ divergence-section: Трек 1 — платформа
   request, and an absent, broken or foreign-signed file revokes nobody (a warning is logged).
   A list with a `serial` lower than the highest one seen is rejected; the highest serial is kept
   next to the license (`MYR_LICENSE_DENY_STATE_PATH`).
+- `license.deny.state` records the highest observed serial; `license.deny.accepted` stores the complete signed envelope of the latest accepted list. On rollback, the board ignores the older incoming list and keeps applying the accepted cache. If that cache is absent, the check fails closed with reason `denylist_rollback_no_cache` and logs a warning. Damaged or unverifiable incoming lists are ignored and do not replace accepted state. Back up and restore both state files with the license directory; monitor logs for `denylist_rollback_no_cache`.
+- Added `POST /api/licensing/deny-list` endpoint for atomic delivery and saving of the signed deny-list.
 
 ## changelog-ru
 
@@ -25,3 +27,5 @@ divergence-section: Трек 1 — платформа
   запросе; нет файла, битый файл или чужая подпись никого не отзывают (в журнал пишется предупреждение).
   Список с `serial` меньше виденного отвергается; наибольший serial хранится рядом с лицензией
   (`MYR_LICENSE_DENY_STATE_PATH`).
+- `license.deny.state` хранит наибольший встреченный serial; `license.deny.accepted` — полный подписанный конверт последнего принятого списка. При rollback более старый список игнорируется, продолжает применяться сохранённый. Если кэша нет, проверка блокирует лицензию с причиной `denylist_rollback_no_cache` и пишет предупреждение. Повреждённый или неподписанный доверенным ключом входящий файл игнорируется и не заменяет принятый кэш. При резервном копировании и восстановлении сохраняйте оба файла состояния вместе с каталогом лицензии; отслеживайте предупреждения `denylist_rollback_no_cache`.
+- Добавлен эндпоинт `POST /api/licensing/deny-list` для атомарной доставки и сохранения подписанного списка отзыва.

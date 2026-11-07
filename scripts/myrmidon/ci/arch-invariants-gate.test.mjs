@@ -277,6 +277,48 @@ describe("INV-13: migration numbering", () => {
     }
   });
 
+  it("RED: duplicate journal idx fails", () => {
+    TEST_HOOKS.migrationBaselineOverride = "none";
+    try {
+      const files = {};
+      const dir = "packages/db/src/migrations";
+      files[`${dir}/0401_a.sql`] = "-- migration\n";
+      files[`${dir}/0402_b.sql`] = "-- migration\n";
+      files[`${dir}/meta/_journal.json`] = JSON.stringify({
+        entries: [
+          { idx: 401, tag: "0401_a" },
+          { idx: 401, tag: "0402_b" },
+        ],
+      });
+      const dirSandbox = sandbox(files);
+      const findings = checkMigrations(dirSandbox);
+      assert.ok(findings.some((f) => /duplicate journal idx 401/.test(f)));
+    } finally {
+      TEST_HOOKS.migrationBaselineOverride = null;
+    }
+  });
+
+  it("RED: mismatched journal idx and tag fails", () => {
+    TEST_HOOKS.migrationBaselineOverride = "none";
+    try {
+      const files = {};
+      const dir = "packages/db/src/migrations";
+      files[`${dir}/0401_a.sql`] = "-- migration\n";
+      files[`${dir}/0402_b.sql`] = "-- migration\n";
+      files[`${dir}/meta/_journal.json`] = JSON.stringify({
+        entries: [
+          { idx: 401, tag: "0401_a" },
+          { idx: 405, tag: "0402_b" },
+        ],
+      });
+      const dirSandbox = sandbox(files);
+      const findings = checkMigrations(dirSandbox);
+      assert.ok(findings.some((f) => /idx 405 does not match tag 0402_b/.test(f)));
+    } finally {
+      TEST_HOOKS.migrationBaselineOverride = null;
+    }
+  });
+
   it("RED: journal/file mismatch fails", () => {
     TEST_HOOKS.migrationBaselineOverride = "none";
     try {

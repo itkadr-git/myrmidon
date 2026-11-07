@@ -145,6 +145,7 @@ const kindLabels = (): Record<IssueRecoveryActionKind, string> => ({
   workspace_myr_ws: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.workspaceMyrWs"),
   devbuild: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.devbuild"),
   disk_space: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.diskSpace"),
+  "resource.oom": i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.resourceOom"),
   operator_action: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.operatorAction"),
 });
 
@@ -163,6 +164,7 @@ const kindHeadlines = (): Record<IssueRecoveryActionKind, string> => ({
   workspace_myr_ws: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.workspaceMyrWs"),
   devbuild: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.devbuild"),
   disk_space: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.diskSpace"),
+  "resource.oom": i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.resourceOom"),
   operator_action: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.operatorAction"),
 });
 

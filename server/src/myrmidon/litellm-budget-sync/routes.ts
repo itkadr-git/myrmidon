@@ -42,6 +42,7 @@ export function litellmBudgetSyncRoutes(db: Db, env: NodeJS.ProcessEnv = process
       signalOnly: runtime.settings.signalOnly,
       limits: runtime.settings.limits,
       sweepIntervalSec: runtime.sweepIntervalSec,
+      storedSweepIntervalSec: runtime.settings.sweepIntervalSec,
       sweepIntervalSource: runtime.sweepIntervalSource,
       sweepIntervalEnvName: BUDGET_PROJECTION_SWEEP_INTERVAL_ENV,
     };
@@ -93,6 +94,8 @@ export function litellmBudgetSyncRoutes(db: Db, env: NodeJS.ProcessEnv = process
         // a failed journal row must not lose the saved document
       }
       res.json(await settingsView(companyId));
+      // Apply the new switches without waiting for a throttled periodic tick.
+      if (configured()) void runBudgetProjectionPass(db, companyId, env).catch(() => {});
     },
   );
 

@@ -23,8 +23,8 @@ const LIB = path.join(HERE, "lib.sh");
 //                  lines "created<TAB>id<TAB>tag" for
 //                  `docker image ls <repo> --no-trunc`
 //   containers.txt container ids for `docker ps -a -q`
-//   used-images.txt the image id `docker inspect <cid>` answers (the images
-//                   the containers use; never removed)
+//   used-images.txt the image ids `docker inspect <cid>` answers, one per line
+//                   (the images the containers use; never removed)
 const FAKE_DOCKER = `#!/usr/bin/env bash
 echo "docker $*" >> "$SANDBOX/calls.log"
 last=""
@@ -34,14 +34,21 @@ case "$1" in
     cat "$SANDBOX/containers.txt" 2>/dev/null
     exit 0 ;;
   inspect)
-    grep -m1 "^" "$SANDBOX/used-images.txt" 2>/dev/null
+    cat "$SANDBOX/used-images.txt" 2>/dev/null
     exit 0 ;;
   image)
     case "$2" in
+      inspect)
+        if [ "$#" -ge 4 ] && [ "$3" = "--format" ]; then
+          case "$4" in *RootFS.Layers*) echo '["sha256:local-layer"]'; exit 0 ;; esac
+        fi
+        if [ -n "\${FAKE_LOCAL_IMAGE:-}" ] && [ "$last" = "$FAKE_LOCAL_IMAGE" ]; then exit 0; fi
+        echo "Error: No such image: $last" >&2
+        exit 1 ;;
       ls)
-        # the repository is the first bare argument after the ls subcommand
         repo=""
         for a in "$@"; do
+          # the repository is the first bare argument after the ls subcommand
           case "$a" in
             image|ls|--*) continue ;;
           esac
@@ -51,11 +58,11 @@ case "$1" in
         cat "$SANDBOX/images-$short.txt" 2>/dev/null
         exit 0 ;;
       rm)
-        # refuse to remove an image a container uses (docker would)
         for a in "$@"; do
           case "$a" in
             image|rm) continue ;;
           esac
+          # refuse to remove an image a container uses (docker would)
           if [ -f "$SANDBOX/used-images.txt" ] && grep -qF "$a" "$SANDBOX/used-images.txt"; then
             echo "Error: conflict: unable to remove repository reference (must force) - container is using its referenced image" >&2
             exit 1
@@ -69,18 +76,28 @@ case "$1" in
     echo "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE"
     echo "Images          8         3         33GB      20GB"
     exit 0 ;;
+  buildx)
+    case "$*" in
+      *imagetools*inspect*)
+        case "$*" in
+          *'{{json .Manifest}}'*) echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ;;
+          *'{{json .Manifest.Layers}}'*) echo '[{"size":2097152},{"size":4194304}]' ;;
+          *'{{json .Manifest.Digest}}'*) echo '"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"' ;;
+          *) echo '{"architecture":"amd64","os":"linux","config":{"Labels":{}},"manifest":{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}' ;;
+        esac
+        exit 0 ;;
+    esac
+    exit 0 ;;
+  run)
+    echo "cid-x"
+    exit 0 ;;
 esac
 exit 0
 `;
-
 const FAKE_DF = `#!/usr/bin/env bash
-# Answers "df -Pk <path>" with the sandbox's free kibibytes (1 block = 1024).
-free_kb=""
-[ -f "$SANDBOX/free-kb" ] && free_kb="$(tr -d '[:space:]' < "$SANDBOX/free-kb")"
-[ -n "$free_kb" ] || free_kb=104857600
-printf 'Filesystem     1024-blocks        Used   Available Capacity Mounted on\\n'
-printf '/dev/root        52428800   %s   %s    %s%% /\\n' \\
-  "$((52428800 - free_kb))" "$free_kb" "$(( (52428800 - free_kb) * 100 / 52428800 ))"
+free_kb="$(cat "$SANDBOX/free-kb")"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/root 52428800 %s %s 50%% /\n' "$((52428800-free_kb))" "$free_kb"
 `;
 
 // Runs one helper of lib.sh in a sandbox. body is a bash snippet evaluated
@@ -108,7 +125,7 @@ function runHelper(sb, body, { dryRun = false, configExtra = "" } = {}) {
     "",
   ].join("\n");
   const result = spawnSync("bash", ["-c", script], {
-    env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+    env: { ...process.env, BASH_ENV: "", PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
     encoding: "utf8",
   });
   return { code: result.status, out: `${result.stdout}${result.stderr}` };
@@ -181,14 +198,12 @@ exit 0
     fs.writeFileSync(path.join(bin, "git"), gitContent, { mode: 0o755 });
     return { dir, bin };
   }
-  // Runs deploy.sh up to its first argument check with the fake git first in
-  // PATH; the run dies on "give --digest or --release", after the journal's
-  // first line. The deploy journal is STDERR (deploy-from-job.sh captures it
-  // as job-<id>.log), so the head assertions read stderr only — and each case
-  // also proves the stamp never leaks into stdout.
+  // Keep the fake invocation environment isolated from a host BASH_ENV. A host
+  // startup file can otherwise override the fake git and hide the fixture's
+  // fallback/error branches.
   function runJournal(sb, exactPath = false) {
     return spawnSync("bash", [path.join(HERE, "deploy.sh")], {
-      env: { ...process.env, PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+      env: { ...process.env, BASH_ENV: "", PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
       encoding: "utf8",
     });
   }
@@ -243,9 +258,9 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 4 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place");
     assert.notEqual(code, 0, out);
-    assert.match(out, /4 GiB free on the filesystem of \/var\/lib\/docker, less than the required 15 GiB/);
-    assert.match(out, /NOT started: no image was pulled, no dump was taken, nothing was changed/);
-    assert.match(out, /docker system df/);
+    assert.match(out, /4 GiB free; requires 15 GiB including image layers and DB dump reserve/);
+    assert.match(out, /refusing before pull, DB dump, or maintenance; cleanup candidates:/);
+    assert.doesNotMatch(calls(sb), /docker pull|dump|maintenance/);
     // the candidates are printed, the deploy refused
     assert.match(calls(sb), /docker system df/);
   });
@@ -254,14 +269,14 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 42 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place");
     assert.equal(code, 0, out);
-    assert.match(out, /42 GiB free on the filesystem of \/var\/lib\/docker \(>= 15 GiB required\)/);
+    assert.match(out, /42 GiB free; requires 15 GiB including image layers and DB dump reserve/);
   });
 
   it("honours MYRMIDON_DEPLOY_MIN_FREE_GB and 0 switches the check off", () => {
     const tight = sandbox({ freeGb: 9 });
     const low = runHelper(tight, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=10" });
     assert.notEqual(low.code, 0, low.out);
-    assert.match(low.out, /9 GiB free .* less than the required 10 GiB/);
+    assert.match(low.out, /9 GiB free; requires 10 GiB including image layers and DB dump reserve/);
 
     const off = sandbox({ freeGb: 1 });
     const offRun = runHelper(off, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=0" });
@@ -273,7 +288,7 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 4 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place", { dryRun: true });
     assert.equal(code, 0, out);
-    assert.match(out, /dry run, nothing refused; the real run needs 15 GiB free .* \(now: 4 GiB\)/);
+    assert.match(out, /dry run; requires 15 GiB including image layers and DB dump reserve .*free: 4 GiB/);
   });
 });
 
@@ -327,13 +342,137 @@ describe("deploy_image_retention (DEPLOY-HYGIENE, OPE-5107)", () => {
     const log = calls(sb);
     assert.doesNotMatch(log, /docker image rm .*5{64}/);
     assert.match(out, /used by a container: skipped/);
-    // per repository the current release plus one previous stay (keep=1, for
-    // a rollback): the board's used old image is skipped (it does not eat the
-    // keep budget), its unused older image and dockergate's old untagged
-    // image are removed
-    assert.match(log, /docker image rm ghcr\.io\/itkadr-git\/myrmidon:1\.6\.5-rc\.1/);
+    // the board's only used image is its OLDEST: every image newer than the
+    // running release was pulled for the next one and stays (rc.1 included),
+    // whatever the keep. dockergate has no used image, so its keep+1 = 2
+    // newest stay and the old untagged image is removed.
+    assert.doesNotMatch(log, /docker image rm ghcr\.io\/itkadr-git\/myrmidon:/);
     assert.match(log, /docker image rm sha256:8{64}/);
-    assert.match(out, /2 image\(s\) removed, 1 in use/);
+    assert.match(out, /1 image\(s\) removed, 1 in use and kept, 3 newer than the running release kept/);
+  });
+
+  // `docker image rm <ref>` targets of the run, in call order.
+  const removedRefs = (sb) =>
+    calls(sb)
+      .split("\n")
+      .filter((l) => l.startsWith("docker image rm "))
+      .map((l) => l.slice("docker image rm ".length));
+  const sha = (c) => "sha256:" + c.repeat(64);
+
+  it("keeps a freshly pulled image, the running one and ONE previous (keep=1); older unused go", () => {
+    const fresh = sha("a");
+    const current = sha("b");
+    const sb = sandbox({
+      freeGb: 42,
+      images: [
+        img(BOARD, fresh, "2026-11-06 10:00:00 +0000 UTC"),
+        img(BOARD, current, "2026-11-05 10:00:00 +0000 UTC"),
+        img(BOARD, sha("c"), "2026-11-04 10:00:00 +0000 UTC"),
+        img(BOARD, sha("d"), "2026-11-03 10:00:00 +0000 UTC"),
+        img(BOARD, sha("e"), "2026-11-02 10:00:00 +0000 UTC"),
+      ],
+      containers: ["cid-current"],
+      usedImages: [current],
+    });
+    const { code, out } = runHelper(sb, "deploy_image_retention", {
+      configExtra: `MYRMIDON_DEPLOY_IMAGE_REPOS=${BOARD}\nMYRMIDON_DEPLOY_IMAGE_KEEP=1`,
+    });
+    assert.equal(code, 0, out);
+    // the two oldest unused images are removed; the fresh one (not started
+    // yet), the running one and the newest previous one stay
+    assert.deepEqual(removedRefs(sb), [sha("d"), sha("e")]);
+    assert.match(out, /2 image\(s\) removed, 1 in use and kept, 1 newer than the running release kept/);
+  });
+
+  it("keeps the running image and ONE previous (keep=1) when nothing newer was pulled", () => {
+    const current = sha("a");
+    const sb = sandbox({
+      freeGb: 42,
+      images: [
+        img(BOARD, current, "2026-11-05 10:00:00 +0000 UTC"),
+        img(BOARD, sha("b"), "2026-11-04 10:00:00 +0000 UTC"),
+        img(BOARD, sha("c"), "2026-11-03 10:00:00 +0000 UTC"),
+        img(BOARD, sha("d"), "2026-11-02 10:00:00 +0000 UTC"),
+      ],
+      containers: ["cid-current"],
+      usedImages: [current],
+    });
+    const { code, out } = runHelper(sb, "deploy_image_retention", {
+      configExtra: `MYRMIDON_DEPLOY_IMAGE_REPOS=${BOARD}\nMYRMIDON_DEPLOY_IMAGE_KEEP=1`,
+    });
+    assert.equal(code, 0, out);
+    assert.deepEqual(removedRefs(sb), [sha("c"), sha("d")]);
+    assert.match(out, /2 image\(s\) removed, 1 in use and kept, 0 newer than the running release kept/);
+  });
+
+  it("without any used image the N+1 newest stay (keep=1: two), the rest go", () => {
+    const sb = sandbox({
+      freeGb: 42,
+      images: [
+        img(BOARD, sha("a"), "2026-11-05 10:00:00 +0000 UTC"),
+        img(BOARD, sha("b"), "2026-11-04 10:00:00 +0000 UTC"),
+        img(BOARD, sha("c"), "2026-11-03 10:00:00 +0000 UTC"),
+        img(BOARD, sha("d"), "2026-11-02 10:00:00 +0000 UTC"),
+      ],
+    });
+    const { code, out } = runHelper(sb, "deploy_image_retention", {
+      configExtra: `MYRMIDON_DEPLOY_IMAGE_REPOS=${BOARD}\nMYRMIDON_DEPLOY_IMAGE_KEEP=1`,
+    });
+    assert.equal(code, 0, out);
+    assert.deepEqual(removedRefs(sb), [sha("c"), sha("d")]);
+    assert.match(out, /2 image\(s\) removed, 0 in use and kept, 0 newer than the running release kept/);
+  });
+
+  it("keep=2 keeps the running image and TWO previous ones; a second used image is skipped and not counted", () => {
+    const current = sha("a");
+    const rollback = sha("d");
+    const sb = sandbox({
+      freeGb: 42,
+      images: [
+        img(BOARD, current, "2026-11-05 10:00:00 +0000 UTC"),
+        img(BOARD, sha("b"), "2026-11-04 10:00:00 +0000 UTC"),
+        img(BOARD, sha("c"), "2026-11-03 10:00:00 +0000 UTC"),
+        // an older image a (stopped) container still uses: never removed and
+        // does not take a place of the previous releases
+        img(BOARD, rollback, "2026-11-02 10:00:00 +0000 UTC"),
+        img(BOARD, sha("e"), "2026-11-01 10:00:00 +0000 UTC"),
+        img(BOARD, sha("f"), "2026-10-31 10:00:00 +0000 UTC"),
+      ],
+      containers: ["cid-current", "cid-stopped"],
+      usedImages: [current, rollback],
+    });
+    const { code, out } = runHelper(sb, "deploy_image_retention", {
+      configExtra: `MYRMIDON_DEPLOY_IMAGE_REPOS=${BOARD}\nMYRMIDON_DEPLOY_IMAGE_KEEP=2`,
+    });
+    assert.equal(code, 0, out);
+    assert.deepEqual(removedRefs(sb), [sha("e"), sha("f")]);
+    assert.match(out, /2 image\(s\) removed, 2 in use/);
+  });
+
+  it("untagged bot images pulled by digest: four generations shrink to the running one plus one (06.11)", () => {
+    const BOT_REPOS = ["myrmidon-hermes", "myrmidon-hermes-dev", "myrmidon-hermes-node"].map((n) => `ghcr.io/itkadr-git/${n}`);
+    // distinct 64-hex ids per repository and generation
+    const idOf = (r, g) => "sha256:" + String(r * 4 + g + 1).padStart(2, "0").repeat(32);
+    const imgs = [];
+    const used = [];
+    // generation 0 is the current release (used by the bot containers), 1..3
+    // are superseded and unused; nothing was pulled after the current one
+    BOT_REPOS.forEach((repo, r) => {
+      for (let g = 0; g < 4; g++) {
+        imgs.push(img(repo, idOf(r, g), `2026-11-0${5 - g} 10:00:00 +0000 UTC`));
+      }
+      used.push(idOf(r, 0));
+    });
+    const sb = sandbox({ freeGb: 42, images: imgs, containers: ["cid-bot-1", "cid-bot-2"], usedImages: used });
+    const { code, out } = runHelper(sb, "deploy_image_retention", {
+      configExtra: `MYRMIDON_DEPLOY_IMAGE_REPOS=${BOT_REPOS.join(",")}\nMYRMIDON_DEPLOY_IMAGE_KEEP=1`,
+    });
+    assert.equal(code, 0, out);
+    // per repository: generation 0 (used) and generation 1 stay, 2 and 3 go
+    const expected = [];
+    BOT_REPOS.forEach((_, r) => expected.push(idOf(r, 2), idOf(r, 3)));
+    assert.deepEqual(removedRefs(sb), expected);
+    assert.match(out, /6 image\(s\) removed, 3 in use/);
   });
 
   it("keep=0 switches the cleanup off", () => {

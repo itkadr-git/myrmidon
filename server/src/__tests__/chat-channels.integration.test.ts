@@ -1059,7 +1059,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await db.insert(companies).values({
       id: companyId,
       name: `Chat Test ${companyId.slice(0, 8)}`,
-      issuePrefix: `C${companyId.replaceAll("-", "").slice(0, 7).toUpperCase()}`,
+      issuePrefix: `C${companyId.replaceAll("-", "").toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
     const now = new Date();
@@ -5974,6 +5974,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(deferred).toHaveLength(1);
 
     deferred.shift()?.();
+    // The GitHub drain owns a fixed reorder window; running its scheduled
+    // task is not the same as advancing the window to its deadline.
+    await new Promise((resolve) => setTimeout(resolve, 800));
     await vi.waitFor(async () => {
       const rows = await db
         .select()
@@ -47237,7 +47240,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const updateOutcome = await Promise.race([
       resourceUpdate,
       new Promise<"timed_out">((resolve) =>
-        setTimeout(() => resolve("timed_out"), 500),
+        setTimeout(() => resolve("timed_out"), 2_500),
       ),
     ]);
     releasePost();

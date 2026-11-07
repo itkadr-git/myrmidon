@@ -72,6 +72,10 @@ limit is now two-dimensional (`server/src/myrmidon/continuation-history-limit.ts
 - `MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS` (default `8000`) — the cap of a
   single entry: its tail is replaced by a marker naming where the full text
   stays.
+- `MYRMIDON_CONTINUATION_ENVELOPE_BYTES` (default `98304`, 96 KiB) — the final
+  byte ceiling on the serialized envelope (see SETTINGS.md). It catches what
+  the character budgets cannot: non-ASCII history that counts few characters
+  but weighs more than one argv/env string allows.
 
 The original request, the latest request and the comments that triggered the run
 are always part of the payload (that is what "pin" means here), and the payload's

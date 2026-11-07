@@ -1405,8 +1405,7 @@ export function createRunAdmission(options: {
       active = Math.max(0, active - 1);
     },
     syncRunning(running) {
-      // Only raise: lowering could drop slots reserved for claims still in flight.
-      if (Number.isInteger(running) && running > active) active = running;
+      if (Number.isInteger(running)) active = Math.max(0, running);
     },
     limited() {
       return lastLimited;

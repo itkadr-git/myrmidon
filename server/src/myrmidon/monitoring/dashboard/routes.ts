@@ -31,7 +31,7 @@ import {
 } from "./settings.js";
 import { vmClient } from "./vm.js";
 import { zabbixReadClient } from "./zabbix.js";
-import { buildDashboardView, buildSelfcheckView } from "./service.js";
+import { buildDashboardView, buildSelfcheckView, buildOomFleetSummary } from "./service.js";
 
 export interface MonitoringDashboardRoutesDeps {
   db: Db;
@@ -97,6 +97,12 @@ export function monitoringDashboardRoutes(deps: MonitoringDashboardRoutesDeps) {
     },
   );
 
+  router.get("/myrmidon/monitoring/oom", async (req, res) => {
+    assertBoard(req);
+    const companyId = resolveCompanyId(req);
+    res.json(await buildOomFleetSummary(deps.db, companyId, deps.now?.() ?? new Date()));
+  });
+
   router.get("/myrmidon/monitoring/dashboard", async (req, res) => {
     assertBoard(req);
     const companyId = resolveCompanyId(req);
@@ -108,6 +114,7 @@ export function monitoringDashboardRoutes(deps: MonitoringDashboardRoutesDeps) {
         vm: clients.vm,
         zabbix: clients.zabbix,
         now: deps.now,
+        db: deps.db,
       }),
     );
   });

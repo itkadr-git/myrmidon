@@ -525,6 +525,7 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        if (item.kind === "knowledge") return `knowledge:${item.suggestion.id}`;
         return `run:${item.run.id}`;
       }),
     ).toEqual([
@@ -568,6 +569,7 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        if (item.kind === "knowledge") return `knowledge:${item.suggestion.id}`;
         return `run:${item.run.id}`;
       }),
     ).toEqual([
@@ -1590,5 +1592,22 @@ describe("inbox helpers", () => {
     expect(shouldResetInboxWorkspaceGrouping("workspace", false, true)).toBe(true);
     expect(shouldResetInboxWorkspaceGrouping("workspace", true, true)).toBe(false);
     expect(shouldResetInboxWorkspaceGrouping("none", false, true)).toBe(false);
+  });
+});
+
+
+describe("knowledge inbox items", () => {
+  it("includes only pending suggestions with stable keys and type grouping", () => {
+    const suggestion = { id: "proposal-1", targetItemId: null, body: "Reusable lesson", status: "pending" as const, trust: null, createdAt: "2026-10-27T00:00:00Z" };
+    const items = getInboxWorkItems({ issues: [], approvals: [], knowledgeSuggestions: [suggestion, { ...suggestion, id: "accepted", status: "accepted" }] });
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe("knowledge");
+    expect(getInboxWorkItemKey(items[0])).toBe("knowledge:proposal-1");
+    expect(groupInboxWorkItems(items, "type")[0]).toMatchObject({ key: "knowledge", label: "Knowledge" });
+  });
+
+  it("persists the knowledge category per company", () => {
+    saveInboxFilterPreferences("knowledge-company", { ...loadInboxFilterPreferences("knowledge-company"), allCategoryFilter: "knowledge", allApprovalFilter: "all" });
+    expect(loadInboxFilterPreferences("knowledge-company").allCategoryFilter).toBe("knowledge");
   });
 });

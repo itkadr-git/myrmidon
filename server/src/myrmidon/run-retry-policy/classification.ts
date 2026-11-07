@@ -23,6 +23,10 @@
 // The code sets are the ones the continuation recovery carried, moved here so
 // that both the recovery sweep and the heartbeat answer from one list.
 
+// myrmidon(RUN-GUARD-LOOPS): the run guard's own stop reasons are listed as
+// permanent below; the list lives next to the guard so the two cannot drift.
+import { RUN_GUARD_STOP_REASONS } from "@myrmidon/adapter-utils/run-guard";
+
 export type RunFailureClass = "transient" | "permanent" | "unknown";
 
 export type RunFailureClassificationReason =
@@ -46,6 +50,7 @@ export const TRANSIENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   "codex_transient_upstream",
   "codex_harness_crash",
   "claude_transient_upstream",
+  "hermes_transient_upstream",
   "provider_quota",
   "timeout",
   "continuation_source_context_missing",
@@ -84,6 +89,12 @@ export const PERMANENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   "low_trust_boundary_mismatch",
   "low_trust_requires_sandbox_environment",
   "low_trust_runtime_services_denied",
+  // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard (model call limit,
+  // idle timeout, tool retry loop, read-only exploration without a write,
+  // repeated identical read) stopped because of what the agent did with this
+  // task. Another run with the same task and context repeats it and burns the
+  // same tokens again, so these are never retried automatically.
+  ...RUN_GUARD_STOP_REASONS,
 ]);
 
 /**

@@ -434,6 +434,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "request_confirmation" as const,
+          addresseeUserId: fixture.boardUserId,
           continuationPolicy: "wake_assignee" as const,
           resolverPolicy: "human_only" as const,
           payload: {
@@ -622,6 +623,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "request_confirmation" as const,
+          addresseeUserId: fixture.boardUserId,
           continuationPolicy: "wake_assignee" as const,
           resolverPolicy: "human_only" as const,
           payload: {
@@ -669,6 +671,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "request_confirmation" as const,
+          addresseeUserId: fixture.boardUserId,
           continuationPolicy: "wake_assignee" as const,
           resolverPolicy: "human_only" as const,
           payload: {
@@ -745,7 +748,8 @@ describeEmbeddedPostgres(
     // The filter consumes the interaction's vendor-computed audience fields:
     // a card reaches the owner's DM only when it is addressed to a human
     // (effectiveResolverPolicy "human_only", or addresseeUserId = the task
-    // owner). Agent-addressed and purely operational cards stay board-only.
+    // owner). Agent-addressed and purely operational interactions stay
+    // board-only in owner_decisions_only; mode all broadens the audience only.
     describe("owner-DM audience filter (1.6.5)", () => {
       beforeEach(async () => {
         await instanceSettingsService(db).updateGeneral({
@@ -770,6 +774,7 @@ describeEmbeddedPostgres(
           resolverPolicy?: "anyone" | "not_creator" | "human_only";
           addresseeAgentId?: string;
           addresseeUserId?: string;
+          addresseeQueue?: string;
         } = {},
       ) {
         return issueThreadInteractionService(db).create(
@@ -785,6 +790,9 @@ describeEmbeddedPostgres(
               : {}),
             ...(input.addresseeUserId
               ? { addresseeUserId: input.addresseeUserId }
+              : {}),
+            ...(input.addresseeQueue
+              ? { addresseeQueue: input.addresseeQueue }
               : {}),
             payload: {
               version: 1 as const,
@@ -887,7 +895,10 @@ describeEmbeddedPostgres(
       it("keeps an operational card (no human addressee) board-only", async () => {
         const fixture = await seedFixture();
         for (const resolverPolicy of ["anyone", "not_creator"] as const) {
-          const interaction = await createCard(fixture, { resolverPolicy });
+          const interaction = await createCard(fixture, {
+            resolverPolicy,
+            addresseeQueue: "default",
+          });
           const publications = await publicationsForInteraction(
             fixture.companyId,
             interaction.id,
@@ -896,7 +907,23 @@ describeEmbeddedPostgres(
         }
       });
 
-      it('mode "all" restores the pre-filter behaviour for operational cards', async () => {
+      it("delivers an operational request with an explicit human-only audience as text", async () => {
+        const fixture = await seedFixture();
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "human_only",
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.payload).not.toHaveProperty("card");
+        expect((publications[0]!.payload as { text: string }).text).toContain(
+          "Proceed with the deploy?",
+        );
+      });
+
+      it('mode "all" publishes operational cards as text without actions', async () => {
         const fixture = await seedFixture();
         await instanceSettingsService(db).updateGeneral({
           [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "all" },
@@ -911,6 +938,14 @@ describeEmbeddedPostgres(
         );
         expect(publications).toHaveLength(1);
         expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+        const payload = publications[0]!.payload as SafeChatPublicationPayload;
+        // Text-only projection: no `actions` field at all, no card, and no
+        // keyboard/callback tokens anywhere in the payload text.
+        expect("actions" in payload).toBe(false);
+        expect(payload.card).toBeUndefined();
+        expect(payload.text).toContain("Proceed with the deploy?");
+        expect(payload.text).not.toContain("callback_data");
+        expect(payload.text).not.toContain("reply_markup");
 
         await instanceSettingsService(db).updateGeneral({
           [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },

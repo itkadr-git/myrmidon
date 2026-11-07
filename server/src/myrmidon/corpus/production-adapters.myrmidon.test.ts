@@ -1,3 +1,5 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -9,11 +11,12 @@ import {
   applyPendingMigrations,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
+  type Db,
   type EmbeddedPostgresTestDatabase,
 } from "@myrmidon/db";
 import { installPgvectorIntoEmbeddedCluster } from "@myrmidon/corpus";
-import { configureCorpusAdapters, resolveCorpusPorts, createCorpusParseWorker } from "./index.js";
-import { createCorpusPorts } from "./adapters.js";
+import { configureCorpusAdapters, resolveCorpusPorts, createCorpusParseWorker, corpusService } from "./index.js";
+import { createCorpusPorts, createSqlExecutor } from "./adapters.js";
 import type { CorpusPortContext } from "./ports.js";
 import type { Config } from "../../config.js";
 
@@ -59,7 +62,7 @@ run("production corpus adapters", () => {
       enabled: true,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
-      embedderModel: "test",
+      embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
       maxDocumentBytes: 1024,
@@ -125,7 +128,7 @@ run("production corpus adapters", () => {
       enabled: false,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
-      embedderModel: "test",
+      embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
       maxDocumentBytes: 1024,
@@ -157,7 +160,7 @@ run("production corpus adapters", () => {
       insert into companies (id, name, issue_prefix) values
         (${companyId}, 'mcp-refresh', 'MCP')
     `);
-    const settings: CorpusPortContext["settings"] = { enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000, embedderModel: "test", embedderDimensions: 3, embedderBaseUrl: null, maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1, maxParseAttempts: 2, searchTopK: 5 };
+    const settings: CorpusPortContext["settings"] = { enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000, embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null, maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1, maxParseAttempts: 2, searchTopK: 5 };
     const { createCorpusMcpProvider } = await import("./adapters.js");
     const provider = createCorpusMcpProvider(async () => settings, (context) => createCorpusPorts(db, context, { storageLocalDiskBaseDir: storageDir! } as Config));
     const tools = await provider(companyId);
@@ -178,7 +181,7 @@ run("production corpus adapters", () => {
     await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
     const settings: CorpusPortContext["settings"] = {
       enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
-      embedderModel: "test", embedderDimensions: 3, embedderBaseUrl: null,
+      embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null,
       maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
       maxParseAttempts: 2, searchTopK: 5,
     };
@@ -220,5 +223,257 @@ run("production corpus adapters", () => {
     expect(failedDocument?.status).toBe("failed");
     expect(failedDocument?.error).toBeTruthy();
     await db.$client.end();
+  });
+
+  it("parses a failed document again through the real adapters: same job, attempts cleared", async () => {
+    const db = createDb(database!.connectionString);
+    const companyId = randomUUID();
+    await db.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'reparse-test', 'RPT')`);
+    await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
+    const settings: CorpusPortContext["settings"] = {
+      enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
+      embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: "http://embedder.invalid",
+      maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
+      maxParseAttempts: 1, searchTopK: 5,
+    };
+    const ports = createCorpusPorts(db, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+    const dataset = await ports.store.createDataset({ companyId, name: "reparse dataset", description: null });
+    const document = await ports.store.createDocument({ companyId, datasetId: dataset.id, filename: "book.pdf", mimeType: "application/pdf", byteSize: 4, blobRef: "", maxAttempts: 1 });
+    const blob = await ports.blobs.put({ companyId, documentId: document.id, filename: document.filename, mimeType: document.mimeType, bytes: new TextEncoder().encode("book") });
+    await ports.store.updateDocument(companyId, document.id, { blobRef: blob.ref });
+    const enqueued = await ports.queue.enqueue({ companyId, datasetId: dataset.id, documentId: document.id, maxAttempts: 1 });
+    // The one attempt runs out: the job and the document are failed, as the sweep leaves them.
+    const [claimed] = await ports.queue.claim({ limit: 1 });
+    expect(claimed?.id).toBe(enqueued.id);
+    await ports.store.updateDocument(companyId, document.id, { status: "parsing" });
+    expect((await ports.queue.fail(companyId, enqueued.id, "parser timed out"))?.state).toBe("failed");
+    await ports.store.updateDocument(companyId, document.id, { status: "failed", error: "parser timed out" });
+    expect(await ports.store.getDocument(companyId, document.id)).toMatchObject({ status: "failed", attempts: 1 });
+
+    const audit: unknown[] = [];
+    const service = corpusService({} as Db, {
+      settings: { getGeneral: async () => ({ corpus: settings }), updateGeneral: async () => ({}) },
+      listCompanyIds: async () => [companyId],
+      logActivity: async (entry) => { audit.push(entry); },
+      ports: () => ports,
+      env: {},
+    });
+    const actor = { actorType: "user", actorId: "user-a", agentId: null, runId: null, agentApiKeyId: null } as const;
+
+    const result = await service.reparseDocument(companyId, document.id, actor);
+
+    expect(result.document).toMatchObject({ id: document.id, status: "queued", error: null, attempts: 0 });
+    expect(result.job).toMatchObject({ id: enqueued.id, state: "queued", attempts: 0, lastError: null });
+    const rows = await db.execute(sql`
+      select id, status, attempts, last_error, finished_at from corpus_parse_jobs where document_id = ${document.id}
+    `) as unknown as Array<{ id: string; status: string; attempts: number; last_error: string | null; finished_at: Date | null }>;
+    expect(rows).toEqual([{ id: enqueued.id, status: "pending", attempts: 0, last_error: null, finished_at: null }]);
+    expect(audit).toHaveLength(1);
+    // The sweep takes it again, from the bytes that were stored.
+    const [again] = await ports.queue.claim({ limit: 1 });
+    expect(again).toMatchObject({ id: enqueued.id, attempts: 1 });
+    expect(new TextDecoder().decode(await ports.blobs.get(blob.ref))).toBe("book");
+    await db.$client.end();
+  });
+
+  it("rolls back multi-step writes atomically in withTransaction when an error occurs on real PostgreSQL", async () => {
+    const db = createDb(database!.connectionString);
+    const sqlExecutor = createSqlExecutor(db);
+    const companyId = randomUUID();
+    const datasetId = randomUUID();
+    const documentId = randomUUID();
+    await db.execute(sql`
+      insert into companies (id, name, issue_prefix) values (${companyId}, 'tx-test', 'CTX')
+    `);
+    await db.execute(sql`
+      insert into corpus_datasets (id, company_id, name) values (${datasetId}, ${companyId}, 'tx-dataset')
+    `);
+
+    // Multi-step write (document + job) where failure midway aborts the transaction
+    await expect(
+      sqlExecutor.withTransaction(async (tx) => {
+        await tx.query(
+          `insert into corpus_documents (id, company_id, dataset_id, title, status, source_uri)
+           values ($1, $2, $3, $4, $5, $6)`,
+          [documentId, companyId, datasetId, "Mid-failure Doc", "queued", "source://test"],
+        );
+
+        // Verify document is temporarily visible inside the uncommitted transaction
+        const inTx = await tx.query<{ id: string }>(
+          `select id from corpus_documents where id = $1`,
+          [documentId],
+        );
+        expect(inTx).toHaveLength(1);
+
+        // Mid-step failure
+        throw new Error("simulated mid-write failure");
+      }),
+    ).rejects.toThrow("simulated mid-write failure");
+
+    // Outside the aborted transaction: no partial data must remain
+    const documentsAfterRollback = await sqlExecutor.query<{ id: string }>(
+      `select id from corpus_documents where id = $1`,
+      [documentId],
+    );
+    expect(documentsAfterRollback).toEqual([]);
+
+    // Verify SET LOCAL works inside withTransaction (Alex's review note on PR #1339)
+    await sqlExecutor.withTransaction(async (tx) => {
+      await tx.query("set local hnsw.ef_search = 120");
+      const ef = await tx.query<{ ef_search: string }>("select current_setting('hnsw.ef_search', true) as ef_search");
+      expect(ef[0]?.ef_search).toBe("120");
+    });
+
+    // Verify successful multi-step writes commit atomically
+    const committedDocId = randomUUID();
+    const committedJobId = randomUUID();
+    await sqlExecutor.withTransaction(async (tx) => {
+      await tx.query(
+        `insert into corpus_documents (id, company_id, dataset_id, title, status, source_uri)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [committedDocId, companyId, datasetId, "Committed Doc", "queued", "source://test"],
+      );
+      await tx.query(
+        `insert into corpus_parse_jobs (id, company_id, document_id, parser_version, status, attempts, max_attempts)
+         values ($1, $2, $3, $4, $5, $6, $7)`,
+        [committedJobId, companyId, committedDocId, "v1", "pending", 0, 3],
+      );
+    });
+
+    const docs = await sqlExecutor.query<{ id: string; title: string }>(
+      `select id, title from corpus_documents where id = $1`,
+      [committedDocId],
+    );
+    expect(docs).toHaveLength(1);
+    expect(docs[0]?.title).toBe("Committed Doc");
+
+    const jobs = await sqlExecutor.query<{ id: string; document_id: string }>(
+      `select id, document_id from corpus_parse_jobs where id = $1`,
+      [committedJobId],
+    );
+    expect(jobs).toHaveLength(1);
+
+    // Verify nested withTransaction creates a real savepoint that rolls back independently
+    const outerDocId = randomUUID();
+    const nestedAbortedDocId = randomUUID();
+    await sqlExecutor.withTransaction(async (outerTx) => {
+      await outerTx.query(
+        `insert into corpus_documents (id, company_id, dataset_id, title, status, source_uri)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [outerDocId, companyId, datasetId, "Outer Doc", "queued", "source://outer"],
+      );
+      try {
+        await outerTx.withTransaction(async (innerTx) => {
+          await innerTx.query(
+            `insert into corpus_documents (id, company_id, dataset_id, title, status, source_uri)
+             values ($1, $2, $3, $4, $5, $6)`,
+            [nestedAbortedDocId, companyId, datasetId, "Nested Aborted Doc", "queued", "source://inner"],
+          );
+          throw new Error("nested abort");
+        });
+      } catch (err) {
+        expect((err as Error).message).toBe("nested abort");
+      }
+    });
+
+    const outerDocs = await sqlExecutor.query<{ id: string }>(
+      `select id from corpus_documents where id = $1`,
+      [outerDocId],
+    );
+    expect(outerDocs).toHaveLength(1);
+
+    const nestedDocs = await sqlExecutor.query<{ id: string }>(
+      `select id from corpus_documents where id = $1`,
+      [nestedAbortedDocId],
+    );
+    expect(nestedDocs).toEqual([]);
+
+    await db.$client.end();
+  });
+
+  it("indexes document chunks by calling the embeddings endpoint with corpus-embed-pplx-0.6b", async () => {
+    const captured: { body: { model?: string; input?: string[]; dimensions?: number } | null; calls: number } = { body: null, calls: 0 };
+    const server = http.createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/embeddings") {
+        captured.calls += 1;
+        let raw = "";
+        req.on("data", (c) => { raw += c; });
+        req.on("end", () => {
+          captured.body = JSON.parse(raw);
+          const input = captured.body?.input ?? [];
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({
+            data: input.map((_, index) => ({
+              index,
+              embedding: Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)),
+            })),
+          }));
+        });
+        return;
+      }
+      res.statusCode = 404;
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const dbInstance = createDb(database!.connectionString);
+      const companyId = randomUUID();
+      await dbInstance.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'bge-test', 'BGE')`);
+
+      const settings: CorpusPortContext["settings"] = {
+        enabled: true,
+        parserBaseUrl: "http://parser.invalid",
+        parserTimeoutMs: 1000,
+        embedderModel: "corpus-embed-pplx-0.6b",
+        embedderDimensions: 1024,
+        embedderBaseUrl: baseUrl,
+        maxDocumentBytes: 1024,
+        maxDocumentsPerDataset: 5,
+        parseConcurrency: 1,
+        maxParseAttempts: 2,
+        searchTopK: 5,
+      };
+
+      const ports = createCorpusPorts(dbInstance, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+      const dataset = await ports.store.createDataset({ companyId, name: "bge dataset", description: null });
+      const document = await ports.store.createDocument({
+        companyId,
+        datasetId: dataset.id,
+        filename: "test.txt",
+        mimeType: "text/plain",
+        byteSize: 10,
+        blobRef: "b1",
+        maxAttempts: 2,
+      });
+
+      const indexedCount = await ports.index.indexDocument({
+        companyId,
+        datasetId: dataset.id,
+        documentId: document.id,
+        chunks: [{ text: "hello bge-m3 world", index: 0 }],
+        embedderModel: settings.embedderModel,
+        embedderDimensions: settings.embedderDimensions,
+        embedderBaseUrl: baseUrl,
+      });
+
+      expect(indexedCount).toBe(1);
+      expect(captured.body).not.toBeNull();
+      expect(captured.body?.model).toBe("corpus-embed-pplx-0.6b");
+      expect(captured.body?.input).toEqual(["hello bge-m3 world"]);
+      expect(captured.body?.dimensions).toBe(1024);
+
+      const search = { companyId, datasetId: dataset.id, query: "hello bge-m3 world", limit: 5, mode: "hybrid" as const, embedderModel: settings.embedderModel, embedderDimensions: settings.embedderDimensions, embedderBaseUrl: baseUrl };
+      const secondPorts = createCorpusPorts(dbInstance, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+      await Promise.all([ports.index.search(search), secondPorts.index.search(search)]);
+      await secondPorts.index.search(search);
+      expect(captured.calls).toBe(2); // one ingestion request, one shared query embedding
+
+      await dbInstance.$client.end();
+    } finally {
+      server.close();
+    }
   });
 });

@@ -1,12 +1,13 @@
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidon/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
@@ -40,6 +41,13 @@ import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
  * blocks, tree pause holds) are enforced by `enqueueWakeup` itself, so this
  * module reuses them instead of re-implementing them. Wakes over a limit
  * simply stay queued and the normal queued-run sweep starts them later.
+ *
+ * myrmidon(OPE-11947): the per-day caps are the one gate that does not hold a
+ * wake — `enqueueWakeup` records a `skipped` receipt row and returns null. A pass
+ * that kept offering every ready task of a capped agent therefore wrote one
+ * receipt per task per pass until midnight UTC. The pass now asks the cap's own
+ * verdict once per agent (`deps.getDailyCapBlock`) and, once the agent's first
+ * receipt of the day exists, leaves it alone — see `idlePickupForAgentImpl`.
  */
 
 export const IDLE_PICKUP_INTERVAL_SEC_ENV = "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC";
@@ -56,7 +64,8 @@ export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
  */
 export const ORPHAN_WAKE_GRACE_SEC = 600;
 
-/** Default: the sweep runs on every scheduler tick (about 30 s), like the other recovery passes. */
+/** In-flight idle-pickup attempts keyed by company and agent. */
+const idlePickupInFlight = new Map<string, Promise<IdlePickupResult>>();
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
 /**
@@ -96,15 +105,11 @@ export const IDLE_PICKUP_WAKE_WINDOW_MS = 60_000;
 
 const WAKEABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const IDLE_PICKUP_BOARD_CANCELLATION_SOURCES = new Set(["board_operator", "reassignment"]);
 
 /** Interval in seconds; invalid or too-small values fall back to the default. */
 export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_INTERVAL_SEC_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  return Math.max(MIN_IDLE_PICKUP_INTERVAL_SEC, value);
+  return liveIdlePickupSettings(env).intervalSec;
 }
 
 /**
@@ -112,8 +117,7 @@ export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env):
  * unrecognized value keeps it on. Only an explicit off value disables it.
  */
 export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[IDLE_PICKUP_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+  return liveIdlePickupSettings(env).enabled;
 }
 
 /**
@@ -127,12 +131,7 @@ export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boo
  * anyone other than the run itself, reopens the issue for idle pickup.
  */
 export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  return value;
+  return liveIdlePickupSettings(env).recentSuccessWindowMs;
 }
 
 /** Bounded non-negative integer reader shared by the two budget knobs. */
@@ -164,21 +163,7 @@ export interface IdleWakeBudgetSettings {
  * spend the whole window in one pass.
  */
 export function readIdleWakeBudgetSettings(env: NodeJS.ProcessEnv = process.env): IdleWakeBudgetSettings {
-  const perMinute = readBoundedInt(
-    env,
-    IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV,
-    DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-    1,
-    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-  );
-  const batch = readBoundedInt(
-    env,
-    IDLE_PICKUP_WAKE_BATCH_ENV,
-    DEFAULT_IDLE_PICKUP_WAKE_BATCH,
-    1,
-    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-  );
-  return { perMinute, batch: Math.min(perMinute, batch) };
+  return liveIdleWakeBudget(env);
 }
 
 /**
@@ -253,7 +238,16 @@ export interface IdlePickupIssueCandidate {
   id: string;
   identifier: string | null;
   priority: string | null;
+  status: string;
   blockedTransitionAt: Date | null;
+  executionState: Record<string, unknown> | null;
+}
+
+/** A per-day heartbeat cap the agent has reached (reason is the gate's own: `heartbeat.daily_run_limit` / `heartbeat.daily_cost_limit`). */
+export interface IdlePickupDailyCapBlock {
+  reason: string;
+  observed: number;
+  limit: number;
 }
 
 export interface IdlePickupDeps {
@@ -271,6 +265,14 @@ export interface IdlePickupDeps {
       contextSnapshot?: Record<string, unknown>;
     },
   ) => Promise<unknown>;
+  /**
+   * myrmidon(OPE-11947): the heartbeat daily-cap gate's verdict for one agent —
+   * `getHeartbeatDailyCapBlock` over the agent's own policy, so the run count, the
+   * failed-before-model exclusion (OPE-9476) and the cost cap are never counted a
+   * second time here. Null means the agent is under its caps. Absent (unit tests
+   * that predate it) means the gate inside `enqueueWakeup` alone decides.
+   */
+  getDailyCapBlock?: (agent: { id: string; companyId: string }) => Promise<IdlePickupDailyCapBlock | null>;
   /**
    * Company-wide wake budget (IDLE-WAKE-BUDGET). One instance is shared by the
    * periodic sweeper and the release-path pickup, so the ceiling holds for the
@@ -307,6 +309,12 @@ export interface IdlePickupResult {
    * picks it up again.
    */
   budgetSkipped: number;
+  /**
+   * myrmidon(OPE-11947): agents left alone because they are over a per-day
+   * heartbeat cap and today's receipt of it is already on the board. Counted once
+   * per agent per pass, whatever the number of its ready tasks.
+   */
+  dailyCapSkipped: number;
   issueIds: string[];
 }
 
@@ -316,6 +324,7 @@ const IDLE_PICKUP_RESULT_ZERO: Omit<IdlePickupResult, "issueIds"> = {
   suppressed: 0,
   considered: 0,
   budgetSkipped: 0,
+  dailyCapSkipped: 0,
 };
 
 /** A fresh zero result; a bare spread of IDLE_PICKUP_RESULT_ZERO would share the issueIds array across calls. */
@@ -362,25 +371,32 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * run in the loop in `idlePickupForAgent`.
  */
 export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+  // Keep idle-pickup candidate SQL prefilter aligned: review stages in_review where agent is currentParticipant
+  const isReviewParticipant =
+    sql`${issues.status} = 'in_review' and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent' and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agentId}`;
   return db
     .select({
       id: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      status: issues.status,
       blockedTransitionAt: issues.blockedTransitionAt,
+      executionState: issues.executionState,
     })
     .from(issues)
     .where(
       and(
         eq(issues.companyId, companyId),
-        eq(issues.assigneeAgentId, agentId),
-        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
-        // assigned to this agent (by hand or by a gated claim) stays theirs —
-        // the scope applies where a task is handed out (matcher, role queue).
-        isNull(issues.assigneeUserId),
+        or(
+          and(
+            eq(issues.assigneeAgentId, agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
+          ),
+          isReviewParticipant,
+        ),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
-        inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
         // Not blocked by an unresolved blocker: no `blocks` edge whose blocker
         // is anything other than `done`. This mirrors the board's readiness
         // rule (only a done blocker resolves its dependent): an open blocker
@@ -442,10 +458,76 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
         // unblock clears a settled hold (settled-holds/human-unblock.ts), and
         // the issue comes back here on the next pass.
         issueHasNoExecutionHold(db),
+        // myrmidon(OPE-7707): do not wake an agent on a task waiting for an
+        // interaction or external unblock (prevents idle pickup looping on pending questions).
+        sql`not exists (
+          select 1
+          from issue_thread_interactions iti
+          where iti.company_id = ${issues.companyId}
+            and iti.issue_id = ${issues.id}
+            and iti.status = 'pending'
+        )`,
+        isNull(issues.unblockDescriptor),
       ),
     )
     .orderBy(asc(issues.createdAt))
     .limit(200);
+}
+
+/**
+ * OPE-10082: Returns true if an issue's review stage is pending for the agent and waiting for CI.
+ * When true, idle pickup should not wake the review participant.
+ */
+export function isReviewPendingWaitingForCi(params: {
+  agentId: string;
+  executionState: unknown;
+  workProductMetadata?: Record<string, unknown> | null;
+  candidateCiState?: unknown;
+}): boolean {
+  const es =
+    params.executionState !== null && typeof params.executionState === "object"
+      ? (params.executionState as Record<string, unknown>)
+      : null;
+  if (!es || es.status !== "pending" || es.currentStageType !== "review") {
+    return false;
+  }
+  const participant =
+    es.currentParticipant !== null && typeof es.currentParticipant === "object"
+      ? (es.currentParticipant as Record<string, unknown>)
+      : null;
+  if (participant && participant.type === "agent" && participant.agentId !== params.agentId) {
+    return false;
+  }
+
+  const candidateCiState =
+    (typeof params.candidateCiState === "string" ? params.candidateCiState : null) ??
+    (typeof es.ciState === "string" ? es.ciState : null) ??
+    (typeof (es.reviewRequest as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.reviewRequest as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof (es.monitor as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.monitor as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof es.ci === "string" ? es.ci : null);
+
+  const wpMeta = params.workProductMetadata;
+  const activeCi =
+    wpMeta?.activeCi !== null && typeof wpMeta?.activeCi === "object"
+      ? (wpMeta.activeCi as Record<string, unknown>)
+      : null;
+  const wpCiState =
+    (typeof wpMeta?.ciState === "string" ? wpMeta.ciState : null) ??
+    (typeof wpMeta?.ci === "string" ? wpMeta.ci : null) ??
+    (typeof activeCi?.state === "string" ? activeCi.state : null) ??
+    (typeof activeCi?.status === "string" ? activeCi.status : null);
+
+  const detectedCiState = (candidateCiState ?? wpCiState)?.toLowerCase();
+  return (
+    detectedCiState === "pending" ||
+    detectedCiState === "unknown" ||
+    detectedCiState === "queued" ||
+    detectedCiState === "in_progress"
+  );
 }
 
 /**
@@ -456,6 +538,26 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
  * once. Returns the outcome counts; the caller decides whether to log them.
  */
 export async function idlePickupForAgent(
+  deps: IdlePickupDeps,
+  agent: { id: string; companyId: string },
+  options: {
+    excludeIssueId?: string | null;
+    behaviorEnabled?: boolean;
+  } = {},
+): Promise<IdlePickupResult> {
+  const key = `${agent.companyId}:${agent.id}`;
+  const existing = idlePickupInFlight.get(key);
+  if (existing) return existing;
+  const attempt = idlePickupForAgentImpl(deps, agent, options);
+  idlePickupInFlight.set(key, attempt);
+  try {
+    return await attempt;
+  } finally {
+    if (idlePickupInFlight.get(key) === attempt) idlePickupInFlight.delete(key);
+  }
+}
+
+async function idlePickupForAgentImpl(
   deps: IdlePickupDeps,
   agent: { id: string; companyId: string },
   options: {
@@ -492,6 +594,7 @@ export async function idlePickupForAgent(
         id: heartbeatRuns.id,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         status: heartbeatRuns.status,
+        cancellationSource: sql<string | null>`(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code')`,
         finishedAt: heartbeatRuns.finishedAt,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -508,6 +611,11 @@ export async function idlePickupForAgent(
                   eq(heartbeatRuns.status, "succeeded"),
                   sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
                 ),
+                and(
+                  eq(heartbeatRuns.status, "cancelled"),
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                  sql`coalesce(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code', '') in ('board_operator', 'reassignment')`,
+                ),
               )
             : inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
         ),
@@ -517,6 +625,27 @@ export async function idlePickupForAgent(
   const result: IdlePickupResult = { ...emptyIdlePickupResult(), considered: candidates.length };
   if (candidates.length === 0) return result;
 
+  // myrmidon(OPE-11947): an agent over its per-day cap is not offered work. The
+  // cap gate inside `enqueueWakeup` does not hold a wake, it writes a `skipped`
+  // receipt row — so offering every ready task on every pass wrote one row per
+  // task per pass until midnight UTC (06.11: 4 179 rows in 6 h, 13 591 in 3 days).
+  // The first attempt of the day still goes through `enqueueWakeup`: that one row
+  // is what the attention card for a capped agent is built from. Once it exists
+  // the agent is skipped here, before any per-task lookup and without a write.
+  let dailyCapBlock: IdlePickupDailyCapBlock | null = null;
+  if (deps.getDailyCapBlock) {
+    try {
+      dailyCapBlock = await deps.getDailyCapBlock(agent);
+    } catch (err) {
+      // Fail open: the gate inside enqueueWakeup stays the authority.
+      logger.warn({ err, agentId: agent.id }, "idle-pickup daily cap lookup failed");
+    }
+    if (dailyCapBlock && (await hasDailyCapReceiptToday(deps.db, agent, dailyCapBlock).catch(() => false))) {
+      result.dailyCapSkipped += 1;
+      return result;
+    }
+  }
+
   const liveIssueIds = new Set(
     liveRuns
       .filter((run) => (LIVE_HEARTBEAT_RUN_STATUSES as readonly string[]).includes(run.status))
@@ -524,33 +653,54 @@ export async function idlePickupForAgent(
       .filter((id): id is string => Boolean(id)),
   );
 
-  // A succeeded run that ended recently on an open issue is not idle work: the
-  // vendor's successful-run-handoff / stranded-recovery machinery owns the next
-  // step for exactly that shape (a disposition is missing, and those paths send
-  // the instructive wake). Waking it again here only races them — and in tests
-  // it turns one background run into a chain that leaks into the next suite.
-  //
-  // myrmidon(IDLE-PICKUP-QUIET): the run is not the whole story — what happened
-  // on the issue after it ended is. A success that moved nothing (no new
-  // comment, nobody asking) leaves nothing to wake for, while a success whose
-  // issue got a new comment meanwhile is work waiting for the agent. The latest
-  // success per issue decides, because its silence is the one that must hold.
-  const recentSuccessesByIssueId = new Map<string, { runId: string; endedAt: Date }>();
+  // Track the latest recent terminal run for each issue. A board/reassignment
+  // cancellation paired with review changes is ready work; other cancellations
+  // remain recent activity and must not cause a wake on every sweep.
+  const recentRunsByIssueId = new Map<
+    string,
+    { runId: string; endedAt: Date; status: string; cancellationSource: string | null }
+  >();
   for (const run of liveRuns) {
-    if (run.status !== "succeeded") continue;
+    if (run.status !== "succeeded" && run.status !== "cancelled") continue;
     const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
     if (!issueId) continue;
     const endedAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
     if (Date.now() - endedAt.getTime() >= recentSuccessWindowMs) continue;
-    const known = recentSuccessesByIssueId.get(issueId);
+    const known = recentRunsByIssueId.get(issueId);
     if (!known || known.endedAt.getTime() < endedAt.getTime()) {
-      recentSuccessesByIssueId.set(issueId, { runId: run.id, endedAt });
+      recentRunsByIssueId.set(issueId, {
+        runId: run.id,
+        endedAt,
+        status: run.status,
+        cancellationSource: run.cancellationSource,
+      });
     }
   }
 
   // Highest priority first, oldest blocked-transition breaks ties: the same
   // order the queued-run start path uses for one agent's runs.
   const ordered = orderIdlePickupCandidates(candidates);
+
+  const candidateIds = ordered.map((c) => c.id);
+  const prProducts =
+    candidateIds.length > 0
+      ? await deps.db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            metadata: issueWorkProducts.metadata,
+          })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, agent.companyId),
+              inArray(issueWorkProducts.issueId, candidateIds),
+              eq(issueWorkProducts.type, "pull_request"),
+            ),
+          )
+      : [];
+  const prMetadataByIssueId = new Map(
+    prProducts.map((p) => [p.issueId, p.metadata as Record<string, unknown> | null]),
+  );
 
   // myrmidon(1.6.5 F-26 T5, design §4.3): cooling. A task whose last
   // automatic run ended stale and that has not moved since is not woken again
@@ -576,8 +726,43 @@ export async function idlePickupForAgent(
       result.alreadyActive += 1;
       continue;
     }
-    const recentSuccess = recentSuccessesByIssueId.get(candidate.id);
-    if (recentSuccess) {
+    // OPE-10082: idle_pickup does not wake a review participant for an issue whose
+    // review stage is pending and waiting for CI (ciState pending/unknown).
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prMetadataByIssueId.get(candidate.id),
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      result.alreadyActive += 1;
+      logger.info(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          issueId: candidate.id,
+        },
+        "myrmidon.idle_pickup: skipped review participant wake while review stage is pending and waiting for CI",
+      );
+      continue;
+    }
+    const recentRun = recentRunsByIssueId.get(candidate.id);
+    const executionState = candidate.executionState;
+    const reviewChangesRequested =
+      executionState !== null &&
+      typeof executionState === "object" &&
+      executionState.status === "changes_requested";
+    const boardCancelledLatestRun =
+      recentRun?.status === "cancelled" &&
+      IDLE_PICKUP_BOARD_CANCELLATION_SOURCES.has(recentRun.cancellationSource ?? "");
+    const readyFromReviewCancellation =
+      candidate.status === "in_progress" && boardCancelledLatestRun && reviewChangesRequested;
+    const shouldSuppressRecentRun =
+      recentRun?.status === "succeeded" ||
+      (recentRun?.status === "cancelled" && !readyFromReviewCancellation);
+
+    if (recentRun && shouldSuppressRecentRun) {
       // The issue just had a successful run without a disposition; the
       // successful-run-handoff / stranded-recovery paths own that next step.
       //
@@ -588,8 +773,8 @@ export async function idlePickupForAgent(
       const spokenSinceRun = await issueHasInboundActivitySince(deps.db, {
         companyId: agent.companyId,
         issueId: candidate.id,
-        since: recentSuccess.endedAt,
-        excludeRunId: recentSuccess.runId,
+        since: recentRun.endedAt,
+        excludeRunId: recentRun.runId,
       });
       if (!spokenSinceRun) {
         result.alreadyActive += 1;
@@ -659,6 +844,17 @@ export async function idlePickupForAgent(
         // paused agent, admission limits, suppressed scheduling): the gates
         // did their job, this is not an error. The next tick retries.
         result.suppressed += 1;
+        // myrmidon(OPE-11947): over a cap, the gate's receipt for today now exists
+        // and every other ready task would only add one more row: stop here. If the
+        // receipt is still missing (a gate ahead of the cap one refused this task),
+        // the next candidate gets its turn.
+        if (
+          dailyCapBlock &&
+          (await hasDailyCapReceiptToday(deps.db, agent, dailyCapBlock).catch(() => false))
+        ) {
+          result.dailyCapSkipped += 1;
+          break;
+        }
         continue;
       }
       result.woken += 1;
@@ -691,6 +887,39 @@ export async function idlePickupForAgent(
     }
   }
   return result;
+}
+
+/**
+ * myrmidon(OPE-11947): is the cap gate's `skipped` receipt for this agent, this
+ * cap and today (UTC, the gate's own day) already on the board?
+ *
+ * The receipt is matched by the gate's reason and by the limit it recorded: a
+ * limit raised or lowered since the morning is a different cap, and its first
+ * hit should leave its own receipt (the attention card reads observed/limit from
+ * the latest one). The `heartbeatSkip.limit` key is the one the gate writes.
+ */
+async function hasDailyCapReceiptToday(
+  db: Db,
+  agent: { id: string; companyId: string },
+  block: IdlePickupDailyCapBlock,
+): Promise<boolean> {
+  const now = new Date();
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const rows = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, agent.companyId),
+        eq(agentWakeupRequests.agentId, agent.id),
+        eq(agentWakeupRequests.reason, block.reason),
+        eq(agentWakeupRequests.status, "skipped"),
+        gte(agentWakeupRequests.requestedAt, dayStart),
+        sql`${agentWakeupRequests.payload} -> 'heartbeatSkip' ->> 'limit' = ${String(block.limit)}`,
+      ),
+    )
+    .limit(1);
+  return Boolean(rows[0]);
 }
 
 /**
@@ -755,20 +984,8 @@ async function hasCoveringWake(
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
         wakeNotParkedOnExecutionHold(),
-        // myrmidon(1.6.6 OPE-8988): a queued/claimed request covers the issue
-        // only while it is real work in flight — a live run carries it, or it
-        // is a just-queued request whose run is still being created. On prod
-        // 147 queued and 438 claimed requests had no live run at all (the
-        // oldest from August): each one covered its issue forever, so idle
-        // pickup counted the agent "already active" and never woke it.
         sql`(
           (
-            -- myrmidon(1.6.6 OPE-8988): a deferred wake waits for the issue's
-            -- execution lock to clear; it covers the issue only while that lock
-            -- is still held, or briefly while the promotion after release is in
-            -- flight. A deferred wake whose lock is long gone was never promoted
-            -- (OPE-8268) and covered its issue forever (prod 24.10: 10 such, the
-            -- oldest a day old). Parked holds (executionWait) are excluded above.
             ${agentWakeupRequests.status} = 'deferred_issue_execution'
             and (
               exists (
@@ -776,7 +993,10 @@ async function hasCoveringWake(
                 where li.id::text = ${agentWakeupRequests.payload} ->> 'issueId'
                   and (li.execution_run_id is not null or li.checkout_run_id is not null)
               )
-              or ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+              or (
+                ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+                and ${agentWakeupRequests.requestedAt} > now() - interval '30 minutes'
+              )
             )
           )
           or exists (
@@ -838,6 +1058,27 @@ export async function findTopReadyIssueForAgent(
   for (const candidate of orderIdlePickupCandidates(candidates)) {
     if (liveIssueIds.has(candidate.id)) continue;
     if (await hasCoveringWake(db, agent, candidate.id)) continue;
+    const prProduct = await db
+      .select({ metadata: issueWorkProducts.metadata })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, agent.companyId),
+          eq(issueWorkProducts.issueId, candidate.id),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prProduct?.metadata as Record<string, unknown> | null,
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      continue;
+    }
     return candidate;
   }
   return null;
@@ -866,6 +1107,8 @@ export interface IdlePickupSweepResult extends IdlePickupResult {
 }
 
 export interface IdlePickupSweeperDeps extends IdlePickupDeps {
+  /** Retry pending participant reviews before the general assigned-task lane. */
+  pickupReviewForAgent?: (agent: { id: string; companyId: string }) => Promise<{ handled: boolean; woken: number }>;
   /** Invokability check for one agent (evaluateAgentInvokabilityFromDb): false for a paused agent. */
   isAgentInvokable: (agent: {
     id: string;
@@ -903,9 +1146,10 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
       // the environment; the reader already resolved that precedence per key.
       // Without a reader this module keeps reading the environment itself.
       const liveness = deps.readLiveness ? (await deps.readLiveness()).settings : null;
+      const idleSettings = liveness ? null : liveIdlePickupSettings(env);
       const intervalMs =
-        (liveness ? liveness.idlePickupIntervalSec : readIdlePickupIntervalSec(env)) * 1000;
-      const enabled = liveness ? liveness.idlePickupEnabled : readIdlePickupEnabled(env);
+        (liveness ? liveness.idlePickupIntervalSec : idleSettings!.intervalSec) * 1000;
+      const enabled = liveness ? liveness.idlePickupEnabled : idleSettings!.enabled;
       if (!enabled) {
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
@@ -913,11 +1157,11 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
       lastSweepAtMs = now.getTime();
-      const envWake = readIdleWakeBudgetSettings(env);
+      const envWake = liveness ? null : liveIdleWakeBudget(env);
       // A pass never spends more of the minute than the minute holds, whichever
       // layer set the two numbers.
-      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake.perMinute;
-      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake.batch, perMinute);
+      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake!.perMinute;
+      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake!.batch, perMinute);
       // The release path spends the same budget object; handing it the resolved
       // pair keeps both paths on the numbers the operator saved.
       deps.budget?.configure({ perMinute, batch });
@@ -961,6 +1205,12 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           continue;
         }
         agentsChecked += 1;
+        const review = await deps.pickupReviewForAgent?.(agent);
+        if (review?.handled) {
+          wakesPerCompany.set(agent.companyId, (wakesPerCompany.get(agent.companyId) ?? 0) + review.woken);
+          totals.woken += review.woken;
+          continue;
+        }
         const perAgent = await idlePickupForAgent(deps, agent, {
           // The pass already decided with the resolved settings; handing the
           // decision over keeps the environment from vetoing a stored "on".
@@ -974,6 +1224,7 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         totals.alreadyActive += perAgent.alreadyActive;
         totals.suppressed += perAgent.suppressed;
         totals.budgetSkipped += perAgent.budgetSkipped;
+        totals.dailyCapSkipped += perAgent.dailyCapSkipped;
         totals.issueIds.push(...perAgent.issueIds);
       }
       if (totals.woken > 0) {

@@ -152,7 +152,18 @@ export function Ui2Costs() {
           value={summary ? formatCents(summary.budgetCents) : t("ui2.common.unknown")}
           hint={budgetHint}
         />
-        <Ui2Tile label={t("ui2.costs.tile.utilization")} value={`${utilizationPercent}%`} tone={utilizationTone} />
+        <Ui2Tile
+          label={t("ui2.costs.tile.utilization")}
+          value={`${utilizationPercent}%`}
+          tone={utilizationTone}
+        />
+        {summary && summary.unpricedEvents > 0 ? (
+          <Ui2Tile
+            label={t("ui2.costs.unpriced")}
+            value={String(summary.unpricedEvents)}
+            hint={t("ui2.costs.unpricedEvents", { count: summary.unpricedEvents })}
+          />
+        ) : null}
         <Ui2Tile
           label={t("ui2.costs.tile.incidents")}
           value={String(overview?.activeIncidents.length ?? 0)}
@@ -164,6 +175,11 @@ export function Ui2Costs() {
           }
         />
       </Ui2Tiles>
+      {summary?.forecastCents != null ? (
+        <p className="ui2-costs-forecast text-sm text-muted-foreground">
+          {t("ui2.costs.forecast", { amount: formatCents(summary.forecastCents) })}
+        </p>
+      ) : null}
 
       {overview && overview.activeIncidents.length > 0 ? (
         <Ui2Section title={t("ui2.costs.incidents.title")}>

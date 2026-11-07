@@ -490,7 +490,7 @@ function generateReadmeFromSelection(
   lines.push("## Getting Started");
   lines.push("");
   lines.push("```bash");
-  lines.push("npx paperclipai company import this-github-url-or-folder");
+  lines.push("npx myrmidon company import this-github-url-or-folder");
   lines.push("```");
   lines.push("");
   // myrmidon(B1a): this file is exported for the recipient to read standalone,

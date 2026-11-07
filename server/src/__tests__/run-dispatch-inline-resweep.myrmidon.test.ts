@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createRunStartDispatcher,
   queuedResweepArmDecision,
+  resolveStaleQueuedRunIssueId,
   startQueuedResweepTimer,
   type QueuedAgentWithoutRunningRun,
 } from "../myrmidon/run-dispatch/index.ts";
+import { queuedRunWaitingSince } from "../modules/run-dispatch/domain/queued-run-age.ts";
 import {
   DEFAULT_QUEUED_RESWEEP_SEC,
+  DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
   resolveRunDispatchSettings,
 } from "../myrmidon/run-dispatch/settings.ts";
 
@@ -26,10 +29,12 @@ describe("run dispatch settings", () => {
     expect(resolveRunDispatchSettings({})).toEqual({
       runStartDispatch: "inline",
       queuedResweepSec: DEFAULT_QUEUED_RESWEEP_SEC,
+      queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
     });
     expect(resolveRunDispatchSettings(null)).toEqual({
       runStartDispatch: "inline",
       queuedResweepSec: 30,
+      queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
     });
   });
 
@@ -38,7 +43,7 @@ describe("run dispatch settings", () => {
       resolveRunDispatchSettings({
         processes: { runStartDispatch: "notify", queuedResweepSec: 45 },
       }),
-    ).toEqual({ runStartDispatch: "notify", queuedResweepSec: 45 });
+    ).toMatchObject({ runStartDispatch: "notify", queuedResweepSec: 45, queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC });
   });
 
   it("normalizes the mode and accepts a numeric string interval", () => {
@@ -55,10 +60,11 @@ describe("run dispatch settings", () => {
       resolveRunDispatchSettings({
         processes: { runStartDispatch: "sometimes", queuedResweepSec: "soon" },
       }),
-    ).toEqual({ runStartDispatch: "inline", queuedResweepSec: 30 });
+    ).toMatchObject({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC });
     expect(resolveRunDispatchSettings({ processes: "inline" })).toEqual({
       runStartDispatch: "inline",
       queuedResweepSec: 30,
+      queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
     });
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: true } })).toMatchObject({
       queuedResweepSec: 30,
@@ -72,9 +78,55 @@ describe("run dispatch settings", () => {
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: -30 } })).toMatchObject({
       queuedResweepSec: 5,
     });
+    expect(resolveRunDispatchSettings({ processes: { queuedRunStaleAfterSec: 0 } })).toMatchObject({ queuedRunStaleAfterSec: 60 });
+    expect(resolveRunDispatchSettings({ processes: { queuedRunStaleAfterSec: 999999 } })).toMatchObject({ queuedRunStaleAfterSec: 604800 });
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: 99_999 } })).toMatchObject({
       queuedResweepSec: 3600,
     });
+  });
+});
+
+// myrmidon(OPE-11947): the age of a queued run for the stale-queued sweep. A
+// scheduled retry is created at the failure and promoted to `queued` when its
+// `scheduled_retry_at` falls due, so it waits since that time, not since
+// `created_at`. The database twin (the sweep's SQL selection and the guard in
+// cancelStaleQueuedRun) is covered in modules/run-dispatch/adapters/postgres.myrmidon.test.ts.
+describe("queued run waiting-since (OPE-11947)", () => {
+  const now = new Date("2026-11-06T15:00:00.000Z");
+  const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+  const staleAfterMs = 30 * 60_000;
+  const isStale = (run: { createdAt: Date; scheduledRetryAt?: Date | string | null }) =>
+    now.getTime() - queuedRunWaitingSince(run, now).getTime() >= staleAfterMs;
+
+  it("counts an ordinary queued run from created_at: 40 minutes old is stale", () => {
+    const run = { createdAt: minutesAgo(40), scheduledRetryAt: null };
+    expect(queuedRunWaitingSince(run, now)).toEqual(run.createdAt);
+    expect(isStale(run)).toBe(true);
+    expect(isStale({ createdAt: minutesAgo(40) })).toBe(true);
+  });
+
+  it("counts a promoted scheduled retry from its due time: created 40 minutes ago, due 1 minute ago is fresh", () => {
+    const run = { createdAt: minutesAgo(40), scheduledRetryAt: minutesAgo(1) };
+    expect(queuedRunWaitingSince(run, now)).toEqual(run.scheduledRetryAt);
+    expect(isStale(run)).toBe(false);
+  });
+
+  it("keeps a long-delay retry (created 6 h ago) fresh right after it fell due", () => {
+    expect(isStale({ createdAt: minutesAgo(6 * 60 + 1), scheduledRetryAt: minutesAgo(1) })).toBe(false);
+  });
+
+  it("declares a promoted retry stale once it stood in the queue past the threshold since it fell due", () => {
+    expect(isStale({ createdAt: minutesAgo(90), scheduledRetryAt: minutesAgo(31) })).toBe(true);
+    expect(isStale({ createdAt: minutesAgo(90), scheduledRetryAt: minutesAgo(29) })).toBe(false);
+  });
+
+  it("accepts the due time as an ISO string", () => {
+    expect(isStale({ createdAt: minutesAgo(40), scheduledRetryAt: minutesAgo(1).toISOString() })).toBe(false);
+  });
+
+  it("ignores a due time that is still in the future and an unreadable one: created_at decides", () => {
+    expect(isStale({ createdAt: minutesAgo(40), scheduledRetryAt: new Date(now.getTime() + 5 * 60_000) })).toBe(true);
+    expect(isStale({ createdAt: minutesAgo(40), scheduledRetryAt: "not a date" })).toBe(true);
   });
 });
 
@@ -158,7 +210,7 @@ describe("queued resweep pass", () => {
     const dispatcher = createRunStartDispatcher({
       listQueuedAgents: async () => [queued("agent-1")],
       startNextQueuedRunForAgent,
-      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30, queuedRunStaleAfterSec: 1800 }),
     });
 
     expect(await dispatcher.sweepQueuedWithoutRunning()).toMatchObject({ agents: 1, started: 1 });
@@ -171,7 +223,7 @@ describe("queued resweep pass", () => {
     const dispatcher = createRunStartDispatcher({
       listQueuedAgents: async () => [queued("agent-1")],
       startNextQueuedRunForAgent,
-      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30, queuedRunStaleAfterSec: 1800 }),
       executesRuns: () => true,
       requestRemoteStart,
     });
@@ -189,7 +241,7 @@ describe("queued resweep pass", () => {
     const dispatcher = createRunStartDispatcher({
       listQueuedAgents: async () => [queued("agent-1")],
       startNextQueuedRunForAgent,
-      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30, queuedRunStaleAfterSec: 1800 }),
       executesRuns: () => false,
       requestRemoteStart,
     });
@@ -259,6 +311,93 @@ describe("queued resweep pass", () => {
     expect(error).toHaveBeenCalledTimes(1);
   });
 
+  it("cancels stale queued runs and wakes the associated agent before resweeping", async () => {
+    const staleRun = { id: "run-stale", agentId: "agent-stale", companyId: "company-1", createdAt: new Date(0) };
+    const listStaleQueuedRuns = vi.fn(async () => [staleRun]);
+    const createCancelStaleQueuedRun = vi.fn(async () => true);
+    const wakeAgent = vi.fn(async () => {});
+    const startNextQueuedRunForAgent = vi.fn(async () => []);
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent,
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 120 }),
+      listStaleQueuedRuns,
+      createCancelStaleQueuedRun,
+      wakeAgent,
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(listStaleQueuedRuns).toHaveBeenCalledWith({ executionCutoff: null, staleAfterMs: 120_000 });
+    expect(createCancelStaleQueuedRun).toHaveBeenCalledWith(staleRun, 120_000);
+    // The cancelled run stood on no task: the wake carries none either.
+    expect(wakeAgent).toHaveBeenCalledWith("agent-stale", "company-1", { issueId: null });
+    expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
+  });
+
+  it("hands the cancelled run's task to the wake so the agent resumes it", async () => {
+    // myrmidon(OPE-11947): the wake used to carry a made-up `system:` task id.
+    const issueId = "5b3f8a52-6f0c-4f6b-9d21-0c1f5a3e7a10";
+    const staleRun = { id: "run-stale", agentId: "agent-stale", companyId: "company-1", createdAt: new Date(0), issueId };
+    const wakeAgent = vi.fn(async () => {});
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent: async () => [],
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 120 }),
+      listStaleQueuedRuns: async () => [staleRun],
+      createCancelStaleQueuedRun: async () => true,
+      wakeAgent,
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(wakeAgent).toHaveBeenCalledWith("agent-stale", "company-1", { issueId });
+  });
+
+  it("does not wake the agent when the stale cancellation lost the race", async () => {
+    const wakeAgent = vi.fn(async () => {});
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent: async () => [],
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 120 }),
+      listStaleQueuedRuns: async () => [
+        { id: "run-stale", agentId: "agent-stale", companyId: "company-1", createdAt: new Date(0), issueId: "5b3f8a52-6f0c-4f6b-9d21-0c1f5a3e7a10" },
+      ],
+      createCancelStaleQueuedRun: async () => false,
+      wakeAgent,
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(wakeAgent).not.toHaveBeenCalled();
+  });
+
+  it("continues cleanup after a stale cancellation fails", async () => {
+    const error = vi.fn();
+    const wakeAgent = vi.fn(async () => {});
+    const runs = [
+      { id: "run-1", agentId: "agent-1", companyId: "company-1", createdAt: new Date(0) },
+      { id: "run-2", agentId: "agent-2", companyId: "company-1", createdAt: new Date(0) },
+    ];
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent: async () => [],
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 1800 }),
+      listStaleQueuedRuns: async () => runs,
+      createCancelStaleQueuedRun: async (run) => {
+        if (run.id === "run-1") throw new Error("cancel failed");
+        return true;
+      },
+      wakeAgent,
+      log: { error },
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(wakeAgent).toHaveBeenCalledWith("agent-2", "company-1", { issueId: null });
+  });
+
   it("passes the worktree execution cutoff to the selection", async () => {
     const cutoff = new Date("2026-10-08T00:00:00.000Z");
     const listQueuedAgents = vi.fn(async () => []);
@@ -271,6 +410,30 @@ describe("queued resweep pass", () => {
     await dispatcher.sweepQueuedWithoutRunning();
 
     expect(listQueuedAgents).toHaveBeenCalledWith({ cutoff });
+  });
+});
+
+describe("stale queued run task resolution", () => {
+  const issueId = "5b3f8a52-6f0c-4f6b-9d21-0c1f5a3e7a10";
+
+  it("reads the cancelled run's task from its context, then the denormalized columns", () => {
+    const other = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: { issueId } })).toBe(issueId);
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: {}, contextIssueId: issueId })).toBe(issueId);
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: null, nativeIssueId: issueId })).toBe(issueId);
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: { taskId: issueId } })).toBe(issueId);
+    expect(
+      resolveStaleQueuedRunIssueId({ contextSnapshot: { issueId }, contextIssueId: other, nativeIssueId: other }),
+    ).toBe(issueId);
+  });
+
+  it("skips values that are not issue UUIDs", () => {
+    expect(resolveStaleQueuedRunIssueId({})).toBeNull();
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: { taskId: "system:queued-run-stale-timeout" } })).toBeNull();
+    expect(resolveStaleQueuedRunIssueId({ contextSnapshot: { issueId: 42 }, contextIssueId: "OPE-1" })).toBeNull();
+    expect(
+      resolveStaleQueuedRunIssueId({ contextSnapshot: { issueId: "system:x" }, nativeIssueId: issueId }),
+    ).toBe(issueId);
   });
 });
 

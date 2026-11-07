@@ -92,7 +92,7 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
       priority: "medium",
     }));
     await ctx.db.insert(issues).values(rows);
-    return { companyId, rows };
+    return { companyId, company, rows };
   }
 
   async function setAgentDefaultsEnabled(enabled: boolean | null) {
@@ -113,6 +113,23 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
       .get(`/api/companies/${companyId}/issues`)
       .expect(200);
     expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toHaveLength(ISSUE_LIST_AGENT_DEFAULT_LIMIT);
+    expect(res.headers.etag).toMatch(/^"compact-issues:/);
+    for (const row of res.body) {
+      expect(row, `description present on ${row.id}`).not.toHaveProperty("description");
+    }
+  });
+
+  it("applies the agent defaults to integration board keys (source: board_key)", async () => {
+    const { companyId, company } = await seedCompanyWithIssues(ISSUE_LIST_AGENT_DEFAULT_LIMIT + 5);
+    const boardKeyActor = {
+      ...company.actor,
+      source: "board_key" as const,
+      keyId: randomUUID(),
+    };
+    const res = await request(routeApp(ctx.db, boardKeyActor as never, issueRoutes))
+      .get(`/api/companies/${companyId}/issues`)
+      .expect(200);
     expect(res.body).toHaveLength(ISSUE_LIST_AGENT_DEFAULT_LIMIT);
     expect(res.headers.etag).toMatch(/^"compact-issues:/);
     for (const row of res.body) {

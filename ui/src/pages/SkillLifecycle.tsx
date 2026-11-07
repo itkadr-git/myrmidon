@@ -5,6 +5,7 @@
 // the route target.
 
 import { SkillLifecyclePanel } from "@/components/myrmidon/skill-lifecycle/SkillLifecyclePanel";
+import { SkillPilotSettingsPanel } from "@/components/myrmidon/skill-lifecycle/SkillPilotSettingsPanel";
 // myrmidon(UI-RU): page header through the fork i18n catalog.
 import { useTranslation } from "@/i18n";
 
@@ -18,6 +19,7 @@ export function SkillLifecycle() {
           {t("skillLifecycle.subtitle")}
         </p>
       </div>
+      <SkillPilotSettingsPanel />
       <SkillLifecyclePanel />
     </div>
   );
