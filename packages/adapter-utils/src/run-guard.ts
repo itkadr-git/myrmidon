@@ -10,6 +10,22 @@ export const DEFAULT_TOOL_RETRY_LIMIT = 3;
 // made in one stretch without a write. 0 disables the check.
 export const DEFAULT_NO_PROGRESS_LIMIT = 40;
 export const DEFAULT_REPEATED_TOOL_CALL_LIMIT = 3;
+// myrmidon(OPE-12004): code-role thresholds (engineer, reviewer, lead, architect)
+// give engineers room for codebase exploration (~100 reads) without false stops.
+export const DEFAULT_CODE_NO_PROGRESS_LIMIT = 100;
+export const DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT = 5;
+
+export const CODE_ROLES: ReadonlySet<string> = new Set([
+  "engineer",
+  "reviewer",
+  "lead",
+  "architect",
+]);
+
+export function isCodeRole(role?: string | null): boolean {
+  if (typeof role !== "string") return false;
+  return CODE_ROLES.has(role.trim().toLowerCase());
+}
 /** Upper bound of distinct read-only call signatures remembered per run. */
 const MAX_TRACKED_CALL_SIGNATURES = 2000;
 
@@ -41,6 +57,9 @@ export interface RunGuardOptions {
   noProgressLimit?: number;
   /** myrmidon(RUN-GUARD-LOOPS): 0 disables. */
   repeatedToolCallLimit?: number;
+  /** myrmidon(OPE-12004): agent role for role-based defaults. */
+  role?: string | null;
+  agentRole?: string | null;
   now?: () => number;
 }
 
@@ -56,6 +75,8 @@ export interface RunGuardConfig {
 export function resolveRunGuardOptions(sources?: {
   agentConfig?: unknown;
   teamLiveness?: unknown;
+  role?: string | null;
+  agentRole?: string | null;
   env?: Record<string, string | undefined>;
   now?: () => number;
 }): RunGuardOptions {
@@ -74,6 +95,15 @@ export function resolveRunGuardOptions(sources?: {
     : undefined;
 
   const env = sources?.env ?? process.env;
+
+  const role =
+    (typeof sources?.role === "string" ? sources.role : undefined) ??
+    (typeof sources?.agentRole === "string" ? sources.agentRole : undefined) ??
+    (typeof agentObj?.role === "string" ? agentObj.role : undefined);
+
+  const isCode = isCodeRole(role);
+  const defaultNoProgress = isCode ? DEFAULT_CODE_NO_PROGRESS_LIMIT : DEFAULT_NO_PROGRESS_LIMIT;
+  const defaultRepeated = isCode ? DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT : DEFAULT_REPEATED_TOOL_CALL_LIMIT;
 
   const parseNum = (val: unknown): number | undefined => {
     if (typeof val === "number" && Number.isFinite(val) && val > 0) return val;
@@ -129,7 +159,7 @@ export function resolveRunGuardOptions(sources?: {
     parseNumOrZero(teamGuardObj?.noProgressLimit) ??
     parseNumOrZero(teamObj?.noProgressLimit) ??
     parseNumOrZero(env.MYRMIDON_RUN_GUARD_NO_PROGRESS_LIMIT) ??
-    DEFAULT_NO_PROGRESS_LIMIT;
+    defaultNoProgress;
 
   const repeatedToolCallLimit =
     parseNumOrZero(agentGuardObj?.repeatedToolCallLimit) ??
@@ -137,7 +167,7 @@ export function resolveRunGuardOptions(sources?: {
     parseNumOrZero(teamGuardObj?.repeatedToolCallLimit) ??
     parseNumOrZero(teamObj?.repeatedToolCallLimit) ??
     parseNumOrZero(env.MYRMIDON_RUN_GUARD_REPEATED_TOOL_CALL_LIMIT) ??
-    DEFAULT_REPEATED_TOOL_CALL_LIMIT;
+    defaultRepeated;
 
   return {
     modelCallLimit,
@@ -145,6 +175,7 @@ export function resolveRunGuardOptions(sources?: {
     toolRetryLimit,
     noProgressLimit,
     repeatedToolCallLimit,
+    role: role ?? undefined,
     now: sources?.now,
   };
 }
@@ -181,11 +212,16 @@ export class RunGuard {
   private stoppedReason: RunGuardStopReason | null = null;
 
   constructor(options: RunGuardOptions = {}) {
+    const isCode = isCodeRole(options.role ?? options.agentRole);
     this.modelCallLimit = options.modelCallLimit ?? DEFAULT_MODEL_CALL_LIMIT;
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.toolRetryLimit = options.toolRetryLimit ?? DEFAULT_TOOL_RETRY_LIMIT;
-    this.noProgressLimit = options.noProgressLimit ?? DEFAULT_NO_PROGRESS_LIMIT;
-    this.repeatedToolCallLimit = options.repeatedToolCallLimit ?? DEFAULT_REPEATED_TOOL_CALL_LIMIT;
+    this.noProgressLimit =
+      options.noProgressLimit ??
+      (isCode ? DEFAULT_CODE_NO_PROGRESS_LIMIT : DEFAULT_NO_PROGRESS_LIMIT);
+    this.repeatedToolCallLimit =
+      options.repeatedToolCallLimit ??
+      (isCode ? DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT : DEFAULT_REPEATED_TOOL_CALL_LIMIT);
     this.now = options.now ?? Date.now;
     this.lastEventAt = this.now();
   }
