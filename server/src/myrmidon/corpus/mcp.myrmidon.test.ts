@@ -129,7 +129,9 @@ describe("company corpus MCP endpoint", () => {
     const memory = corpus();
     const app = harness({ settings: () => ENABLED, port: () => memory.port });
     const tools = (await request(app).post(URL).send({ id: 15, method: "tools/list" }).expect(200)).body.result.tools;
-    const ajv = new Ajv();
+    // ajv is CommonJS: under NodeNext the default import is the module object (same idiom as plugin-config-validator.ts).
+    const AjvCtor = (Ajv as any).default ?? Ajv;
+    const ajv = new AjvCtor();
     const argumentsByName: Record<string, Record<string, string>> = {
       corpus_search: { query: "товар" },
       corpus_get_document: { document_id: "doc-1" },
