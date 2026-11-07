@@ -19,7 +19,7 @@
 //   and they never touch the step log (maskStepDetail re-masks detail).
 
 import { generateKeyPairSync } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/secrets.js";

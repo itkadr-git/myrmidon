@@ -5,7 +5,7 @@
 // partial unique index (one open job per server) is the claim guard.
 
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import { myrmidonFleetOnboardJobs, myrmidonFleetServers, type Db } from "@paperclipai/db";
+import { myrmidonFleetOnboardJobs, myrmidonFleetServers, type Db } from "@myrmidon/db";
 import {
   ONBOARD_BOOTSTRAP_VERSION,
   appendStepLog,
@@ -27,6 +27,7 @@ export type OnboardServerRow = {
   username: string;
   passwordSecretKey: string | null;
   role: string;
+  keepPassword: boolean;
   onboardState: string;
   hostKeyFingerprint: string | null;
   accessKeySecretKey: string | null;
@@ -46,6 +47,7 @@ export interface OnboardJobClaim {
     username: string;
     protocol: string;
     passwordSecretKey: string | null;
+    keepPassword: boolean;
     accessKeySecretKey: string | null;
     hostKeyFingerprint: string | null;
   };
@@ -138,6 +140,7 @@ function toServer(row: ServerRow): OnboardServerRow {
     username: row.username,
     passwordSecretKey: row.passwordSecretKey,
     role: row.role,
+    keepPassword: (row as any).keepPassword ?? false,
     onboardState: row.onboardState,
     hostKeyFingerprint: row.hostKeyFingerprint,
     accessKeySecretKey: row.accessKeySecretKey,
@@ -176,7 +179,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const row = await db
         .select()
         .from(myrmidonFleetOnboardJobs)
-        .where(and(eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.id, jobId)))
+        .where(eq(myrmidonFleetOnboardJobs.id, jobId))
         .then((rows) => rows[0] ?? null);
       return row ? toJob(row) : null;
     },
