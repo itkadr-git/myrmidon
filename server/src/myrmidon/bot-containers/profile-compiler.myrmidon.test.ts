@@ -1977,13 +1977,35 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
       compileHermesProfile(baseInput({ instanceDefaults: { sessionsRetentionDays: 30 } })).files,
       "hermes/config.yaml",
     ).content;
-    expect(yaml).toContain("sessions:\n  retention_days: 30");
+    // myrmidon(BOT-DISK): keys render sorted, the maintenance keys sit around retention_days.
+    expect(yaml).toMatch(/^sessions:\n(?:  [a-z_]+: [^\n]+\n)*  retention_days: 30\n/m);
   });
 
-  it("leaves compression and sessions out of the document when unset", () => {
+  it("myrmidon(BOT-DISK): writes Hermes' state.db maintenance keys next to retention_days", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(baseInput({ instanceDefaults: { sessionsRetentionDays: 30 } })).files,
+      "hermes/config.yaml",
+    ).content;
+    // The renderer sorts keys, so the whole block is pinned in that order.
+    expect(yaml).toContain(
+      "sessions:\n  auto_prune: true\n  min_interval_hours: 24\n  min_vacuum_interval_days: 7\n" +
+        "  retention_days: 30\n  vacuum_after_prune: true\n",
+    );
+  });
+
+  it("myrmidon(BOT-DISK): writes the maintenance keys even when no retention is configured", () => {
+    const yaml = fileByPath(compileHermesProfile(baseInput()).files, "hermes/config.yaml").content;
+    expect(yaml).toContain("auto_prune: true");
+    expect(yaml).toContain("vacuum_after_prune: true");
+    expect(yaml).toContain("min_interval_hours: 24");
+    expect(yaml).toContain("min_vacuum_interval_days: 7");
+    // Unset retention stays Hermes' own default (90): the key is not invented here.
+    expect(yaml).not.toContain("retention_days");
+  });
+
+  it("leaves compression out of the document when unset", () => {
     const yaml = fileByPath(compileHermesProfile(baseInput()).files, "hermes/config.yaml").content;
     expect(yaml).not.toContain("compression:");
-    expect(yaml).not.toContain("sessions:");
   });
 });
 

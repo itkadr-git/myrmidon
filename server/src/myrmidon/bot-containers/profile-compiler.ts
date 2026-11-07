@@ -645,6 +645,24 @@ function buildMaxOutputTokens(value: number | undefined, warnings: string[]): nu
   return undefined;
 }
 
+// myrmidon(BOT-DISK): Hermes' own state.db maintenance (gateway/run.py
+// `_housekeeping_state_db_maintenance` -> `maybe_auto_prune_and_vacuum`), written
+// into every profile explicitly instead of relying on Hermes' built-in defaults,
+// so a change of the vendor defaults cannot silently switch it off. The key names
+// are Hermes' own `sessions.*` keys. `instanceDefaults` carries no matching
+// setting (only `sessionsRetentionDays`), hence constants.
+//  - auto_prune / vacuum_after_prune: prune ended sessions older than
+//    `retention_days`, then VACUUM when the prune deleted rows.
+//  - min_interval_hours: at most one prune run per this many hours (Hermes: 24).
+//  - min_vacuum_interval_days: at most one VACUUM per this many days (Hermes: 30);
+//    7 so a bot that grew back is compacted weekly rather than monthly.
+// Hermes additionally refuses a VACUUM below 25% reclaimable pages, with another
+// process holding state.db, or in a run whose prune deleted nothing.
+const SESSIONS_AUTO_PRUNE = true;
+const SESSIONS_VACUUM_AFTER_PRUNE = true;
+const SESSIONS_MIN_INTERVAL_HOURS = 24;
+const SESSIONS_MIN_VACUUM_INTERVAL_DAYS = 7;
+
 // myrmidon(REASONING-OUTPUT-LIMIT): default output room for reasoning models.
 const MODEL_MAX_TOKENS_DEFAULT = 32_000;
 const MODEL_MAX_TOKENS_MIN = 256;
@@ -1192,7 +1210,15 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     // Company skills are delivered per run into Hermes' local skills root.
     // Keep the legacy profile mount empty so Hermes cannot index each skill twice.
     skills: { external_dirs: [] },
-    sessions: { retention_days: input.instanceDefaults.sessionsRetentionDays },
+    // myrmidon(BOT-DISK): retention_days unset = Hermes' own 90; the maintenance keys are
+    // always written, see SESSIONS_AUTO_PRUNE.
+    sessions: {
+      retention_days: input.instanceDefaults.sessionsRetentionDays,
+      auto_prune: SESSIONS_AUTO_PRUNE,
+      vacuum_after_prune: SESSIONS_VACUUM_AFTER_PRUNE,
+      min_interval_hours: SESSIONS_MIN_INTERVAL_HOURS,
+      min_vacuum_interval_days: SESSIONS_MIN_VACUUM_INTERVAL_DAYS,
+    },
     // myrmidon(OPE-11947): execute_code scrubs every *KEY*/*TOKEN* variable from its
     // kernel environment unless config.yaml opts it in via terminal.env_passthrough.
     // Without it the board key the skill tells Python callers to read is missing in
