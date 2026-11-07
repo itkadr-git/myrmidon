@@ -26,7 +26,7 @@ vi.mock("node:fs/promises", () => ({
   stat: vi.fn(async () => ({ isFile: () => true, isDirectory: () => false })),
 }));
 
-import { execute, isProviderErrorAsContent, PROVIDER_ERROR_AS_CONTENT_PATTERNS } from "./execute.js";
+import { execute, isHermesNoReplySentinel, isProviderErrorAsContent, PROVIDER_ERROR_AS_CONTENT_PATTERNS } from "./execute.js";
 import * as serverUtils from "@myrmidon/adapter-utils/server-utils";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
@@ -136,7 +136,52 @@ describe("provider error responses disguised as content", () => {
     expect(result.summary).toBeUndefined();
     expect(result.resultJson?.result).toBe("");
     expect(result.resultJson?.provider_error_as_content).toBe(true);
+    // myrmidon(OPE-11947): an overload/quota text means the model pool did not answer.
+    expect(result.resultJson?.model_unavailable).toBe(true);
     expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("provider_error_as_content model=gpt-4o"));
+  });
+
+  // myrmidon(OPE-11947): Hermes' own "No reply" give-up notice is a model-unavailable
+  // outcome, not agent output.
+  it("recognizes the Hermes 'No reply' give-up notice and nothing that merely mentions a reply", () => {
+    for (const text of [
+      "⚠️ No reply: chatgpt-pool/gpt-6-luna didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.",
+      "⚠️ No reply: antigravity/gemini-3.8-flash-medium didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.",
+    ]) {
+      expect(isHermesNoReplySentinel(text)).toBe(true);
+      expect(isProviderErrorAsContent(text)).toBe(true);
+    }
+    for (const text of [
+      "No reply: m didn't produce a reply",
+      "Done. There was no reply from QA, so I pinged them again.",
+      "Please reply when ready.",
+    ]) {
+      expect(isHermesNoReplySentinel(text)).toBe(false);
+      expect(isProviderErrorAsContent(text)).toBe(false);
+    }
+  });
+
+  it("suppresses the Hermes 'No reply' notice and marks the run model-unavailable", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout:
+        "⚠️ No reply: chatgpt-pool/gpt-6-luna didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.\n\nsession_id: test-session-789\n",
+      stderr: "",
+      pid: 1234,
+      startedAt: new Date().toISOString(),
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorCode).toBe("hermes_transient_upstream");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson?.result).toBe("");
+    expect(result.resultJson?.provider_error_as_content).toBe(true);
+    expect(result.resultJson?.model_unavailable).toBe(true);
   });
 
   it("preserves standard valid model responses as content without errors", async () => {
@@ -159,5 +204,6 @@ describe("provider error responses disguised as content", () => {
     expect(result.summary).toBe("Task completed successfully with all criteria met.");
     expect(result.resultJson?.result).toBe("Task completed successfully with all criteria met.");
     expect(result.resultJson?.provider_error_as_content).toBeUndefined();
+    expect(result.resultJson?.model_unavailable).toBeUndefined();
   });
 });

@@ -88,3 +88,46 @@ export function formatValidationSummary(result: LocaleValidationResult): Catalog
     warningMessages,
   };
 }
+
+export interface CatalogKeyDiffItem {
+  path: string;
+  status: "matched" | "missing" | "extra";
+  beforeValue?: string;
+  afterValue?: string;
+}
+
+export function computeCatalogKeyDiff(
+  candidateCatalog: Record<string, unknown>,
+  baseCatalog: Record<string, unknown>,
+  maxDepth = 10,
+): CatalogKeyDiffItem[] {
+  const { entries: candidateEntries } = flattenCatalog(candidateCatalog, "", 1, maxDepth);
+  const { entries: baseEntries } = flattenCatalog(baseCatalog, "", 1, maxDepth);
+
+  const allKeys = new Set([...candidateEntries.keys(), ...baseEntries.keys()]);
+  const sortedKeys = Array.from(allKeys).sort();
+
+  return sortedKeys.map((path) => {
+    const hasCandidate = candidateEntries.has(path);
+    const hasBase = baseEntries.has(path);
+    const beforeValue = baseEntries.get(path);
+    const afterValue = candidateEntries.get(path);
+
+    let status: "matched" | "missing" | "extra";
+    if (hasCandidate && hasBase) {
+      status = "matched";
+    } else if (hasBase) {
+      status = "missing";
+    } else {
+      status = "extra";
+    }
+
+    return {
+      path,
+      status,
+      beforeValue,
+      afterValue,
+    };
+  });
+}
+

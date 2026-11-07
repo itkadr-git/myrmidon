@@ -178,6 +178,7 @@ import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseli
 import { startRunContextColumnsBackfill } from "./services/run-context-columns-backfill.js"; // OPE-5007 П2
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
 import { startDistillSweep, stopDistillSweep } from "./myrmidon/distill/startup.js"; // myrmidon(1.6.6-K5)
+import { startRedactionSubstitutionCleanup } from "./myrmidon/guardrails/index.js"; // myrmidon(1.7-REDACT)
 import { startKnowledgeExport, stopKnowledgeExport } from "./myrmidon/knowledge/git-export-job.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-8)
 import { startLessonDistillSweep, stopLessonDistillSweep } from "./myrmidon/lesson-distill/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-4)
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
@@ -203,6 +204,7 @@ import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js
 import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
+import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
@@ -1327,7 +1329,10 @@ async function startServerWithDatabaseTeardown(
 
   let startupListenerBound = false;
   try {
-  setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
+  // myrmidon(OPE-11755): runnerd is local; bind its URL to the actual listening socket.
+  if (processRoleProfile.role === "all") {
+    setupRunnerPrpWebSocketServer(server);
+  }
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
@@ -1477,6 +1482,8 @@ async function startServerWithDatabaseTeardown(
     const spec = processRoleProfile.loopbackListen;
     if (!spec) return null;
     const listener = createServer(app as unknown as Parameters<typeof createServer>[0]);
+    // myrmidon(OPE-11755): registrations live in this worker, not in the public api children.
+    setupRunnerPrpWebSocketServer(listener);
     await new Promise<void>((resolveLoopback, rejectLoopback) => {
       const onError = (err: Error) => {
         listener.off("error", onError);
@@ -1672,6 +1679,7 @@ async function startServerWithDatabaseTeardown(
   // pass refreshes it too, so the first periodic tick waits one full interval
   // instead of doubling up on candidates the startup sweep just scanned.
   let lastGatewayReattachSweepAtMs = 0;
+  let lastGatewayRemoteCloseSweepAtMs = 0; // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889)
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1724,7 +1732,15 @@ async function startServerWithDatabaseTeardown(
     );
   }
   const executionControlSweeps = [
-    ["finalization", () => reconcileAbandonedExecutionControl(db)],
+    ["finalization", () => reconcileAbandonedExecutionControl(db, new Date(), {
+      // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): a run failed on the board's
+      // deadline no longer has a supervisor; free its gateway slot now.
+      onTerminalRun: (run) => {
+        void heartbeat?.closeTerminalGatewayRun(run.id).catch((err) => {
+          logger.warn({ err, runId: run.id }, "gateway run close after execution-control deadline failed; the sweep retries");
+        });
+      },
+    })],
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
     ["reconciliation_delivery", () => heartbeat ? deliverReconciledExecutions(db, heartbeat.wakeup) : undefined],
     ["status_delivery", () => deliverExecutionStatuses(db)],
@@ -2440,6 +2456,7 @@ async function startServerWithDatabaseTeardown(
     startDatastoreCare(db as any); // myrmidon(DBC-4): hourly snapshots of the board's database plus their 90-day retention; a no-op unless MYRMIDON_DATASTORE_CARE_ENABLED=0
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
     startDistillSweep(db as any); // myrmidon(1.6.6-K5): knowledge distiller v2 pass; a no-op unless the distill setting (or MYRMIDON_DISTILL_ENABLED=1) is on
+    startRedactionSubstitutionCleanup(db as any); // myrmidon(1.7-REDACT): expire reversible substitutions
     startKnowledgeExport(db as any); // myrmidon(1.7 KNOWLEDGE-2.0 L-8): no-op unless MYRMIDON_KNOWLEDGE_EXPORT_REPO is set
     startLessonDistillSweep({ db: db as any }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4): hindsight lessons -> knowledge suggestions; a no-op unless MYRMIDON_LESSON_DISTILL_ENABLED=1
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
@@ -2943,6 +2960,23 @@ async function startServerWithDatabaseTeardown(
                   { ...swept },
                   "periodic gateway run reattach pass complete",
                 );
+              }
+            })
+            // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): the durable net under
+            // every terminal writer: close the gateway run of a terminal
+            // hermes_gateway run that no status writer closed, or whose close
+            // failed and is due for a bounded retry.
+            .then(async () => {
+              if (
+                Date.now() - lastGatewayRemoteCloseSweepAtMs <
+                GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS
+              ) {
+                return;
+              }
+              lastGatewayRemoteCloseSweepAtMs = Date.now();
+              const closed = await heartbeat.sweepTerminalGatewayRunCloses();
+              if (closed.attempted > 0 || closed.failed > 0) {
+                logger.info({ ...closed }, "periodic terminal gateway run close pass complete");
               }
             })
             .catch((err) => {

@@ -86,48 +86,24 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
     expect(edgeFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("reads directly with the product user agent and preserves the source URL", async () => {
+  it("safely refuses and makes zero direct outbound HTTP calls when gateway is not configured (fail-closed)", async () => {
     resetForagingHostState();
-    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      expect(new Headers(init?.headers).get("user-agent")).toContain("myrmidon-foraging/1.0");
-      return new Response("<html><body><h1>Hello</h1><script>bad()</script></body></html>", {
-        status: 200,
-        headers: { "content-type": "text/html" },
-      });
+    const directHttpCalls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      directHttpCalls.push(String(url));
+      return new Response("unexpected", { status: 200 });
     });
-    const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
-    const result = await reader.read(source("https://example.com/direct"), new AbortController().signal);
-    expect(result.text).toContain("Hello");
-    expect(result.page?.final_url).toBe("https://example.com/direct");
-    expect(result.page?.content_sha256).toMatch(/^[a-f0-9]{64}$/);
-  });
-
-  it("rejects direct redirects", async () => {
-    resetForagingHostState();
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://other.test" } }));
-    const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
-    await expect(reader.read(source("https://example.com/redirect"), new AbortController().signal)).rejects.toThrow(/redirect/);
-  });
-
-  it("rejects a response larger than 2 MB even without content-length", async () => {
-    resetForagingHostState();
-    const body = new Uint8Array(2 * 1024 * 1024 + 1);
-    const fetchImpl = vi.fn(async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } }));
-    const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
-    await expect(reader.read(source("https://example.com/large"), new AbortController().signal)).rejects.toThrow(/2 MB/);
-  });
-
-  it("aborts a direct read on timeout", async () => {
-    resetForagingHostState();
-    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      await new Promise<void>((resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-      });
-      throw new Error("aborted");
+    const reader = createForagingReader({
+      minHostIntervalMs: 0,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 1_000_000,
     });
-    const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
-    await expect(reader.read(source("https://example.com/slow"), new AbortController().signal)).rejects.toThrow(/aborted|timeout/i);
-  }, 20_000);
+    await expect(reader.read(source("https://example.com/direct"), new AbortController().signal)).rejects.toThrow(
+      /direct HTTP fetch from vm-core is disabled/i,
+    );
+    expect(directHttpCalls).toHaveLength(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
   it("uses the optional vm-exec gateway when configured", async () => {
     resetForagingHostState();
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -145,6 +121,48 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
     expect(endpoint).toBe("https://edge.example.test/internal/v1/firecrawl/fetch");
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer test-token");
     expect(init.redirect).toBe("error");
+  });
+
+  it("uses the foraging fetcher gateway when configured", async () => {
+    resetForagingHostState();
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      return Response.json(edgePage({ request_id: payload.request_id, url: "https://example.com/a" }, "x"));
+    });
+    const reader = createForagingReader({
+      minHostIntervalMs: 0,
+      env: { MYRMIDON_FORAGING_FETCHER_URL: "https://edge.example.test", MYRMIDON_FORAGING_FETCHER_TOKEN: "test-token" } as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 12_000_000,
+    });
+    await reader.read(source("https://example.com/a"), new AbortController().signal);
+    const [endpoint, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(endpoint).toBe("https://edge.example.test/internal/v1/firecrawl/fetch");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer test-token");
+    expect(init.redirect).toBe("error");
+  });
+
+  it("prefers MYRMIDON_FORAGING_FETCHER_URL over legacy MYRMIDON_VMEXEC_URL", async () => {
+    resetForagingHostState();
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      return Response.json(edgePage({ request_id: payload.request_id, url: "https://example.com/a" }, "x"));
+    });
+    const reader = createForagingReader({
+      minHostIntervalMs: 0,
+      env: {
+        MYRMIDON_FORAGING_FETCHER_URL: "https://new-edge.example.test",
+        MYRMIDON_FORAGING_FETCHER_TOKEN: "new-token",
+        MYRMIDON_VMEXEC_URL: "https://legacy-edge.example.test",
+        MYRMIDON_VMEXEC_TOKEN: "legacy-token",
+      } as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 12_000_000,
+    });
+    await reader.read(source("https://example.com/a"), new AbortController().signal);
+    const [endpoint, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(endpoint).toBe("https://new-edge.example.test/internal/v1/firecrawl/fetch");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer new-token");
   });
 
   it("makes zero direct outbound HTTP calls to source url (0 outbound)", async () => {
@@ -169,10 +187,13 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
     expect(outboundHttpProxyCalls).toHaveLength(0);
   });
 
-  it("uses direct HTTP when the gateway is not configured", async () => {
+  it("safely rejects non-HTTP URLs when gateway is configured", async () => {
     resetForagingHostState();
-    const reader = createForagingReader({ minHostIntervalMs: 0 });
-    await expect(reader.read(source("ftp://example.com/a"), new AbortController().signal)).rejects.toThrow(/http or https/);
+    const reader = createForagingReader({
+      minHostIntervalMs: 0,
+      env: { MYRMIDON_FORAGING_FETCHER_URL: "https://edge.example.test", MYRMIDON_FORAGING_FETCHER_TOKEN: "token" } as NodeJS.ProcessEnv,
+    });
+    await expect(reader.read(source("ftp://example.com/a"), new AbortController().signal)).rejects.toThrow();
   });
 
   it("rejects injection-flagged content", async () => {

@@ -395,7 +395,11 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
             </p>
           ) : null}
 
-          {toggleSource.error ? <p className="text-sm text-destructive" role="alert">{(toggleSource.error as Error).message}</p> : null}
+          {toggleSource.error ? (
+            <p className="text-sm text-destructive" role="alert" data-testid="foraging-source-toggle-error">
+              {t("foraging.sources.saveFailed", { message: (toggleSource.error as Error).message })}
+            </p>
+          ) : null}
           {sourcesQuery.isLoading ? (
             <PageSkeleton variant="costs" />
           ) : sources.length === 0 ? (
@@ -433,10 +437,13 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
                         <ToggleSwitch
                           checked={source.enabled}
                           onCheckedChange={(enabled) => toggleSource.mutate({ source, enabled })}
-                          disabled={toggleSource.isPending}
+                          disabled={toggleSource.isPending || sourcesQuery.isFetching}
                           aria-label={t("foraging.sources.toggleEnabled", { url: source.url })}
                           data-testid="foraging-source-enabled-toggle"
                         />
+                        <span className="ml-2 text-muted-foreground" data-testid="foraging-source-status">
+                          {t(source.enabled ? "foraging.sources.active" : "foraging.sources.paused")}
+                        </span>
                       </td>
                       <td className="px-3 py-2 tabular-nums">
                         {source.lastSnapshotAt

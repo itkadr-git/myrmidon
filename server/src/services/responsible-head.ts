@@ -48,6 +48,47 @@ export async function resolveAgentHeadId(
   return null;
 }
 
+const MAX_MANAGER_CHAIN_DEPTH = 32;
+
+/**
+ * Walks reportsTo upward from the given agent and returns the ids of its
+ * managers, nearest first. Managers that cannot be invoked right now (paused,
+ * terminated, ...) are skipped so a card climbs past them instead of waiting on
+ * someone who cannot answer. Stops on a cycle, a missing agent or an absurdly
+ * deep hierarchy. Unlike resolveAgentHeadId it keeps every level, not the root.
+ */
+export async function resolveAgentManagerChainIds(
+  reader: DbReader,
+  companyId: string,
+  startAgentId: string,
+): Promise<string[]> {
+  const lookup = async (agentId: string) => {
+    const [agent] = await reader
+      .select({
+        id: agents.id,
+        reportsTo: agents.reportsTo,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    return agent ?? null;
+  };
+
+  const chain: string[] = [];
+  const visited = new Set<string>([startAgentId]);
+  let nextId: string | null = (await lookup(startAgentId))?.reportsTo ?? null;
+
+  while (nextId && !visited.has(nextId) && visited.size <= MAX_MANAGER_CHAIN_DEPTH) {
+    visited.add(nextId);
+    const manager = await lookup(nextId);
+    if (!manager) break;
+    if (isAgentStatusInvokable(manager.status)) chain.push(manager.id);
+    nextId = manager.reportsTo ?? null;
+  }
+
+  return chain;
+}
+
 /**
  * Finds the domain company head: an active root agent (reportsTo IS NULL),
  * prioritizing known head names ('adm', 'bbq', 'work', 'life', 'dispatch'),

@@ -34,6 +34,9 @@ describe("isThrottleCandidateIssueRewake", () => {
   it("throttles state-poll reasons and reason-less invokes", () => {
     expect(isThrottleCandidateIssueRewake(base)).toBe(false);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_continuation_needed" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_state_guard_mismatch" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "execution_reconciliation_required" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "transient_failure_retry" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "task_ticker" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "task-ticker" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_assignment_recovery" })).toBe(true);

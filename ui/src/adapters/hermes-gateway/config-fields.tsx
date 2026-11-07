@@ -17,6 +17,7 @@ const inputClass =
 const DEFAULT_SESSION_KEY_STRATEGY = "issue";
 const DEFAULT_TIMEOUT_SEC = 600;
 const DEFAULT_EVENT_RECONNECT_MS = 2000;
+const DEFAULT_POLL_INTERVAL_MS = 1000;
 
 type SecretRef = {
   type: "secret_ref";
@@ -138,10 +139,33 @@ export function HermesGatewayConfigFields({
   const timeoutSec = Number(readValue("timeoutSec", DEFAULT_TIMEOUT_SEC) ?? DEFAULT_TIMEOUT_SEC);
   const eventReconnectMs = Number(readValue("eventReconnectMs", DEFAULT_EVENT_RECONNECT_MS) ?? DEFAULT_EVENT_RECONNECT_MS);
   const allowInsecureRemoteHttp = Boolean(readValue("dangerouslyAllowInsecureRemoteHttp", false));
+  const pollIntervalMs = Number(readValue("pollIntervalMs", DEFAULT_POLL_INTERVAL_MS) ?? DEFAULT_POLL_INTERVAL_MS);
   const instructions = String(readValue("instructions", "") ?? "");
+  const flag = readValue("centralHistory", false);
+  const centralHistory = flag === true || flag === "1" || flag === "true";
+  const livenessEvents = Boolean(readValue("livenessEvents", false));
+  const debugEvents = Boolean(readValue("debugEvents", false));
+  const runtimeMcpUrlRewrite = readValue("runtimeMcpUrlRewrite", true) !== false;
+  const runtimeMcpUrlBase = String(readValue("runtimeMcpUrlBase", "") ?? "");
+  const createRequestTimeoutSec = Number(readValue("createRequestTimeoutSec", 60) ?? 60);
+  const centralHistoryMaxTurns = Number(readValue("centralHistoryMaxTurns", 10) ?? 10);
   const headers = isCreate
     ? String(readCreateValue(values, "headers", "") ?? "")
     : headersDraft;
+  const hindsightValue = readValue("hindsight", null);
+  const hindsight = hindsightValue && typeof hindsightValue === "object" && !Array.isArray(hindsightValue)
+    ? hindsightValue as Record<string, unknown>
+    : {};
+  const updateHindsight = (key: string, value: unknown) => {
+    const next = { ...hindsight };
+    if (value === undefined || value === "") delete next[key];
+    else next[key] = value;
+    writeValue("hindsight", Object.keys(next).length ? next : undefined);
+  };
+  const hindsightTags = Array.isArray(hindsight.tags) ? hindsight.tags.join(", ") : "";
+  const observationScopes = Array.isArray(hindsight.observationScopes)
+    ? hindsight.observationScopes.map((scope) => Array.isArray(scope) ? scope.join(", ") : "").join("\n")
+    : "";
 
   return configFieldsForSection(section, (
     <>
@@ -216,12 +240,46 @@ export function HermesGatewayConfigFields({
         />
       </Field>
 
+      <Field
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.pollIntervalLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.pollIntervalHint")}
+      >
+        <DraftNumberInput
+          value={Number.isFinite(pollIntervalMs) ? pollIntervalMs : DEFAULT_POLL_INTERVAL_MS}
+          onCommit={(v) => writeValue("pollIntervalMs", v > 0 ? v : undefined)}
+          immediate
+          className={inputClass}
+        />
+      </Field>
+
       <ToggleField
         label={t("area.adapters-plugins-1.hermes-gateway.fields.allowRemoteHttpLabel")}
         hint={t("area.adapters-plugins-1.hermes-gateway.fields.allowRemoteHttpHint")}
         checked={allowInsecureRemoteHttp}
         onChange={(v) => writeValue("dangerouslyAllowInsecureRemoteHttp", v)}
       />
+
+      <Field configSection="runPolicy" label={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutHint")}>
+        <DraftNumberInput value={createRequestTimeoutSec} onCommit={(v) => writeValue("createRequestTimeoutSec", v > 0 ? v : undefined)} immediate className={inputClass} />
+      </Field>
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.livenessEventsLabel")} checked={livenessEvents} onChange={(v) => writeValue("livenessEvents", v)} />
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.debugEventsLabel")} checked={debugEvents} onChange={(v) => writeValue("debugEvents", v)} />
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlRewriteLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlRewriteHint")} checked={runtimeMcpUrlRewrite} onChange={(v) => writeValue("runtimeMcpUrlRewrite", v)} />
+      <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlBaseLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlBaseHint")}>
+        <DraftInput value={runtimeMcpUrlBase} onCommit={(v) => writeValue("runtimeMcpUrlBase", v || undefined)} immediate className={inputClass} />
+      </Field>
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryHint")} checked={centralHistory} onChange={(v) => writeValue("centralHistory", v ? "1" : "0")} />
+      {centralHistory && <>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryUrlLabel")}>
+          <DraftInput value={String(readValue("centralHistoryUrl", "") ?? "")} onCommit={(v) => writeValue("centralHistoryUrl", v || undefined)} immediate className={inputClass} />
+        </Field>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryBankIdLabel")}>
+          <DraftInput value={String(readValue("centralHistoryBankId", "") ?? "")} onCommit={(v) => writeValue("centralHistoryBankId", v || undefined)} immediate className={inputClass} />
+        </Field>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryMaxTurnsLabel")}>
+          <DraftNumberInput value={centralHistoryMaxTurns} onCommit={(v) => writeValue("centralHistoryMaxTurns", v > 0 ? v : undefined)} immediate className={inputClass} />
+        </Field>
+      </>}
 
       <Field
         label={t("area.adapters-plugins-1.hermes-gateway.fields.extraHeadersLabel")}
@@ -250,6 +308,56 @@ export function HermesGatewayConfigFields({
           onCommit={(v) => writeValue("instructions", v || undefined)}
           immediate
           minRows={3}
+        />
+      </Field>
+      <Field
+        configSection="advanced"
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightBankIdLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightBankIdHint")}
+      >
+        <DraftInput
+          value={String(hindsight.bankId ?? "")}
+          onCommit={(v) => updateHindsight("bankId", v.trim())}
+          immediate
+          className={inputClass}
+        />
+      </Field>
+      <Field
+        configSection="advanced"
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightTagsLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightTagsHint")}
+      >
+        <DraftInput value={hindsightTags} onCommit={(v) => updateHindsight("tags", v.split(",").map((tag) => tag.trim()).filter(Boolean))} immediate className={inputClass} />
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMissionLabel")}>
+        <DraftTextarea value={String(hindsight.mission ?? "")} onCommit={(v) => updateHindsight("mission", v.trim())} immediate minRows={2} />
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightRecallBudgetLabel")}>
+        <select className={inputClass} value={String(hindsight.recallBudget ?? "")} onChange={(event) => updateHindsight("recallBudget", event.target.value)}>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
+          <option value="low">{t("area.adapters-plugins-1.hermes-gateway.fields.low")}</option><option value="mid">{t("area.adapters-plugins-1.hermes-gateway.fields.mid")}</option><option value="high">{t("area.adapters-plugins-1.hermes-gateway.fields.high")}</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeLabel")}>
+        <select className={inputClass} value={String(hindsight.memoryMode ?? "")} onChange={(event) => updateHindsight("memoryMode", event.target.value)}>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
+          <option value="hybrid">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeHybrid")}</option>
+          <option value="context">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeContext")}</option>
+          <option value="tools">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeTools")}</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightAutoRetainLabel")}>
+        <select className={inputClass} value={typeof hindsight.autoRetain === "boolean" ? String(hindsight.autoRetain) : ""} onChange={(event) => updateHindsight("autoRetain", event.target.value === "" ? undefined : event.target.value === "true")}>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
+          <option value="true">{t("area.adapters-plugins-1.hermes-gateway.fields.enabled")}</option><option value="false">{t("area.adapters-plugins-1.hermes-gateway.fields.disabled")}</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightObservationScopesLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightObservationScopesHint")}>
+        <DraftTextarea
+          value={observationScopes}
+          onCommit={(v) => updateHindsight("observationScopes", v.split("\n").map((line) => line.split(",").map((tag) => tag.trim()).filter(Boolean)).filter((scope) => scope.length > 0))}
+          immediate
+          minRows={2}
         />
       </Field>
     </>

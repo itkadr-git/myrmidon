@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   activityLog,
@@ -10,6 +10,7 @@ import {
   documentRevisions,
   workspaceOperations,
   agentWakeupRequests,
+  heartbeatRunEvents,
 } from "@myrmidon/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
@@ -17,6 +18,34 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 // empty-run stop rules; schema documented in doc/run-log-events.md.
 export const DEVEFF_EVENT_NO_OP = "run.deveff.no_op";
 export const DEVEFF_EVENT_REPEATED_TOOL_ERROR = "run.deveff.repeated_tool_error";
+export const IDLE_REPICK_NO_PROGRESS_EVENT = "run.idle_repick.no_progress_threshold";
+
+/** Record the fifth no-result run for an agent/task pair in the rolling day. */
+export async function recordIdleRepickThresholdEvent(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; runId: string },
+): Promise<void> {
+  const [row] = await db
+    .select({ total: count() })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+      sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId') = ${input.issueId}`,
+      gte(heartbeatRuns.finishedAt, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+      sql`exists (select 1 from ${heartbeatRunEvents} e where e.run_id = ${heartbeatRuns.id} and e.event_type = ${DEVEFF_EVENT_NO_OP})`,
+    ));
+  if (Number(row?.total ?? 0) !== 5) return;
+  await appendHeartbeatRunEvent(db, {
+    companyId: input.companyId,
+    runId: input.runId,
+    agentId: input.agentId,
+    eventType: IDLE_REPICK_NO_PROGRESS_EVENT,
+    level: "warn",
+    message: "Agent/task pair reached five no-result runs in 24 hours",
+    payload: { issueId: input.issueId, count: 5, windowHours: 24 },
+  });
+}
 
 export type EmptyRunReason =
   | "no_changes_and_no_status_transition"

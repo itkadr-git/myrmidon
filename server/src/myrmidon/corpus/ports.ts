@@ -149,6 +149,11 @@ export interface WorkQueuePort {
     datasetId: string;
     documentId: string;
     maxAttempts: number;
+    /**
+     * A re-parse on request: the document's existing job starts over (queued, attempts and
+     * error cleared) whatever its state is. Without it only a failed job is re-armed.
+     */
+    reset?: boolean;
   }): Promise<CorpusJobRecord>;
   /** Oldest queued jobs, at most `limit`; `[]` when the queue is empty. */
   claim(input: { limit: number }): Promise<CorpusJobRecord[]>;
@@ -206,7 +211,8 @@ export interface SearchIndexPort {
   deleteDocument(companyId: string, documentId: string): Promise<void>;
   search(input: {
     companyId: string;
-    datasetId: string;
+    datasetId?: string;
+    datasetIds?: string[];
     query: string;
     limit: number;
     mode: CorpusSearchMode;

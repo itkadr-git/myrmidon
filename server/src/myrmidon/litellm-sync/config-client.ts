@@ -87,8 +87,15 @@ export function createLitellmConfigClient(deps: LitellmConfigClientDeps): Litell
       chains: FallbackChain[],
       catalog?: Map<string, KnownModelInfo>,
     ): Promise<{ ok: boolean }> {
-      // 1. Check cycles
+      // 1. Check cycles and reject chain entries with no usable destination.
       const rawPayload = chains.map((c) => ({ [c.model]: [...c.targets] }));
+      for (const chain of chains) {
+        if (!chain.model.trim() || chain.targets.length === 0 || chain.targets.some((target) => !target.trim())) {
+          throw unprocessable(`Fallback chain for '${chain.model}' has no fallback targets or contains an empty model name`, {
+            code: "litellm_fallback_deadend",
+          });
+        }
+      }
       try {
         assertFallbackTopologyAcyclic(rawPayload);
       } catch (err) {
@@ -121,8 +128,15 @@ export function createLitellmConfigClient(deps: LitellmConfigClientDeps): Litell
         }
       }
 
-      // 4. Validate single provider rule: "не допускать единственного provider"
+      // 4. A missing provider is not evidence of redundancy; never infer it
+      // from a model-group label (which is an arbitrary LiteLLM alias).
       for (const chain of chains) {
+        const unknown = [chain.model, ...chain.targets].filter((name) => !catalog?.get(name)?.provider?.trim());
+        if (unknown.length > 0) {
+          throw unprocessable(`Fallback chain for '${chain.model}' has unknown provider for: ${unknown.join(", ")}`, {
+            code: "litellm_unknown_fallback_provider",
+          });
+        }
         const diversity = validateFallbackDiversity(chain, catalog);
         if (!diversity.valid) {
           throw unprocessable(diversity.error ?? "Fallback chain must not rely on a single provider", {

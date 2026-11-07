@@ -360,6 +360,90 @@ describe("main-green-gate.sh (OPE-10789)", () => {
     assert.equal(greenRes.status, 0);
     assert.equal(greenRes.stdout.trim(), "green");
   });
+
+  it("OPE-11694: is GREEN when main CI run is green even if a tag CI run on the same SHA is red", () => {
+    const SAME_SHA = "3a085ac83aaeaa216fb2895157450035270767b6";
+    const sandbox = makeSandbox({
+      headSha: SAME_SHA,
+      runs: {
+        workflow_runs: [
+          // Tag CI run on the same SHA was created later and failed (e.g. rc.34 failure)
+          {
+            id: 41952676310,
+            name: "Myrmidon CI (tag)",
+            path: ".github/workflows/myrmidon-ci-tag.yml",
+            head_branch: "myr-v1.6.6-rc.34",
+            head_sha: SAME_SHA,
+            event: "push",
+            status: "completed",
+            conclusion: "failure",
+            created_at: "2026-11-05T02:26:00Z",
+          },
+          // Main branch CI run on SAME_SHA was completed successfully
+          {
+            id: 41949314014,
+            name: "Myrmidon CI",
+            path: ".github/workflows/myrmidon-ci.yml",
+            head_branch: "main",
+            head_sha: SAME_SHA,
+            event: "push",
+            status: "completed",
+            conclusion: "success",
+            created_at: "2026-11-05T01:33:00Z",
+          },
+        ],
+      },
+    });
+
+    // Check-runs on this SHA contains the failed CI result check from the tag run
+    writeJson(sandbox, `check-runs-${SAME_SHA}.json`, {
+      check_runs: [
+        {
+          name: "CI result",
+          status: "completed",
+          conclusion: "failure",
+          started_at: "2026-11-05T02:26:22Z",
+        },
+        {
+          name: "CI result",
+          status: "completed",
+          conclusion: "success",
+          started_at: "2026-11-05T01:54:25Z",
+        },
+      ],
+    });
+
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 0, "gate must be green based on main CI run, ignoring tag CI run on same SHA");
+    assert.match(res.stderr, /main branch CI is GREEN/i);
+  });
+
+  it("OPE-11694: is RED when main CI run on SHA failed, blocking PR merges", () => {
+    const SAME_SHA = "3a085ac83aaeaa216fb2895157450035270767b6";
+    const sandbox = makeSandbox({
+      headSha: SAME_SHA,
+      runs: {
+        workflow_runs: [
+          // Main run failed
+          {
+            id: 41949314014,
+            name: "Myrmidon CI",
+            path: ".github/workflows/myrmidon-ci.yml",
+            head_branch: "main",
+            head_sha: SAME_SHA,
+            event: "push",
+            status: "completed",
+            conclusion: "failure",
+            created_at: "2026-11-05T01:33:00Z",
+          },
+        ],
+      },
+    });
+
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 1, "gate must be red when main CI run failed");
+    assert.match(res.stderr, /MAIN BRANCH CI IS RED.*run #41949314014 concluded with failure/i);
+  });
 });
 
 describe("Merge gate integration (OPE-10789 Acceptance Criteria)", () => {

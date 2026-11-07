@@ -679,6 +679,10 @@ function buildStateWithCompletedStages(input: {
     lastDecisionId: input.previous?.lastDecisionId ?? null,
     lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
     monitor: input.previous?.monitor ?? null,
+    // myrmidon(OPE-11970): the state keeps its status, so it keeps the head of the last return.
+    ...(input.previous?.lastChangesRequestedHeadSha
+      ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
+      : {}),
   };
 }
 
@@ -729,6 +733,11 @@ function buildPendingState(input: {
     lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
     monitor: input.previous?.monitor ?? null,
     changesRequestedCount: input.changesRequestedCount ?? input.previous?.changesRequestedCount ?? 0,
+    // myrmidon(OPE-11970): the executor resubmits, the reviewer decides again: the next
+    // return compares its PR head with the head of the previous return.
+    ...(input.previous?.lastChangesRequestedHeadSha
+      ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
+      : {}),
     ...(input.reviewCycleId ? { reviewCycleId: input.reviewCycleId } : {}),
     ...(input.escalationPolicyRevision || input.previous?.escalationPolicyRevision
       ? { escalationPolicyRevision: input.escalationPolicyRevision ?? input.previous?.escalationPolicyRevision }

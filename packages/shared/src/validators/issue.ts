@@ -626,6 +626,9 @@ export const issueExecutionStateSchema = z.object({
   escalationReason: z.literal("review_round_limit").nullable().optional().default(null),
   escalationFromParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
   escalationToParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  // myrmidon(OPE-11970): PR head the last changes-requested decision was made on;
+  // a repeat return on the same head does not wake the executor again.
+  lastChangesRequestedHeadSha: z.string().max(128).nullable().optional(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -1290,6 +1293,7 @@ export const connectionIntentResultSchema = z
   .object({
     version: z.literal(1),
     outcome: z.enum(["connected", "declined", "superseded", "expired"]),
+    expirationReason: z.literal("issue_closed").optional(),
     connectionId: z.string().guid().nullable().optional(),
     reason: z.string().trim().max(4000).nullable().optional(),
     supersededByInteractionId: z.string().guid().nullable().optional(),
@@ -1395,6 +1399,7 @@ export const suggestTasksResultSchema = z.object({
   outcome: z
     .enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted"])
     .optional(),
+  expirationReason: z.literal("issue_closed").optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z
@@ -1625,7 +1630,7 @@ export const askUserQuestionsResultSchema = z.object({
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
   expirationReason: z
-    .enum(["superseded_by_comment", "superseded_by_newer_interaction"])
+    .enum(["superseded_by_comment", "superseded_by_newer_interaction", "issue_closed"])
     .optional(),
   commentId: z.string().guid().nullable().optional(),
   // Set alongside expirationReason "superseded_by_newer_interaction": the id of
@@ -1879,6 +1884,7 @@ export const requestConfirmationResultSchema = z.object({
     "issue_closed",
     "addressee_deleted",
   ]),
+  expirationReason: z.literal("issue_closed").optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().guid().nullable().optional(),
   supersededByInteractionId: z.string().guid().nullable().optional(),
@@ -2045,6 +2051,7 @@ export const requestItemVerdictsResultSchema = z
       "issue_closed",
       "addressee_deleted",
     ]),
+    expirationReason: z.literal("issue_closed").optional(),
     reason: z.string().trim().max(4000).nullable().optional(),
     complete: z.boolean(),
     items: z

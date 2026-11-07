@@ -348,3 +348,5 @@ export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
 export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
 // myrmidon(OPE-9187): idempotency journal for legacy blocked imports.
 export { legacyBlockedImports } from "./legacy_blocked_imports.js";
+// myrmidon(1.7-REDACT): redaction substitutions with expiry TTL
+export { redactionSubstitutions } from "./redaction_substitutions.js";

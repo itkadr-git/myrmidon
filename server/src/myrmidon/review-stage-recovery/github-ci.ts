@@ -21,6 +21,7 @@ import { issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { recordGitHubRequest } from "../../services/github-rate-limit.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
+import { repositoryHasHostedCi } from "../../services/github-hosted-ci.js";
 import { defaultTokenProvider as resolveGitHubReadToken } from "../../services/github-external-object-provider.js";
 import {
   extractGitHubPullRequestReferences,
@@ -145,7 +146,7 @@ export async function resolvePullRequestHeadCi(input: {
   token: string | null;
   fetch?: FetchLike;
 }): Promise<{
-  state: "pending" | "complete" | "unknown" | "no_pull_request";
+  state: "pending" | "complete" | "unknown" | "not_configured" | "no_pull_request";
   headSha: string | null;
   /** Only for "unknown": a short code of what failed, never a token. */
   reason?: string;
@@ -171,6 +172,8 @@ export async function resolvePullRequestHeadCi(input: {
   // A merged or closed pull request has no CI to wait for; the PR sync owns it.
   if (pullRecord.state !== "open") return { state: "no_pull_request", headSha };
   if (!headSha) return { state: "unknown", headSha: null, reason: "pull:no_head_sha" };
+  const hostedCi = await repositoryHasHostedCi({ ...input.reference, token: input.token, fetch: fetchImpl });
+  if (hostedCi === false) return { state: "not_configured", headSha };
   // Only the final check is asked for; `filter=all` keeps the check runs of earlier workflow
   // runs of the same head too, which the policy then discards when they were cancelled/skipped.
   const checkRunsUrl =
@@ -190,6 +193,45 @@ export async function resolvePullRequestHeadCi(input: {
   return { state: pullRequestHeadCiStateFromChecks({ checkRuns: runs }), headSha };
 }
 
+/** The pull request work product of an issue and its GitHub reference, as far as the board can read them. */
+type IssuePullRequestTarget =
+  | { kind: "none" }
+  | { kind: "unreadable"; pullRequestUrl: string | null }
+  | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference };
+
+async function loadIssuePullRequestTarget(
+  db: Db,
+  companyId: string,
+  issueId: string,
+): Promise<IssuePullRequestTarget> {
+  const products = await db
+    .select({
+      id: issueWorkProducts.id,
+      type: issueWorkProducts.type,
+      status: issueWorkProducts.status,
+      url: issueWorkProducts.url,
+      metadata: issueWorkProducts.metadata,
+      isPrimary: issueWorkProducts.isPrimary,
+      updatedAt: issueWorkProducts.updatedAt,
+    })
+    .from(issueWorkProducts)
+    .where(
+      and(
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.issueId, issueId),
+        eq(issueWorkProducts.type, "pull_request"),
+      ),
+    );
+  const product = selectOpenPullRequestWorkProduct(products);
+  if (!product) return { kind: "none" };
+  const metadata = asRecord(product.metadata) ?? {};
+  const repo = typeof metadata.repo === "string" ? metadata.repo : null;
+  const number = typeof metadata.number === "number" ? metadata.number : null;
+  const reference = extractGitHubPullRequestReferences([product.url, repo && number ? `${repo}#${number}` : null])[0] ?? null;
+  if (!reference) return { kind: "unreadable", pullRequestUrl: product.url };
+  return { kind: "ok", pullRequestUrl: product.url, reference };
+}
+
 export function createReviewPullRequestCiResolver(input: {
   db: Db;
   fetch?: FetchLike;
@@ -201,33 +243,12 @@ export function createReviewPullRequestCiResolver(input: {
       resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, input.fetch));
 
   return async ({ companyId, issueId }) => {
-    const products = await input.db
-      .select({
-        id: issueWorkProducts.id,
-        type: issueWorkProducts.type,
-        status: issueWorkProducts.status,
-        url: issueWorkProducts.url,
-        metadata: issueWorkProducts.metadata,
-        isPrimary: issueWorkProducts.isPrimary,
-        updatedAt: issueWorkProducts.updatedAt,
-      })
-      .from(issueWorkProducts)
-      .where(
-        and(
-          eq(issueWorkProducts.companyId, companyId),
-          eq(issueWorkProducts.issueId, issueId),
-          eq(issueWorkProducts.type, "pull_request"),
-        ),
-      );
-    const product = selectOpenPullRequestWorkProduct(products);
-    if (!product) return { state: "no_pull_request", pullRequestUrl: null, headSha: null };
-    const metadata = asRecord(product.metadata) ?? {};
-    const repo = typeof metadata.repo === "string" ? metadata.repo : null;
-    const number = typeof metadata.number === "number" ? metadata.number : null;
-    const reference = extractGitHubPullRequestReferences([product.url, repo && number ? `${repo}#${number}` : null])[0] ?? null;
-    if (!reference) {
-      return { state: "unknown", pullRequestUrl: product.url, headSha: null, reason: "pull_request_reference_unreadable" };
+    const target = await loadIssuePullRequestTarget(input.db, companyId, issueId);
+    if (target.kind === "none") return { state: "no_pull_request", pullRequestUrl: null, headSha: null };
+    if (target.kind === "unreadable") {
+      return { state: "unknown", pullRequestUrl: target.pullRequestUrl, headSha: null, reason: "pull_request_reference_unreadable" };
     }
+    const { reference, pullRequestUrl } = target;
     let token: string | null = null;
     let tokenError = false;
     try {
@@ -237,16 +258,99 @@ export function createReviewPullRequestCiResolver(input: {
     }
     try {
       const head = await resolvePullRequestHeadCi({ reference, token, fetch: input.fetch });
-      if (head.state !== "unknown") return { state: head.state, pullRequestUrl: product.url, headSha: head.headSha };
+      if (head.state !== "unknown") return { state: head.state, pullRequestUrl, headSha: head.headSha };
       return {
         state: "unknown",
-        pullRequestUrl: product.url,
+        pullRequestUrl,
         headSha: head.headSha,
         reason: `${head.reason ?? "read_failed"}${tokenError ? "; token provider failed" : ""}`,
         ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
       };
     } catch {
-      return { state: "unknown", pullRequestUrl: product.url, headSha: null, reason: "read_failed" };
+      return { state: "unknown", pullRequestUrl, headSha: null, reason: "read_failed" };
+    }
+  };
+}
+
+/** Conclusions of a finished check run that mean the check itself failed (cancelled and skipped runs are not failures). */
+const FAILED_CHECK_CONCLUSIONS: ReadonlySet<string> = new Set(["failure", "timed_out", "startup_failure", "action_required"]);
+
+export type ReviewHeadFailedChecks =
+  /** `failed` are the names of the checks that finished with a failing conclusion on the head (latest run per check). */
+  | { state: "ok"; headSha: string; pullRequestUrl: string | null; failed: string[] }
+  /** The board could not read the check runs; the caller keeps its normal behaviour. */
+  | { state: "unknown"; reason: string };
+
+export type ReviewHeadFailedChecksResolver = (input: {
+  companyId: string;
+  issueId: string;
+  /** The head the review decision was made on; a pull request whose head moved since is "unknown". */
+  headSha: string;
+}) => Promise<ReviewHeadFailedChecks>;
+
+/**
+ * Names of the checks that failed on one head commit. Network only, injected
+ * fetch for tests. `filter=latest` keeps the newest run of every check name, so
+ * a check that failed and was re-run green is not listed. A list that does not
+ * fit one page is "unknown": a partial list could hide a code failure.
+ */
+export async function resolvePullRequestHeadFailedChecks(input: {
+  reference: GitHubPullRequestReference;
+  token: string | null;
+  headSha: string;
+  fetch?: FetchLike;
+}): Promise<{ state: "ok"; failed: string[] } | { state: "unknown"; reason: string }> {
+  const fetchImpl = input.fetch ?? ghFetch;
+  const apiBase = gitHubApiBase(input.reference.host);
+  const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
+  const url =
+    `${apiBase}/repos/${repository}/commits/${encodeURIComponent(input.headSha)}/check-runs` +
+    `?filter=latest&per_page=100`;
+  const read = await readGitHub(fetchImpl, url, input.token, "check_runs");
+  if (!read.ok) return { state: "unknown", reason: read.reason };
+  const body = asRecord(read.json);
+  const runs = body?.check_runs;
+  if (!body || !Array.isArray(runs)) return { state: "unknown", reason: "check_runs:unreadable_payload" };
+  const totalCount = body.total_count;
+  const total = typeof totalCount === "number" ? totalCount : runs.length;
+  if (total > runs.length) return { state: "unknown", reason: "check_runs:more_than_one_page" };
+  const failed: string[] = [];
+  for (const entry of runs) {
+    const run = asRecord(entry);
+    if (!run || typeof run.name !== "string") continue;
+    if (run.status !== "completed") continue;
+    if (typeof run.conclusion === "string" && FAILED_CHECK_CONCLUSIONS.has(run.conclusion) && !failed.includes(run.name)) {
+      failed.push(run.name);
+    }
+  }
+  return { state: "ok", failed };
+}
+
+export function createReviewHeadFailedChecksResolver(input: {
+  db: Db;
+  fetch?: FetchLike;
+  tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
+}): ReviewHeadFailedChecksResolver {
+  const tokenProvider =
+    input.tokenProvider ??
+    ((companyId: string, repository: string) =>
+      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, input.fetch));
+
+  return async ({ companyId, issueId, headSha }) => {
+    const target = await loadIssuePullRequestTarget(input.db, companyId, issueId);
+    if (target.kind !== "ok") return { state: "unknown", reason: target.kind === "none" ? "no_pull_request" : "pull_request_reference_unreadable" };
+    let token: string | null = null;
+    try {
+      token = (await tokenProvider(companyId, `${target.reference.owner}/${target.reference.repo}`))?.trim() || null;
+    } catch {
+      // Anonymous read: the repository may be public; a failed read answers "unknown" below.
+    }
+    try {
+      const failed = await resolvePullRequestHeadFailedChecks({ reference: target.reference, token, headSha, fetch: input.fetch });
+      if (failed.state === "unknown") return failed;
+      return { state: "ok", headSha, pullRequestUrl: target.pullRequestUrl, failed: failed.failed };
+    } catch {
+      return { state: "unknown", reason: "read_failed" };
     }
   };
 }

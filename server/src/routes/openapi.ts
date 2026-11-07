@@ -294,6 +294,7 @@ import {
   updateChatEndpointSchema,
   blockerGraphRootsResponseSchema,
   validateMaintenanceWindowCronRequestSchema,
+  checkUpdatesRequestSchema,
 } from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -6507,6 +6508,29 @@ registry.registerPath({
   request: { body: jsonBody(updateSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): manual update availability check routes
+for (const path of [
+  "/api/system/check-updates",
+  "/api/myrmidon/system/check-updates",
+  "/api/instance-settings/check-updates",
+]) {
+  registry.registerPath({
+    method: "get",
+    path,
+    tags: ["instance"],
+    summary: "Check for available system updates",
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "post",
+    path,
+    tags: ["instance"],
+    summary: "Check for available system updates",
+    request: { body: jsonBody(checkUpdatesRequestSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+}
 
 registry.registerPath({
   method: "get",

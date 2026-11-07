@@ -1,0 +1,42 @@
+{
+  "baseline": {
+    "source": "GitHub Actions API 14-day production baseline (2026-10-16T14:05:38Z to 2026-10-30T14:05:38Z, 522 merges to main)",
+    "type": "measured_operational",
+    "windowDays": 14,
+    "totalRuns": 1836,
+    "cancelledRuns": 521,
+    "cancellationRatePercent": 28.38,
+    "mainMergesTotal": 522,
+    "mainMergesPerDay": 37.3,
+    "queueWaitSeconds": {
+      "count": 1836,
+      "p50": 3781.0,
+      "p95": 4920.0
+    },
+    "durationSeconds": {
+      "count": 1315,
+      "p50": 14.0,
+      "p95": 17.8
+    }
+  },
+  "postChange": {
+    "source": "Modeled post-change traffic (with release-freeze/pr-text/hot-files duplicate elimination and vps-ci runner isolation)",
+    "type": "modeled_projection",
+    "windowDays": 14,
+    "totalRuns": 950,
+    "cancelledRuns": 82,
+    "cancellationRatePercent": 8.63,
+    "mainMergesTotal": 522,
+    "mainMergesPerDay": 37.3,
+    "queueWaitSeconds": {
+      "count": 950,
+      "p50": 1205.0,
+      "p95": 2440.0
+    },
+    "durationSeconds": {
+      "count": 868,
+      "p50": 13.5,
+      "p95": 16.9
+    }
+  }
+}

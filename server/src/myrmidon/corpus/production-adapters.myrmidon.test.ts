@@ -11,10 +11,11 @@ import {
   applyPendingMigrations,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
+  type Db,
   type EmbeddedPostgresTestDatabase,
 } from "@myrmidon/db";
 import { installPgvectorIntoEmbeddedCluster } from "@myrmidon/corpus";
-import { configureCorpusAdapters, resolveCorpusPorts, createCorpusParseWorker } from "./index.js";
+import { configureCorpusAdapters, resolveCorpusPorts, createCorpusParseWorker, corpusService } from "./index.js";
 import { createCorpusPorts, createSqlExecutor } from "./adapters.js";
 import type { CorpusPortContext } from "./ports.js";
 import type { Config } from "../../config.js";
@@ -224,6 +225,57 @@ run("production corpus adapters", () => {
     await db.$client.end();
   });
 
+  it("parses a failed document again through the real adapters: same job, attempts cleared", async () => {
+    const db = createDb(database!.connectionString);
+    const companyId = randomUUID();
+    await db.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'reparse-test', 'RPT')`);
+    await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
+    const settings: CorpusPortContext["settings"] = {
+      enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
+      embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: "http://embedder.invalid",
+      maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
+      maxParseAttempts: 1, searchTopK: 5,
+    };
+    const ports = createCorpusPorts(db, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+    const dataset = await ports.store.createDataset({ companyId, name: "reparse dataset", description: null });
+    const document = await ports.store.createDocument({ companyId, datasetId: dataset.id, filename: "book.pdf", mimeType: "application/pdf", byteSize: 4, blobRef: "", maxAttempts: 1 });
+    const blob = await ports.blobs.put({ companyId, documentId: document.id, filename: document.filename, mimeType: document.mimeType, bytes: new TextEncoder().encode("book") });
+    await ports.store.updateDocument(companyId, document.id, { blobRef: blob.ref });
+    const enqueued = await ports.queue.enqueue({ companyId, datasetId: dataset.id, documentId: document.id, maxAttempts: 1 });
+    // The one attempt runs out: the job and the document are failed, as the sweep leaves them.
+    const [claimed] = await ports.queue.claim({ limit: 1 });
+    expect(claimed?.id).toBe(enqueued.id);
+    await ports.store.updateDocument(companyId, document.id, { status: "parsing" });
+    expect((await ports.queue.fail(companyId, enqueued.id, "parser timed out"))?.state).toBe("failed");
+    await ports.store.updateDocument(companyId, document.id, { status: "failed", error: "parser timed out" });
+    expect(await ports.store.getDocument(companyId, document.id)).toMatchObject({ status: "failed", attempts: 1 });
+
+    const audit: unknown[] = [];
+    const service = corpusService({} as Db, {
+      settings: { getGeneral: async () => ({ corpus: settings }), updateGeneral: async () => ({}) },
+      listCompanyIds: async () => [companyId],
+      logActivity: async (entry) => { audit.push(entry); },
+      ports: () => ports,
+      env: {},
+    });
+    const actor = { actorType: "user", actorId: "user-a", agentId: null, runId: null, agentApiKeyId: null } as const;
+
+    const result = await service.reparseDocument(companyId, document.id, actor);
+
+    expect(result.document).toMatchObject({ id: document.id, status: "queued", error: null, attempts: 0 });
+    expect(result.job).toMatchObject({ id: enqueued.id, state: "queued", attempts: 0, lastError: null });
+    const rows = await db.execute(sql`
+      select id, status, attempts, last_error, finished_at from corpus_parse_jobs where document_id = ${document.id}
+    `) as unknown as Array<{ id: string; status: string; attempts: number; last_error: string | null; finished_at: Date | null }>;
+    expect(rows).toEqual([{ id: enqueued.id, status: "pending", attempts: 0, last_error: null, finished_at: null }]);
+    expect(audit).toHaveLength(1);
+    // The sweep takes it again, from the bytes that were stored.
+    const [again] = await ports.queue.claim({ limit: 1 });
+    expect(again).toMatchObject({ id: enqueued.id, attempts: 1 });
+    expect(new TextDecoder().decode(await ports.blobs.get(blob.ref))).toBe("book");
+    await db.$client.end();
+  });
+
   it("rolls back multi-step writes atomically in withTransaction when an error occurs on real PostgreSQL", async () => {
     const db = createDb(database!.connectionString);
     const sqlExecutor = createSqlExecutor(db);
@@ -340,9 +392,10 @@ run("production corpus adapters", () => {
   });
 
   it("indexes document chunks by calling the embeddings endpoint with corpus-embed-pplx-0.6b", async () => {
-    const captured: { body: { model?: string; input?: string[]; dimensions?: number } | null } = { body: null };
+    const captured: { body: { model?: string; input?: string[]; dimensions?: number } | null; calls: number } = { body: null, calls: 0 };
     const server = http.createServer((req, res) => {
       if (req.method === "POST" && req.url === "/embeddings") {
+        captured.calls += 1;
         let raw = "";
         req.on("data", (c) => { raw += c; });
         req.on("end", () => {
@@ -411,6 +464,12 @@ run("production corpus adapters", () => {
       expect(captured.body?.model).toBe("corpus-embed-pplx-0.6b");
       expect(captured.body?.input).toEqual(["hello bge-m3 world"]);
       expect(captured.body?.dimensions).toBe(1024);
+
+      const search = { companyId, datasetId: dataset.id, query: "hello bge-m3 world", limit: 5, mode: "hybrid" as const, embedderModel: settings.embedderModel, embedderDimensions: settings.embedderDimensions, embedderBaseUrl: baseUrl };
+      const secondPorts = createCorpusPorts(dbInstance, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+      await Promise.all([ports.index.search(search), secondPorts.index.search(search)]);
+      await secondPorts.index.search(search);
+      expect(captured.calls).toBe(2); // one ingestion request, one shared query embedding
 
       await dbInstance.$client.end();
     } finally {

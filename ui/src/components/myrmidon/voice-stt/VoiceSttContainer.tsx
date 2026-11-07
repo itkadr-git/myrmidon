@@ -3,16 +3,16 @@
 // mutation. The layout + local form state live in VoiceSttScreen.tsx so tests
 // can drive the wire tier against a mocked API client.
 //
-// Key hygiene: the record's key fields carry the secret NAMES only (the values
-// live server-side in the company secret store); this side never sees a value,
-// so nothing value-like can enter props, cache, or DOM. A save invalidates the
-// query so the canonical record re-renders.
+// Key hygiene: the STT GET returns only configured flags, not secret names or
+// values. The picker lists active company secret metadata; a save invalidates
+// the settings query so the canonical record re-renders.
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { ApiError } from "@/api/client";
+import { secretsApi } from "@/api/secrets";
 import {
   diffFromSettings,
   formFromSettings,
@@ -45,6 +45,11 @@ export function VoiceSttScreen() {
     queryFn: () => voiceSttApi.view(companyId),
     enabled: companyId.length > 0,
   });
+  const secretsQuery = useQuery({
+    queryKey: ["secrets", companyId],
+    queryFn: () => secretsApi.list(companyId),
+    enabled: companyId.length > 0,
+  });
 
   const [form, setForm] = useState<VoiceSttFormState | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -72,15 +77,15 @@ export function VoiceSttScreen() {
     );
   }
 
-  if (settingsQuery.isError) {
+  if (settingsQuery.isError || secretsQuery.isError) {
     return (
       <p className="text-sm text-destructive" data-testid="myrmidon-voice-stt-error">
-        {readable(settingsQuery.error)}
+        {readable(settingsQuery.error ?? secretsQuery.error)}
       </p>
     );
   }
 
-  if (settingsQuery.isPending || !settings) {
+  if (settingsQuery.isPending || secretsQuery.isPending || !settings) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="myrmidon-voice-stt-loading">
         {t("voiceStt.loading")}
@@ -94,6 +99,7 @@ export function VoiceSttScreen() {
       saving={updateMutation.isPending}
       error={mutationError}
       dirty={dirty}
+      secretNames={(secretsQuery.data ?? []).filter((secret) => secret.status === "active" && secret.scope === "company").map((secret) => secret.name)}
       onChange={setForm}
       onSave={(input) => updateMutation.mutate(input)}
     />
