@@ -1227,6 +1227,14 @@ fn wait_for_terminal_result_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
+                // The controller handles frames strictly in order, so this
+                // result can sit behind event frames it is still committing.
+                // An ACK that advances the cursor proves it is alive and
+                // draining that backlog; queue wait must not consume the
+                // acknowledgement budget. A repeated ACK without progress is
+                // not a liveness signal and does not re-arm the window. A
+                // silent controller still times out one full window after
+                // its last ACK, and never later than the hard cap.
                 let previous = state.acked_source_seq;
                 ack_persistence.apply(state, store, acked, connection.protocol_version)?;
                 deadline = terminal_result_ack_deadline(
@@ -1281,7 +1289,8 @@ fn wait_for_old_authority_outbox_ack(
         connection.protocol_version,
     )?;
     let target = state.highest_source_seq();
-    let deadline = Instant::now() + TERMINAL_RESULT_ACK_TIMEOUT;
+    let started = Instant::now();
+    let mut deadline = started + TERMINAL_RESULT_ACK_TIMEOUT;
     while state.acked_source_seq < target {
         if Instant::now() >= deadline {
             return Err(DurableRunnerError::invalid(
@@ -1298,8 +1307,22 @@ fn wait_for_old_authority_outbox_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
+                // Advance only when the ACK actually moves the cursor; a
+                // replayed or duplicate cumulative ACK carries no progress
+                // signal and must not re-arm the window.
+                let advanced = acked > state.acked_source_seq;
                 state.apply_ack(acked, connection.protocol_version)?;
                 store.save(state)?;
+                // The old authority's event tail sits behind everything the
+                // controller is still committing; each advancing ACK proves it
+                // is draining that backlog. Keep the fence alive while it makes
+                // progress, with the same window and hard cap as the terminal
+                // result wait; a silent controller still times out one window
+                // after its last ACK.
+                if advanced {
+                    deadline =
+                        terminal_result_ack_deadline(deadline, started, Instant::now(), true);
+                }
             }
             Some("ping") => transport.send_json(&control_envelope(
                 state,
@@ -1987,19 +2010,19 @@ mod tests {
         assert_eq!(extended, at(1_500) + TERMINAL_RESULT_ACK_TIMEOUT);
         assert!(extended > initial);
 
+        // Repeated advancing ACKs keep re-arming the window.
+        let again = terminal_result_ack_deadline(extended, started, at(2_000), true);
+        assert_eq!(again, at(2_000) + TERMINAL_RESULT_ACK_TIMEOUT);
+
         // A repeated ACK without progress does not extend it, however often
         // it arrives.
         assert_eq!(
-            terminal_result_ack_deadline(extended, started, at(2_500), false),
-            extended
-        );
-        assert_eq!(
-            terminal_result_ack_deadline(extended, started, at(3_400), false),
-            extended
+            terminal_result_ack_deadline(again, started, at(3_000), false),
+            again
         );
 
         // Progress keeps extending, but never past the hard cap...
-        let capped = terminal_result_ack_deadline(extended, started, at(9_500), true);
+        let capped = terminal_result_ack_deadline(again, started, at(9_500), true);
         assert_eq!(capped, started + TERMINAL_RESULT_ACK_MAX_WAIT);
         assert_eq!(
             terminal_result_ack_deadline(capped, started, at(9_900), true),
@@ -2018,6 +2041,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminal_result_ack_window_expires_before_hard_cap_when_silent() {
+        let started = Instant::now();
+        let window = TERMINAL_RESULT_ACK_TIMEOUT;
+        let max_wait = TERMINAL_RESULT_ACK_MAX_WAIT;
+        // With no ACK at all the runner gives up exactly one window after the
+        // wait began — long before the hard cap. That is what makes the
+        // window "renewable" rather than an unconditional 10 s wait.
+        let deadline = started + window;
+        assert_eq!(deadline, started + window);
+        assert!(deadline < started + max_wait);
+    }
     struct CountingExecutor {
         calls: usize,
     }

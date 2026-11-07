@@ -5980,7 +5980,7 @@ it("steers the active provider turn through the durable PRP command path", async
   }
 }, 30_000);
 
-it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
+it.each(["held-ack", "lost-ack", "rejected-attach", "slow-outbox-commits"] as const)(
   "preserves old warm-attach authority and event ownership across %s",
   async (mode) => {
     const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-ack-"));
@@ -6007,6 +6007,17 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         const core = new OriginalCore({
           ...options,
           onCommittedEvent: async (event) => {
+            if (armed && mode === "slow-outbox-commits") {
+              // The controller commits each retained outbox event strictly in
+              // order and only then advances the cumulative cursor. Slowing
+              // every commit below puts more than the runner's fixed 2 s
+              // acknowledgement window between advancing ACKs: without the
+              // renewable window the old-authority outbox fence times out
+              // mid-backlog even though the controller is alive and draining.
+              await new Promise((resolveCommit) =>
+                setTimeout(resolveCommit, 2_200),
+              );
+            }
             await options.onCommittedEvent?.(event);
             const prior = effects.get(event.sourceEventId);
             if (prior) {
@@ -6021,6 +6032,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
             if (
               armed &&
               mode !== "rejected-attach" &&
+              mode !== "slow-outbox-commits" &&
               heldEvent === null &&
               event.eventType === "run.attached"
             ) {
@@ -6187,6 +6199,31 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
           core.store.state.commands.find((entry) => entry.type === "run.attach")
             ?.status,
         ).toBe("failed");
+      } else if (mode === "slow-outbox-commits") {
+        // No commit gate: the controller is alive but each durable commit
+        // takes longer than the runner's fixed 2 s acknowledgement window.
+        // The old-authority outbox fence must stay alive on every advancing
+        // ACK and let the warm attach complete instead of timing out
+        // mid-backlog.
+        await within("warm attach with slow outbox commits", attachment, 15_000);
+        expect(rotations).toHaveLength(1);
+        const retired = rotations[0]!;
+        expect(
+          retired.committedEvents.slice(-4).map((entry) => entry.eventType),
+        ).toEqual([
+          "session.resumed",
+          "session.capabilities.updated",
+          "session.goal.snapshot",
+          "run.attached",
+        ]);
+        await vi.waitFor(async () =>
+          expect((await readRunner()).runId).toBe("run-warm-ack-next"),
+        );
+        const read = await within(
+          "read under new authority",
+          bundle.transport.request("thread/read", {}),
+        );
+        expect((read.thread as { id: string }).id).toBe(opened.thread.id);
       } else {
         await within("old authority commit barrier", commitEntered);
         const retained = await readRunner();
