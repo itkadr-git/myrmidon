@@ -62,6 +62,12 @@ Execution-stage reviewer wake requests use that same transaction path. If the
 wake request cannot be persisted, the issue update does not leave the task in
 review without a durable wake receipt.
 
+A review task is not treated as stranded while its review participant is alive:
+if the participant has a live run on any task of the company, the
+stranded-work sweep skips the board escalation and keeps the task waiting for
+that participant. Only when the participant has no live run at all can the
+review task be moved to board-only `blocked` with a recovery card.
+
 ## Planning from a chat message
 
 The Commander chat is the board's planning entry: the owner writes what is
