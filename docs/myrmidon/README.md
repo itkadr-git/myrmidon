@@ -133,6 +133,8 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/issue-list-agent-defaults.md](guides/issue-list-agent-defaults.md) | Умолчания списка задач для агентов (1.6.5 F-16 A): compact без `view`, limit 200 по умолчанию / максимум 500 с 400-подсказкой про пагинацию, без `description` в compact, полный вид только `view=full&limit<=100`, настройка `issuesListAgentDefaults`, доска без изменений |
 | [guides/instance-execution-policy-and-attention.md](guides/instance-execution-policy-and-attention.md) | Политика выполнения и настройки ленты внимания (1.6.6 SETTINGS-UI S): бейдж `general.executionMode` только для чтения, панель настроек окон ленты внимания `attentionFailedRunHorizonDays` и `attentionFeedCacheTtlSeconds` на Instance → General |
 | [guides/instance-users.md](guides/instance-users.md) | Instance users: поиск пользователей по всему инстансу, доступ только администраторам инстанса, состояния загрузки/пустого результата/ошибки и отказ 403 (русская версия: [guides/instance-users.ru.md](guides/instance-users.ru.md)) |
+| [guides/users-admin-ui.md](guides/users-admin-ui.md) | Экран «Пользователи» компании (1.7 USERS-ADMIN-UI B): управление пользователями в настройках компании (`/company/settings/users`), список и создание (пароль или одноразовая ссылка), блокировка, сброс пароля, роли (`instance_admin` / `member`), отключённая саморегистрация |
+| [guides/users-admin-a.md](guides/users-admin-a.md) | Управление пользователями и журнал аудита (1.7 USERS-ADMIN-A): REST API администрирования пользователей, одноразовые токены установки пароля, аудит-лог действий с дедупликацией и фильтрами |
 
 ## Сборка и запуск
 
