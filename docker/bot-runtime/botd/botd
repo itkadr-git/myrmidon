@@ -365,7 +365,8 @@ async function main() {
     BASE_DIR,
   });
 
-  // Archive retention (30 days / 2 GiB) once per pass, after the actions. Entries created
+  // Archive retention (30 days; cap = min(2 GiB, 5% of free volume bytes, floor 64 MiB),
+  // env MYRMIDON_BOTD_ARCHIVE_CAP_BYTES overrides) once per pass, after the actions. Entries created
   // during this pass are never evicted: the only copy of someone's work outlives the quota.
   // Per-pass retention hooks close over the verified desired snapshot for this cycle.
   const retention = async ({ startedAt, desired: passDesired }) => {
