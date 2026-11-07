@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   agents,
   approvals,
@@ -62,7 +63,7 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     await ctx.db
       .update(companies)
       .set({ budgetMonthlyCents: 500_000 })
-      .where(companies.id.getSQL().append(` = '${companyId}'`));
+      .where(eq(companies.id, companyId));
 
     const createAgent = async (name: string, status: string) => {
       const id = randomUUID();

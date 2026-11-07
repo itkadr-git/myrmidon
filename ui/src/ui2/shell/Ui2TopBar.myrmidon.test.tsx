@@ -145,7 +145,7 @@ describe("myrmidon(HERMES-USAGE-COST) forecast chip", () => {
       monthBudgetCents: 12_000,
       attentionCount: 5,
     });
-    expect(text).toContain("3/12");
+    expect(text).toContain("3 of 12");
     expect(text).toContain("$42");
     expect(text).toContain("$120");
     expect(text).toContain("5");
