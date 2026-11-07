@@ -254,6 +254,7 @@ import { userProfileRoutes } from "./routes/user-profiles.js";
 import { usersRoutes } from "./routes/users.js";
 import { auditRoutes } from "./routes/audit.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
+import { statusStripRoutes } from "./routes/status-strip.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { announcementRoutes } from "./routes/announcements.js";
 import { serverVersion } from "./version.js";
@@ -1197,6 +1198,7 @@ export async function createApp(
   api.use(userProfileRoutes(db));
   api.use(usersRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(statusStripRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
   api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
   api.use(resourceMembershipRoutes(db));
