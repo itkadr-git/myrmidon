@@ -99,6 +99,7 @@ export function intakeRoutes(options: IntakeRouteOptions = {}) {
       // myrmidon(1.7 WEBHOOK-INTAKE): respond 429 directly so the Retry-After
       // header survives (a thrown HttpError is re-rendered by the central
       // error handler, which drops headers already set on the response).
+      res.setHeader("Retry-After", String(limitResult.retryAfterSeconds));
       res.status(429).json({
         error: `Rate limit exceeded for source '${sourceParam}'`,
         code: "rate_limit_exceeded",
