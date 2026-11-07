@@ -153,6 +153,28 @@ describe("myrmidon(OPE-9855) LiteLLM config client and DB integration", () => {
     );
   });
 
+  it("rejects an empty fallback group before writing to the gateway or DB", async () => {
+    const dbMock: any = { execute: vi.fn() };
+    const client = createLitellmConfigClient({ db: dbMock, litellmBaseUrl: "http://litellm-test:4000", litellmAdminKey: "test-admin" });
+    const catalog = new Map<string, KnownModelInfo>([
+      ["primary", { modelName: "primary", provider: "openai" }],
+    ]);
+    await expect(client.updateFallbackTopology([{ model: "primary", targets: [] }], catalog))
+      .rejects.toThrow(/no fallback targets/i);
+    expect(dbMock.execute).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a chain when a model's provider is not known", async () => {
+    const catalog = new Map<string, KnownModelInfo>([
+      ["primary", { modelName: "primary", provider: null }],
+      ["backup", { modelName: "backup", provider: "anthropic" }],
+    ]);
+    await expect(clientWithoutDb.updateFallbackTopology([{ model: "primary", targets: ["backup"] }], catalog))
+      .rejects.toThrow(/unknown provider/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("refuses to update when unknown model groups are used", async () => {
     const catalog = new Map<string, KnownModelInfo>([
       ["gpt-4o", { modelName: "gpt-4o", provider: "openai" }],

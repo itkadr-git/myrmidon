@@ -131,6 +131,9 @@ export interface SpendLogEntry {
   startTime: string;
   model: string;
   provider: string | null;
+  /** LiteLLM's final request result; failed rows can have zero spend. */
+  status?: string | null;
+  attemptedFallbacks?: number;
 }
 
 export interface GatewayModelRow {
@@ -204,6 +207,7 @@ export function parseSpendLogsV2Page(
     if (!startTime) continue;
     const when = new Date(startTime);
     if (Number.isNaN(when.getTime()) || when < window.from || when >= window.to) continue;
+    const metadata = asRecord(row.metadata);
     entries.push({
       requestId: typeof row.request_id === "string" && row.request_id ? row.request_id : null,
       apiKey: typeof row.api_key === "string" && row.api_key.trim() ? row.api_key.trim() : null,
@@ -213,6 +217,8 @@ export function parseSpendLogsV2Page(
       startTime,
       model: typeof row.model === "string" ? row.model : "unknown",
       provider: typeof row.custom_llm_provider === "string" ? row.custom_llm_provider : null,
+      status: typeof row.status === "string" ? row.status : null,
+      attemptedFallbacks: typeof metadata?.attempted_fallbacks === "number" ? metadata.attempted_fallbacks : undefined,
     });
   }
   return { entries, totalPages };
