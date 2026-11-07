@@ -170,6 +170,7 @@
   "api.use(myrmidonTelegramNotifyRoutes(db))",
   "api.use(ui2LanguageRoutes(db))",
   "api.use(localeUploadRoutes(db))",
+  "api.use(localeModuleRoutes(db))",
   "api.use(myrmidonBridgeLanguageRoutes(db))",
   "api.use(myrmidonInstalledLocalesRoutes(db))",
   "api.use(myrmidonForagingRoutes(db))",
