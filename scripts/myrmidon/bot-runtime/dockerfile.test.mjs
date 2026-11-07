@@ -365,6 +365,34 @@ describe("docker/bot-runtime/patches/", () => {
     assert.equal(new Set(numbers).size, numbers.length, "patch numbers must be unique");
   });
 
+  it("recognises the wake message the hermes_gateway adapter builds (measure A went dead once, at the product rename)", () => {
+    // 16-context-economy.patch finds a board wake message by the identity head and the section
+    // markers that buildInput() writes. When the adapter renamed "Paperclip runtime identity:" to
+    // "Myrmidon runtime identity:" the patch kept matching the old head, measure A never fired again
+    // and its build-time test (fixtures frozen at the old shape) stayed green. Tie the two together.
+    const adapter = fs.readFileSync(
+      path.join(ROOT, "packages/adapters/hermes/src/gateway/server/execute.ts"),
+      "utf8",
+    );
+    const utils = fs.readFileSync(path.join(ROOT, "packages/adapter-utils/src/server-utils.ts"), "utf8");
+    const patch = fs.readFileSync(path.join(IMAGE_DIR, "patches/16-context-economy.patch"), "utf8");
+    const head = adapter.match(/"([A-Za-z]+ runtime identity:)",/);
+    assert.ok(head, "buildInput() must keep writing a '<Product> runtime identity:' head");
+    assert.ok(patch.includes(`"${head[1]}"`), `patch 16 must recognise the adapter's wake head "${head[1]}"`);
+    for (const marker of ["Execution contract:", "Structured wake payload JSON:"]) {
+      assert.ok(adapter.includes(`"${marker}"`), `buildInput() no longer writes "${marker}"`);
+      assert.ok(patch.includes(`"${marker}"`), `patch 16 must recognise "${marker}"`);
+    }
+    assert.ok(adapter.includes("`- Run ID: ${"), "buildInput() no longer writes the '- Run ID:' line");
+    assert.ok(patch.includes('"- Run ID:"'), "patch 16 must recognise the '- Run ID:' line");
+    assert.ok(utils.includes("## Current request and continuation context"));
+    assert.ok(patch.includes('"## Current request and continuation context"'));
+    for (const section of ["Wake Payload", "Resume Delta"]) {
+      assert.ok(utils.includes(`## \${PRODUCT_NAME} ${section}`), `the wake renderer no longer writes the ${section} section`);
+      assert.ok(patch.includes(`"## Myrmidon ${section}"`), `patch 16 must recognise the "## Myrmidon ${section}" section`);
+    }
+  });
+
   it("retries a state-database read that finds the database locked, with fixed bounds", () => {
     // Two concurrent runs of one agent (a writer and a session-history reader) made the
     // reader fail with "database is locked": the read path replayed only "disk I/O error".

@@ -8,6 +8,7 @@ import { behaviorSettingsService, type BehaviorSettingsServiceDeps } from "./ser
 import { applyMyrmidonRunEnvAllow } from "@myrmidon/adapter-utils/myrmidon-run-env";
 import { startBotContainers, stopBotContainers } from "../bot-containers/startup.js";
 import { startStackCheckSweep, stopStackCheckSweep } from "../stack-registry/index.js";
+import { startBaselineSnapshots, stopBaselineSnapshots } from "../baseline/startup.js";
 import { applyLiveBehaviorSettings } from "./live.js";
 
 let runtimeDb: Db | null = null;
@@ -39,6 +40,10 @@ function scheduleBehaviorSettingsResweep(changedKeys: readonly string[]): void {
   if (changedKeys.includes("stack_check_interval_sec")) {
     stopStackCheckSweep();
     startStackCheckSweep(runtimeDb);
+  }
+  if (changedKeys.includes("baseline_interval_sec")) {
+    stopBaselineSnapshots();
+    startBaselineSnapshots(runtimeDb);
   }
 }
 

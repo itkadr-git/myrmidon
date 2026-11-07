@@ -43,8 +43,15 @@ import {
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
-import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
-import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import type { ReviewHeadFailedChecksResolver, ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+// myrmidon(OPE-11970): a review return on the same PR head, or only on infrastructure checks, does not wake the executor.
+import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmidon/review-return-guard/guard.js";
+import {
+  readReviewInfraCheckNames,
+  readReviewReturnGuardEnabled,
+  withChangesRequestedHeadSha,
+} from "../myrmidon/review-return-guard/policy.js";
 import {
   REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
@@ -3732,6 +3739,7 @@ export function issueRoutes(
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
     resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
+    resolveReviewHeadFailedChecks?: ReviewHeadFailedChecksResolver;
     insertReviewAdmissionWakeup?: (
       agentId: string,
       options: WakeupOptions,
@@ -15660,6 +15668,14 @@ export function issueRoutes(
                     : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
                 );
               }
+              // myrmidon(OPE-11970): remember the pull request head this return was made on.
+              // The next return on the same head does not wake the executor again.
+              if (updateFields.executionState && typeof updateFields.executionState === "object") {
+                updateFields.executionState = withChangesRequestedHeadSha(
+                  updateFields.executionState as Record<string, unknown>,
+                  ci.headSha,
+                );
+              }
             }
             if (lockedTransition.decision?.outcome === "changes_requested") {
               const hasHumanDecisionBlocker = lockedExisting.blockerMetadata?.blockReason === "human_decision";
@@ -17107,14 +17123,79 @@ export function issueRoutes(
           });
         };
 
-        if (executionStageWakeup && deferWakeForGoal !== true && !deferExecutionReviewWakeForCi) {
+        // myrmidon(OPE-11970, REVIEW-RETURN-GUARD): an agent reviewer returns the task on the
+        // same pull request head as the previous return (no new commit), or only because
+        // infrastructure checks of the head failed: the executor has nothing to change, so it
+        // is not woken. The decision stays recorded; the executor is woken by a new CI result,
+        // a new head or a comment. Anything the guard cannot read keeps the wake.
+        let suppressChangesRequestedWake = false;
+        if (executionStageWakeup?.wakeup.reason === "execution_changes_requested") {
+          try {
+            const returnWake = await decideReviewReturnWake(
+              {
+                enabled: readReviewReturnGuardEnabled() && actor.actorType === "agent",
+                companyId: issue.companyId,
+                issueId: issue.id,
+                previousState: previousExecutionState,
+                nextState: nextExecutionState,
+                commentBody,
+                infraCheckNames: readReviewInfraCheckNames(),
+              },
+              {
+                resolveFailedChecks:
+                  opts.resolveReviewHeadFailedChecks ?? createReviewHeadFailedChecksResolver({ db }),
+              },
+            );
+            if (returnWake.action === "suppress") {
+              suppressChangesRequestedWake = true;
+              await recordSuppressedReviewReturn(
+                {
+                  addSystemComment: (issueId, body) =>
+                    svc.addComment(issueId, body, { runId: null }, { authorType: "system" }),
+                  logActivity: (entry) =>
+                    logActivity(db, {
+                      companyId: entry.companyId,
+                      actorType: "system",
+                      actorId: "review-return-guard",
+                      agentId: null,
+                      runId: actor.runId,
+                      action: entry.action,
+                      entityType: "issue",
+                      entityId: entry.entityId,
+                      details: entry.details,
+                    }),
+                },
+                {
+                  companyId: issue.companyId,
+                  issueId: issue.id,
+                  identifier: issue.identifier ?? null,
+                  decisionId: nextExecutionState?.lastDecisionId ?? null,
+                  decision: returnWake,
+                },
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id },
+              "review return guard failed to evaluate or record a return",
+            );
+          }
+        }
+
+        if (
+          executionStageWakeup &&
+          deferWakeForGoal !== true &&
+          !deferExecutionReviewWakeForCi &&
+          !suppressChangesRequestedWake
+        ) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
           deferWakeForGoal !== true &&
-          !deferExecutionReviewWakeForCi
+          !deferExecutionReviewWakeForCi &&
+          !suppressChangesRequestedWake
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "assignment",
@@ -17293,7 +17374,9 @@ export function issueRoutes(
           for (const mentionedId of mentionedIds) {
             if (
               (actor.actorType === "agent" && actor.actorId === mentionedId) ||
-              (commentIsFromAssigneeRun && mentionedId === assigneeId)
+              (commentIsFromAssigneeRun && mentionedId === assigneeId) ||
+              // myrmidon(OPE-11970): a return that does not wake the executor does not wake it by mention either.
+              (suppressChangesRequestedWake && mentionedId === assigneeId)
             )
               continue;
             const delegation = commentIsFromAssigneeRun

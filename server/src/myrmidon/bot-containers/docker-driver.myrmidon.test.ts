@@ -707,12 +707,13 @@ interface FakeContainer {
     Entrypoint?: string[];
     Cmd?: string[];
     Labels?: Record<string, string>;
-    HostConfig: { Binds: string[]; ReadonlyRootfs?: boolean; Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string };
+    HostConfig: { Binds: string[]; ReadonlyRootfs?: boolean; Memory?: number; MemorySwap?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string };
   };
   state: "created" | "running" | "exited" | "dead";
   health?: "starting" | "healthy" | "unhealthy";
   exitCode: number;
   logs: string;
+  enrolledLimits?: { memoryMb: number; cpus?: number; pidsLimit?: number };
 }
 
 interface RecordedRequest {
@@ -970,6 +971,23 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
       // here rather than only in production.
       return send(403, { message: "dockergate: denied (route_not_allowed)" });
     }
+    if ((m = route.match(/^\/containers\/([^/]+)\/config\/update$/))) {
+      const name = decodeURIComponent(m[1]);
+      const container = containers.get(name);
+      if (!container) return send(404, { message: `No such container: ${name}` });
+      if (method !== "PUT") return send(405, { message: "method not allowed" });
+      const update = JSON.parse(raw.toString("utf8"));
+      const CEILING_MB = 3072;
+      if (update.memoryMb && update.memoryMb > CEILING_MB) {
+        return send(400, { message: "dockergate: denied (limit_exceeds_ceiling)" });
+      }
+      container.enrolledLimits = {
+        memoryMb: update.memoryMb,
+        cpus: update.cpus,
+        pidsLimit: update.pidsLimit,
+      };
+      return send(200, { ok: true, botKey: update.botKey, ...container.enrolledLimits });
+    }
     if (!(m = route.match(/^\/containers\/([^/]+)(?:\/([a-z]+))?$/))) return send(404, { message: "no such route" });
     const name = decodeURIComponent(m[1]);
     const action = m[2];
@@ -1017,6 +1035,17 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
       container.name = query.name;
       containers.set(query.name, container);
       return send(204);
+    }
+    if (action === "update" && method === "POST") {
+      const body = JSON.parse(raw.toString("utf8"));
+      const enrolledMem = container.enrolledLimits?.memoryMb ?? Math.round((container.body.HostConfig.Memory ?? 1024 * 1024 * 1024) / (1024 * 1024));
+      if (body.Memory && body.Memory > enrolledMem * 1024 * 1024) {
+        return send(403, { message: "dockergate: denied (json_value)" });
+      }
+      if (body.Memory) container.body.HostConfig.Memory = body.Memory;
+      if (body.MemorySwap) container.body.HostConfig.MemorySwap = body.MemorySwap;
+      if (body.PidsLimit) container.body.HostConfig.PidsLimit = body.PidsLimit;
+      return send(200, { Warnings: null });
     }
     if (action === "logs" && method === "GET") {
       const payload = Buffer.from(container.logs, "utf8");
@@ -2153,6 +2182,38 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await slowDriver.writeProfile("agent-a", testProfile());
       await slowDriver.start("agent-a");
       expect(waits).toEqual([3_000, 3_000]);
+    });
+
+    it("updates live container resources (1024 MB -> 2048 MB) after updating dockergate ceilings without restart (OPE-10565)", async () => {
+      await driver.create(spec({ memoryMb: 1024, cpus: 1, pidsLimit: 512 }));
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+
+      const before = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(before.state).toBe("running");
+      expect(before.body.HostConfig.Memory).toBe(1024 * 1024 * 1024);
+
+      // Live update from card: 1024 MB -> 2048 MB (2 GB)
+      await driver.updateResources!(spec({ memoryMb: 2048, cpus: 1, pidsLimit: 512 }));
+
+      const after = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(after.state).toBe("running");
+      expect(after.body.HostConfig.Memory).toBe(2048 * 1024 * 1024);
+      expect(after.enrolledLimits?.memoryMb).toBe(2048);
+    });
+
+    it("refuses live resource update when limits exceed dockergate platform ceiling with a clear error (OPE-10565)", async () => {
+      await driver.create(spec({ memoryMb: 1024, cpus: 1, pidsLimit: 512 }));
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+
+      // Platform ceiling in fake daemon is 3072 MB. Requesting 4096 MB must be refused with clear error.
+      await expect(
+        driver.updateResources!(spec({ memoryMb: 4096, cpus: 1, pidsLimit: 512 })),
+      ).rejects.toThrow(/requested resource limits exceed platform ceiling/);
+
+      const after = daemon.containers.get("myrmidon-bot-agent-a")!;
+      expect(after.body.HostConfig.Memory).toBe(1024 * 1024 * 1024);
     });
   });
 });

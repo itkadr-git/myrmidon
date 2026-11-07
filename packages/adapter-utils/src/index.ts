@@ -1,4 +1,8 @@
 export { RunGuard, resolveRunGuardOptions } from "./run-guard.js";
+// myrmidon(RUN-GUARD-LOOPS): stop-reason list + guard helper exports.
+export { RUN_GUARD_STOP_REASONS, isRunGuardStopReason } from "./run-guard.js";
+export { classifyTerminalCommand, classifyToolCall } from "./myrmidon-run-guard-tools.js";
+export type { RunGuardToolKind } from "./myrmidon-run-guard-tools.js";
 export type { RunGuardConfig, RunGuardDecision, RunGuardOptions, RunGuardStopReason } from "./run-guard.js";
 export type {
   AdapterAgent,
@@ -78,6 +82,8 @@ export { PRODUCT_NAME } from "@myrmidon/shared";
 export {
   DEFAULT_IDLE_TIMEOUT_MS,
   DEFAULT_MODEL_CALL_LIMIT,
+  DEFAULT_NO_PROGRESS_LIMIT,
+  DEFAULT_REPEATED_TOOL_CALL_LIMIT,
   DEFAULT_TOOL_RETRY_LIMIT,
   toolFailureSignature,
 } from "./run-guard.js";

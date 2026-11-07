@@ -244,6 +244,7 @@ import {
   myrmidonHindsightModelsRoutes,
   configureCorpusAdapters,
   createCorpusShadowSearch,
+  buildTokensTraceRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -260,6 +261,7 @@ import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { updatesRoutes } from "./routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
+import { systemUpdatesRoutes } from "./routes/system-updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186)
 // myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
@@ -283,7 +285,6 @@ import { secretService } from "./services/secrets.js";
 
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
 // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace export
-import { buildTokensTraceRoutes } from "./myrmidon/tokens-trace/index.js";
 // myrmidon(1.6-WIKI): company regulations as wiki pages (statuses, revisions, rollback, resolver)
 // myrmidon(1.6-CTO-CHAT-B): the board chat planner (owner text -> proposed epic).
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
@@ -1233,6 +1234,7 @@ export async function createApp(
   api.use(boardJanitorRoutes(db)); // myrmidon(BOARD-JANITOR)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
+  api.use(systemUpdatesRoutes()); // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186)
   api.use(licensingRoutes({ installId: installIdProviderFor(db), installedModules: installedClosedModules(db) })); // myrmidon(LICENSING): install id, license request, license state and save (instance admin)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)
   api.use(myrmidonBrowserConsoleRoutes(db)); // myrmidon(BROWSER-CONSOLE)

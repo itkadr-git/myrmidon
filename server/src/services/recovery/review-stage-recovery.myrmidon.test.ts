@@ -171,6 +171,25 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
       .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, REVIEW_STAGE_RECOVERY_DEFERRED_ACTION)));
   }
 
+  it("defers release recovery on the current PR head until CI is terminal", async () => {
+    const seeded = await seed();
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc123" });
+    expect(await service.deferReviewParticipantReleaseForCi({ companyId: seeded.companyId, runId: seeded.runId })).toBe(true);
+    expect(wakes).toHaveLength(0);
+    const issue = await readIssue(seeded.issueId);
+    expect(issue.status).toBe("in_review");
+    expect(issue.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(issue.executionPolicy).toMatchObject({ monitor: { serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } });
+    expect(await service.deferReviewParticipantReleaseForCi({ companyId: seeded.companyId, runId: seeded.runId })).toBe(false);
+  });
+
+  it("does not defer release recovery when CI is terminal", async () => {
+    const seeded = await seed();
+    const { service } = createService({ state: "complete", pullRequestUrl: PR_URL, headSha: "abc123" });
+    expect(await service.deferReviewParticipantReleaseForCi({ companyId: seeded.companyId, runId: seeded.runId })).toBe(false);
+    expect((await readIssue(seeded.issueId)).monitorNextCheckAt).toBeNull();
+  });
+
   it("waits for CI on the PR head instead of blocking the task", async () => {
     const seeded = await seed();
     const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc123" });

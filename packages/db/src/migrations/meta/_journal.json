@@ -2678,10 +2678,24 @@
       "breakpoints": true
     },
     {
+      "idx": 456,
+      "version": "5",
+      "when": 1727787600000,
+      "tag": "0456_user_ui_custom_catalogs",
+      "breakpoints": true
+    },
+    {
       "idx": 457,
       "version": "7",
-      "when": 1793783608065,
-      "tag": "0457_warm_hercules",
+      "when": 1762248000000,
+      "tag": "0457_company_secret_github_app_installations",
+      "breakpoints": true
+    },
+    {
+      "idx": 459,
+      "version": "7",
+      "when": 1793560000001,
+      "tag": "0459_expire_pending_interactions_on_closed_issues",
       "breakpoints": true
     }
   ]

@@ -1,6 +1,7 @@
 import { and, asc, eq, isNotNull, lte, notExists, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { interactionEscalations, issueThreadInteractions } from "@myrmidon/db";
+import { interactionEscalationStepSchema } from "@myrmidon/shared/interaction-routing";
 
 export interface DueEscalationItem {
   interactionId: string;
@@ -21,17 +22,10 @@ function extractRecipient(row: {
 function extractNextRecipient(
   escalationChain: unknown,
   nextLevel: number,
-): Record<string, unknown> {
-  if (Array.isArray(escalationChain) && escalationChain.length >= nextLevel && nextLevel >= 1) {
-    const step = escalationChain[nextLevel - 1];
-    if (step && typeof step === "object") {
-      if ("recipient" in step && step.recipient && typeof step.recipient === "object") {
-        return step.recipient as Record<string, unknown>;
-      }
-      return step as Record<string, unknown>;
-    }
-  }
-  return {};
+): Record<string, unknown> | null {
+  const parsed = interactionEscalationStepSchema.array().safeParse(escalationChain);
+  if (!parsed.success || nextLevel >= parsed.data.length || nextLevel < 1) return null;
+  return parsed.data[nextLevel]?.recipient ?? null;
 }
 
 export async function selectDueEscalations(
@@ -43,6 +37,7 @@ export async function selectDueEscalations(
     return [];
   }
 
+  // An invalid or exhausted chain must not claim the timeout in the journal.
   const candidates = await db
     .select({
       id: issueThreadInteractions.id,
@@ -59,6 +54,12 @@ export async function selectDueEscalations(
         eq(issueThreadInteractions.status, "pending"),
         isNotNull(issueThreadInteractions.timeoutAt),
         lte(issueThreadInteractions.timeoutAt, now),
+        // Filter before LIMIT so exhausted chains cannot starve actionable cards.
+        sql`(
+          nullif(${issueThreadInteractions.escalationChain} -> (${issueThreadInteractions.escalationLevel} + 1) -> 'recipient' ->> 'agentId', '') is not null
+          or nullif(${issueThreadInteractions.escalationChain} -> (${issueThreadInteractions.escalationLevel} + 1) -> 'recipient' ->> 'userId', '') is not null
+          or nullif(${issueThreadInteractions.escalationChain} -> (${issueThreadInteractions.escalationLevel} + 1) -> 'recipient' ->> 'serviceQueue', '') is not null
+        )`,
         notExists(
           db
             .select({ one: sql`1` })
@@ -82,18 +83,21 @@ export async function selectDueEscalations(
     return [];
   }
 
-  const rowsToInsert = candidates.map((candidate) => {
+  const rowsToInsert = candidates.flatMap((candidate) => {
     const nextLevel = (candidate.escalationLevel ?? 0) + 1;
-    return {
+    const toRecipient = extractNextRecipient(candidate.escalationChain, nextLevel);
+    if (!toRecipient) return [];
+    return [{
       companyId: candidate.companyId,
       interactionId: candidate.id,
       level: nextLevel,
       fromRecipient: extractRecipient(candidate),
-      toRecipient: extractNextRecipient(candidate.escalationChain, nextLevel),
+      toRecipient,
       reason: "timeout",
       createdAt: now,
-    };
+    }];
   });
+  if (rowsToInsert.length === 0) return [];
 
   const inserted = await db
     .insert(interactionEscalations)

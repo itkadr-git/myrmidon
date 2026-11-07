@@ -18,9 +18,11 @@ import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRouti
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
-import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
+import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
-import type { PullRequestHeadState } from "./pr-policy.js";
+import type { BoardMergeClient } from "./github-board-merge.js";
+import type { BoardMergeFacts, PullRequestHeadState } from "./pr-policy.js";
+import type { ApprovedPrIssueRow } from "./store.js";
 
 const COMPANY = "company-1";
 const AUTHOR = "aaaaaaaa-0000-4000-8000-000000000001";
@@ -66,7 +68,7 @@ interface Fixture {
   history: Map<string, RoutingHistory>;
   prWorkProducts?: Map<string, { repository: string; number: number }>;
   activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
-  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null }>;
+  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null; lastEscalationAt?: Date | null }>;
   reviewerActiveRuns?: Map<string, number>;
   escalations: Array<Record<string, unknown>>;
   agentModels?: Map<string, string | null>;
@@ -107,7 +109,13 @@ function makeStore(fx: Fixture) {
     reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
       return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
     },
-    recordReviewWakeEscalation: async (entry: Record<string, unknown>) => { fx.escalations?.push(entry); },
+    // Like the Postgres store: a persisted escalation is what reviewWakeState reports as lastEscalationAt.
+    recordReviewWakeEscalation: async (entry: Record<string, unknown>) => {
+      fx.escalations?.push(entry);
+      const issueId = String(entry.issueId);
+      const wake = fx.wakeStates?.get(issueId);
+      if (wake) fx.wakeStates?.set(issueId, { ...wake, lastEscalationAt: entry.at as Date });
+    },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
       const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
       fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
@@ -337,6 +345,99 @@ describe("review wake liveness", () => {
     expect((await exhausted.sweep.sweep(NOW, { force: true })).woken).toBe(0);
     expect(exhausted.wakes).toHaveLength(0);
     expect(exhausted.fixture.escalations).toEqual([expect.objectContaining({ companyId: COMPANY, issueId: "1", reviewerAgentId: REV_A, attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+  });
+
+  // myrmidon(OPE-11947): an exhausted wake series is escalated once and re-armed after a pause.
+  describe("exhausted wake series", () => {
+    const exhaustedState = (overrides: { lastWakeAt: Date; lastEscalationAt?: Date | null }) => new Map([
+      ["1", { activeRun: false, pendingWake: false, attempts: REVIEW_WAKE_MAX_ATTEMPTS, ...overrides }],
+    ]);
+
+    it("writes one escalation for the whole series, however many passes run", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({ lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000) }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      let woken = 0;
+      for (let pass = 0; pass < 20; pass += 1) {
+        woken += (await t.sweep.sweep(new Date(NOW.getTime() + pass * 60_000), { force: true })).woken;
+      }
+      expect(woken).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", reviewerAgentId: REV_A, attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("neither wakes nor escalates again while an escalation newer than the last wake exists and the pause is short", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 30 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result.woken).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect(t.fixture.escalations).toHaveLength(0);
+    });
+
+    it("escalates a series again when its escalation predates the last wake", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 9 * 60 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true })).woken).toBe(0);
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("re-arms after the pause: the next wake is attempt 1 and the earlier escalation stays", async () => {
+      const escalatedAt = new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 30 * 60_000);
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS),
+        lastEscalationAt: escalatedAt,
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result.woken).toBe(1);
+      expect(t.wakes).toHaveLength(1);
+      expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
+      expect(t.fixture.escalations).toHaveLength(0);
+      expect(t.fixture.wakeStates!.get("1")).toMatchObject({ attempts: 1, lastWakeAt: NOW, lastEscalationAt: escalatedAt });
+    });
+
+    it("counts the backoff of a re-armed series from its start", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - 7 * 60 * 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(1);
+      // The dispatch of the first attempt of the new series is over without a run: only the ten-minute step applies.
+      t.fixture.wakeStates!.set("1", { ...t.fixture.wakeStates!.get("1")!, pendingWake: false });
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + REVIEW_WAKE_RETRY_BACKOFF_MS - 60_000), { force: true })).woken).toBe(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + REVIEW_WAKE_RETRY_BACKOFF_MS), { force: true })).woken).toBe(1);
+      expect(t.wakes.map((wake) => wake.retryAttempt)).toEqual([1, 2]);
+      expect(t.fixture.escalations).toHaveLength(0);
+    });
+
+    it("records the exhausted series once before re-arming when no escalation was persisted", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({ lastWakeAt: new Date(NOW.getTime() - 7 * 60 * 60_000) }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(1);
+      expect(t.wakes[0]).toMatchObject({ issueId: "1", retryAttempt: 1 });
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("stays exhausted until the pause is full", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 1),
+        lastEscalationAt: new Date(NOW.getTime() - 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + 1), { force: true })).woken).toBe(1);
+      expect(t.wakes[0]).toMatchObject({ retryAttempt: 1 });
+    });
   });
   it("retries a failed dispatch after ten minutes despite a fresh issue update", async () => {
     const t = setup({}, { wakeStates: new Map([
@@ -1438,5 +1539,200 @@ describe("settings and pass control", () => {
 
   it("uses the documented default of 24 hours", () => {
     expect(DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS).toBe(24);
+  });
+});
+
+describe("board-side merge in the sweep (OPE-11767)", () => {
+  const HEAD = "28f15c1be15204153f0e06464842d88875c373f8";
+  const IMPLEMENTER = "aaaaaaaa-0000-4000-8000-0000000000aa";
+
+  function approvedRow(number = 7): ApprovedPrIssueRow {
+    return {
+      issueId: `issue-${number}`,
+      identifier: `OPE-${number}`,
+      title: `Task ${number}`,
+      status: "in_review",
+      repository: "acme/widgets",
+      number,
+      prUrl: `https://github.com/acme/widgets/pull/${number}`,
+      verdict: `APPROVE PR #${number} ${HEAD}`,
+      approvedAt: NOW,
+    };
+  }
+
+  function boardSetup(
+    options: {
+      settings?: SettingsOverride & { boardMerge?: Record<string, unknown> };
+      facts?: Partial<BoardMergeFacts>;
+      checks?: "success" | "pending" | "failed";
+      wired?: boolean;
+      underMaintenance?: boolean;
+      readThrows?: boolean;
+    } = {},
+  ) {
+    const fixture: Fixture = {
+      rows: new Map(),
+      reviewers: [],
+      load: new Map(),
+      history: new Map(),
+      activities: [],
+      escalations: [],
+      wakeStates: new Map(),
+    };
+    let pullFacts: BoardMergeFacts = {
+      open: true,
+      draft: false,
+      headSha: HEAD,
+      baseRef: "main",
+      mergeable: true,
+      mergeableState: "clean",
+      labels: [],
+      ...options.facts,
+    };
+    const merges: Array<{ number: number; headSha: string; method: string }> = [];
+    const returned: string[] = [];
+    const comments: Array<{ issueId: string; body: string }> = [];
+    const activities: Array<{ action: string; issueId: string }> = [];
+    const wakes: Array<{ agentId: string; issueId: string; reason: string }> = [];
+    const client: BoardMergeClient = {
+      readPull: async () => {
+        if (options.readThrows) throw new Error("github exploded");
+        return { ok: true, facts: pullFacts };
+      },
+      readChecks: async ({ names }) => ({ ok: true, checks: Object.fromEntries(names.map((name) => [name, options.checks ?? "success"])) }),
+      addApprovedLabel: async () => true,
+      merge: async ({ number, headSha, method }) => {
+        merges.push({ number, headSha, method });
+        pullFacts = { ...pullFacts, open: false };
+        return { status: "merged", sha: "f".repeat(40) };
+      },
+    };
+    const listApprovedPrIssues = vi.fn(async () => [approvedRow()].filter((row) => !returned.includes(row.issueId)));
+    const returnApprovedPrToImplementer = vi.fn(async ({ issueId }: { issueId: string }) => {
+      returned.push(issueId);
+      return {
+        implementerAgentId: IMPLEMENTER,
+        previousStatus: "in_review",
+        executionState: { currentStageId: "s1", currentStageType: "review", returnAssignee: { type: "agent", agentId: IMPLEMENTER } },
+      };
+    });
+    const store = Object.assign(makeStore(fixture), { listApprovedPrIssues, returnApprovedPrToImplementer });
+    const settings = normalizeReviewRoutingSettings(options.settings ?? {});
+    const sweep = createReviewRoutingSweep({
+      store,
+      boardMerge: options.wired === false ? undefined : client,
+      readSettings: async () => settings,
+      isUnderMaintenance: async () => options.underMaintenance === true,
+      addComment: async (issueId, body) => {
+        comments.push({ issueId, body });
+      },
+      wakeReviewer: async (agentId, wake) => {
+        wakes.push({ agentId, issueId: wake.issueId, reason: wake.reason });
+      },
+      logActivity: async (entry) => {
+        activities.push({ action: entry.action, issueId: entry.issueId });
+      },
+      log: { info: vi.fn(), warn: vi.fn() },
+    });
+    return {
+      sweep,
+      merges,
+      returned,
+      comments,
+      activities,
+      wakes,
+      listApprovedPrIssues,
+      setFacts: (next: Partial<BoardMergeFacts>) => {
+        pullFacts = { ...pullFacts, ...next };
+      },
+    };
+  }
+
+  it("the periodic pass merges an approved, green PR and counts it; the PR is not merged twice", async () => {
+    const t = boardSetup();
+    const first = await t.sweep.sweep(NOW, { force: true });
+    expect(first).toMatchObject({ boardMerged: 1, boardReturned: 0, failed: 0 });
+    expect(t.merges).toEqual([{ number: 7, headSha: HEAD, method: "squash" }]);
+    expect(t.activities.map((a) => a.action)).toEqual(["issue.review_routing.board_merged"]);
+
+    const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
+    expect(second.boardMerged).toBe(0);
+    expect(t.merges).toHaveLength(1);
+  });
+
+  it("approved while CI runs: the pass waits, and merges on the first pass after CI is green", async () => {
+    const t = boardSetup({ checks: "pending" });
+    expect((await t.sweep.sweep(NOW, { force: true })).boardMerged).toBe(0);
+    expect(t.merges).toEqual([]);
+
+    const green = boardSetup({ checks: "success" });
+    expect((await green.sweep.sweep(NOW, { force: true })).boardMerged).toBe(1);
+  });
+
+  it("a conflict after the approval sends the task back to its implementer with the rebase reason", async () => {
+    const t = boardSetup({ facts: { mergeable: false, mergeableState: "dirty" } });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ boardReturned: 1, boardMerged: 0 });
+    expect(t.returned).toEqual(["issue-7"]);
+    expect(t.comments[0]?.body).toContain("нужен rebase");
+    expect(t.wakes).toEqual([{ agentId: IMPLEMENTER, issueId: "issue-7", reason: "execution_changes_requested" }]);
+    expect(t.merges).toEqual([]);
+  });
+
+  it("a base other than main is not merged", async () => {
+    const t = boardSetup({ facts: { baseRef: "rel/1.6.6" } });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ boardMerged: 0, boardReturned: 0 });
+    expect(t.merges).toEqual([]);
+  });
+
+  it("is inert without a client, and when boardMerge is switched off or the routing is disabled", async () => {
+    const unwired = boardSetup({ wired: false });
+    await unwired.sweep.sweep(NOW, { force: true });
+    expect(unwired.listApprovedPrIssues).not.toHaveBeenCalled();
+
+    const off = boardSetup({ settings: { boardMerge: { enabled: false } } });
+    expect((await off.sweep.sweep(NOW, { force: true })).boardMerged).toBe(0);
+    expect(off.merges).toEqual([]);
+
+    const disabled = boardSetup({ settings: { enabled: false } });
+    await disabled.sweep.sweep(NOW, { force: true });
+    expect(disabled.merges).toEqual([]);
+  });
+
+  it("is not run during maintenance, and a GitHub fault in the merge step never fails the pass", async () => {
+    const maintenance = boardSetup({ underMaintenance: true });
+    expect((await maintenance.sweep.sweep(NOW, { force: true })).skippedPass).toBe(true);
+    expect(maintenance.listApprovedPrIssues).not.toHaveBeenCalled();
+    expect(await maintenance.sweep.mergeOnEvent({ companyId: COMPANY, issueId: "issue-7", source: "review_approved" })).toBeNull();
+
+    const exploding = boardSetup({ readThrows: true });
+    const result = await exploding.sweep.sweep(NOW, { force: true });
+    expect(result.boardMerged).toBe(0);
+    expect(result.failed).toBe(1);
+  });
+
+  it("the approval event merges at once, without waiting for the pass; the pass then finds nothing left", async () => {
+    const t = boardSetup();
+    const event = await t.sweep.mergeOnEvent({ companyId: COMPANY, issueId: "issue-7", source: "review_approved" });
+    expect(event).toMatchObject({ merged: 1 });
+    expect(t.merges).toHaveLength(1);
+
+    const pass = await t.sweep.sweep(NOW, { force: true });
+    expect(pass.boardMerged).toBe(0);
+    expect(t.merges).toHaveLength(1);
+  });
+
+  it("the CI-completed event looks at that one pull request; an event that names nothing does nothing", async () => {
+    const t = boardSetup();
+    expect(await t.sweep.mergeOnEvent({ companyId: COMPANY, repository: "acme/widgets", number: 99, source: "ci_completed" })).toMatchObject({
+      merged: 0,
+    });
+    expect(t.merges).toEqual([]);
+    expect(await t.sweep.mergeOnEvent({ companyId: COMPANY, repository: "acme/widgets", number: 7, source: "ci_completed" })).toMatchObject({
+      merged: 1,
+    });
+    expect(await t.sweep.mergeOnEvent({ companyId: COMPANY, source: "ci_completed" })).toBeNull();
+    expect(await boardSetup({ wired: false }).sweep.mergeOnEvent({ companyId: COMPANY, issueId: "issue-7", source: "review_approved" })).toBeNull();
   });
 });

@@ -324,6 +324,7 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AgentVisibilityAuthorizationPolicy,
   type AssignmentAuthorizationPolicy,
   type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
@@ -1856,6 +1857,7 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  agentVisibilityAuthorizationPolicySchema,
   assignmentAuthorizationPolicySchema,
   protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
@@ -1866,6 +1868,7 @@ export {
   type RecordSmokeRunStep,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
+  type AgentVisibilityAuthorizationPolicyInput,
   type TrustAuthorizationPolicyInput,
   type HaStandbyStatus,
   haStandbyStatusSchema,
@@ -3104,3 +3107,6 @@ export * from "./myrmidon-vendor-name.js";
 // myrmidon(1.7 HA-GEO, OPE-10184): site readiness evaluation contract and helpers for geo-check.
 export * from "./geo-check.js";
 export * from "./validators/geo-check.js";
+
+// myrmidon(1.7 WAKE-9, OPE-9501): session-per-task isolation and reviewer containment contracts.
+export * from "./myrmidon-task-session-and-reviewer-isolation.js";

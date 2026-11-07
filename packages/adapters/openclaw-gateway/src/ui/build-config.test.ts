@@ -44,6 +44,22 @@ describe("buildOpenClawGatewayConfig", () => {
     expect(config.waitTimeoutMs).toBe(9000);
   });
 
+  it("keeps explicit client identity separate from the agent identity", () => {
+    const config = buildOpenClawGatewayConfig({
+      ...baseValues(),
+      agentId: "agent-123",
+      clientId: "gateway-client",
+      clientMode: "backend",
+      clientVersion: "1.6.6",
+    });
+    expect(config).toMatchObject({
+      agentId: "agent-123",
+      clientId: "gateway-client",
+      clientMode: "backend",
+      clientVersion: "1.6.6",
+    });
+  });
+
   it("applies the documented identity defaults when unset", () => {
     const config = buildOpenClawGatewayConfig(baseValues());
     expect(config.sessionKeyStrategy).toBe("issue");

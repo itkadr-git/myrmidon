@@ -68,7 +68,14 @@ describe("HermesGatewayConfigFields", () => {
     expect(text).toContain("Session key strategy");
     expect(text).toContain("Timeout seconds");
     expect(text).toContain("Event reconnect ms");
+    expect(text).toContain("Run create timeout");
+    expect(text).toContain("Runtime MCP URL rewrite");
+    expect(text).toContain("Runtime MCP internal URL base");
+    expect(text).toContain("Central session history");
+    expect(text).toContain("Keep active runs alive");
+    expect(text).toContain("Log raw redacted gateway events");
     expect(text).toContain("Dangerously allow remote HTTP");
+    expect(text).toContain("Poll interval");
     expect(text).toContain("Extra headers");
     expect(text).toContain("Instructions");
 
@@ -80,5 +87,14 @@ describe("HermesGatewayConfigFields", () => {
     expect(apiKeyInput).toBeTruthy();
 
     expect(result.container.querySelector('button[aria-label="Show API key"]')).toBeTruthy();
+  });
+
+  it("shows configured central history without offering a plain-text credential field", () => {
+    const result = renderFields({ config: { centralHistory: "1", centralHistoryUrl: "https://hindsight.example", centralHistoryBankId: "bank-a" } });
+    roots.push(result.root);
+    expect(result.container.textContent).toContain("Hindsight URL");
+    expect(result.container.textContent).toContain("Hindsight bank ID");
+    expect(result.container.textContent).not.toContain("Central history API key");
+    expect(result.container.querySelector('input[value="https://hindsight.example"]')).toBeTruthy();
   });
 });

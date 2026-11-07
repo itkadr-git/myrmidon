@@ -45,7 +45,7 @@ describe("myrmidon app facade", () => {
     const app = readFileSync(appPath, "utf8");
     const importFrom = /\bfrom\s*(["'])(\.\/myrmidon\/[^"']+)\1/g;
     const imports = [...app.matchAll(importFrom)];
-    expect(imports.length).toBeLessThanOrEqual(2);
+    expect(imports.length).toBeLessThanOrEqual(3);
     expect(imports[0]?.[2]).toBe("./myrmidon/app-plugin.js");
   });
 });

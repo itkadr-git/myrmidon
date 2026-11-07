@@ -22,7 +22,7 @@ import {
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 function sameJsonValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -214,6 +214,10 @@ export function instanceSettingsRoutes(
             code: "execution_mode_platform_managed",
           });
         }
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body, "sharedMount")) {
+        // A board owner with other settings privileges cannot expose host paths.
+        assertInstanceAdmin(req);
       }
       const hidden = getHiddenSettings();
       await assertNoHiddenSettingChanges(

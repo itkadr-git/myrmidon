@@ -317,6 +317,7 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 		Bots:             []config.Bot{{BotKey: m.BotKey, MaxMemoryMB: 2048, MaxCPUs: 4, MaxPids: 2048}},
 		Limits:           lim,
 		StatsFile:        filepath.Join(dir, "stats.json"),
+		PlatformLimits:   &config.PlatformLimits{},
 	}
 	r := &rig{
 		t: t, dir: dir, d: d, m: m, cfg: cfg, log: &syncBuf{}, sock: cfg.Listen,
@@ -350,12 +351,20 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 	})
 
 	gopt := gate.Options{
-		Cfg: cfg, ConfigHash: "test", Version: "test", Log: r.log,
+		ConfigPath: filepath.Join(dir, "config.json"),
+		Cfg:        cfg, ConfigHash: "test", Version: "test", Log: r.log,
 		Cred: r.credFn, Lstat: r.lstat, Disk: o.disk, DiskHost: o.diskHost, Oom: o.oom,
 		DisableOomLoop: !o.enableOomLoop,
 	}
 	if r.proc != nil {
 		gopt.Proc = r.proc
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(gopt.ConfigPath, data, 0600); err != nil {
+		t.Fatalf("write config file: %v", err)
 	}
 	g, err := gate.New(gopt)
 	if err != nil {

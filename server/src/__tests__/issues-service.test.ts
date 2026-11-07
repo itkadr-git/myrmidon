@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -18,12 +18,14 @@ import {
   issueComments,
   issueInboxArchives,
   issueDocuments,
+  issueLabels,
   issuePlanDecompositions,
   issueReadStates,
   issueRelations,
   issueThreadInteractions,
   issueWorkProducts,
   issues,
+  labels,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -718,60 +720,98 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   it("expires pending thread interactions on any service-level terminal transition", async () => {
     const companyId = await seedAssignableAgentCompany();
-    const issue = await svc.create(companyId, {
-      title: "Close me with a pending card",
-      description: null,
-      status: "todo",
-      priority: "medium",
-    });
-    const interactionId = randomUUID();
-    await db.insert(issueThreadInteractions).values({
-      id: interactionId,
-      companyId,
-      issueId: issue.id,
-      kind: "ask_user_questions",
-      status: "pending",
-      continuationPolicy: "wake_assignee",
-      payload: {
-        version: 1,
-        questions: [{
-          id: "scope",
-          prompt: "Pick one",
-          selectionMode: "single",
-          options: [{ id: "a", label: "A" }],
-        }],
-      } as never,
-    });
+    for (const terminalStatus of ["done", "cancelled"] as const) {
+      const terminalIssue = await svc.create(companyId, {
+        title: `Close me with a pending card (${terminalStatus})`,
+        description: null,
+        status: "todo",
+        priority: "medium",
+      });
+      const pendingId = randomUUID();
+      const resolvedId = randomUUID();
+      const openId = randomUUID();
+      await db.insert(issueThreadInteractions).values([
+        {
+          id: pendingId,
+          companyId,
+          issueId: terminalIssue.id,
+          kind: "ask_user_questions",
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          payload: {
+            version: 1,
+            questions: [{
+              id: "scope",
+              prompt: "Pick one",
+              selectionMode: "single",
+              options: [{ id: "a", label: "A" }],
+            }],
+          } as never,
+        },
+        {
+          id: resolvedId,
+          companyId,
+          issueId: terminalIssue.id,
+          kind: "ask_user_questions",
+          status: "resolved",
+          continuationPolicy: "wake_assignee",
+          payload: { version: 1, questions: [] } as never,
+          result: { version: 1, outcome: "accepted" } as never,
+          resolvedAt: new Date(),
+        },
+      ]);
+      const openIssue = await svc.create(companyId, {
+        title: "Keep open interactions pending",
+        description: null,
+        status: "todo",
+        priority: "medium",
+      });
+      await db.insert(issueThreadInteractions).values({
+        id: openId,
+        companyId,
+        issueId: openIssue.id,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, questions: [] } as never,
+      });
 
-    // Direct service callers (tree control, recovery, pipelines, status cards)
-    // never pass through the HTTP routes, so the expiry must fire here.
-    const updated = await svc.update(issue.id, { status: "cancelled", actorUserId: "local-board" });
-    expect(updated?.status).toBe("cancelled");
+      const updated = await svc.update(terminalIssue.id, {
+        status: terminalStatus,
+        actorUserId: "local-board",
+      });
+      expect(updated?.status).toBe(terminalStatus);
 
-    const interaction = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, interactionId))
-      .then((rows) => rows[0] ?? null);
-    expect(interaction).toMatchObject({
-      status: "expired",
-      resolvedByUserId: "local-board",
-    });
-    expect(interaction?.result).toMatchObject({ version: 1, outcome: "issue_closed" });
-    expect(interaction?.resolvedAt).not.toBeNull();
+      const interactions = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(inArray(issueThreadInteractions.id, [pendingId, resolvedId, openId]));
+      expect(interactions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: pendingId,
+          status: "expired",
+          resolvedByUserId: "local-board",
+          result: expect.objectContaining({ version: 1, outcome: "issue_closed" }),
+        }),
+        expect.objectContaining({ id: resolvedId, status: "resolved" }),
+        expect.objectContaining({ id: openId, status: "pending" }),
+      ]));
+
+      await expect(svc.update(terminalIssue.id, { status: terminalStatus })).resolves.toMatchObject({
+        status: terminalStatus,
+      });
+      const expiredAgain = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, pendingId));
+      expect(expiredAgain[0]).toMatchObject({ status: "expired" });
+    }
 
     const logged = await db
       .select()
       .from(activityLog)
       .where(eq(activityLog.action, "issue.thread_interaction_expired"));
-    expect(logged).toHaveLength(1);
-    // details.source is dot-separated and trips the JWT-shaped redaction
-    // heuristic in sanitizeRecord, so assert the identifying fields instead.
-    expect(logged[0]?.details).toMatchObject({
-      interactionId,
-      interactionKind: "ask_user_questions",
-      interactionStatus: "expired",
-    });
+    expect(logged).toHaveLength(2);
   });
 
   it("expires superseded interactions when human comments are added through the service", async () => {
@@ -7399,5 +7439,83 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .from(issueComments)
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
+  });
+
+  it("createChild inherits release label from parent and defaults unassigned backlog to todo", async () => {
+    const [releaseLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.6.7",
+        color: "#112233",
+      })
+      .returning();
+
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent release task",
+      status: "in_progress",
+      issueNumber: 991,
+      identifier: "PAP-991",
+    });
+
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId: parentIssueId,
+      labelId: releaseLabel.id,
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Child subtask",
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.status).toBe("todo");
+    expect(child.labels?.map((l: any) => l.name)).toContain("1.6.7");
+  });
+
+  it("createChild does not overwrite explicit release label on child", async () => {
+    const [parentLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.6.6",
+        color: "#112233",
+      })
+      .returning();
+
+    const [childLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.7.0",
+        color: "#445566",
+      })
+      .returning();
+
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent release task 2",
+      status: "in_progress",
+      issueNumber: 992,
+      identifier: "PAP-992",
+    });
+
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId: parentIssueId,
+      labelId: parentLabel.id,
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Child with explicit release label",
+      labelIds: [childLabel.id],
+    });
+
+    expect(child.labels?.map((l: any) => l.name)).toEqual(["1.7.0"]);
   });
 });

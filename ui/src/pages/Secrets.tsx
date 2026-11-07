@@ -2348,6 +2348,32 @@ export function Secrets() {
                   <MetaChip>{providerLabel(providers, selectedSecret.provider)}</MetaChip>
                   <MetaChip>v{selectedSecret.latestVersion}</MetaChip>
                 </div>
+                {(() => {
+                  const patExpires = (selectedSecret.providerMetadata as Record<string, any> | undefined)?.githubPatExpiresAt;
+                  if (!patExpires) return null;
+                  const expDate = new Date(patExpires);
+                  const daysLeft = Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                  const isExpiringSoon = daysLeft <= 7;
+                  return (
+                    <div
+                      className={cn(
+                        "flex items-center gap-2 rounded-md border p-2 text-xs",
+                        isExpiringSoon
+                          ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                          : "border-border bg-muted/20 text-muted-foreground",
+                      )}
+                    >
+                      <AlertTriangle
+                        className={cn("h-4 w-4 shrink-0", isExpiringSoon ? "text-amber-500" : "text-muted-foreground")}
+                      />
+                      <span>
+                        {isExpiringSoon
+                          ? `Warning: GitHub PAT expires in ${daysLeft <= 0 ? "less than a day" : `${daysLeft} days`} (${expDate.toISOString().slice(0, 10)})`
+                          : `GitHub PAT expires on ${expDate.toISOString().slice(0, 10)}`}
+                      </span>
+                    </div>
+                  );
+                })()}
               </SheetHeader>
               <div className="flex items-center gap-2 px-4 pb-2">
                 <Button
@@ -4826,28 +4852,43 @@ export function SecretUsageTab({ loading, bindings }: { loading: boolean; bindin
           >
             <div className="flex items-center justify-between gap-2">
               <span className="flex items-center gap-1.5">
-                <span className="font-medium capitalize">{binding.target.type}</span>
+                <span className="font-medium capitalize">
+                  {binding.target.type === "github_actions" ? "GitHub Actions CI" : binding.target.type}
+                </span>
                 <Badge
                   variant="outline"
                   className={cn(
                     "h-5 px-1.5 text-(length:--text-nano) font-normal",
-                    deliveryMode === "api"
-                      ? "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300"
-                      : deliveryMode === "env"
-                        ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-                        : null,
+                    binding.target.type === "github_actions"
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                      : deliveryMode === "api"
+                        ? "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                        : deliveryMode === "env"
+                          ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                          : null,
                   )}
                 >
-                  {deliveryModeLabel(deliveryMode)}
+                  {binding.target.type === "github_actions" ? "CI Secret" : deliveryModeLabel(deliveryMode)}
                 </Badge>
               </span>
               <span className="font-mono text-muted-foreground">v{binding.versionSelector}</span>
             </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-2">
               {binding.target.href ? (
-                <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
-                  {binding.target.label}
-                </Link>
+                binding.target.href.startsWith("http") ? (
+                  <a
+                    href={binding.target.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate font-medium text-primary hover:underline"
+                  >
+                    {binding.target.label}
+                  </a>
+                ) : (
+                  <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
+                    {binding.target.label}
+                  </Link>
+                )
               ) : (
                 <span className="truncate font-medium">{binding.target.label}</span>
               )}

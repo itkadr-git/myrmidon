@@ -40,6 +40,20 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default.",
       },
       {
+        // myrmidon(WAKE-HISTORY): how much earlier task history one wake carries.
+        key: "wakeHistory",
+        label: "Wake history",
+        type: "select",
+        default: "auto",
+        options: [
+          { value: "auto", label: "Auto (summary for run/none sessions, recent otherwise)" },
+          { value: "summary", label: "Summary only" },
+          { value: "recent", label: "Recent messages" },
+          { value: "full", label: "Full (bounded by the server history limit)" },
+        ],
+        hint: "Summary: the wake carries the previous run, its status and the completed-work summary, no earlier messages. Recent: the newest 8 messages once, each cut to 1000 characters. Auto picks summary when the session key strategy is run or none.",
+      },
+      {
         key: "timeoutSec",
         label: "Timeout seconds",
         type: "number",

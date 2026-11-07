@@ -29,6 +29,8 @@ import { issueService } from "../services/issues.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
+import { readGitHubPatExpiration } from "../services/github-pat-expiration.js";
+import { syncSecretToGitHubActions } from "../services/github-actions-secrets.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 
 type SecretRoutesDeps = {
@@ -979,6 +981,14 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );
+    if (typeof req.body.value === "string" && req.body.value.startsWith("github_pat_")) {
+      const expiresAt = await readGitHubPatExpiration(req.body.value).catch(() => null);
+      if (expiresAt) {
+        await svc.update(created.id, {
+          providerMetadata: { ...(created.providerMetadata ?? {}), githubPatExpiresAt: expiresAt },
+        });
+      }
+    }
 
     await logActivity(db, {
       companyId,
@@ -1090,6 +1100,26 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );
+    if (typeof req.body.value === "string") {
+      if (req.body.value.startsWith("github_pat_")) {
+        const expiresAt = await readGitHubPatExpiration(req.body.value).catch(() => null);
+        if (expiresAt) {
+          await svc.update(id, {
+            providerMetadata: { ...(rotated.providerMetadata ?? {}), githubPatExpiresAt: expiresAt },
+          });
+        }
+      }
+
+      const bindings = await svc.listBindings(rotated.companyId, rotated.id);
+      const ghBindings = bindings.filter((b) => b.targetType === "github_actions");
+      for (const b of ghBindings) {
+        await syncSecretToGitHubActions({
+          repo: b.targetId,
+          secretName: b.configPath,
+          secretValue: req.body.value,
+        }).catch(() => null);
+      }
+    }
 
     await logActivity(db, {
       companyId: rotated.companyId,

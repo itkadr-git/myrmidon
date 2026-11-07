@@ -723,6 +723,7 @@ export function CodexLocalConfigFields({
         mode={mode}
         adapterType={adapterType}
         models={models}
+        managedSandboxOnly={managedSandboxOnly}
       />
     </>
   ));

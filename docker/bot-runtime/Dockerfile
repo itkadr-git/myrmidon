@@ -266,11 +266,23 @@ RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/run-skills-test /opt/hermes-src/.
 # prompt instead of piling up as user rows, against a real SessionDB.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/stranded_run_turn.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 16-context-economy.patch (input-token measures A and B):
-# every wake message but the newest and every stale heavy tool result become short notes in the
-# per-call request copy, read_stale_tool_result returns the original for a note's ref, and each
-# switch (HERMES_KEEP_STALE_WAKES / HERMES_KEEP_STALE_TOOL_RESULTS) gives the old request back byte
-# for byte. Runs against the same synced venv and patched tree as the checks above.
+# both rewrite earlier rows of the request and so break the provider's prompt cache; they are OFF by
+# default (request byte for byte unchanged, reader not in the tool schema) and, switched on, turn every
+# wake message but the newest and every stale heavy tool result into short notes in the per-call
+# request copy (skill_view and other instruction loads never), read_stale_tool_result returns the
+# original for a note's ref, and the wake detection matches the adapter's current identity head.
+# Runs against the same synced venv and patched tree as the checks above.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/context_economy.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 25-tool-result-head-tail.patch: a new tool result over 16000
+# characters is stored and sent as its first 8000 and last 4000 characters plus a marker that names the
+# spill file and the omitted range; read_file stays pinned, skill_view is exempt, the settings come from
+# config.yaml.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/tool_result_head_tail.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 26-compaction-summary-cap.patch and 27-compaction-keep-prefix.patch:
+# the summary is asked for and held to 8000 characters, a summary that stopped on the output limit is
+# kept instead of failing the compression, wake packages are not quoted into it, and a compaction
+# keeps the system prompt and tool schemas (the cached prefix) as they are.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_cap.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 17-disabled-tools-by-name.patch (input-token measure D):
 # agent.disabled_tools removes single tools from the model's schema, and leaves it alone when unset.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/disabled_tools.py /opt/hermes-src
@@ -285,6 +297,10 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # the X-Paperclip-Run-Id header's UUID does, and a run's child env sees exactly its own
 # board run id.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_id_context_scope.py /opt/hermes-src
+# myrmidon(OPE-10858): behaviour regression for 24-max-tokens-recovery.patch:
+# Hermes custom OpenAI-compatible provider forwards configured max_tokens, resets
+# length_continue_retries after successful tool step, and boosts output tokens on retry.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/max_tokens_recovery.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).

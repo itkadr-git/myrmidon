@@ -839,6 +839,9 @@ export interface CreateConfigValues {
   // openclaw_gateway adapter fields
   authToken?: string;
   agentId?: string;
+  clientId?: string;
+  clientMode?: string;
+  clientVersion?: string;
   sessionKeyStrategy?: string;
   sessionKey?: string;
   timeoutSec?: number;

@@ -41,6 +41,8 @@ export interface DocumentParserClientOptions {
   readonly pollIntervalMs?: number;
   /** How long `parseDocument` waits for a job before it reports a retryable timeout. */
   readonly pollTimeoutMs?: number;
+  /** Optional timeout for the full parser job when no dedicated poll timeout is set. */
+  readonly parserTimeoutMs?: number;
   readonly retry?: RetryPolicy;
   readonly fetchImpl?: typeof fetch;
   readonly sleep?: (milliseconds: number) => Promise<void>;
@@ -62,9 +64,9 @@ export function createDocumentParserClient(options: DocumentParserClientOptions)
   if (!/^https?:\/\//.test(baseUrl)) {
     throw new RangeError("document parser baseUrl must be an absolute http(s) URL");
   }
-  const timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_PARSER_TIMEOUT_MS, "timeoutMs");
+  const timeoutMs = positiveInteger(options.timeoutMs ?? options.parserTimeoutMs ?? DEFAULT_PARSER_TIMEOUT_MS, "timeoutMs");
   const pollIntervalMs = positiveInteger(options.pollIntervalMs ?? DEFAULT_PARSER_POLL_INTERVAL_MS, "pollIntervalMs");
-  const pollTimeoutMs = positiveInteger(options.pollTimeoutMs ?? DEFAULT_PARSER_POLL_TIMEOUT_MS, "pollTimeoutMs");
+  const pollTimeoutMs = positiveInteger(options.pollTimeoutMs ?? options.parserTimeoutMs ?? DEFAULT_PARSER_POLL_TIMEOUT_MS, "pollTimeoutMs");
   const retry = options.retry ?? DEFAULT_RETRY_POLICY;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const retryContext: RetryContext = {
