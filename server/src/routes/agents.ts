@@ -108,6 +108,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import type { AgentCasteDirectoryPort } from "../services/agents.js";
+import { createAgentsModule, type AgentsModule } from "../modules/agents/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { CHAT_INBOUND_WAKE_KEY_PREFIX } from "../myrmidon/chat-holds/chat-backed.js"; // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
@@ -546,6 +547,7 @@ export function agentRoutes(
      * then a no-op, which keeps the pre-directory behavior exactly.
      */
     casteDirectory?: AgentCasteDirectoryPort;
+    agentsModule?: AgentsModule;
   } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -589,8 +591,14 @@ export function agentRoutes(
   ] as const;
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
+  const agentsMod = options.agentsModule ?? createAgentsModule(db);
+  const agentQuotaMiddleware = agentsMod.quotaMiddleware();
+
   const router = Router();
-  const svc = agentService(db, { castes: options.casteDirectory });
+  const svc = agentService(db, {
+    castes: options.casteDirectory,
+    agentsModule: agentsMod,
+  });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -4937,9 +4945,13 @@ function getActorIdentityPart(req: Request): string {
     res.status(outcome.status).json(outcome.body);
   });
 
-  router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+  router.post(
+    "/companies/:companyId/agents",
+    agentQuotaMiddleware,
+    validate(createAgentSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanCreateAgentsForCompany(req, companyId);
 
     const company = await db
       .select()

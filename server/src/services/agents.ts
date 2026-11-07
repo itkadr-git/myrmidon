@@ -48,7 +48,12 @@ import {
   mergeCompanyBaseSkillsIntoAgentConfig,
 } from "./company-base-skill-keys.js";
 import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
-import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
+import { conflict, notFound, unprocessable, badRequest, forbidden } from "../errors.js";
+import {
+  createAgentsModule,
+  AgentQuotaExceededError,
+  type AgentsModule,
+} from "../modules/agents/index.js";
 import {
   collectSecretRefs,
   collectUserSecretRefs,
@@ -374,8 +379,15 @@ export function deduplicateAgentName(
   return `${candidateName} ${Date.now()}`;
 }
 
-export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort }) {
+export function agentService(
+  db: Db,
+  ports?: {
+    castes?: AgentCasteDirectoryPort;
+    agentsModule?: AgentsModule;
+  },
+) {
   const secretsSvc = secretService(db);
+  const agentsMod = ports?.agentsModule ?? createAgentsModule(db);
 
   // myrmidon(1.6.1 CUSTOM-CASTES B): refuse a role key that is not a caste of
   // this company. 400 with a message that names the key and where it must be
@@ -1107,6 +1119,16 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       await assertRoleIsCompanyCaste(companyId, data.role);
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
+      }
+
+      // myrmidon(1.7 TIER-QUOTA-CHECK OPE-12092): enforce agent quota per company subscription tier
+      try {
+        await agentsMod.assertCompanyAgentQuota(companyId);
+      } catch (err: unknown) {
+        if (err instanceof AgentQuotaExceededError) {
+          throw forbidden(err.message, { code: "quota_exceeded" });
+        }
+        throw err;
       }
 
       const existingAgents = await db
