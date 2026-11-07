@@ -306,10 +306,15 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # prompt_cache_key (the header's own value, bounded to 64 characters), a pinned key and every endpoint
 # without the option are untouched, and api.openai.com keeps its content-addressed key.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/session_affinity_prompt_cache_key.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 29-gateway-outage-keeps-primary.patch: a lost connection to
+# the model gateway is retried against the primary for the outage budget instead of moving the run to a
+# fallback, model/provider errors still move it at once, and a run on a fallback tries the primary again
+# every few model calls.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/gateway_outage_fallback.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills agent.session_persistence agent.context_economy tools.stale_result_tool agent.turn_request_assembly model_tools
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills agent.session_persistence agent.context_economy tools.stale_result_tool agent.turn_request_assembly model_tools agent.gateway_outage agent.turn_recovery agent.turn_api_error agent.turn_retry_state agent.conversation_loop
 # myrmidon(OPE-10755): statically verify no undefined names (pyflakes F821 / NameError
 # on start) in any module touched by patches/*.patch (#1381 / rc.31 incident where
 # missing SessionStore in gateway/run_startup.py passed top-level import checks but
