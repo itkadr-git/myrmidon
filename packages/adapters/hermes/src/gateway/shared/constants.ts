@@ -58,3 +58,23 @@ export function resolveCreateRequestTimeoutMs(
 // (this grace, plus the stop path's STOP_GRACE_MS) stays well under the
 // platform's 60s waitForAdapterStop deadline.
 export const CREATE_CANCEL_GRACE_MS = 5_000;
+
+// myrmidon(OPE-11677): when waking containers stopped by idle-stop, initial DNS
+// registration or gateway TCP listen can lag by a few seconds, producing
+// pre-send EAI_AGAIN or ECONNREFUSED connect errors. Retry these until the
+// gateway becomes ready or the readiness budget expires.
+export const GATEWAY_CONNECT_RETRY_INTERVAL_MS = 500;
+export const DEFAULT_GATEWAY_READY_TIMEOUT_MS = 15_000;
+export const GATEWAY_READY_TIMEOUT_ENV = "MYRMIDON_HERMES_GATEWAY_READY_TIMEOUT_MS";
+
+export function resolveGatewayReadyTimeoutMs(
+  configValue: unknown,
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const parsed = typeof configValue === "number" ? configValue : Number(configValue);
+  if (Number.isFinite(parsed) && parsed >= 0) return Math.round(parsed);
+  const envVal = Number(env[GATEWAY_READY_TIMEOUT_ENV]);
+  if (Number.isFinite(envVal) && envVal >= 0) return Math.round(envVal);
+  return DEFAULT_GATEWAY_READY_TIMEOUT_MS;
+}
+
