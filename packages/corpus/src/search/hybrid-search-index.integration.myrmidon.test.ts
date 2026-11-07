@@ -483,6 +483,42 @@ suite("hybrid search over postgres with the vector extension", () => {
     for (const hit of hits) expect(hit.chunk.datasetId).toBe(SMALL_DATASET_ID);
   });
 
+  it("ranks a company of up to exactSetMaxChunks chunks exactly when the search names no dataset", async () => {
+    // The stand holds about 2 000 chunks: below this threshold the company is small.
+    const smallCompany = createPostgresSearchIndex({
+      sql: executor,
+      schema,
+      ftsLanguage: FTS_LANGUAGE,
+      exactSetMaxChunks: 5_000,
+    });
+    recorded.length = 0;
+    const source = chunks[1203];
+    const hits = await smallCompany.search({ companyId: COMPANY_ID, text: NO_MATCH_TEXT, embedding: source.vector, limit: 5 });
+
+    expect(recorded.filter(isExactStatement)).toHaveLength(1);
+    expect(recorded.filter(isIndexStatement)).toHaveLength(0);
+    expect(hits[0]?.chunk.id).toBe(source.id);
+    expect(hits.map((hit) => hit.chunk.id)).toEqual(exactOrder([...chunks, ...smallChunks], source.vector).slice(0, 5));
+  });
+
+  it("finds the chunk a question names by a number the OR of significant words drops", async () => {
+    // "97" is shorter than the 4 characters of a significant word, and every chunk holds `document` and
+    // `number`: only the question taken as a whole, every word mandatory, singles the chunk out.
+    const hits = await index.search({ companyId: COMPANY_ID, datasetId: DATASET_ID, text: "the document number 97", limit: 5 });
+
+    expect(hits[0]?.chunk.id).toBe(chunkId(97));
+  });
+
+  it("keeps what the question as a whole finds, next to the OR of its words", async () => {
+    // The text of a chunk, word for word, as the hybrid recall test asks it: the chunk is in the full-text
+    // leg at rank 1, whatever the many chunks that share all its words but the number.
+    for (const position of [97, 391, 1009, 1500]) {
+      const hits = await index.search({ companyId: COMPANY_ID, datasetId: DATASET_ID, text: chunkContent(position), limit: 5 });
+      expect(hits[0]?.fusion.fullTextRank).toBe(1);
+      expect(hits[0]?.chunk.id).toBe(chunkId(position));
+    }
+  });
+
   it("with exactSetMaxChunks 0 sends the small dataset through the iterative scan, and never ranks exactly", async () => {
     const indexOnly = createPostgresSearchIndex({
       sql: executor,

@@ -54,19 +54,26 @@ One `search()` call runs these statements inside one transaction:
      milliseconds for a small dataset, while the index scan, cut by company only, has to walk far to
      find a few chunks of it. The size comes from a bounded probe (`count(*)` with `limit
      exactSetMaxChunks + 1`);
-   - a search without a dataset goes through the iterative scan with no probe.
+   - a search without a dataset probes the company the same way: a company of at most
+     `exactSetMaxChunks` embedded chunks is ranked exactly, a larger one goes through the iterative
+     scan.
 
    On pgvector before 0.8 (no `hnsw.iterative_scan`) the ranking is the plain statement alone, with no
    probe. The version is read from `pg_extension` and not tried with a `SET`, because a refused `SET`
    aborts the transaction and the product's driver rethrows it at the end of the transaction even when
    the caller caught it.
-3. Full-text ranking: `ts_rank` over the same rows with `to_tsquery($5, $1)`, where `$1` is a
-   bounded OR of the question's significant words (`toFullTextQuery`: tokens of 4+ characters,
-   stop words dropped, at most 8 terms, joined with ` | `). `plainto_tsquery` made every word
-   mandatory, so a natural-language question matched nothing on the RU corpus: in the 07.11
-   golden bench the full-text leg returned 0 rows for 98.6% of the questions and the hybrid
-   search degraded to vector-only. A query text of at most `ilikeMaxLength` characters (16 by
-   default) also gets an `ilike '%…%'` trigram match;
+3. Full-text ranking: `ts_rank` over the same rows with the tsquery
+   `plainto_tsquery($5, $1) || to_tsquery($5, $or)`, where `$1` is the question as written and `$or`
+   is a bounded OR of its significant words (`toFullTextQuery`: tokens of 4+ characters, stop words
+   dropped, at most 8 terms, joined with ` | `; empty means the question alone). `plainto_tsquery`
+   alone made every word mandatory, so a natural-language question matched nothing on the RU corpus:
+   in the 07.11 golden bench the full-text leg returned 0 rows for 98.6% of the questions and the
+   hybrid search degraded to vector-only. The OR alone drops numbers and short words, so a question
+   that names a chunk by its number or code (`the document number 97`) matched every chunk that
+   shares the other words and lost the chunk; the question as a whole, every word mandatory, still
+   finds it, and `ts_rank`, which sums over the distinct terms a chunk holds, puts it first. The
+   OR gives what the whole question does not find. A query text of at most `ilikeMaxLength`
+   characters (16 by default) also gets an `ilike '%…%'` trigram match;
    `%` and `_` in the query text are escaped before they reach the pattern. A longer text is matched
    by the `tsvector` alone: the trigram index reads one posting list per trigram of the pattern, so
    the cost of the match grows with the length of the text (a 40-character question read from 150 ms
