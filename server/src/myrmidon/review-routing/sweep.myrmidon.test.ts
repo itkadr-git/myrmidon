@@ -18,7 +18,7 @@ import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRouti
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
-import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
+import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { BoardMergeClient } from "./github-board-merge.js";
 import type { BoardMergeFacts, PullRequestHeadState } from "./pr-policy.js";
@@ -68,7 +68,7 @@ interface Fixture {
   history: Map<string, RoutingHistory>;
   prWorkProducts?: Map<string, { repository: string; number: number }>;
   activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
-  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null }>;
+  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null; lastEscalationAt?: Date | null }>;
   reviewerActiveRuns?: Map<string, number>;
   escalations: Array<Record<string, unknown>>;
   agentModels?: Map<string, string | null>;
@@ -109,7 +109,13 @@ function makeStore(fx: Fixture) {
     reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
       return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
     },
-    recordReviewWakeEscalation: async (entry: Record<string, unknown>) => { fx.escalations?.push(entry); },
+    // Like the Postgres store: a persisted escalation is what reviewWakeState reports as lastEscalationAt.
+    recordReviewWakeEscalation: async (entry: Record<string, unknown>) => {
+      fx.escalations?.push(entry);
+      const issueId = String(entry.issueId);
+      const wake = fx.wakeStates?.get(issueId);
+      if (wake) fx.wakeStates?.set(issueId, { ...wake, lastEscalationAt: entry.at as Date });
+    },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
       const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
       fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
@@ -339,6 +345,99 @@ describe("review wake liveness", () => {
     expect((await exhausted.sweep.sweep(NOW, { force: true })).woken).toBe(0);
     expect(exhausted.wakes).toHaveLength(0);
     expect(exhausted.fixture.escalations).toEqual([expect.objectContaining({ companyId: COMPANY, issueId: "1", reviewerAgentId: REV_A, attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+  });
+
+  // myrmidon(OPE-11947): an exhausted wake series is escalated once and re-armed after a pause.
+  describe("exhausted wake series", () => {
+    const exhaustedState = (overrides: { lastWakeAt: Date; lastEscalationAt?: Date | null }) => new Map([
+      ["1", { activeRun: false, pendingWake: false, attempts: REVIEW_WAKE_MAX_ATTEMPTS, ...overrides }],
+    ]);
+
+    it("writes one escalation for the whole series, however many passes run", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({ lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000) }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      let woken = 0;
+      for (let pass = 0; pass < 20; pass += 1) {
+        woken += (await t.sweep.sweep(new Date(NOW.getTime() + pass * 60_000), { force: true })).woken;
+      }
+      expect(woken).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", reviewerAgentId: REV_A, attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("neither wakes nor escalates again while an escalation newer than the last wake exists and the pause is short", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 30 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result.woken).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect(t.fixture.escalations).toHaveLength(0);
+    });
+
+    it("escalates a series again when its escalation predates the last wake", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 9 * 60 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true })).woken).toBe(0);
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("re-arms after the pause: the next wake is attempt 1 and the earlier escalation stays", async () => {
+      const escalatedAt = new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 30 * 60_000);
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS),
+        lastEscalationAt: escalatedAt,
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result.woken).toBe(1);
+      expect(t.wakes).toHaveLength(1);
+      expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
+      expect(t.fixture.escalations).toHaveLength(0);
+      expect(t.fixture.wakeStates!.get("1")).toMatchObject({ attempts: 1, lastWakeAt: NOW, lastEscalationAt: escalatedAt });
+    });
+
+    it("counts the backoff of a re-armed series from its start", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - 7 * 60 * 60_000),
+        lastEscalationAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(1);
+      // The dispatch of the first attempt of the new series is over without a run: only the ten-minute step applies.
+      t.fixture.wakeStates!.set("1", { ...t.fixture.wakeStates!.get("1")!, pendingWake: false });
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + REVIEW_WAKE_RETRY_BACKOFF_MS - 60_000), { force: true })).woken).toBe(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + REVIEW_WAKE_RETRY_BACKOFF_MS), { force: true })).woken).toBe(1);
+      expect(t.wakes.map((wake) => wake.retryAttempt)).toEqual([1, 2]);
+      expect(t.fixture.escalations).toHaveLength(0);
+    });
+
+    it("records the exhausted series once before re-arming when no escalation was persisted", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({ lastWakeAt: new Date(NOW.getTime() - 7 * 60 * 60_000) }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(1);
+      expect(t.wakes[0]).toMatchObject({ issueId: "1", retryAttempt: 1 });
+      expect(t.fixture.escalations).toEqual([expect.objectContaining({ issueId: "1", attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+    });
+
+    it("stays exhausted until the pause is full", async () => {
+      const t = setup({}, { wakeStates: exhaustedState({
+        lastWakeAt: new Date(NOW.getTime() - REVIEW_WAKE_REARM_AFTER_MS + 1),
+        lastEscalationAt: new Date(NOW.getTime() - 60_000),
+      }) });
+      t.fixture.rows.set("1", pending("1", REV_A));
+      expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+      expect(t.wakes).toHaveLength(0);
+      expect((await t.sweep.sweep(new Date(NOW.getTime() + 1), { force: true })).woken).toBe(1);
+      expect(t.wakes[0]).toMatchObject({ retryAttempt: 1 });
+    });
   });
   it("retries a failed dispatch after ten minutes despite a fresh issue update", async () => {
     const t = setup({}, { wakeStates: new Map([

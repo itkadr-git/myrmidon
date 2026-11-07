@@ -43,6 +43,8 @@ import { issueNeedsReviewer } from "./policy.js";
 import { OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "../review-stage-recovery/policy.js";
 
 const activeStatuses = ["queued", "running", "scheduled_retry"] as const;
+// myrmidon(OPE-11947): the escalation row is also read back (reviewWakeState) to write it once per series.
+const REVIEW_WAKE_ESCALATION_ACTION = "issue.review_routing.wake_escalation_required";
 
 export interface InReviewIssueRow extends RoutingIssue {
   companyId: string;
@@ -95,6 +97,8 @@ export interface ReviewRoutingStore {
     lastWakeAt: Date | null;
     attempts: number;
     lastCancelledRunAt?: Date | null;
+    /** Newest wake_escalation_required row of this issue/reviewer/stage, whatever the series. */
+    lastEscalationAt?: Date | null;
   }>;
   recordReviewWake(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }): Promise<void>;
   recordReviewWakeEscalation(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; attempts: number; at: Date }): Promise<void>;
@@ -604,6 +608,19 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         ))
         .orderBy(desc(activityLog.createdAt))
         .limit(1);
+      const [lastEscalation] = await db
+        .select({ requestedAt: activityLog.createdAt })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, REVIEW_WAKE_ESCALATION_ACTION),
+          sql`${activityLog.details} ->> 'reviewerAgentId' = ${reviewerAgentId}`,
+          sql`${activityLog.details} ->> 'stageId' = ${stageId}`,
+        ))
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
       const [lastCancelledRun] = await db
         .select({ finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt, createdAt: heartbeatRuns.createdAt })
         .from(heartbeatRuns)
@@ -621,13 +638,14 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         lastWakeAt: lastWake?.requestedAt ?? null,
         attempts: lastWake?.attempt ?? 0,
         lastCancelledRunAt: lastCancelledRun ? (lastCancelledRun.finishedAt ?? lastCancelledRun.updatedAt ?? lastCancelledRun.createdAt) : null,
+        lastEscalationAt: lastEscalation?.requestedAt ?? null,
       };
     },
 
     async recordReviewWakeEscalation({ companyId, issueId, reviewerAgentId, stageId, attempts, at }) {
       await db.insert(activityLog).values({
         companyId, actorType: "system", actorId: "review_routing_sweep",
-        action: "issue.review_routing.wake_escalation_required", entityType: "issue", entityId: issueId, agentId: reviewerAgentId,
+        action: REVIEW_WAKE_ESCALATION_ACTION, entityType: "issue", entityId: issueId, agentId: reviewerAgentId,
         details: { reviewerAgentId, stageId, attempts, owner: "ADM", nextAction: "inspect reviewer runtime and manually replay the review wake; preserve stage unless intentionally returned" },
         createdAt: at,
       });

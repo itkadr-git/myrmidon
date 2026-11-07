@@ -142,6 +142,28 @@ describeEmbeddedPostgres("Postgres review routing wake state", () => {
     expect((escalation?.details as Record<string, unknown>)?.owner).toBe("ADM");
     expect((escalation?.details as Record<string, unknown>)?.attempts).toBe(5);
   });
+
+  // myrmidon(OPE-11947): the sweep writes an exhausted series' escalation once, judging by the newest one stored.
+  it("reports the newest escalation of the same issue, reviewer and stage only", async () => {
+    const issueId = await makeIssue();
+    const otherIssueId = await makeIssue();
+    const otherReviewerId = randomUUID();
+    await db!.insert(agents).values({ id: otherReviewerId, companyId, name: "other reviewer", role: "reviewer", status: "idle", runtimeConfig: {} });
+    const store = createPgReviewRoutingStore(db!);
+    const at = (minutes: number) => new Date(Date.UTC(2026, 10, 7, 0, minutes, 0));
+    const escalate = (target: string, stageId: string, minutes: number, reviewerAgentId = reviewerId) =>
+      store.recordReviewWakeEscalation({ companyId, issueId: target, reviewerAgentId, stageId, attempts: 6, at: at(minutes) });
+    const state = () => store.reviewWakeState({ companyId, issueId, reviewerAgentId: reviewerId, stageId: "review" });
+
+    expect((await state()).lastEscalationAt).toBeNull();
+
+    await escalate(issueId, "review", 10);
+    await escalate(issueId, "review", 20);
+    await escalate(issueId, "other-stage", 30);
+    await escalate(issueId, "review", 40, otherReviewerId);
+    await escalate(otherIssueId, "review", 50);
+    expect((await state()).lastEscalationAt).toEqual(at(20));
+  });
 });
 
 // myrmidon(OPE-11767): the stored half of the board-side merge — which tasks
