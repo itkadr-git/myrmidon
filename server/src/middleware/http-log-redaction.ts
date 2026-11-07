@@ -34,10 +34,25 @@ export const HTTP_LOG_REDACT_PATHS = [
   // Telegram's optional webhook verification header is a reusable bearer
   // secret sent on every provider callback.
   'req.headers["x-telegram-bot-api-secret-token"]',
+  // Invite tokens or invite headers
+  'req.headers["x-invite-token"]',
+  'req.headers["x-paperclip-invite-token"]',
+  'req.headers["x-myrmidon-invite-token"]',
   // The structured failure logger adds a sanitized request-body copy under
   // `reqBody`. Keep the standard connector credential envelope covered again
   // at the final serialization boundary in case a future custom serializer
   // bypasses the recursive redactor.
   "reqBody.credentials",
+  "reqBody.password",
+  "reqBody.token",
+  "reqBody.secret",
+  "reqBody.inviteToken",
+  "reqBody.invite_token",
+  "reqParams.token",
+  "reqParams.inviteToken",
+  "reqParams.invite_token",
   "errorContext.details.credentials",
+  "errorContext.details.password",
+  "errorContext.details.token",
+  "errorContext.details.secret",
 ] as const;

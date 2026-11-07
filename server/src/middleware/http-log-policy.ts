@@ -41,6 +41,9 @@ const SECRET_SENSITIVE_HTTP_PATHS = [
   /^\/api\/chat-endpoints\/[^/]+\/setup(?:-secret)?(?:\/|$)/,
   // myrmidon(OPE-8985): carries the one-time token and the new password.
   /^\/api\/myrmidon\/users-admin-a\/password-set(?:\/|$)/,
+  // myrmidon(OPE-11891): invite creation/acceptance routes carrying tokens/credentials
+  /^\/api\/companies\/[^/]+\/invites(?:\/|$)/,
+  /^\/api\/invites\/[^/]+\/accept(?:\/|$)/,
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
