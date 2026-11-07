@@ -385,6 +385,57 @@ describe("createReviewPullRequestCiResolver", () => {
       headSha: "abc123",
     });
   });
+
+  // myrmidon(OPE-12024): a PR work product with empty url but metadata carrying
+  // repository + number must still be readable — the CI resolver falls back to
+  // the metadata fields instead of answering pull_request_reference_unreadable.
+  it("falls back to metadata.repository and metadata.number when url is empty", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{
+        ...openProduct,
+        url: "",
+        metadata: { repository: "acme/app", number: 7 },
+      }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "pending",
+      pullRequestUrl: "",
+      headSha: "abc123",
+    });
+  });
+
+  it("falls back to metadata.repo (shorthand) when url is empty", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{
+        ...openProduct,
+        url: "",
+        metadata: { repo: "acme/app", number: 7 },
+      }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "pending",
+      pullRequestUrl: "",
+      headSha: "abc123",
+    });
+  });
+
+  it("still answers pull_request_reference_unreadable when url and metadata are both empty", async () => {
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([{ ...openProduct, url: "", metadata: {} }]),
+      tokenProvider: async () => "token",
+      fetch: fakeFetch({}),
+    });
+    expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
+      state: "unknown",
+      pullRequestUrl: "",
+      headSha: null,
+      reason: "pull_request_reference_unreadable",
+    });
+  });
 });
 
 // myrmidon(OPE-11970): the names of the checks that failed on a head, for the

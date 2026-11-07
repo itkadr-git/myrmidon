@@ -190,4 +190,139 @@ describe("workProductService", () => {
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });
+
+  // myrmidon(OPE-12024): creating a pull_request work product without url or
+  // externalId must either derive them from metadata (repository/repo + number)
+  // or fail with a clear 422 — never write a silently unreadable record.
+  describe("createForIssue pull_request validation (OPE-12024)", () => {
+    function makeTx() {
+      const insertReturning = vi.fn(async () => [createWorkProductRow()]);
+      const insertValues = vi.fn(() => ({ returning: insertReturning }));
+      const txInsert = vi.fn(() => ({ values: insertValues }));
+      const tx = { insert: txInsert };
+      const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+      return { tx, transaction, txInsert, insertValues };
+    }
+
+    it("derives url and externalId from metadata.repository + metadata.number", async () => {
+      const { tx, transaction, txInsert, insertValues } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      const result = await svc.createForIssue("issue-1", "company-1", {
+        type: "pull_request",
+        provider: "github",
+        title: "PR 1",
+        status: "open",
+        reviewState: "draft",
+        isPrimary: true,
+        metadata: { repository: "acme/app", number: 7 },
+      });
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(txInsert).toHaveBeenCalledTimes(1);
+      const insertArg = insertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertArg.url).toBe("https://github.com/acme/app/pull/7");
+      expect(insertArg.externalId).toBe("acme/app#pull/7");
+      expect(result?.id).toBe("work-product-1");
+    });
+
+    it("derives url and externalId from metadata.repo (shorthand) + metadata.number", async () => {
+      const { transaction, insertValues } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", {
+        type: "pull_request",
+        provider: "github",
+        title: "PR 1",
+        status: "open",
+        reviewState: "draft",
+        isPrimary: true,
+        metadata: { repo: "acme/app", number: 7 },
+      });
+
+      const insertArg = insertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertArg.url).toBe("https://github.com/acme/app/pull/7");
+      expect(insertArg.externalId).toBe("acme/app#pull/7");
+    });
+
+    it("fills only the missing field when the other is present", async () => {
+      const { transaction, insertValues } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", {
+        type: "pull_request",
+        provider: "github",
+        title: "PR 1",
+        status: "open",
+        reviewState: "draft",
+        isPrimary: true,
+        url: "https://github.com/acme/app/pull/7",
+        metadata: { repository: "acme/app", number: 7 },
+      });
+
+      const insertArg = insertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertArg.url).toBe("https://github.com/acme/app/pull/7");
+      expect(insertArg.externalId).toBe("acme/app#pull/7");
+    });
+
+    it("throws 422 when url, externalId and usable metadata are all missing", async () => {
+      const { transaction } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await expect(
+        svc.createForIssue("issue-1", "company-1", {
+          type: "pull_request",
+          provider: "github",
+          title: "PR 1",
+          status: "open",
+          reviewState: "draft",
+          isPrimary: true,
+          metadata: {},
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("pull_request work product requires url or externalId"),
+      });
+      expect(transaction).not.toHaveBeenCalled();
+    });
+
+    it("throws 422 when metadata has repository but no number", async () => {
+      const { transaction } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await expect(
+        svc.createForIssue("issue-1", "company-1", {
+          type: "pull_request",
+          provider: "github",
+          title: "PR 1",
+          status: "open",
+          reviewState: "draft",
+          isPrimary: true,
+          metadata: { repository: "acme/app" },
+        }),
+      ).rejects.toMatchObject({ status: 422 });
+      expect(transaction).not.toHaveBeenCalled();
+    });
+
+    it("does not touch non-pull_request types", async () => {
+      const { tx, transaction, txInsert, insertValues } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", {
+        type: "preview_url",
+        provider: "github",
+        title: "Preview",
+        status: "open",
+        reviewState: "draft",
+        isPrimary: true,
+        metadata: {},
+      });
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(txInsert).toHaveBeenCalledTimes(1);
+      const insertArg = insertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertArg.url).toBeUndefined();
+      expect(insertArg.externalId).toBeUndefined();
+    });
+  });
 });
