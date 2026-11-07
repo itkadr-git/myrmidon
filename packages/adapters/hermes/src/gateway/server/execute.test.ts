@@ -1356,6 +1356,111 @@ describe("execute", () => {
     expect(result.errorMessage).toContain("host.docker.internal");
   });
 
+  it("retries EAI_AGAIN or ECONNREFUSED until gateway becomes ready", async () => {
+    const eaiCause = Object.assign(new Error("getaddrinfo EAI_AGAIN myrmidon-bot-test"), { code: "EAI_AGAIN" });
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/runs")) {
+        attempts++;
+        if (attempts < 3) {
+          throw Object.assign(new Error("fetch failed"), { cause: eaiCause });
+        }
+        return new Response(JSON.stringify({ run_id: "run-ready-1", status: "started" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://myrmidon-bot-test:8642",
+      apiKey: "secret-key",
+      dangerouslyAllowInsecureRemoteHttp: true,
+      gatewayReadyTimeoutMs: 5000,
+      timeoutSec: 5,
+    }));
+
+    expect(attempts).toBe(3);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("handles mass waking N>=5 bots concurrently recovering from EAI_AGAIN DNS delay without failures", async () => {
+    const eaiCause = Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" });
+    const botIds = ["bot-w1", "bot-w2", "bot-w3", "bot-w4", "bot-w5", "bot-w6"];
+    const attemptsPerBot = new Map<string, number>();
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const urlStr = String(input);
+      const match = urlStr.match(/http:\/\/(bot-w\d):8642/);
+      const botId = match ? match[1] : "unknown";
+
+      if (urlStr.endsWith("/v1/runs")) {
+        const count = (attemptsPerBot.get(botId) ?? 0) + 1;
+        attemptsPerBot.set(botId, count);
+        // Each bot simulates DNS resolution / TCP readiness lag for 2 attempts
+        if (count < 3) {
+          throw Object.assign(new Error("fetch failed"), { cause: eaiCause });
+        }
+        return new Response(JSON.stringify({ run_id: `run-${botId}`, status: "started" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: `done-${botId}` }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+
+    // Trigger mass concurrent execution across N=6 waking bots
+    const results = await Promise.all(
+      botIds.map((b) =>
+        execute(
+          makeCtx({
+            apiBaseUrl: `http://${b}:8642`,
+            apiKey: "secret-key",
+            dangerouslyAllowInsecureRemoteHttp: true,
+            gatewayReadyTimeoutMs: 5000,
+            timeoutSec: 5,
+          }),
+        ),
+      ),
+    );
+
+    expect(results).toHaveLength(6);
+    for (const res of results) {
+      expect(res.errorCode).toBeUndefined();
+      expect(res.exitCode).toBe(0);
+    }
+    for (const b of botIds) {
+      expect(attemptsPerBot.get(b)).toBe(3);
+    }
+  });
+
+  it("handles EAI_AGAIN DNS failures as hermes_gateway_connect_failed after retry timeout expires", async () => {
+    const cause = Object.assign(new Error("getaddrinfo EAI_AGAIN myrmidon-bot-test"), { code: "EAI_AGAIN" });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw Object.assign(new Error("fetch failed"), { cause });
+    }));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://myrmidon-bot-test:8642",
+      apiKey: "secret-key",
+      dangerouslyAllowInsecureRemoteHttp: true,
+      gatewayReadyTimeoutMs: 0,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.errorMessage).toContain("EAI_AGAIN");
+    expect(result.errorMessage).toContain("myrmidon-bot-test");
+  });
+
   it("redacts echoed auth material from HTTP error payloads", async () => {
     vi.stubGlobal(
       "fetch",
@@ -2979,6 +3084,14 @@ describe("execute — operator cancellation (G4)", () => {
         label: "ENOTFOUND",
         respond: async () => {
           throw connectError("ENOTFOUND");
+        },
+        unambiguous: true,
+        errorCode: "hermes_gateway_cancelled",
+      },
+      {
+        label: "EAI_AGAIN",
+        respond: async () => {
+          throw connectError("EAI_AGAIN");
         },
         unambiguous: true,
         errorCode: "hermes_gateway_cancelled",
