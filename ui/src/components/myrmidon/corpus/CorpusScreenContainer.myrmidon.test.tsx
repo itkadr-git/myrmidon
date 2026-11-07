@@ -22,7 +22,7 @@ const corpusApi = vi.hoisted(() => ({
   deleteDataset: vi.fn(),
   listDocuments: vi.fn(),
   uploadDocument: vi.fn(),
-  retryDocument: vi.fn(),
+  reparseDocument: vi.fn(),
   deleteDocument: vi.fn(),
   search: vi.fn(),
 }));
@@ -95,7 +95,10 @@ beforeEach(() => {
   corpusApi.listDocuments.mockResolvedValue(DOCUMENTS);
   corpusApi.putSettings.mockResolvedValue(undefined);
   corpusApi.deleteDataset.mockResolvedValue(undefined);
-  corpusApi.retryDocument.mockResolvedValue(undefined);
+  corpusApi.reparseDocument.mockResolvedValue({
+    document: { ...DOCUMENTS[1], status: "queued", error: null },
+    job: { id: "job-1" },
+  });
   corpusApi.deleteDocument.mockResolvedValue(undefined);
   corpusApi.uploadDocument.mockResolvedValue(undefined);
 });
@@ -287,32 +290,31 @@ describe("myrmidon(1.6.6 CORPUS E) corpus screen wiring", () => {
   });
 
   it("retries a failed document and updates the row to queued", async () => {
-    corpusApi.retryDocument.mockResolvedValue({
-      document: {
-        id: "doc-failed",
-        datasetId: "ds-1",
-        filename: "fail.txt",
-        mime: "text/plain",
-        byteSize: 128,
-        status: "queued",
-        chunkCount: 0,
-        errorMessage: null,
-        updatedAt: "2026-10-08T09:05:00.000Z",
-      },
-      job: { id: "job-1" },
+    const queuedRow = {
+      ...DOCUMENTS[1],
+      status: "queued",
+      error: null,
+      updatedAt: "2026-10-08T09:05:00.000Z",
+    };
+    // The reparse answer shape is the frozen 202 of the server: { document, job }.
+    // The server has already replaced the row before it answers, so the next
+    // list of the dataset reports `queued` as well.
+    corpusApi.reparseDocument.mockImplementation(async () => {
+      corpusApi.listDocuments.mockResolvedValue([DOCUMENTS[0], queuedRow]);
+      return { document: queuedRow, job: { id: "job-1" } };
     });
     await render();
     await settle();
 
-    // Verify button is present for failed document and not for ready document
+    // The reparse button belongs to a failed document only.
     expect(maybe("myrmidon-corpus-document-retry-doc-failed")).not.toBeNull();
     expect(maybe("myrmidon-corpus-document-retry-doc-ready")).toBeNull();
 
     await click("myrmidon-corpus-document-retry-doc-failed");
-    expect(corpusApi.retryDocument).toHaveBeenCalledWith("c-1", "doc-failed");
+    expect(corpusApi.reparseDocument).toHaveBeenCalledWith("c-1", "doc-failed");
     await settle();
 
-    // The row transitions to queued
+    // The row shows the answer of the reparse route: queued again.
     expect(text("myrmidon-corpus-document-status-doc-failed")).toBe("corpus.documents.status.queued");
   });
 
@@ -322,21 +324,30 @@ describe("myrmidon(1.6.6 CORPUS E) corpus screen wiring", () => {
     await settle();
 
     await click("myrmidon-corpus-document-retry-doc-failed");
-    expect(corpusApi.retryDocument).toHaveBeenCalledWith("c-1", "doc-failed");
+    expect(corpusApi.reparseDocument).toHaveBeenCalledWith("c-1", "doc-failed");
 
     await click("myrmidon-corpus-document-delete-doc-ready");
     expect(corpusApi.deleteDocument).toHaveBeenCalledWith("c-1", "doc-ready");
   });
 
-  it("surfaces retry errors (409, 422, 502) with response text", async () => {
-    corpusApi.retryDocument.mockRejectedValue(new ApiError("document is not failed", 409, { error: "document is not failed" }));
+  it("surfaces reparse errors (409, 422, 502) with the response text", async () => {
+    // The corpus routes answer errors as { error: <token>, message: <text> };
+    // the screen shows the message, which is the part an operator can act on.
+    corpusApi.reparseDocument.mockRejectedValue(
+      new ApiError("document_not_failed", 409, {
+        error: "document_not_failed",
+        message: "only a failed document can be parsed again (this one is parsing)",
+      }),
+    );
     await render();
     await settle();
 
     await click("myrmidon-corpus-document-retry-doc-failed");
     await settle();
 
-    expect(text("myrmidon-corpus-document-retry-error")).toBe("document is not failed");
+    expect(text("myrmidon-corpus-document-retry-error")).toBe(
+      "only a failed document can be parsed again (this one is parsing)",
+    );
   });
 
   it("runs the trial search over the open dataset with the stored top-k", async () => {

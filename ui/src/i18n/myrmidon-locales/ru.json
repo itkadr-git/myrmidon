@@ -400,7 +400,7 @@
     "documentsColumnUpdated": "Обновлён",
     "documentsColumnActions": "Действия",
     "retry": "Разобрать заново",
-    "retrying": "Повторяем…",
+    "retrying": "Разбираем заново…",
     "documentsDelete": "Удалить",
     "documentsDeleteConfirm": "Удалить документ «{{name}}»?",
     "searchTitle": "Пробный поиск",
