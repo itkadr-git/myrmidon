@@ -26,6 +26,7 @@ export const CONTRACT_FILES = [
   "continuation-key.ts",
   "interaction-routing.ts",
   "recovery-factory.ts",
+  "task-card-readiness.ts",
 ];
 
 export function generateBarrelContent(customRepoRoot) {
