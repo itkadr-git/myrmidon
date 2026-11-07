@@ -209,7 +209,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       async delete(ref) { await blobs.delete(ref); },
     },
     queue: {
-      async enqueue(input) { const row = await queue.enqueue({ companyId: input.companyId, documentId: input.documentId, parserVersion: "v1", maxAttempts: input.maxAttempts }); return (await jobRecord(input.companyId, row))!; },
+      async enqueue(input) { const row = await queue.enqueue({ companyId: input.companyId, documentId: input.documentId, parserVersion: "v1", maxAttempts: input.maxAttempts, ...(input.reset ? { reset: true } : {}) }); return (await jobRecord(input.companyId, row))!; },
       async claim({ limit }) {
         if (limit <= 0) return [];
         const claimed = await db.execute(drizzleSql`
