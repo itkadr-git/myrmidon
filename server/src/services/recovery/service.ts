@@ -218,6 +218,7 @@ import {
   decideStalledReviewRecovery,
   type ReviewPullRequestCiFacts,
 } from "../../myrmidon/review-stage-recovery/policy.js";
+import { orphanBlockerFitsCreator } from "../../myrmidon/recovery/orphan-blocker-caste.js";
 import type { ReviewPullRequestCiResolver } from "../../myrmidon/review-stage-recovery/github-ci.js";
 import {
   createGitHubPrHeadResolver,
@@ -2569,6 +2570,7 @@ export function recoveryService(
         identifier: issues.identifier,
         status: issues.status,
         createdByAgentId: issues.createdByAgentId,
+        casteKey: issues.casteKey,
       })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2609,6 +2611,12 @@ export function recoveryService(
         creatorAgent.companyId !== candidate.companyId ||
         !(await isAgentInvokable(creatorAgent))
       ) {
+        skipped += 1;
+        continue;
+      }
+      // myrmidon(OPE-12220): a caste-bound subtask is not handed back to a creator
+      // of another caste (the lead that sliced the epic); the caste matcher assigns it.
+      if (!orphanBlockerFitsCreator({ issueCasteKey: candidate.casteKey, creatorRole: creatorAgent.role })) {
         skipped += 1;
         continue;
       }
