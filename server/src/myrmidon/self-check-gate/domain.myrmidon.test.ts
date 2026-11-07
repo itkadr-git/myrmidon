@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MYRMIDON_SELF_CHECK_REJECT_CODES,
+  SELF_CHECK_REJECT_CODES,
   isMyrmidonDiffEmpty,
   isCheckResultStale,
   evaluateSelfCheckGate,
@@ -42,7 +42,7 @@ describe("domain unit-tests (pre-in_review stop-gate)", () => {
     expect(resNull.admitted).toBe(false);
     expect(resNull.kind).toBe("reject");
     if (resNull.kind === "reject") {
-      expect(resNull.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+      expect(resNull.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
     }
 
     // 0 files, 0 additions, 0 deletions
@@ -54,7 +54,7 @@ describe("domain unit-tests (pre-in_review stop-gate)", () => {
     });
     expect(resEmpty.admitted).toBe(false);
     if (resEmpty.kind === "reject") {
-      expect(resEmpty.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+      expect(resEmpty.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
     }
 
     // 1 file, 0 additions, 0 deletions
@@ -66,7 +66,7 @@ describe("domain unit-tests (pre-in_review stop-gate)", () => {
     });
     expect(resNoLines.admitted).toBe(false);
     if (resNoLines.kind === "reject") {
-      expect(resNoLines.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+      expect(resNoLines.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
     }
   });
 
@@ -85,7 +85,7 @@ describe("domain unit-tests (pre-in_review stop-gate)", () => {
     expect(res.admitted).toBe(false);
     expect(res.kind).toBe("reject");
     if (res.kind === "reject") {
-      expect(res.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.LINT_FAILED);
+      expect(res.code).toBe(SELF_CHECK_REJECT_CODES.LINT_FAILED);
     }
   });
 
@@ -103,7 +103,7 @@ describe("domain unit-tests (pre-in_review stop-gate)", () => {
     });
     expect(staleTestRes.admitted).toBe(false);
     if (staleTestRes.kind === "reject") {
-      expect(staleTestRes.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_TEST);
+      expect(staleTestRes.code).toBe(SELF_CHECK_REJECT_CODES.STALE_TEST);
     }
 
     const staleLintRes = evaluateSelfCheckGate({
@@ -118,7 +118,7 @@ describe("domain unit-tests (pre-in_review stop-gate)", () => {
     });
     expect(staleLintRes.admitted).toBe(false);
     if (staleLintRes.kind === "reject") {
-      expect(staleLintRes.code).toBe(MYRMIDON_SELF_CHECK_REJECT_CODES.STALE_LINT);
+      expect(staleLintRes.code).toBe(SELF_CHECK_REJECT_CODES.STALE_LINT);
     }
   });
 
