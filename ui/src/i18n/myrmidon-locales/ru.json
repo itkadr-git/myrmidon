@@ -399,7 +399,7 @@
     "documentsColumnSize": "Размер",
     "documentsColumnUpdated": "Обновлён",
     "documentsColumnActions": "Действия",
-    "retry": "Повторить",
+    "retry": "Разобрать заново",
     "retrying": "Повторяем…",
     "documentsDelete": "Удалить",
     "documentsDeleteConfirm": "Удалить документ «{{name}}»?",

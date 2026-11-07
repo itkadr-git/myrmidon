@@ -286,6 +286,36 @@ describe("myrmidon(1.6.6 CORPUS E) corpus screen wiring", () => {
     expect(corpusApi.uploadDocument).toHaveBeenCalledWith("c-1", "ds-1", file);
   });
 
+  it("retries a failed document and updates the row to queued", async () => {
+    corpusApi.retryDocument.mockResolvedValue({
+      document: {
+        id: "doc-failed",
+        datasetId: "ds-1",
+        filename: "fail.txt",
+        mime: "text/plain",
+        byteSize: 128,
+        status: "queued",
+        chunkCount: 0,
+        errorMessage: null,
+        updatedAt: "2026-10-08T09:05:00.000Z",
+      },
+      job: { id: "job-1" },
+    });
+    await render();
+    await settle();
+
+    // Verify button is present for failed document and not for ready document
+    expect(maybe("myrmidon-corpus-document-retry-doc-failed")).not.toBeNull();
+    expect(maybe("myrmidon-corpus-document-retry-doc-ready")).toBeNull();
+
+    await click("myrmidon-corpus-document-retry-doc-failed");
+    expect(corpusApi.retryDocument).toHaveBeenCalledWith("c-1", "doc-failed");
+    await settle();
+
+    // The row transitions to queued
+    expect(text("myrmidon-corpus-document-status-doc-failed")).toBe("corpus.documents.status.queued");
+  });
+
   it("retries a failed document and deletes a document after confirmation", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     await render();
@@ -296,6 +326,17 @@ describe("myrmidon(1.6.6 CORPUS E) corpus screen wiring", () => {
 
     await click("myrmidon-corpus-document-delete-doc-ready");
     expect(corpusApi.deleteDocument).toHaveBeenCalledWith("c-1", "doc-ready");
+  });
+
+  it("surfaces retry errors (409, 422, 502) with response text", async () => {
+    corpusApi.retryDocument.mockRejectedValue(new ApiError("document is not failed", 409, { error: "document is not failed" }));
+    await render();
+    await settle();
+
+    await click("myrmidon-corpus-document-retry-doc-failed");
+    await settle();
+
+    expect(text("myrmidon-corpus-document-retry-error")).toBe("document is not failed");
   });
 
   it("runs the trial search over the open dataset with the stored top-k", async () => {

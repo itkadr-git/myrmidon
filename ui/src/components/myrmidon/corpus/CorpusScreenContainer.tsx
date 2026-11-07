@@ -147,8 +147,14 @@ export function CorpusScreen() {
   const retry = useMutation({
     mutationFn: (documentId: string) => corpusApi.retryDocument(companyId, documentId),
     onMutate: () => setRetryError(null),
-    onSuccess: async () => {
+    onSuccess: async (data) => {
       setRetryError(null);
+      if (selectedDatasetId && data?.document) {
+        queryClient.setQueryData<CorpusDocument[]>(
+          corpusDocumentsQueryKey(companyId, selectedDatasetId),
+          (prev) => (prev ? prev.map((doc) => (doc.id === data.document.id ? data.document : doc)) : [data.document]),
+        );
+      }
       await queryClient.invalidateQueries({
         queryKey: corpusDocumentsQueryKey(companyId, selectedDatasetId ?? ""),
       });
