@@ -61,7 +61,7 @@ state. Both use one shape:
 | `status`    | Client behaviour                                                        |
 | ----------- | ----------------------------------------------------------------------- |
 | `pending`   | keep polling every `pollIntervalMs`; the wait is bounded by `queueTimeoutMs` |
-| `running`   | keep polling every `pollIntervalMs`; the run is bounded by `pollTimeoutMs`, counted from the first poll that reports `running` |
+| `running`   | keep polling every `pollIntervalMs`; given up on after `pollTimeoutMs` without progress (`progress.done` growing starts the count over), or after `maxRunMs` in all |
 | `succeeded` | finish: `text` if the service sent it, otherwise the page texts joined by a blank line and ordered by `pageNumber` |
 | `failed`    | finish with a permanent failure carrying `error.code` / `error.message` |
 
@@ -77,7 +77,7 @@ keeps a broken parser from crashing the worker.
 | `kind`             | When                                                                  | `retryable` |
 | ------------------ | --------------------------------------------------------------------- | ----------- |
 | `unavailable`      | connection failure, `5xx`, `408`, `429`                               | yes         |
-| `timeout`          | no answer within `timeoutMs`, the job did not finish within `pollTimeoutMs` of running, or did not start within `queueTimeoutMs` | yes |
+| `timeout`          | no answer within `timeoutMs`; the job ran `pollTimeoutMs` without progress or `maxRunMs` in all; or it did not start within `queueTimeoutMs` | yes |
 | `rejected`         | `4xx` other than `408`/`429` — unsupported type, too large, bad token  | no          |
 | `parse-failed`     | the service accepted the job and reported it cannot parse the document | no          |
 | `invalid-response` | body does not match this contract, or the base URL/JSON is unusable    | no          |
@@ -89,20 +89,31 @@ keeps `jobId` when the job was already created, so the retry can poll instead of
 ### Giving up on a job
 
 The limit on a job (`pollTimeoutMs`, from the module setting `parserTimeoutMs`, up to two hours)
-counts the time the job RUNS. A document that waits in the service's queue behind others does not
-use it up — the service parses one document at a time, so the Nth document of a batch would never
-fit otherwise. A job that goes back to `pending` (the service restarted) stops the clock; it starts
-again when the job runs. The wait itself has a generous ceiling (`queueTimeoutMs`, four hours) so a
-service that never starts the job cannot hold a worker slot forever.
+is the time it RUNS WITHOUT PROGRESS. The clock starts when a poll first reports the job `running`
+and starts over every time `progress.done` (pages done) grows, so a scanned book that keeps turning
+pages is never given up on after N minutes — only one that stops is. A format that has no pages
+sends no progress and gets `pollTimeoutMs` from the start of its run. `maxRunMs` (six hours) is a
+hard ceiling on a run that never ends. A document that waits in the service's queue behind others
+does not use any of it — the service parses one document at a time, so the Nth document of a batch
+would never fit otherwise. A job that goes back to `pending` (the service restarted) stops the run
+clock and starts the queue clock (`queueTimeoutMs`, four hours, counted from the last time the job
+was queued, so a service that never starts the job cannot hold a worker slot forever); the progress
+count starts over when it runs again.
 
 When `parseDocument` ends an attempt without a final state of the job (a timeout, an abort
 by the caller, a poll that keeps failing) it sends `DELETE /v1/parse/{jobId}` before it returns.
 Without it the service goes on parsing — a large scanned book for tens of minutes — for a client that
 has left, and the next attempt waits behind it. The request is best effort: one try with a short
 timeout, never retried, and its failure (`404`, `405` from a service older than the endpoint, no
-answer) changes nothing in the outcome. `cancelJob(jobId)` is exported for callers that drive the
-job themselves. A finished job is never cancelled: its result stays in the service until its TTL, and
-a retry of the same document finds it.
+answer) changes nothing in the outcome. `cancelJob(jobId, { submissionId })` is exported for callers
+that drive the job themselves. A finished job is never cancelled: its result stays in the service
+until its TTL, and a retry of the same document finds it.
+
+Every request of an attempt after the submission — the polls and the cancel — carries the attempt's
+`submissionId` in the `X-Submission-Id` header. A job is shared by all clients that submit the same
+document, and the service uses the header to cancel it only when no other client still waits for
+it (the answer is then `cancelled: false` and the job runs on). `cancelJob` without a
+`submissionId` cancels whoever else waits.
 
 Retries inside the client use the shared retry policy of the module (`attempts`,
 exponential backoff with jitter) and apply to `unavailable` / `timeout` only. A call that
@@ -132,8 +143,9 @@ this package decides retry policy — it only reports whether a failure is worth
 | `apiKey`         | —       | bearer token, from the module settings                    |
 | `timeoutMs`      | 30000   | per-request timeout (derived from `parserTimeoutMs` when only that is set, at most 120000) |
 | `pollIntervalMs` | 500     | pause between status polls                                |
-| `pollTimeoutMs`  | 120000  | how long a job may RUN, counted from the first poll that reports `running` (falls back to `parserTimeoutMs`) |
-| `queueTimeoutMs` | 14400000 | how long a job may wait in the service's queue before it runs |
+| `pollTimeoutMs`  | 120000  | how long a job may RUN WITHOUT PROGRESS (`progress.done` growing starts the count over; falls back to `parserTimeoutMs`) |
+| `queueTimeoutMs` | 14400000 | how long a job may wait in the service's queue before it runs (counted from the last time it was queued) |
+| `maxRunMs`       | 21600000 | hard ceiling on one run, progress or not |
 | `retry`          | shared  | attempts and backoff of the client's own retries          |
 
 Wiring these to interface settings and environment variables is outside this package.
@@ -143,8 +155,10 @@ Wiring these to interface settings and environment variables is outside this pac
 [document-parser-client.myrmidon.test.ts](document-parser-client.myrmidon.test.ts) runs the
 client against an in-process `node:http` server and covers the accepted path, polling, the
 retry of `5xx`, permanent `4xx`, both timeouts, a malformed body and an unreachable service, and
-the time limit counted from `running` (a long wait in the queue does not fail the job) and the
-cancel request after a timeout, an abort and a broken poll.
+the time limit that counts running time without progress (a long wait in the queue does not fail a
+job, a book that keeps progressing is not given up on), the queue clock that starts over when a job
+is queued again, the `X-Submission-Id` header, and the cancel request after a timeout, an abort and a
+broken poll.
 [http-document-parser.myrmidon.test.ts](http-document-parser.myrmidon.test.ts) runs the same
 way for the port adapter: byte and source-URI submissions, the wire body, one block per page
 in reading order, a retried `5xx`, a refused request, a failed job and an unreachable

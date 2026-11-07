@@ -116,8 +116,9 @@ export const CORPUS_SETTINGS_BOUNDS: Record<
   "parserTimeoutMs" | "embedderDimensions" | "maxDocumentBytes" | "maxDocumentsPerDataset" | "parseConcurrency" | "maxParseAttempts" | "searchTopK",
   { min: number; max: number }
 > = {
-  // Time a parse job may RUN in the parse service (the wait in its queue does not count): a
-  // 300-page scanned book needs about 25 minutes of OCR, so the ceiling is two hours.
+  // Time a parse job may RUN WITHOUT PROGRESS in the parse service (pages done growing starts the
+  // count over; the wait in its queue does not count): a 300-page scanned book needs about 25
+  // minutes of OCR in all, so the ceiling is two hours.
   parserTimeoutMs: { min: 1_000, max: 7_200_000 },
   embedderDimensions: { min: 1, max: 8_192 },
   maxDocumentBytes: { min: 1, max: 1024 * 1024 * 1024 },
