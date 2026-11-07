@@ -57,7 +57,7 @@ def main() -> None:
         outage = None
 
     # ---------------------------------------------------------------- errors as the OpenAI SDK raises them
-    request = httpx.Request("POST", "http://172.22.0.1:4000/v1/chat/completions")
+    request = httpx.Request("POST", "http://litellm-gateway:4000/v1/chat/completions")
 
     def status_error(cls, status, body, text=None):
         response = httpx.Response(status, request=request, text=text if text is not None else str(body))
@@ -106,12 +106,12 @@ def main() -> None:
     # ---------------------------------------------------------------- 1. classification
     for name, make in gateway_down.items():
         err = make()
-        classified = classify_api_error(err, provider="custom", model="m", base_url="http://172.22.0.1:4000/v1")
+        classified = classify_api_error(err, provider="custom", model="m", base_url="http://litellm-gateway:4000/v1")
         verdict = outage is not None and outage.is_gateway_outage(err, classified)
         check(f"classified as gateway outage: {name}", verdict, f"reason={classified.reason.value}")
     for name, make in model_side.items():
         err = make()
-        classified = classify_api_error(err, provider="custom", model="m", base_url="http://172.22.0.1:4000/v1")
+        classified = classify_api_error(err, provider="custom", model="m", base_url="http://litellm-gateway:4000/v1")
         verdict = outage is not None and not outage.is_gateway_outage(err, classified)
         check(f"classified as model/provider error: {name}", verdict, f"reason={classified.reason.value}")
 
@@ -132,10 +132,10 @@ def main() -> None:
         outage._now = lambda: clock.t
 
     def make_agent(chain=True):
-        agent = AIAgent(model="custom/primary", base_url="http://172.22.0.1:4000/v1", api_key="dummy", quiet_mode=True)
+        agent = AIAgent(model="custom/primary", base_url="http://litellm-gateway:4000/v1", api_key="dummy", quiet_mode=True)
         agent.provider = "custom"
         agent._fallback_chain = (
-            [{"provider": "custom", "model": "fallback-model", "base_url": "http://172.22.0.1:4000/v1"}] if chain else []
+            [{"provider": "custom", "model": "fallback-model", "base_url": "http://litellm-gateway:4000/v1"}] if chain else []
         )
         agent._fallback_index = 0
         agent._try_activate_fallback = MagicMock(return_value=True)
