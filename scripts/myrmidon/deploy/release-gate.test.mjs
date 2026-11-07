@@ -173,6 +173,11 @@ fi
 exec "$@"
 `;
 
+const FAKE_SYSTEMCTL = `#!/usr/bin/env bash
+echo "systemctl $*" >> "$SANDBOX/calls.log"
+exit 0
+`;
+
 // The fake board: health, the company agents list, and per-agent
 // bot-container status from files the test controls.
 const FAKE_CURL = `#!/usr/bin/env bash
@@ -239,18 +244,12 @@ function sandbox({
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "ssh"), FAKE_SSH, { mode: 0o755 });
-  fs.writeFileSync(path.join(bin, "systemctl"), `#!/usr/bin/env bash
-case "$1" in
-  --version) echo systemd 255 ; exit 0 ;;
-  is-enabled|daemon-reload|enable|start) exit 0 ;;
-  *) exit 0 ;;
-esac
-`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "systemctl"), FAKE_SYSTEMCTL, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "df"), `#!/usr/bin/env bash
-echo "Filesystem 1K-blocks Used Available Use% Mounted on"
-echo "/dev/sda1 100000000 10000000 90000000 10% /"
-exit 0
-`, { mode: 0o755 });
+ echo "Filesystem 1K-blocks Used Available Use% Mounted on"
+ echo "/dev/sda1 100000000 10000000 90000000 10% /"
+ exit 0
+ `, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   if (sshFails) fs.writeFileSync(path.join(dir, "ssh-fails"), "");
   const lbls = registryLabels === undefined ? labels() : registryLabels;
@@ -343,6 +342,8 @@ exit 0
       `MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health`,
       // The bot image rollout has its own tests (bot-image-rollout.test.mjs).
       "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
+      // Sandbox: skip host disk precheck so runs do not depend on runner free space.
+      "MYRMIDON_DEPLOY_MIN_FREE_GB=0",
       // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
       // default; this sandbox walks the real default path list, so the attention
       // list of the company is exercised against the throwaway copy.
@@ -366,6 +367,7 @@ function run(sb, script, args) {
     ...(sb.env ?? {}),
   };
   delete env.BASH_ENV;
+  delete env.ENV;
   const result = spawnSync(
     process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
     [path.join(HERE, script), "--config", sb.config, ...args],
@@ -751,6 +753,7 @@ describe("bot-apply-smoke.sh", () => {
   function runSmoke(sb, args) {
     const env = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir };
     delete env.BASH_ENV;
+    delete env.ENV;
     const result = spawnSync(
       process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
       [path.join(HERE, "bot-apply-smoke.sh"), ...args],

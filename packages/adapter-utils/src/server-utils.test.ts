@@ -23,6 +23,7 @@ import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  renderWakeBlockDelta,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
@@ -41,6 +42,17 @@ import {
 } from "./server-utils.js";
 
 describe("runtime connection tool delivery", () => {
+  it("sends changed wake blocks fully and represents unchanged blocks by revision", () => {
+    const original = { rules: "rules-v1", notes: "notes-v1" };
+    const first = renderWakeBlockDelta(original, null);
+    expect(first.blocks).toEqual(original);
+    const next = renderWakeBlockDelta({ ...original, notes: "notes-v2" }, first.digests);
+    expect(next.blocks.rules).toBe(`без изменений (ревизия ${first.digests.rules})`);
+    expect(next.blocks.notes).toBe("notes-v2");
+    const afterCompaction = renderWakeBlockDelta(original, null);
+    expect(afterCompaction.blocks).toEqual(original);
+  });
+
   const access = {
     version: 1 as const,
     guidance: CONNECTION_INTENT_AGENT_GUIDANCE,
