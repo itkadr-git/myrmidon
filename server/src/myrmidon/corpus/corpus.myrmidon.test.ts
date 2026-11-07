@@ -370,6 +370,27 @@ function corpusHarness(
         state.jobs.set(jobId, settled);
         return settled;
       },
+      async release(companyId, jobId, reason) {
+        const job = jobOf(companyId, jobId);
+        if (!job || job.state !== "running") return null;
+        const given: CorpusJobRecord = { ...job, state: "queued", attempts: Math.max(job.attempts - 1, 0), lastError: reason };
+        state.jobs.set(jobId, given);
+        return given;
+      },
+      async releaseRunning() {
+        const settled: CorpusJobRecord[] = [];
+        for (const job of state.jobs.values()) {
+          if (job.state !== "running") continue;
+          const next: CorpusJobRecord = {
+            ...job,
+            state: job.attempts >= job.maxAttempts ? "failed" : "queued",
+            lastError: "the board stopped or restarted while the document was being parsed",
+          };
+          state.jobs.set(job.id, next);
+          settled.push(next);
+        }
+        return settled;
+      },
     },
     parser: {
       async parse() {

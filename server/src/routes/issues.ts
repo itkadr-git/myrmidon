@@ -17065,6 +17065,39 @@ export function issueRoutes(
           getDependencyReadiness?: typeof svc.getDependencyReadiness;
         };
         const dependencyReadinessSvc = svc as DependencyReadinessProvider;
+        // myrmidon(1.6.6 OPE-12049): the assignee's own PATCH (release and
+        // re-assign to itself, a status move of its own task) is not an event
+        // for that assignee: it is inside the run that made it. The skip is
+        // narrow on purpose: the actor is the assignee AND its authenticated
+        // run is a run on THIS task. An agent that writes to another task, or
+        // acts without a run, wakes the assignee as before. Only the two "state
+        // of the task changed" wakes below honour this; comment and mention
+        // wakes carry their own self guards, and the shared assignment service
+        // (create, child_create, decomposition, cards) never skips.
+        const selfPatchWake = await (async () => {
+          if (
+            actor.actorType !== "agent" ||
+            !actor.runId ||
+            !issue.assigneeAgentId ||
+            actor.actorId !== issue.assigneeAgentId
+          ) {
+            return false;
+          }
+          try {
+            const actorRun = await heartbeat.getRun(actor.runId);
+            return (
+              actorRun?.companyId === issue.companyId &&
+              actorRun.agentId === actor.actorId &&
+              actorRun.contextSnapshot?.issueId === issue.id
+            );
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id, runId: actor.runId },
+              "could not match the PATCH run to the task; self wake not skipped",
+            );
+            return false;
+          }
+        })();
         const wakeups = new Map<
           string,
           { agentId: string; wakeup: WakeupRequest }
@@ -17203,7 +17236,8 @@ export function issueRoutes(
           issue.status !== "backlog" &&
           deferWakeForGoal !== true &&
           !deferExecutionReviewWakeForCi &&
-          !suppressChangesRequestedWake
+          !suppressChangesRequestedWake &&
+          !selfPatchWake
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "assignment",
@@ -17260,7 +17294,8 @@ export function issueRoutes(
             statusChangedFromBlockedToTodo ||
             statusChangedFromClosedToTodo ||
             userResumedFromReviewToTodo) &&
-          issue.assigneeAgentId
+          issue.assigneeAgentId &&
+          !selfPatchWake
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "automation",

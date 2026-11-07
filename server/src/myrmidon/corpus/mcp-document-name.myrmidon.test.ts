@@ -109,6 +109,8 @@ function makePorts(overrides: {
       async claim() { return []; },
       async complete() {},
       async fail() { return null; },
+      async release() { return null; },
+      async releaseRunning() { return []; },
     },
     parser: {
       async parse() { throw new Error("not used"); },
