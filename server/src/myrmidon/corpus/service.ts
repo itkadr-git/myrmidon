@@ -27,7 +27,7 @@ import {
   type CorpusDataset,
   type CorpusDocument,
   type CorpusParseJob,
-  type CorpusRefreshUrlsResult,
+  type CorpusRefreshUrlsStarted,
   type CorpusSearchHit,
   type CorpusSearchMode,
   type CorpusSearchResponse,
@@ -63,6 +63,11 @@ export const CORPUS_DOCUMENT_REPARSED_ACTION = "myrmidon.corpus.document_reparse
 export const CORPUS_DOCUMENT_DELETED_ACTION = "myrmidon.corpus.document_deleted";
 /** OPE-12000: a URL-sourced document got new content (an unchanged refresh is not audited). */
 export const CORPUS_DOCUMENT_REFRESHED_ACTION = "myrmidon.corpus.document_refreshed";
+/** OPE-12000: a manual refresh of a dataset's URL documents began / ended (the end carries the counters). */
+export const CORPUS_REFRESH_STARTED_ACTION = "myrmidon.corpus.refresh_started";
+export const CORPUS_REFRESH_COMPLETED_ACTION = "myrmidon.corpus.refresh_completed";
+/** Least time between the end of one manual refresh of a dataset and the start of the next. */
+export const CORPUS_REFRESH_PAUSE_MS = 60_000;
 export const CORPUS_DATASET_DELETED_ACTION = "myrmidon.corpus.dataset_deleted";
 
 /** Code of the 503 a data route answers while the ports of parts A/B are missing. */
@@ -121,6 +126,8 @@ export interface CorpusServiceDeps {
   env?: Record<string, string | undefined>;
   /** OPE-12000: downloads a document by address; the guarded fetcher unless a test supplies one. */
   fetchUrl?: CorpusUrlFetcher;
+  /** Milliseconds clock; tests move it to step over the pause between manual refreshes. */
+  now?: () => number;
 }
 
 export interface CorpusUploadInput {
@@ -177,10 +184,12 @@ export interface CorpusService {
    */
   addDocumentFromUrl(input: CorpusAddUrlInput): Promise<CorpusUploadResult>;
   /**
-   * OPE-12000: fetches every URL-sourced document of the dataset now, whatever its interval:
-   * same hash -> only `lastFetchedAt` moves; new hash -> content replaced and parsed again.
+   * OPE-12000: starts fetching every URL-sourced document of the dataset now, whatever its interval,
+   * and returns at once; the run goes on in the background and its counters are audited when it ends.
+   * Refused with 409 `refresh_in_progress` while a run of the dataset is going, and with 429
+   * `refresh_too_soon` within CORPUS_REFRESH_PAUSE_MS of the end of the last one.
    */
-  refreshDatasetUrls(companyId: string, datasetId: string, actor: CorpusActor): Promise<CorpusRefreshUrlsResult>;
+  refreshDatasetUrls(companyId: string, datasetId: string, actor: CorpusActor): Promise<CorpusRefreshUrlsStarted>;
   getDocument(companyId: string, documentId: string): Promise<CorpusDocument>;
   /**
    * Parses a failed document again from the bytes already stored: the document goes back to
@@ -253,6 +262,29 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
     ...overrides,
   };
   const fetchUrl: CorpusUrlFetcher = deps.fetchUrl ?? createCorpusUrlFetcher();
+  const now = deps.now ?? Date.now;
+  // Per process, like the rest of the module's in-memory state: which datasets are being refreshed,
+  // when each was last done, and the per-address lock of add-by-address.
+  const refreshRunning = new Set<string>();
+  const refreshFinishedAt = new Map<string, number>();
+  const keyedLocks = new Map<string, Promise<void>>();
+
+  async function withKeyedLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const before = keyedLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = before.then(() => mine);
+    keyedLocks.set(key, tail);
+    await before;
+    try {
+      return await run();
+    } finally {
+      release();
+      if (keyedLocks.get(key) === tail) keyedLocks.delete(key);
+    }
+  }
   const env = deps.env ?? process.env;
 
   function notFound(what: string): CorpusRequestError {
@@ -575,68 +607,132 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
 
       const parsed = parseSourceUrl(url);
       const sourceUrl = parsed.toString();
-      const existing = await ports.store.listSourceDocuments({
-        companyId,
-        datasetId,
-        limit: Math.max(settings.maxDocumentsPerDataset, 1),
-      });
-      const duplicate = existing.find((document) => document.sourceUrl === sourceUrl);
-      if (duplicate) {
-        throw new CorpusRequestError(
-          409,
-          "source_url_exists",
-          "the dataset already holds a document from this address: use refresh-urls to fetch it again",
-          { documentId: duplicate.id },
-        );
-      }
+      const assertNotThere = async (): Promise<void> => {
+        const existing = await ports.store.listSourceDocuments({
+          companyId,
+          datasetId,
+          limit: Math.max(settings.maxDocumentsPerDataset, 1),
+        });
+        const duplicate = existing.find((document) => document.sourceUrl === sourceUrl);
+        if (duplicate) {
+          throw new CorpusRequestError(
+            409,
+            "source_url_exists",
+            "the dataset already holds a document from this address: use refresh-urls to fetch it again",
+            { documentId: duplicate.id },
+          );
+        }
+      };
 
-      let fetched;
-      try {
-        fetched = await fetchUrl(sourceUrl, { maxBytes: settings.maxDocumentBytes });
-      } catch (err) {
-        throw sourceFailure(err);
-      }
+      // One call per dataset and address at a time, from the first look at the dataset to the row
+      // being created: a double click (or two scripts) gets one document and one 409, not two documents.
+      return withKeyedLock(`${companyId}|${datasetId}|${sourceUrl}`, async () => {
+        await assertNotThere();
 
-      return ingestDocument({
-        companyId,
-        datasetId,
-        filename: name?.trim() || defaultSourceName(parsed, fetched.contentType),
-        mimeType: fetched.contentType,
-        bytes: fetched.bytes,
-        actor,
-        source: {
-          url: sourceUrl,
-          refreshIntervalHours: refreshIntervalHours ?? CORPUS_DEFAULT_REFRESH_INTERVAL_HOURS,
-          contentHash: fetched.contentHash,
-          fetchedAt: new Date().toISOString(),
-        },
+        let fetched;
+        try {
+          fetched = await fetchUrl(sourceUrl, { maxBytes: settings.maxDocumentBytes });
+        } catch (err) {
+          throw sourceFailure(err);
+        }
+
+        // Looked at again right before the row is created: the download took time.
+        await assertNotThere();
+        return ingestDocument({
+          companyId,
+          datasetId,
+          filename: name?.trim() || defaultSourceName(parsed, fetched.contentType),
+          mimeType: fetched.contentType,
+          bytes: fetched.bytes,
+          actor,
+          source: {
+            url: sourceUrl,
+            refreshIntervalHours: refreshIntervalHours ?? CORPUS_DEFAULT_REFRESH_INTERVAL_HOURS,
+            contentHash: fetched.contentHash,
+            fetchedAt: new Date().toISOString(),
+          },
+        });
       });
     },
 
     refreshDatasetUrls: async (companyId, datasetId, actor) => {
       const { settings, ports } = await requirePorts();
       await requireDataset(ports, companyId, datasetId);
-      const documents = await ports.store.listSourceDocuments({
-        companyId,
-        datasetId,
-        limit: Math.max(settings.maxDocumentsPerDataset, 1),
-      });
-      const tally = await refreshSourceDocuments({
-        ports,
-        settings,
-        fetcher: fetchUrl,
-        documents,
-        onUpdated: (document, outcome) =>
-          audit(actor, CORPUS_DOCUMENT_REFRESHED_ACTION, companyId, "corpus_document", document.id, {
-            datasetId,
-            filename: document.filename,
-            sourceUrl: document.sourceUrl,
-            previousHash: outcome.previousHash,
-            contentHash: outcome.contentHash,
-            jobId: outcome.job.id,
-          }),
-      });
-      return { datasetId, ...tally };
+
+      // One run per dataset at a time, and a pause between runs. Checked and taken in one
+      // synchronous step, so two requests cannot both pass.
+      const key = `${companyId}|${datasetId}`;
+      if (refreshRunning.has(key)) {
+        throw new CorpusRequestError(
+          409,
+          "refresh_in_progress",
+          "a refresh of this dataset is already running: wait for it to finish",
+        );
+      }
+      const finishedAt = refreshFinishedAt.get(key);
+      const waitMs = finishedAt === undefined ? 0 : CORPUS_REFRESH_PAUSE_MS - (now() - finishedAt);
+      if (waitMs > 0) {
+        throw new CorpusRequestError(
+          429,
+          "refresh_too_soon",
+          "this dataset was refreshed a moment ago: wait before refreshing it again",
+          { retryAfterSeconds: Math.ceil(waitMs / 1000) },
+        );
+      }
+      refreshRunning.add(key);
+
+      let documents: CorpusDocumentRecord[];
+      try {
+        documents = await ports.store.listSourceDocuments({
+          companyId,
+          datasetId,
+          limit: Math.max(settings.maxDocumentsPerDataset, 1),
+        });
+        await audit(actor, CORPUS_REFRESH_STARTED_ACTION, companyId, "corpus_dataset", datasetId, {
+          datasetId,
+          documents: documents.length,
+        });
+      } catch (err) {
+        refreshRunning.delete(key);
+        throw err;
+      }
+
+      // The downloads go on after the answer: a dataset of a thousand pages must not hold a request
+      // open for hours. The counters are written to the audit log when the run ends.
+      const startedAt = now();
+      void (async () => {
+        let details: Record<string, unknown>;
+        try {
+          const tally = await refreshSourceDocuments({
+            ports,
+            settings,
+            fetcher: fetchUrl,
+            documents,
+            onUpdated: (document, outcome) =>
+              audit(actor, CORPUS_DOCUMENT_REFRESHED_ACTION, companyId, "corpus_document", document.id, {
+                datasetId,
+                filename: document.filename,
+                sourceUrl: document.sourceUrl,
+                previousHash: outcome.previousHash,
+                contentHash: outcome.contentHash,
+                jobId: outcome.job.id,
+                reparsed: outcome.reparsed,
+              }),
+          });
+          details = { datasetId, ...tally, durationMs: now() - startedAt };
+        } catch (err) {
+          logger.error({ err, companyId, datasetId }, "corpus: a manual source refresh ended with an error");
+          details = { datasetId, error: "internal_error", durationMs: now() - startedAt };
+        }
+        // Released before the audit row is written: whoever sees the row can start the next run.
+        refreshFinishedAt.set(key, now());
+        refreshRunning.delete(key);
+        await audit(actor, CORPUS_REFRESH_COMPLETED_ACTION, companyId, "corpus_dataset", datasetId, details).catch(
+          (err) => logger.error({ err, companyId, datasetId }, "corpus: the audit of a source refresh failed"),
+        );
+      })();
+
+      return { datasetId, started: true as const, documents: documents.length };
     },
 
     getDocument: async (companyId, documentId) => {
@@ -770,6 +866,12 @@ async function dropDerived(ports: CorpusPorts, document: CorpusDocumentRecord): 
       { err, documentId: document.id },
       "corpus: search-index rows left behind (the document is gone from the board)",
     );
+  }
+  // OPE-12000: bytes of a replaced version that has not become `ready` yet.
+  if (document.previousBlobRef) {
+    await ports.blobs.delete(document.previousBlobRef).catch((err) => {
+      logger.warn({ err, documentId: document.id }, "corpus: replaced bytes left behind (the document is gone from the board)");
+    });
   }
   if (!document.blobRef) return;
   try {

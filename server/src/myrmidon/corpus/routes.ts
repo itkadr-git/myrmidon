@@ -102,6 +102,9 @@ function handle(
       await run(req, res);
     } catch (err) {
       if (err instanceof CorpusRequestError) {
+        if (err.status === 429 && typeof err.details.retryAfterSeconds === "number") {
+          res.setHeader("Retry-After", String(err.details.retryAfterSeconds));
+        }
         res.status(err.status).json({ error: err.code, message: err.message, ...err.details });
         return;
       }
@@ -306,7 +309,9 @@ export function myrmidonCorpusRoutes(db: Db, deps: CorpusRoutesDeps) {
     }),
   );
 
-  // OPE-12000: fetch the URL-sourced documents of the dataset now, whatever their interval.
+  // OPE-12000: start fetching the URL-sourced documents of the dataset now, whatever their interval.
+  // The answer comes at once (202 {started}); the run is one per dataset at a time (409), with a
+  // pause between runs (429), and its counters land in the audit log.
   router.post(
     "/myrmidon/companies/:companyId/corpus/datasets/:datasetId/refresh-urls",
     handle(async (req, res) => {

@@ -19,6 +19,7 @@
 // cannot get past a small Content-Length.
 
 import { createHash } from "node:crypto";
+import { logger } from "../../middleware/logger.js";
 import {
   guardedRemoteHttpFetch,
   type GuardedRemoteHttpFetchOptions,
@@ -28,6 +29,12 @@ import type { RemoteHttpEndpointLookup } from "../../services/remote-http-endpoi
 /** Deadline for one whole download (all redirect hops included). */
 export const CORPUS_SOURCE_FETCH_TIMEOUT_MS = 30_000;
 export const CORPUS_SOURCE_MAX_REDIRECTS = 5;
+/** Downloads in flight at once in this process, whoever asks (sweep, manual refresh, add by address). */
+export const CORPUS_DOWNLOAD_CONCURRENCY = 4;
+/** Downloads allowed to wait for a slot; past this the caller is told to come back later. */
+export const CORPUS_DOWNLOAD_QUEUE_LIMIT = 64;
+/** The only ports a document address may name. */
+const ALLOWED_PORTS = new Set(["80", "443"]);
 
 /** A refusal with a machine token; the service turns it into the HTTP answer. */
 export class CorpusSourceError extends Error {
@@ -61,7 +68,55 @@ export type CorpusUrlFetcher = (url: string, limits: CorpusSourceFetchLimits) =>
 
 type GuardedFetch = (url: URL, init: RequestInit, options: GuardedRemoteHttpFetchOptions) => Promise<Response>;
 
+export interface DownloadLimiter {
+  run<T>(task: () => Promise<T>): Promise<T>;
+}
+
+/** A counting semaphore with a bounded line: `max` tasks run, `maxQueue` more wait, the rest are refused. */
+export function createDownloadLimiter(max: number, maxQueue: number): DownloadLimiter {
+  let running = 0;
+  const waiting: Array<() => void> = [];
+  const release = (): void => {
+    const next = waiting.shift();
+    if (next) next(); // the slot passes straight to the next waiter
+    else running -= 1;
+  };
+  return {
+    async run<T>(task: () => Promise<T>): Promise<T> {
+      if (running >= max) {
+        if (waiting.length >= maxQueue) {
+          throw new CorpusSourceError(
+            503,
+            "source_fetch_busy",
+            "too many downloads are waiting: try again later",
+          );
+        }
+        await new Promise<void>((resolve) => waiting.push(resolve));
+      } else {
+        running += 1;
+      }
+      try {
+        return await task();
+      } finally {
+        release();
+      }
+    },
+  };
+}
+
+/**
+ * One limiter for the whole process: the hourly sweep, a manual refresh and an add-by-address all
+ * download through it, so a burst of requests cannot open more than CORPUS_DOWNLOAD_CONCURRENCY
+ * connections (and buffers of up to `maxDocumentBytes`) at once.
+ */
+export const corpusDownloadLimiter: DownloadLimiter = createDownloadLimiter(
+  CORPUS_DOWNLOAD_CONCURRENCY,
+  CORPUS_DOWNLOAD_QUEUE_LIMIT,
+);
+
 export interface CorpusUrlFetcherOptions {
+  /** Test seam: a limiter of its own. Production uses the process-wide one. */
+  limiter?: DownloadLimiter;
   /** Test seam: the DNS answer the guard sees. Production leaves it unset. */
   lookup?: RemoteHttpEndpointLookup;
   /** Test seam: the transport behind the guard. Production leaves it unset. */
@@ -92,28 +147,33 @@ export function parseCorpusSourceUrl(value: string): URL {
   if (!parsed.hostname) {
     throw new CorpusSourceError(422, "source_url_invalid", "the address has no host");
   }
+  // `URL` drops a port that is the default of the scheme, so "" means 80 or 443.
+  if (parsed.port && !ALLOWED_PORTS.has(parsed.port)) {
+    throw new CorpusSourceError(422, "source_url_invalid", "only ports 80 and 443 can be fetched");
+  }
   parsed.hash = "";
   return parsed;
 }
 
+/**
+ * The guard's rejections become fixed texts. What the guard or the socket said is for the log only: it
+ * can carry host names, addresses and system messages that an API caller has no business reading.
+ */
 function guardError(_message: string, code: string): Error {
   if (code === "remote_http_private_endpoint") {
     return new CorpusSourceError(
       422,
       "source_url_blocked",
       "the address points to a private, loopback or otherwise reserved network location",
-      { reason: code },
     );
   }
   if (code === "remote_http_dns_failed") {
-    return new CorpusSourceError(502, "source_fetch_failed", "the host of the address could not be resolved", {
-      reason: code,
-    });
+    return new CorpusSourceError(502, "source_fetch_failed", "the host of the address could not be resolved");
   }
   if (code === "remote_http_response_timeout") {
-    return new CorpusSourceError(504, "source_fetch_timeout", "the server did not answer in time", { reason: code });
+    return new CorpusSourceError(504, "source_fetch_timeout", "the server did not answer in time");
   }
-  return new CorpusSourceError(502, "source_fetch_failed", "the address could not be reached", { reason: code });
+  return new CorpusSourceError(502, "source_fetch_failed", "the address could not be reached");
 }
 
 async function readBounded(response: Response, maxBytes: number): Promise<Uint8Array> {
@@ -156,11 +216,19 @@ function tooLarge(maxBytes: number): CorpusSourceError {
 
 export function createCorpusUrlFetcher(options: CorpusUrlFetcherOptions = {}): CorpusUrlFetcher {
   const transport: GuardedFetch = options.transport ?? guardedRemoteHttpFetch;
+  const limiter = options.limiter ?? corpusDownloadLimiter;
 
   return async (rawUrl, limits) => {
+    // The address is judged before a slot is taken: a refused address costs nothing.
+    const start = parseCorpusSourceUrl(rawUrl);
+    return limiter.run(() => download(start, limits));
+  };
+
+  async function download(start: URL, limits: CorpusSourceFetchLimits): Promise<FetchedSource> {
+    // The deadline runs from the moment the slot is held, not from the wait in line.
     const timeoutMs = limits.timeoutMs ?? CORPUS_SOURCE_FETCH_TIMEOUT_MS;
     const signal = AbortSignal.timeout(timeoutMs);
-    let current = parseCorpusSourceUrl(rawUrl);
+    let current = start;
 
     try {
       for (let hop = 0; hop <= CORPUS_SOURCE_MAX_REDIRECTS; hop += 1) {
@@ -222,12 +290,11 @@ export function createCorpusUrlFetcher(options: CorpusUrlFetcherOptions = {}): C
       if (signal.aborted) {
         throw new CorpusSourceError(504, "source_fetch_timeout", `the download took longer than ${timeoutMs} ms`);
       }
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new CorpusSourceError(502, "source_fetch_failed", "the address could not be fetched", {
-        reason: reason.slice(0, 300),
-      });
+      // The raw message stays in the log: it can name internal hosts, addresses and system errors.
+      logger.warn({ err, sourceUrl: current.toString() }, "corpus: a source download failed");
+      throw new CorpusSourceError(502, "source_fetch_failed", "the address could not be fetched");
     }
-  };
+  }
 }
 
 /**

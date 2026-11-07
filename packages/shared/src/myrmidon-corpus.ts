@@ -500,7 +500,19 @@ export const addCorpusUrlDocumentSchema = z
   })
   .strict();
 
-/** Answer of `POST …/datasets/:datasetId/refresh-urls` (202, OPE-12000). */
+/**
+ * Answer of `POST …/datasets/:datasetId/refresh-urls` (202, OPE-12000). The run goes on in the
+ * background, one at a time per dataset; its counters are written to the audit log
+ * (`myrmidon.corpus.refresh_completed`) and each document shows its own `lastFetchedAt` / `sourceError`.
+ */
+export interface CorpusRefreshUrlsStarted {
+  datasetId: string;
+  started: true;
+  /** URL-sourced documents the run will look at. */
+  documents: number;
+}
+
+/** The counters of a finished refresh run (the `details` of `myrmidon.corpus.refresh_completed`). */
 export interface CorpusRefreshUrlsResult {
   datasetId: string;
   /** URL-sourced documents of the dataset the pass looked at. */

@@ -10,11 +10,15 @@
 //
 //   * skipped while the document is still being parsed (its bytes are in use);
 //   * a fetch through the guarded transport (see ./source-fetch.ts);
-//   * same hash  -> only `lastFetchedAt` moves, nothing is parsed again;
-//   * new hash   -> the new bytes replace the stored ones, the old chunks and
-//                   the old bytes are dropped, and the document goes back to
-//                   `queued` with a fresh parse job — the same road an upload
-//                   takes after its bytes are stored;
+//   * same hash  -> only `lastFetchedAt` moves, nothing is parsed again — unless
+//                   the document is `failed`: then it is parsed again from the
+//                   bytes it holds;
+//   * new hash   -> the new bytes replace the stored ones and the document goes
+//                   back to `queued` with a fresh parse job — the same road an
+//                   upload takes after its bytes are stored. The old chunks are
+//                   replaced by the parse of the new version (search only sees
+//                   `ready` documents), and the old bytes are removed by the
+//                   parse worker once the new version is `ready`;
 //   * a failed fetch (or a replace that could not finish) leaves the stored
 //     version exactly as it was and records the reason in `sourceError`.
 //
@@ -26,7 +30,7 @@
 import { logger } from "../../middleware/logger.js";
 import type { CorpusSettings } from "@myrmidon/shared";
 import type { CorpusDocumentRecord, CorpusJobRecord, CorpusPorts, CorpusPortsResolver } from "./ports.js";
-import type { CorpusUrlFetcher } from "./source-fetch.js";
+import { CorpusSourceError, type CorpusUrlFetcher } from "./source-fetch.js";
 
 /** The sweep is gated to one pass per hour on the board's scheduler tick. */
 export const CORPUS_SOURCE_REFRESH_INTERVAL_MS = 3_600_000;
@@ -38,7 +42,14 @@ const MAX_REPORTED_FAILURES = 50;
 
 export type CorpusSourceOutcome =
   | { kind: "unchanged" }
-  | { kind: "updated"; job: CorpusJobRecord; previousHash: string | null; contentHash: string }
+  | {
+      kind: "updated";
+      job: CorpusJobRecord;
+      previousHash: string | null;
+      contentHash: string;
+      /** True when the bytes were the same and the document was only parsed again (it had failed). */
+      reparsed: boolean;
+    }
   | { kind: "skipped"; reason: "in_flight" | "not_a_url_document" }
   | { kind: "failed"; error: string };
 
@@ -51,11 +62,20 @@ export interface CorpusRefreshTally {
   failures: Array<{ documentId: string; sourceUrl: string; error: string }>;
 }
 
-function describeError(err: unknown): string {
-  const code = (err as { code?: unknown } | null)?.code;
-  const text = err instanceof Error ? err.message : String(err);
-  const line = typeof code === "string" && !text.includes(code) ? `${code}: ${text}` : text;
-  return line.slice(0, 300);
+/**
+ * What an API caller may read about a failure (it ends up in `sourceError`, which the corpus API returns).
+ * The board's own refusals carry fixed texts and pass as they are; an embedder or parser refusal passes
+ * as its code; anything else — a blob, a database, a bug — becomes the fixed code the caller names, and
+ * the real error goes to the log only.
+ */
+function describeError(err: unknown, fallback: string, context: Record<string, unknown> = {}): string {
+  if (err instanceof CorpusSourceError) return `${err.code}: ${err.message}`.slice(0, 300);
+  if (err instanceof Error && err.name === "CorpusRequestError") {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === "string" && /^[a-z_]+$/.test(code)) return code;
+  }
+  logger.warn({ err, ...context }, `corpus: a source refresh step failed (${fallback})`);
+  return fallback;
 }
 
 /** Refreshes one URL-sourced document. Never throws: the outcome says what happened. */
@@ -74,9 +94,10 @@ export async function refreshSourceDocument(input: {
     return { kind: "skipped", reason: "in_flight" };
   }
   const fetchedAt = (input.now?.() ?? new Date()).toISOString();
+  const logContext = { companyId, documentId: document.id, sourceUrl: url };
 
   const fail = async (error: string): Promise<CorpusSourceOutcome> => {
-    logger.warn({ companyId, documentId: document.id, sourceUrl: url, error }, "corpus: a URL source could not be refreshed");
+    logger.warn({ ...logContext, error }, "corpus: a URL source could not be refreshed");
     await ports.store.updateDocument(companyId, document.id, { sourceError: error }).catch(() => null);
     return { kind: "failed", error };
   };
@@ -85,10 +106,13 @@ export async function refreshSourceDocument(input: {
   try {
     fetched = await fetcher(url, { maxBytes: settings.maxDocumentBytes });
   } catch (err) {
-    return fail(describeError(err));
+    return fail(describeError(err, "source_fetch_failed", logContext));
   }
 
-  if (fetched.contentHash === document.contentHash) {
+  // The same bytes need no new parse — unless the last parse failed: a failed document is given
+  // another go on every look at its address, the way a person would press "parse again".
+  const sameContent = fetched.contentHash === document.contentHash;
+  if (sameContent && document.status !== "failed") {
     await ports.store.updateDocument(companyId, document.id, { lastFetchedAt: fetchedAt, sourceError: null });
     return { kind: "unchanged" };
   }
@@ -99,27 +123,43 @@ export async function refreshSourceDocument(input: {
     try {
       await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
     } catch (err) {
-      return fail(describeError(err));
+      return fail(describeError(err, "internal_error", logContext));
     }
   }
 
+  // The stored bytes are reused when they are the same and still there; otherwise the new ones
+  // are written first, so the row never points at bytes that do not exist.
   const previousRef = document.blobRef;
-  let blobRef: string;
-  try {
-    const blob = await ports.blobs.put({
-      companyId,
-      documentId: document.id,
-      filename: document.filename,
-      mimeType: fetched.contentType ?? document.mimeType,
-      bytes: fetched.bytes,
+  let blobRef = previousRef;
+  if (!sameContent || !previousRef) {
+    try {
+      const blob = await ports.blobs.put({
+        companyId,
+        documentId: document.id,
+        filename: document.filename,
+        mimeType: fetched.contentType ?? document.mimeType,
+        bytes: fetched.bytes,
+      });
+      blobRef = blob.ref;
+    } catch (err) {
+      return fail(describeError(err, "blob_write_failed", logContext));
+    }
+  }
+  const replacedBytes = blobRef !== previousRef;
+
+  // The version before this one that was never cleaned up (its replacement failed to parse) is two
+  // generations old now: nothing can need it any more.
+  if (replacedBytes && document.previousBlobRef && document.previousBlobRef !== previousRef) {
+    await ports.blobs.delete(document.previousBlobRef).catch((err) => {
+      logger.warn({ err, ...logContext }, "corpus: older bytes left behind after a source refresh");
     });
-    blobRef = blob.ref;
-  } catch (err) {
-    return fail(`blob_write_failed: ${describeError(err)}`);
   }
 
   const queued = await ports.store.updateDocument(companyId, document.id, {
     blobRef,
+    // The bytes this version replaces stay until the new one is `ready` (the parse worker removes
+    // them then): if the new parse never finishes, nothing has been thrown away yet.
+    ...(replacedBytes ? { previousBlobRef: previousRef || null } : {}),
     byteSize: fetched.bytes.byteLength,
     mimeType: fetched.contentType ?? document.mimeType,
     contentHash: fetched.contentHash,
@@ -133,21 +173,13 @@ export async function refreshSourceDocument(input: {
   });
   if (!queued) {
     // Deleted while the bytes were being fetched: nothing to keep.
-    await ports.blobs.delete(blobRef).catch(() => undefined);
+    if (replacedBytes) await ports.blobs.delete(blobRef).catch(() => undefined);
     return { kind: "failed", error: "document_deleted" };
   }
 
-  // The old version goes: its chunks (the new parse writes the new ones) and its bytes. A
-  // failure here is a warning — the board row already points at the new bytes.
-  await ports.index.deleteDocument(companyId, document.id).catch((err) => {
-    logger.warn({ err, documentId: document.id }, "corpus: old chunks left behind after a source refresh");
-  });
-  if (previousRef && previousRef !== blobRef) {
-    await ports.blobs.delete(previousRef).catch((err) => {
-      logger.warn({ err, documentId: document.id }, "corpus: old bytes left behind after a source refresh");
-    });
-  }
-
+  // Straight after the row: a document that is `queued` must have its job. The old chunks are not
+  // touched here — they are invisible to search while the document is not `ready`, and the parse of
+  // the new version replaces them in one step when it indexes.
   let job: CorpusJobRecord;
   try {
     job = await ports.queue.enqueue({
@@ -158,13 +190,19 @@ export async function refreshSourceDocument(input: {
       reset: true,
     });
   } catch (err) {
-    logger.error({ err, companyId, documentId: document.id }, "corpus: the enqueue after a source refresh failed");
+    logger.error({ err, ...logContext }, "corpus: the enqueue after a source refresh failed");
     await ports.store
       .updateDocument(companyId, document.id, { status: "failed", error: "queue_unavailable" })
       .catch(() => null);
     return fail("queue_unavailable");
   }
-  return { kind: "updated", job, previousHash: document.contentHash, contentHash: fetched.contentHash };
+  return {
+    kind: "updated",
+    job,
+    previousHash: document.contentHash,
+    contentHash: fetched.contentHash,
+    reparsed: sameContent,
+  };
 }
 
 /** Refreshes `documents` with a few downloads at a time; `onUpdated` hears about every replaced one. */
@@ -186,7 +224,7 @@ export async function refreshSourceDocuments(input: {
       try {
         outcome = await refreshSourceDocument({ ...input, document });
       } catch (err) {
-        outcome = { kind: "failed", error: describeError(err) };
+        outcome = { kind: "failed", error: describeError(err, "internal_error", { documentId: document.id }) };
       }
       if (outcome.kind === "unchanged") tally.unchanged += 1;
       else if (outcome.kind === "skipped") tally.skipped += 1;

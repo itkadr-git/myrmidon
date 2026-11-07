@@ -551,6 +551,13 @@ run("production corpus adapters", () => {
     const later = new Date(Date.now() + 25 * 3_600_000);
     expect((await ports.store.listSourceDocuments({ companyId, dueAt: later, limit: 10 })).map((document) => document.id)).toEqual([daily.id]);
 
+    // The bytes a refresh replaced are remembered until the new version is ready, then forgotten; the
+    // bookkeeping around them is merged, not replaced.
+    expect((await ports.store.updateDocument(companyId, daily.id, { previousBlobRef: "old-blob" }))?.previousBlobRef).toBe("old-blob");
+    const touched = await ports.store.updateDocument(companyId, daily.id, { lastFetchedAt: new Date().toISOString() });
+    expect(touched).toMatchObject({ previousBlobRef: "old-blob", refreshIntervalHours: 24 });
+    expect((await ports.store.updateDocument(companyId, daily.id, { previousBlobRef: null }))?.previousBlobRef).toBeNull();
+
     // A parsed document goes back to `queued` with its parse state cleared, the way a refresh does it.
     await ports.store.updateDocument(companyId, daily.id, { status: "parsing" });
     await ports.store.updateDocument(companyId, daily.id, { status: "ready", chunkCount: 0, error: null, parsedAt: new Date().toISOString() });

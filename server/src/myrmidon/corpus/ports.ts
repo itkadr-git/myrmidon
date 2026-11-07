@@ -76,6 +76,11 @@ export interface CorpusDocumentRecord {
   lastFetchedAt: string | null;
   /** Why the last fetch failed, or null. */
   sourceError: string | null;
+  /**
+   * OPE-12000: the bytes the current version replaced. They stay until the new version is `ready`
+   * (the parse worker removes them then); null when there is nothing to clean up.
+   */
+  previousBlobRef: string | null;
 }
 
 export interface CorpusJobRecord {
@@ -142,6 +147,7 @@ export interface CorpusStorePort {
         | "contentHash"
         | "lastFetchedAt"
         | "sourceError"
+        | "previousBlobRef"
       >
     >,
   ): Promise<CorpusDocumentRecord | null>;

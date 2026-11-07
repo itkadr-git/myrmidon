@@ -2109,6 +2109,7 @@ async function startServerWithDatabaseTeardown(
             previousHash: outcome.previousHash,
             contentHash: outcome.contentHash,
             jobId: outcome.job.id,
+            reparsed: outcome.reparsed,
           },
         });
       },

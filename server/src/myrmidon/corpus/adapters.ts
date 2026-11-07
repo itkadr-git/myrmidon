@@ -65,7 +65,7 @@ export function createSqlExecutor(db: DbOrTx): SqlExecutor {
  * RAGFlow importer keeps its provenance there too — so the refresh interval in `metadata` is the
  * marker; the address itself stays in `source_uri`, the hash in `content_hash`.
  */
-function sourceFields(row: { sourceUri: string | null; contentHash: string | null; metadata: unknown }): Pick<CorpusDocumentRecord, "sourceUrl" | "refreshIntervalHours" | "contentHash" | "lastFetchedAt" | "sourceError"> {
+function sourceFields(row: { sourceUri: string | null; contentHash: string | null; metadata: unknown }): Pick<CorpusDocumentRecord, "sourceUrl" | "refreshIntervalHours" | "contentHash" | "lastFetchedAt" | "sourceError" | "previousBlobRef"> {
   const meta = (row.metadata ?? {}) as Record<string, unknown>;
   const interval = typeof meta.sourceRefreshIntervalHours === "number" ? meta.sourceRefreshIntervalHours : null;
   const isUrlSource = interval !== null && !!row.sourceUri;
@@ -75,6 +75,7 @@ function sourceFields(row: { sourceUri: string | null; contentHash: string | nul
     contentHash: row.contentHash,
     lastFetchedAt: isUrlSource && typeof meta.sourceFetchedAt === "string" ? meta.sourceFetchedAt : null,
     sourceError: isUrlSource && typeof meta.sourceError === "string" ? meta.sourceError : null,
+    previousBlobRef: typeof meta.sourcePreviousBlobRef === "string" ? meta.sourcePreviousBlobRef : null,
   };
 }
 
@@ -224,6 +225,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
         const metadataPatch: Record<string, unknown> = {
           ...(patch.lastFetchedAt !== undefined ? { sourceFetchedAt: patch.lastFetchedAt } : {}),
           ...(patch.sourceError !== undefined ? { sourceError: patch.sourceError } : {}),
+          ...(patch.previousBlobRef !== undefined ? { sourcePreviousBlobRef: patch.previousBlobRef } : {}),
         };
         const updated = await db.update(corpusDocuments).set({
           updatedAt: new Date(),
