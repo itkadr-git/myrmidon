@@ -52,6 +52,8 @@ export {
   readStackCheckIntervalSec,
   STACK_GITHUB_TOKEN_ENV,
   readStackGithubToken,
+  STACK_OSV_API_BASE_ENV,
+  readStackOsvApiBase,
 } from "./settings.js";
 export {
   buildStackAttentionCards,
@@ -71,6 +73,21 @@ export {
   countBehind,
   normaliseVersion,
   type StackFetchJson,
+  type StackFetchOptions,
   type StackHttpResponse,
   type StackReleaseRecord,
 } from "./releases.js";
+export {
+  DEFAULT_OSV_API_BASE,
+  OSV_QUERY_BATCH_PATH,
+  queryOsvAdvisories,
+  osvJsonPort,
+  parseOsvBatchResponse,
+  parseOsvVulnerabilities,
+  buildOsvBatchPayload,
+  extractVulnIdAndCve,
+  extractVulnSeverity,
+  type StackAdvisoryPackage,
+  type StackAdvisoryQuery,
+  type StackVulnerability,
+} from "./advisory.js";
