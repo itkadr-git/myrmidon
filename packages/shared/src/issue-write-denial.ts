@@ -301,7 +301,7 @@ export function describeIssueWriteDenial(
         boundary: "Issue privacy flag",
         title: "Only board actors can change the privacy flag",
         description:
-          `\`isPrivate\` marks a task as hidden from agent swarm matching and ` +
+          `\`isPrivate\` marks this task as hidden from agent swarm matching and ` +
           `agent-facing read paths. Agents cannot set or clear it, no matter who they ` +
           `act for — the flag is a board-only control.`,
         whoCanAct:

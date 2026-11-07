@@ -4,6 +4,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   authUsers,
   companies,
@@ -57,6 +58,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(companyMemberships);
@@ -158,7 +160,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     const fixture = await seed();
     const boardApp = await createApp(db, boardActor(fixture));
     const res = await request(boardApp)
-      .post("/api/issues")
+      .post(`/api/companies/${fixture.company.id}/issues`)
       .send({
         title: "Board private task",
         status: "todo",
@@ -173,7 +175,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     const fixture = await seed();
     const agentApp = await createApp(db, agentActor(fixture));
     const res = await request(agentApp)
-      .post("/api/issues")
+      .post(`/api/companies/${fixture.company.id}/issues`)
       .send({
         title: "Agent private task",
         status: "todo",
