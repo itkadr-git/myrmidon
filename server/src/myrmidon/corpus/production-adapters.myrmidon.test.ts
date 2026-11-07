@@ -404,12 +404,10 @@ run("production corpus adapters", () => {
         embedderDimensions: settings.embedderDimensions,
         embedderBaseUrl: baseUrl,
       });
-      // Search only returns chunks of `ready` documents; drive the status through
-      // the chain the store enforces: queued -> parsing -> embedding -> ready.
-      // The port-level updateDocument only accepts the shared CorpusDocumentStatus
-      // union (no "embedding"), so the middle step goes through the store directly.
+      // Search only returns chunks of `ready` documents; drive the status to
+      // `ready` through the port: updateDocument internally walks the store
+      // chain parsing -> embedding -> ready when it sees a parsing -> ready jump.
       await ports.store.updateDocument(companyId, document.id, { status: "parsing" });
-      await ports.store.updateDocumentStatus(companyId, document.id, "embedding", { parserVersion: "v1" });
       await ports.store.updateDocument(companyId, document.id, { status: "ready" });
 
       const { createCorpusMcpProvider } = await import("./adapters.js");
