@@ -153,8 +153,7 @@ flowchart LR
 
 Релизные заметки — в [docs/myrmidon/CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)
 (английская версия: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md)). Текущий
-предварительный выпуск — [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18);
-последний стабильный выпуск — [1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5).
+стабильный выпуск — [1.6.6](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6).
 
 ### Работа и агенты
 
@@ -302,8 +301,7 @@ flowchart LR
 Полные заметки по каждому выпуску:
 [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md) и [страница
 выпусков](https://github.com/itkadr-git/myrmidon/releases). Последний стабильный:
-[1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5);
-текущий предварительный: [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18).
+[1.6.6](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6).
 
 - **1.6.3 — один выкат для всех компонентов.** `deploy.sh --release`
   обновляет доску, dockergate, fleetd и образы ботов в одно окно
