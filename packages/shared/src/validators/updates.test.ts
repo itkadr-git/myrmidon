@@ -4,6 +4,7 @@ import {
   canarySettingsSchema,
   maintenanceWindowBoundsSchema,
   patchUpdateSettingsSchema,
+  putUpdateSettingsSchema,
   updateSettingsSchema,
 } from "./updates.js";
 
@@ -240,6 +241,114 @@ describe("updates validators (OPE-10268)", () => {
 
       expect(patch.mode).toBe("auto_release");
       expect(patch.canary?.sharePercent).toBe(50);
+    });
+
+    describe("maintenanceWindow cron validation (OPE-12087)", () => {
+      it("accepts a valid 5-field cron in window.cron", () => {
+        const parsed = updateSettingsSchema.parse({
+          window: {
+            cron: "30 3 * * 0",
+            durationMinutes: 120,
+          },
+        });
+
+        expect(parsed.window?.cron).toBe("30 3 * * 0");
+      });
+
+      it("accepts cron with names, ranges, steps, and lists", () => {
+        const parsed = updateSettingsSchema.parse({
+          window: {
+            cron: "0 2 1-7/2 JAN,JUL MON,FRI",
+          },
+        });
+
+        expect(parsed.window?.cron).toBe("0 2 1-7/2 JAN,JUL MON,FRI");
+      });
+
+      it("accepts a valid flat cron alias", () => {
+        const parsed = putUpdateSettingsSchema.parse({
+          cron: "15 4 * * 1-5",
+        });
+
+        expect(parsed.cron).toBe("15 4 * * 1-5");
+      });
+
+      it("accepts valid maintenanceWindow cron alias (string or object)", () => {
+        const parsedStr = updateSettingsSchema.parse({
+          maintenanceWindow: "30 3 * * 0",
+        });
+        expect(parsedStr.maintenanceWindow).toBe("30 3 * * 0");
+
+        const parsedObj = updateSettingsSchema.parse({
+          maintenanceWindow: {
+            cron: "30 3 * * 0",
+            durationMinutes: 120,
+          },
+        });
+        expect((parsedObj.maintenanceWindow as any)?.cron).toBe("30 3 * * 0");
+      });
+
+      it("rejects invalid maintenanceWindow cron", () => {
+        for (const bad of ["invalid-cron", "60 3 * * 0", "0 3 * * 0 extra"]) {
+          const resStr = updateSettingsSchema.safeParse({
+            maintenanceWindow: bad,
+          });
+          expect(resStr.success).toBe(false);
+
+          const resObj = updateSettingsSchema.safeParse({
+            maintenanceWindow: { cron: bad },
+          });
+          expect(resObj.success).toBe(false);
+        }
+      });
+
+      it("rejects a cron with wrong field count", () => {
+        for (const bad of ["0 3 * * 0 extra", "0 3 * *", ""]) {
+          const windowResult = updateSettingsSchema.safeParse({
+            window: { cron: bad },
+          });
+          expect(windowResult.success).toBe(false);
+          if (!windowResult.success) {
+            expect(
+              windowResult.error.issues.some((i) => i.path.join(".") === "window.cron"),
+            ).toBe(true);
+          }
+        }
+      });
+
+      it("rejects a flat cron with wrong field count", () => {
+        const result = putUpdateSettingsSchema.safeParse({ cron: "0 3 * * 0 extra" });
+
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues.some((i) => i.path[0] === "cron")).toBe(true);
+        }
+      });
+
+      it("rejects cron fields out of bounds", () => {
+        const cases = [
+          "60 3 * * 0", // minute out of bounds
+          "0 24 * * 0", // hour out of bounds
+          "0 3 32 * 0", // day-of-month out of bounds
+          "0 3 * 13 0", // month out of bounds
+          "0 3 * * 8", // day-of-week out of bounds
+        ];
+
+        for (const bad of cases) {
+          const result = updateSettingsSchema.safeParse({
+            window: { cron: bad },
+          });
+          expect(result.success).toBe(false);
+        }
+      });
+
+      it("rejects a cron that is not a string", () => {
+        const result = updateSettingsSchema.safeParse({
+          window: { cron: 42 },
+        });
+
+        expect(result.success).toBe(false);
+      });
     });
   });
 });
