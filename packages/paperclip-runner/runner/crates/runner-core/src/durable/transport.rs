@@ -2412,16 +2412,20 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let read_timeout = transport
+        // SO_RCVTIMEO round-trips through the kernel in jiffies, so a loaded
+        // runner (HZ=250 -> 4 ms granularity) reports the 250 ms runtime read
+        // timeout as e.g. 252 ms. Assert the steady-state timeout is the
+        // configured runtime value within kernel tick tolerance instead of
+        // requiring tick-exact equality.
+        let observed_read_timeout = transport
             .socket
             .read_timeout()
             .unwrap()
-            .expect("read_timeout");
+            .expect("runtime read timeout must be configured");
         assert!(
-            (240..=260).contains(&read_timeout.as_millis()),
-            "expected read_timeout near {:?}, got {:?}",
-            RUNTIME_READ_TIMEOUT,
-            read_timeout
+            observed_read_timeout >= RUNTIME_READ_TIMEOUT
+                && observed_read_timeout <= RUNTIME_READ_TIMEOUT + Duration::from_millis(10),
+            "runtime read timeout {observed_read_timeout:?} outside kernel-tick tolerance"
         );
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
