@@ -168,6 +168,16 @@ export function createDocumentParserClient(options: DocumentParserClientOptions)
           signal: controller.signal,
         });
       } catch (error) {
+        // The caller left (its signal fired, not our own timer): no retry, the call ends now.
+        if (context.signal?.aborted && !timedOut) {
+          throw new DocumentParserError({
+            kind: "aborted",
+            message: "the document parser call was aborted by the caller",
+            retryable: false,
+            attempts: context.attempt,
+            cause: error,
+          });
+        }
         throw new DocumentParserError({
           kind: timedOut ? "timeout" : "unavailable",
           message: timedOut

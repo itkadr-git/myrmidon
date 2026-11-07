@@ -59,6 +59,7 @@ function makePorts(overrides: {
       async updateDataset() { return null; },
       async deleteDataset() { return false; },
       async listDocuments() { return []; },
+      async listSourceDocuments() { return []; },
       async getDocument(_companyId: string, id: string) {
         if (id !== DOCUMENT_ID) return null;
         return {
@@ -108,6 +109,8 @@ function makePorts(overrides: {
       async claim() { return []; },
       async complete() {},
       async fail() { return null; },
+      async release() { return null; },
+      async releaseRunning() { return []; },
     },
     parser: {
       async parse() { throw new Error("not used"); },
