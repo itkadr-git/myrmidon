@@ -390,6 +390,45 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
     expect((await issueRow(issueId)).assigneeAgentId).toBe(agentId);
   });
 
+  // myrmidon(OPE-12004): the first no_progress_exploration stop gets one automatic retry
+  // with a hint, so it is not final and wakes nobody; the stop of that retry is final.
+  it("wakes the manager only at the final no_progress_exploration stop, not at the one that is retried", async () => {
+    const { companyId, issueId, agentId, managerId, runId } = await seed({ withManager: true });
+    await db
+      .update(issues)
+      .set({ executionRunId: runId, executionAgentNameKey: "codexcoder", executionLockedAt: STOPPED_AT })
+      .where(eq(issues.id, issueId));
+
+    await heartbeat.applyRunGuardStop(runId);
+
+    expect(await wakesFor(companyId)).toHaveLength(0);
+    expect((await issueRow(issueId)).status).toBe("in_progress");
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+
+    // The retry runs and is stopped the same way: the ceiling of 1 is spent, the stop is final.
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        errorCode: "no_progress_exploration",
+        resultJson: { runGuardStopReason: "no_progress_exploration", runGuardStats: LOOP_STATS },
+        startedAt: STOPPED_AT,
+        finishedAt: new Date(STOPPED_AT.getTime() + 5_000),
+      })
+      .where(eq(heartbeatRuns.id, retry!.id));
+    await db.update(issues).set({ checkoutRunId: retry!.id }).where(eq(issues.id, issueId));
+
+    await heartbeat.applyRunGuardStop(retry!.id);
+
+    const wakes = await wakesFor(companyId);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ agentId: managerId });
+    const issue = await issueRow(issueId);
+    expect(issue.status).toBe("blocked");
+    expect(issue.assigneeAgentId).toBe(agentId);
+  });
+
   it("accepts only the assignee's reports_to or adm as the recipient the run dispatch lets through", async () => {
     const { companyId, agentId, managerId, admId } = await seed({ withManager: true, withAdm: true });
     const strangerId = await insertAgent({ companyId, name: "Stranger" });
