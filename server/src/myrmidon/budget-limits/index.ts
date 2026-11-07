@@ -7,7 +7,8 @@
 // module serves.
 
 import type { Db } from "@myrmidon/db";
-import { and, eq, issues } from "@myrmidon/db";
+import { issues } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
 import { budgetLimitsRoutes } from "./routes.js";
 import { createForagingBudgetStatePort } from "./foraging-port.js";
 
