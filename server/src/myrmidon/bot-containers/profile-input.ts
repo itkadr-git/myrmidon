@@ -602,8 +602,24 @@ function assertHttpUrl(setting: string, value: string): void {
   }
 }
 
-/** Env variable names the compiler or the image owns; the LLM key variable may not be one of them. */
-const OWNED_ENV_NAMES = new Set(["HOME", "PATH", "HERMES_HOME", "API_SERVER_KEY", "PAPERCLIP_API_URL", "PAPERCLIP_API_KEY"]);
+/**
+ * Env variable names the compiler or the image owns; the LLM key variable may
+ * not be one of them. The board key/address pair is owned under both names:
+ * MYRMIDON_API_KEY / MYRMIDON_API_URL (the canonical names the profile
+ * compiles in, REBRAND-ENV) and the legacy PAPERCLIP_* alias written next to
+ * them — otherwise an admin could name the LLM key variable MYRMIDON_API_KEY
+ * and the bot would hand the board key to the LLM gateway.
+ */
+const OWNED_ENV_NAMES = new Set([
+  "HOME",
+  "PATH",
+  "HERMES_HOME",
+  "API_SERVER_KEY",
+  "MYRMIDON_API_URL",
+  "MYRMIDON_API_KEY",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_API_KEY",
+]);
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -625,7 +641,7 @@ export function assertBotProfileSettings(settings: BotProfileSettings): void {
   if (settings.llmApiKeyEnv) {
     if (!ENV_NAME_PATTERN.test(settings.llmApiKeyEnv) || OWNED_ENV_NAMES.has(settings.llmApiKeyEnv)) {
       throw new BotProfileInputError(
-        `${BOT_LLM_API_KEY_ENV_ENV} must be a valid variable name that is not HOME, PATH, HERMES_HOME, API_SERVER_KEY, PAPERCLIP_API_URL or PAPERCLIP_API_KEY`,
+        `${BOT_LLM_API_KEY_ENV_ENV} must be a valid variable name that is not HOME, PATH, HERMES_HOME, API_SERVER_KEY, MYRMIDON_API_URL, MYRMIDON_API_KEY, PAPERCLIP_API_URL or PAPERCLIP_API_KEY`,
       );
     }
   }
