@@ -394,7 +394,7 @@ function scripted(answers: {
 describe("vector ranking through the HNSW iterative scan", () => {
   it("reads the pgvector version, turns the iterative scan on, sizes the dataset, then ranks through the index", async () => {
     const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
-    await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, embedding: embedding() });
+    await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetId, embedding: embedding() });
 
     expect(calls.map((call) => call.text).slice(0, 6)).toEqual([
       "set local hnsw.ef_search = 64",
@@ -411,8 +411,8 @@ describe("vector ranking through the HNSW iterative scan", () => {
   it("keeps a positive pgvector answer for the life of the index", async () => {
     const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
     const index = createPostgresSearchIndex({ sql });
-    await index.search({ companyId, datasetId, embedding: embedding() });
-    await index.search({ companyId, datasetId, embedding: embedding() });
+    await index.search({ text: "", companyId, datasetId, embedding: embedding() });
+    await index.search({ text: "", companyId, datasetId, embedding: embedding() });
 
     expect(calls.filter((call) => /pg_extension/.test(call.text))).toHaveLength(1);
     expect(calls.filter(isIterativeScan)).toHaveLength(2);
@@ -424,12 +424,12 @@ describe("vector ranking through the HNSW iterative scan", () => {
     const { sql, calls } = createScriptedSql((call) => scripted({ version, size: 50_000, index: manyChunkRows(100, "v") })(call));
     const index = createPostgresSearchIndex({ sql });
 
-    await index.search({ companyId, datasetId, embedding: embedding() });
+    await index.search({ text: "", companyId, datasetId, embedding: embedding() });
     expect(calls.filter(isIterativeScan)).toHaveLength(0);
     expect(calls.filter(isIndexRanking)).toHaveLength(1);
 
     version = "0.8.7";
-    await index.search({ companyId, datasetId, embedding: embedding() });
+    await index.search({ text: "", companyId, datasetId, embedding: embedding() });
     expect(calls.filter((call) => /pg_extension/.test(call.text))).toHaveLength(2);
     expect(calls.filter(isIterativeScan)).toHaveLength(1);
     expect(calls.filter(isSizeProbe)).toHaveLength(1);
@@ -440,6 +440,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
     const rows = [chunkRow("a", 0, 0.8), chunkRow("b", 1, 0.9, secondDocumentId), chunkRow("c", 2, 0.7, "cccccccc-0000-0000-0000-000000000005")];
     const { sql } = createScriptedSql(scripted({ size: 50_000, index: rows }));
     const hits = await createPostgresSearchIndex({ sql }).search({
+      text: "",
       companyId,
       datasetId,
       embedding: embedding(),
@@ -452,7 +453,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
 
   it("returns what a large dataset has, with no exact ranking, when the scan fills fewer than kCandidates", async () => {
     const { sql, calls } = createScriptedSql(scripted({ size: 50_000, index: [chunkRow("only", 0, 0.9)], exact: manyChunkRows(100, "x") }));
-    const hits = await createPostgresSearchIndex({ sql }).search({ companyId, datasetIds: [datasetId], embedding: embedding() });
+    const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetIds: [datasetId], embedding: embedding() });
 
     expect(calls.filter(isExact)).toHaveLength(0);
     expect(calls.filter(isIndexRanking)).toHaveLength(1);
@@ -461,7 +462,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
 
   it("does not probe or rank exactly a search without a dataset", async () => {
     const { sql, calls } = createScriptedSql(scripted({ size: 5, index: [chunkRow("only", 0, 0.9)] }));
-    const hits = await createPostgresSearchIndex({ sql }).search({ companyId, embedding: embedding() });
+    const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, embedding: embedding() });
 
     expect(calls.filter(isSizeProbe)).toHaveLength(0);
     expect(calls.filter(isExact)).toHaveLength(0);
@@ -474,7 +475,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
     const { sql, calls } = createScriptedSql(
       scripted({ size: 500, index: manyChunkRows(100, "index"), exact: [chunkRow("exact-1", 0, 0.8), chunkRow("exact-2", 1, 0.7, secondDocumentId)] }),
     );
-    const hits = await createPostgresSearchIndex({ sql }).search({ companyId, datasetIds: [datasetId], embedding: embedding() });
+    const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetIds: [datasetId], embedding: embedding() });
 
     const probe = calls.find(isSizeProbe);
     expect(probe?.text).toContain("d.dataset_id = any($2::uuid[])");
@@ -495,7 +496,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
       [10_001, false],
     ] as const) {
       const { sql, calls } = createScriptedSql(scripted({ size, index: manyChunkRows(100, "v") }));
-      await createPostgresSearchIndex({ sql }).search({ companyId, datasetIds: [datasetId], embedding: embedding() });
+      await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetIds: [datasetId], embedding: embedding() });
       expect(calls.filter(isIndexRanking)).toHaveLength(small ? 0 : 1);
       expect(calls.filter(isExact)).toHaveLength(small ? 1 : 0);
     }
@@ -504,6 +505,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
   it("honours exactSetMaxChunks, and 0 sends every dataset through the index without a probe", async () => {
     const custom = createScriptedSql(scripted({ size: 300, index: manyChunkRows(100, "v") }));
     await createPostgresSearchIndex({ sql: custom.sql, exactSetMaxChunks: 200 }).search({
+      text: "",
       companyId,
       datasetIds: [datasetId],
       embedding: embedding(),
@@ -513,6 +515,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
 
     const off = createScriptedSql(scripted({ size: 5, index: manyChunkRows(100, "v") }));
     await createPostgresSearchIndex({ sql: off.sql, exactSetMaxChunks: 0 }).search({
+      text: "",
       companyId,
       datasetIds: [datasetId],
       embedding: embedding(),
@@ -524,7 +527,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
 
   it("sets hnsw.max_scan_tuples right after the iterative scan: 100 000 by default, the option otherwise", async () => {
     const byDefault = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
-    await createPostgresSearchIndex({ sql: byDefault.sql }).search({ companyId, datasetId, embedding: embedding() });
+    await createPostgresSearchIndex({ sql: byDefault.sql }).search({ text: "", companyId, datasetId, embedding: embedding() });
     const defaultTexts = byDefault.calls.map((call) => call.text);
     expect(defaultTexts.indexOf("set local hnsw.max_scan_tuples = 100000")).toBe(
       defaultTexts.indexOf("set local hnsw.iterative_scan = relaxed_order") + 1,
@@ -532,6 +535,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
 
     const withLimit = createScriptedSql(scripted({ size: 50_000, index: manyChunkRows(100, "v") }));
     await createPostgresSearchIndex({ sql: withLimit.sql, maxScanTuples: 60_000 }).search({
+      text: "",
       companyId,
       datasetId,
       embedding: embedding(),
@@ -545,7 +549,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
   for (const version of ["0.7.4", "0.5.1", null]) {
     it(`uses the plain statement where pgvector has no iterative scan (${version ?? "no vector extension"})`, async () => {
       const { sql, calls } = createScriptedSql(scripted({ version, size: 5, index: [chunkRow("plain", 0, 0.9)] }));
-      const hits = await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, embedding: embedding() });
+      const hits = await createPostgresSearchIndex({ sql }).search({ text: "", companyId, datasetId, embedding: embedding() });
 
       // No statement the old extension would refuse: the settings are never sent, so the transaction
       // is never aborted and nothing has to be rolled back. No probe either: the plain statement is
@@ -571,7 +575,7 @@ describe("vector ranking through the HNSW iterative scan", () => {
       return answer(call);
     });
     const error = await createPostgresSearchIndex({ sql })
-      .search({ companyId, datasetId, embedding: embedding() })
+      .search({ text: "", companyId, datasetId, embedding: embedding() })
       .then(() => null, (thrown: unknown) => thrown);
 
     expect((error as Error).message).toMatch(/deadlock/);
