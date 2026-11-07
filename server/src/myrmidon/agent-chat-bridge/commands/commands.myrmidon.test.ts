@@ -14,14 +14,17 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  instanceSettings,
   issues,
   userUiLanguage,
 } from "@myrmidon/db";
+import { BRIDGE_LANGUAGE_SETTINGS_KEY } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { telegramConversationUserId } from "../identity.js";
+import { CROSS_CHANNEL_MESSAGES_ENV } from "../settings.js";
 import {
   TELEGRAM_DM_COMMANDS,
   parseBridgedCommand,
@@ -1036,6 +1039,164 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((switched as { text: string }).text).toBe(
       "Unknown command /foo. The command list is in /help.",
     );
+  });
+
+  it("12d. (1.7-TG-LOCALE-HELP) /help and /status render full snapshot texts per locale; switching the language switches the replies", async () => {
+    const ruUser = randomUUID();
+    const enUser = randomUUID();
+    await db.insert(userUiLanguage).values([
+      { userId: ruUser, language: "ru" },
+      { userId: enUser, language: "en" },
+    ]);
+    // Pin the cross-channel line off so the /status snapshot is fully
+    // deterministic (the default shares 12 web-chat messages, and the
+    // conversation lookup itself would depend on the web-chat rows).
+    const previousCrossChannel = process.env[CROSS_CHANNEL_MESSAGES_ENV];
+    process.env[CROSS_CHANNEL_MESSAGES_ENV] = "0";
+
+    try {
+      const ruConv = await createTelegramConversation({ boardUserId: ruUser });
+      const ruHelp = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: ruConv.issue.id, boardUserId: ruUser, text: "/help" }),
+      );
+      expect(ruHelp).toEqual({
+        kind: "reply",
+        command: "help",
+        text: [
+          "Здесь вы общаетесь с Agent A. Задачи из этого чата создаются по необходимости.",
+          "",
+          "/help — Показать команды",
+          "/new — Начать новую сессию (необязательно: /new <модель>)",
+          "/model — Показать или сменить модель для этого чата",
+          "/think — Показать или задать глубину рассуждений",
+          "/stop — Остановить текущий ответ",
+          "/status — Показать модель, сессию и текущий ответ",
+          "/plan — Превратить сообщение в план эпика (только владелец компании)",
+          "/accept — Принять карточку плана (только владелец компании)",
+          "/reject — Отклонить карточку плана (только владелец компании)",
+          "/agents — Показать агентов компании и их алиасы",
+          "/to — Выбрать адресата по умолчанию (/to <алиас>; без аргумента — сброс)",
+          "/who — Показать текущего адресата",
+          "",
+          "/model и /think действуют только на этот чат в Telegram.",
+        ].join("\n"),
+      });
+
+      const ruStatus = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: ruConv.issue.id, boardUserId: ruUser, text: "/status" }),
+      );
+      expect(ruStatus).toEqual({
+        kind: "reply",
+        command: "status",
+        text: [
+          "Agent A · чат в Telegram",
+          "Модель: model-a (по умолчанию у агента)",
+          "Рассуждения: по умолчанию у адаптера (по умолчанию у адаптера)",
+          "Сессия: #1, сессия модели начнётся заново со следующим ответом",
+          "Сейчас: простаивает",
+          "Веб-чат: не общий",
+        ].join("\n"),
+      });
+
+      const enConv = await createTelegramConversation({ boardUserId: enUser });
+      const enHelp = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: enConv.issue.id, boardUserId: enUser, text: "/help" }),
+      );
+      expect(enHelp).toEqual({
+        kind: "reply",
+        command: "help",
+        text: [
+          "You are talking to Agent A here. Tasks from this chat are created as needed.",
+          "",
+          "/help — Show commands",
+          "/new — Start a new session (optional: /new <model>)",
+          "/model — Show or change the model for this chat",
+          "/think — Show or set the reasoning effort",
+          "/stop — Stop the current reply",
+          "/status — Show model, session and current reply",
+          "/plan — Turn a message into an epic plan (company owner only)",
+          "/accept — Accept a suggested plan card (company owner only)",
+          "/reject — Reject a suggested plan card (company owner only)",
+          "/agents — Show the company's agents and their aliases",
+          "/to — Choose the default addressee (/to <alias>; no argument resets)",
+          "/who — Show the current addressee",
+          "",
+          "/model and /think apply to this Telegram chat only.",
+        ].join("\n"),
+      });
+
+      const enStatus = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: enConv.issue.id, boardUserId: enUser, text: "/status" }),
+      );
+      expect(enStatus).toEqual({
+        kind: "reply",
+        command: "status",
+        text: [
+          "Agent A · chat in Telegram",
+          "Model: model-a (agent default)",
+          "Reasoning effort: adapter default (adapter default)",
+          "Session: #1, model session will start fresh with the next reply",
+          "Now: idle",
+          "Web chat: not shared",
+        ].join("\n"),
+      });
+
+      // The language is read per reply: switching the RU user's preference to
+      // English switches both commands on their next run, without a restart.
+      await db.update(userUiLanguage).set({ language: "en" }).where(eq(userUiLanguage.userId, ruUser));
+      const switchedHelp = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: ruConv.issue.id, boardUserId: ruUser, text: "/help" }),
+      );
+      expect(switchedHelp).toEqual(enHelp);
+
+      const switchedStatus = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: ruConv.issue.id, boardUserId: ruUser, text: "/status" }),
+      );
+      expect(switchedStatus).toEqual(enStatus);
+
+      // Switching the instance-wide default language switches replies for users
+      // without an individual preference (acceptance criterion: "смена языка инстанса меняет ответы").
+      const plainUser = randomUUID();
+      const plainConv = await createTelegramConversation({ boardUserId: plainUser });
+      const defaultPlainHelp = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: plainConv.issue.id, boardUserId: plainUser, text: "/help" }),
+      );
+      expect(defaultPlainHelp).toEqual(enHelp);
+
+      const defaultPlainStatus = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: plainConv.issue.id, boardUserId: plainUser, text: "/status" }),
+      );
+      expect(defaultPlainStatus).toEqual(enStatus);
+
+      // Change instance language to Russian
+      const generalRu = { [BRIDGE_LANGUAGE_SETTINGS_KEY]: { language: "ru" } };
+      const [existingSetting] = await db.select({ id: instanceSettings.id }).from(instanceSettings).limit(1);
+      if (existingSetting) {
+        await db.update(instanceSettings).set({ general: generalRu, updatedAt: new Date() });
+      } else {
+        await db.insert(instanceSettings).values({ general: generalRu });
+      }
+
+      const instanceRuHelp = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: plainConv.issue.id, boardUserId: plainUser, text: "/help" }),
+      );
+      expect(instanceRuHelp).toEqual(ruHelp);
+
+      const instanceRuStatus = await runBridgedDirectMessageCommand(
+        baseInput({ conversationIssueId: plainConv.issue.id, boardUserId: plainUser, text: "/status" }),
+      );
+      expect(instanceRuStatus).toEqual(ruStatus);
+    } finally {
+      const [settingToReset] = await db.select({ id: instanceSettings.id }).from(instanceSettings).limit(1);
+      if (settingToReset) {
+        await db.update(instanceSettings).set({ general: {}, updatedAt: new Date() });
+      }
+      if (previousCrossChannel === undefined) {
+        delete process.env[CROSS_CHANNEL_MESSAGES_ENV];
+      } else {
+        process.env[CROSS_CHANNEL_MESSAGES_ENV] = previousCrossChannel;
+      }
+    }
   });
 
   it("13. commands refuse a web conversation and another person's Telegram conversation, writing nothing", async () => {
