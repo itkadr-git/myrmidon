@@ -298,6 +298,10 @@ it.each([
   { alreadyEnded: true, appendFailure: false, holdSpawned: true },
   { alreadyEnded: true, appendFailure: false, completedTerminalAck: "pending" },
   { alreadyEnded: true, appendFailure: false, completedTerminalAck: "completed" },
+  // The controller commits every retained event before it reaches the terminal
+  // result, so slow durable commits leave that result queued behind the
+  // backlog for longer than the runner's fixed acknowledgement window.
+  { alreadyEnded: true, appendFailure: false, completedTerminalAck: "completed", slowCommits: true },
   { alreadyEnded: true, appendFailure: false, completedTerminalAck: "repeat" },
   { alreadyEnded: true, appendFailure: false, finalRetirementRevocation: "abort" },
   { alreadyEnded: true, appendFailure: false, finalRetirementRevocation: "revoked" },
@@ -313,7 +317,7 @@ it.each([
     terminalReplay: true,
   },
 ])(
-  "settles only retained control authority without starting another provider turn ($alreadyEnded/$appendFailure/$bareCodex/$epochFailure/$terminalReplay/$holdSpawned/$homeScoped/$missingHome/$unknownExit) startup-failure-proof=$startupFailureProof completed-ack=$completedTerminalAck retired-revocation=$finalRetirementRevocation",
+  "settles only retained control authority without starting another provider turn ($alreadyEnded/$appendFailure/$bareCodex/$epochFailure/$terminalReplay/$holdSpawned/$homeScoped/$missingHome/$unknownExit) startup-failure-proof=$startupFailureProof completed-ack=$completedTerminalAck retired-revocation=$finalRetirementRevocation slow-commits=$slowCommits",
   async ({
     alreadyEnded,
     appendFailure,
@@ -327,6 +331,7 @@ it.each([
     missingHome,
     unknownExit,
     startupFailureProof,
+    slowCommits,
   }) => {
     const replaySpyRestorers: Array<() => void> = [];
     const replayRetirements: ReturnType<typeof maintenanceReplaySnapshot>[] = [];
@@ -556,7 +561,10 @@ it.each([
           ),
         )
         .digest("hex");
-      const appendEvent = vi.fn(async (_event: PrpEvent) => {});
+      const appendEvent = vi.fn(async (_event: PrpEvent) => {
+        if (slowCommits)
+          await new Promise((resolveCommit) => setTimeout(resolveCommit, 30));
+      });
       const maintenanceAbort = new AbortController();
       let finalAuthorityRevoked = false;
       const authorize = vi.fn(async () => {

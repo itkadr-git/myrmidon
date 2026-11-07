@@ -47,6 +47,9 @@ enum CommandLifecycle {
 }
 
 const TERMINAL_RESULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound for a terminal result acknowledgement wait that keeps being
+/// extended by controller progress (see `wait_for_terminal_result_ack`).
+const TERMINAL_RESULT_ACK_MAX_WAIT: Duration = Duration::from_secs(10);
 const CUMULATIVE_ACK_PERSIST_INTERVAL: usize = 16;
 
 fn sleep_for_reconnect(base: Duration, max_delay: Duration, attempt: &mut u32) {
@@ -1168,7 +1171,8 @@ fn wait_for_terminal_result_ack(
     connection: &ConnectionMetadata,
     result: &StoredCommandResult,
 ) -> Result<(), DurableRunnerError> {
-    let deadline = Instant::now() + TERMINAL_RESULT_ACK_TIMEOUT;
+    let started = Instant::now();
+    let mut deadline = started + TERMINAL_RESULT_ACK_TIMEOUT;
     let mut ack_persistence = CumulativeAckPersistence::default();
     while Instant::now() < deadline {
         let Some(message) = transport.receive_json()? else {
@@ -1205,6 +1209,17 @@ fn wait_for_terminal_result_ack(
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
                 ack_persistence.apply(state, store, acked, connection.protocol_version)?;
+                // The controller handles frames strictly in order, so this
+                // result can sit behind event frames it is still committing.
+                // Each cumulative ACK proves the controller is alive and
+                // draining that backlog; queue wait must not consume the
+                // acknowledgement budget. A silent controller still times out
+                // one full window after its last ACK, and never later than
+                // the hard cap.
+                deadline = deadline.max(
+                    (Instant::now() + TERMINAL_RESULT_ACK_TIMEOUT)
+                        .min(started + TERMINAL_RESULT_ACK_MAX_WAIT),
+                );
             }
             Some("ping") => transport.send_json(&control_envelope(
                 state,
