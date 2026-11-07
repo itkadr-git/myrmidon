@@ -65,6 +65,7 @@ type putStub struct {
 	keys       []string
 	hard       []int64
 	ensureKeys []string
+	removeKeys []string
 }
 
 func (p *putStub) Ensure(_ context.Context, botKey string) (int, error) {
@@ -74,6 +75,12 @@ func (p *putStub) Ensure(_ context.Context, botKey string) (int, error) {
 	return disk.FirstProjectID, p.err
 }
 
+func (p *putStub) Remove(_ context.Context, botKey string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.removeKeys = append(p.removeKeys, botKey)
+	return p.err
+}
 func (p *putStub) Put(_ context.Context, botKey string, hard int64) (disk.Result, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -346,6 +346,37 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect((await openLoadByAgent(db, companyId)).get(agent)).toBe(1);
     });
 
+    it("excludes a leased-but-unassigned blocked task from agent load, while counting unblocked lease", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-with-leases");
+      const blocker = await seedTask(companyId, { status: "in_progress" });
+      const blockedLeasedTask = await seedTask(companyId, { assigneeAgentId: null, status: "todo" });
+      await seedLease(companyId, agent, blockedLeasedTask);
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blocker,
+        relatedIssueId: blockedLeasedTask,
+        type: "blocks",
+      });
+
+      const unblockedLeasedTask = await seedTask(companyId, { assigneeAgentId: null, status: "todo" });
+      await seedLease(companyId, agent, unblockedLeasedTask);
+
+      // Blocked lease is excluded, unblocked lease is counted -> load is 1
+      const load = await openLoadByAgent(db, companyId);
+      expect(load.get(agent)).toBe(1);
+
+      // With maxActiveTasks: 2, agent has room for 1 more task (load 1 < 2)
+      const readyTask = await seedTask(companyId, { assigneeAgentId: null, status: "todo" });
+      const wakes: string[] = [];
+      const result = await matchCompany(deps(wakes, { maxActiveTasks: 2 }), companyId);
+
+      expect(result.pairs.map((pair) => pair.issueId)).toEqual([readyTask]);
+      expect(result.pairs.map((pair) => pair.agentId)).toEqual([agent]);
+      expect(wakes).toEqual([agent]);
+      expect((await openLoadByAgent(db, companyId)).get(agent)).toBe(2);
+    });
+
     it("does not event-claim a task with an open blocker", async () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-blocked-event");

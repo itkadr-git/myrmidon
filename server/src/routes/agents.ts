@@ -21,7 +21,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@myrmidon/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { toolConnections } from "@myrmidon/db";
 import { sha256Digest } from "../services/feedback-redaction.js";
@@ -125,6 +125,11 @@ import { resolveEnvironmentExecutionTarget } from "../services/environment-execu
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
+import {
+  hermesGatewayConfigProblem,
+  localAdapterConfigProblem,
+  localAdapterSecurityConfigChanged,
+} from "../myrmidon/agent-local-adapter-config.js"; // myrmidon(1.6.6 OPE-11239)
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
@@ -2094,17 +2099,41 @@ export function agentRoutes(
     payload: Record<string, unknown> | null | undefined,
   ) {
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
-    if (!issueId) {
-      return {
-        status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
-        issueId: null,
-        executionRunId: null,
-        executionAgentId: null,
-        executionAgentName: null,
-      };
-    }
+    const skippedRequest = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, agent.companyId),
+        eq(agentWakeupRequests.agentId, agent.id),
+        eq(agentWakeupRequests.status, "skipped"),
+        ...(issueId
+          ? [sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`]
+          : []),
+      ))
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const skipDetails = skippedRequest?.payload && typeof skippedRequest.payload === "object"
+      ? (skippedRequest.payload as Record<string, unknown>).heartbeatSkip
+      : null;
+    const reason = skippedRequest?.reason ??
+      (skipDetails && typeof skipDetails === "object" && typeof (skipDetails as Record<string, unknown>).reason === "string"
+        ? (skipDetails as Record<string, unknown>).reason
+        : null);
+    const detailText = skipDetails && typeof skipDetails === "object"
+      ? (skipDetails as Record<string, unknown>).reason
+      : null;
+    const responseBase = {
+      status: "skipped" as const,
+      reason: typeof reason === "string" ? reason : "wakeup_skipped",
+      message: typeof detailText === "string" ? detailText : "Wakeup was skipped.",
+      issueId,
+      executionRunId: null,
+      executionAgentId: null,
+      executionAgentName: null,
+      ...(skipDetails && typeof skipDetails === "object" ? { details: skipDetails } : {}),
+    };
+    if (!issueId) return responseBase;
 
     const issue = await db
       .select({
@@ -2117,46 +2146,25 @@ export function agentRoutes(
 
     const blocker = issue ? await getExecutionBlocker(db, agent.companyId, issueId) : null;
     if (blocker) return {
-      status: "skipped" as const, reason: "execution_reconciliation_required",
-      message: blocker.nextAction, issueId,
-      executionRunId: blocker.runId, executionAgentId: blocker.agentId, executionAgentName: null,
+      ...responseBase, reason: "execution_reconciliation_required",
+      message: blocker.nextAction,
+      executionRunId: blocker.runId, executionAgentId: blocker.agentId,
     };
-
-    if (!issue?.executionRunId) {
-      return {
-        status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
-        issueId,
-        executionRunId: null,
-        executionAgentId: null,
-        executionAgentName: null,
-      };
-    }
+    if (!issue?.executionRunId) return responseBase;
 
     const executionRun = await heartbeat.getRun(issue.executionRunId);
-    if (!executionRun || (executionRun.status !== "queued" && executionRun.status !== "running")) {
-      return {
-        status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
-        issueId,
-        executionRunId: issue.executionRunId,
-        executionAgentId: null,
-        executionAgentName: null,
-      };
-    }
+    if (!executionRun || (executionRun.status !== "queued" && executionRun.status !== "running")) return {
+      ...responseBase, executionRunId: issue.executionRunId,
+    };
 
     const executionAgent = await svc.getById(executionRun.agentId);
     const executionAgentName = executionAgent?.name ?? null;
-
     return {
-      status: "skipped" as const,
+      ...responseBase,
       reason: "issue_execution_deferred",
       message: executionAgentName
         ? `Wakeup was deferred because this issue is already being executed by ${executionAgentName}.`
         : "Wakeup was deferred because this issue already has an active execution run.",
-      issueId,
       executionRunId: executionRun.id,
       executionAgentId: executionRun.agentId,
       executionAgentName,
@@ -2706,6 +2714,22 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  // myrmidon(1.6.6 OPE-11239): sandbox and permission keys of the local CLI adapters are
+  // security settings; changing one needs an instance admin (rules: myrmidon/agent-local-adapter-config.ts).
+  function assertLocalAdapterSecurityChangeAllowed(
+    req: Request,
+    adapterType: string | null | undefined,
+    previousAdapterConfig: Record<string, unknown> | null | undefined,
+    nextAdapterConfig: Record<string, unknown> | null | undefined,
+  ) {
+    const adapterDefaults: Record<string, unknown> = adapterType === "claude_local"
+      ? { dangerouslySkipPermissions: true }
+      : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
+    if (localAdapterSecurityConfigChanged(adapterType, previousAdapterConfig, nextAdapterConfig, adapterDefaults)) {
+      assertInstanceAdmin(req);
+    }
+  }
+
   async function assertAdapterConfigConstraints(
     companyId: string,
     adapterType: string | null | undefined,
@@ -2714,6 +2738,10 @@ export function agentRoutes(
     // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
     const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
+    const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
+    if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
+    const gatewayProblem = hermesGatewayConfigProblem(adapterType, adapterConfig);
+    if (gatewayProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${gatewayProblem}`);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -4653,6 +4681,7 @@ function getActorIdentityPart(req: Request): string {
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertInheritProcessEnvChangeAllowed(req, { companyId, agentId: null, previousAdapterConfig: null, nextAdapterConfig: rawHireAdapterConfig }); // myrmidon(S4)
+    assertLocalAdapterSecurityChangeAllowed(req, hireInput.adapterType, null, rawHireAdapterConfig); // myrmidon(1.6.6 OPE-11239)
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
@@ -4966,6 +4995,7 @@ function getActorIdentityPart(req: Request): string {
         rawCreateAdapterConfig,
       ),
     );
+    assertLocalAdapterSecurityChangeAllowed(req, createInput.adapterType, null, rawCreateAdapterConfig);
     assertExternalInstructionsAdmin(req, {
       id: agentId,
       companyId,
@@ -5089,6 +5119,47 @@ function getActorIdentityPart(req: Request): string {
     // check below. The gate applies only when the request carries `boardAdmin`,
     // so ordinary permission updates keep their existing behavior.
     const requestedBoardAdmin = req.body.boardAdmin as boolean | undefined;
+    // myrmidon(1.6.6 SETTINGS-UI / OPE-11237): modifying agent authorizationPolicy requires
+    // explicit users:manage_permissions and prohibits agents from modifying their own policy.
+    const requestedAuthPolicy = req.body.authorizationPolicy as Record<string, unknown> | null | undefined;
+    if (requestedAuthPolicy !== undefined) {
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId) {
+          res.status(403).json({ error: "Agent authentication required" });
+          return;
+        }
+        if (req.actor.agentId === existing.id) {
+          res.status(403).json({ error: "An agent cannot modify its own authorization policy" });
+          return;
+        }
+        if (
+          !(await access.hasPermission(
+            existing.companyId,
+            "agent",
+            req.actor.agentId,
+            "users:manage_permissions",
+          ))
+        ) {
+          res.status(403).json({ error: "Missing users:manage_permissions grant" });
+          return;
+        }
+      } else {
+        if (!hasCompanyAccess(req, existing.companyId)) throw notFound("Agent not found");
+        assertCompanyAccess(req, existing.companyId);
+        const isLocalImplicitActor =
+          req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+        if (!isLocalImplicitActor) {
+          const allowed = await access.canUser(
+            existing.companyId,
+            req.actor.userId,
+            "users:manage_permissions",
+          );
+          if (!allowed) {
+            throw forbidden("Missing users:manage_permissions permission for the company");
+          }
+        }
+      }
+    }
     // myrmidon(1.6.5-F-23): the off-run self-secret toggle is board-only.
     if (req.body.offRunSecretRead !== undefined && req.actor.type !== "board") {
       res.status(403).json({ error: "Only board actors can manage off-run secret read grants" });
@@ -5748,6 +5819,12 @@ function getActorIdentityPart(req: Request): string {
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      assertLocalAdapterSecurityChangeAllowed(
+        req,
+        requestedAdapterType,
+        asRecord(existing.adapterConfig),
+        normalizedEffectiveAdapterConfig,
+      );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
@@ -5806,6 +5883,20 @@ function getActorIdentityPart(req: Request): string {
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    if (typeof patchData.budgetMonthlyCents === "number") {
+      const actorUserId = req.actor.type === "agent" ? null : (req.actor.userId ?? null);
+      await budgets.upsertPolicy(
+        agent.companyId,
+        {
+          scopeType: "agent",
+          scopeId: agent.id,
+          amount: patchData.budgetMonthlyCents,
+          windowKind: "calendar_month_utc",
+        },
+        actorUserId,
+      );
     }
 
     await logActivity(db, {
@@ -6480,7 +6571,25 @@ function getActorIdentityPart(req: Request): string {
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent, wakePayload));
+      const skipped = await opts.skippedResponse(agent, wakePayload);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: id,
+        runId: null,
+        action: "heartbeat.wakeup_skipped",
+        entityType: "agent",
+        entityId: id,
+        details: {
+          issueId: typeof wakePayload?.issueId === "string" ? wakePayload.issueId : null,
+          reason: typeof skipped === "object" && skipped !== null && "reason" in skipped ? skipped.reason : "wakeup_skipped",
+          message: typeof skipped === "object" && skipped !== null && "message" in skipped ? skipped.message : null,
+          details: typeof skipped === "object" && skipped !== null && "details" in skipped ? skipped.details : null,
+        },
+      });
+      res.status(202).json(skipped);
       return;
     }
 

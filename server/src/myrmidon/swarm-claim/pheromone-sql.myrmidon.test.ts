@@ -355,6 +355,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     }
   });
 
+
   it("the routing sends each task to exactly one caste, and the matcher pools read the same routing", async () => {
     const { companyId } = await seedCompany();
     const [qaProject] = await db

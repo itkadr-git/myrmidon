@@ -177,6 +177,7 @@ function sandbox({ job = null, windowState = "on", health, predeployHealth } = {
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
+      "MYRMIDON_DEPLOY_MIN_FREE_GB=0",
       // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
       // default and refuses without its inputs. The path list is company-free
       // here (this harness has no BOARD_COMPANY_ID).

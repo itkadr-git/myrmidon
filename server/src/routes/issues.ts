@@ -43,8 +43,19 @@ import {
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
-import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
-import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import type { ReviewHeadFailedChecksResolver, ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+// myrmidon(OPE-11970): a review return on the same PR head, or only on infrastructure checks, does not wake the executor.
+import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmidon/review-return-guard/guard.js";
+import {
+  readReviewInfraCheckNames,
+  readReviewReturnGuardEnabled,
+  withChangesRequestedHeadSha,
+} from "../myrmidon/review-return-guard/policy.js";
+import {
+  REVIEW_CI_WAIT_INTERVAL_MS,
+  REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+} from "../myrmidon/review-stage-recovery/policy.js";
 import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
@@ -167,6 +178,7 @@ import {
   ISSUE_LIST_AGENT_DEFAULT_LIMIT,
   ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT,
   ISSUE_LIST_AGENT_MAX_LIMIT,
+  shouldApplyIssueListAgentDefaults,
   issueListAgentDefaultsEnabled,
   type CompactIssue,
   type CompanySearchExtractQuery,
@@ -367,6 +379,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
   safeNormalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -3063,8 +3076,19 @@ function buildExecutionStageWakeup(input: {
       nextState.currentParticipant?.type === "agent"
         ? (nextState.currentParticipant.agentId ?? null)
         : null;
+    const isExecutionReviewParticipantRecovery =
+      input.requestedByActorType === "agent" &&
+      nextState.currentStageType === "review" &&
+      input.interruptedRunId !== null &&
+      previousState?.status === "pending" &&
+      previousState.currentStageId === nextState.currentStageId &&
+      executionPrincipalsEqual(
+        previousState.currentParticipant ?? null,
+        nextState.currentParticipant ?? null,
+      );
     const stageChanged =
       input.reenteringReview === true ||
+      isExecutionReviewParticipantRecovery ||
       previousState?.status !== "pending" ||
       previousState?.currentStageId !== nextState.currentStageId ||
       !executionPrincipalsEqual(
@@ -3076,7 +3100,9 @@ function buildExecutionStageWakeup(input: {
     const reason =
       nextState.currentStageType === "approval"
         ? "execution_approval_requested"
-        : "execution_review_requested";
+        : isExecutionReviewParticipantRecovery
+          ? "execution_review_participant_recovery"
+          : "execution_review_requested";
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
       wakeRole:
@@ -3712,13 +3738,14 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
+    resolveReviewHeadFailedChecks?: ReviewHeadFailedChecksResolver;
     insertReviewAdmissionWakeup?: (
       agentId: string,
       options: WakeupOptions,
       tx: Db,
       companyId?: string,
-    ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
-    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
+    ) => Promise<{ created: boolean; skippedMissingAgent?: boolean; deduplicated?: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -8527,15 +8554,14 @@ export function issueRoutes(
       rawLimit !== undefined && /^\d+$/.test(rawLimit)
         ? Number.parseInt(rawLimit, 10)
         : null;
-    // myrmidon(F16): agent actors get the defect-fix defaults (compact view,
-    // limit 200, max 500, description omitted in compact) behind the instance
-    // setting `issuesListAgentDefaults`; absent means ON, `{enabled: false}`
-    // restores the pre-feature behaviour byte-for-byte.
-    const agentDefaultsEnabled =
-      req.actor.type === "agent" &&
-      issueListAgentDefaultsEnabled(
-        (await instanceSettings.getGeneral()).issuesListAgentDefaults,
-      );
+    // myrmidon(F16, OPE-9997): agent actors and non-agent integration board keys
+    // get the defect-fix defaults (compact view, limit 200, max 500, description
+    // omitted in compact) behind the instance setting `issuesListAgentDefaults`;
+    // absent means ON, `{enabled: false}` restores the pre-feature behaviour byte-for-byte.
+    const agentDefaultsEnabled = shouldApplyIssueListAgentDefaults(
+      req.actor,
+      (await instanceSettings.getGeneral()).issuesListAgentDefaults,
+    );
     const limit =
       parsedLimit === null
         ? agentDefaultsEnabled
@@ -12702,18 +12728,29 @@ export function issueRoutes(
           return;
         }
       }
-      if (req.actor.type === "agent" && effectiveParentId) {
-        createParent = await svc.getById(effectiveParentId);
+      if (effectiveParentId) {
+        if (!createParent) {
+          createParent = await svc.getById(effectiveParentId);
+        }
         if (!createParent || createParent.companyId !== companyId) {
           res.status(404).json({ error: "Parent issue not found" });
           return;
         }
         if (
+          req.actor.type === "agent" &&
           !isTaskBridgeKeyActor(req) &&
           !(await assertIssueWriteInfluenceAllowed(req, res, createParent))
         )
           return;
       }
+      const inheritedProjectId =
+        rawCreateBody.projectId == null && createParent?.projectId
+          ? createParent.projectId
+          : null;
+      const effectiveProjectId =
+        typeof rawCreateBody.projectId === "string" && rawCreateBody.projectId.length > 0
+          ? rawCreateBody.projectId
+          : (inheritedProjectId ?? null);
       if (
         !watchdogProductBugFollowUp &&
         !(await assertTaskWatchdogCreateIssueAllowed(
@@ -12735,7 +12772,7 @@ export function issueRoutes(
         issue: null,
         status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
         assigneeAgentId: normalizedAssigneeAgentId,
-        projectId: typeof rawCreateBody.projectId === "string" ? rawCreateBody.projectId : null,
+        projectId: effectiveProjectId,
         labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
         casteKey: typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null,
         harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
@@ -12795,6 +12832,7 @@ export function issueRoutes(
       const createBody = {
         ...rawCreateBody,
         parentId: effectiveParentId,
+        ...(effectiveProjectId !== null ? { projectId: effectiveProjectId } : {}),
         ...(normalizedAssigneeAgentId !== undefined
           ? { assigneeAgentId: normalizedAssigneeAgentId }
           : {}),
@@ -15630,6 +15668,14 @@ export function issueRoutes(
                     : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
                 );
               }
+              // myrmidon(OPE-11970): remember the pull request head this return was made on.
+              // The next return on the same head does not wake the executor again.
+              if (updateFields.executionState && typeof updateFields.executionState === "object") {
+                updateFields.executionState = withChangesRequestedHeadSha(
+                  updateFields.executionState as Record<string, unknown>,
+                  ci.headSha,
+                );
+              }
             }
             if (lockedTransition.decision?.outcome === "changes_requested") {
               const hasHumanDecisionBlocker = lockedExisting.blockerMetadata?.blockReason === "human_decision";
@@ -15825,23 +15871,140 @@ export function issueRoutes(
                 // myrmidon(OPE-10045): wake the kept participant when the task returns to review.
                 reenteringReview: existing.status !== "in_review",
               });
+              const ciAdmissionCandidate =
+                stageWake?.wakeup.reason === "execution_review_requested" ||
+                stageWake?.wakeup.reason === "execution_review_participant_recovery";
+              let reviewerAdmissionDeferred = false;
               if (stageWake?.agentId) {
-                const admission = await insertReviewAdmissionWakeup(
-                  stageWake.agentId,
-                  stageWake.wakeup,
-                  tx as unknown as Db,
-                  updated.companyId,
-                );
-                if (admission && admission.created === false && !admission.skippedMissingAgent) {
-                  throw new Error(
-                    `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                let admitReviewer = true;
+                if (ciAdmissionCandidate) {
+                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                    companyId: updated.companyId,
+                    issueId: updated.id,
+                  });
+                  if (ci.state === "pending" || ci.state === "unknown") {
+                    admitReviewer = false;
+                    reviewerAdmissionDeferred = true;
+                    if (ci.state === "unknown") {
+                      const headKey = ci.headSha ?? "unknown-head";
+                      const eventIdempotencyKey = `review-ci-unreadable:${updated.id}:${headKey}`;
+                      const priorEvent = await tx.query.activityLog.findFirst({
+                        where: and(
+                          eq(activityLog.companyId, updated.companyId),
+                          eq(activityLog.entityType, "issue"),
+                          eq(activityLog.entityId, updated.id),
+                          eq(activityLog.action, "review_ci_unreadable"),
+                          sql`${activityLog.details}->>'idempotencyKey' = ${eventIdempotencyKey}`,
+                        ),
+                      });
+                      if (!priorEvent) {
+                        await logActivity(tx as unknown as Db, {
+                          companyId: updated.companyId,
+                          actorType: "system",
+                          actorId: "review-admission",
+                          agentId: null,
+                          runId: actor.runId,
+                          action: "review_ci_unreadable",
+                          entityType: "issue",
+                          entityId: updated.id,
+                          details: {
+                            idempotencyKey: eventIdempotencyKey,
+                            pullRequestUrl: ci.pullRequestUrl,
+                            headSha: ci.headSha,
+                            reason: ci.reason ?? "unknown",
+                          },
+                        });
+                      }
+                    }
+                    const previousPolicy = normalizeIssueExecutionPolicy(
+                      (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                    );
+                    const monitor = {
+                      nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
+                      notes: `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
+                      scheduledBy: "assignee" as const,
+                      kind: "external_service" as const,
+                      serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+                      externalRef: ci.pullRequestUrl ?? updated.id,
+                      timeoutAt: null,
+                      maxAttempts: null,
+                      recoveryPolicy: "wake_owner" as const,
+                    };
+                    updateFields.executionPolicy = {
+                      ...(previousPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
+                      monitor,
+                    } as any;
+                    issueUpdateData.executionPolicy = updateFields.executionPolicy;
+                    issueUpdateData.monitorNextCheckAt = new Date(monitor.nextCheckAt);
+                    issueUpdateData.monitorScheduledBy = monitor.scheduledBy;
+                    issueUpdateData.monitorAttemptCount = 0;
+                    issueUpdateData.monitorWakeRequestedAt = null;
+                    issueUpdateData.monitorLastTriggeredAt = null;
+                    // Apply the monitor transition now because the update ran before
+                    // reviewer admission decided that this stage must wait on CI.
+                    const monitorPatch = applyIssueMonitorPolicyTransition({
+                      issue: updated,
+                      policy: updateFields.executionPolicy,
+                      previousPolicy: normalizeIssueExecutionPolicy(
+                        (existing.executionPolicy ?? null) as any,
+                      ),
+                      requestedStatus: updated.status,
+                      requestedAssigneePatch: {},
+                      actor: {
+                        agentId: actor.agentId ?? null,
+                        userId: actor.actorType === "user" ? actor.actorId : null,
+                      },
+                      monitorExplicitlyUpdated: true,
+                    });
+                    Object.assign(issueUpdateData, monitorPatch.patch);
+                    // The initial issue update ran before admission could decide
+                    // that review must wait for CI. Persist the monitor transition
+                    // in the same transaction; mutating issueUpdateData alone is
+                    // too late to affect the already-committed service update.
+                    const persistedMonitor = await svc.update(
+                      id,
+                      {
+                        executionPolicy: updateFields.executionPolicy,
+                        monitorNextCheckAt: issueUpdateData.monitorNextCheckAt,
+                        monitorScheduledBy: issueUpdateData.monitorScheduledBy,
+                        monitorAttemptCount: issueUpdateData.monitorAttemptCount,
+                        monitorWakeRequestedAt: issueUpdateData.monitorWakeRequestedAt,
+                        monitorLastTriggeredAt: issueUpdateData.monitorLastTriggeredAt,
+                        ...monitorPatch.patch,
+                      },
+                      tx,
+                    );
+                    if (persistedMonitor) Object.assign(updated, persistedMonitor);
+                    if (typeof monitorPatch.patch.executionState !== "undefined") {
+                      updated.executionState = monitorPatch.patch.executionState as Record<string, unknown> | null;
+                    }
+                    if (typeof monitorPatch.patch.monitorNextCheckAt !== "undefined") {
+                      updated.monitorNextCheckAt = monitorPatch.patch.monitorNextCheckAt as Date | null;
+                    }
+                    if (typeof monitorPatch.patch.monitorWakeRequestedAt !== "undefined") {
+                      updated.monitorWakeRequestedAt = monitorPatch.patch.monitorWakeRequestedAt as Date | null;
+                    }
+                  }
+                }
+                if (admitReviewer) {
+                  const admission = await insertReviewAdmissionWakeup(
+                    stageWake.agentId,
+                    stageWake.wakeup,
+                    tx as unknown as Db,
+                    updated.companyId,
                   );
+                  if (admission && admission.created === false && !admission.skippedMissingAgent && !admission.deduplicated) {
+                    throw new Error(
+                      `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                    );
+                  }
                 }
               }
               if (
                 assigneeWillChange &&
                 updated.assigneeAgentId &&
-                (!stageWake || stageWake.agentId !== updated.assigneeAgentId)
+                (!stageWake || stageWake.agentId !== updated.assigneeAgentId) &&
+                !reviewerAdmissionDeferred
               ) {
                 const wakeup: WakeupOptions = {
                   source: "assignment",
@@ -15859,7 +16022,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false && !admission.skippedMissingAgent) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent && !admission.deduplicated) {
                   throw new Error(
                     `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
                   );
@@ -16781,6 +16944,18 @@ export function issueRoutes(
         reenteringReview:
           existing.status !== "in_review" && issue.status === "in_review",
       });
+      let deferExecutionReviewWakeForCi = false;
+      const isReviewCiWakeCandidate =
+        issue.status === "in_review" &&
+        (executionStageWakeup?.wakeup.reason === "execution_review_requested" ||
+          executionStageWakeup?.wakeup.reason === "execution_review_participant_recovery");
+      if (isReviewCiWakeCandidate) {
+        const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        deferExecutionReviewWakeForCi = reviewCi.state === "pending" || reviewCi.state === "unknown";
+      }
 
       if (closesRecoveryIssue) {
         try {
@@ -16948,13 +17123,79 @@ export function issueRoutes(
           });
         };
 
-        if (executionStageWakeup && deferWakeForGoal !== true) {
+        // myrmidon(OPE-11970, REVIEW-RETURN-GUARD): an agent reviewer returns the task on the
+        // same pull request head as the previous return (no new commit), or only because
+        // infrastructure checks of the head failed: the executor has nothing to change, so it
+        // is not woken. The decision stays recorded; the executor is woken by a new CI result,
+        // a new head or a comment. Anything the guard cannot read keeps the wake.
+        let suppressChangesRequestedWake = false;
+        if (executionStageWakeup?.wakeup.reason === "execution_changes_requested") {
+          try {
+            const returnWake = await decideReviewReturnWake(
+              {
+                enabled: readReviewReturnGuardEnabled() && actor.actorType === "agent",
+                companyId: issue.companyId,
+                issueId: issue.id,
+                previousState: previousExecutionState,
+                nextState: nextExecutionState,
+                commentBody,
+                infraCheckNames: readReviewInfraCheckNames(),
+              },
+              {
+                resolveFailedChecks:
+                  opts.resolveReviewHeadFailedChecks ?? createReviewHeadFailedChecksResolver({ db }),
+              },
+            );
+            if (returnWake.action === "suppress") {
+              suppressChangesRequestedWake = true;
+              await recordSuppressedReviewReturn(
+                {
+                  addSystemComment: (issueId, body) =>
+                    svc.addComment(issueId, body, { runId: null }, { authorType: "system" }),
+                  logActivity: (entry) =>
+                    logActivity(db, {
+                      companyId: entry.companyId,
+                      actorType: "system",
+                      actorId: "review-return-guard",
+                      agentId: null,
+                      runId: actor.runId,
+                      action: entry.action,
+                      entityType: "issue",
+                      entityId: entry.entityId,
+                      details: entry.details,
+                    }),
+                },
+                {
+                  companyId: issue.companyId,
+                  issueId: issue.id,
+                  identifier: issue.identifier ?? null,
+                  decisionId: nextExecutionState?.lastDecisionId ?? null,
+                  decision: returnWake,
+                },
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id },
+              "review return guard failed to evaluate or record a return",
+            );
+          }
+        }
+
+        if (
+          executionStageWakeup &&
+          deferWakeForGoal !== true &&
+          !deferExecutionReviewWakeForCi &&
+          !suppressChangesRequestedWake
+        ) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
-          deferWakeForGoal !== true
+          deferWakeForGoal !== true &&
+          !deferExecutionReviewWakeForCi &&
+          !suppressChangesRequestedWake
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "assignment",
@@ -17133,7 +17374,9 @@ export function issueRoutes(
           for (const mentionedId of mentionedIds) {
             if (
               (actor.actorType === "agent" && actor.actorId === mentionedId) ||
-              (commentIsFromAssigneeRun && mentionedId === assigneeId)
+              (commentIsFromAssigneeRun && mentionedId === assigneeId) ||
+              // myrmidon(OPE-11970): a return that does not wake the executor does not wake it by mention either.
+              (suppressChangesRequestedWake && mentionedId === assigneeId)
             )
               continue;
             const delegation = commentIsFromAssigneeRun
@@ -18705,6 +18948,7 @@ export function issueRoutes(
               userId: resolvedByUserId,
               issues: svc,
               heartbeat,
+              db,
             });
           }
           continuationInteraction =

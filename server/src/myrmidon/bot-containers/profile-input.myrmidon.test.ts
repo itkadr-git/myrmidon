@@ -40,6 +40,7 @@ import {
   type BotProfileSettings,
   type BotProfileSource,
 } from "./profile-input.js";
+import { BOT_DEVELOPER_ROLES_ENV, BOT_ROLE_TOOL_DIET_ENV, DEFAULT_BOT_DEVELOPER_ROLES } from "./tool-diet.js";
 
 // Everything here is placeholder data: fake bot keys, example.com URLs and
 // obviously-fake secrets.
@@ -150,6 +151,9 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
       localMemoryOff: false,
       // myrmidon(TOOL-DIET): unset in the env above -> the fleet default list.
       disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS],
+      // myrmidon(TOOL-DIET-ROLES): unset in the env above -> the role defaults are on, default developer roles.
+      roleToolDiet: true,
+      developerRoles: [...DEFAULT_BOT_DEVELOPER_ROLES],
     });
     expect(readBotProfileSettings({ [BOT_BOARD_URL_ENV]: "   " }).boardUrl).toBeNull();
     expect(readBotProfileSettings({}).hindsightApiUrl).toBeNull();
@@ -321,6 +325,14 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("context_length: 262144");
   });
 
+  it("the card's models.maxOutputTokens reaches model.max_tokens in compiled config", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { model: "model-a", models: { maxOutputTokens: 16_384 } } }),
+      settings(),
+    );
+    expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("max_tokens: 16384");
+  });
+
   it("the card's models.titleGeneration and models.compressionSummary reach the compiled auxiliary block", () => {
     const { input } = buildHermesProfileInput(
       source({
@@ -479,6 +491,152 @@ describe("myrmidon(TOOL-DIET) MYRMIDON_BOT_DISABLED_TOOLS", () => {
     const yaml = configYaml(input);
     expect(yaml).toContain('- "web_extract"');
     expect(yaml).not.toContain("rm -rf");
+  });
+});
+
+// myrmidon(TOOL-DIET-ROLES, OPE-11947): per-role default tool lists, resolved from the agent's role and card.
+describe("myrmidon(TOOL-DIET-ROLES) role tool diet in the profile input", () => {
+  /** The entries of one `agent.<key>` block of a compiled config.yaml, in file order. */
+  function yamlList(yaml: string, key: string): string[] {
+    const body = new RegExp(`\\n  ${key}:\\n((?:  - "[^"\\n]*"\\n)+)`).exec(yaml)?.[1];
+    if (!body) return [];
+    return [...body.matchAll(/"([^"\n]*)"/g)].map((item) => item[1] ?? "");
+  }
+  const toolsOf = (yaml: string) => yamlList(yaml, "disabled_tools");
+  const toolsetsOf = (yaml: string) => yamlList(yaml, "disabled_toolsets");
+  const compileWith = (
+    overrides: Partial<BotProfileSource>,
+    env: Record<string, string> = {},
+  ): string => {
+    const built = buildHermesProfileInput(source(overrides), readBotProfileSettings({ ...baseEnv(), ...env }));
+    return fileContent(compileHermesProfile(built.input), "hermes/config.yaml");
+  };
+  // A card of a team that curated its tools: memory, web, the browser and the rest, as listed.
+  const CURATED = "terminal,file,web,vision,skills,todo,memory,session_search,clarify,browser";
+  // The board always switches `delegation` off for a card that did not enable parallel helpers.
+  const NO_HELPERS = ["delegation"];
+
+  it("the fleet default also drops clarify and skill_manage, for every role and for none", () => {
+    expect(BOT_DEFAULT_DISABLED_TOOLS).toEqual(expect.arrayContaining(["clarify", "skill_manage"]));
+    for (const role of [undefined, "lead", "operator"]) {
+      expect(toolsOf(compileWith({ role }))).toEqual(expect.arrayContaining([...BOT_DEFAULT_DISABLED_TOOLS]));
+    }
+  });
+
+  it("reads the settings: on by default, off with its switch or with MYRMIDON_BOT_DISABLED_TOOLS=none", () => {
+    const base = readBotProfileSettings({ ...baseEnv() });
+    expect(base.roleToolDiet).toBe(true);
+    expect(base.developerRoles).toEqual([...DEFAULT_BOT_DEVELOPER_ROLES]);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_ROLE_TOOL_DIET_ENV]: "off" }).roleToolDiet).toBe(false);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DISABLED_TOOLS_ENV]: "none" }).roleToolDiet).toBe(false);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DISABLED_TOOLS_ENV]: "web_extract" }).roleToolDiet).toBe(true);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DEVELOPER_ROLES_ENV]: "engineer, lead" }).developerRoles).toEqual([
+      "engineer",
+      "lead",
+    ]);
+  });
+
+  it("a developer role whose card names no toolsets loses memory, Hindsight, web, browser and media tools", () => {
+    for (const role of ["engineer", "reviewer", "release"]) {
+      const yaml = compileWith({ role });
+      // The memory toolset gate takes the built-in memory tool and the Hindsight provider tools with it.
+      expect(toolsetsOf(yaml)).toEqual([...NO_HELPERS, "memory"]);
+      expect(toolsOf(yaml)).toEqual(
+        expect.arrayContaining([
+          "web_search",
+          "web_extract",
+          "browser_exec",
+          "browser_navigate",
+          "image_generate",
+          "skill_manage",
+          "clarify",
+        ]),
+      );
+      // What a developer does use is never listed.
+      for (const name of ["terminal", "read_file", "write_file", "patch", "search_files", "skill_view", "execute_code", "tool_search"]) {
+        expect(toolsOf(yaml)).not.toContain(name);
+      }
+    }
+  });
+
+  it("a developer role whose card lists its own toolsets keeps what the card asked for", () => {
+    const yaml = compileWith({ role: "engineer", adapterConfig: { toolsets: CURATED } });
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+    expect(toolsOf(yaml)).not.toContain("web_search");
+    expect(toolsOf(yaml)).not.toContain("browser_exec");
+    // Not asked for: media tools; and the role-independent fleet default still applies.
+    expect(toolsOf(yaml)).toContain("image_generate");
+    expect(toolsOf(yaml)).toContain("skill_manage");
+    // The toolsets may come as a list too.
+    expect(compileWith({ role: "engineer", adapterConfig: { toolsets: CURATED.split(",") } })).toBe(yaml);
+  });
+
+  it("any other role gets the standard list only: browser and media tools, never memory or web", () => {
+    for (const role of ["lead", "operator", "analyst", "infra", "qa"]) {
+      const yaml = compileWith({ role });
+      expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+      expect(toolsOf(yaml)).not.toContain("web_search");
+      expect(toolsOf(yaml)).toEqual(expect.arrayContaining(["browser_exec", "image_generate"]));
+    }
+    const curated = compileWith({ role: "lead", adapterConfig: { toolsets: CURATED } });
+    expect(toolsOf(curated)).not.toContain("browser_exec");
+    expect(toolsOf(curated)).toContain("image_generate");
+  });
+
+  it("a bot with no role gets the fleet default and nothing else", () => {
+    const yaml = compileWith({});
+    expect(toolsOf(yaml)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+  });
+
+  it("matches on the role only, never on the name of the bot", () => {
+    for (const botKey of ["adm-dev-eng-2", "bbq-web-developer", "work-gip", "life"]) {
+      expect(toolsetsOf(compileWith({ botKey, role: "engineer" }))).toEqual([...NO_HELPERS, "memory"]);
+      expect(toolsetsOf(compileWith({ botKey, role: "lead" }))).toEqual(NO_HELPERS);
+    }
+  });
+
+  it("keepTools of the card brings back a role group, a role tool or a fleet-default tool", () => {
+    const yaml = compileWith({ role: "engineer", adapterConfig: { keepTools: ["memory", "web_search", "skill_manage"] } });
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+    expect(toolsOf(yaml)).not.toContain("web_search");
+    expect(toolsOf(yaml)).not.toContain("skill_manage");
+    expect(toolsOf(yaml)).toContain("web_extract");
+    expect(toolsOf(yaml)).toContain("browser_exec");
+    expect(toolsOf(compileWith({ role: "operator", adapterConfig: { keepTools: ["clarify"] } }))).not.toContain("clarify");
+  });
+
+  it("the card's own disabledTools list replaces the instance list and the role defaults", () => {
+    const own = compileWith({ role: "engineer", adapterConfig: { disabledTools: ["web_extract"] } });
+    expect(toolsOf(own)).toEqual(["web_extract"]);
+    expect(toolsetsOf(own)).toEqual(NO_HELPERS);
+    const none = compileWith({ role: "engineer", adapterConfig: { disabledTools: [] } });
+    expect(toolsOf(none)).toEqual([]);
+    expect(toolsetsOf(none)).toEqual(NO_HELPERS);
+  });
+
+  it("the developer roles are the instance's to name", () => {
+    const lead = compileWith({ role: "lead" }, { [BOT_DEVELOPER_ROLES_ENV]: "lead" });
+    expect(toolsetsOf(lead)).toEqual([...NO_HELPERS, "memory"]);
+    expect(toolsOf(lead)).toContain("web_search");
+    const noDevelopers = compileWith({ role: "engineer" }, { [BOT_DEVELOPER_ROLES_ENV]: "none" });
+    expect(toolsetsOf(noDevelopers)).toEqual(NO_HELPERS);
+    expect(toolsOf(noDevelopers)).not.toContain("web_search");
+  });
+
+  it("the switch off, MYRMIDON_BOT_DISABLED_TOOLS=none and hand-built settings leave the role defaults out", () => {
+    const off = compileWith({ role: "engineer" }, { [BOT_ROLE_TOOL_DIET_ENV]: "off" });
+    expect(toolsOf(off)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(off)).toEqual(NO_HELPERS);
+    // `none` switches every default list off.
+    const none = compileWith({ role: "engineer" }, { [BOT_DISABLED_TOOLS_ENV]: "none" });
+    expect(toolsOf(none)).toEqual([]);
+    expect(toolsetsOf(none)).toEqual(NO_HELPERS);
+    // Settings built by hand that never mention the role defaults: off, like the other optional fields.
+    const hand = buildHermesProfileInput(source({ role: "engineer" }), settings({ disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS] }));
+    const handYaml = fileContent(compileHermesProfile(hand.input), "hermes/config.yaml");
+    expect(toolsOf(handYaml)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(handYaml)).toEqual(NO_HELPERS);
   });
 });
 

@@ -167,7 +167,12 @@ export function createForagingKnowledgePort(deps: ForagingKnowledgePortDeps): Fo
           sourceUri: input.url,
           contentType: "text/markdown",
           markdown: buildQuarantineMarkdown(input, input.diff.added),
-          metadata: { role: input.role, skillKey: input.skillKey, sourceId: input.sourceId },
+          metadata: {
+            role: input.role,
+            skillKey: input.skillKey,
+            sourceId: input.sourceId,
+            provenance: input.provenance ?? null,
+          },
         });
 
         // Scan all untrusted finding text after quarantine but before proposal creation.

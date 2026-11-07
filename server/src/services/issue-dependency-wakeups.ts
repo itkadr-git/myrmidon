@@ -9,11 +9,16 @@ export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 // for these statuses. The level-triggered state key uses this full set so that
 // one wake for a ready state suppresses further wakes for the SAME state. This
 // bounds reconciliation: after one wake, later passes find the completed row.
-const IDEMPOTENT_DEPENDENCY_WAKE_STATUSES = [
+export const IDEMPOTENT_DEPENDENCY_WAKE_STATUSES = [
   "queued",
   "deferred_issue_execution",
   "claimed",
+  "running",
+  "retrying",
+  "scheduled_retry",
+  "coalesced",
   "completed",
+  "succeeded",
 ] as const;
 
 // A wake counts as "still in flight" for these statuses. The `completed` status
@@ -25,6 +30,9 @@ const IN_FLIGHT_DEPENDENCY_WAKE_STATUSES = [
   "queued",
   "deferred_issue_execution",
   "claimed",
+  "running",
+  "retrying",
+  "scheduled_retry",
 ] as const;
 
 const IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET = new Set<string>(IDEMPOTENT_DEPENDENCY_WAKE_STATUSES);

@@ -269,7 +269,11 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     }).where(eq(issues.id, issueId));
     const release = createReleaseIssueExecution({
       issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
-      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+      recovery: {
+        deferReviewParticipantReleaseForCi: async () => false,
+        escalateStrandedAssignedIssue: async () => {},
+        escalateStrandedRecoveryIssueInPlace: async () => {},
+      },
     });
     try {
       await settings.updateExperimental({ enableAgentChat: false });
@@ -306,6 +310,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       const release = createReleaseIssueExecution({
         issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
         recovery: {
+          deferReviewParticipantReleaseForCi: async () => false,
           escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
           escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
         },
@@ -838,6 +843,32 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(row.checkoutRunId).toBeNull();
     }
     await Promise.all([dbA.$client.end(), dbB.$client.end()]);
+  });
+
+  it("bounds N concurrent releases above a small pool without hanging", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runIds = await Promise.all(
+      Array.from({ length: 5 }, () => seedRun({ companyId, agentId, contextSnapshot: { issueId } })),
+    );
+    await db.update(issues).set({ executionRunId: runIds[0] }).where(eq(issues.id, issueId));
+
+    // Five workers contend for one issue through pools of two connections;
+    // this is deliberately larger than every pool and reproduces the former
+    // pool-starvation shape rather than merely checking two-way serialization.
+    const workerDbs = runIds.map(() => createDb(tempDb!.connectionString, { maxConnections: 2 }));
+    const adapters = workerDbs.map((workerDb) => createPostgresWakeQueueAdapter(workerDb, stubDeps));
+    const settled = await Promise.race([
+      Promise.all(runIds.map((runId, index) => adapters[index].withIssueExecutionLock(
+        { companyId, runId, now: new Date() },
+        async () => ({ outcome: { kind: "released" as const }, postCommitEffects: [] }),
+      ))),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("concurrent release timed out")), 10_000)),
+    ]);
+    expect(settled).toHaveLength(runIds.length);
+    expect(settled.every((result) => result.outcome.kind === "released")).toBe(true);
+    await Promise.all(workerDbs.map((workerDb) => workerDb.$client.end()));
   });
 
   it("re-checks the interrupt queue under the lock: a queue dispatched by the lock holder while the release waits does not send it into the drain", async () => {

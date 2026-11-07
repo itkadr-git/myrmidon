@@ -117,6 +117,19 @@ export const en = {
     instanceLanguageSaved: "Instance language for the Telegram bot: {{language}}.",
     instanceLanguageFailed: "Could not save the instance language.",
     instanceLanguageAdminOnly: "Only an instance admin can change the instance language.",
+    uploadTitle: "Upload a custom translation",
+    uploadDescription: "Choose a locale and upload a complete JSON catalog. Keys and placeholders must match English.",
+    uploadLocale: "Locale",
+    uploadFile: "Catalog JSON file",
+    uploadPreview: "Preview",
+    uploadApply: "Apply translation",
+    uploadInvalid: "The catalog does not match the English keys or placeholders.",
+    uploadSaved: "Custom translation saved.",
+    uploadError: "Could not save the catalog. Please try again.",
+    uploadSizeError: "Catalog must be 256 KiB or smaller.",
+    uploadMissingCount: "{{count}} missing keys",
+    uploadUnknownCount: "{{count}} unknown keys",
+    uploadPlaceholderCount: "{{count}} placeholder mismatches",
   },
   status: {
     open: "Open",
@@ -295,6 +308,20 @@ export const en = {
           },
           subtitle: "Interface language",
           title: "Language and formats",
+          formats: {
+            title: "Time zone and formats",
+            timeZone: "Time zone",
+            timeZonePlaceholder: "Search time zones",
+            numberFormat: "Number format",
+            numberFormatEnUs: "English (United States)",
+            numberFormatRuRu: "Russian (Russia)",
+            dateFormat: "Date format",
+            dateFormatYmd: "Year-month-day",
+            dateFormatDmy: "Day-month-year",
+            dateFormatMdy: "Month-day-year",
+            preview: "Preview",
+            source: { default: "Default", settings: "Settings", pending: "Unsaved changes" },
+          },
         },
         runs: {
           drain: {
@@ -582,6 +609,19 @@ export type Ui2Catalog = {
     instanceLanguageSaved: string;
     instanceLanguageFailed: string;
     instanceLanguageAdminOnly: string;
+    uploadTitle: string;
+    uploadDescription: string;
+    uploadLocale: string;
+    uploadFile: string;
+    uploadPreview: string;
+    uploadApply: string;
+    uploadInvalid: string;
+    uploadSaved: string;
+    uploadError: string;
+    uploadSizeError: string;
+    uploadMissingCount: string;
+    uploadUnknownCount: string;
+    uploadPlaceholderCount: string;
   };
   status: Record<
     | "open"
@@ -762,6 +802,20 @@ export type Ui2Catalog = {
           },
           subtitle: string;
           title: string;
+          formats: {
+            title: string;
+            timeZone: string;
+            timeZonePlaceholder: string;
+            numberFormat: string;
+            numberFormatEnUs: string;
+            numberFormatRuRu: string;
+            dateFormat: string;
+            dateFormatYmd: string;
+            dateFormatDmy: string;
+            dateFormatMdy: string;
+            preview: string;
+            source: { default: string; settings: string; pending: string };
+          };
         };
         runs: {
           drain: {

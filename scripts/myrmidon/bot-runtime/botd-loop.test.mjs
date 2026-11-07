@@ -17,6 +17,7 @@ const { buildReport, createReporter, validateReport, MAX_ACTIONS } = await impor
   path.join(ROOT, "docker/bot-runtime/botd/lib/report.js")
 );
 const realRules = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/rules.js"));
+const { guardedRemove } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/remove.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 const fixture = (name) => JSON.parse(fs.readFileSync(path.join(FIXTURES, name), "utf8"));
 
@@ -211,6 +212,34 @@ describe("botd loop: one pass", () => {
 });
 
 describe("botd loop: real rules with the Date clock", () => {
+  it("deletes the oldest 0600 archives to enforce the cap", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "botd-archive-cap-"));
+    try {
+      const archives = [1, 2, 3].map((number) => {
+        const file = path.join(dir, `${number}.dir.tar`);
+        fs.writeFileSync(file, "archive", { mode: 0o600 });
+        return { path: file, sizeBytes: 7, createdAt: new Date(NOW.getTime() - (4 - number) * 3600_000).toISOString() };
+      });
+      const removed = [];
+      const r = rig({
+        rules: realRules,
+        inventory: { worktrees: [], scratch: [], bases: [], archives: [...archives].reverse() },
+        desired: { ok: true, state: desiredState({ workspaces: [] }) },
+        settings: { archiveCapBytes: 8 },
+        executor: { "delete-archive": (action) => {
+          removed.push(action);
+          return guardedRemove(action.path, [dir]);
+        } },
+      });
+      await r.loop.runOnce();
+      assert.deepEqual(removed.map((action) => action.path), archives.slice(0, 2).map((entry) => entry.path));
+      assert.deepEqual(removed.map((action) => action.reason), ["archive-over-cap", "archive-over-cap"]);
+      assert.deepEqual(archives.map((entry) => fs.existsSync(entry.path)), [false, false, true]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("plans a removal for a stale scratch copy (a Date clock used to give an empty plan)", async () => {
     const stale = { name: "old-clone", path: "/scratch/old-clone", mtime: new Date(NOW.getTime() - 48 * 3600 * 1000).toISOString(), isGit: false };
     const r = rig({

@@ -71,6 +71,15 @@ function fakeService() {
     async rotateProviderKey() {
       return providerView("provider-1");
     },
+    async captureKeyRotationSnapshot() {
+      return {
+        secretId: "sec-1",
+        secretValue: "old-key",
+        models: [],
+        keyValidatedAt: null,
+      };
+    },
+    rollbackProviderKey: vi.fn(async () => {}),
     async patchProvider() {
       return providerView("provider-1");
     },
@@ -93,6 +102,9 @@ function fakeService() {
     async checkToolCallCompatibility() {
       return providerView("provider-1");
     },
+    async checkPackageExpirations() {
+      return [];
+    },
     async listChannels(companyId, providerId) {
       return {
         providerId,
@@ -103,6 +115,25 @@ function fakeService() {
     },
     listAvailableTypes: () => listAvailableModelProviderTypes(),
     syncPoolSignals: async () => [],
+    oauthBegin: async () => ({
+      verificationUri: "http://localhost:8895/auth",
+      userCode: "TEST-CODE",
+      accountNumber: 1,
+      expiresInSec: 900,
+      intervalSec: 5,
+    }),
+    oauthStatus: async () => ({
+      status: "pending",
+      accountNumber: 1,
+    }),
+    oauthComplete: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
+    oauthRefresh: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
   };
   return service;
 }
@@ -123,10 +154,12 @@ function app(options: {
   sync?: LitellmSyncService | null;
   refreshAgentAllowlists?: (companyId: string) => Promise<unknown>;
   actor?: unknown;
+  service?: ModelProviderService;
 } = {}) {
   const getLitellmSync = vi.fn(async () => (options.sync === undefined ? fakeSync() : options.sync));
   const refresh = options.refreshAgentAllowlists ?? vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] }));
   const actor = options.actor ?? member;
+  const service = options.service ?? fakeService();
   const server = express();
   server.use(express.json());
   server.use((req, _res, next) => {
@@ -136,7 +169,7 @@ function app(options: {
   server.use(
     "/api",
     modelProviderRoutesWithSync({
-      service: fakeService(),
+      service,
       getLitellmSync,
       refreshAgentAllowlists: refresh,
     }),
@@ -228,10 +261,17 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
     expect(res.body.code).toBe("litellm_sync_failed");
   });
 
-  it("answers 422 when rotation propagation fails", async () => {
+  it("answers 422 and rolls back when rotation propagation fails", async () => {
     sync.handleProviderCredentialRotation.mockRejectedValue(new Error("gateway timeout"));
-    const { server } = app({ sync });
+    const service = fakeService();
+    const { server } = app({ sync, service });
     await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(422);
+    expect(service.rollbackProviderKey).toHaveBeenCalledTimes(1);
+    expect(service.rollbackProviderKey).toHaveBeenCalledWith(
+      COMPANY_ID,
+      "provider-1",
+      expect.objectContaining({ secretId: "sec-1", secretValue: "old-key" }),
+    );
   });
 
   it("answers 422 when the provider-removal cleanup fails", async () => {

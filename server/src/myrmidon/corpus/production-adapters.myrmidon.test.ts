@@ -1,3 +1,5 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -26,10 +28,6 @@ const run = support.supported && pgvector.ok ? describe : describe.skip;
 if (!support.supported || !pgvector.ok) {
   console.warn(`[corpus] production adapter test skipped: ${pgvector.reason ?? support.reason}`);
 }
-
-afterAll(async () => {
-  await pgvector.cleanup();
-});
 
 run("production corpus adapters", () => {
   let database: EmbeddedPostgresTestDatabase | undefined;
@@ -63,7 +61,7 @@ run("production corpus adapters", () => {
       enabled: true,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
-      embedderModel: "test",
+      embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
       maxDocumentBytes: 1024,
@@ -129,7 +127,7 @@ run("production corpus adapters", () => {
       enabled: false,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
-      embedderModel: "test",
+      embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
       maxDocumentBytes: 1024,
@@ -161,7 +159,7 @@ run("production corpus adapters", () => {
       insert into companies (id, name, issue_prefix) values
         (${companyId}, 'mcp-refresh', 'MCP')
     `);
-    const settings: CorpusPortContext["settings"] = { enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000, embedderModel: "test", embedderDimensions: 3, embedderBaseUrl: null, maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1, maxParseAttempts: 2, searchTopK: 5 };
+    const settings: CorpusPortContext["settings"] = { enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000, embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null, maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1, maxParseAttempts: 2, searchTopK: 5 };
     const { createCorpusMcpProvider } = await import("./adapters.js");
     const provider = createCorpusMcpProvider(async () => settings, (context) => createCorpusPorts(db, context, { storageLocalDiskBaseDir: storageDir! } as Config));
     const tools = await provider(companyId);
@@ -182,7 +180,7 @@ run("production corpus adapters", () => {
     await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
     const settings: CorpusPortContext["settings"] = {
       enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
-      embedderModel: "test", embedderDimensions: 3, embedderBaseUrl: null,
+      embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null,
       maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
       maxParseAttempts: 2, searchTopK: 5,
     };
@@ -339,5 +337,91 @@ run("production corpus adapters", () => {
     expect(nestedDocs).toEqual([]);
 
     await db.$client.end();
+  });
+
+  it("indexes document chunks by calling the embeddings endpoint with corpus-embed-pplx-0.6b", async () => {
+    const captured: { body: { model?: string; input?: string[]; dimensions?: number } | null; calls: number } = { body: null, calls: 0 };
+    const server = http.createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/embeddings") {
+        captured.calls += 1;
+        let raw = "";
+        req.on("data", (c) => { raw += c; });
+        req.on("end", () => {
+          captured.body = JSON.parse(raw);
+          const input = captured.body?.input ?? [];
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({
+            data: input.map((_, index) => ({
+              index,
+              embedding: Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)),
+            })),
+          }));
+        });
+        return;
+      }
+      res.statusCode = 404;
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const dbInstance = createDb(database!.connectionString);
+      const companyId = randomUUID();
+      await dbInstance.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'bge-test', 'BGE')`);
+
+      const settings: CorpusPortContext["settings"] = {
+        enabled: true,
+        parserBaseUrl: "http://parser.invalid",
+        parserTimeoutMs: 1000,
+        embedderModel: "corpus-embed-pplx-0.6b",
+        embedderDimensions: 1024,
+        embedderBaseUrl: baseUrl,
+        maxDocumentBytes: 1024,
+        maxDocumentsPerDataset: 5,
+        parseConcurrency: 1,
+        maxParseAttempts: 2,
+        searchTopK: 5,
+      };
+
+      const ports = createCorpusPorts(dbInstance, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+      const dataset = await ports.store.createDataset({ companyId, name: "bge dataset", description: null });
+      const document = await ports.store.createDocument({
+        companyId,
+        datasetId: dataset.id,
+        filename: "test.txt",
+        mimeType: "text/plain",
+        byteSize: 10,
+        blobRef: "b1",
+        maxAttempts: 2,
+      });
+
+      const indexedCount = await ports.index.indexDocument({
+        companyId,
+        datasetId: dataset.id,
+        documentId: document.id,
+        chunks: [{ text: "hello bge-m3 world", index: 0 }],
+        embedderModel: settings.embedderModel,
+        embedderDimensions: settings.embedderDimensions,
+        embedderBaseUrl: baseUrl,
+      });
+
+      expect(indexedCount).toBe(1);
+      expect(captured.body).not.toBeNull();
+      expect(captured.body?.model).toBe("corpus-embed-pplx-0.6b");
+      expect(captured.body?.input).toEqual(["hello bge-m3 world"]);
+      expect(captured.body?.dimensions).toBe(1024);
+
+      const search = { companyId, datasetId: dataset.id, query: "hello bge-m3 world", limit: 5, mode: "hybrid" as const, embedderModel: settings.embedderModel, embedderDimensions: settings.embedderDimensions, embedderBaseUrl: baseUrl };
+      const secondPorts = createCorpusPorts(dbInstance, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+      await Promise.all([ports.index.search(search), secondPorts.index.search(search)]);
+      await secondPorts.index.search(search);
+      expect(captured.calls).toBe(2); // one ingestion request, one shared query embedding
+
+      await dbInstance.$client.end();
+    } finally {
+      server.close();
+    }
   });
 });

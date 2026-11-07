@@ -11,6 +11,7 @@ import type { CorpusDocumentRecord, CorpusPorts, CorpusJobRecord, CorpusDatasetR
 import { secretService } from "../../services/secrets.js";
 import type { Config } from "../../config.js";
 import { CORPUS_EMBED_BATCH_SIZE, embedInBatches } from "./embed-batches.js";
+import { CorpusRequestError } from "./service.js";
 
 /** How long one embedding request may take before it is aborted. A document is sent as many requests. */
 const CORPUS_EMBED_REQUEST_TIMEOUT_MS = 120_000;
@@ -59,12 +60,41 @@ export function createSqlExecutor(db: DbOrTx): SqlExecutor {
   return over(db);
 }
 
+// Port objects are created per request; keep the bounded query cache across requests.
+const queryVectors = new Map<string, { expiresAt: number; value: Promise<number[]> }>();
+
 export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Config): CorpusPorts {
   const { settings } = context;
   const store = new PostgresCorpusStore(db as never);
   const queue = new PostgresWorkQueue(db as never);
   const blobs = new LocalBlobStore(path.join(config.storageLocalDiskBaseDir, "corpus"));
+  const checkEmbedderConfigured = async (companyId: string, baseUrl: string | null): Promise<void> => {
+    if (baseUrl) return;
+    const secretRow = await db
+      .select()
+      .from(companySecrets)
+      .where(
+        and(
+          eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "company"),
+          eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"),
+          eq(companySecrets.status, "active"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!secretRow) {
+      throw new CorpusRequestError(
+        422,
+        "corpus_embedder_not_configured",
+        "the corpus embedder is not configured for this company: missing secret MYRMIDON_CORPUS_EMBEDDER_API_KEY",
+        {
+          hint: "Configure the active company secret MYRMIDON_CORPUS_EMBEDDER_API_KEY or set embedderBaseUrl.",
+        },
+      );
+    }
+  };
   const embedder = async (companyId: string, baseUrl: string | null, model: string, dimensions: number, input: string[]): Promise<number[][]> => {
+    await checkEmbedderConfigured(companyId, baseUrl);
     const secretRow = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"), eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"), eq(companySecrets.status, "active"))).then((rows) => rows[0] ?? null);
     const apiKey = secretRow ? await secretService(db).resolveSecretValue(companyId, secretRow.id, "latest", { accessContext: { consumerType: "system", consumerId: "myrmidon-corpus" } }) : undefined;
     const endpoint = baseUrl ?? context.env.MYRMIDON_LLM_GATEWAY_BASE_URL ?? "http://127.0.0.1:3000/v1";
@@ -80,16 +110,32 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     return embedInBatches({ input, batchSize: CORPUS_EMBED_BATCH_SIZE, embedBatch });
   };
   const searchIndex = createPostgresSearchIndex({ sql: createSqlExecutor(db) });
+  // Share identical in-flight queries and retain only a small, short-lived set of vectors.
+  const queryVector = (input: { companyId: string; query: string; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }): Promise<number[]> => {
+    const key = JSON.stringify([input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.query]);
+    const now = Date.now();
+    const cached = queryVectors.get(key);
+    if (cached && cached.expiresAt > now) return cached.value;
+    if (cached) queryVectors.delete(key);
+    const value = embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, [input.query]).then((vectors) => vectors[0]!);
+    queryVectors.set(key, { value, expiresAt: now + 60_000 });
+    void value.catch(() => {
+      if (queryVectors.get(key)?.value === value) queryVectors.delete(key);
+    });
+    while (queryVectors.size > 128) queryVectors.delete(queryVectors.keys().next().value!);
+    return value;
+  };
   const index = {
+    assertEmbedderConfigured: checkEmbedderConfigured,
     async indexDocument(input: { companyId: string; datasetId: string; documentId: string; chunks: Array<{ text: string; index: number; metadata?: Record<string, unknown> }>; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
       const vectors = await embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.chunks.map((c) => c.text));
       await store.replaceDocumentChunks({ companyId: input.companyId, documentId: input.documentId, chunks: input.chunks.map((c, i) => ({ chunkIndex: c.index, content: c.text, embedding: vectors[i]!, metadata: c.metadata })) });
       return input.chunks.length;
     },
     async deleteDocument(companyId: string, documentId: string) { await store.replaceDocumentChunks({ companyId, documentId, chunks: [] }); },
-    async search(input: { companyId: string; datasetId: string; query: string; limit: number; mode: "hybrid" | "vector" | "fulltext"; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
-      const vector = input.mode === "fulltext" ? undefined : (await embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, [input.query]))[0];
-      const hits = await searchIndex.search({ companyId: input.companyId, datasetId: input.datasetId, text: input.mode === "vector" ? "" : input.query, embedding: vector, limit: input.limit });
+    async search(input: { companyId: string; datasetId?: string; datasetIds?: string[]; query: string; limit: number; mode: "hybrid" | "vector" | "fulltext"; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
+      const vector = input.mode === "fulltext" ? undefined : await queryVector(input);
+      const hits = await searchIndex.search({ companyId: input.companyId, datasetId: input.datasetId, datasetIds: input.datasetIds, text: input.mode === "vector" ? "" : input.query, embedding: vector, limit: input.limit });
       return hits.map((hit) => ({ chunkId: hit.chunkId, documentId: hit.documentId, datasetId: hit.datasetId, score: hit.score, text: hit.content, metadata: hit.metadata }));
     },
     async countChunks(companyId: string, datasetId?: string) {
@@ -217,7 +263,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     },
     parser: {
       async parse(input) {
-        const client = createHttpDocumentParser({ baseUrl: input.baseUrl, timeoutMs: input.timeoutMs });
+        const client = createHttpDocumentParser({ baseUrl: input.baseUrl, parserTimeoutMs: input.timeoutMs });
         const result = await client.parse({ sourceUri: null, content: input.bytes, contentType: input.mimeType, title: input.filename, parserVersion: "v1" });
         return { text: result.chunks.map((chunk) => chunk.content).join("\n"), chunks: result.chunks.map((chunk) => ({ text: chunk.content, index: chunk.chunkIndex, metadata: chunk.metadata })) };
       },
@@ -240,10 +286,60 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         if (!current) throw new Error("corpus_disabled");
         const { settings, ports } = current;
         const datasets = await ports.store.listDatasets(companyId);
-        const allowed = new Set(datasets.map((d) => d.id));
-        const ids = (request.datasets.length ? request.datasets : datasets.map((d) => d.id)).filter((id) => allowed.has(id));
-        const groups = await Promise.all(ids.map((datasetId) => ports.index.search({ companyId, datasetId, query: request.query, limit: request.topK, mode: "hybrid", embedderModel: settings.embedderModel, embedderDimensions: settings.embedderDimensions, embedderBaseUrl: settings.embedderBaseUrl })));
-        return { query: request.query, datasets: ids, topK: request.topK, hits: groups.flat().filter((hit) => request.minScore === null || hit.score >= request.minScore).slice(0, request.topK).map((hit) => ({ chunkId: hit.chunkId, document: { id: hit.documentId, name: hit.documentId, datasetId: hit.datasetId, datasetName: datasets.find((d) => d.id === hit.datasetId)?.name ?? "", url: null }, ordinal: 0, text: hit.text, score: hit.score })) };
+        const datasetMap = new Map<string, string>(); // id -> id and name -> id
+        for (const d of datasets) {
+          datasetMap.set(d.id, d.id);
+          datasetMap.set(d.name, d.id);
+        }
+        let targetIds: string[];
+        if (request.datasets.length > 0) {
+          const resolvedIds = new Set<string>();
+          for (const item of request.datasets) {
+            const mapped = datasetMap.get(item);
+            if (mapped) resolvedIds.add(mapped);
+          }
+          targetIds = [...resolvedIds];
+          if (targetIds.length === 0) {
+            return { query: request.query, datasets: [], topK: request.topK, hits: [] };
+          }
+        } else {
+          targetIds = datasets.map((d) => d.id);
+        }
+
+        const hits = await ports.index.search({
+          companyId,
+          datasetIds: targetIds,
+          query: request.query,
+          limit: request.topK,
+          mode: "hybrid",
+          embedderModel: settings.embedderModel,
+          embedderDimensions: settings.embedderDimensions,
+          embedderBaseUrl: settings.embedderBaseUrl,
+        });
+
+        const filteredHits = hits
+          .filter((hit) => request.minScore === null || hit.score >= request.minScore)
+          .slice(0, request.topK)
+          .map((hit) => ({
+            chunkId: hit.chunkId,
+            document: {
+              id: hit.documentId,
+              name: hit.documentId,
+              datasetId: hit.datasetId,
+              datasetName: datasets.find((d) => d.id === hit.datasetId)?.name ?? "",
+              url: null,
+            },
+            ordinal: 0,
+            text: hit.text,
+            score: hit.score,
+          }));
+
+        return {
+          query: request.query,
+          datasets: targetIds,
+          topK: request.topK,
+          hits: filteredHits,
+        };
       },
       async getDocument({ documentId, includeText }) {
         const current = await resolve();

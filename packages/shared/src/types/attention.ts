@@ -76,11 +76,14 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(1.6.5-F-18): the gateway spend sweep completed but the model
   // catalog (/v1/model/info) is empty — the accounting key is misconfigured.
   "empty_model_catalog",
+  // myrmidon(OPE-11776): LiteLLM key cap and spend threshold signals.
+  "litellm_budget",
   // myrmidon(1.6.5 F-09): a queued run older than the instance's stall
   // threshold (default 1 h) still waits without a waitReason.
   "queue_stall",
   // myrmidon(OPE-7932): a due issue monitor has not produced a wake claim.
   "issue_monitor_overdue",
+  "provider_usage_warning",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -265,6 +268,16 @@ export type AttentionItemDetail =
   | {
       kind: "generic";
       summaryExcerpt: string | null;
+      images: AttentionDetailImage[];
+    }
+  | {
+      kind: "provider_usage";
+      provider: string;
+      windowKind: "package" | "5h" | "week";
+      usedPercent: number;
+      thresholdPercent: number;
+      resetsAt: string;
+      credentialRef: string;
       images: AttentionDetailImage[];
     };
 

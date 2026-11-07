@@ -2702,6 +2702,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await db.update(heartbeatRuns).set({ invocationSource: "automation" }).where(eq(heartbeatRuns.id, runId));
       const factory = vi.fn(() => { throw new Error("provider must not start"); });
       let reachedDispatch = false;
+      let dispatchReachedResolve: (() => void) | undefined;
+      const dispatchReached = new Promise<void>((resolve) => {
+        dispatchReachedResolve = resolve;
+      });
       const heartbeat = heartbeatService(db, {
         nativeSessionBackendFactory: factory,
         beforeChatControlRecoveryCheck: async ({ stage, runId: id }) => {
@@ -2709,9 +2713,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           reachedDispatch = true;
           expect((await heartbeat.getRun(id))?.runtimeMode).toBe("native");
           await heartbeat.cancelRun(id);
+          dispatchReachedResolve?.();
         },
       });
       await heartbeat.resumeQueuedRuns();
+      await dispatchReached;
       await heartbeat.drainActiveRunExecutions();
       expect(reachedDispatch).toBe(true);
       expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "native",
@@ -5269,7 +5275,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(
       runs.filter((run) => run.contextSnapshot?.wakeReason === "interaction_pending"),
     ).toHaveLength(1);
-    expect(runs[0]).toMatchObject({
+    // Look the run up by id: the select has no ORDER BY, and the queued
+    // continuation run can come back first once the failed row is rewritten.
+    const failedRun = runs.find((run) => run.id === runId);
+    expect(failedRun).toMatchObject({
       id: runId,
       status: "failed",
       errorCode: "process_lost",
@@ -13316,6 +13325,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       source: "issue.productive_terminal_continuation_recovery",
     });
     if (retryRun) await waitForRunToSettle(heartbeat, retryRun.id);
+  });
+
+  it("suppresses issue_continuation_needed recovery when agent has reached daily run cap", async () => {
+    const { companyId, agentId, issueId, runId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "succeeded",
+        runSource: "issue.assignment",
+        livenessState: "advanced",
+        now: new Date(),
+      });
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: {
+          heartbeat: {
+            maxDailyRuns: 1,
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    const allRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(allRuns).toHaveLength(1);
+    expect(allRuns[0]!.id).toBe(runId);
   });
 
   it("lets a child waiting for the shared workspace run before recovering its lead", async () => {

@@ -16,7 +16,7 @@ export interface RemoteSiteEnrollFormProps {
 }
 
 const FIELDS: Array<keyof EnrollFormValues> = [
-  "name", "url", "tokenSecret", "clientCertSecretKey", "caCert", "maxCpus", "maxMemoryMb", "maxBots", "gatewayPortStart", "gatewayPortEnd",
+  "name", "url", "tokenSecret", "maxCpus", "maxMemoryMb", "maxBots", "gatewayPortStart", "gatewayPortEnd",
 ];
 
 export function RemoteSiteEnrollForm({ pending = false, error = null, doneName = null, onSubmit }: RemoteSiteEnrollFormProps) {
@@ -43,18 +43,7 @@ export function RemoteSiteEnrollForm({ pending = false, error = null, doneName =
       {FIELDS.map((field) => (
         <div key={field} className="space-y-1">
           <Label htmlFor={`remote-site-${field}`}>{t(`remoteSites.form.${field}`)}</Label>
-          {field === "caCert" ? (
-            <textarea
-              id={`remote-site-${field}`}
-              name={field}
-              rows={5}
-              className="w-full rounded-md border border-input bg-background px-2 py-1 font-mono text-sm"
-              value={form[field]}
-              onChange={(event) => setForm({ ...form, [field]: event.target.value })}
-            />
-          ) : (
-            <Input id={`remote-site-${field}`} name={field} autoComplete="off" value={form[field]} onChange={(event) => setForm({ ...form, [field]: event.target.value })} />
-          )}
+          <Input id={`remote-site-${field}`} name={field} autoComplete="off" value={form[field]} onChange={(event) => setForm({ ...form, [field]: event.target.value })} />
         </div>
       ))}
       {problem ? <p className="text-sm text-destructive" role="alert" data-testid="remote-site-enroll-problem">{problem}</p> : null}

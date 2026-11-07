@@ -42,6 +42,7 @@ import {
   periodLabelKey,
   signalOnlySourceLabelKey,
   usagePercent,
+  warningLabelKey,
   type BudgetLimitNode,
   type BudgetLimitProjectRef,
 } from "./budgetLimitsConfig";
@@ -151,10 +152,13 @@ export function BudgetLimitsScreenView({
       setAddError(t(parsed.messageKey));
       return;
     }
-    setAddError(null);
-    if (!rows.find((group) => group.level === level)?.nodes.some((node) => node.ref === parsed.ref)) {
-      setAddedRefs((previous) => [...previous, { level, ref: parsed.ref }]);
+    const alreadyExists = rows.find((group) => group.level === level)?.nodes.some((node) => node.ref === parsed.ref);
+    if (alreadyExists) {
+      setAddError(t("budgetLimits.refAlreadyExists"));
+      return;
     }
+    setAddError(null);
+    setAddedRefs((previous) => [...previous, { level, ref: parsed.ref }]);
     setAddLevel(null);
     setAddProjectRef("");
     setAddFreeRef("");
@@ -278,7 +282,17 @@ export function BudgetLimitsScreenView({
                           <td className="py-2 pr-4">
                             {node.limit ? (
                               <span data-testid={`budget-limits-spent-${node.key}`}>
-                                <span className={node.overLimit ? "font-medium text-destructive" : undefined}>
+                                <span
+                                  className={
+                                    node.overLimit
+                                      ? "font-medium text-destructive"
+                                      : node.warningThreshold
+                                        ? node.warningThreshold >= 95
+                                          ? "font-medium text-amber-500"
+                                          : "font-medium text-yellow-600"
+                                        : undefined
+                                  }
+                                >
                                   {formatCents(node.spentCents ?? 0)}
                                 </span>
                                 <span className="text-muted-foreground">
@@ -289,6 +303,17 @@ export function BudgetLimitsScreenView({
                                 {node.overLimit ? (
                                   <span className="ml-2 text-xs font-medium text-destructive">
                                     {t("budgetLimits.overLimit")}
+                                  </span>
+                                ) : node.warningThreshold ? (
+                                  <span
+                                    className={
+                                      node.warningThreshold >= 95
+                                        ? "ml-2 text-xs font-medium text-amber-500"
+                                        : "ml-2 text-xs font-medium text-yellow-600"
+                                    }
+                                    data-testid={`budget-limits-warning-${node.key}`}
+                                  >
+                                    {t(warningLabelKey(node.warningThreshold))}
                                   </span>
                                 ) : null}
                               </span>

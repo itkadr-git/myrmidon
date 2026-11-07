@@ -266,7 +266,23 @@ interface ParsedOutput {
   errorMessage?: string;
 }
 
+// myrmidon(OPE-11947): Hermes' own give-up notice. When the model pool is out of
+// quota (or the model never answers) Hermes retries, then ends the turn with
+// "⚠️ No reply: <model> didn't produce a reply this time, even after retries.
+// Send `continue` to try again, or switch models with /model." as the final
+// response. The turn "completes", so the board recorded a succeeded run whose
+// comment was that notice and re-woke the agent every few minutes (1709 of 5998
+// runs in 24 h). The notice is anchored at the start and bounded in length so a
+// long agent report that merely quotes it is never reclassified.
+export const HERMES_NO_REPLY_SENTINEL_RE =
+  /^\u26A0\uFE0F?\s*No reply:.{0,300}didn['\u2019]t produce a reply.{0,300}$/i;
+
+export function isHermesNoReplySentinel(response: string): boolean {
+  return HERMES_NO_REPLY_SENTINEL_RE.test(response.trim().replace(/\s+/g, " "));
+}
+
 export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  HERMES_NO_REPLY_SENTINEL_RE,
   // myrmidon(OPE-10494): provider maintenance / resource-exhaustion replies.
   // The upstream proxy answers with a bilingual Vietnamese/English notice
   // ("Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to
@@ -829,6 +845,11 @@ export async function execute(
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
   const providerErrorAsContent = Boolean(parsed.response && isProviderErrorAsContent(parsed.response));
+  // myrmidon(OPE-11947): the model pool did not answer (Hermes gave up without a
+  // reply, or the provider returned an overload/quota/maintenance text as the
+  // response); the board defers the retry of such a run by 30 min and up
+  // (resultJson.model_unavailable) and auto-resume returns the agent on the same long schedule.
+  const modelUnavailable = providerErrorAsContent;
   if (providerErrorAsContent) {
     await ctx.onLog("stderr", `[hermes] provider_error_as_content model=${model}\n`);
     parsed.errorMessage = "Provider returned an overload or quota error as successful response content";
@@ -892,6 +913,7 @@ export async function execute(
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
     ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
+    ...(modelUnavailable ? { model_unavailable: true } : {}),
     trajectory: tracker
       ? {
           stopCondition: stopConditionTriggered ? "repeated_tool_error" : null,

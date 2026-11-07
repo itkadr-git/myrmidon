@@ -100,6 +100,24 @@ describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
     blockedTransitionAt: secondCycle,
   };
 
+  it("does not allow an active execution state to be suppressed by a prior wake", async () => {
+    for (const status of ["running", "retrying", "scheduled_retry"] as const) {
+      const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+      const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
+        dbWithWakes([
+          {
+            id: `wake-${status}`,
+            status,
+            idempotencyKey: cycleKey,
+            requestedAt: secondCycle,
+          },
+        ]),
+        readyState,
+      );
+      expect(existing?.id).toBe(`wake-${status}`);
+    }
+  });
+
   it("suppresses a completed wake on the cycle-aware state key", async () => {
     const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
     const existing = await findExistingIssueBlockersResolvedWakeForReadyState(

@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import type { CreateConfigValues } from "@myrmidon/adapter-utils";
+import type { CompanySecret } from "@myrmidon/shared";
 
 // Re-export shared types so local consumers don't need to change imports
 export type { TranscriptEntry, StdoutLineParser, CreateConfigValues } from "@myrmidon/adapter-utils";
@@ -49,6 +50,8 @@ export interface AdapterConfigFieldsProps {
    * so a stored path never flashes before the policy resolves.
    */
   managedSandboxOnly?: boolean;
+  /** Company-scoped secrets visible to this editor; binding is still checked server-side. */
+  secrets?: readonly CompanySecret[];
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {

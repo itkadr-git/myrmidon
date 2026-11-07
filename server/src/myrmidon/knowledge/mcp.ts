@@ -374,7 +374,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             field: "sources",
           });
         }
-        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources });
+        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources, idempotencyKey: args.idempotencyKey });
         assertCleanWrite(input.body, "body");
         return {
           suggestion: await mod.suggest(actorRef, {
@@ -383,6 +383,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             targetSlug: input.targetSlug ?? undefined,
             sourceKind: input.sources[0]!.kind,
             sourceRef: input.sources[0]!.ref,
+            idempotencyKey: input.idempotencyKey ?? undefined,
           }),
         };
       }
@@ -393,7 +394,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             field: "sources",
           });
         }
-        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources });
+        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources, idempotencyKey: args.idempotencyKey });
         assertCleanWrite(input.body, "body");
         return {
           suggestion: await mod.suggest(actorRef, {
@@ -402,6 +403,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             targetSlug: input.targetSlug ?? undefined,
             sourceKind: input.sources[0]!.kind,
             sourceRef: input.sources[0]!.ref,
+            idempotencyKey: input.idempotencyKey ?? undefined,
           }),
         };
       }

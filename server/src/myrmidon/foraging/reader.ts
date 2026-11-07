@@ -9,8 +9,8 @@
 // here, on module state shared by every pass and every company of the process, so
 // two agents of two companies pointing at one host cannot double the rate.
 //
-// Network access is delegated to vm-exec. vm-core never calls source URLs or
-// the Firecrawl provider directly; the answer remains capped for snapshots.
+// Network access is either delegated to the optional edge fetcher gateway (myr-vm1, legacy vm-exec) or made
+// directly to the registered source URL. Responses are bounded before parsing.
 
 import { createHash, randomUUID } from "node:crypto";
 import { logger } from "../../middleware/logger.js";
@@ -25,8 +25,6 @@ export const BREAKER_FAILURE_THRESHOLD = 2;
 export const BREAKER_OPEN_MS = 6 * 60 * 60 * 1000;
 /** How long one read may take, in milliseconds. */
 export const READ_TIMEOUT_MS = 15_000;
-/** The tool name and contact the host sees; a host must know who is knocking. */
-export const FORAGING_USER_AGENT = "myrmidon-foraging/1.0 (+https://github.com/itkadr-git/myrmidon)";
 
 interface HostState {
   lastReadAt: number;
@@ -82,7 +80,7 @@ export interface ForagingReaderDeps {
   readKey?: (companyId: string, secretName: string | null) => Promise<string | null>;
   now?: () => number;
   fetchImpl?: typeof fetch;
-  /** Calls the authenticated vm-exec gateway; injected for tests. */
+  /** Calls the authenticated optional vm-exec gateway; injected for tests. */
   edgeFetch?: (request: ForagingEdgeFetchRequest, signal: AbortSignal) => Promise<ForagingEdgeFetchResponse>;
   log?: Pick<typeof logger, "warn" | "error">;
 }
@@ -115,7 +113,7 @@ export interface ForagingFetcher {
   fetch(source: ForagingSourceRef, signal?: AbortSignal): Promise<ForagingReaderResult>;
 }
 
-/** The production reader: fetches through vm-exec edge gateway under host rules above. */
+/** The production reader: uses the optional gateway or reads the source directly. */
 export function createForagingReader(deps: ForagingReaderDeps): ForagingReader & ForagingFetcher {
   const edgeFetch = deps.edgeFetch ?? createHttpEdgeFetchClient(deps);
   const now = deps.now ?? (() => Date.now());
@@ -152,8 +150,8 @@ export function createForagingReader(deps: ForagingReaderDeps): ForagingReader &
         throw new Error("foraging: edge fetch returned an invalid response");
       }
       const page = fetched.pages[0];
-      if (!page || page.url !== source.url || !page.content_sha256 || !page.fetched_at) {
-        throw new Error("foraging: edge fetch response is missing source provenance");
+      if (!page || page.url !== source.url || page.final_url !== source.url || !page.content_sha256 || !page.fetched_at) {
+        throw new Error("foraging: edge fetch response is missing source provenance or redirected");
       }
       const body = page.markdown;
       const scannerVerdict = scanForInjection(body, injectionScoreThreshold(deps.env));
@@ -197,23 +195,26 @@ export function snapshotFingerprint(lines: readonly string[]): string {
 
 function createHttpEdgeFetchClient(deps: ForagingReaderDeps): NonNullable<ForagingReaderDeps["edgeFetch"]> {
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const gateway = deps.env?.MYRMIDON_VMEXEC_URL?.trim();
-  const token = deps.env?.MYRMIDON_VMEXEC_TOKEN?.trim();
-  if (!gateway || !token) {
-    return async () => {
-      throw new Error("foraging: vm-exec edge fetch is not configured");
+  const gateway = (deps.env?.MYRMIDON_FORAGING_FETCHER_URL || deps.env?.MYRMIDON_VMEXEC_URL)?.trim();
+  const token = (deps.env?.MYRMIDON_FORAGING_FETCHER_TOKEN || deps.env?.MYRMIDON_VMEXEC_TOKEN)?.trim();
+  if (gateway && token) {
+    const isVmexec = Boolean(!deps.env?.MYRMIDON_FORAGING_FETCHER_URL && deps.env?.MYRMIDON_VMEXEC_URL);
+    const endpoint = new URL("/internal/v1/firecrawl/fetch", gateway).toString();
+    return async (request, signal) => {
+      const response = await fetchImpl(endpoint, {
+        method: "POST",
+        redirect: "error",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(request),
+        signal,
+      });
+      if (!response.ok) throw new Error(`foraging: ${isVmexec ? "vm-exec " : ""}edge fetch answered ${response.status}`);
+      return await response.json() as ForagingEdgeFetchResponse;
     };
   }
-  const endpoint = new URL("/internal/v1/firecrawl/fetch", gateway).toString();
-  return async (request, signal) => {
-    const response = await fetchImpl(endpoint, {
-      method: "POST",
-      redirect: "error",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify(request),
-      signal,
-    });
-    if (!response.ok) throw new Error(`foraging: vm-exec edge fetch answered ${response.status}`);
-    return await response.json() as ForagingEdgeFetchResponse;
+  return async (_request, _signal) => {
+    throw new Error(
+      "foraging: direct HTTP fetch from vm-core is disabled; configure MYRMIDON_FORAGING_FETCHER_URL and MYRMIDON_FORAGING_FETCHER_TOKEN",
+    );
   };
 }

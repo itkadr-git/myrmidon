@@ -21,6 +21,7 @@
 import { logger } from "../../middleware/logger.js";
 import type { CorpusSettings } from "@myrmidon/shared";
 import type { CorpusJobRecord, CorpusPorts, CorpusPortsResolver, ParsedChunk } from "./ports.js";
+import { CorpusRequestError, CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR } from "./service.js";
 
 /**
  * How often a pass is worth running on the board's scheduler tick. The tick
@@ -28,7 +29,7 @@ import type { CorpusJobRecord, CorpusPorts, CorpusPortsResolver, ParsedChunk } f
  * here: an idle corpus costs one settings read every 30 s, and a document that
  * was just uploaded reaches `ready` within about half a minute.
  */
-export const CORPUS_PARSE_SWEEP_INTERVAL_MS = 30_000;
+export const CORPUS_PARSE_SWEEP_INTERVAL_MS = 150_000;
 
 /** Counters of one pass; the sweep logs them and the tests assert them. */
 export interface CorpusParseSweepResult {
@@ -126,12 +127,16 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
       return "parsed";
     } catch (err) {
       const reason = message(err);
+      const isEmbedderConfigError =
+        (err instanceof CorpusRequestError && err.code === CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR) ||
+        reason.includes(CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR);
       const settled = await ports.queue
         .fail(job.companyId, job.id, reason)
         .catch(() => null);
       // The store owns the retry policy; if it did not answer, the attempts we
       // counted are the fallback. Anything else keeps the document queued.
-      const exhausted = settled ? settled.state === "failed" : job.attempts + 1 >= job.maxAttempts;
+      // Configuration errors are unretryable: fail the document immediately.
+      const exhausted = isEmbedderConfigError || (settled ? settled.state === "failed" : job.attempts + 1 >= job.maxAttempts);
       await ports.store
         .updateDocument(job.companyId, job.documentId, {
           status: exhausted ? "failed" : "queued",

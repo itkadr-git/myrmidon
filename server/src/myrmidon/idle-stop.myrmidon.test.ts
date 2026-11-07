@@ -455,6 +455,32 @@ describe('IdleStopService', () => {
       expect(mockDriver.start).toHaveBeenCalledWith(botKey);
     });
 
+    it('should start an exited container on wake and wait for health', async () => {
+      const botKey = 'exited-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      const result = await idleStopService.wake(botKey);
+
+      expect(result).toBe(true);
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
+    it('should start a created container on wake and wait for health', async () => {
+      const botKey = 'created-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'created' } } })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      const result = await idleStopService.wake(botKey);
+
+      expect(result).toBe(true);
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
     it('should return true without starting anything for an agent without a bot container', async () => {
       const botKey = 'host-run-agent';
       vi.mocked(mockDriver.status).mockResolvedValue({ botKey, state: 'missing' });
@@ -495,6 +521,18 @@ describe('IdleStopService', () => {
   });
 
   describe('ensureStartedAndHealthy', () => {
+    it('restarts a running container marked idle-stopped before allowing the queued run to contact gateway', async () => {
+      const botKey = 'idle-stopped-running-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'running', idleStopped: true })
+        .mockResolvedValueOnce({ botKey, state: 'running', idleStopped: false });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+      expect(mockDriver.status).toHaveBeenCalledTimes(2);
+    });
+
     it('should return immediately if container is running', async () => {
       const botKey = 'running-bot';
 
@@ -512,6 +550,45 @@ describe('IdleStopService', () => {
 
       vi.mocked(mockDriver.status)
         .mockResolvedValueOnce({ botKey, state: 'stopped' })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
+    it('should start an exited container on claim and wait for health', async () => {
+      const botKey = 'exited-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
+    it('should start a created container on claim and wait for health', async () => {
+      const botKey = 'created-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'created' } } })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
+    it('should start an exited container even when idle-stop config is disabled', async () => {
+      const disabledConfig: IdleStopConfig = {
+        ...testConfig,
+        enabled: false,
+      };
+
+      idleStopService = new IdleStopService(mockDriver as any, mockDb, disabledConfig);
+      const botKey = 'exited-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
         .mockResolvedValueOnce({ botKey, state: 'running' });
 
       await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
@@ -638,7 +715,7 @@ describe('IdleStopService', () => {
     it('is enabled by default', () => {
       const service = new IdleStopService(mockDriver, mockDb, {}, mockLogger);
       service.start();
-      expect(mockLogger.info).toHaveBeenCalledWith('Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=30000');
+      expect(mockLogger.info).toHaveBeenCalledWith('Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=420000');
       service.stop();
     });
 

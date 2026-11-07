@@ -121,6 +121,14 @@
    ]
   },
   {
+   "id": "A20",
+   "method": "PUT",
+   "template": "containers/{name}/config/update",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
    "id": "A12",
    "method": "POST",
    "template": "containers/{name}/rename?name={mainName}",

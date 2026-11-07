@@ -15,7 +15,8 @@
 // The contract is additive-only: fields are never renamed or removed.
 
 import { Router } from "express";
-import type { Db } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
+import { agents, type Db } from "@myrmidon/db";
 import { promptBudgetSettingsSchema, type PromptBudgetSettings } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertCompanyAccess, assertInstanceAdmin } from "../../routes/authz.js";
@@ -40,7 +41,17 @@ export function promptBudgetRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       assertInstanceAdmin(req);
-      res.json(await writePromptBudgetSettings(settings, req.body as PromptBudgetSettings));
+      const input = req.body as PromptBudgetSettings;
+      if (input.optimizerAgentId) {
+        const matching = await db.select({ id: agents.id }).from(agents).where(
+          and(eq(agents.id, input.optimizerAgentId), eq(agents.companyId, companyId)),
+        ).limit(1);
+        if (matching.length === 0) {
+          res.status(400).json({ error: "Optimizer agent must belong to this company" });
+          return;
+        }
+      }
+      res.json(await writePromptBudgetSettings(settings, input));
     },
   );
 

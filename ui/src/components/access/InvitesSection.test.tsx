@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InvitesSection } from "./InvitesSection";
 import { queryKeys } from "@/lib/queryKeys";
+import { i18n } from "@/i18n";
 
 const listInvitesMock = vi.hoisted(() => vi.fn());
 const createCompanyInviteMock = vi.hoisted(() => vi.fn());
@@ -112,6 +113,10 @@ describe("InvitesSection", () => {
     });
   });
 
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
@@ -137,6 +142,9 @@ describe("InvitesSection", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Invite a person");
+    expect(container.textContent).toContain("Create a one-time invite link");
+    expect(container.textContent).toContain("the entered email is saved only as invite defaults and is not verified against the acceptor");
+    expect(container.textContent).not.toContain("Create an account for a person");
     expect(container.textContent).not.toContain("Invite an agent");
     expect(container.textContent).not.toContain("Generate agent onboarding prompt");
     expect(container.textContent).toContain("Invite history");
@@ -191,12 +199,27 @@ describe("InvitesSection", () => {
     await act(async () => {
       createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    expect(container.textContent).toContain("Enter a valid email address.");
+    expect(createCompanyInviteMock).not.toHaveBeenCalled();
+
+    const emailInput = container.querySelector<HTMLInputElement>("#invitee-email");
+    expect(emailInput).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(emailInput, "new.user@example.com");
+      emailInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     await flushReact();
     await flushReact();
 
     expect(createCompanyInviteMock).toHaveBeenCalledWith("company-1", {
       allowedJoinTypes: "human",
       humanRole: "viewer",
+      defaultsPayload: { email: "new.user@example.com" },
       agentMessage: null,
     });
     expect(clipboardWriteTextMock).toHaveBeenCalledWith("https://paperclip.local/invite/new-token");
@@ -275,7 +298,11 @@ describe("InvitesSection", () => {
       (button) => button.textContent === "Create invite",
     );
 
+    const emailInput = container.querySelector<HTMLInputElement>("#invitee-email");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
+      setter.call(emailInput, "invitee@example.com");
+      emailInput?.dispatchEvent(new Event("input", { bubbles: true }));
       createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();

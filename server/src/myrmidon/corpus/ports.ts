@@ -206,7 +206,8 @@ export interface SearchIndexPort {
   deleteDocument(companyId: string, documentId: string): Promise<void>;
   search(input: {
     companyId: string;
-    datasetId: string;
+    datasetId?: string;
+    datasetIds?: string[];
     query: string;
     limit: number;
     mode: CorpusSearchMode;
@@ -215,6 +216,8 @@ export interface SearchIndexPort {
     embedderBaseUrl: string | null;
   }): Promise<SearchHitRecord[]>;
   countChunks(companyId: string, datasetId?: string): Promise<number>;
+  /** Check that the embedder is configured for this company. Throws CorpusRequestError if not. */
+  assertEmbedderConfigured?: (companyId: string, embedderBaseUrl: string | null) => Promise<void>;
 }
 
 export interface CorpusPorts {

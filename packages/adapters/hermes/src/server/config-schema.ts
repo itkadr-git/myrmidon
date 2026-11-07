@@ -116,6 +116,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Optional comma-separated hostnames, host:port entries, or origin URLs.",
       },
       {
+        key: "includeConfiguredMcpServers",
+        label: "Include configured MCP servers",
+        type: "toggle",
+        default: true,
+        hint: "Copy the existing Hermes MCP server names into the run-scoped MCP configuration. Turn off to expose only runtime-provided servers.",
+      },
+      {
         key: "quiet",
         label: "Quiet output",
         type: "toggle",

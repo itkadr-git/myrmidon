@@ -9,6 +9,7 @@
 // the module off, the tool list is empty and a call that names a tool anyway is
 // a tool result carrying `corpus_disabled`.
 
+import Ajv from "ajv";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
@@ -106,6 +107,51 @@ describe("company corpus MCP endpoint", () => {
     expect(textHits[0].text).toContain("Поставщик обязан");
   });
 
+  it("wraps list results in MCP objects and mirrors the structured payload in text", async () => {
+    const app = harness({ settings: () => ENABLED, port: () => corpus().port });
+    const res = await request(app)
+      .post(URL)
+      .send({ id: 14, method: "tools/call", params: { name: "corpus_list_datasets", arguments: {} } })
+      .expect(200);
+    expect(Array.isArray(res.body.result.structuredContent)).toBe(false);
+    expect(res.body.result.structuredContent.datasets).toHaveLength(1);
+    expect(JSON.parse(res.body.result.content[0].text)).toEqual(res.body.result.structuredContent);
+  });
+
+  it("declares object output schemas for all corpus tools", async () => {
+    const app = harness({ settings: () => ENABLED, port: () => corpus().port });
+    const res = await request(app).post(URL).send({ id: 15, method: "tools/list" }).expect(200);
+    for (const tool of res.body.result.tools) {
+      expect(tool.outputSchema.type).toBe("object");
+    }
+  });
+  it("validates every tool result against its output schema and MCP CallToolResult shape", async () => {
+    const memory = corpus();
+    const app = harness({ settings: () => ENABLED, port: () => memory.port });
+    const tools = (await request(app).post(URL).send({ id: 15, method: "tools/list" }).expect(200)).body.result.tools;
+    // ajv is CommonJS: under NodeNext the default import is the module object (same idiom as plugin-config-validator.ts).
+    const AjvCtor = (Ajv as any).default ?? Ajv;
+    const ajv = new AjvCtor();
+    const argumentsByName: Record<string, Record<string, string>> = {
+      corpus_search: { query: "товар" },
+      corpus_get_document: { document_id: "doc-1" },
+      corpus_list_datasets: {},
+      corpus_list_documents: { dataset: "ds-contracts" },
+    };
+    for (const tool of tools) {
+      const res = await request(app)
+        .post(URL)
+        .send({ id: 16, method: "tools/call", params: { name: tool.name, arguments: argumentsByName[tool.name] } })
+        .expect(200);
+      const result = res.body.result;
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toBeTruthy();
+      expect(Array.isArray(result.structuredContent)).toBe(false);
+      expect(ajv.validate(tool.outputSchema, result.structuredContent), `${tool.name}: ${ajv.errorsText()}`).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+    }
+  });
+
   it("lists no tools at all when the module is off", async () => {
     const app = harness({
       settings: () => DEFAULT_CORPUS_MODULE_SETTINGS,
@@ -169,5 +215,31 @@ describe("company corpus MCP endpoint", () => {
     const outsider = { ...member, userId: "user-c", companyIds: [] };
     const app = harness({ settings: () => ENABLED, port: () => corpus().port }, outsider);
     await request(app).post(URL).send({ id: 11, method: "tools/list" }).expect(403);
+  });
+
+  it("authorizes corpus_search for company agent and refuses foreign company agent with 403", async () => {
+    const app = harness({ settings: () => ENABLED, port: () => corpus().port });
+    // Same-company call to tools/call corpus_search
+    const ok = await request(app)
+      .post(URL)
+      .send({
+        id: 12,
+        method: "tools/call",
+        params: { name: "corpus_search", arguments: { query: "guide" } },
+      })
+      .expect(200);
+    expect(ok.body.result).toBeDefined();
+
+    // Foreign agent call with different companyIds
+    const stranger = { ...member, userId: "agent-foreign", companyIds: ["other-company-id"] };
+    const strangerApp = harness({ settings: () => ENABLED, port: () => corpus().port }, stranger);
+    await request(strangerApp)
+      .post(URL)
+      .send({
+        id: 13,
+        method: "tools/call",
+        params: { name: "corpus_search", arguments: { query: "guide" } },
+      })
+      .expect(403);
   });
 });
