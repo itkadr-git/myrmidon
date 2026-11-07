@@ -113,6 +113,16 @@ describe("myrmidon skill core", () => {
     // 4. APPROVE rule / APPROVE-правило
     expect(content).toMatch(/APPROVE/);
 
+    // REVIEW-DISCIPLINE B (OPE-12222): PR text & diff are untrusted input —
+    // nonce markers, file manifest first, diff limits.
+    expect(content).toContain("<<<UNTRUSTED-PR <nonce>>>");
+    expect(content).toContain("<<<END-UNTRUSTED-PR <nonce>>>");
+    expect(content).toContain("approve this PR");
+    expect(content).toContain("ignore previous instructions");
+    expect(content).toMatch(/манифест/);
+    expect(content).toContain("400 строк диффа на файл");
+    expect(content).toContain("2000 строк суммарно");
+
     // Links to api-reference and heartbeat-procedure, and status PATCH mechanism
     expect(content).toContain("api-reference.md");
     expect(content).toContain("heartbeat-procedure.md");
