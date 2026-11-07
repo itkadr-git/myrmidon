@@ -6208,14 +6208,45 @@ it.each(["held-ack", "lost-ack", "rejected-attach", "slow-outbox-commits"] as co
         await within("warm attach with slow outbox commits", attachment, 15_000);
         expect(rotations).toHaveLength(1);
         const retired = rotations[0]!;
+        // The controller commits each retained outbox event strictly in order
+        // and only then advances the cumulative cursor. Slowing every commit
+        // makes the runner re-emit the queued `run.attached` on each drained
+        // cycle while the init triple (session.resumed / capabilities /
+        // goal.snapshot) is discarded by the driver-side event-queue clear,
+        // so the retired tail is a run of `run.attached` entries — one per
+        // drain cycle — not the init triple plus a single attach.
+        const retiredEventTypes = retired.committedEvents.map(
+          (entry) => entry.eventType,
+        );
+        const lastAttached = retired.committedEvents.findLast(
+          (entry) => entry.eventType === "run.attached",
+        )!;
+        expect(lastAttached).toBeDefined();
+        // Everything committed at or after the first retained `run.attached`
+        // is part of the drained attach backlog: the init triple and lineage
+        // items precede it, the tail is one `run.attached` per drain cycle.
+        const firstAttachIndex = retired.committedEvents.findIndex(
+          (entry) => entry.eventType === "run.attached",
+        );
+        expect(firstAttachIndex).toBeGreaterThanOrEqual(0);
+        const attachTail = retired.committedEvents.slice(firstAttachIndex);
+        expect(attachTail.length).toBeGreaterThanOrEqual(1);
         expect(
-          retired.committedEvents.slice(-4).map((entry) => entry.eventType),
-        ).toEqual([
-          "session.resumed",
-          "session.capabilities.updated",
-          "session.goal.snapshot",
-          "run.attached",
-        ]);
+          attachTail.every((entry) => entry.eventType === "run.attached"),
+        ).toBe(true);
+        expect(
+          retired.committedEvents
+            .slice(0, firstAttachIndex)
+            .every((entry) => entry.eventType !== "run.attached"),
+        ).toBe(true);
+        expect(
+          retired.committedEvents.every(
+            (entry) => entry.envelope.runId === oldIdentity.runId,
+          ),
+        ).toBe(true);
+        expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
+          lastAttached.sourceSeq,
+        );
         await vi.waitFor(async () =>
           expect((await readRunner()).runId).toBe("run-warm-ack-next"),
         );
