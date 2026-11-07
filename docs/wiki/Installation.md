@@ -16,6 +16,18 @@ stable release and is not a substitute for a pinned candidate. The command
 needs an internet connection and `curl` (on a bare Ubuntu or Debian, run
 `sudo apt-get install -y curl` to add it).
 
+To render and validate the Compose files without pulling images or changing
+running services, add `--dry-run`. The generated files remain in the install
+directory for inspection:
+
+```sh
+sudo bash install.sh --dir /var/lib/myrmidon --version myr-v1.6.6 --dry-run
+```
+
+When migrating an existing installation, keep the existing directory,
+database URL, passwords, bind mounts and volume names. The installer preserves
+legacy database volumes and does not delete data during a normal install.
+
 ## What the installer does, step by step
 
 1. **Checks the machine** against the
