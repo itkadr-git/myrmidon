@@ -106,6 +106,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   // myrmidon(OPE-7932): label for an overdue issue monitor.
   issue_monitor_overdue: { label: "Overdue issue monitor" },
   provider_usage_warning: { label: "Provider usage" },
+  litellm_budget: { label: "LLM key budget" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -177,6 +178,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "budget_alert":
     case "host_disk_alert":
     case "foraging_limit":
+    case "litellm_budget":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":

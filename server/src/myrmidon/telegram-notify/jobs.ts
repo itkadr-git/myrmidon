@@ -143,6 +143,7 @@ function sectionsForSourceKind(sourceKind: string): DigestSection[] {
     case "agent_error_alert":
       return ["blocked"];
     case "budget_alert":
+    case "litellm_budget":
       return ["spend", "needs_decision"];
     default:
       return [];
@@ -173,7 +174,7 @@ export function buildDigestSections(input: {
     if (target.includes("blocked") && selected.includes("blocked")) {
       blocked.push(line);
     }
-    if (item.sourceKind === "budget_alert" && selected.includes("spend")) {
+    if ((item.sourceKind === "budget_alert" || item.sourceKind === "litellm_budget") && selected.includes("spend")) {
       spend.push(line);
     }
   }

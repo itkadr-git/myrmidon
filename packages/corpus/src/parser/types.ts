@@ -38,9 +38,17 @@ export interface DocumentParseJobError {
   readonly message: string;
 }
 
+/** How far a running job has got: pages done of pages total (only PDFs and images report it). */
+export interface DocumentParseProgress {
+  readonly done: number;
+  readonly total: number;
+}
+
 export interface DocumentParseJob {
   readonly jobId: string;
   readonly status: DocumentParseStatus;
+  /** Present on a running job of a paged format; `done` grows as the service works. */
+  readonly progress?: DocumentParseProgress;
   readonly pages?: readonly ParsedDocumentPage[];
   readonly text?: string;
   readonly error?: DocumentParseJobError;

@@ -45,6 +45,7 @@ import {
   CorpusRequestError,
   corpusService,
   CORPUS_DOCUMENT_DELETED_ACTION,
+  CORPUS_DOCUMENT_REPARSED_ACTION,
   CORPUS_DOCUMENT_UPLOADED_ACTION,
   CORPUS_SETTINGS_ACTION,
   type CorpusActor,
@@ -277,7 +278,25 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
       },
     },
     queue: {
-      async enqueue({ companyId, datasetId, documentId, maxAttempts }) {
+      async enqueue({ companyId, datasetId, documentId, maxAttempts, reset }) {
+        // Like the Postgres queue: one job per document; a failed one (or any one, with `reset`)
+        // starts over instead of a second job being created.
+        const existing = [...state.jobs.values()].find(
+          (row) => row.companyId === companyId && row.documentId === documentId,
+        );
+        if (existing) {
+          if (!reset && existing.state !== "failed") return existing;
+          const rearmed: CorpusJobRecord = {
+            ...existing,
+            state: "queued",
+            attempts: 0,
+            maxAttempts: Math.max(existing.maxAttempts, maxAttempts),
+            lastError: null,
+            updatedAt: AT,
+          };
+          state.jobs.set(existing.id, rearmed);
+          return rearmed;
+        }
         const job: CorpusJobRecord = {
           id: nextId("30"),
           companyId,
@@ -513,6 +532,7 @@ describe("corpus module: off by default and silent while off", () => {
         .post(`${datasetPath()}/documents`)
         .attach("file", Buffer.from("hello corpus"), "note.txt"),
       request(app).post(`${datasetPath()}/search`).send({ query: "hello" }),
+      request(app).post(`${companyPath()}/documents/${DATASET_ID}/reparse`),
       request(app).get(`${companyPath()}/stats`),
     ];
     for (const call of calls) {
@@ -635,6 +655,25 @@ describe("corpus settings: the instance block drives the module", () => {
     expect((await request(h.app()).patch(settingsPath).send({ enabled: "yes" })).status).toBe(400);
     expect(h.calls.updateGeneral).toBe(0);
     expect(h.audit).toHaveLength(0);
+  });
+
+  it("takes a parse time limit of up to two hours and refuses more", async () => {
+    const h = corpusHarness();
+    // A scanned book of 300 pages needs about 25 minutes of OCR: the old ceiling was ten minutes.
+    const saved = await request(h.app()).patch(settingsPath).send({ parserTimeoutMs: 7_200_000 });
+    expect(saved.status).toBe(200);
+    expect(saved.body.settings.parserTimeoutMs).toBe(7_200_000);
+    expect((await request(h.app()).patch(settingsPath).send({ parserTimeoutMs: 1_800_000 })).status).toBe(200);
+    expect((await request(h.app()).patch(settingsPath).send({ parserTimeoutMs: 7_200_001 })).status).toBe(400);
+    expect((await request(h.app()).patch(settingsPath).send({ parserTimeoutMs: 999 })).status).toBe(400);
+    expect(h.state.stored?.parserTimeoutMs).toBe(1_800_000);
+    // The environment default follows the same bound.
+    expect(
+      resolveCorpusSettings({ stored: undefined, env: { MYRMIDON_CORPUS_PARSER_TIMEOUT_MS: "7200000" } }).settings.parserTimeoutMs,
+    ).toBe(7_200_000);
+    expect(
+      resolveCorpusSettings({ stored: undefined, env: { MYRMIDON_CORPUS_PARSER_TIMEOUT_MS: "7200001" } }).settings.parserTimeoutMs,
+    ).toBe(DEFAULT_CORPUS_SETTINGS.parserTimeoutMs);
   });
 
   it("materializes the block on a save that moves nothing", async () => {
@@ -1029,5 +1068,200 @@ describe("corpus API: upload, parse and search", () => {
     // No blob stored and no job enqueued for the unconfigured upload
     expect(h.state.blobs.size).toBe(0);
     expect(h.state.jobs.size).toBe(0);
+  });
+
+  it("holds the parseConcurrency cap across passes that overlap", async () => {
+    // A pass lasts as long as its slowest parse while the scheduler starts a new one every
+    // CORPUS_PARSE_SWEEP_INTERVAL_MS: a pass must not claim more than the slots still free.
+    const h = enabled({ MYRMIDON_CORPUS_PARSE_CONCURRENCY: "2" });
+    h.seedDataset();
+    const app = h.app();
+    for (const name of ["a", "b", "c", "d", "e"]) await upload(app, DATASET_ID, `book ${name}`, `${name}.txt`);
+
+    let active = 0;
+    let peak = 0;
+    const gates: Array<() => void> = [];
+    h.ports.parser.parse = async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      active -= 1;
+      return { text: "book", chunks: [{ index: 0, text: "book" }] };
+    };
+
+    const first = h.worker.sweep();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(active).toBe(2);
+
+    // Ticks while both parses are still running claim nothing, however many are queued.
+    expect(await h.worker.sweep()).toMatchObject({ enabled: true, available: true, claimed: 0 });
+    expect(await h.worker.sweep()).toMatchObject({ claimed: 0 });
+    expect(h.calls.claim).toBe(1);
+    expect(active).toBe(2);
+
+    gates.splice(0).forEach((release) => release());
+    expect(await first).toMatchObject({ claimed: 2, parsed: 2 });
+
+    // Both slots are free again: the next pass takes the next two, and no more.
+    const second = h.worker.sweep();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(active).toBe(2);
+    gates.splice(0).forEach((release) => release());
+    expect(await second).toMatchObject({ claimed: 2, parsed: 2 });
+    expect(peak).toBe(2);
+    expect([...h.state.jobs.values()].filter((job) => job.state === "queued")).toHaveLength(1);
+  });
+
+  it("frees the slots of a pass whose jobs fail, and of a claim that throws", async () => {
+    const h = enabled({ MYRMIDON_CORPUS_PARSE_CONCURRENCY: "1" });
+    h.seedDataset();
+    await upload(h.app(), DATASET_ID, "one", "one.txt");
+    h.state.parse = new Error("the parse service answered 502");
+    expect(await h.worker.sweep()).toMatchObject({ claimed: 1, requeued: 1 });
+    expect(await h.worker.sweep()).toMatchObject({ claimed: 1, requeued: 1 }); // the slot was free again
+
+    const claim = h.ports.queue.claim;
+    h.ports.queue.claim = async () => {
+      throw new Error("the database went away");
+    };
+    await expect(h.worker.sweep()).rejects.toThrow("the database went away");
+    h.ports.queue.claim = claim;
+    expect(await h.worker.sweep()).toMatchObject({ claimed: 1, failed: 1 }); // third attempt: the slot was released
+  });
+
+  describe("parsing a failed document again", () => {
+    const failedDocument = async (h: ReturnType<typeof enabled>, app: TestApp) => {
+      const uploaded = await upload(app, DATASET_ID, "a big book", "book.pdf");
+      const documentId = uploaded.body.document.id as string;
+      h.state.parse = new Error("the parse service answered 502");
+      await h.worker.sweep();
+      await h.worker.sweep();
+      await h.worker.sweep();
+      expect(h.state.documents.get(documentId)).toMatchObject({ status: "failed" });
+      expect(h.state.documents.get(documentId)?.attempts).toBeGreaterThanOrEqual(3);
+      return { documentId, jobId: uploaded.body.job.id as string };
+    };
+    const reparse = (app: TestApp, documentId: string, companyId: string = COMPANY) =>
+      request(app).post(`${companyPath(companyId)}/documents/${documentId}/reparse`);
+
+    it("queues the stored bytes again with the attempts cleared, and the next pass makes it ready", async () => {
+      const h = enabled();
+      h.seedDataset();
+      const app = h.app();
+      const { documentId, jobId } = await failedDocument(h, app);
+      const parsedBytes: string[] = [];
+      h.ports.parser.parse = async (input) => {
+        parsedBytes.push(Buffer.from(input.bytes).toString("utf8"));
+        return { text: "a big book", chunks: [{ index: 0, text: "a big book" }] };
+      };
+      const blobsBefore = [...h.state.blobs.keys()];
+
+      const response = await reparse(app, documentId);
+
+      expect(response.status).toBe(202);
+      expect(response.body.document).toMatchObject({ id: documentId, status: "queued", error: null, attempts: 0, chunkCount: 0 });
+      expect(response.body.job).toMatchObject({ id: jobId, state: "queued", attempts: 0, lastError: null });
+      expect(response.body.document.blobRef).toBeUndefined(); // never leaves the board
+      // The same job and the same bytes: nothing was uploaded, nothing was duplicated.
+      expect(h.state.jobs.size).toBe(1);
+      expect([...h.state.blobs.keys()]).toEqual(blobsBefore);
+      expect(h.audit.map((row) => row.action)).toEqual([CORPUS_DOCUMENT_UPLOADED_ACTION, CORPUS_DOCUMENT_REPARSED_ACTION]);
+      expect(h.audit[1].details).toMatchObject({ datasetId: DATASET_ID, filename: "book.pdf", jobId });
+      expect(String(h.audit[1].details.previousError)).toContain("502");
+
+      expect(await h.worker.sweep()).toMatchObject({ claimed: 1, parsed: 1, failed: 0 });
+      expect(parsedBytes).toEqual(["a big book"]);
+      expect((await request(app).get(`${companyPath()}/documents/${documentId}`)).body.document).toMatchObject({
+        status: "ready",
+        chunkCount: 1,
+        error: null,
+      });
+    });
+
+    it("gives a document that fails again the full number of attempts once more", async () => {
+      const h = enabled();
+      h.seedDataset();
+      const app = h.app();
+      const { documentId } = await failedDocument(h, app);
+
+      expect((await reparse(app, documentId)).status).toBe(202);
+      expect(await h.worker.sweep()).toMatchObject({ claimed: 1, requeued: 1 });
+      expect(await h.worker.sweep()).toMatchObject({ claimed: 1, requeued: 1 });
+      expect(await h.worker.sweep()).toMatchObject({ claimed: 1, failed: 1 });
+      expect(h.state.documents.get(documentId)?.status).toBe("failed");
+      expect((await reparse(app, documentId)).status).toBe(202); // and again, as often as needed
+    });
+
+    it("refuses a document that is not failed, one without stored bytes and an unknown one", async () => {
+      const h = enabled();
+      h.seedDataset();
+      const app = h.app();
+      const queued = (await upload(app, DATASET_ID, "waiting", "waiting.txt")).body.document.id as string;
+      const refusedQueued = await reparse(app, queued);
+      expect(refusedQueued.status).toBe(409);
+      expect(refusedQueued.body).toMatchObject({ error: "document_not_failed", status: "queued" });
+
+      await h.worker.sweep();
+      const refusedReady = await reparse(app, queued);
+      expect(refusedReady.status).toBe(409);
+      expect(refusedReady.body).toMatchObject({ error: "document_not_failed", status: "ready" });
+
+      // A document that failed at upload (no embedder) never got its bytes.
+      h.state.embedderConfigured = false;
+      const noBytes = (await upload(app, DATASET_ID, "no embedder", "none.txt")).body.documentId as string;
+      h.state.embedderConfigured = true;
+      expect(h.state.documents.get(noBytes)).toMatchObject({ status: "failed", blobRef: "" });
+      const refusedNoBytes = await reparse(app, noBytes);
+      expect(refusedNoBytes.status).toBe(409);
+      expect(refusedNoBytes.body.error).toBe("document_has_no_stored_bytes");
+
+      expect((await reparse(app, "no-such-document")).status).toBe(404);
+      expect(h.audit.map((row) => row.action)).not.toContain(CORPUS_DOCUMENT_REPARSED_ACTION);
+    });
+
+    it("keeps the company scope: another company's document is not reachable", async () => {
+      const h = enabled();
+      h.seedDataset();
+      const app = h.app();
+      const { documentId } = await failedDocument(h, app);
+
+      expect((await reparse(h.app(strangerActor), documentId)).status).toBe(403);
+      expect((await reparse(app, documentId, OTHER_COMPANY)).status).toBe(403);
+      expect(h.state.documents.get(documentId)?.status).toBe("failed");
+    });
+
+    it("leaves the document failed while the embedder is still not configured", async () => {
+      const h = enabled();
+      h.seedDataset();
+      const app = h.app();
+      const { documentId } = await failedDocument(h, app);
+      h.state.embedderConfigured = false;
+
+      const response = await reparse(app, documentId);
+
+      expect(response.status).toBe(422);
+      expect(response.body.error).toBe("corpus_embedder_not_configured");
+      expect(h.state.documents.get(documentId)).toMatchObject({ status: "failed" });
+      expect(h.state.jobs.size).toBe(1);
+      expect([...h.state.jobs.values()][0]?.state).toBe("failed");
+    });
+
+    it("puts the document back to failed when the job cannot be queued", async () => {
+      const h = enabled();
+      h.seedDataset();
+      const app = h.app();
+      const { documentId } = await failedDocument(h, app);
+      h.ports.queue.enqueue = async () => {
+        throw new Error("the queue is down");
+      };
+
+      const response = await reparse(app, documentId);
+
+      expect(response.status).toBe(502);
+      expect(response.body.error).toBe("enqueue_failed");
+      const document = h.state.documents.get(documentId);
+      expect(document).toMatchObject({ status: "failed" });
+      expect(document?.error).toContain("502"); // the reason it had before is not lost
+    });
   });
 });

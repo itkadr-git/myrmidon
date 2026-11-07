@@ -293,6 +293,21 @@ export function myrmidonCorpusRoutes(db: Db, deps: CorpusRoutesDeps) {
     }),
   );
 
+  // A failed document is parsed again from the bytes already stored — no delete and re-upload.
+  router.post(
+    "/myrmidon/companies/:companyId/corpus/documents/:documentId/reparse",
+    handle(async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await service.reparseDocument(
+        companyId,
+        req.params.documentId as string,
+        actorOf(req),
+      );
+      res.status(202).json(result);
+    }),
+  );
+
   router.delete(
     "/myrmidon/companies/:companyId/corpus/documents/:documentId",
     handle(async (req, res) => {

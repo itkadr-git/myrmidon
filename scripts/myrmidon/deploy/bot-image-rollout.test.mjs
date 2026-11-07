@@ -468,7 +468,7 @@ exit 0
 }
 
 function cleanEnv(sb, extra = {}) {
-  const env = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, MYRMIDON_DEPLOY_MIN_FREE_GB: "10", ...extra };
+  const env = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, MYRMIDON_DEPLOY_MIN_FREE_GB: "0", ...extra };
   delete env.BASH_ENV;
   delete env.ENV;
   return env;

@@ -24,6 +24,16 @@ export interface AgentGatewayKeyView {
   agentName?: string | null;
   role?: string | null;
   budget?: KeyBudgetLimitView | null;
+  maxBudgetUsd?: number | null;
+  gatewaySpendUsd?: number | null;
+  usage?: {
+    spentCents: number;
+    weeklySpentCents: number;
+    zeroCostEvents: number;
+    windowStart: string;
+    utilizationPercent: number | null;
+    status: "ok" | "near_cap" | "exhausted" | "unknown";
+  } | null;
 }
 
 export interface ServiceKeyBudgetView {
