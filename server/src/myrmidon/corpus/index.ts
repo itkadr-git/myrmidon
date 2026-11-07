@@ -26,6 +26,7 @@ export {
 export {
   CORPUS_DATASET_DELETED_ACTION,
   CORPUS_DOCUMENT_DELETED_ACTION,
+  CORPUS_DOCUMENT_REFRESHED_ACTION,
   CORPUS_DOCUMENT_REPARSED_ACTION,
   CORPUS_DOCUMENT_UPLOADED_ACTION,
   CORPUS_NOT_CONFIGURED_ERROR,
@@ -33,6 +34,7 @@ export {
   CorpusRequestError,
   corpusService,
   type CorpusActor,
+  type CorpusAddUrlInput,
   type CorpusAuditEntry,
   type CorpusService,
   type CorpusServiceDeps,
@@ -40,6 +42,14 @@ export {
   type CorpusUploadInput,
   type CorpusUploadResult,
 } from "./service.js";
+export {
+  CORPUS_SOURCE_REFRESH_INTERVAL_MS,
+  createCorpusSourceRefresher,
+  type CorpusSourceRefresher,
+  type CorpusSourceRefresherDeps,
+  type CorpusSourceRefreshSweepResult,
+} from "./source.js";
+export { createCorpusUrlFetcher, type CorpusUrlFetcher } from "./source-fetch.js";
 export type {
   BlobStorePort,
   CorpusDatasetRecord,

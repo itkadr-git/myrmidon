@@ -87,6 +87,7 @@ import {
   githubConnectionEventService,
   issueService,
   instanceSettingsService,
+  logActivity, // myrmidon(1.6.6 OPE-12000)
   reconcileBuiltInAgentsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -221,9 +222,13 @@ import { buildRunsReconnectingWatchdog } from "./myrmidon/monitoring/metrics/ind
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — one pass per gate,
 // a no-op while the module is off or its ports (parts A/B) are not wired.
 import {
+  CORPUS_DOCUMENT_REFRESHED_ACTION,
   CORPUS_PARSE_SWEEP_INTERVAL_MS,
+  CORPUS_SOURCE_REFRESH_INTERVAL_MS,
   corpusService,
   createCorpusParseWorker,
+  createCorpusSourceRefresher,
+  createCorpusUrlFetcher,
   configureCorpusAdapters,
   resolveCorpusPorts,
 } from "./myrmidon/corpus/index.js";
@@ -2076,10 +2081,53 @@ async function startServerWithDatabaseTeardown(
         return { settings: view.settings, enabled: view.enabled };
       },
     });
+    // myrmidon(1.6.6 OPE-12000): documents added by address are fetched again when their interval
+    // has passed — once an hour on the same tick, same switch, same ports. This is the product
+    // replacement of the weekly host script that re-downloaded the platform documentation pages.
+    const sourceRefresher = createCorpusSourceRefresher({
+      ports: resolveCorpusPorts,
+      resolveSettings: async () => {
+        const view = await service.readSettings();
+        return { settings: view.settings, enabled: view.enabled };
+      },
+      fetcher: createCorpusUrlFetcher(),
+      onUpdated: async (document, outcome) => {
+        await logActivity(db as any, {
+          companyId: document.companyId,
+          actorType: "system",
+          actorId: "corpus-source-refresh",
+          agentId: null,
+          runId: null,
+          agentApiKeyId: null,
+          action: CORPUS_DOCUMENT_REFRESHED_ACTION,
+          entityType: "corpus_document",
+          entityId: document.id,
+          details: {
+            datasetId: document.datasetId,
+            filename: document.filename,
+            sourceUrl: document.sourceUrl,
+            previousHash: outcome.previousHash,
+            contentHash: outcome.contentHash,
+            jobId: outcome.job.id,
+          },
+        });
+      },
+    });
     let lastPassAt = 0;
+    let lastSourceRefreshAt = 0;
     return () => {
       if (heartbeatSchedulerStopped) return;
       const now = Date.now();
+      if (lastSourceRefreshAt === 0 || now - lastSourceRefreshAt >= CORPUS_SOURCE_REFRESH_INTERVAL_MS) {
+        lastSourceRefreshAt = now;
+        trackHeartbeatSchedulerWork(sourceRefresher.sweep().then((result) => {
+          if (result.updated > 0 || result.failed > 0) {
+            logger.info(result, "Corpus source refresh completed");
+          }
+        }).catch((err) => {
+          logger.error({ err }, "Corpus source refresh failed");
+        }));
+      }
       if (lastPassAt !== 0 && now - lastPassAt < CORPUS_PARSE_SWEEP_INTERVAL_MS) return;
       lastPassAt = now;
       trackHeartbeatSchedulerWork(worker.sweep().then((result) => {

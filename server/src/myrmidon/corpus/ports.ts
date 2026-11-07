@@ -68,6 +68,14 @@ export interface CorpusDocumentRecord {
   createdAt: string;
   updatedAt: string;
   parsedAt: string | null;
+  /** OPE-12000: where a URL-sourced document comes from; null for an upload. */
+  sourceUrl: string | null;
+  refreshIntervalHours: number | null;
+  /** SHA-256 (hex) of the stored bytes; null for an upload. */
+  contentHash: string | null;
+  lastFetchedAt: string | null;
+  /** Why the last fetch failed, or null. */
+  sourceError: string | null;
 }
 
 export interface CorpusJobRecord {
@@ -114,6 +122,8 @@ export interface CorpusStorePort {
     byteSize: number;
     blobRef: string;
     maxAttempts: number;
+    /** OPE-12000: set for a document added by address. */
+    source?: { url: string; refreshIntervalHours: number; contentHash: string; fetchedAt: string };
   }): Promise<CorpusDocumentRecord>;
   updateDocument(
     companyId: string,
@@ -121,10 +131,31 @@ export interface CorpusStorePort {
     patch: Partial<
       Pick<
         CorpusDocumentRecord,
-        "status" | "chunkCount" | "error" | "attempts" | "parsedAt" | "blobRef"
+        | "status"
+        | "chunkCount"
+        | "error"
+        | "attempts"
+        | "parsedAt"
+        | "blobRef"
+        | "byteSize"
+        | "mimeType"
+        | "contentHash"
+        | "lastFetchedAt"
+        | "sourceError"
       >
     >,
   ): Promise<CorpusDocumentRecord | null>;
+  /**
+   * OPE-12000: the URL-sourced documents (those with a `sourceUrl`), oldest fetch first. With
+   * `dueAt` only the ones whose `lastFetchedAt + refreshIntervalHours` has passed; without it all
+   * of them. `companyId` / `datasetId` narrow the scope; the scheduled sweep passes neither.
+   */
+  listSourceDocuments(input: {
+    companyId?: string;
+    datasetId?: string;
+    dueAt?: Date;
+    limit: number;
+  }): Promise<CorpusDocumentRecord[]>;
   deleteDocument(companyId: string, documentId: string): Promise<boolean>;
   countDocuments(companyId: string, datasetId: string): Promise<number>;
   getJob(companyId: string, jobId: string): Promise<CorpusJobRecord | null>;

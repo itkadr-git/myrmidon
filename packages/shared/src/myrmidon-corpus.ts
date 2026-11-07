@@ -400,6 +400,16 @@ export interface CorpusDocument {
   updatedAt: string;
   /** When the document reached `ready`, else null. */
   parsedAt: string | null;
+  /** OPE-12000: the address a URL-sourced document is fetched from, or null for an upload. */
+  sourceUrl: string | null;
+  /** OPE-12000: hours between two fetches of `sourceUrl`; null for an upload. */
+  refreshIntervalHours: number | null;
+  /** OPE-12000: SHA-256 (hex) of the fetched bytes; a refresh re-parses only when it moves. */
+  contentHash: string | null;
+  /** OPE-12000: when `sourceUrl` was last fetched successfully, else null. */
+  lastFetchedAt: string | null;
+  /** OPE-12000: why the last fetch of `sourceUrl` failed, or null. */
+  sourceError: string | null;
 }
 
 export interface CorpusParseJob {
@@ -471,9 +481,46 @@ export const corpusSearchBodySchema = z
   })
   .strict();
 
+/** OPE-12000: hours between two fetches of a URL-sourced document, unless the caller says otherwise. */
+export const CORPUS_DEFAULT_REFRESH_INTERVAL_HOURS = 168;
+export const CORPUS_MIN_REFRESH_INTERVAL_HOURS = 1;
+export const CORPUS_MAX_REFRESH_INTERVAL_HOURS = 8_760;
+
+/** Body of `POST …/datasets/:datasetId/documents/url` (OPE-12000). */
+export const addCorpusUrlDocumentSchema = z
+  .object({
+    url: z.string().trim().min(1).max(2_048),
+    refreshIntervalHours: z
+      .number()
+      .int()
+      .min(CORPUS_MIN_REFRESH_INTERVAL_HOURS)
+      .max(CORPUS_MAX_REFRESH_INTERVAL_HOURS)
+      .optional(),
+    name: z.string().trim().min(1).max(255).optional(),
+  })
+  .strict();
+
+/** Answer of `POST …/datasets/:datasetId/refresh-urls` (202, OPE-12000). */
+export interface CorpusRefreshUrlsResult {
+  datasetId: string;
+  /** URL-sourced documents of the dataset the pass looked at. */
+  checked: number;
+  /** Fetched, same hash: only `lastFetchedAt` moved. */
+  unchanged: number;
+  /** Fetched, new hash: the content was replaced and a new parse job queued. */
+  updated: number;
+  /** Not fetched: the document is still being parsed. */
+  skipped: number;
+  /** The fetch (or the replace) failed; the stored version stays as it was. */
+  failed: number;
+  /** One entry per failed document, at most 50. */
+  failures: Array<{ documentId: string; sourceUrl: string; error: string }>;
+}
+
 export type CreateCorpusDatasetInput = z.infer<typeof createCorpusDatasetSchema>;
 export type UpdateCorpusDatasetInput = z.infer<typeof updateCorpusDatasetSchema>;
 export type CorpusSearchInput = z.infer<typeof corpusSearchBodySchema>;
+export type AddCorpusUrlDocumentInput = z.infer<typeof addCorpusUrlDocumentSchema>;
 
 /** Route paths, so part D and part E do not hard-code strings. */
 export const CORPUS_SETTINGS_PATH = "/api/myrmidon/corpus/settings";
@@ -495,6 +542,16 @@ export function corpusDatasetPath(companyId: string, datasetId: string): string 
 /** `GET`/`POST`/`DELETE …/datasets/:datasetId/documents`. */
 export function corpusDocumentsPath(companyId: string, datasetId: string): string {
   return `${corpusDatasetPath(companyId, datasetId)}/documents`;
+}
+
+/** `POST …/datasets/:datasetId/documents/url` — add a document by address (OPE-12000). */
+export function corpusUrlDocumentsPath(companyId: string, datasetId: string): string {
+  return `${corpusDocumentsPath(companyId, datasetId)}/url`;
+}
+
+/** `POST …/datasets/:datasetId/refresh-urls` — fetch the URL-sourced documents now (OPE-12000). */
+export function corpusRefreshUrlsPath(companyId: string, datasetId: string): string {
+  return `${corpusDatasetPath(companyId, datasetId)}/refresh-urls`;
 }
 
 /** `GET`/`DELETE …/documents/:documentId` — the document id is unique in the corpus. */

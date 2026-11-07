@@ -41,10 +41,14 @@ import type {
   SearchHitRecord,
 } from "./ports.js";
 import { myrmidonCorpusRoutes } from "./routes.js";
+import { guardedRemoteHttpFetch } from "../../services/remote-http-fetch.js";
+import { createCorpusSourceRefresher } from "./source.js";
+import { createCorpusUrlFetcher, sha256Hex, type CorpusUrlFetcher } from "./source-fetch.js";
 import {
   CorpusRequestError,
   corpusService,
   CORPUS_DOCUMENT_DELETED_ACTION,
+  CORPUS_DOCUMENT_REFRESHED_ACTION,
   CORPUS_DOCUMENT_REPARSED_ACTION,
   CORPUS_DOCUMENT_UPLOADED_ACTION,
   CORPUS_SETTINGS_ACTION,
@@ -111,7 +115,9 @@ interface Harness {
 }
 
 /** In-memory ports plus the two board services the module leans on. */
-function corpusHarness(options: { env?: Record<string, string | undefined>; stored?: unknown; wired?: boolean } = {}): Harness {
+function corpusHarness(
+  options: { env?: Record<string, string | undefined>; stored?: unknown; wired?: boolean; fetchUrl?: CorpusUrlFetcher } = {},
+): Harness {
   const state: Harness["state"] = {
     datasets: new Map(),
     documents: new Map(),
@@ -135,6 +141,7 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
   };
   const audit: Harness["audit"] = [];
   let sequence = 0;
+  let blobSequence = 0;
   const nextId = (prefix: string) => `${prefix}000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`;
   const datasetOf = (companyId: string, datasetId: string) => {
     const found = state.datasets.get(datasetId);
@@ -218,6 +225,11 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
           createdAt: AT,
           updatedAt: AT,
           parsedAt: null,
+          sourceUrl: input.source?.url ?? null,
+          refreshIntervalHours: input.source?.refreshIntervalHours ?? null,
+          contentHash: input.source?.contentHash ?? null,
+          lastFetchedAt: input.source?.fetchedAt ?? null,
+          sourceError: null,
         };
         state.documents.set(row.id, row);
         return row;
@@ -239,6 +251,19 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
         state.blobs.delete(row.blobRef);
         state.chunks.delete(documentId);
         return true;
+      },
+      async listSourceDocuments({ companyId, datasetId, dueAt, limit }) {
+        return [...state.documents.values()]
+          .filter((row) => row.sourceUrl !== null)
+          .filter((row) => !companyId || row.companyId === companyId)
+          .filter((row) => !datasetId || row.datasetId === datasetId)
+          .filter(
+            (row) =>
+              !dueAt ||
+              new Date(row.lastFetchedAt ?? row.createdAt).getTime() + (row.refreshIntervalHours ?? 168) * 3_600_000 <=
+                dueAt.getTime(),
+          )
+          .slice(0, limit);
       },
       async countDocuments(companyId, datasetId) {
         return [...state.documents.values()].filter(
@@ -263,7 +288,8 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
     },
     blobs: {
       async put({ companyId, documentId, filename, bytes }) {
-        const ref = `corpus/${companyId}/${documentId}/${filename}`;
+        // Unique per write, like the production key: a replaced version must not overwrite the old one.
+        const ref = `corpus/${companyId}/${documentId}/${++blobSequence}-${filename}`;
         state.blobs.set(ref, bytes);
         return { ref, byteSize: bytes.byteLength };
       },
@@ -408,6 +434,7 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
       return options.wired === false ? null : ports;
     },
     env: options.env,
+    fetchUrl: options.fetchUrl,
   };
 
   const service = corpusService({} as Db, deps);
@@ -454,6 +481,7 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
           settings: deps.settings,
           logActivity: deps.logActivity,
           listCompanyIds: deps.listCompanyIds,
+          fetchUrl: options.fetchUrl,
         },
       }),
     );
@@ -1258,6 +1286,446 @@ describe("corpus API: upload, parse and search", () => {
       const document = h.state.documents.get(documentId);
       expect(document).toMatchObject({ status: "failed" });
       expect(document?.error).toContain("502"); // the reason it had before is not lost
+    });
+  });
+});
+
+// myrmidon(1.6.6 OPE-12000): documents added by address and kept current. The pages are served by a
+// stand-in transport behind the real URL fetcher, so the redirect, size and status handling run for
+// real; the address guard is the board's own (`guardedRemoteHttpFetch`) and is exercised un-stubbed
+// by the private-address cases — they never reach a socket.
+describe("corpus API: documents by address, refreshed on a schedule", () => {
+  type TestApp = ReturnType<typeof express>;
+
+  const PAGE = "https://docs.example.com/guide/start";
+  const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+
+  interface Page {
+    status?: number;
+    body?: string;
+    type?: string;
+    headers?: Record<string, string>;
+  }
+
+  /** A site: URL -> page, with the number of times each URL was asked for. */
+  function site(pages: Record<string, Page>) {
+    const hits = new Map<string, number>();
+    const transport = async (url: URL): Promise<globalThis.Response> => {
+      const key = url.toString();
+      hits.set(key, (hits.get(key) ?? 0) + 1);
+      const page = pages[key];
+      if (!page) return new globalThis.Response("not found", { status: 404 });
+      return new globalThis.Response(page.body ?? "", {
+        status: page.status ?? 200,
+        headers: { "content-type": page.type ?? "text/html; charset=utf-8", ...(page.headers ?? {}) },
+      });
+    };
+    return {
+      pages,
+      transport,
+      fetches: () => [...hits.values()].reduce((total, value) => total + value, 0),
+      hitsOf: (url: string) => hits.get(url) ?? 0,
+    };
+  }
+
+  const enabledEnv = {
+    MYRMIDON_CORPUS_ENABLED: "true",
+    MYRMIDON_CORPUS_PARSER_BASE_URL: "http://parser:8080",
+  };
+
+  function withSite(pages: Record<string, Page>, env: Record<string, string> = {}) {
+    const web = site(pages);
+    const fetchUrl = createCorpusUrlFetcher({ lookup: publicLookup, transport: web.transport });
+    const h = corpusHarness({ env: { ...enabledEnv, ...env }, fetchUrl });
+    h.seedDataset();
+    return { h, web, fetchUrl, app: h.app() };
+  }
+
+  const addByUrl = (app: TestApp, body: Record<string, unknown>, datasetId: string = DATASET_ID) =>
+    request(app).post(`${companyPath()}/datasets/${datasetId}/documents/url`).send(body);
+  const refreshUrls = (app: TestApp, datasetId: string = DATASET_ID) =>
+    request(app).post(`${companyPath()}/datasets/${datasetId}/refresh-urls`).send({});
+
+  it("downloads the page, stores it like an upload and queues its parse", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "<h1>Start</h1> install it" } });
+
+    const response = await addByUrl(app, { url: PAGE, refreshIntervalHours: 24 });
+
+    expect(response.status).toBe(202);
+    expect(response.body.document).toMatchObject({
+      status: "queued",
+      filename: "docs.example.com_guide_start.html",
+      mimeType: "text/html",
+      byteSize: Buffer.byteLength("<h1>Start</h1> install it"),
+      sourceUrl: PAGE,
+      refreshIntervalHours: 24,
+      contentHash: sha256Hex(Buffer.from("<h1>Start</h1> install it")),
+      sourceError: null,
+    });
+    expect(response.body.document.lastFetchedAt).toEqual(expect.any(String));
+    expect(response.body.job).toMatchObject({ state: "queued", attempts: 0 });
+    // The same road an upload takes: bytes in the BlobStore, one job, nothing indexed yet.
+    expect(web.hitsOf(PAGE)).toBe(1);
+    expect(h.state.blobs.size).toBe(1);
+    expect(h.state.jobs.size).toBe(1);
+    expect(h.state.chunks.size).toBe(0);
+    expect(h.audit.map((row) => row.action)).toEqual([CORPUS_DOCUMENT_UPLOADED_ACTION]);
+    expect(h.audit[0].details).toMatchObject({ sourceUrl: PAGE, refreshIntervalHours: 24 });
+
+    // And the parse worker takes it to ready like any other document.
+    await h.worker.sweep();
+    expect([...h.state.documents.values()][0]).toMatchObject({ status: "ready", chunkCount: 1 });
+  });
+
+  it("refreshes once a week unless told otherwise, and takes the caller's name", async () => {
+    const { app } = withSite({ [PAGE]: { body: "x" } });
+
+    const response = await addByUrl(app, { url: PAGE, name: "Start guide.html" });
+
+    expect(response.status).toBe(202);
+    expect(response.body.document).toMatchObject({ filename: "Start guide.html", refreshIntervalHours: 168 });
+  });
+
+  it("refuses the same address twice in one dataset", async () => {
+    const { h, app } = withSite({ [PAGE]: { body: "x" } });
+    const first = await addByUrl(app, { url: PAGE });
+
+    const second = await addByUrl(app, { url: PAGE });
+
+    expect(second.status).toBe(409);
+    expect(second.body).toMatchObject({ error: "source_url_exists", documentId: first.body.document.id });
+    expect(h.state.documents.size).toBe(1);
+  });
+
+  it("keeps the hash and does not parse again when the page has not changed", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "same words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    await h.worker.sweep();
+    expect(h.calls.parse).toBe(1);
+    const blobRefBefore = h.state.documents.get(added.body.document.id)?.blobRef;
+
+    const refreshed = await refreshUrls(app);
+
+    expect(refreshed.status).toBe(202);
+    expect(refreshed.body).toMatchObject({
+      datasetId: DATASET_ID,
+      checked: 1,
+      unchanged: 1,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      failures: [],
+    });
+    expect(web.hitsOf(PAGE)).toBe(2); // the page was asked for again...
+    await h.worker.sweep();
+    expect(h.calls.parse).toBe(1); // ...and nothing was parsed again
+    expect(h.calls.index).toBe(1);
+    const document = h.state.documents.get(added.body.document.id);
+    expect(document).toMatchObject({ status: "ready", chunkCount: 1, blobRef: blobRefBefore });
+    expect(h.state.blobs.size).toBe(1);
+    expect(h.audit.map((row) => row.action)).not.toContain(CORPUS_DOCUMENT_REFRESHED_ACTION);
+  });
+
+  it("replaces the content and parses again when the page has changed", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "old words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+    const oldRef = h.state.documents.get(documentId)!.blobRef;
+    expect(h.state.chunks.get(documentId)?.[0]?.text).toBe("hello corpus");
+    const deletesBefore = h.calls.indexDelete;
+
+    web.pages[PAGE] = { body: "brand new words, longer" };
+    h.state.parse = { text: "fresh chunk", chunks: [{ index: 0, text: "fresh chunk" }] };
+    const refreshed = await refreshUrls(app);
+
+    expect(refreshed.status).toBe(202);
+    expect(refreshed.body).toMatchObject({ checked: 1, unchanged: 0, updated: 1, failed: 0 });
+    // The stored version is the new one, waiting for its parse; the old chunks and bytes are gone.
+    const queued = h.state.documents.get(documentId)!;
+    expect(queued).toMatchObject({
+      status: "queued",
+      chunkCount: 0,
+      error: null,
+      attempts: 0,
+      byteSize: Buffer.byteLength("brand new words, longer"),
+      contentHash: sha256Hex(Buffer.from("brand new words, longer")),
+    });
+    expect(queued.blobRef).not.toBe(oldRef);
+    expect(h.state.blobs.has(oldRef)).toBe(false);
+    expect(Buffer.from(h.state.blobs.get(queued.blobRef)!).toString("utf8")).toBe("brand new words, longer");
+    expect(h.calls.indexDelete).toBe(deletesBefore + 1);
+    expect(h.state.chunks.has(documentId)).toBe(false);
+    expect([...h.state.jobs.values()].filter((job) => job.documentId === documentId)).toEqual([
+      expect.objectContaining({ state: "queued", attempts: 0 }),
+    ]);
+    expect(h.audit.at(-1)).toMatchObject({
+      action: CORPUS_DOCUMENT_REFRESHED_ACTION,
+      entityId: documentId,
+      details: { sourceUrl: PAGE, contentHash: queued.contentHash },
+    });
+
+    // The next parse pass writes the new version.
+    await h.worker.sweep();
+    expect(h.calls.parse).toBe(2);
+    expect(h.state.documents.get(documentId)).toMatchObject({ status: "ready", chunkCount: 1 });
+    expect(h.state.chunks.get(documentId)?.[0]?.text).toBe("fresh chunk");
+  });
+
+  it("keeps the stored version and says why when a fetch fails", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "good words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+
+    web.pages[PAGE] = { status: 503, body: "down" };
+    const refreshed = await refreshUrls(app);
+
+    expect(refreshed.body).toMatchObject({ checked: 1, updated: 0, failed: 1 });
+    expect(refreshed.body.failures).toEqual([
+      { documentId, sourceUrl: PAGE, error: expect.stringContaining("503") },
+    ]);
+    const document = await request(app).get(`${companyPath()}/documents/${documentId}`);
+    expect(document.body.document).toMatchObject({ status: "ready", chunkCount: 1 });
+    expect(document.body.document.sourceError).toContain("503");
+    expect(h.state.chunks.has(documentId)).toBe(true);
+
+    // The next good answer clears the note.
+    web.pages[PAGE] = { body: "good words" };
+    await refreshUrls(app);
+    const recovered = await request(app).get(`${companyPath()}/documents/${documentId}`);
+    expect(recovered.body.document.sourceError).toBeNull();
+  });
+
+  it("leaves a document that is still being parsed alone", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "first" } });
+    await addByUrl(app, { url: PAGE });
+    web.pages[PAGE] = { body: "second" };
+
+    const refreshed = await refreshUrls(app); // the document is still queued
+
+    expect(refreshed.body).toMatchObject({ checked: 1, skipped: 1, updated: 0, unchanged: 0, failed: 0 });
+    expect(web.hitsOf(PAGE)).toBe(1);
+    expect(h.state.blobs.size).toBe(1);
+  });
+
+  it("follows a redirect to a public page and stores the page it landed on", async () => {
+    const moved = "https://docs.example.com/guide/moved";
+    const { h, app } = withSite({
+      [PAGE]: { status: 301, headers: { location: "/guide/moved" } },
+      [moved]: { body: "landed", type: "text/plain" },
+    });
+
+    const response = await addByUrl(app, { url: PAGE, name: "moved.txt" });
+
+    expect(response.status).toBe(202);
+    expect(response.body.document).toMatchObject({ sourceUrl: PAGE, mimeType: "text/plain", byteSize: 6 });
+    expect(Buffer.from([...h.state.blobs.values()][0]!).toString("utf8")).toBe("landed");
+  });
+
+  it("refuses an oversized page, an empty one and an error status without creating a document", async () => {
+    const { h, app } = withSite(
+      {
+        "https://docs.example.com/big": { body: "x".repeat(2_048), headers: { "content-length": "2048" } },
+        "https://docs.example.com/empty": { body: "" },
+        "https://docs.example.com/gone": { status: 404, body: "no" },
+      },
+      { MYRMIDON_CORPUS_MAX_DOCUMENT_BYTES: "1024" },
+    );
+
+    const big = await addByUrl(app, { url: "https://docs.example.com/big" });
+    const empty = await addByUrl(app, { url: "https://docs.example.com/empty" });
+    const gone = await addByUrl(app, { url: "https://docs.example.com/gone" });
+
+    expect(big.status).toBe(413);
+    expect(big.body.error).toBe("document_too_large");
+    expect(empty.status).toBe(422);
+    expect(empty.body.error).toBe("empty_document");
+    expect(gone.status).toBe(502);
+    expect(gone.body).toMatchObject({ error: "source_fetch_failed", upstreamStatus: 404 });
+    expect(h.state.documents.size).toBe(0);
+    expect(h.state.blobs.size).toBe(0);
+  });
+
+  describe("addresses that must never be fetched", () => {
+    // No stand-in transport here: the real guard decides, and it decides before any socket opens.
+    it.each([
+      ["a loopback address", "http://127.0.0.1:3100/api/health", "source_url_blocked"],
+      ["a private network address", "http://10.0.0.5/admin", "source_url_blocked"],
+      ["the cloud metadata address", "http://169.254.169.254/latest/meta-data/", "source_url_blocked"],
+      ["an IPv6 loopback", "http://[::1]/", "source_url_blocked"],
+      ["an IPv4-mapped IPv6 loopback", "http://[::ffff:7f00:1]/", "source_url_blocked"],
+      ["localhost", "http://localhost:3100/api/companies", "source_url_blocked"],
+      ["a file address", "file:///etc/passwd", "source_url_invalid"],
+      ["an ftp address", "ftp://example.com/doc.pdf", "source_url_invalid"],
+      ["an address with a password", "https://user:secret@example.com/doc", "source_url_invalid"],
+      ["not a URL", "docs.example.com/guide", "source_url_invalid"],
+    ])("refuses %s", async (_label, url, code) => {
+      const h = corpusHarness({ env: enabledEnv });
+      h.seedDataset();
+
+      const response = await addByUrl(h.app(), { url });
+
+      expect(response.status).toBe(422);
+      expect(response.body.error).toBe(code);
+      expect(h.state.documents.size).toBe(0);
+      expect(h.state.blobs.size).toBe(0);
+      expect(h.state.jobs.size).toBe(0);
+      expect(h.audit).toEqual([]);
+    });
+
+    it("refuses a host name that resolves to a private address", async () => {
+      const fetchUrl = createCorpusUrlFetcher({ lookup: async () => [{ address: "10.1.2.3", family: 4 }] });
+      const h = corpusHarness({ env: enabledEnv, fetchUrl });
+      h.seedDataset();
+
+      const response = await addByUrl(h.app(), { url: "https://internal.example.com/wiki" });
+
+      expect(response.status).toBe(422);
+      expect(response.body.error).toBe("source_url_blocked");
+      expect(h.state.documents.size).toBe(0);
+    });
+
+    it("refuses a redirect that leads to a private address", async () => {
+      // First hop: a public page that redirects. Second hop: the real guard, which says no.
+      const transport = (url: URL, init: RequestInit, options: Parameters<typeof guardedRemoteHttpFetch>[2]) =>
+        url.hostname === "docs.example.com"
+          ? Promise.resolve(new globalThis.Response(null, { status: 302, headers: { location: "http://127.0.0.1:3100/api/health" } }))
+          : guardedRemoteHttpFetch(url, init, options);
+      const fetchUrl = createCorpusUrlFetcher({ lookup: publicLookup, transport });
+      const h = corpusHarness({ env: enabledEnv, fetchUrl });
+      h.seedDataset();
+
+      const response = await addByUrl(h.app(), { url: PAGE });
+
+      expect(response.status).toBe(422);
+      expect(response.body.error).toBe("source_url_blocked");
+      expect(h.state.documents.size).toBe(0);
+    });
+
+    it("never refreshes a stored address that has become private", async () => {
+      const web = site({ [PAGE]: { body: "x" } });
+      // First the address is public and served; later its host name resolves to a private network.
+      let active = createCorpusUrlFetcher({ lookup: publicLookup, transport: web.transport });
+      const h = corpusHarness({ env: enabledEnv, fetchUrl: (url, limits) => active(url, limits) });
+      h.seedDataset();
+      const app = h.app();
+      await addByUrl(app, { url: PAGE });
+      await h.worker.sweep();
+      expect(web.fetches()).toBe(1);
+
+      active = createCorpusUrlFetcher({ lookup: async () => [{ address: "192.168.1.9", family: 4 }] });
+      const refreshed = await refreshUrls(app);
+
+      expect(refreshed.body).toMatchObject({ checked: 1, failed: 1, updated: 0 });
+      expect(refreshed.body.failures[0].error).toContain("private");
+      expect(web.fetches()).toBe(1);
+      expect([...h.state.documents.values()][0]).toMatchObject({ status: "ready", chunkCount: 1 });
+    });
+  });
+
+  it("answers 503 while the module is off and 403 across companies, without fetching anything", async () => {
+    const web = site({ [PAGE]: { body: "x" } });
+    const fetchUrl = createCorpusUrlFetcher({ lookup: publicLookup, transport: web.transport });
+    const off = corpusHarness({ fetchUrl });
+    off.seedDataset();
+    const disabled = await addByUrl(off.app(), { url: PAGE });
+    expect(disabled.status).toBe(503);
+    expect(disabled.body.error).toBe("corpus_disabled");
+    expect((await refreshUrls(off.app())).status).toBe(503);
+
+    const on = corpusHarness({ env: enabledEnv, fetchUrl });
+    on.seedDataset();
+    expect((await addByUrl(on.app(strangerActor), { url: PAGE })).status).toBe(403);
+    expect((await refreshUrls(on.app(strangerActor))).status).toBe(403);
+    expect((await addByUrl(on.app(), { url: PAGE }, "99999999-9999-4999-8999-999999999999")).status).toBe(404);
+    expect(web.fetches()).toBe(0);
+  });
+
+  it("validates the body", async () => {
+    const { app } = withSite({});
+
+    expect((await addByUrl(app, {})).status).toBe(400);
+    expect((await addByUrl(app, { url: PAGE, refreshIntervalHours: 0 })).status).toBe(400);
+    expect((await addByUrl(app, { url: PAGE, refreshIntervalHours: 1.5 })).status).toBe(400);
+    expect((await addByUrl(app, { url: PAGE, extra: true })).status).toBe(400);
+  });
+
+  describe("the scheduled sweep", () => {
+    const hours = (n: number) => n * 3_600_000;
+
+    function sweeper(h: ReturnType<typeof corpusHarness>, fetchUrl: ReturnType<typeof createCorpusUrlFetcher>, offsetMs: number) {
+      return createCorpusSourceRefresher({
+        ports: h.deps.ports,
+        resolveSettings: async () => {
+          const view = await h.service.readSettings();
+          return { settings: view.settings, enabled: view.enabled };
+        },
+        fetcher: fetchUrl,
+        now: () => new Date(Date.now() + offsetMs),
+        onUpdated: async (document, outcome) => {
+          h.audit.push({
+            action: CORPUS_DOCUMENT_REFRESHED_ACTION,
+            companyId: document.companyId,
+            entityType: "corpus_document",
+            entityId: document.id,
+            details: { contentHash: outcome.contentHash },
+          });
+        },
+      });
+    }
+
+    it("fetches only the documents whose interval has passed", async () => {
+      const { h, web, fetchUrl, app } = withSite({
+        [PAGE]: { body: "daily" },
+        "https://docs.example.com/weekly": { body: "weekly" },
+      });
+      await addByUrl(app, { url: PAGE, refreshIntervalHours: 24 });
+      await addByUrl(app, { url: "https://docs.example.com/weekly" }); // 168 h
+      await h.worker.sweep();
+      expect(web.fetches()).toBe(2);
+
+      const early = await sweeper(h, fetchUrl, hours(23)).sweep();
+      expect(early).toMatchObject({ enabled: true, available: true, checked: 0 });
+      expect(web.fetches()).toBe(2);
+
+      web.pages[PAGE] = { body: "daily, changed" };
+      const nextDay = await sweeper(h, fetchUrl, hours(25)).sweep();
+      expect(nextDay).toMatchObject({ checked: 1, updated: 1, unchanged: 0, failed: 0 });
+      expect(web.hitsOf(PAGE)).toBe(2);
+      expect(web.hitsOf("https://docs.example.com/weekly")).toBe(1);
+
+      // After a week both are due again, and neither page has moved since.
+      await h.worker.sweep(); // the changed daily page is parsed
+      const nextWeek = await sweeper(h, fetchUrl, hours(24 * 8)).sweep();
+      expect(nextWeek).toMatchObject({ checked: 2, unchanged: 2, updated: 0, skipped: 0, failed: 0 });
+    });
+
+    it("is silent while the module is off or unwired", async () => {
+      const web = site({ [PAGE]: { body: "x" } });
+      const fetchUrl = createCorpusUrlFetcher({ lookup: publicLookup, transport: web.transport });
+
+      const off = corpusHarness({ fetchUrl });
+      off.seedDataset();
+      expect(await sweeper(off, fetchUrl, hours(1000)).sweep()).toMatchObject({ enabled: false, available: false, checked: 0 });
+      expect(off.calls.resolvePorts).toBe(0);
+
+      const unwired = corpusHarness({ env: enabledEnv, fetchUrl, wired: false });
+      expect(await sweeper(unwired, fetchUrl, hours(1000)).sweep()).toMatchObject({ enabled: true, available: false, checked: 0 });
+      expect(web.fetches()).toBe(0);
+    });
+
+    it("does not touch uploads or documents whose source address was only provenance", async () => {
+      const { h, web, fetchUrl, app } = withSite({});
+      await request(app)
+        .post(`${companyPath()}/datasets/${DATASET_ID}/documents`)
+        .attach("file", Buffer.from("uploaded"), { filename: "notes.txt", contentType: "text/plain" });
+      expect([...h.state.documents.values()][0]?.sourceUrl).toBeNull();
+
+      const result = await sweeper(h, fetchUrl, hours(24 * 365)).sweep();
+
+      expect(result.checked).toBe(0);
+      expect(web.fetches()).toBe(0);
     });
   });
 });
