@@ -368,7 +368,7 @@ run("production corpus adapters", () => {
     try {
       const dbInstance = createDb(database!.connectionString);
       const companyId = randomUUID();
-      await dbInstance.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'mcp-name-test', 'MCP')`);
+      await dbInstance.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'mcp-name-test', 'MCN')`);
 
       const settings: CorpusPortContext["settings"] = {
         enabled: true,
@@ -406,8 +406,10 @@ run("production corpus adapters", () => {
       });
       // Search only returns chunks of `ready` documents; drive the status through
       // the chain the store enforces: queued -> parsing -> embedding -> ready.
+      // The port-level updateDocument only accepts the shared CorpusDocumentStatus
+      // union (no "embedding"), so the middle step goes through the store directly.
       await ports.store.updateDocument(companyId, document.id, { status: "parsing" });
-      await ports.store.updateDocument(companyId, document.id, { status: "embedding" });
+      await ports.store.updateDocumentStatus(companyId, document.id, "embedding", { parserVersion: "v1" });
       await ports.store.updateDocument(companyId, document.id, { status: "ready" });
 
       const { createCorpusMcpProvider } = await import("./adapters.js");
