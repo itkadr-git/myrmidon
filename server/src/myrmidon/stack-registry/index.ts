@@ -62,6 +62,12 @@ export {
   type StackAttentionCard,
 } from "./attention.js";
 export {
+  decideStackBacklogDrafts,
+  STACK_BACKLOG_LAG_DEFAULT,
+  type StackBacklogDraft,
+  type StackBacklogDraftOptions,
+} from "./backlog-draft.js";
+export {
   STACK_GITHUB_API_BASE,
   STACK_HTTP_TIMEOUT_MS,
   githubJsonPort,
