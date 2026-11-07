@@ -17,6 +17,11 @@ import { reportRunFailure } from "./run-failure-report.js";
 export async function reconcileAbandonedExecutionControl(
   db: Db,
   now = new Date(),
+  // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): called after commit for every run
+  // this pass moved to a terminal status on the board's deadline, so the caller
+  // can close the remote gateway run the board no longer supervises. Never
+  // awaited and never allowed to fail the reconciliation.
+  options: { onTerminalRun?: (run: typeof heartbeatRuns.$inferSelect) => void } = {},
 ) {
   const nativeDue = await db
     .select({
@@ -257,7 +262,14 @@ export async function reconcileAbandonedExecutionControl(
           return true;
         });
         if (repaired) surfaced += 1;
-        if (terminalRunToReport) void reportRunFailure(db, terminalRunToReport);
+        if (terminalRunToReport) {
+          void reportRunFailure(db, terminalRunToReport);
+          try {
+            options.onTerminalRun?.(terminalRunToReport);
+          } catch (err) {
+            logger.warn({ err, runId: candidate.runId }, "terminal run hook of the execution-control reconciliation failed");
+          }
+        }
       } catch {
         logger.warn(
           { runId: candidate.runId },

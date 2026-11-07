@@ -204,6 +204,7 @@ import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js
 import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
+import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
@@ -1678,6 +1679,7 @@ async function startServerWithDatabaseTeardown(
   // pass refreshes it too, so the first periodic tick waits one full interval
   // instead of doubling up on candidates the startup sweep just scanned.
   let lastGatewayReattachSweepAtMs = 0;
+  let lastGatewayRemoteCloseSweepAtMs = 0; // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889)
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1730,7 +1732,15 @@ async function startServerWithDatabaseTeardown(
     );
   }
   const executionControlSweeps = [
-    ["finalization", () => reconcileAbandonedExecutionControl(db)],
+    ["finalization", () => reconcileAbandonedExecutionControl(db, new Date(), {
+      // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): a run failed on the board's
+      // deadline no longer has a supervisor; free its gateway slot now.
+      onTerminalRun: (run) => {
+        void heartbeat?.closeTerminalGatewayRun(run.id).catch((err) => {
+          logger.warn({ err, runId: run.id }, "gateway run close after execution-control deadline failed; the sweep retries");
+        });
+      },
+    })],
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
     ["reconciliation_delivery", () => heartbeat ? deliverReconciledExecutions(db, heartbeat.wakeup) : undefined],
     ["status_delivery", () => deliverExecutionStatuses(db)],
@@ -2950,6 +2960,23 @@ async function startServerWithDatabaseTeardown(
                   { ...swept },
                   "periodic gateway run reattach pass complete",
                 );
+              }
+            })
+            // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): the durable net under
+            // every terminal writer: close the gateway run of a terminal
+            // hermes_gateway run that no status writer closed, or whose close
+            // failed and is due for a bounded retry.
+            .then(async () => {
+              if (
+                Date.now() - lastGatewayRemoteCloseSweepAtMs <
+                GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS
+              ) {
+                return;
+              }
+              lastGatewayRemoteCloseSweepAtMs = Date.now();
+              const closed = await heartbeat.sweepTerminalGatewayRunCloses();
+              if (closed.attempted > 0 || closed.failed > 0) {
+                logger.info({ ...closed }, "periodic terminal gateway run close pass complete");
               }
             })
             .catch((err) => {

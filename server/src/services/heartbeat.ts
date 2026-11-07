@@ -21,6 +21,16 @@ import {
 } from "../myrmidon/pr-wait-monitor/policy.js";
 import { readAgentLastLookAt } from "../myrmidon/pr-wait-monitor/store.js";
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
+import {
+  claimGatewayRemoteClose,
+  deriveTerminalCloseProvenance,
+  recordGatewayRemoteCloseResult,
+  sweepTerminalGatewayRunCloses,
+  type GatewayRemoteCloseOutcome,
+  type GatewayRemoteCloseProvenance,
+  type GatewayRemoteCloseResult,
+  type GatewayRemoteCloseTrigger,
+} from "../myrmidon/gateway-run-close.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
@@ -13752,6 +13762,7 @@ export function heartbeatService(
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
       await closeWakeupOfTerminalRun(updated);
+      scheduleRemoteGatewayCloseOfTerminalRun(updated, previousStatus?.status ?? null);
     }
 
     return updated;
@@ -13846,6 +13857,7 @@ export function heartbeatService(
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
       await closeWakeupOfTerminalRun(updated);
+      scheduleRemoteGatewayCloseOfTerminalRun(updated, previousStatus?.status ?? null);
       return { run: updated, updated: true as const };
     }
 
@@ -20830,6 +20842,129 @@ export function heartbeatService(
       apiKey,
       gatewayRunId: input.gatewayRunId,
       cancellation: input.cancellation,
+    });
+  }
+
+  // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): close the remote gateway run of
+  // a heartbeat run the board has finished with -- once, with provenance. The
+  // ledger, retry bounds and the sweep live in myrmidon/gateway-run-close.ts.
+  // `cancel` is the operator cancellation of an unsupervised run (not yet
+  // terminal here) and stops without probing; `terminal` / `sweep` probe the
+  // gateway first and stop only a run that is still live, so a run the gateway
+  // already finished costs one GET and no POST. Only the remote RUN is stopped,
+  // never the Hermes session: the session is what lets a retry of the run keep
+  // the conversation, and it does not occupy a run slot.
+  async function closeRemoteGatewayRunOfRun(
+    runId: string,
+    options: {
+      trigger: GatewayRemoteCloseTrigger;
+      provenance?: GatewayRemoteCloseProvenance;
+      probeFirst: boolean;
+    },
+  ): Promise<GatewayRemoteCloseResult> {
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        externalRunId: heartbeatRuns.externalRunId,
+        errorCode: heartbeatRuns.errorCode,
+        cancellationCorrelationId: sql<string | null>`${heartbeatRuns.resultJson}->'executionCancellation'->>'correlationId'`,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run?.externalRunId) return { outcome: "skipped", reason: "no_gateway_run" };
+    if (options.trigger !== "cancel" && !isHeartbeatRunTerminalStatus(run.status)) {
+      return { outcome: "skipped", reason: "not_terminal" };
+    }
+    const agent = await getAgent(run.agentId);
+    if (agent?.adapterType !== "hermes_gateway") {
+      return { outcome: "skipped", reason: "not_hermes_gateway" };
+    }
+    const gatewayRunId = run.externalRunId;
+    const provenance = options.provenance ?? deriveTerminalCloseProvenance(run, randomUUID);
+    const ref = {
+      id: run.id,
+      companyId: run.companyId,
+      agentId: run.agentId,
+      externalRunId: gatewayRunId,
+    };
+    const claim = await claimGatewayRemoteClose(db, {
+      run: { ...ref, status: run.status },
+      trigger: options.trigger,
+      provenance,
+    });
+    if (!claim.claimed) return { outcome: "skipped", reason: claim.reason };
+    let outcome: GatewayRemoteCloseOutcome;
+    let detail: string | null = null;
+    try {
+      const adapterConfig = parseObject(agent.adapterConfig);
+      const probe = options.probeFirst
+        ? await probeRemoteGatewayRun({
+            companyId: run.companyId,
+            agentId: run.agentId,
+            runId: run.id,
+            adapterConfig,
+            gatewayRunId,
+          })
+        : null;
+      if (probe && (probe.state === "terminal" || probe.state === "not_found")) {
+        outcome = "already_closed";
+      } else if (probe?.state === "unreachable") {
+        outcome = "unreachable";
+        detail = probe.error ?? null;
+      } else {
+        const stopped = await stopRemoteGatewayRun({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          runId: run.id,
+          adapterConfig,
+          gatewayRunId,
+          cancellation: provenance,
+        });
+        outcome = stopped.stopped ? "stopped" : "stop_failed";
+      }
+    } catch (err) {
+      outcome = "stop_failed";
+      detail = err instanceof Error ? err.name : "unknown";
+    }
+    await recordGatewayRemoteCloseResult(db, {
+      run: ref,
+      attempt: claim.attempt,
+      trigger: options.trigger,
+      outcome,
+      provenance,
+      detail,
+    });
+    return { outcome, attempt: claim.attempt };
+  }
+
+  // The central status writers (setRunStatus / setRunStatusFromLive) call this
+  // after a genuine transition into a terminal status. Background and
+  // best-effort: a terminal write never waits on the gateway, and a failure is
+  // retried by the sweep. Tracked so shutdown does not cut it off mid-request.
+  function scheduleRemoteGatewayCloseOfTerminalRun(
+    updated: typeof heartbeatRuns.$inferSelect,
+    previousStatus: string | null,
+  ) {
+    if (!updated.externalRunId || !isHeartbeatRunTerminalStatus(updated.status)) return;
+    if (previousStatus === updated.status) return;
+    const closing = closeRemoteGatewayRunOfRun(updated.id, {
+      trigger: "terminal",
+      probeFirst: true,
+    })
+      .then(() => undefined)
+      .catch((err) => {
+        logger.warn(
+          { err, runId: updated.id, externalRunId: updated.externalRunId },
+          "hermes_gateway terminal close failed; the sweep retries",
+        );
+      });
+    activeRunExecutionPromises.add(closing);
+    void closing.finally(() => {
+      activeRunExecutionPromises.delete(closing);
     });
   }
 
@@ -34445,16 +34580,21 @@ export function heartbeatService(
     // and logged, a failed stop never blocks the board-side cancellation.
     if (!control && !running && run.externalRunId && agent?.adapterType === "hermes_gateway") {
       try {
-        const stopped = await stopRemoteGatewayRun({
-          companyId: run.companyId,
-          agentId: run.agentId,
-          runId: run.id,
-          adapterConfig: parseObject(agent.adapterConfig),
-          gatewayRunId: run.externalRunId,
-          cancellation: { correlationId, source: cancellationSource, reason },
+        // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): the stop is claimed in the
+        // close ledger, so the terminal write that follows this cancellation does
+        // not send the gateway a second one.
+        const closed = await closeRemoteGatewayRunOfRun(run.id, {
+          trigger: "cancel",
+          provenance: { correlationId, source: cancellationSource, reason },
+          probeFirst: false,
         });
         logger.info(
-          { runId: run.id, externalRunId: run.externalRunId, stopped: stopped.stopped },
+          {
+            runId: run.id,
+            externalRunId: run.externalRunId,
+            outcome: closed.outcome,
+            ...(closed.outcome === "skipped" ? { skipReason: closed.reason } : {}),
+          },
           "hermes_gateway board-side stop requested",
         );
       } catch (err) {
@@ -35548,6 +35688,22 @@ export function heartbeatService(
       gatewayRunId: string;
       timeoutMs?: number;
     }) => probeRemoteGatewayRun(input),
+
+    // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): close the gateway run of one
+    // terminal run (the execution-control reconciliation calls this for a run it
+    // failed on the board's deadline), and the periodic net under every other
+    // terminal writer; see myrmidon/gateway-run-close.ts.
+    closeTerminalGatewayRun: (runId: string) =>
+      closeRemoteGatewayRunOfRun(runId, { trigger: "terminal", probeFirst: true }),
+    sweepTerminalGatewayRunCloses: (opts?: Parameters<typeof sweepTerminalGatewayRunCloses>[2]) =>
+      sweepTerminalGatewayRunCloses(
+        db,
+        {
+          closeTerminalGatewayRun: (runId: string) =>
+            closeRemoteGatewayRunOfRun(runId, { trigger: "sweep", probeFirst: true }),
+        },
+        opts,
+      ),
 
     // myrmidon(1.6.6 REMOTE-SITES-T4): finalize one run of a lost execution site as
     // failed(site_lost) and queue its bounded retry, see myrmidon/site-lost-claim.ts. Only a run
