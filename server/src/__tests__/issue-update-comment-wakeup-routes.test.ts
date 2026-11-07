@@ -975,18 +975,41 @@ describe("issue update comment wakeups", () => {
     );
   });
 
-  // myrmidon(1.6.6 OPE-12049, TOKEN-BURN H): an agent's own PATCH never wakes
-  // that agent. 07.11: the adm bot released a task, assigned it to itself and
-  // woke itself with "issue_assigned" ten times an hour.
+  // myrmidon(1.6.6 OPE-12049, TOKEN-BURN H): the assignee's own PATCH, made from
+  // its run on this very task, does not wake that assignee. 07.11: the adm bot
+  // released a task, assigned it to itself and woke itself with
+  // "issue_assigned" ten times an hour. Any other writer still wakes it.
   describe("assignee's own PATCH does not wake the assignee", () => {
     const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+    const OTHER_TASK_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-    it("does not wake an agent that assigns the task to itself", async () => {
+    const runOf = (agentId: string, issueId: string) => ({
+      id: SOURCE_RUN_ID,
+      companyId: "company-1",
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    function selfAssignScenario() {
       const existing = makeIssue({ assigneeAgentId: null, assigneeUserId: null, status: "todo" });
       mockIssueService.getById.mockResolvedValue(existing);
       mockIssueService.update.mockResolvedValue(
         makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "todo" }),
       );
+      return existing;
+    }
+
+    function backlogScenario() {
+      const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "backlog" });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockResolvedValue({ ...existing, status: "todo" });
+      return existing;
+    }
+
+    it("does not wake an agent that assigns the task to itself from its run on that task", async () => {
+      const existing = selfAssignScenario();
+      mockHeartbeatService.getRun.mockResolvedValue(runOf(ASSIGNEE_AGENT_ID, existing.id));
 
       const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
         .patch(`/api/issues/${existing.id}`)
@@ -998,12 +1021,55 @@ describe("issue update comment wakeups", () => {
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     });
 
-    it("still wakes the new assignee when a different agent assigns the task", async () => {
-      const existing = makeIssue({ assigneeAgentId: null, assigneeUserId: null, status: "todo" });
-      mockIssueService.getById.mockResolvedValue(existing);
-      mockIssueService.update.mockResolvedValue(
-        makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "todo" }),
+    it("does not wake an agent that moves its own task out of backlog from its run on that task", async () => {
+      const existing = backlogScenario();
+      mockHeartbeatService.getRun.mockResolvedValue(runOf(ASSIGNEE_AGENT_ID, existing.id));
+
+      const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
+        .patch(`/api/issues/${existing.id}`)
+        .send({ status: "todo" });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("still wakes the assignee when its run belongs to a different task", async () => {
+      const existing = selfAssignScenario();
+      mockHeartbeatService.getRun.mockResolvedValue(runOf(ASSIGNEE_AGENT_ID, OTHER_TASK_ID));
+
+      const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
+        .patch(`/api/issues/${existing.id}`)
+        .send({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ASSIGNEE_AGENT_ID,
+        expect.objectContaining({ reason: "issue_assigned", requestedByActorType: "agent" }),
       );
+    });
+
+    it("still wakes the assignee when the run cannot be matched to the task", async () => {
+      const existing = backlogScenario();
+      mockHeartbeatService.getRun.mockRejectedValue(new Error("run lookup failed"));
+
+      const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
+        .patch(`/api/issues/${existing.id}`)
+        .send({ status: "todo" });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ASSIGNEE_AGENT_ID,
+        expect.objectContaining({ reason: "issue_status_changed" }),
+      );
+    });
+
+    it("still wakes the new assignee when a different agent assigns the task", async () => {
+      const existing = selfAssignScenario();
+      mockHeartbeatService.getRun.mockResolvedValue(runOf(PREVIOUS_AGENT_ID, existing.id));
 
       const res = await request(await createApp({ agentId: PREVIOUS_AGENT_ID, runId: SOURCE_RUN_ID }))
         .patch(`/api/issues/${existing.id}`)
@@ -1023,11 +1089,7 @@ describe("issue update comment wakeups", () => {
     });
 
     it("still wakes the new assignee when a board user assigns the task", async () => {
-      const existing = makeIssue({ assigneeAgentId: null, assigneeUserId: null, status: "todo" });
-      mockIssueService.getById.mockResolvedValue(existing);
-      mockIssueService.update.mockResolvedValue(
-        makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "todo" }),
-      );
+      const existing = selfAssignScenario();
 
       const res = await request(await createApp())
         .patch(`/api/issues/${existing.id}`)
@@ -1044,25 +1106,8 @@ describe("issue update comment wakeups", () => {
       );
     });
 
-    it("does not wake an agent that moves its own task out of backlog", async () => {
-      const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "backlog" });
-      mockIssueService.getById.mockResolvedValue(existing);
-      mockIssueService.update.mockResolvedValue({ ...existing, status: "todo" });
-
-      const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
-        .patch(`/api/issues/${existing.id}`)
-        .send({ status: "todo" });
-
-      expect(res.status).toBe(200);
-      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
-      await settle();
-      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-    });
-
     it("still wakes the assignee when a board user moves its task out of backlog", async () => {
-      const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "backlog" });
-      mockIssueService.getById.mockResolvedValue(existing);
-      mockIssueService.update.mockResolvedValue({ ...existing, status: "todo" });
+      const existing = backlogScenario();
 
       const res = await request(await createApp())
         .patch(`/api/issues/${existing.id}`)

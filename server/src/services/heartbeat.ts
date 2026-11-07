@@ -33256,9 +33256,10 @@ export function heartbeatService(
                 .select({
                   runId: activityLog.runId,
                   action: activityLog.action,
-                  actorType: activityLog.actorType,
-                  actorId: activityLog.actorId,
-                  details: activityLog.details,
+                  // Only the two JSON paths the progress read looks at, not
+                  // the whole (possibly large) `details` of every row.
+                  changes: sql<unknown>`${activityLog.details} -> 'changes'`,
+                  source: sql<string | null>`${activityLog.details} ->> 'source'`,
                 })
                 .from(activityLog)
                 .where(

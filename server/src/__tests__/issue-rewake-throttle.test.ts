@@ -6,7 +6,6 @@ import {
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
   isIssueProgressActivity,
-  isOwnAgentActivity,
   isThrottleCandidateIssueRewake,
 } from "../services/issue-rewake-throttle.ts";
 
@@ -277,29 +276,16 @@ describe("agent's own writes in the rewake throttle", () => {
 
   const echoComment = {
     action: "issue.comment_added",
-    actorType: "agent",
-    actorId: AGENT,
-    details: { source: "run_presentation_resolver", commentId: "c1" },
+    source: "run_presentation_resolver",
   };
-  const release = { action: "issue.released", actorType: "agent", actorId: AGENT, details: null };
+  const release = { action: "issue.released" };
   const reassignToSelf = {
     action: "issue.updated",
-    actorType: "agent",
-    actorId: AGENT,
-    details: {
-      changes: {
-        assigneeAgentId: { from: null, to: AGENT },
-        responsibleUserId: { from: "user-1", to: null },
-      },
+    changes: {
+      assigneeAgentId: { from: null, to: AGENT },
+      responsibleUserId: { from: "user-1", to: null },
     },
   };
-
-  it("recognises the agent's own activity by actor type and id only", () => {
-    expect(isOwnAgentActivity(echoComment, AGENT)).toBe(true);
-    expect(isOwnAgentActivity(echoComment, OTHER)).toBe(false);
-    expect(isOwnAgentActivity({ action: "issue.comment_added", actorType: "user", actorId: AGENT }, AGENT)).toBe(false);
-    expect(isOwnAgentActivity({ action: "issue.comment_added", actorType: "agent", actorId: null }, AGENT)).toBe(false);
-  });
 
   it("does not count release, self re-assignment or the echo of the final text as progress", () => {
     expect(isIssueProgressActivity(release, AGENT)).toBe(false);
@@ -308,27 +294,31 @@ describe("agent's own writes in the rewake throttle", () => {
   });
 
   it("still counts a real comment, a status change, a hand-off to another agent and a document as progress", () => {
+    expect(isIssueProgressActivity({ action: "issue.comment_added", source: "agent_comment" }, AGENT)).toBe(true);
+    expect(isIssueProgressActivity({ action: "issue.comment_added" }, AGENT)).toBe(true);
     expect(isIssueProgressActivity({
-      action: "issue.comment_added", actorType: "agent", actorId: AGENT,
-      details: { source: "agent_comment" },
+      action: "issue.updated", changes: { status: { from: "todo", to: "in_review" } },
     }, AGENT)).toBe(true);
     expect(isIssueProgressActivity({
-      action: "issue.updated", actorType: "agent", actorId: AGENT,
-      details: { changes: { status: { from: "todo", to: "in_review" } } },
+      action: "issue.updated", changes: { assigneeAgentId: { from: AGENT, to: OTHER } },
     }, AGENT)).toBe(true);
+    // re-assignment to itself together with a real status move is a real PATCH
     expect(isIssueProgressActivity({
-      action: "issue.updated", actorType: "agent", actorId: AGENT,
-      details: { changes: { assigneeAgentId: { from: AGENT, to: OTHER } } },
+      action: "issue.updated",
+      changes: { assigneeAgentId: { from: null, to: AGENT }, status: { from: "backlog", to: "todo" } },
     }, AGENT)).toBe(true);
-    expect(isIssueProgressActivity({
-      action: "issue.updated", actorType: "agent", actorId: AGENT,
-      details: { changes: { assigneeAgentId: { from: null, to: AGENT }, status: { from: "backlog", to: "todo" } } },
-    }, AGENT)).toBe(true);
-    expect(isIssueProgressActivity({
-      action: "issue.document_upserted", actorType: "agent", actorId: AGENT, details: {},
-    }, AGENT)).toBe(true);
+    expect(isIssueProgressActivity({ action: "issue.updated" }, AGENT)).toBe(true);
+    expect(isIssueProgressActivity({ action: "issue.document_upserted" }, AGENT)).toBe(true);
     // not a progress action at all
-    expect(isIssueProgressActivity({ action: "issue.checkout", actorType: "agent", actorId: AGENT }, AGENT)).toBe(false);
+    expect(isIssueProgressActivity({ action: "issue.checkout" }, AGENT)).toBe(false);
+  });
+
+  it("reads the changes path whether the driver returns an object or its JSON text", () => {
+    const changes = { assigneeAgentId: { from: null, to: AGENT } };
+    expect(isIssueProgressActivity({ action: "issue.updated", changes: JSON.stringify(changes) }, AGENT)).toBe(false);
+    expect(isIssueProgressActivity({ action: "issue.updated", changes: "not json" }, AGENT)).toBe(true);
+    // assigned to somebody else is a hand-off, not self-bookkeeping
+    expect(isIssueProgressActivity({ action: "issue.updated", changes }, OTHER)).toBe(true);
   });
 
   it("starts the throttle on runs whose only activity is the agent's own bookkeeping", () => {
@@ -352,8 +342,8 @@ describe("agent's own writes in the rewake throttle", () => {
   it("does not throttle when the latest run really moved the task", () => {
     const runs = [0, 1, 2].map((i) => runSample({ id: `r${i}`, finishedSecondsAgo: 60 + i * 120 }));
     const real = {
-      action: "issue.updated", actorType: "agent", actorId: AGENT, runId: "r0",
-      details: { changes: { status: { from: "todo", to: "in_review" } } },
+      action: "issue.updated", runId: "r0",
+      changes: { status: { from: "todo", to: "in_review" } },
     };
     const withProgress = new Set(
       [real, { ...release, runId: "r0" }].filter((row) => isIssueProgressActivity(row, AGENT)).map((row) => row.runId),

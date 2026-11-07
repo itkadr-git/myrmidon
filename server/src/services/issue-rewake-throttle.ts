@@ -116,23 +116,16 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   "myrmidon.task_pr_sync.returned",
 ];
 
-/** One issue activity row, as the throttle's progress and new-input reads see it. */
+/**
+ * One issue activity row, as the throttle's progress read sees it: the columns
+ * it needs and only the two JSON paths it looks at, not the whole `details`.
+ */
 export interface IssueActivitySample {
   action: string;
-  actorType?: string | null;
-  actorId?: string | null;
-  details?: unknown;
-}
-
-/**
- * myrmidon(1.6.6 OPE-12049, TOKEN-BURN H): the agent's own write is never "new
- * input" for that agent. A comment the server posts for the agent's run after
- * the run closed (`run_presentation_resolver`), its own PATCH, its own release:
- * all land after `finishedAt` and used to re-open the throttle, so a task the
- * agent keeps re-waking itself on never cooled down.
- */
-export function isOwnAgentActivity(row: IssueActivitySample, agentId: string): boolean {
-  return row.actorType === "agent" && Boolean(row.actorId) && row.actorId === agentId;
+  /** `details -> 'changes'` of an `issue.updated` row: `{ field: { from, to } }`. */
+  changes?: unknown;
+  /** `details ->> 'source'`. */
+  source?: string | null;
 }
 
 const ASSIGNMENT_BOOKKEEPING_FIELDS: ReadonlySet<string> = new Set([
@@ -142,6 +135,14 @@ const ASSIGNMENT_BOOKKEEPING_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 function readRecord(value: unknown): Record<string, unknown> | null {
+  // A driver may hand a json path back as text; the throttle reads either shape.
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
@@ -150,7 +151,7 @@ function readRecord(value: unknown): Record<string, unknown> | null {
 /** `issue.updated` that only gave the task back to the agent that holds it (release, then assign to itself). */
 function isSelfReassignment(row: IssueActivitySample, agentId: string): boolean {
   if (row.action !== "issue.updated") return false;
-  const changes = readRecord(readRecord(row.details)?.changes);
+  const changes = readRecord(row.changes);
   if (!changes) return false;
   const fields = Object.keys(changes);
   if (fields.length === 0 || !fields.every((field) => ASSIGNMENT_BOOKKEEPING_FIELDS.has(field))) {
@@ -171,10 +172,7 @@ function isSelfReassignment(row: IssueActivitySample, agentId: string): boolean 
 export function isIssueProgressActivity(row: IssueActivitySample, agentId: string): boolean {
   if (!ISSUE_PROGRESS_ACTIVITY_ACTIONS.includes(row.action)) return false;
   if (row.action === "issue.released") return false;
-  if (
-    row.action === "issue.comment_added" &&
-    readRecord(row.details)?.source === "run_presentation_resolver"
-  ) {
+  if (row.action === "issue.comment_added" && row.source === "run_presentation_resolver") {
     return false;
   }
   if (isSelfReassignment(row, agentId)) return false;

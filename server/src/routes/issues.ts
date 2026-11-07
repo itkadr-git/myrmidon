@@ -326,7 +326,7 @@ import {
   normalizeUploadAttachmentContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
-import { isSelfWake, queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): recognising the signal comments the
 // board left in agent tasks, so none of them wakes an agent.
@@ -17059,14 +17059,37 @@ export function issueRoutes(
         const dependencyReadinessSvc = svc as DependencyReadinessProvider;
         // myrmidon(1.6.6 OPE-12049): the assignee's own PATCH (release and
         // re-assign to itself, a status move of its own task) is not an event
-        // for that assignee: it is inside the run that made it. Only the two
-        // "state of the task changed" wakes below honour this; a comment or a
-        // mention already carry their own self guards.
-        const selfPatchWake = isSelfWake({
-          assigneeAgentId: issue.assigneeAgentId,
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-        });
+        // for that assignee: it is inside the run that made it. The skip is
+        // narrow on purpose: the actor is the assignee AND its authenticated
+        // run is a run on THIS task. An agent that writes to another task, or
+        // acts without a run, wakes the assignee as before. Only the two "state
+        // of the task changed" wakes below honour this; comment and mention
+        // wakes carry their own self guards, and the shared assignment service
+        // (create, child_create, decomposition, cards) never skips.
+        const selfPatchWake = await (async () => {
+          if (
+            actor.actorType !== "agent" ||
+            !actor.runId ||
+            !issue.assigneeAgentId ||
+            actor.actorId !== issue.assigneeAgentId
+          ) {
+            return false;
+          }
+          try {
+            const actorRun = await heartbeat.getRun(actor.runId);
+            return (
+              actorRun?.companyId === issue.companyId &&
+              actorRun.agentId === actor.actorId &&
+              actorRun.contextSnapshot?.issueId === issue.id
+            );
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id, runId: actor.runId },
+              "could not match the PATCH run to the task; self wake not skipped",
+            );
+            return false;
+          }
+        })();
         const wakeups = new Map<
           string,
           { agentId: string; wakeup: WakeupRequest }
