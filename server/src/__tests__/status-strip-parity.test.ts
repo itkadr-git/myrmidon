@@ -145,9 +145,10 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     expect(strip.colony.idle).toBe(3);
     expect(strip.colony.paused).toBe(1);
     expect(strip.colony.error).toBe(1);
-    expect(strip.colony.running + strip.colony.idle).toBe(dashboard.agentCounts.active);
-    expect(strip.colony.paused).toBe(dashboard.agentCounts.paused);
-    expect(strip.colony.error).toBe(dashboard.agentCounts.error);
+    expect(strip.colony.running).toBe(dashboard.agents.running);
+    expect(strip.colony.idle).toBe(dashboard.agents.active);
+    expect(strip.colony.paused).toBe(dashboard.agents.paused);
+    expect(strip.colony.error).toBe(dashboard.agents.error);
 
     expect(strip.runs.running).toBe(1);
     expect(strip.runs.queued).toBe(2);
@@ -155,9 +156,9 @@ describeEmbeddedPostgres("status-strip endpoint parity & acceptance", () => {
     expect(strip.runs.failedToday).toBe(sidebar.failedRuns);
 
     expect(strip.costs.monthSpendCents).toBe(1500);
-    expect(strip.costs.monthSpendCents).toBe(dashboard.monthSpendCents);
+    expect(strip.costs.monthSpendCents).toBe(dashboard.costs.monthSpendCents);
     expect(strip.costs.budgetCents).toBe(500_000);
-    expect(strip.costs.budgetCents).toBe(dashboard.budgetMonthlyCents);
+    expect(strip.costs.budgetCents).toBe(dashboard.costs.monthBudgetCents);
     expect(strip.costs.unpricedEvents).toBe(1);
 
     expect(strip.waiting.approvals).toBe(1);
