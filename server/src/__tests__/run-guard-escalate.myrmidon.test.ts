@@ -2,11 +2,15 @@
 // with "a new input is needed") wakes the assignee's manager with the wake reason
 // `run_guard_stop_needs_input`: reports_to, else the agent `adm`, else nobody. The
 // assignee and the blocked status stay as the escalation set them. One wake per
-// issue per 30 minutes.
+// block episode: while the task has not left `blocked` since the previous wake
+// there is no second one; once it was put back, the next stop wakes again. An
+// assignee that is `adm` itself wakes nobody. The run dispatch lets the wake start
+// only for the assignee's reports_to or `adm`, and only on a blocked issue.
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agentWakeupRequests,
   agents,
   companies,
@@ -21,8 +25,10 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import {
+  RUN_GUARD_STOP_NEEDS_INPUT_SOURCE,
   RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
-  hasRecentRunGuardStopWake,
+  hasRunGuardStopWakeInBlockEpisode,
+  isRunGuardStopWakeRecipient,
 } from "../myrmidon/run-guard-escalation.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -126,7 +132,12 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
   }
 
   /** Company, an assignee (optionally reporting to a manager, optionally with an `adm` agent), an in_progress issue and one stopped run. */
-  async function seed(input: { withManager: boolean; withAdm?: boolean; managerStatus?: "idle" | "paused" }) {
+  async function seed(input: {
+    withManager: boolean;
+    withAdm?: boolean;
+    managerStatus?: "idle" | "paused";
+    assigneeName?: string;
+  }) {
     const companyId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -141,7 +152,7 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
       ? await insertAgent({ companyId, name: "Lead", status: input.managerStatus })
       : null;
     const admId = input.withAdm ? await insertAgent({ companyId, name: "adm" }) : null;
-    const agentId = await insertAgent({ companyId, name: "CodexCoder", reportsTo: managerId });
+    const agentId = await insertAgent({ companyId, name: input.assigneeName ?? "CodexCoder", reportsTo: managerId });
     const runId = await insertStoppedRun({ companyId, agentId, issueId });
     await db.insert(issues).values({
       id: issueId,
@@ -177,6 +188,49 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
     return issue!;
   }
 
+  /** The wake the board sends, sent as a given agent: what the run dispatch has to judge. */
+  async function wakeAs(agentId: string, issueId: string) {
+    const returned = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
+      payload: { issueId },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
+        source: RUN_GUARD_STOP_NEEDS_INPUT_SOURCE,
+      },
+    });
+    const [wake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.reason, RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON)));
+    return { wake, returned };
+  }
+
+  /** What the manager's PATCH leaves behind: an `issue.updated` activity row that moves the status away from `blocked`. */
+  async function logLeftBlocked(input: { companyId: string; issueId: string; at: Date; shape?: "changes" | "previousStatus" | "_previous" }) {
+    const shape = input.shape ?? "changes";
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: "manager",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issueId,
+      details:
+        shape === "changes"
+          ? { changes: { status: { from: "blocked", to: "todo" } } }
+          : shape === "previousStatus"
+            ? { status: "todo", previousStatus: "blocked" }
+            : { status: "todo", _previous: { status: "blocked" } },
+      createdAt: input.at,
+    });
+  }
+
   it("wakes the assignee's manager with the reason, the issue and the stop text, and leaves the assignee and the blocked status", async () => {
     const { companyId, issueId, agentId, managerId, runId } = await seed({ withManager: true, withAdm: true });
 
@@ -205,17 +259,19 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
     expect(issue.assigneeAgentId).toBe(agentId);
   });
 
-  it("does not wake the manager a second time within 30 minutes, and does again after them", async () => {
-    const { companyId, issueId, agentId, managerId, runId } = await seed({ withManager: true });
+  it("does not wake the manager a second time while the task has not left blocked since the first wake", async () => {
+    const { companyId, issueId, agentId, runId } = await seed({ withManager: true });
     await heartbeat.applyRunGuardStop(runId);
-    expect(await wakesFor(companyId)).toHaveLength(1);
-
-    // The manager put the task back; five minutes later it is stopped again.
     const [first] = await wakesFor(companyId);
+    expect(first).toBeDefined();
+
+    // Five minutes later the task is stopped again without anybody having put it back
+    // (the only status activity is older than the wake: the one that blocked it).
     await db
       .update(agentWakeupRequests)
       .set({ requestedAt: new Date(Date.now() - 5 * 60 * 1000) })
       .where(eq(agentWakeupRequests.id, first!.id));
+    await logLeftBlocked({ companyId, issueId, at: new Date(Date.now() - 6 * 60 * 1000) });
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
     const secondRunId = await insertStoppedRun({ companyId, agentId, issueId, reason: "repeated_tool_call" });
 
@@ -224,30 +280,59 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
     expect(await wakesFor(companyId)).toHaveLength(1);
     // The issue is blocked again all the same: only the wake is held back.
     expect((await issueRow(issueId)).status).toBe("blocked");
+  });
 
-    // The window is 30 minutes: 29 still holds the wake back, 31 lets it through.
-    const holds = (minutesAgo: number) =>
-      db
-        .update(agentWakeupRequests)
-        .set({ requestedAt: new Date(Date.now() - minutesAgo * 60 * 1000) })
-        .where(eq(agentWakeupRequests.id, first!.id))
-        .then(() => hasRecentRunGuardStopWake(db, { companyId, issueId }));
-    expect(await holds(29)).toBe(true);
-    expect(await holds(31)).toBe(false);
+  it("wakes the manager again five minutes later when he put the task back to todo and it was stopped anew", async () => {
+    const { companyId, issueId, agentId, managerId, runId } = await seed({ withManager: true });
+    await heartbeat.applyRunGuardStop(runId);
+    const [first] = await wakesFor(companyId);
+    expect(first).toBeDefined();
 
-    // And after the window a new stop wakes the manager again (the manager's earlier run is over).
+    // The manager's PATCH blocked -> todo, five minutes before the new stop.
+    await db
+      .update(agentWakeupRequests)
+      .set({ requestedAt: new Date(Date.now() - 6 * 60 * 1000) })
+      .where(eq(agentWakeupRequests.id, first!.id));
+    await logLeftBlocked({ companyId, issueId, at: new Date(Date.now() - 5 * 60 * 1000) });
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+    // The manager's earlier run is over, so the new wake is not coalesced into it.
     await db
       .update(heartbeatRuns)
       .set({ status: "failed", finishedAt: new Date() })
       .where(and(eq(heartbeatRuns.agentId, managerId!), eq(heartbeatRuns.status, "running")));
-    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
-    const thirdRunId = await insertStoppedRun({ companyId, agentId, issueId, reason: "tool_retry_loop" });
+    const secondRunId = await insertStoppedRun({ companyId, agentId, issueId, reason: "tool_retry_loop" });
 
-    await heartbeat.applyRunGuardStop(thirdRunId);
+    await heartbeat.applyRunGuardStop(secondRunId);
 
     const wakes = await wakesFor(companyId);
     expect(wakes).toHaveLength(2);
     expect(wakes.every((wake) => wake.agentId === managerId)).toBe(true);
+    expect((await issueRow(issueId)).status).toBe("blocked");
+  });
+
+  it("reads every shape the status change away from blocked is logged in, and only that", async () => {
+    const { companyId, issueId, runId } = await seed({ withManager: true });
+    await heartbeat.applyRunGuardStop(runId);
+    const [first] = await wakesFor(companyId);
+    const wakeAt = new Date(Date.now() - 10 * 60 * 1000);
+    await db.update(agentWakeupRequests).set({ requestedAt: wakeAt }).where(eq(agentWakeupRequests.id, first!.id));
+    const after = new Date(wakeAt.getTime() + 60 * 1000);
+    const insideEpisode = () => hasRunGuardStopWakeInBlockEpisode(db, { companyId, issueId });
+
+    expect(await insideEpisode()).toBe(true);
+    // Other status changes, other actions, and the same change dated before the wake do not end the episode.
+    await db.insert(activityLog).values([
+      { companyId, actorType: "agent", actorId: "m", action: "issue.updated", entityType: "issue", entityId: issueId, details: { changes: { status: { from: "todo", to: "in_progress" } } }, createdAt: after },
+      { companyId, actorType: "agent", actorId: "m", action: "issue.comment_added", entityType: "issue", entityId: issueId, details: { previousStatus: "blocked" }, createdAt: after },
+    ]);
+    await logLeftBlocked({ companyId, issueId, at: new Date(wakeAt.getTime() - 60 * 1000) });
+    expect(await insideEpisode()).toBe(true);
+
+    for (const shape of ["changes", "previousStatus", "_previous"] as const) {
+      await db.delete(activityLog).where(and(eq(activityLog.entityId, issueId), eq(activityLog.actorId, "manager")));
+      await logLeftBlocked({ companyId, issueId, at: after, shape });
+      expect(await insideEpisode(), shape).toBe(false);
+    }
   });
 
   it("wakes the agent named adm when the assignee reports to nobody", async () => {
@@ -257,7 +342,7 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
 
     const wakes = await wakesFor(companyId);
     expect(wakes).toHaveLength(1);
-    expect(wakes[0]).toMatchObject({ agentId: admId });
+    expect(wakes[0]).toMatchObject({ agentId: admId, status: expect.not.stringMatching(/^skipped$/) });
     expect(wakes[0]?.payload).toMatchObject({ issueId });
   });
 
@@ -303,6 +388,65 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
     expect(await wakesFor(companyId)).toHaveLength(0);
     expect((await issueRow(issueId)).status).toBe("in_progress");
     expect((await issueRow(issueId)).assigneeAgentId).toBe(agentId);
+  });
+
+  it("accepts only the assignee's reports_to or adm as the recipient the run dispatch lets through", async () => {
+    const { companyId, agentId, managerId, admId } = await seed({ withManager: true, withAdm: true });
+    const strangerId = await insertAgent({ companyId, name: "Stranger" });
+    const recipient = (agent: string) =>
+      isRunGuardStopWakeRecipient(db, { companyId, assigneeAgentId: agentId, agentId: agent });
+
+    expect(await recipient(managerId!)).toBe(true);
+    expect(await recipient(admId!)).toBe(true);
+    expect(await recipient(strangerId)).toBe(false);
+    // The assignee is never its own recipient, and a task of adm itself has none.
+    expect(await recipient(agentId)).toBe(false);
+    expect(await isRunGuardStopWakeRecipient(db, { companyId, assigneeAgentId: admId!, agentId: managerId! })).toBe(false);
+    // An agent of another company is not one either.
+    const other = await seed({ withManager: true });
+    expect(await isRunGuardStopWakeRecipient(db, { companyId, assigneeAgentId: agentId, agentId: other.managerId! })).toBe(false);
+  });
+
+  it("wakes nobody when the assignee is adm itself", async () => {
+    const { companyId, issueId, runId } = await seed({ withManager: true, withAdm: false, assigneeName: "adm" });
+
+    await heartbeat.applyRunGuardStop(runId);
+
+    expect(await wakesFor(companyId)).toHaveLength(0);
+    expect((await issueRow(issueId)).status).toBe("blocked");
+  });
+
+  it("does not let the run dispatch start the wake of an agent that is neither the assignee's manager nor adm", async () => {
+    const { companyId, issueId, runId } = await seed({ withManager: true });
+    await heartbeat.applyRunGuardStop(runId);
+    const strangerId = await insertAgent({ companyId, name: "Stranger" });
+
+    const { wake, returned } = await wakeAs(strangerId, issueId);
+
+    // No run starts for the stranger: the wake is refused outright or its run is cancelled as stale.
+    expect(returned === null || returned.status === "cancelled").toBe(true);
+    expect(wake === undefined || wake.status === "skipped").toBe(true);
+    const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, strangerId));
+    expect(runs.every((run) => run.status === "cancelled")).toBe(true);
+  });
+
+  it("does not let the run dispatch start the wake of the manager once the issue is no longer blocked", async () => {
+    const { issueId, managerId, runId } = await seed({ withManager: true });
+    await heartbeat.applyRunGuardStop(runId);
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.agentId, managerId!));
+    // Set the first wake aside (a delete would hit the run that holds it).
+    await db
+      .update(agentWakeupRequests)
+      .set({ reason: "run_guard_stop_needs_input_first" })
+      .where(eq(agentWakeupRequests.reason, RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+
+    const { wake } = await wakeAs(managerId!, issueId);
+    const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.runId!));
+    expect(run?.status).toBe("cancelled");
+
+    expect(wake.status).toBe("skipped");
+    expect(wake.error).toContain("issue assignee changed");
   });
 
   it("wakes the manager when the stranded-issue sweep is the one that blocks the task", async () => {

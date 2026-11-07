@@ -43,6 +43,7 @@ import { isOwnerExplainWake, isPendingInteractionAddresseeWake } from "../myrmid
 import {
   RUN_GUARD_STOP_NEEDS_INPUT_SOURCE,
   RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
+  isRunGuardStopWakeRecipient,
 } from "../../../myrmidon/run-guard-escalation.js";
 import type {
   QueuedRunFacts,
@@ -593,12 +594,20 @@ export function createPostgresRunDispatchAdapter(
 
     // myrmidon(RUN-GUARD-ESCALATE): the wake that tells the assignee's manager a task
     // was stopped for good by the run guard. Bound to the exact automation source and
-    // wake reason; the manager is not the assignee and the assignee does not change.
+    // wake reason, to the issue being `blocked` (the state the stop left it in) and to
+    // the run's agent being the assignee's `reports_to` or the agent `adm`: a stranger
+    // agent, or a task that has moved on, gets no bypass and is cancelled as before.
     const isRunGuardStopNeedsInputWake = Boolean(
       issue &&
+        issue.status === "blocked" &&
         input.invocationSource === "automation" &&
         context.source === RUN_GUARD_STOP_NEEDS_INPUT_SOURCE &&
-        wakeReason === RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
+        wakeReason === RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON &&
+        (await isRunGuardStopWakeRecipient(dbOrTx, {
+          companyId: input.companyId,
+          assigneeAgentId: issue.assigneeAgentId,
+          agentId: input.agentId,
+        })),
     );
 
     // myrmidon(OPE-11948): an automatic continuation wake — the system's own

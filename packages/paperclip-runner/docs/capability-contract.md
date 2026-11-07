@@ -54,7 +54,7 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/chat-turns.md:conversation-tasks:3 | optional_agent_tool | skills/paperclip/references/chat-turns.md:3 |
 | skill:skills/paperclip/references/chat-turns.md:server-verified-external-chat-turns:20 | control_plane_owned | skills/paperclip/references/chat-turns.md:20 |
 | skill:skills/paperclip/references/heartbeat-procedure.md:the-heartbeat-procedure:3 | optional_agent_tool | skills/paperclip/references/heartbeat-procedure.md:3 |
-| skill:skills/paperclip/references/heartbeat-procedure.md:delegating-review-tasks:77 | always_agent_tool | skills/paperclip/references/heartbeat-procedure.md:77 |
+| skill:skills/paperclip/references/heartbeat-procedure.md:delegating-review-tasks:79 | always_agent_tool | skills/paperclip/references/heartbeat-procedure.md:79 |
 | skill:skills/paperclip/references/disposition-and-monitors.md:generated-artifacts-and-work-products:3 | always_agent_tool | skills/paperclip/references/disposition-and-monitors.md:3 |
 | skill:skills/paperclip/references/disposition-and-monitors.md:status-quick-guide:51 | control_plane_owned | skills/paperclip/references/disposition-and-monitors.md:51 |
 | skill:skills/paperclip/references/disposition-and-monitors.md:monitors-and-watchers-say-only-what-you-actually-scheduled:61 | optional_agent_tool | skills/paperclip/references/disposition-and-monitors.md:61 |

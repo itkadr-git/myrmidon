@@ -4,7 +4,7 @@
 // myrmidon(RUN-GUARD-CONTINUE): the one exception is a call-limit stop of a run
 // that made changes: the work continues in a follow-up run (the max-turn
 // continuation machinery) and the issue is not blocked. These continuations have
-// their own ceiling (heartbeat.runGuardContinuation.maxAttempts, default 10, at
+// their own ceiling (heartbeat.runGuardContinuation.maxAttempts, default 6, at
 // most 20) and do not spend the max-turn one (heartbeat.maxTurnContinuation).
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -415,13 +415,13 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
       expect(state.comments).toHaveLength(0);
     });
 
-    it("blocks the issue with the usual comment when the own continuation ceiling (10) is spent", async () => {
+    it("blocks the issue with the usual comment when the own continuation ceiling (6) is spent", async () => {
       const { issueId, runId } = await seedRun({
         shape: "stranded",
         status: "cancelled",
         errorCode: "model_call_limit",
-        scheduledRetryAttempt: 10,
-        runGuardContinuationAttempts: 10,
+        scheduledRetryAttempt: 6,
+        runGuardContinuationAttempts: 6,
         resultJson: {
           runGuardStopReason: "model_call_limit",
           runGuardStats: { toolCalls: 140, writeCalls: 20, readOnlyStreak: 0, modelCalls: 150 },
@@ -440,22 +440,22 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
       expect(await successorsOf(runId)).toHaveLength(0);
     });
 
-    it("continues the 10th continuation and not the 11th", async () => {
-      const ninth = await seedRun({
+    it("continues the 6th continuation and not the 7th", async () => {
+      const fifth = await seedRun({
         shape: "retry",
         status: "cancelled",
         errorCode: "model_call_limit",
-        scheduledRetryAttempt: 9,
-        runGuardContinuationAttempts: 9,
+        scheduledRetryAttempt: 5,
+        runGuardContinuationAttempts: 5,
         resultJson: { runGuardStopReason: "model_call_limit", runGuardStats: CHANGING_STATS },
       });
-      await heartbeat.applyRunGuardStop(ninth.runId);
-      const [tenth] = await successorsOf(ninth.runId);
-      expect(tenth).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 10 });
+      await heartbeat.applyRunGuardStop(fifth.runId);
+      const [sixth] = await successorsOf(fifth.runId);
+      expect(sixth).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 6 });
 
-      expect(await stopFollowUp(tenth!.id, CHANGING_STATS)).toMatchObject({ outcome: "handled" });
-      expect(await successorsOf(tenth!.id)).toHaveLength(0);
-      expect((await issueState(ninth.issueId)).status).toBe("blocked");
+      expect(await stopFollowUp(sixth!.id, CHANGING_STATS)).toMatchObject({ outcome: "handled" });
+      expect(await successorsOf(sixth!.id)).toHaveLength(0);
+      expect((await issueState(fifth.issueId)).status).toBe("blocked");
     });
 
     it("reads the own ceiling from heartbeat.runGuardContinuation.maxAttempts, capped at 20", async () => {

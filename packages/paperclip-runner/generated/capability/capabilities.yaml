@@ -119,9 +119,9 @@
       "expectedMockState": "runtime_decision_record"
     },
     {
-      "id": "skill:skills/paperclip/references/heartbeat-procedure.md:77",
+      "id": "skill:skills/paperclip/references/heartbeat-procedure.md:79",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/heartbeat-procedure.md#L77:delegating-review-tasks",
+      "sourceAnchor": "skills/paperclip/references/heartbeat-procedure.md#L79:delegating-review-tasks",
       "heading": "Delegating review tasks",
       "primaryDisposition": "control_plane_owned",
       "semanticOperation": "runtime_reconciliation",

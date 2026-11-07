@@ -13,7 +13,7 @@
 // terminal command that writes: `writeCalls` in the guard statistics) is a run
 // that was working, not looping, so the board continues it the way it continues
 // a run that ran out of turns (RUN-GUARD-CONTINUE). These continuations have
-// their own ceiling (`heartbeat.runGuardContinuation.maxAttempts`, default 10,
+// their own ceiling (`heartbeat.runGuardContinuation.maxAttempts`, default 6,
 // at most 20) and do not spend the max-turn ceiling
 // (`heartbeat.maxTurnContinuation.maxAttempts`): a chain of productive runs of
 // 150 calls each is not a loop. When the own ceiling is spent, or the last run
@@ -104,7 +104,7 @@ export function shouldContinueAfterRunGuardStop(
 }
 
 /** Default ceiling of call-limit continuations along one chain (RUN-GUARD-CONTINUE). */
-export const RUN_GUARD_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 10;
+export const RUN_GUARD_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 6;
 /** Upper bound of `heartbeat.runGuardContinuation.maxAttempts`, whatever the agent config says. */
 export const RUN_GUARD_CONTINUATION_MAX_ATTEMPTS_CAP = 20;
 /**
@@ -122,7 +122,7 @@ export interface RunGuardContinuationPolicy {
 
 /**
  * The call-limit continuation policy of an agent: `runtimeConfig.heartbeat.runGuardContinuation`
- * (`enabled`, default true; `maxAttempts`, default 10, clamped to 0..20; 0 turns it off).
+ * (`enabled`, default true; `maxAttempts`, default 6, clamped to 0..20; 0 turns it off).
  */
 export function parseRunGuardContinuationPolicy(runtimeConfig: unknown): RunGuardContinuationPolicy {
   const configured = asRecord(asRecord(asRecord(runtimeConfig)?.heartbeat)?.runGuardContinuation);

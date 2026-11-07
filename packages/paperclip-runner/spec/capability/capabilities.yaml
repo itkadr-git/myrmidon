@@ -220,9 +220,9 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/heartbeat-procedure.md:delegating-review-tasks:77",
+      "id": "skill:skills/paperclip/references/heartbeat-procedure.md:delegating-review-tasks:79",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/heartbeat-procedure.md:77",
+      "sourceAnchor": "skills/paperclip/references/heartbeat-procedure.md:79",
       "title": "Delegating review tasks",
       "expectedSemantics": "Skill guidance headed “Delegating review tasks”.",
       "primaryDisposition": "always_agent_tool",
@@ -231,7 +231,7 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/heartbeat-procedure.md:77"
+        "skill:skills/paperclip/references/heartbeat-procedure.md:79"
       ]
     },
     {

@@ -16558,7 +16558,7 @@ export function heartbeatService(
   // stopped at the model call limit after it made changes. The same machinery as
   // the max-turn continuation (the same retry reason, the same issue gate), but
   // with its own ceiling: `heartbeat.runGuardContinuation.maxAttempts` (default
-  // 10, at most 20), counted along the chain of such continuations only. The
+  // 6, at most 20), counted along the chain of such continuations only. The
   // max-turn ceiling (`heartbeat.maxTurnContinuation.maxAttempts`) is not spent
   // by them: three productive runs of 150 calls each are work, not a loop.
   // Returns true when a continuation run is scheduled (the caller then leaves

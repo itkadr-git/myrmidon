@@ -234,9 +234,9 @@ describe("guard stop metadata", () => {
 
 // myrmidon(RUN-GUARD-CONTINUE): call-limit continuations have their own ceiling.
 describe("parseRunGuardContinuationPolicy", () => {
-  it("defaults to enabled with 10 continuations", () => {
+  it("defaults to enabled with 6 continuations", () => {
     for (const runtimeConfig of [undefined, null, {}, { heartbeat: {} }, { heartbeat: { runGuardContinuation: {} } }]) {
-      expect(parseRunGuardContinuationPolicy(runtimeConfig)).toEqual({ enabled: true, maxAttempts: 10 });
+      expect(parseRunGuardContinuationPolicy(runtimeConfig)).toEqual({ enabled: true, maxAttempts: 6 });
     }
   });
 
@@ -248,19 +248,19 @@ describe("parseRunGuardContinuationPolicy", () => {
     expect(policy({ maxAttempts: 500 }).maxAttempts).toBe(20);
     expect(policy({ maxAttempts: 3.9 }).maxAttempts).toBe(3);
     expect(policy({ maxAttempts: -2 }).maxAttempts).toBe(0);
-    expect(policy({ enabled: false })).toEqual({ enabled: false, maxAttempts: 10 });
+    expect(policy({ enabled: false })).toEqual({ enabled: false, maxAttempts: 6 });
   });
 
   it("falls back to the default for a value that is not a number", () => {
     for (const maxAttempts of ["7", null, Number.NaN, {}]) {
       expect(
         parseRunGuardContinuationPolicy({ heartbeat: { runGuardContinuation: { maxAttempts } } }).maxAttempts,
-      ).toBe(10);
+      ).toBe(6);
     }
   });
 
   it("does not read the max-turn ceiling", () => {
-    expect(parseRunGuardContinuationPolicy({ heartbeat: { maxTurnContinuation: { maxAttempts: 1 } } }).maxAttempts).toBe(10);
+    expect(parseRunGuardContinuationPolicy({ heartbeat: { maxTurnContinuation: { maxAttempts: 1 } } }).maxAttempts).toBe(6);
   });
 });
 
