@@ -165,6 +165,10 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "GET /api/admin-assistant/health",
   "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
+  "POST /api/companies/{companyId}/admin-assistant/cluster-health",
+  "GET /api/myrmidon/tool-complaints",
+  "POST /api/myrmidon/tool-complaints",
+  "PATCH /api/myrmidon/tool-complaints/{id}",
 ]);
 
 function createApp() {

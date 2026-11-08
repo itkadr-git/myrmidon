@@ -3,6 +3,7 @@ import {
   FlaskConical,
   Layers,
   Network,
+  AlertTriangle,
 } from "lucide-react";
 
 /**
@@ -31,6 +32,7 @@ export const DEVELOPER_TABS = [
   { key: "gateways", label: "Gateways", icon: Network },
   { key: "profiles", label: "Profiles", icon: Layers },
   { key: "smoke-lab", label: "Smoke Lab", icon: FlaskConical },
+  { key: "complaints", label: "Tool Complaints", icon: AlertTriangle },
 ] as const;
 
 export const TOOL_TABS = [...ADVANCED_TABS, ...DEVELOPER_TABS] as const;

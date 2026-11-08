@@ -147,6 +147,8 @@ export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
 export { workAssessments } from "./work_assessments.js";
+// myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228): agent complaints about tools.
+export { toolComplaints } from "./tool_complaints.js";
 export { statusDecisions } from "./status_decisions.js";
 export { statusDecisionEffects } from "./status_decision_effects.js";
 export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decisions.js";

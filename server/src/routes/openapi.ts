@@ -11984,3 +11984,26 @@ registerCurrentRoute({
     429: r.tooManyRequests,
   },
 });
+
+// --- myrmidon(1.7 TOOL-COMPLAINTS): agent tool-complaints channel & triage ---
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/tool-complaints",
+  tags: ["tool-complaints"],
+  summary: "List company tool complaints and threshold warnings",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/tool-complaints",
+  tags: ["tool-complaints"],
+  summary: "File a tool complaint as an agent",
+  responses: { 201: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/myrmidon/tool-complaints/{id}",
+  tags: ["tool-complaints"],
+  summary: "Update tool complaint status or disable tool via tool access service",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
