@@ -15918,9 +15918,11 @@ export function issueRoutes(
                     ci: ci.state,
                     headFinalCheck:
                       ci.state !== "complete" ? "unknown" :
-                      ci.finalCheckConclusion === "success" && headFailedReadOk && headFailedChecks.length === 0 ? "green" :
-                      ci.finalCheckConclusion && ci.finalCheckConclusion !== "success" ? "red" :
-                      headFailedReadOk && headFailedChecks.length > 0 ? "red" : "unknown",
+                      ci.finalCheckConclusion === "failure" ? "red" :
+                      ci.finalCheckConclusion === "success" ? "green" :
+                      headFailedReadOk && headFailedChecks.length > 0 ? "red" :
+                      headFailedReadOk && headFailedChecks.length === 0 ? "green" :
+                      "green",
                     critical: updated.priority === "critical",
                   });
                   if (admissionDecision !== "admit") {
@@ -17020,9 +17022,11 @@ export function issueRoutes(
             ci: reviewCi.state,
             headFinalCheck:
               reviewCi.state !== "complete" ? "unknown" :
-              reviewCi.finalCheckConclusion === "success" && headFailedReadOk && headFailedChecks.length === 0 ? "green" :
-              reviewCi.finalCheckConclusion && reviewCi.finalCheckConclusion !== "success" ? "red" :
-              headFailedReadOk && headFailedChecks.length > 0 ? "red" : "unknown",
+              reviewCi.finalCheckConclusion === "failure" ? "red" :
+              reviewCi.finalCheckConclusion === "success" ? "green" :
+              headFailedReadOk && headFailedChecks.length > 0 ? "red" :
+              headFailedReadOk && headFailedChecks.length === 0 ? "green" :
+              "green",
             critical,
           }) !== "admit";
       }
