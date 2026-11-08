@@ -176,6 +176,63 @@ func runMutations(t *testing.T, id, suffix string, cases []mutation) {
 	}
 }
 
+// myrmidon(1.6.7 BOT-HARDENING): HostConfig.Ulimits is an OPTIONAL member of
+// both forms, and when present it must be exactly [{Name:"core",Soft:0,Hard:0}].
+// The key is optional on purpose: the gate is deployed before the driver that
+// sends it, so an old body (no key) and a hardened body (exact key) are both
+// accepted, each rebuilding byte for byte; any other shape is denied.
+func TestCoreUlimitsShape(t *testing.T) {
+	const exact = `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}]`
+	for _, tc := range []struct{ id, suffix string }{
+		{"bot-plain", ""},
+		{"helper-prepare", ".helper"},
+		{"helper-apply-0123456789abcdef", ".helper"},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			m := fixture.Load(t)
+			b, body := m.FindBody(t, tc.id, tc.suffix)
+			rt := createRoute(t, b.Name)
+
+			// Without the key the recorded body is still canonical (old driver).
+			if _, err := policy.ParseCreate(body, rt, env(m)); err != nil {
+				t.Fatalf("body without Ulimits denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+			}
+
+			// The exact form is accepted and rebuilt byte for byte.
+			got := replace(t, body, `"Privileged":false`, exact)
+			c, err := policy.ParseCreate(got, rt, env(m))
+			if err != nil {
+				t.Fatalf("exact Ulimits denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+			}
+			if string(c.Body) != string(got) {
+				t.Fatalf("canonical body differs from the accepted one:\n got %s\nwant %s", c.Body, got)
+			}
+
+			for _, bad := range []struct{ name, repl, code string }{
+				{"other name", `"Privileged":false,"Ulimits":[{"Name":"nofile","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"soft not zero", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":1024,"Hard":0}]`, deny.JSONValue},
+				{"hard not zero", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":1024}]`, deny.JSONValue},
+				// Negative ints parse as KindInt, so wantInt reports a value mismatch (JSONValue).
+				{"negative values", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":-1,"Hard":-1}]`, deny.JSONValue},
+				{"values as strings", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":"0","Hard":"0"}]`, deny.JSONType},
+				{"second entry", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0},{"Name":"core","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"empty list", `"Privileged":false,"Ulimits":[]`, deny.JSONValue},
+				{"list of string", `"Privileged":false,"Ulimits":["core=0:0"]`, deny.JSONType},
+				{"object instead of list", `"Privileged":false,"Ulimits":{"core":0}`, deny.JSONType},
+				{"extra member", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0,"Unit":1}]`, deny.JSONUnknownKey},
+				{"missing hard", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0}]`, deny.JSONValue},
+				{"upper case name", `"Privileged":false,"Ulimits":[{"Name":"CORE","Soft":0,"Hard":0}]`, deny.JSONValue},
+			} {
+				t.Run(bad.name, func(t *testing.T) {
+					mut := replace(t, body, `"Privileged":false`, bad.repl)
+					c, err := policy.ParseCreate(mut, rt, env(m))
+					wantDeny(t, c, err, bad.code)
+				})
+			}
+		})
+	}
+}
+
 // The schema of the bot form: every field of the driver's body, changed.
 func TestBotBodyMutations(t *testing.T) {
 	m := fixture.Load(t)
