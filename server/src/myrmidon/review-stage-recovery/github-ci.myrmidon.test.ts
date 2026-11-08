@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetGitHubRateLimitForTests } from "../../services/github-rate-limit.js";
 import {
   createReviewHeadFailedChecksResolver,
   createReviewPullRequestCiResolver,
+  resetReviewCiCacheForTests,
   resolvePullRequestHeadCi,
   resolvePullRequestHeadFailedChecks,
 } from "./github-ci.js";
@@ -9,6 +11,21 @@ import {
 // myrmidon(OPE-10045, OPE-10063): the CI read of a PR head never touches the
 // network in tests. CI of the head is finished only by its final `CI result`
 // check; a read the board cannot make answers "unknown" with a reason.
+
+// myrmidon(OPE-12397): the CI reads are cached per process and the rate-limit state is process-wide.
+// Every case here reads the same head from its own fake GitHub, so it runs with the cache off and
+// with a fresh rate-limit state (the cache itself is covered in github-ci-cache.myrmidon.test.ts).
+beforeEach(() => {
+  vi.stubEnv("MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC", "0");
+  vi.stubEnv("MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC", "0");
+  resetReviewCiCacheForTests();
+  resetGitHubRateLimitForTests();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetGitHubRateLimitForTests();
+});
 
 const reference = { host: "github.com" as const, owner: "acme", repo: "app", number: 7 };
 
