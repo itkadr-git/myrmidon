@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
   REVIEW_REWORK_ACCEPTANCE_ACTION,
   REVIEW_REWORK_BLOCKED_ACTION,
   REVIEW_REWORK_CLOSED_ACTION,
@@ -153,6 +154,7 @@ function build(input: {
     resolvePr,
     readSettings: async () => ({
       enabled: true,
+      sweepIntervalSec: DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
       fallbackAssigneeAgentId: null,
       ...input.settings,
     }),
