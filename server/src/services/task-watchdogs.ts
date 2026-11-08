@@ -52,7 +52,7 @@ const TASK_WATCHDOG_OPERATOR_BACKLOG_STATUSES = ["backlog"] as const;
 // Same-fingerprint re-wake cooldown for reviews that keep cycling (for
 // example, a stale in_review review reopened again and again). Overridable in
 // tests via the classifier input; production sweeps use the default.
-const TASK_WATCHDOG_REWAKE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+export const TASK_WATCHDOG_REWAKE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 type ActorFields = {
   agentId?: string | null;
@@ -310,6 +310,29 @@ function toEpochMs(value: Date | string | null | undefined): number | null {
   if (value == null) return null;
   const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
   return Number.isFinite(ms) ? ms : null;
+}
+
+// myrmidon(OPERATOR-BUDGET / OPE-3008): a watchdog that already woke for the
+// exact same stop fingerprint must not wake again inside the cooldown window —
+// one situation = one review wake, not dozens of `swarm_matched` runs a day.
+// Exported pure so unit tests can pin the decision without an embedded
+// Postgres scheduler run. Only a same-fingerprint re-wake inside the window
+// counts; a changed fingerprint, a never-triggered watchdog, or a disabled
+// cooldown (<= 0) all allow the wake.
+export function rewakeCooldownActive(params: {
+  lastTriggeredAt: Date | string | null | undefined;
+  lastObservedFingerprint: string | null | undefined;
+  stopFingerprint: string;
+  cooldownMs: number | null | undefined;
+  nowMs?: number;
+}): boolean {
+  const cooldownMs = params.cooldownMs ?? 0;
+  if (cooldownMs <= 0) return false;
+  if (params.lastObservedFingerprint !== params.stopFingerprint) return false;
+  const lastTriggeredMs = toEpochMs(params.lastTriggeredAt);
+  if (lastTriggeredMs == null) return false;
+  const nowMs = params.nowMs ?? Date.now();
+  return nowMs - lastTriggeredMs < cooldownMs;
 }
 
 function pathIssueIds(paths: TaskWatchdogClassifierPath[] | undefined, companyId: string) {
@@ -1547,17 +1570,17 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return { state: classification.state, reason: classification.reason, classification };
     }
 
-    if (watchdog.lastTriggeredAt && watchdog.lastObservedFingerprint === classification.stopFingerprint) {
-      const lastTriggeredMs = toEpochMs(watchdog.lastTriggeredAt);
-      const nowMs = Date.now();
-      const cooldownMs = TASK_WATCHDOG_REWAKE_COOLDOWN_MS;
-      if (lastTriggeredMs != null && nowMs - lastTriggeredMs < cooldownMs) {
-        return {
-          state: "skipped" as const,
-          reason: "rewake_cooldown",
-          classification,
-        };
-      }
+    if (rewakeCooldownActive({
+      lastTriggeredAt: watchdog.lastTriggeredAt,
+      lastObservedFingerprint: watchdog.lastObservedFingerprint,
+      stopFingerprint: classification.stopFingerprint,
+      cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
+    })) {
+      return {
+        state: "skipped" as const,
+        reason: "rewake_cooldown",
+        classification,
+      };
     }
 
     const existingWatchdogIssueId = watchdog.watchdogIssueId ?? (await findTaskWatchdogIssue(
