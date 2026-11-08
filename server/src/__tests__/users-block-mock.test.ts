@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { usersRoutes } from "../routes/users.js";
 import { auditRoutes } from "../routes/audit.js";
+import { userBlocks } from "@myrmidon/db";
 
 const testState = vi.hoisted(() => ({
   auditEntries: [] as any[],
@@ -35,9 +36,12 @@ describe("users block API and audit routes", () => {
   const mockDb = {
     insert: vi.fn((table: any) => ({
       values: vi.fn((vals: any) => {
-        mockInsertedBlocks.push(vals);
+        if (table === userBlocks) {
+          mockInsertedBlocks.push(vals);
+        }
         return {
           onConflictDoNothing: vi.fn().mockResolvedValue({}),
+          returning: vi.fn().mockResolvedValue([{ id: "company-1" }]),
         };
       }),
     })),
@@ -89,15 +93,25 @@ describe("users block API and audit routes", () => {
   }
 
   const adminActor = {
+    type: "user",
+    actorId: "admin-user-id",
+    isInstanceAdmin: true,
+    source: "session",
+  };
+
+  const companyAdminActor = {
     type: "board",
     userId: "admin-user-id",
     isInstanceAdmin: true,
+    companyIds: ["company-1"],
   };
 
   const nonAdminActor = {
-    type: "board",
-    userId: "regular-user-id",
+    type: "user",
+    actorId: "regular-user-id",
     isInstanceAdmin: false,
+    source: "session",
+    memberships: [],
   };
 
   beforeEach(() => {
@@ -318,7 +332,7 @@ describe("users block API and audit routes", () => {
     });
 
     it("rejects when reason is empty with 400 Bad Request", async () => {
-      const app = createApp(adminActor);
+      const app = createApp(companyAdminActor);
       const res = await request(app)
         .post("/api/companies/company-1/users/user-123/block")
         .send({ reason: "" });
@@ -328,7 +342,7 @@ describe("users block API and audit routes", () => {
     });
 
     it("rejects when an admin tries to block themselves within company with 409 Conflict", async () => {
-      const app = createApp(adminActor);
+      const app = createApp(companyAdminActor);
       const res = await request(app)
         .post("/api/companies/company-1/users/admin-user-id/block")
         .send({ reason: "Self block" });
@@ -338,7 +352,7 @@ describe("users block API and audit routes", () => {
     });
 
     it("successfully blocks user within company and records audit log", async () => {
-      const app = createApp(adminActor);
+      const app = createApp(companyAdminActor);
       const res = await request(app)
         .post("/api/companies/company-1/users/user-123/block")
         .send({ reason: "Company violation" });
