@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAX_EMPTY_RESPONSE_LIVENESS_CONTINUATION_ATTEMPTS,
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
+  DEFAULT_MAX_PLAN_ONLY_LIVENESS_CONTINUATION_ATTEMPTS,
+  EMPTY_RESPONSE_LIVENESS_CONTINUATION_INSTRUCTION,
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,
@@ -74,7 +77,7 @@ describe("run liveness continuations", () => {
       livenessState: "plan_only",
       livenessReason: "Planned without acting",
       continuationAttempt: 1,
-      maxContinuationAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
+      maxContinuationAttempts: DEFAULT_MAX_PLAN_ONLY_LIVENESS_CONTINUATION_ATTEMPTS,
       instruction: "Take the first concrete action now.",
     });
     expect(decision.payload).not.toHaveProperty("modelProfile");
@@ -82,13 +85,94 @@ describe("run liveness continuations", () => {
       issueId,
       wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
       livenessContinuationAttempt: 1,
-      livenessContinuationMaxAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
+      livenessContinuationMaxAttempts: DEFAULT_MAX_PLAN_ONLY_LIVENESS_CONTINUATION_ATTEMPTS,
       livenessContinuationSourceRunId: runId,
       livenessContinuationState: "plan_only",
       livenessContinuationReason: "Planned without acting",
       livenessContinuationInstruction: "Take the first concrete action now.",
     });
     expect(decision.contextSnapshot).not.toHaveProperty("modelProfile");
+  });
+
+  it("keeps the plan_only ceiling at two attempts", () => {
+    expect(DEFAULT_MAX_PLAN_ONLY_LIVENESS_CONTINUATION_ATTEMPTS).toBe(2);
+    expect(DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS).toBe(2);
+
+    const decision = decideRunLivenessContinuation({
+      run: run({ continuationAttempt: 2 }),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "plan_only",
+      livenessReason: "Still planning",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision.kind).toBe("exhausted");
+    if (decision.kind !== "exhausted") return;
+    expect(decision.maxAttempts).toBe(2);
+    expect(decision.comment).toContain("Attempts used: 2/2");
+  });
+
+  it("enqueues the first empty_response continuation with the own correction instruction", () => {
+    const decision = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "empty_response",
+      livenessReason: "Run succeeded without useful output or concrete action evidence",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.nextAttempt).toBe(1);
+    expect(decision.idempotencyKey).toBe(
+      buildRunLivenessContinuationIdempotencyKey({
+        issueId,
+        sourceRunId: runId,
+        livenessState: "empty_response",
+        nextAttempt: 1,
+      }),
+    );
+    expect(decision.payload).toMatchObject({
+      issueId,
+      sourceRunId: runId,
+      livenessState: "empty_response",
+      continuationAttempt: 1,
+      maxContinuationAttempts: DEFAULT_MAX_EMPTY_RESPONSE_LIVENESS_CONTINUATION_ATTEMPTS,
+      instruction: EMPTY_RESPONSE_LIVENESS_CONTINUATION_INSTRUCTION,
+    });
+    expect(decision.contextSnapshot).toMatchObject({
+      wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
+      livenessContinuationAttempt: 1,
+      livenessContinuationMaxAttempts: DEFAULT_MAX_EMPTY_RESPONSE_LIVENESS_CONTINUATION_ATTEMPTS,
+      livenessContinuationState: "empty_response",
+      livenessContinuationInstruction: EMPTY_RESPONSE_LIVENESS_CONTINUATION_INSTRUCTION,
+    });
+  });
+
+  it("exhausts empty_response after the first continuation", () => {
+    const decision = decideRunLivenessContinuation({
+      run: run({ continuationAttempt: 1 }),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "empty_response",
+      livenessReason: "No useful output",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision.kind).toBe("exhausted");
+    if (decision.kind !== "exhausted") return;
+    expect(decision.attempt).toBe(1);
+    expect(decision.maxAttempts).toBe(1);
+    expect(decision.comment).toContain("Bounded liveness continuation exhausted");
+    expect(decision.comment).toContain("Attempts used: 1/1");
   });
 
   it("does not enqueue while an open pull request waits for CI or review", () => {
@@ -110,39 +194,6 @@ describe("run liveness continuations", () => {
     });
   });
 
-  it("does not suppress continuation when open PR is not waiting for CI (e.g. changes requested)", () => {
-    const decision = decideRunLivenessContinuation({
-      run: run({ continuationAttempt: 1 }),
-      issue: issue(),
-      agent: agent(),
-      livenessState: "empty_response",
-      livenessReason: "Review requested changes",
-      nextAction: null,
-      hasOpenPullRequestWaitingForCi: false,
-      budgetBlocked: false,
-      idempotentWakeExists: false,
-    });
-
-    expect(decision.kind).toBe("enqueue");
-  });
-
-  it("enqueues the second empty_response continuation", () => {
-    const decision = decideRunLivenessContinuation({
-      run: run({ continuationAttempt: 1 }),
-      issue: issue(),
-      agent: agent(),
-      livenessState: "empty_response",
-      livenessReason: "No useful output",
-      nextAction: null,
-      budgetBlocked: false,
-      idempotentWakeExists: false,
-    });
-
-    expect(decision.kind).toBe("enqueue");
-    if (decision.kind !== "enqueue") return;
-    expect(decision.nextAttempt).toBe(2);
-  });
-
   it("leaves advanced terminal runs to stranded issue recovery instead of bounded liveness continuation", () => {
     const decision = decideRunLivenessContinuation({
       run: run(),
@@ -159,24 +210,6 @@ describe("run liveness continuations", () => {
       kind: "skip",
       reason: "liveness state is not actionable for continuation",
     });
-  });
-
-  it("does not enqueue a third continuation and returns an exhaustion comment", () => {
-    const decision = decideRunLivenessContinuation({
-      run: run({ continuationAttempt: 2 }),
-      issue: issue(),
-      agent: agent(),
-      livenessState: "plan_only",
-      livenessReason: "Still planning",
-      nextAction: null,
-      budgetBlocked: false,
-      idempotentWakeExists: false,
-    });
-
-    expect(decision.kind).toBe("exhausted");
-    if (decision.kind !== "exhausted") return;
-    expect(decision.comment).toContain("Bounded liveness continuation exhausted");
-    expect(decision.comment).toContain("Attempts used: 2/2");
   });
 
   it("skips non-actionable and guarded issues", () => {
