@@ -86,11 +86,11 @@ const EDIT_KEYS = Object.keys(DOC_FILES).flatMap((doc) =>
 );
 const DIRECTIVE_KEYS = ["section", "after", "after-line", "occurrence"];
 
-const isTableRow = (line) => line.trimStart().startsWith("|");
+const isTableRow = (line) => /^\s*(?:\d+i)?\|/.test(line);
 
 /** First cell of a markdown table row, trimmed (escaped pipes stay inside the cell). */
 export function firstCell(line) {
-  const m = /^\s*\|\s*((?:\\\||[^|])*?)\s*\|/.exec(line);
+  const m = /^\s*(?:\d+i)?\|\s*((?:\\\||[^|])*?)\s*\|/.exec(line);
   return m ? m[1] : null;
 }
 

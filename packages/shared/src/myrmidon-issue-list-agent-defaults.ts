@@ -14,9 +14,10 @@
 //   - the full view stays reachable through an explicit `view=full` with an
 //     explicit `limit <= 100`.
 //
-// The board actor (`req.actor.type === "board"`) is untouched — the UI keeps
-// the previous behaviour byte-for-byte. Setting `enabled: false` restores
-// the pre-feature behaviour for the agent actor as well, byte-for-byte.
+// The board session actor (`req.actor.type === "board"` without `source === "board_key"`)
+// is untouched — the UI keeps the previous behaviour byte-for-byte. Non-agent integration
+// board keys (`source === "board_key"`) get the same default limit and compact view as agents (OPE-9997).
+// Setting `enabled: false` restores the pre-feature behaviour for both, byte-for-byte.
 //
 // The settings live in `instance_settings.general.issuesListAgentDefaults`;
 // the key is absent on instances that never toggled it, and absent means
@@ -62,4 +63,18 @@ export function normalizeIssueListAgentDefaults(
 /** True when the agent defaults apply (absent key = enabled). */
 export function issueListAgentDefaultsEnabled(raw: unknown): boolean {
   return normalizeIssueListAgentDefaults(raw).enabled;
+}
+
+/**
+ * True when the issue-list compact and limit defaults should apply.
+ * Applies to agents and non-agent integration board keys (source === "board_key")
+ * when the feature is enabled (OPE-9997).
+ */
+export function shouldApplyIssueListAgentDefaults(
+  actor: { type: string; source?: string | null } | null | undefined,
+  rawSetting: unknown,
+): boolean {
+  if (!actor) return false;
+  const isAgentOrBoardKey = actor.type === "agent" || actor.source === "board_key";
+  return isAgentOrBoardKey && issueListAgentDefaultsEnabled(rawSetting);
 }

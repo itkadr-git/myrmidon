@@ -40,6 +40,7 @@ const DIRECT_ADAPTERS = [
   ["codex_local", "codex"],
   ["claude_local", "claude"],
   ["opencode_local", "opencode"],
+  ["hermes_gateway", "hermes_gateway"],
 ] as const;
 
 if (!embeddedPostgresSupport.supported) {
@@ -145,8 +146,10 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
         timedOut: false,
         provider,
         model: `test-${provider}`,
-        summary: "Direct adapter summary.",
-        resultJson: { directProofJson },
+        summary: provider === "hermes_gateway" ? "Gateway completed output." : "Direct adapter summary.",
+        resultJson: provider === "hermes_gateway"
+          ? { output: "Gateway completed output.", directProofJson }
+          : { directProofJson },
       });
 
       await db.insert(companies).values({
@@ -185,6 +188,11 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
         unknown
       > | null;
       expect(persistedResult?.directProofJson).toBe(directProofJson);
+      if (provider === "hermes_gateway") {
+        expect(finished?.status).toBe("succeeded");
+        expect(finished?.error).toBeNull();
+        expect(persistedResult?.output).toBe("Gateway completed output.");
+      }
 
       const nativeRows = await Promise.all([
         db.select().from(completionContracts),

@@ -41,6 +41,12 @@ export interface ExecutionContinuationEnvelope {
     messages: ExecutionContinuationEnvelope["messages"];
   };
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
+  /**
+   * The run this wake continues (the handoff/retry source, else the latest
+   * finished run of the agent on the task) and how it ended. A fresh-session
+   * agent reads this instead of the previous run's messages.
+   */
+  previousRun?: { runId: string; status: string } | null;
   completedWork: string | null;
   /** Start a new turn from history; never replay prior tool calls automatically. */
   interruptedRunId?: string;
@@ -53,7 +59,11 @@ export interface ExecutionContinuationEnvelope {
   }>;
   unresolvedInteractionIds: string[];
   coverage: {
-    kind: "full_task_history" | "task_history_delta";
+    /**
+     * `summary_only` and `recent_messages` are set by the wake renderer when a
+     * card's `wakeHistory` mode shortens the message list.
+     */
+    kind: "full_task_history" | "task_history_delta" | "summary_only" | "recent_messages";
     baseRunId?: string;
     throughCommentId: string | null;
     summaryThroughCommentId: null;

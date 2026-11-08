@@ -1,0 +1,79 @@
+# Docker Compose for Myrmidon center warm standby on myr-vm1 (T9).
+# Single PostgreSQL 18 standby cluster replicating vm-core myrmidon-pg
+# containing both 'paperclip' and 'myrmidon_hindsight' databases.
+# Standby data directory and authentication are provisioned by standby-ctl.mjs setup
+# (pg_basebackup + streaming replication passfile in /var/lib/postgresql/data/.pgpass).
+#
+# NOTE: compose interpolates the WHOLE file for every command (even for services in an
+# inactive profile), so nothing in this file may use a required `${VAR:?}` - otherwise
+# `setup`/`switchback` (`compose stop|up|run myrmidon-pg-standby`) would fail unless the
+# drill secrets were exported. The drill board therefore ships NO default secrets (empty
+# defaults) and standby-ctl.mjs `rehearse --keep-drill` refuses to start it unless
+# BETTER_AUTH_SECRET and PAPERCLIP_DB_PASSWORD are set in the environment.
+services:
+  myrmidon-pg-standby:
+    image: pgvector/pgvector:pg18
+    container_name: myrmidon-pg-standby
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - /srv/standby/myrmidon-pg/data:/var/lib/postgresql/data
+      - /srv/backups/wal/myrmidon-pg:/srv/backups/wal:ro
+      - /srv/standby/drill-cluster:/srv/standby/drill-cluster
+    environment:
+      PGDATA: /var/lib/postgresql/data
+    command: >
+      postgres
+      -c hot_standby=on
+      -c restore_command='cp /srv/backups/wal/%f %p'
+      -c hot_standby_feedback=on
+      -c max_connections=200
+      -c max_worker_processes=16
+    # Healthy = accepting connections AND still a standby (psql -tA prints exactly "1").
+    # After a failover the promoted node reports "0" and is deliberately no longer "healthy".
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5432 -U paperclip && psql -U paperclip -d paperclip -tA -c 'SELECT pg_is_in_recovery()::int' | grep -qx 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # D6: board service for rehearsal drill verification (profile "drill").
+  # Started ONLY by `standby-ctl.sh rehearse --keep-drill` (or by hand with
+  # `docker compose --profile drill up -d --no-deps myrmidon-board`); never by the
+  # default `docker compose up`. It points at the ephemeral DRILL postgres that
+  # `rehearse` starts INSIDE the myrmidon-pg-standby container on port 5533. That port
+  # is not published to the host: the board reaches it over the compose network by the
+  # service name, which is why `--keep-drill` makes the drill instance listen on '*'.
+  #
+  # Isolation (only switches the server really reads):
+  #  - MYRMIDON_PROCESS_ROLE=api       HTTP only: no background timers/sweeps, no run execution,
+  #                                    no plugin workers, no backups (server/src/services/process-role.ts)
+  #  - HEARTBEAT_SCHEDULER_ENABLED=false  no heartbeat scheduler (server/src/config.ts)
+  #  - MYRMIDON_DB_BACKUP_ENABLED=false   no database backups (server/src/config.ts)
+  # The server has no global "outbound off" switch. The board is therefore started with NO
+  # connector credentials: no SECRETS_MASTER_KEY(_FILE) is provided, so the copies of the
+  # production secrets in the drill database cannot be decrypted. Do not add one.
+  # The api role waits for an up-to-date schema: COMPOSE_BOARD_IMAGE must be the same
+  # release image/migration level as the database being rehearsed.
+  myrmidon-board:
+    profiles: ["drill"]
+    # D6: drill-only board service. Image is pinned via COMPOSE_BOARD_IMAGE
+    # to the exact release-component digest during rehearsal.
+    image: ${COMPOSE_BOARD_IMAGE:-ghcr.io/itkadr-git/myrmidon:latest}
+    container_name: myrmidon-board-drill
+    restart: "no"
+    ports:
+      - "127.0.0.1:3101:3100"
+    environment:
+      # PAPERCLIP_DB_PASSWORD must be URL-encoded; there is deliberately no default.
+      DATABASE_URL: "postgres://paperclip:${PAPERCLIP_DB_PASSWORD:-}@myrmidon-pg-standby:5533/paperclip"
+      PORT: "3100"
+      SERVE_UI: "true"
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated"
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "private"
+      MYRMIDON_PROCESS_ROLE: "api"
+      HEARTBEAT_SCHEDULER_ENABLED: "false"
+      MYRMIDON_DB_BACKUP_ENABLED: "false"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-}"

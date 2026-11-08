@@ -1,5 +1,5 @@
 {
-  "$comment": "Machine-readable delta registry for hermes-agent. Every change we carry on top of the pinned upstream tag lives here with the reason and the condition under which it can be dropped; hermes-upstream-check.mjs compares it against upstream and flags the deltas upstream has caught up with. Docs: docs/myrmidon/hermes-deltas.md. Keep pinnedRef/pinnedVersion in sync with docker/bot-runtime/Dockerfile (the checker fails when they disagree). `source` stays the upstream repository (that is what the pin is compared against); the image itself clones `docker/bot-runtime/Dockerfile`'s HERMES_REPO, our mirror fork — see the 'Not deltas' section of the docs.",
+  "$comment": "Machine-readable delta registry for hermes-agent. Every change we carry on top of the pinned upstream tag lives here with the reason and the condition under which it can be dropped; hermes-upstream-check.mjs compares it against upstream and flags the deltas upstream has caught up with. Docs: docs/myrmidon/hermes-deltas.md. Keep pinnedRef/pinnedVersion in sync with docker/bot-runtime/Dockerfile (the checker fails when they disagree). `source` stays the upstream repository (that is what the pin is compared against); the image itself clones `docker/bot-runtime/Dockerfile`'s HERMES_REPO, our mirror fork \u2014 see the 'Not deltas' section of the docs.",
   "component": "hermes-agent",
   "source": "https://github.com/NousResearch/hermes-agent.git",
   "pinnedRef": "v2026.9.24",
@@ -72,7 +72,7 @@
       "files": [
         "hermes_state.py"
       ],
-      "reason": "Before every state-DB write the gateway probes whether the WAL/SHM generation this handle opened is still on disk. When the handle has no recorded sidecar identity the probe readlinks every open descriptor of the process on the calling thread — the gateway's event loop. A state.db reached through a symlink never records an identity (SQLite puts -wal/-shm next to the link target, so the literal <path>-wal never stats), so a multi-profile gateway with hundreds of descriptors walked /proc/self/fd once per write and starved the out-of-loop liveness watchdog into a hard exit (75), failing every run in flight. Same verdict, at most one walk per second per handle.",
+      "reason": "Before every state-DB write the gateway probes whether the WAL/SHM generation this handle opened is still on disk. When the handle has no recorded sidecar identity the probe readlinks every open descriptor of the process on the calling thread \u2014 the gateway's event loop. A state.db reached through a symlink never records an identity (SQLite puts -wal/-shm next to the link target, so the literal <path>-wal never stats), so a multi-profile gateway with hundreds of descriptors walked /proc/self/fd once per write and starved the out-of-loop liveness watchdog into a hard exit (75), failing every run in flight. Same verdict, at most one walk per second per handle.",
       "dropCondition": "Upstream stops walking /proc/self/fd on the write path: a cached probe verdict, a minimum interval between probes, or the probe moved off the caller's thread.",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
@@ -89,7 +89,7 @@
       "files": [
         "agent/file_safety.py"
       ],
-      "reason": "The run harness removes each run's scratch dir at the run boundary. A path remembered mid-session then succeeds again the moment a write tool's folded mkdir -p re-creates the missing paperclip-run-* parent: mode 755, no run-scratch marker file, never reclaimed — unmarked residue in the shared /tmp holding payloads and comment bodies readable to every co-tenant agent in the container. The guard refuses a write whose ancestor is a removed run-scratch root; a live root and dirs outside the class are untouched, and the guard fails open on its own errors.",
+      "reason": "The run harness removes each run's scratch dir at the run boundary. A path remembered mid-session then succeeds again the moment a write tool's folded mkdir -p re-creates the missing paperclip-run-* parent: mode 755, no run-scratch marker file, never reclaimed \u2014 unmarked residue in the shared /tmp holding payloads and comment bodies readable to every co-tenant agent in the container. The guard refuses a write whose ancestor is a removed run-scratch root; a live root and dirs outside the class are untouched, and the guard fails open on its own errors.",
       "dropCondition": "Upstream ships an equivalent guard in agent/file_safety.py / tools/file_operations.py: a write into a removed run-scratch root is refused instead of re-creating it.",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
@@ -197,7 +197,7 @@
       "files": [
         "agent/redact.py"
       ],
-      "reason": "A live board key (pcp_ + family + opaque body) reached the delegation live transcript verbatim: every existing matcher in agent/redact.py needs a KEY=, header or JSON-field shape, and transcript prose (subagent result text, CLI echo, error message) carries none of them. Six bare-token prefix patterns — pcp_, pcp_board_, pcp_cli_auth_, pcp_invite_, pcp_bootstrap_, pcp_claim_ — join _PREFIX_PATTERNS so the generic pass masks the key wherever it appears. Bodies are controlled per family: invite tokens are base64url(32 bytes), so the invite pattern takes [A-Za-z0-9_-]{20,} (an alphanumeric-only body silently fails to match whenever a separator lands in the first 20 chars, because the compiled matcher's trailing lookahead forbids ending the run before a '-'/'_'); the other five keep [A-Za-z0-9]{20,} so the short form cannot swallow legitimate pcp_board_-style config slugs. One pattern per family: the engine validator rejects top-level alternation, and one merged grouped alternative would force a single body class on all families; a grouped pcp_(?:board|cli_auth|...)_ prefix would also drop the extracted literal prefix to 'pcp_' only — per-family patterns keep full literal prefixes for the pre-screen.",
+      "reason": "A live board key (pcp_ + family + opaque body) reached the delegation live transcript verbatim: every existing matcher in agent/redact.py needs a KEY=, header or JSON-field shape, and transcript prose (subagent result text, CLI echo, error message) carries none of them. Six bare-token prefix patterns \u2014 pcp_, pcp_board_, pcp_cli_auth_, pcp_invite_, pcp_bootstrap_, pcp_claim_ \u2014 join _PREFIX_PATTERNS so the generic pass masks the key wherever it appears. Bodies are controlled per family: invite tokens are base64url(32 bytes), so the invite pattern takes [A-Za-z0-9_-]{20,} (an alphanumeric-only body silently fails to match whenever a separator lands in the first 20 chars, because the compiled matcher's trailing lookahead forbids ending the run before a '-'/'_'); the other five keep [A-Za-z0-9]{20,} so the short form cannot swallow legitimate pcp_board_-style config slugs. One pattern per family: the engine validator rejects top-level alternation, and one merged grouped alternative would force a single body class on all families; a grouped pcp_(?:board|cli_auth|...)_ prefix would also drop the extracted literal prefix to 'pcp_' only \u2014 per-family patterns keep full literal prefixes for the pre-screen.",
       "dropCondition": "Upstream ships a bare-token prefix family covering the pcp_ key prefixes in agent/redact.py.",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending). The pattern family is board-specific anyway; the general defect upstream owns is that no bare-token pass exists for vendor prefixes outside its list.",
@@ -214,7 +214,7 @@
       "files": [
         "tools/delegation_live_log.py"
       ],
-      "reason": "LiveTranscriptWriter created task-N.log with path.write_text(), i.e. 0o644 & ~umask — world-readable under the image's umask 022. The transcripts live in a shared bot container under HERMES_HOME/delegation/live/ and survive 7 days, so any co-tenant process could read them; combined with the missing pcp_ redaction (delta 12) a live board key was readable container-wide. The header write now goes through tempfile.mkstemp(dir=...) + os.replace, which creates the file 0o600 without a mode argument, so there is no chmod race and no world-readable window; later event() appends touch an existing 0o600 file.",
+      "reason": "LiveTranscriptWriter created task-N.log with path.write_text(), i.e. 0o644 & ~umask \u2014 world-readable under the image's umask 022. The transcripts live in a shared bot container under HERMES_HOME/delegation/live/ and survive 7 days, so any co-tenant process could read them; combined with the missing pcp_ redaction (delta 12) a live board key was readable container-wide. The header write now goes through tempfile.mkstemp(dir=...) + os.replace, which creates the file 0o600 without a mode argument, so there is no chmod race and no world-readable window; later event() appends touch an existing 0o600 file.",
       "dropCondition": "Upstream creates delegation live transcripts owner-only (0o600).",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending). This one is a generic security fix worth offering on its own once the publish path exists.",
@@ -272,7 +272,7 @@
         "agent/tool_result_classification.py",
         "toolsets.py"
       ],
-      "reason": "Every model call re-sends the whole session, and its two largest parts are one wake package per run (up to 78 piled up in one session) and tool results older than eight messages. The per-call request copy now carries every wake message but the newest as a short note (run, issue, wake reason) and every stale heavy tool result as a note with a ref; the new read_stale_tool_result tool returns the original for the ref. The transcript, state.db and compaction input are untouched; HERMES_KEEP_STALE_WAKES=1 and HERMES_KEEP_STALE_TOOL_RESULTS=1 switch the two parts off, each restoring the old request byte for byte.",
+      "reason": "Every model call re-sends the whole session; quotas are consumed by fresh (uncached) input and a provider cache hits only on a byte-identical prefix, so rewriting a message that was already sent turns the rest of the context into fresh input. The patch carries the logic and the settings (config.yaml `context_economy:` block) of the token economy: measure A (every wake message but the newest becomes a one-line note) and measure B (stale heavy tool results become notes with a ref; the new read_stale_tool_result tool returns the original) rewrite earlier rows of the request copy, so both are off by default and kept behind config keys; the wake detection recognises the adapter's current and pre-rename identity heads (it had gone dead at the rename) and skill_view and reads of skill files are never replaced. At a compaction, which breaks the cache anyway, wake packages are not quoted into the summarizer input and the summary's verbatim user messages. HERMES_KEEP_STALE_WAKES=1 and HERMES_KEEP_STALE_TOOL_RESULTS=1 force A and B off.",
       "dropCondition": "Upstream trims superseded task prompts and stale tool results of the replayed history on the send path, with a way to read the original back.",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
@@ -312,8 +312,239 @@
       "offerNote": "Not offered yet.",
       "probe": {
         "source": "hermes",
-        "path": "tools/terminal_tool.py",
-        "upstreamMarker": "foreground.{0,80}(ignor|drop)"
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "run_id_context|set_run_id_vars|PAPERCLIP_RUN_ID"
+      }
+    },
+    {
+      "id": "22-async-state-db-writer-acquire",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/22-async-writer-acquire.patch",
+      "files": [
+        "hermes_state_dbfile.py",
+        "hermes_state_errors.py",
+        "hermes_state.py",
+        "hermes_state_registry.py",
+        "gateway/session_db_recovery.py",
+        "gateway/session.py",
+        "gateway/session_persistence.py",
+        "gateway/session_recovery.py",
+        "gateway/session_lifecycle.py",
+        "gateway/session_transcript.py",
+        "gateway/run.py",
+        "gateway/run_startup.py",
+        "gateway/run_shutdown.py",
+        "tests/hermes_state/test_deleted_wal_generation_guard.py",
+        "tests/gateway/test_async_writer_acquire_contract.py"
+      ],
+      "reason": "worker-owned async writer acquire: one awaited scan, connect and registry/cache ownership transaction. Includes full OPE-7854 lifecycle A-G implementation.",
+      "dropCondition": "Upstream implements the complete OPE-7854 A-G contract: strict complete scanner verdict before every writer connect, one shared sync/async registry, cancellation-safe ownership and cache drain, async lazy profile/routing/recovery opens, and awaited gateway startup/shutdown lifecycle.",
+      "offer": null,
+      "offerNote": "Not offered yet: publisher-scan wrapper is not available.",
+      "probe": {
+        "source": "hermes",
+        "path": "hermes_state_dbfile.py",
+        "upstreamMarker": "SidecarScanIncompleteError"
+      }
+    },
+    {
+      "id": "19-redact-auth-bearer-template-syntax",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/19-redact-auth-bearer-template-syntax.patch",
+      "files": [
+        "agent/redact.py"
+      ],
+      "reason": "Upstream _AUTH_HEADER_RE in agent/redact.py unconditionally masked any token following Authorization: Bearer, swallowing enclosing backticks and leading Bearer into *** when inspecting code template strings (e.g. `authorization: `Bearer ${token}``). This resulted in syntax corruption (`authorization: *** ${token}`) in tool outputs, leading to false-positive review rejections. The patch preserves enclosing quotes and backticks in _AUTH_HEADER_RE and introduces _is_probable_auth_secret to distinguish genuine high-entropy credentials (Bearer ghp_... 36+ chars, JWTs, opaque tokens) from code template syntax (${...}, <...>, {...}) and variable names ($token, authToken).",
+      "dropCondition": "Upstream distinguishes code template syntax and variable identifiers from genuine credentials in authorization header redaction and preserves enclosing quote delimiters.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/redact.py",
+        "upstreamMarker": "_is_probable_auth_secret|_AUTH_KNOWN_SECRET_PREFIXES"
+      }
+    },
+    {
+      "id": "20-run-scoped-run-id",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/20-run-scoped-run-id.patch",
+      "files": [
+        "gateway/platforms/api_server_runs.py",
+        "tools/environments/local.py",
+        "tools/run_id_context.py"
+      ],
+      "reason": "A bot gateway container is long-lived and serves many runs, so the container-level PAPERCLIP_RUN_ID/MYRMIDON_RUN_ID in os.environ belongs to whichever run happened to start the container and is stale for every later run. An agent reading $PAPERCLIP_RUN_ID and sending it as X-Paperclip-Run-Id on a board mutation got a stale value and the board answered 409 Issue run ownership conflict, blocking decision writes (OPE-10358). _run_agent_sync now binds the board run id through contextvars for the whole turn; the terminal child-env bridge in local.py overrides the inherited (stale) container-level value for that run's subprocesses only. OPE-10602: the rc.29 image bound the gateway's INTERNAL run id (run_<hex>) \u2014 not a board UUID \u2014 and every agent board mutation 500ed with invalid input syntax for type uuid: \"run_...\", so reviewers could not write verdicts. The board adapter now always sends the board run id as the X-Paperclip-Run-Id request header; _handle_runs validates it to a UUID (400 on malformed), _run_agent_sync binds ONLY that value \u2014 never run.run_id \u2014 and set_run_id_vars refuses to bind anything that is not a UUID. Without the header (older boards) nothing is bound.",
+      "dropCondition": "Upstream ships a per-run run-id binding for gateway-spawned children fed from an explicit, caller-supplied board run id, or the board stops enforcing run ownership on agent mutations.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "run_id_context|set_run_id_vars|PAPERCLIP_RUN_ID"
+      }
+    },
+    {
+      "id": "21-session-storage-diet",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/21-session-storage-diet.patch",
+      "files": [
+        "hermes_state_common.py"
+      ],
+      "reason": "The state database stores repeated wake envelopes in user messages and indexes long user/tool content in both full-text indexes. Keep transcript rows intact while bounding regular FTS indexing of user messages and excluding long user messages from trigram FTS.",
+      "dropCondition": "Upstream state schema and FTS rebuild/migration support avoid indexing long wake payloads and large tool outputs.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "hermes_state_common.py",
+        "upstreamMarker": "FTS.*(trigram|content)"
+      }
+    },
+    {
+      "id": "23-integrity-check-lease-file",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/23-integrity-check-lease-file.patch",
+      "files": [
+        "gateway/lifecycle_ledger.py"
+      ],
+      "reason": "Writes and periodically renews <home>/state/startup-progress-lease.json during the unclean-exit PRAGMA quick_check(1) integrity check, and unlinks it upon completion. Allows the container driver to observe that the bot gateway is actively making progress on an integrity check, preventing health-check timeout restarts.",
+      "dropCondition": "Upstream adopts progress-lease file reporting for external health watchdog synchronization.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/lifecycle_ledger.py",
+        "upstreamMarker": "startup-progress-lease|check_state_db_integrity"
+      }
+    },
+    {
+      "id": "24-max-tokens-recovery",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/24-max-tokens-recovery.patch",
+      "files": [
+        "agent/agent_init.py",
+        "agent/chat_completion_helpers.py",
+        "agent/transports/chat_completions.py",
+        "agent/turn_iteration_prep.py",
+        "agent/turn_tool_round.py",
+        "agent/turn_truncation.py"
+      ],
+      "reason": "Propagates configured max_tokens / max_output_tokens from config.yaml into agent and custom OpenAI-compatible provider request kwargs; resets length_continue_retries to 0 after a successful tool round; and escalates ephemeral max output tokens on truncation retry without relying solely on reasoning_effort=none for persistent thinking models.",
+      "dropCondition": "Upstream Hermes reads configured max_tokens for custom providers, resets length retry counters after tool steps, and scales output budget on truncation retries.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/turn_tool_round.py",
+        "upstreamMarker": "length_continue_retries = 0"
+      }
+    },
+    {
+      "id": "25-tool-result-head-tail",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/25-tool-result-head-tail.patch",
+      "files": [
+        "tools/tool_result_storage.py"
+      ],
+      "reason": "Upstream persists a tool result only above 100000 characters (50000 for mcp_ tools) and then shows a 1500-character preview, so a 20 KB command output rides every later request in full. A new result longer than context_economy.tool_result_max_chars (16000) is now stored and sent as its first 8000 and last 4000 characters plus a marker that names the spill file holding the whole text and how to read the middle. The result is shaped once, before any provider has seen it, so the provider cache is untouched. read_file stays pinned by upstream, skill_view is exempt, 0 gives the upstream limits back.",
+      "dropCondition": "Upstream bounds an oversized tool result by head and tail with a configurable threshold and a way to read the rest.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "tools/tool_result_storage.py",
+        "upstreamMarker": "head_chars|tail_chars|head_tail"
+      }
+    },
+    {
+      "id": "26-compaction-summary-cap",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/26-compaction-summary-cap.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "The compaction summary grew to about 37k characters (a token target of up to 10000 tokens plus a 4000-token session log, 24000 characters of verbatim user messages and a 7000-character anchor index) and was re-sent with every request; no max_tokens was sent, so LiteLLM's 4096-token default cut Anthropic-routed summaries and the compression failed on finish_reason=length. The summarizer is now asked for at most context_economy.compaction_summary_max_chars (8000) characters with a max_tokens guard, the text is held to the cap at a line end, a length-stopped summary is kept (cut at a line end and marked) instead of failing, the appended sections are bounded and board wake packages are not quoted into the summarizer input or the verbatim user messages.",
+      "dropCondition": "Upstream makes the summary size and the appended sections configurable and keeps a summary that stopped on the output limit.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "summary_max_chars|max_summary_chars|summary_max_tokens"
+      }
+    },
+    {
+      "id": "27-compaction-keep-prefix",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/27-compaction-keep-prefix.patch",
+      "files": [
+        "agent/conversation_compression.py"
+      ],
+      "reason": "A compaction rewrites the messages, but the tool schemas and the system prompt in front of them can stay byte-identical and keep their provider cache. The upstream rebuild at the compaction boundary invalidates the cached prompt, re-reads memory, re-renders plugin sections, re-lists skills and re-lists MCP tools, which changes those bytes whenever any of it moved during the session. With context_economy.compaction_keep_prefix (default on) the cached prompt and the tool array are kept.",
+      "dropCondition": "Upstream keeps the system prompt and the tool array byte-stable at a compaction unless something requires a rebuild.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/conversation_compression.py",
+        "upstreamMarker": "keep_prefix|keep_system_prompt"
+      }
+    },
+    {
+      "id": "28-session-affinity-prompt-cache-key",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/28-session-affinity-prompt-cache-key.patch",
+      "files": [
+        "agent/opencode_affinity.py",
+        "agent/transports/chat_completions.py"
+      ],
+      "reason": "Upstream's providers.<id>.session_affinity_header puts the conversation key in a request header. The pool of ChatGPT accounts behind the LiteLLM gateway also routes its prompt cache on the request body's prompt_cache_key, which the chat-completions transport sends only to api.openai.com and to provider profiles that declare support, never to a custom endpoint, so the body key was absent. An endpoint whose providers entry names the option now gets the same key (the header's own value) in the body, bounded to 64 characters like every key; a key the caller pinned stays, and every endpoint without the option is untouched.",
+      "dropCondition": "Upstream sends the conversation key as prompt_cache_key for an endpoint that opted in with session_affinity_header.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/transports/chat_completions.py",
+        "upstreamMarker": "session_affinity|affinity_cache_key"
+      }
+    },
+    {
+      "id": "29-gateway-outage-keeps-primary",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/29-gateway-outage-keeps-primary.patch",
+      "files": [
+        "agent/gateway_outage.py",
+        "agent/turn_recovery.py",
+        "agent/turn_api_error.py",
+        "agent/turn_retry_state.py",
+        "agent/conversation_loop.py"
+      ],
+      "reason": "Every model of a bot is reached through one gateway, so a lost connection to it fails the primary and every fallback alike. Upstream treated a connect failure as any transport error: one more attempt, the fallback chain after the second failure, and the run stayed on the fallback until its end (the primary is restored only at the start of the next turn), so a gateway restart of about a minute moved a run onto a paid model. An error that says the gateway is not answering (no HTTP answer: connection refused or reset, connect timeout, APIConnectionError; or a 502/503/504 whose text names no model and no provider) is now retried against the primary with the growing pause for up to HERMES_GATEWAY_OUTAGE_BUDGET_S seconds (180) before any fallback; errors of a model or a provider (429, quota, model not found, no healthy deployments, overload, read timeout) go to the fallback as before. A run on a fallback tries the primary again every HERMES_FALLBACK_PROBE_EVERY model calls (10) and stays on it when the call succeeds.",
+      "dropCondition": "Upstream tells an unreachable endpoint from a model or provider error before it walks the fallback chain, and lets a run on a fallback return to the primary inside the turn.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/turn_recovery.py",
+        "upstreamMarker": "gateway_outage|gateway_unreachable|probe_primary"
+      }
+    },
+    {
+      "id": "30-vacuum-by-freelist",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/30-vacuum-by-freelist.patch",
+      "files": [
+        "hermes_state_maintenance.py",
+        "gateway/run.py"
+      ],
+      "reason": "Upstream runs the automatic VACUUM of state.db only in a pass whose own prune deleted a session. The bot runtime deletes old sessions through the API when a container starts, before hermes' first maintenance tick, so the tick's prune found nothing and none of the 65 databases was ever vacuumed (15.6 GB of 39.9 GB were free pages). The VACUUM now runs on the freelist share alone (above 25%, at most once per min_vacuum_interval_days), after checking that no turn is running (session turn leases in the store, the gateway's running turns), that the database's volume has twice the live data free and that SQLite's temp directory is not RAM; otherwise it waits and the pass is retried by the next housekeeping tick. The bot entrypoint sets SQLITE_TMPDIR to the data volume so the temporary copy of the live data is not charged to the container's memory.",
+      "dropCondition": "Upstream vacuums on the freelist share alone and checks the free space and the temp directory before the rewrite.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "hermes_state_maintenance.py",
+        "upstreamMarker": "disk_usage|SQLITE_TMPDIR|vacuum_defer"
       }
     }
   ]

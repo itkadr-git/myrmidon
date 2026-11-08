@@ -38,6 +38,8 @@ export interface FleetHostConfig {
   /** LLM gateway base URL as seen from this host (`http://…`); instance-wide value when omitted. */
   llmBaseUrl?: string;
   mcpEndpoints?: readonly string[];
+  /** Board address the site-agent uses for its health probe, as host:port. */
+  boardAddress?: string;
   /** Name the bot container on this host resolves the board by (docker `--add-host`
    *  target). The instance-wide board URL name by default; the board's own
    *  hostname allowlist is never widened by this field. */
@@ -55,6 +57,16 @@ const NAME_PATTERN = FLEET_HOST_NAME_PATTERN;
 /** A DNS name a container may resolve: labels of the same shape, dot-separated. */
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
+export function parseBoardAddress(value: string, context = "boardAddress"): string {
+  const trimmed = value.trim();
+  const match = /^([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*):(\d{1,5})$/.exec(trimmed);
+  const port = match ? Number(match[2]) : 0;
+  if (!match || port < 1 || port > 65535) {
+    throw new Error(`${context} must be a hostname or IP address with a port (host:port)`);
+  }
+  return trimmed;
+}
+
 const ALLOWED_KEYS = new Set([
   "name",
   "url",
@@ -62,6 +74,7 @@ const ALLOWED_KEYS = new Set([
   "hindsightUrl",
   "llmBaseUrl",
   "mcpEndpoints",
+  "boardAddress",
   "boardExtraHost",
   "volumeRoot",
   "network",
@@ -125,6 +138,15 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
     if (!tokenSecret) throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" is missing tokenSecret (a company secret name)`);
     if (hosts.has(name)) throw new Error(`${FLEET_HOSTS_ENV}: duplicate host name "${name}"`);
 
+    const boardAddressRaw = optionalString(entry, "boardAddress", name);
+    let boardAddress: string | undefined;
+    if (boardAddressRaw !== undefined) {
+      try {
+        boardAddress = parseBoardAddress(boardAddressRaw, `${FLEET_HOSTS_ENV}: host "${name}" field "boardAddress"`);
+      } catch (e) {
+        throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "boardAddress" must be host:port`);
+      }
+    }
     const boardExtraHost = optionalString(entry, "boardExtraHost", name);
     if (boardExtraHost !== undefined && !HOSTNAME_PATTERN.test(boardExtraHost)) {
       throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "boardExtraHost" must be a hostname (got "${boardExtraHost}")`);
@@ -152,6 +174,7 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
       throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "mcpEndpoints" must be an array of non-empty strings`);
     }
     if (entry.mcpEndpoints !== undefined) host.mcpEndpoints = (entry.mcpEndpoints as string[]).map((value) => value.trim());
+    if (boardAddress !== undefined) host.boardAddress = boardAddress;
     if (boardExtraHost !== undefined) host.boardExtraHost = boardExtraHost;
     if (volumeRoot !== undefined) host.volumeRoot = volumeRoot;
     if (network !== undefined) host.network = network;

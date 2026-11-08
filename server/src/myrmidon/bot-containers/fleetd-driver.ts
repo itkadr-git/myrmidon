@@ -29,6 +29,7 @@ import https from "node:https";
 import { logger } from "../../middleware/logger.js";
 
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
+import type { DriverOomEvent } from "./container-oom.js";
 import type { CompiledProfile } from "./types.js";
 
 /** The token header fleetd requires on every call. */
@@ -40,6 +41,101 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 /** profileDrift/writeProfile bodies carry the whole profile; allow headroom. */
 const BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 const START_TIMEOUT_MS = 180_000;
+
+/** Wire format of a mount accepted by fleetd v1 (/bots, /template-drift). */
+export interface FleetdWireMount {
+  source: string;
+  destination: string;
+  readOnly?: boolean;
+}
+
+/** Wire format of a container spec accepted by fleetd v1 (/bots, /template-drift, /resources). */
+export interface FleetdWireSpec {
+  botKey: string;
+  image: string;
+  cpus: number;
+  memoryMb: number;
+  pidsLimit: number;
+  network: string;
+  mounts?: FleetdWireMount[];
+  labels?: Record<string, string>;
+  gatewayPort?: number;
+  boardExtraHost?: string;
+}
+
+/** Wire format of a profile file accepted by fleetd v1 (/bots/:key/profile). */
+export interface FleetdWireProfileFile {
+  path: string;
+  content: string;
+  mode: number;
+  secret: boolean;
+}
+
+/** Wire format of a compiled profile accepted by fleetd v1 (/bots/:key/profile). */
+export interface FleetdWireProfile {
+  botKey: string;
+  files: FleetdWireProfileFile[];
+  restartHash: string;
+  filesHash: string;
+}
+
+/**
+ * Maps the internal BotContainerSpec to the strict /v1 wire spec accepted by fleetd.
+ * fleetd uses json.Decoder.DisallowUnknownFields, so only fields known to fleetd
+ * (botKey, image, cpus, memoryMb, pidsLimit, network, mounts, labels, gatewayPort, boardExtraHost)
+ * must be transmitted. extraMounts is mapped to mounts (containerPath -> destination),
+ * and board-local fields like sharedMount are stripped.
+ */
+export function toFleetdWireSpec(spec: BotContainerSpec): FleetdWireSpec {
+  const rawMounts = spec.extraMounts ?? (spec as { mounts?: unknown }).mounts;
+  const mounts: FleetdWireMount[] | undefined = Array.isArray(rawMounts) && rawMounts.length > 0
+    ? rawMounts.map((m: { source: string; destination?: string; containerPath?: string; readOnly?: boolean }) => ({
+        source: m.source,
+        destination: m.destination ?? m.containerPath ?? "",
+        ...(m.readOnly !== undefined ? { readOnly: Boolean(m.readOnly) } : {}),
+      }))
+    : undefined;
+
+  const wire: FleetdWireSpec = {
+    botKey: spec.botKey,
+    image: spec.image,
+    cpus: spec.cpus,
+    memoryMb: spec.memoryMb,
+    pidsLimit: spec.pidsLimit,
+    network: spec.network,
+  };
+  if (mounts && mounts.length > 0) wire.mounts = mounts;
+  if (spec.labels && Object.keys(spec.labels).length > 0) wire.labels = spec.labels;
+  if (typeof (spec as { gatewayPort?: unknown }).gatewayPort === "number") {
+    wire.gatewayPort = (spec as { gatewayPort?: number }).gatewayPort;
+  }
+  if (
+    typeof (spec as { boardExtraHost?: unknown }).boardExtraHost === "string" &&
+    (spec as { boardExtraHost?: string }).boardExtraHost!.length > 0
+  ) {
+    wire.boardExtraHost = (spec as { boardExtraHost?: string }).boardExtraHost;
+  }
+  return wire;
+}
+
+/**
+ * Maps the internal CompiledProfile to the strict /v1 wire profile accepted by fleetd.
+ * Internal board metadata like maxConcurrentRuns or apiServerKeyVersion are stripped
+ * to satisfy fleetd's DisallowUnknownFields.
+ */
+export function toFleetdWireProfile(profile: CompiledProfile, botKeyFallback?: string): FleetdWireProfile {
+  return {
+    botKey: profile.botKey || botKeyFallback || "",
+    files: (profile.files ?? []).map((f) => ({
+      path: f.path,
+      content: f.content,
+      mode: f.mode,
+      secret: Boolean(f.secret),
+    })),
+    restartHash: profile.restartHash ?? "",
+    filesHash: profile.filesHash ?? "",
+  };
+}
 
 export interface FleetdDriverConfig {
   baseUrl: string;
@@ -248,30 +344,30 @@ export function fleetdBotContainerDriver(
       const res = await callJson<{ drift: boolean; fields?: TemplateDriftField[] }>({
         method: "POST",
         path: `/bots/${encodeURIComponent(spec.botKey)}/template-drift`,
-        body: { spec },
+        body: { spec: toFleetdWireSpec(spec) },
       });
       return { drifted: res.drift === true, fields: res.fields ?? [] };
     },
 
     async updateResources(spec: BotContainerSpec): Promise<void> {
-      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/resources`, body: { spec } });
+      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/resources`, body: { spec: toFleetdWireSpec(spec) } });
     },
 
     async create(spec: BotContainerSpec): Promise<void> {
       await noticeSharedPackageCache();
-      await callVoid({ method: "POST", path: "/bots", body: { spec } });
+      await callVoid({ method: "POST", path: "/bots", body: { spec: toFleetdWireSpec(spec) } });
     },
 
     async recreate(spec: BotContainerSpec): Promise<void> {
       await noticeSharedPackageCache();
-      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`, body: { spec } });
+      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`, body: { spec: toFleetdWireSpec(spec) } });
     },
 
     async writeProfile(botKey: string, profile: CompiledProfile): Promise<void> {
       await callVoid({
         method: "PUT",
         path: `/bots/${encodeURIComponent(botKey)}/profile`,
-        body: { profile },
+        body: { profile: toFleetdWireProfile(profile, botKey) },
         timeoutMs: START_TIMEOUT_MS,
       });
     },
@@ -289,6 +385,15 @@ export function fleetdBotContainerDriver(
         method: "POST",
         path: `/bots/${encodeURIComponent(botKey)}/stop`,
         timeoutMs: START_TIMEOUT_MS,
+      });
+    },
+
+    async getOomEvents(sinceNano?: number): Promise<DriverOomEvent[]> {
+      const q = sinceNano ? `?since=${sinceNano}` : "";
+      return callJson<DriverOomEvent[]>({
+        method: "GET",
+        path: `/v1/events/oom${q}`,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
       });
     },
   };

@@ -74,9 +74,15 @@ type botProjectEnsurer interface {
 	Ensure(ctx context.Context, botKey string) (int, error)
 }
 
+// botProjectRemover is the cleanup capability used after bot deletion.
+type botProjectRemover interface {
+	Remove(ctx context.Context, botKey string) error
+}
+
 // diskProjectEnsurer is nil for tests and for configurations that don't enable
 // bot volume project registration.
 var diskProjectEnsurer botProjectEnsurer
+var diskProjectRemover botProjectRemover
 
 // SetDiskProjectEnsurer installs the dockergate disk registration implementation.
 func SetDiskProjectEnsurer(ensurer botProjectEnsurer) { diskProjectEnsurer = ensurer }
@@ -88,6 +94,17 @@ func EnsureBotDiskProject(ctx context.Context, botKey string) error {
 	}
 	_, err := diskProjectEnsurer.Ensure(ctx, botKey)
 	return err
+}
+
+// SetDiskProjectRemover installs the dockergate disk cleanup implementation.
+func SetDiskProjectRemover(remover botProjectRemover) { diskProjectRemover = remover }
+
+// RemoveBotDiskProject removes one bot's XFS project through the audited gate boundary.
+func RemoveBotDiskProject(ctx context.Context, botKey string) error {
+	if diskProjectRemover == nil {
+		return nil
+	}
+	return diskProjectRemover.Remove(ctx, botKey)
 }
 
 // Quota sets project quotas on the bot volumes.
@@ -193,6 +210,75 @@ func (q *Quota) Ensure(ctx context.Context, botKey string) (int, error) {
 		return 0, fmt.Errorf("disk: xfs_quota: %w", err)
 	}
 	return id, nil
+}
+
+// Remove deletes the project-table entries for one bot after its volume has been removed.
+// It refuses to remove a mapping while the bot directory still exists.
+func (q *Quota) Remove(ctx context.Context, botKey string) error {
+	if !route.IsBotKey(botKey) {
+		return ErrBadKey
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	root, err := filepath.Abs(q.VolumeRoot)
+	if err != nil {
+		return fmt.Errorf("disk: invalid volume root: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("disk: volume root unavailable: %w", err)
+	}
+	dir := filepath.Join(root, botKey)
+	if _, err := os.Lstat(dir); err == nil {
+		return fmt.Errorf("disk: bot directory still exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("disk: inspect bot directory: %w", err)
+	}
+	projid, err := readLines(q.ProjidFile)
+	if err != nil {
+		return fmt.Errorf("disk: read %s: %w", q.ProjidFile, err)
+	}
+	projects, err := readLines(q.ProjectsFile)
+	if err != nil {
+		return fmt.Errorf("disk: read %s: %w", q.ProjectsFile, err)
+	}
+	id := 0
+	for _, line := range projid {
+		if lineKey(line) == botKey {
+			id, _ = strconv.Atoi(lineValue(line))
+			break
+		}
+	}
+	newProjid := make([]string, 0, len(projid))
+	for _, line := range projid {
+		if lineKey(line) != botKey {
+			newProjid = append(newProjid, line)
+		}
+	}
+	newProjects := make([]string, 0, len(projects))
+	for _, line := range projects {
+		if lineValue(line) == dir || (id > 0 && lineKey(line) == strconv.Itoa(id)) {
+			continue
+		}
+		newProjects = append(newProjects, line)
+	}
+	if len(newProjid) != len(projid) {
+		if err := writeAtomic(q.ProjidFile, joinLines(newProjid)); err != nil {
+			return fmt.Errorf("disk: write %s: %w", q.ProjidFile, err)
+		}
+	}
+	if len(newProjects) != len(projects) {
+		if err := writeAtomic(q.ProjectsFile, joinLines(newProjects)); err != nil {
+			return fmt.Errorf("disk: write %s: %w", q.ProjectsFile, err)
+		}
+	}
+	if id > 0 {
+		if _, err := q.Exec.Run(ctx, q.Binary, "-x", "-c", "limit -p bhard=0 bsoft=0 "+strconv.Itoa(id), q.VolumeRoot); err != nil {
+			return fmt.Errorf("disk: xfs_quota: %w", err)
+		}
+	}
+	return nil
 }
 
 // Put sets the hard limit of the bot's volume to hard bytes and the soft one to 0.8 of

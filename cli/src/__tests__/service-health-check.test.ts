@@ -144,7 +144,7 @@ describe("service health doctor checks", () => {
       expect.objectContaining({
         name: "Service runtime",
         status: "fail",
-        message: expect.stringContaining("another Paperclip process"),
+        message: expect.stringContaining("another Myrmidon process"),
       }),
     );
   });
@@ -201,7 +201,7 @@ describe("service runtime shim awareness", () => {
     const runtime = results.find((r) => r.name === "Service runtime");
     expect(runtime?.status).toBe("fail");
     expect(runtime?.message).toContain("no executable exists at");
-    expect(runtime?.repairHint).toContain("myrmidon install");
+    expect(runtime?.repairHint).toContain("paperclipai install");
   });
 
   it("diagnoses against the executable recorded in the definition, not the current env", async () => {
@@ -218,7 +218,7 @@ describe("service runtime shim awareness", () => {
     expect(runtime?.message).toContain("/custom/bin/paperclipai");
     expect(runtime?.repairHint).toContain("/custom/bin/paperclipai");
     expect(runtime?.repairHint).toContain("unset PAPERCLIP_SHIM_PATH");
-    expect(runtime?.repairHint).toContain("`myrmidon install` followed by `myrmidon service install`");
+    expect(runtime?.repairHint).toContain("`paperclipai install` followed by `paperclipai service install`");
   });
 
   it("attributes a healthy foreign responder instead of reporting Healthy", async () => {
@@ -231,7 +231,7 @@ describe("service runtime shim awareness", () => {
     expect(healthResult?.status).toBe("warn");
     expect(healthResult?.message).toContain("but not from ing.paperclip.paperclipai");
     const runtime = results.find((r) => r.name === "Service runtime");
-    expect(runtime?.message).toContain("serving another Paperclip process");
+    expect(runtime?.message).toContain("serving another Myrmidon process");
   });
 });
 

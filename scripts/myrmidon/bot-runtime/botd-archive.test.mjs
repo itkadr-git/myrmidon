@@ -16,8 +16,10 @@ let origin;
 let copy;
 let archiveRoot;
 
+const GIT_BIN = process.env.MYRMIDON_GIT_REAL || "git";
+
 function git(cwd, ...args) {
-  const r = spawnSync("git", args, {
+  const r = spawnSync(GIT_BIN, ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
     cwd,
     encoding: "utf8",
     env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
@@ -187,7 +189,7 @@ describe("retain()", () => {
   function seed(items) {
     fs.mkdirSync(archiveRoot, { recursive: true });
     const archives = items.map(({ createdAt, size, key = KEY }) => {
-      const bundle = path.join(archiveRoot, `${key}-${createdAt.replace(/[-:]/g, "").replace(/\.\d+/, "")}.bundle`);
+      const bundle = path.join(archiveRoot, `${key}-${createdAt.replace(/[-:]/g, "").replace(/\.\d+/, "").replace(/Z$/, "")}.bundle`);
       fs.writeFileSync(bundle, Buffer.alloc(size));
       return { key, bundle, patch: undefined, createdAt, sizeBytes: size, truncatedUntracked: false };
     });
@@ -195,6 +197,46 @@ describe("retain()", () => {
     return archives;
   }
   const NOW = at("2026-10-07T00:00:00Z");
+
+  it("delivered task archives older than the age threshold are removed through manifest retention", () => {
+    const [delivered, unmerged] = seed([
+      { createdAt: "2026-07-01T00:00:00Z", size: 10, key: "OPE-1" },
+      { createdAt: "2026-07-01T00:00:00Z", size: 10, key: "OPE-2" },
+    ]);
+    const r = retain(archiveRoot, {
+      now: at("2026-10-01T00:00:00Z"),
+      requireVerifiedReceipt: true,
+      isDelivered: (entry) => entry.key === "OPE-1",
+    });
+    assert.equal(r.ok, true);
+    assert.equal(fs.existsSync(delivered.bundle), false);
+    assert.equal(fs.existsSync(unmerged.bundle), true);
+    assert.deepEqual(readManifest(archiveRoot).archives.map((entry) => entry.key), ["OPE-2"]);
+    const journal = fs.readFileSync(path.join(archiveRoot, "retention-journal.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    assert.ok(journal.some((record) => record.action === "deleted" && record.key === "OPE-1"));
+    assert.ok(journal.some((record) => record.action === "backup-missing" && record.key === "OPE-2"));
+  });
+
+  it("enforces the 2 GiB cap while retaining unmerged work without a receipt", () => {
+    const cap = 2 * 1024 * 1024 * 1024;
+    const [delivered, protectedWork] = seed([
+      { createdAt: "2026-09-20T00:00:00Z", size: 1024 * 1024 * 1024, key: "OPE-3" },
+      { createdAt: "2026-09-19T00:00:00Z", size: 1024 * 1024 * 1024 + 10, key: "OPE-4" },
+    ]);
+    const r = retain(archiveRoot, {
+      now: NOW,
+      capBytes: cap,
+      requireVerifiedReceipt: true,
+      isDelivered: (entry) => entry.key === "OPE-3",
+    });
+    assert.equal(r.ok, true);
+    assert.ok(r.remainingBytes <= cap);
+    assert.equal(fs.existsSync(delivered.bundle), false);
+    assert.equal(fs.existsSync(protectedWork.bundle), true);
+    const journal = fs.readFileSync(path.join(archiveRoot, "retention-journal.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    assert.ok(journal.some((record) => record.action === "deleted" && record.key === "OPE-3"));
+    assert.ok(journal.some((record) => record.action === "backup-missing" && record.key === "OPE-4"));
+  });
 
   it("removes entries older than 30 days, keeps fresh ones", () => {
     const [old, fresh] = seed([

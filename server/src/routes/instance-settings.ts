@@ -5,6 +5,8 @@ import {
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
+  validateMaintenanceWindowCronRequestSchema,
+  validateMaintenanceWindowCronSchedule,
 } from "@myrmidon/shared";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -20,7 +22,7 @@ import {
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 function sameJsonValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -212,6 +214,10 @@ export function instanceSettingsRoutes(
             code: "execution_mode_platform_managed",
           });
         }
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body, "sharedMount")) {
+        // A board owner with other settings privileges cannot expose host paths.
+        assertInstanceAdmin(req);
       }
       const hidden = getHiddenSettings();
       await assertNoHiddenSettingChanges(
@@ -444,6 +450,27 @@ export function instanceSettingsRoutes(
     });
     res.json({ wasActive });
   });
+
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator
+  router.post(
+    "/instance/maintenance-window/validate-cron",
+    validate(validateMaintenanceWindowCronRequestSchema),
+    async (req, res) => {
+      assertBoardOrgAccess(req);
+      const result = validateMaintenanceWindowCronSchedule(req.body);
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/instance-settings/auto-update/validate-cron",
+    validate(validateMaintenanceWindowCronRequestSchema),
+    async (req, res) => {
+      assertBoardOrgAccess(req);
+      const result = validateMaintenanceWindowCronSchedule(req.body);
+      res.json(result);
+    },
+  );
 
   return router;
 }

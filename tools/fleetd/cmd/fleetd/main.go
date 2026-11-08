@@ -7,6 +7,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -19,6 +20,7 @@ import (
 	"hash"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -121,7 +123,7 @@ func strictDecode(data []byte, out any) error {
 	if err := dec.Decode(out); err != nil {
 		return err
 	}
-	if dec.More() {
+	if err := dec.Decode(new(any)); err != io.EOF {
 		return fmt.Errorf("trailing JSON content")
 	}
 	return nil
@@ -160,11 +162,13 @@ func main() {
 	if cfg.Memory != nil && cfg.Memory.Enabled && err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
-	srv := &server{cfg: &cfg, memory: memory, docker: newDockerClient(&cfg)}
+	srv := &server{cfg: &cfg, memory: memory, docker: newDockerClient(&cfg), oom: newOomStore(1000)}
+	go srv.startOomListener(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", srv.requireAuth(srv.health))
 	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
 	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	mux.HandleFunc("/v1/events/oom", srv.requireAuth(srv.eventsOom))
 	mux.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
 	mux.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
 	mux.HandleFunc("/v1/memory/export", srv.requireAuth(srv.memoryExport))
@@ -255,6 +259,20 @@ func validate(cfg *config) error {
 	if cfg.Upstream == "" {
 		cfg.Upstream = "/var/run/docker.sock"
 	}
+	if cfg.GatewayPortStart != 0 || cfg.GatewayPortEnd != 0 {
+		if strings.TrimSpace(cfg.GatewayBindIP) == "" {
+			return fmt.Errorf("gatewayBindIp is required when gatewayPortStart/gatewayPortEnd is configured")
+		}
+	}
+	if cfg.GatewayBindIP != "" {
+		ip := net.ParseIP(cfg.GatewayBindIP)
+		if ip == nil {
+			return fmt.Errorf("gatewayBindIp %q is not a valid IP address", cfg.GatewayBindIP)
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("gatewayBindIp %q is unspecified (0.0.0.0 or :: is not allowed; must be a specific interface IP or loopback)", cfg.GatewayBindIP)
+		}
+	}
 	if len(cfg.Bots) == 0 {
 		return fmt.Errorf("at least one bots[] entry is required")
 	}
@@ -311,6 +329,7 @@ type server struct {
 	cfg       *config
 	memory    *memoryClient
 	docker    *dockerClient
+	oom       *oomStore
 	gatewayMu sync.Mutex
 }
 
@@ -799,8 +818,13 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 				return http.StatusBadRequest, fmt.Errorf("invalid archive: %v", err)
 			}
 			var m snapshotManifest
-			if err := json.Unmarshal(body, &m); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&m); err != nil {
 				return http.StatusBadRequest, fmt.Errorf("invalid manifest: %v", err)
+			}
+			if err := dec.Decode(new(any)); err != io.EOF {
+				return http.StatusBadRequest, fmt.Errorf("invalid manifest: trailing data")
 			}
 			manifest = &m
 			continue
@@ -1058,7 +1082,13 @@ func (s *server) checkSpec(botKey string, sp *spec) error {
 func decodeBody(r *http.Request, out any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	return dec.Decode(out)
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("trailing JSON content")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, body any) {

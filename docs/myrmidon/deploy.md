@@ -34,12 +34,17 @@ settings file of an installation lives in a private deploy repository and never 
 
 ## Where to get the digest
 
-In the summary of the `image` job of the **Myrmidon image** workflow (Actions → the run on the
-commit or tag): the `Digest` line. Or:
+For a release, use the `Digest` line in the `image` job summary of the **Myrmidon image**
+workflow for the `myr-vX.Y.Z[-rc.N]` tag, or resolve the version tag directly:
 
 ```sh
 docker buildx imagetools inspect ghcr.io/itkadr-git/myrmidon:1.0.0 --format '{{json .Manifest.Digest}}'
 ```
+
+Do not resolve a release digest from `sha-<short>` or `main`: those tags are not the
+release selector. CI publishes `sha-<short>` only for tagged releases and checks that
+it and the version tag point to the tested digest; untagged main builds use
+`main-sha-<short>` instead. Always pass the resulting digest, not the tag, to deploy.
 
 `--digest` accepts `sha256:<64 hex>` or the full reference
 `ghcr.io/itkadr-git/myrmidon@sha256:<64 hex>`. The script does not take a tag (`1.0.0`, `main`,
@@ -49,7 +54,44 @@ The version and commit that `/api/health` must report come from the image labels
 (`org.opencontainers.image.version`, `org.opencontainers.image.revision`). They can be set
 explicitly: `--expect-version`, `--expect-commit`.
 
-## CI-built images only
+## Production migration registry
+
+The checked-in `packages/db/src/migrations/.deployed.json` records migrations confirmed applied
+in production. It is the CI source of truth: do not infer applied state from SQL files present in
+a release branch or tag, since those can include migrations that were never run. CI fails closed
+if the registry is missing or invalid.
+
+After a production rollout, the release operator owns reconciliation of this registry against
+the migration ledger on the production database. Update the manifest in a PR on the product
+repository; do not edit it directly on the host. Review the actual applied migration names and
+numbers, release branch/tag, and rollout timestamp before accepting the change. For example, the
+current confirmed release is represented as:
+
+```json
+{
+  "releaseBranch": "rel/1.6.6-rc.19",
+  "releaseTag": "myr-v1.6.6-rc.19",
+  "deployedAt": "2026-10-30T12:37:21Z",
+  "lastMigration": "0424_clear_stale_replay_holds.sql",
+  "migrations": [
+    { "number": "0423", "file": "0423_colorful_jazinda.sql", "pr": 1997 },
+    { "number": "0424", "file": "0424_clear_stale_replay_holds.sql", "pr": 2012 }
+  ]
+}
+```
+
+The updater can propose a candidate list from the release tree; it is not proof that every
+migration ran. Run `node scripts/myrmidon/ci/update-deployed-migrations.mjs --dry-run`, compare
+the proposal with the production migration ledger, then edit and review the manifest in the PR.
+Never apply a dry-run proposal without that comparison. Once confirmed, commit the manifest
+update with the deployment record. Missing an applied migration can let CI permit a conflicting
+number; recording an unapplied migration creates a false collision and blocks valid work. Either
+mismatch must be corrected from the production ledger by the release operator.
+
+The `deployed-migrations` CI job checks added migrations against this registry and is included in
+`CI result`. On collision it reports the occupied production number and filename; renumber the
+new migration only after coordinating the order of the PR that owns the deployed number.
+
 
 The owner's decision: only an image built by CI (the **Myrmidon image** workflow) from `main`
 or from a `myr-v*` tag reaches production. A hotfix also goes through a PR, even an expedited
@@ -419,7 +461,11 @@ Order:
    reference goes to `$STATE_DIR/previous-image` (so the first switch from a vendor image
    works too), the fork digest also to `$STATE_DIR/previous-digest`.
 3. A database dump by `DUMP_COMMAND` into `DUMP_DIR`. If the file is missing or smaller than
-   `DUMP_MIN_BYTES`, the deploy refuses and the image does not change.
+   `DUMP_MIN_BYTES`, the deploy refuses and the image does not change. Only after the dump
+   passes both checks, retention removes older `myrmidon-*.dump` files so that the newest
+   `DUMP_KEEP` (default 3) by filesystem modification time remain. Listing or deletion errors
+   abort the deploy before maintenance/image changes; a failed dump or size gate never prunes.
+   Restore and rollback policy is unchanged.
 4. Entering maintenance mode (`MAINTENANCE_MODE`):
    - `api` — `POST /api/myrmidon/maintenance` per the contract of
      [design/maintenance-mode.md](design/maintenance-mode.md), section 7 (track 5, R3).
@@ -713,6 +759,49 @@ scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to sha256:<ol
 The script asks to type `RESTORE` (or takes `--yes-restore-database`), stops the server
 service, runs `RESTORE_COMMAND`, then brings the old image up.
 
+A release component rolls back separately, without touching the board:
+```sh
+scripts/myrmidon/deploy/rollback-component.sh --config /path/to/deploy.env --component dockergate
+```
+
+It restores the image the component's rollout remembered as previous (`$STATE_DIR/
+previous-<component>-image`, or an explicit `--to-image <ref>`), recreates the service and
+re-runs that component's health probe (skipped with a warning when the probe is unset).
+The rollback honors `MYR_<COMPONENT>_HOST` exactly like the rollout: a `remote:<user>@<host>`
+component is pulled, switched and recreated on that host through ssh, a `skip` component is
+left to its own procedure (a loud SKIP). Like
+`rollback.sh` it is the emergency path: an unverified target warns but does not block.
+Rolling the board back does not roll the components back, and rolling a component back does
+not touch the board: after a DEGRADED deploy the output names exactly which side failed and
+which command to run.
+
+### Rolling back to a local image (ROLLBACK-LOCAL)
+
+Images before 1.1.0 are not in the registry, and the registry can be unreachable exactly at the moment of an incident.
+`--local` rolls back to an image that is already on the deploy host, **without pulling**:
+
+```sh
+# a local tag
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --local myrmidon-local:hotfix
+# the usual digest, but without a pull
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --local sha256:<64 hex>
+# a rollback with --to/--to-image without a pull
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to sha256:<old> --local
+```
+
+- The reference comes from the `--local` argument (a tag or a digest; a bare digest is completed to
+  `ghcr.io/itkadr-git/myrmidon@sha256:…`), from `MYRMIDON_ROLLBACK_LOCAL` in the settings file (used when `--local`
+  is not passed), and a bare `--local` without a value takes it from `--to`/`--to-image`. An explicit
+  `--local <reference>` together with `--to`/`--to-image` is an error: there is one reference.
+- The presence of the image is checked with `docker image inspect` **before any change**. No image: the rollback stops
+  with an error and the list of local tags/digests of this repository (`docker image ls <repo>`), so a typo in a tag
+  does not turn into a bare "No such image".
+- In this mode the registry is not read at all: neither `pull` nor the "CI-built only" check — a local image could not
+  have passed CI anyway, and the warning about a non-CI image is useless here (this is its main use). The other steps
+  (maintenance, the `image:` switch, health) are as in the usual rollback.
+- Remember: a local image on the host is protected from substitution by nothing — write access to the deploy host is
+  the trust boundary. `--dry-run` prints the plan without changes.
+
 ## Multi-process mode (BOARD-PROCESSES)
 
 > Russian version of this section: [deploy.ru.md](deploy.ru.md#многопроцессный-режим-board-processes)
@@ -751,51 +840,6 @@ parallel load to Postgres, which is the next bottleneck. Raise `apiCount` by one
 when the process metrics show `event_loop_utilization` of the api processes staying above
 0.6 **and** Postgres CPU staying below 300 %. If it is the worker's ELU that is high,
 that is the run-supervision / background work — more api processes will not help.
-
-### Откат на локальный образ (ROLLBACK-LOCAL)
-
-Образы до 1.1.0 не лежат в реестре, а реестр может быть недоступен именно в момент инцидента.
-`--local` откатывает на образ, который уже есть на хосте выката, **без скачивания**:
-
-```sh
-# локальный тег
-scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --local myrmidon-local:hotfix
-# тот же дайджест, что и обычно, но без pull
-scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --local sha256:<64 hex>
-# откат на --to/--to-image без pull
-scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to sha256:<old> --local
-```
-
-- Ссылка берётся из аргумента `--local` (тег или дайджест; голый дайджест дополняется до
-  `ghcr.io/itkadr-git/myrmidon@sha256:…`), из `MYRMIDON_ROLLBACK_LOCAL` в файле настроек
-  (действует, когда `--local` не передан), а голый `--local` без значения — из `--to`/`--to-image`.
-  Явный `--local <ссылка>` вместе с `--to`/`--to-image` — ошибка: ссылка одна.
-- Наличие образа проверяется через `docker image inspect` **до любых изменений**. Образа нет —
-  откат прекращается с ошибкой и списком локальных тегов/дайджестов этого репозитория
-  (`docker image ls <repo>`), чтобы опечатка в теге не превращалась в голое «No such image».
-- В этом режиме реестр не читается вовсе: ни `pull`, ни проверка «только из CI» — локальный
-  образ и так не мог пройти CI, а предупреждение о не-CI образе здесь бесполезно
-  (это его основной сценарий). Остальные шаги (maintenance, смена `image:`, health) — как в
-  обычном откате.
-- Помните: локальный образ на хосте ничем не защищён от подмены — право записи на хост
-  выката и есть граница доверия. `--dry-run` печатает план без изменений.
-
-## Что проверить после выката
-A release component rolls back separately, without touching the board:
-```sh
-scripts/myrmidon/deploy/rollback-component.sh --config /path/to/deploy.env --component dockergate
-```
-
-It restores the image the component's rollout remembered as previous (`$STATE_DIR/
-previous-<component>-image`, or an explicit `--to-image <ref>`), recreates the service and
-re-runs that component's health probe (skipped with a warning when the probe is unset).
-The rollback honors `MYR_<COMPONENT>_HOST` exactly like the rollout: a `remote:<user>@<host>`
-component is pulled, switched and recreated on that host through ssh, a `skip` component is
-left to its own procedure (a loud SKIP). Like
-`rollback.sh` it is the emergency path: an unverified target warns but does not block.
-Rolling the board back does not roll the components back, and rolling a component back does
-not touch the board: after a DEGRADED deploy the output names exactly which side failed and
-which command to run.
 
 ## Deploy from the interface
 
@@ -990,8 +1034,8 @@ be published by hand.
 
 **How it works.** The **Myrmidon release publish** workflow (started by the
 `myr-vX.Y.Z` tag push) opens an issue titled `release-freeze: <tag>`; the
-issue being open IS the freeze. The **Release freeze gate** check (workflow
-[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+issue being open IS the freeze. The **Release freeze gate** check (integrated
+directly into the `plan` job of `Myrmidon CI`, [.github/workflows/myrmidon-ci.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci.yml))
 fails on every PR into `main` while the freeze is active. As soon as
 `Myrmidon CI` is green on the tag, the same tag workflow closes the issue —
 freeze cleared. The state is derived from GitHub (newest tag + its CI + the

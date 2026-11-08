@@ -16,6 +16,7 @@ import {
 import { botContainerSpec, readBotContainerAgentConfig } from "./agent-config.js";
 import { buildBinds, withSharedMount, BotContainerTemplateError } from "./template.js";
 import { buildCreateContainerRequestBody, type DockerDriverConfig } from "./docker-driver.js";
+import { sharedMountSettingsSchema } from "@myrmidon/shared";
 
 const VALID_CONTAINER = {
   enabled: true,
@@ -34,6 +35,13 @@ const DRIVER_CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowl
 };
 
 describe("shared-mount rules", () => {
+  it("rejects unsafe host paths at the settings API boundary", () => {
+    for (const hostPath of ["/", "relative", "/srv/../etc", "/srv/./secret", "/srv//shared", "/srv/shared/", "/srv:shared", "/srv,shared", "/srv\\shared", "/srv\nshared"]) {
+      expect(sharedMountSettingsSchema.safeParse({ enabled: true, hostPath }).success).toBe(false);
+    }
+    expect(sharedMountSettingsSchema.safeParse({ enabled: true, hostPath: "/srv/bots/shared" }).success).toBe(true);
+  });
+
   it("merges settings over the defaults", () => {
     expect(getEffectiveSharedMountSettings(undefined)).toEqual(DEFAULT_SHARED_MOUNT_SETTINGS);
     expect(getEffectiveSharedMountSettings({ enabled: true, writable: true })).toEqual({

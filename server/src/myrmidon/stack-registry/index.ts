@@ -45,13 +45,15 @@ export {
 } from "./collector.js";
 export { readStackDocument, writeStackDocument, preserveStackGeneralKey } from "./store.js";
 export { stackRegistryRoutes, myrmidonStackRegistryRoutes, type StackRegistryRouteOptions } from "./routes.js";
-export { checkStackReleases, startStackCheckSweep, STACK_CHECK_PER_PAGE, type StackCheckOptions } from "./check.js";
+export { checkStackReleases, startStackCheckSweep, stopStackCheckSweep, STACK_CHECK_PER_PAGE, type StackCheckOptions } from "./check.js";
 export {
   STACK_CHECK_INTERVAL_ENV,
   STACK_CHECK_MIN_INTERVAL_SEC,
   readStackCheckIntervalSec,
   STACK_GITHUB_TOKEN_ENV,
   readStackGithubToken,
+  STACK_OSV_API_BASE_ENV,
+  readStackOsvApiBase,
 } from "./settings.js";
 export {
   buildStackAttentionCards,
@@ -71,6 +73,21 @@ export {
   countBehind,
   normaliseVersion,
   type StackFetchJson,
+  type StackFetchOptions,
   type StackHttpResponse,
   type StackReleaseRecord,
 } from "./releases.js";
+export {
+  DEFAULT_OSV_API_BASE,
+  OSV_QUERY_BATCH_PATH,
+  queryOsvAdvisories,
+  osvJsonPort,
+  parseOsvBatchResponse,
+  parseOsvVulnerabilities,
+  buildOsvBatchPayload,
+  extractVulnIdAndCve,
+  extractVulnSeverity,
+  type StackAdvisoryPackage,
+  type StackAdvisoryQuery,
+  type StackVulnerability,
+} from "./advisory.js";

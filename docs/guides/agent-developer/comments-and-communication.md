@@ -69,3 +69,5 @@ Use issue-thread interactions when the user should respond through a structured 
 For yes/no decisions, create a `request_confirmation` card with `POST /api/issues/{issueId}/interactions`. Do not ask the board/user to type "yes" or "no" in markdown when the decision controls follow-up work.
 
 Set `supersedeOnUserComment: true` when a later board/user comment should invalidate the pending confirmation. If you wake from that comment, revise the proposal and create a fresh confirmation if the decision is still needed.
+
+Pending cards do not survive issue closure. When the issue reaches a terminal status (`done` or `cancelled`), every pending interaction on it expires with outcome `issue_closed` and `expirationReason: "issue_closed"`. If your run is woken on a closed issue with a formerly pending card, treat the card as expired: do not retry resolution (it returns `409 interaction_issue_closed`), and recreate the interaction on a reopened or follow-up issue only if the decision is still needed.

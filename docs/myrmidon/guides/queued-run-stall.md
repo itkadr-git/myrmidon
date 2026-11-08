@@ -26,19 +26,43 @@ The card offers two verbs:
   it has been queued;
 - **dismiss** — removes the notice; the run stays queued and keeps its place.
 
-## The threshold
+## The attention-card threshold
 
-The stall threshold is `MYRMIDON_QUEUED_RUN_STALE_AFTER_SEC` (default `3600`
-seconds — one hour). The environment variable is the default read at sweep
-time; the live value is `instance_settings.general.queuedRunStaleAfterSec`,
-which overrides the env default and is clamped to 60…604800 s. A non-numeric,
-zero, negative or empty value keeps the default. The card cannot be switched
-off by design — the closest is setting the instance setting to its maximum.
+The `queue_stall` attention card uses `MYRMIDON_QUEUED_RUN_STALE_AFTER_SEC`
+(default `3600` seconds — one hour). The environment variable is the default;
+`instance_settings.general.queuedRunStaleAfterSec` overrides it and is clamped
+to 60…604800 seconds. A non-numeric, zero, negative or empty value keeps the
+default. The card cannot be switched off by design; the closest is setting the
+instance value to its maximum.
 
 The companion threshold `MYRMIDON_QUEUED_RUN_EXPLAIN_AFTER_SEC` (default `60`
-s) governs when a still-queued run must already carry a `waitReason` — see the
+seconds) governs when a queued run must already carry a `waitReason` — see the
 table in [run-limits.md](run-limits.md). In a healthy queue every run older
 than a minute carries a reason, so the `queue_stall` card stays silent.
+
+## Expiry and the Prometheus metric
+
+The dispatcher separately cancels queued runs that exceed its expiry threshold.
+Set `instance_settings.general.processes.queuedRunStaleAfterSec` to the number
+of seconds to keep a run queued. The default is `1800` seconds (30 minutes);
+the value is clamped to 60…604800 seconds. The dispatcher re-reads it each
+sweep. `general.processes.queuedResweepSec` controls the sweep interval (default
+`30` seconds). This expiry setting is distinct from the attention-card setting
+above.
+
+On successful expiry, Myrmidon records the cancellation reason in the run's
+error and activity log. If the run has issue context, the sweep releases the
+issue execution lock. It then wakes the agent so other ready work can proceed.
+
+The root `GET /metrics` endpoint exports
+`myrmidon_runs_queued_over_30m{role="…"}` as a gauge. It counts only rows whose
+status is `queued` and whose creation time is more than 30 minutes ago. The
+30-minute metric threshold is fixed; changing the expiry threshold does not
+change it. For example, configure the external Prometheus-compatible alerting
+stack to alert when `myrmidon_runs_queued_over_30m > 0` remains true for five
+minutes. This repository exposes the metric; it does not install that alert
+rule. Confirm the metric reaches zero after deployment and test recovery with
+a controlled stale run before considering operational acceptance complete.
 
 ## What to do about it
 

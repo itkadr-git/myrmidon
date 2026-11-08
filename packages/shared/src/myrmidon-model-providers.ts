@@ -29,10 +29,19 @@ export const BUILTIN_MODEL_PROVIDER_TYPES = [
 ] as const;
 export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
 
-/** Statically known provider kinds for type safety. */
+export const POOL_MODEL_PROVIDER_TYPES = [
+  "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
+] as const;
+
+/** Providers whose connector exposes per-account quota windows. */
+export type PoolModelProviderType = (typeof POOL_MODEL_PROVIDER_TYPES)[number];
+
+/** Statically known provider types for type safety. */
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
-  "chatgpt-pool",
+  ...POOL_MODEL_PROVIDER_TYPES,
 ] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
@@ -56,26 +65,43 @@ export interface ModelProviderConnectorRegistration {
   supportsChannels?: boolean;
 }
 
+// Keep one registration per plugin/type pair so two plugins can contribute the
+// same connector type without one plugin deleting the other's registration.
 const registeredModelProviderConnectors = new Map<string, ModelProviderConnectorRegistration>();
 
+function connectorRegistrationKey(reg: Pick<ModelProviderConnectorRegistration, "type" | "pluginKey">): string {
+  return `${reg.type}\0${reg.pluginKey ?? ""}`;
+}
+
 export function registerModelProviderConnector(reg: ModelProviderConnectorRegistration): void {
-  registeredModelProviderConnectors.set(reg.type, reg);
+  registeredModelProviderConnectors.set(connectorRegistrationKey(reg), reg);
 }
 
 export function unregisterModelProviderConnector(type: string): void {
-  registeredModelProviderConnectors.delete(type);
+  for (const [key, reg] of registeredModelProviderConnectors) {
+    if (reg.type === type) registeredModelProviderConnectors.delete(key);
+  }
+}
+
+/** Remove only the connector registration owned by one plugin. */
+export function unregisterModelProviderConnectorForPlugin(type: string, pluginKey: string): void {
+  registeredModelProviderConnectors.delete(`${type}\0${pluginKey}`);
 }
 
 export function unregisterModelProviderConnectorsByPlugin(pluginKey: string): void {
-  for (const [type, reg] of registeredModelProviderConnectors.entries()) {
+  for (const [key, reg] of registeredModelProviderConnectors.entries()) {
     if (reg.pluginKey === pluginKey) {
-      registeredModelProviderConnectors.delete(type);
+      registeredModelProviderConnectors.delete(key);
     }
   }
 }
 
 export function getModelProviderConnector(type: string): ModelProviderConnectorRegistration | null {
-  return registeredModelProviderConnectors.get(type) ?? null;
+  let match: ModelProviderConnectorRegistration | null = null;
+  for (const reg of registeredModelProviderConnectors.values()) {
+    if (reg.type === type) match = reg;
+  }
+  return match;
 }
 
 export function clearModelProviderConnectors(): void {
@@ -84,7 +110,10 @@ export function clearModelProviderConnectors(): void {
 
 /** Lists provider types currently available (built-in + active registered connectors). */
 export function listAvailableModelProviderTypes(): string[] {
-  return [...BUILTIN_MODEL_PROVIDER_TYPES, ...registeredModelProviderConnectors.keys()];
+  return [...new Set([
+    ...BUILTIN_MODEL_PROVIDER_TYPES,
+    ...[...registeredModelProviderConnectors.values()].map((reg) => reg.type),
+  ])];
 }
 
 export function isModelProviderTypeAvailable(type: string): boolean {
@@ -115,13 +144,29 @@ export type PoolAccountState =
   | "banned"
   | "login_pending"
   | "login_expired"
-  | "not_logged_in";
+  | "not_logged_in"
+  | "disabled";
+
+/** Known subscription pool account plans (OPE-10810). */
+export const POOL_ACCOUNT_PLANS = ["plus", "pro", "k-12", "k12", "team", "free"] as const;
+export type PoolAccountPlan = (typeof POOL_ACCOUNT_PLANS)[number] | string;
+
+/**
+ * Returns true if the plan represents a K-12 tariff account.
+ * Under ADM 05.11 directive, 31 K-12 accounts are disabled / excluded from pool rotation.
+ */
+export function isK12Plan(plan?: string | null): boolean {
+  if (!plan) return false;
+  const p = plan.trim().toLowerCase();
+  return p === "k-12" || p === "k12";
+}
 
 /** A quota window on a subscription account (e.g. 5-hour rolling or weekly). */
 export interface PoolAccountLimitWindow {
   usedPct: number | null;
   windowMin: number | null;
   resetsAt: number | null;
+  limitReached?: boolean;
 }
 
 /** Usage metrics observed on a subscription account. */
@@ -138,7 +183,7 @@ export interface PoolAccountUsage {
   recentErrors?: Array<{ at: number; status: number; message: string }>;
 }
 
-/** One account in the provider's channel registry (OPE-7189 ч.A). */
+/** One account in the provider's channel registry (OPE-7189 ч.A / OPE-10810). */
 export interface PoolAccountChannelView {
   n: number;
   label: string;
@@ -146,6 +191,7 @@ export interface PoolAccountChannelView {
   state: PoolAccountState | string;
   stateRu?: string;
   plan?: string | null;
+  models?: string[];
   limitedUntil: number | null;
   lastOk: number | null;
   windows: {
@@ -155,6 +201,10 @@ export interface PoolAccountChannelView {
   usage?: PoolAccountUsage;
   isBanned: boolean;
   isExhausted: boolean;
+  isDisabled?: boolean;
+  isExcluded?: boolean;
+  oauthState?: PoolAccountOAuthState;
+  oauthExpiresAt?: number | null;
   error?: string | null;
 }
 
@@ -179,7 +229,58 @@ export interface ModelProviderChannelsView {
   providerType: ModelProviderType;
   channels: PoolAccountChannelView[];
   signals: PoolAccountRoleSignal[];
+  summary?: {
+    total: number;
+    live: number;
+    exhausted: number;
+    banned: number;
+    disabled?: number;
+    nextResetAt: number | null;
+  };
 }
+
+/** Known Codex / ChatGPT subscription pool account OAuth states (OPE-10810). */
+export const POOL_ACCOUNT_OAUTH_STATES = [
+  "idle",
+  "authorizing",
+  "active",
+  "expired",
+  "error",
+] as const;
+export type PoolAccountOAuthState = (typeof POOL_ACCOUNT_OAUTH_STATES)[number];
+
+export interface PoolAccountOAuthBeginResult {
+  accountNumber: number;
+  userCode: string;
+  verificationUri: string;
+  expiresInSec: number;
+  intervalSec: number;
+}
+
+export interface PoolAccountOAuthStatusResult {
+  accountNumber: number;
+  status: "pending" | "success" | "expired" | "failed";
+  error?: string | null;
+}
+
+export const poolAccountOAuthBeginSchema = z.object({
+  accountNumber: z.number().int().positive().optional(),
+  label: z.string().trim().max(160).optional(),
+  plan: z.string().trim().max(64).optional(),
+});
+export type PoolAccountOAuthBeginInput = z.infer<typeof poolAccountOAuthBeginSchema>;
+
+export const poolAccountOAuthCompleteSchema = z.object({
+  accountNumber: z.number().int().positive(),
+  code: z.string().optional(),
+  token: z.string().optional(),
+});
+export type PoolAccountOAuthCompleteInput = z.infer<typeof poolAccountOAuthCompleteSchema>;
+
+export const poolAccountOAuthRefreshSchema = z.object({
+  accountNumber: z.number().int().positive(),
+});
+export type PoolAccountOAuthRefreshInput = z.infer<typeof poolAccountOAuthRefreshSchema>;
 
 /**
  * The secret-store name that carries one provider's credential.
@@ -191,6 +292,14 @@ export interface ModelProviderChannelsView {
 export function modelProviderSecretName(providerId: string): string {
   const id = providerId.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return `${MODEL_PROVIDER_SECRET_PREFIX}${id}`;
+}
+
+/**
+ * The secret-store name that carries one pool account's OAuth credentials (OPE-10810).
+ * Secrets are strictly isolated and never exposed over plain API responses.
+ */
+export function modelProviderAccountSecretName(providerId: string, accountNumber: number): string {
+  return `${modelProviderSecretName(providerId)}/accounts/${accountNumber}`;
 }
 
 /** Whether a secret name is one this feature manages. */

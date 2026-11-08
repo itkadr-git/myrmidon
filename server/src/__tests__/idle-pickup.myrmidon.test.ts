@@ -13,6 +13,7 @@ import {
   issuePlanDecompositions,
   issueRelations,
   issues,
+  issueWorkProducts,
 } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -43,6 +44,7 @@ import {
   readIdlePickupEnabled,
   readIdlePickupIntervalSec,
   readIdlePickupRecentSuccessWindowMs,
+  isReviewPendingWaitingForCi,
 } from "../myrmidon/idle-pickup.ts";
 
 // IDLE-PICKUP (1.3): the board wakes an agent with a free queue on its
@@ -148,7 +150,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
 
   async function seedIssue(input: {
     companyId: string;
-    agentId: string;
+    agentId?: string | null;
     status?: string;
     priority?: string;
     parentId?: string | null;
@@ -161,7 +163,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       title: "Ready task",
       status: input.status ?? "todo",
       priority: input.priority ?? "medium",
-      assigneeAgentId: input.agentId,
+      assigneeAgentId: input.agentId ?? null,
       ...(input.parentId ? { parentId: input.parentId } : {}),
       ...(input.monitorNextCheckAt ? { monitorNextCheckAt: input.monitorNextCheckAt } : {}),
     });
@@ -295,6 +297,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     overrides: {
       enqueueWakeup?: (...args: unknown[]) => Promise<unknown>;
       env?: Record<string, string | undefined>;
+      getDailyCapBlock?: NonNullable<Parameters<typeof idlePickupForAgent>[0]["getDailyCapBlock"]>;
     } = {},
   ) {
     const enqueueWakeup = vi.fn(overrides.enqueueWakeup ?? (async () => ({ id: randomUUID() })));
@@ -302,6 +305,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       db,
       enqueueWakeup: enqueueWakeup as unknown as Parameters<typeof idlePickupForAgent>[0]["enqueueWakeup"],
       ...(overrides.env ? { env: overrides.env } : {}),
+      ...(overrides.getDailyCapBlock ? { getDailyCapBlock: overrides.getDailyCapBlock } : {}),
     };
   }
 
@@ -404,6 +408,38 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("wakes an agent who is the current review participant on an in_review issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const other = await seedAgent({ companyId });
+    const issueId = await seedIssue({
+      companyId,
+      agentId: other.agentId,
+      status: "in_review",
+    });
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        contextSnapshot: expect.objectContaining({ issueId }),
+      }),
+    );
+  });
+
   it("does not wake a blocked issue (an unresolved blocker relation)", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId });
@@ -464,6 +500,77 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(result.woken).toBe(1);
     const [call] = vi.mocked(deps.enqueueWakeup).mock.calls;
     expect((call[1] as { contextSnapshot: { issueId: string } }).contextSnapshot.issueId).not.toBe(parentId);
+  });
+
+  it("does not wake review participant when review stage is pending and waiting for CI (executionState ciState pending/unknown, OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        ciState: "pending",
+      },
+    }).where(eq(issues.id, issueId));
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(1);
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not wake review participant when review stage is pending and PR work product has ciState unknown (OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+      },
+    }).where(eq(issues.id, issueId));
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #2078",
+      status: "open",
+      metadata: {
+        ciState: "unknown",
+      },
+    });
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(1);
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes review participant when review stage is pending and CI is green (OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        ciState: "green",
+      },
+    }).where(eq(issues.id, issueId));
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("a container whose children are all done is itself ready again", async () => {
@@ -696,6 +803,36 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
 
     expect(result.alreadyActive).toBe(0);
     expect(result.woken).toBe(1);
+  });
+
+  it("myrmidon(1.6.6 OPE-9445): an idle pickup does not coalesce into an old deferred wake (>30m requestedAt)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    const oldDate = new Date(Date.now() - 35 * 60 * 1000);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      createdAt: new Date(),
+      requestedAt: oldDate,
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(0);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      source: "automation",
+      reason: IDLE_WAKE_REASON,
+      contextSnapshot: expect.objectContaining({ issueId }),
+    }));
   });
 
   it("a deferred or claimed wake also counts as covering (not only queued)", async () => {
@@ -1004,9 +1141,289 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  // myrmidon(OPE-11947): the per-day cap gate does not hold a wake, it writes a
+  // `skipped` receipt row. An agent over its cap must not be offered every ready
+  // task on every pass: at most one receipt per agent per day (the attention
+  // card for a capped agent is built from it).
+  describe("daily cap (OPE-11947)", () => {
+    const RUN_CAP = { reason: "heartbeat.daily_run_limit", observed: 40, limit: 40 };
+    const COST_CAP = { reason: "heartbeat.daily_cost_limit", observed: 900, limit: 800 };
+
+    /** The receipt row the cap gate in enqueueWakeup leaves behind. */
+    async function seedCapReceipt(input: {
+      companyId: string;
+      agentId: string;
+      reason?: string;
+      limit?: number;
+      requestedAt?: Date;
+    }) {
+      await db.insert(agentWakeupRequests).values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: input.reason ?? RUN_CAP.reason,
+        payload: {
+          heartbeatSkip: {
+            reason: "Per-agent heartbeat daily cap reached before adapter invocation.",
+            observed: input.limit ?? RUN_CAP.limit,
+            limit: input.limit ?? RUN_CAP.limit,
+          },
+        },
+        status: "skipped",
+        requestedByActorType: "system",
+        requestedByActorId: "idle_pickup",
+        ...(input.requestedAt ? { requestedAt: input.requestedAt } : {}),
+        finishedAt: new Date(),
+      });
+    }
+
+    async function countReceipts(agentId: string) {
+      const rows = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId));
+      return rows.length;
+    }
+
+    it("does not offer any task to an agent over its run cap once today's receipt exists", async () => {
+      const { companyId, agentId } = await seedAgent();
+      await seedIssue({ companyId, agentId, priority: "high" });
+      await seedIssue({ companyId, agentId, priority: "medium" });
+      await seedIssue({ companyId, agentId, priority: "low" });
+      await seedCapReceipt({ companyId, agentId });
+      const getDailyCapBlock = vi.fn(async (_agent: { id: string; companyId: string }) => RUN_CAP);
+      const deps = fakeDeps({ getDailyCapBlock });
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+      expect(getDailyCapBlock).toHaveBeenCalledTimes(1);
+      expect(getDailyCapBlock).toHaveBeenCalledWith({ id: agentId, companyId });
+      expect(result.dailyCapSkipped).toBe(1);
+      expect(result.woken).toBe(0);
+      expect(result.suppressed).toBe(0);
+      expect(result.considered).toBe(3);
+      expect(await countReceipts(agentId)).toBe(1);
+    });
+
+    it("lets the first attempt of the day reach the gate, then stops: one receipt per agent, not one per task", async () => {
+      const { companyId, agentId } = await seedAgent();
+      await seedIssue({ companyId, agentId, priority: "high" });
+      await seedIssue({ companyId, agentId, priority: "medium" });
+      await seedIssue({ companyId, agentId, priority: "low" });
+      // The gate in enqueueWakeup: writes its receipt row and returns null.
+      const deps = fakeDeps({
+        enqueueWakeup: async () => {
+          await seedCapReceipt({ companyId, agentId });
+          return null;
+        },
+        getDailyCapBlock: async () => RUN_CAP,
+      });
+
+      const first = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(first.suppressed).toBe(1);
+      expect(first.dailyCapSkipped).toBe(1);
+      expect(await countReceipts(agentId)).toBe(1);
+
+      // Every later pass of the day leaves the agent alone and writes nothing.
+      for (let pass = 0; pass < 3; pass += 1) {
+        const later = await idlePickupForAgent(deps, { id: agentId, companyId });
+        expect(later.dailyCapSkipped).toBe(1);
+        expect(later.suppressed).toBe(0);
+      }
+      expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(await countReceipts(agentId)).toBe(1);
+    });
+
+    it("covers the daily cost cap through the same check", async () => {
+      const { companyId, agentId } = await seedAgent();
+      await seedIssue({ companyId, agentId });
+      await seedIssue({ companyId, agentId });
+      await seedCapReceipt({ companyId, agentId, reason: COST_CAP.reason, limit: COST_CAP.limit });
+      const deps = fakeDeps({ getDailyCapBlock: async () => COST_CAP });
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+      expect(result.dailyCapSkipped).toBe(1);
+    });
+
+    it("a receipt of the other cap does not cover this one", async () => {
+      const { companyId, agentId } = await seedAgent();
+      await seedIssue({ companyId, agentId });
+      // Today's receipt belongs to the run cap; the agent is now over the cost cap.
+      await seedCapReceipt({ companyId, agentId });
+      const deps = fakeDeps({
+        enqueueWakeup: async () => {
+          await seedCapReceipt({ companyId, agentId, reason: COST_CAP.reason, limit: COST_CAP.limit });
+          return null;
+        },
+        getDailyCapBlock: async () => COST_CAP,
+      });
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(result.dailyCapSkipped).toBe(1);
+    });
+
+    it("a receipt of a different limit (the cap was changed today) does not cover the new cap", async () => {
+      const { companyId, agentId } = await seedAgent();
+      await seedIssue({ companyId, agentId });
+      await seedCapReceipt({ companyId, agentId, limit: 30 });
+      const deps = fakeDeps({
+        enqueueWakeup: async () => {
+          await seedCapReceipt({ companyId, agentId });
+          return null;
+        },
+        getDailyCapBlock: async () => RUN_CAP,
+      });
+
+      await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(await countReceipts(agentId)).toBe(2);
+    });
+
+    it("yesterday's receipt does not cover today", async () => {
+      const { companyId, agentId } = await seedAgent();
+      await seedIssue({ companyId, agentId });
+      await seedCapReceipt({
+        companyId,
+        agentId,
+        requestedAt: new Date(Date.now() - 36 * 60 * 60 * 1000),
+      });
+      const deps = fakeDeps({
+        enqueueWakeup: async () => {
+          await seedCapReceipt({ companyId, agentId });
+          return null;
+        },
+        getDailyCapBlock: async () => RUN_CAP,
+      });
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(result.dailyCapSkipped).toBe(1);
+    });
+
+    it("another agent's receipt does not cover this agent", async () => {
+      const first = await seedAgent();
+      const second = await seedAgent();
+      await seedIssue({ companyId: second.companyId, agentId: second.agentId });
+      await seedCapReceipt({ companyId: first.companyId, agentId: first.agentId });
+      const deps = fakeDeps({
+        enqueueWakeup: async () => {
+          await seedCapReceipt({ companyId: second.companyId, agentId: second.agentId });
+          return null;
+        },
+        getDailyCapBlock: async () => RUN_CAP,
+      });
+
+      await idlePickupForAgent(deps, { id: second.agentId, companyId: second.companyId });
+
+      expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    it("an agent under its caps is woken as before", async () => {
+      const { companyId, agentId } = await seedAgent();
+      const issueId = await seedIssue({ companyId, agentId });
+      await seedCapReceipt({ companyId, agentId });
+      const getDailyCapBlock = vi.fn(async () => null);
+      const deps = fakeDeps({ getDailyCapBlock });
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(getDailyCapBlock).toHaveBeenCalledTimes(1);
+      expect(result.dailyCapSkipped).toBe(0);
+      expect(result.woken).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+      expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps offering the next task while no cap receipt exists (a gate ahead of the cap refused the first)", async () => {
+      const { companyId, agentId } = await seedAgent();
+      await seedIssue({ companyId, agentId, priority: "high" });
+      await seedIssue({ companyId, agentId, priority: "medium" });
+      await seedIssue({ companyId, agentId, priority: "low" });
+      const deps = fakeDeps({
+        enqueueWakeup: async () => null,
+        getDailyCapBlock: async () => RUN_CAP,
+      });
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(deps.enqueueWakeup).toHaveBeenCalledTimes(3);
+      expect(result.suppressed).toBe(3);
+      expect(result.dailyCapSkipped).toBe(0);
+    });
+
+    it("fails open when the cap lookup throws: the gate inside enqueueWakeup still decides", async () => {
+      const { companyId, agentId } = await seedAgent();
+      const issueId = await seedIssue({ companyId, agentId });
+      await seedCapReceipt({ companyId, agentId });
+      const deps = fakeDeps({
+        getDailyCapBlock: async () => {
+          throw new Error("agent row unavailable");
+        },
+      });
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(result.woken).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+      expect(result.dailyCapSkipped).toBe(0);
+    });
+
+    it("does not look up the cap for an agent with nothing to pick up", async () => {
+      const { companyId, agentId } = await seedAgent();
+      const getDailyCapBlock = vi.fn(async () => RUN_CAP);
+      const deps = fakeDeps({ getDailyCapBlock });
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(result.considered).toBe(0);
+      expect(getDailyCapBlock).not.toHaveBeenCalled();
+    });
+  });
+
   // The manual-wake binding (WAKE-BIND) reuses this ranking: a wake without an
   // explicit issue must land on the same task the idle-pickup scheduler picks.
   describe("findTopReadyIssueForAgent", () => {
+    it("skips a higher-priority task with an open blocker and picks the next ready task (OPE-9556)", async () => {
+      const { companyId, agentId } = await seedAgent();
+      const blockerId = await seedIssue({ companyId, status: "in_progress" });
+      const blockedId = await seedIssue({
+        companyId,
+        agentId,
+        status: "todo",
+        priority: "critical",
+      });
+      const nextId = await seedIssue({
+        companyId,
+        agentId,
+        status: "todo",
+        priority: "low",
+      });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: blockedId,
+        type: "blocks",
+      });
+
+      const top = await findTopReadyIssueForAgent(db, { id: agentId, companyId });
+      expect(top?.id).toBe(nextId);
+
+      // When blocker resolves, the higher-priority task becomes eligible
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
+      const unblockedTop = await findTopReadyIssueForAgent(db, { id: agentId, companyId });
+      expect(unblockedTop?.id).toBe(blockedId);
+    });
+
     it("returns the top ready task by the same ranking the sweep uses", async () => {
       const { companyId, agentId } = await seedAgent();
       const lowId = await seedIssue({ companyId, agentId, priority: "low" });
@@ -1137,9 +1554,11 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
   function sweeperDeps(
     overrides: {
       enqueueWakeup?: (...args: unknown[]) => Promise<unknown>;
+      pickupReviewForAgent?: Parameters<typeof createIdlePickupSweeper>[0]["pickupReviewForAgent"];
       invokable?: (agent: { id: string; status: string }) => boolean;
       underMaintenance?: (agentId: string) => boolean;
       env?: Record<string, string | undefined>;
+      getDailyCapBlock?: Parameters<typeof createIdlePickupSweeper>[0]["getDailyCapBlock"];
     } = {},
   ) {
     const enqueueWakeup = vi.fn(overrides.enqueueWakeup ?? (async () => ({ id: randomUUID() })));
@@ -1154,10 +1573,29 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
         async (agentId: string) => (overrides.underMaintenance ? overrides.underMaintenance(agentId) : false),
       ),
       ...(overrides.env ? { env: overrides.env } : {}),
+      ...(overrides.pickupReviewForAgent ? { pickupReviewForAgent: overrides.pickupReviewForAgent } : {}),
+      ...(overrides.getDailyCapBlock ? { getDailyCapBlock: overrides.getDailyCapBlock } : {}),
     };
     const sweeper = createIdlePickupSweeper(deps);
     return { sweeper, enqueueWakeup: enqueueWakeup as unknown as ReturnType<typeof vi.fn>, deps };
   }
+
+  it("retries suppressed review work on later ticks before general development work", async () => {
+    const { companyId, agentId } = await seedAgent();
+    await db.insert(issues).values({
+      id: randomUUID(), companyId, title: "Development task", status: "todo",
+      priority: "high", assigneeAgentId: agentId,
+    });
+    const pickupReviewForAgent = vi.fn()
+      .mockResolvedValueOnce({ handled: true, woken: 0 })
+      .mockResolvedValueOnce({ handled: true, woken: 1 });
+    const { sweeper, enqueueWakeup } = sweeperDeps({ pickupReviewForAgent });
+    expect((await sweeper.sweep(new Date("2026-09-30T12:00:00Z"))).woken).toBe(0);
+    expect((await sweeper.sweep(new Date("2026-09-30T12:10:00Z"))).woken).toBe(1);
+    expect(pickupReviewForAgent).toHaveBeenCalledTimes(2);
+    expect(pickupReviewForAgent).toHaveBeenCalledWith(expect.objectContaining({ id: agentId, companyId }));
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
 
   it("wakes a ready issue of an invokable idle agent on the tick", async () => {
     const { companyId, agentId } = await seedAgent();
@@ -1177,6 +1615,41 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
     expect(result.agentsChecked).toBe(1);
     expect(result.woken).toBe(1);
     expect(enqueueWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ reason: IDLE_WAKE_REASON }));
+  });
+
+  it("myrmidon(OPE-11947): skips an agent over its daily cap whose receipt exists and still wakes the others", async () => {
+    const capped = await seedAgent();
+    const free = await seedAgent();
+    for (const { companyId, agentId } of [capped, free]) {
+      for (let n = 0; n < 3; n += 1) {
+        await db.insert(issues).values({
+          id: randomUUID(), companyId, title: `Ready task ${n}`, status: "todo",
+          priority: "medium", assigneeAgentId: agentId,
+        });
+      }
+    }
+    await db.insert(agentWakeupRequests).values({
+      companyId: capped.companyId,
+      agentId: capped.agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "heartbeat.daily_run_limit",
+      payload: { heartbeatSkip: { observed: 40, limit: 40 } },
+      status: "skipped",
+      finishedAt: new Date(),
+    });
+    const { sweeper, enqueueWakeup } = sweeperDeps({
+      getDailyCapBlock: async (agent) =>
+        agent.id === capped.agentId ? { reason: "heartbeat.daily_run_limit", observed: 40, limit: 40 } : null,
+    });
+
+    const result = await sweeper.sweep(new Date());
+
+    expect(result.agentsChecked).toBe(2);
+    expect(result.dailyCapSkipped).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(free.agentId, expect.objectContaining({ reason: IDLE_WAKE_REASON }));
   });
 
   it("does not wake a paused agent (the pause is respected)", async () => {
@@ -1269,5 +1742,103 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
     expect(result.agentsChecked).toBe(0);
     expect(result.woken).toBe(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+});
+
+describe("isReviewPendingWaitingForCi (OPE-10082)", () => {
+  const agentId = randomUUID();
+
+  it("returns true when executionState has review pending and ciState is pending or unknown", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "unknown",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true when PR workProduct metadata has ciState pending/unknown or activeCi queued", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+        workProductMetadata: { ciState: "pending" },
+      }),
+    ).toBe(true);
+
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+        workProductMetadata: { activeCi: { status: "queued" } },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false when CI is green", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "green",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when currentParticipant is a different agent", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: randomUUID() },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when review stage is not pending", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "approved",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(false);
   });
 });

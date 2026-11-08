@@ -6,6 +6,8 @@
 // deployment value with a neutral default (60 s), tuned from env like its
 // siblings.
 
+import { liveTaskPrSyncSettings } from "../runs-queue-settings/live.js";
+
 function readInt(
   env: NodeJS.ProcessEnv,
   name: string,
@@ -51,10 +53,10 @@ export interface TaskPrSyncSettings {
 /**
  * Master switch. Unset or an unrecognized value keeps the fix on: a typo must not
  * silently extinguish it (`MYRMIDON_RUN_STALL_ENABLED` follows the same rule).
+ * OPE-4096: resolves live (UI value → env forced override → default on).
  */
 export function readTaskPrSyncEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[TASK_PR_SYNC_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+  return liveTaskPrSyncSettings(env).enabled;
 }
 
 /** The blunt settle kill switch; any explicit truthy spelling turns settling off. */
@@ -64,8 +66,10 @@ export function readTaskPrSyncSettleDisabled(env: NodeJS.ProcessEnv = process.en
 }
 
 export function readTaskPrSyncSettings(env: NodeJS.ProcessEnv = process.env): TaskPrSyncSettings {
+  // OPE-4096: the enable switch resolves live; poll interval and batch size stay
+  // env-only per ia-v2 §10.7 («TASK_PR_SYNC период/пачка — остаются env»).
   return {
-    enabled: readTaskPrSyncEnabled(env),
+    enabled: liveTaskPrSyncSettings(env).enabled,
     settleDisabled: readTaskPrSyncSettleDisabled(env),
     pollMs:
       readInt(

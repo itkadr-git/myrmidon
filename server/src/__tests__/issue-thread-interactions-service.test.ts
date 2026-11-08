@@ -75,6 +75,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
+    const defaultAgentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -83,6 +84,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(agents).values({
+      id: defaultAgentId,
+      companyId,
+      name: "Default Agent",
+      role: "engineer",
+      status: "active",
+    });
     await db.insert(goals).values({
       id: goalId,
       companyId,
@@ -97,9 +105,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: defaultAgentId,
     });
 
-    return { companyId, goalId, issueId };
+    return { companyId, goalId, issueId, defaultAgentId };
   }
 
   async function attachPlanDocument(companyId: string, issueId: string) {
@@ -360,6 +369,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       {
         ...input,
         resolverPolicy: "board_only",
+        addresseeAgentId: undefined,
+        addresseeUserId: "board-user",
         idempotencyKey: "addressed:board-only",
       },
       { agentId: creatorAgentId },
@@ -1803,38 +1814,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   });
 
   it("accepts request_confirmation interactions without creating child issues", async () => {
-    const companyId = randomUUID();
-    const goalId = randomUUID();
-    const issueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
-    await db.insert(goals).values({
-      id: goalId,
-      companyId,
-      title: "Confirm a request",
-      level: "task",
-      status: "active",
-    });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      goalId,
-      title: "Parent issue",
-      status: "in_progress",
-      priority: "medium",
-    });
+    const { companyId, goalId, issueId, defaultAgentId } = await seedConfirmationIssue(
+      "Confirm a request",
+    );
 
     const created = await interactionsSvc.create({
       id: issueId,
       companyId,
     }, {
       kind: "request_confirmation",
+      addresseeAgentId: defaultAgentId,
       continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
@@ -1875,6 +1864,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "request_confirmation",
+      addresseeAgentId: defaultAgentId,
       payload: {
         version: 1,
         prompt: "Decline only with a reason?",
@@ -1968,6 +1958,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
     const created = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
+      addresseeAgentId: resolverAgentId,
       payload: { version: 1, prompt: "Approve this review?" },
       resolverPolicy: "anyone",
     }, {
@@ -2021,6 +2012,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       });
       const created = await interactionsSvc.create({ id: issueId, companyId }, {
         kind: "request_confirmation",
+        addresseeAgentId: resolverAgentId,
         payload: { version: 1, prompt: "Approve this review?" },
       }, {
         userId: "local-board",
@@ -2123,6 +2115,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     const createdByResolver = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
+      addresseeAgentId: resolverAgentId,
       payload: { version: 1, prompt: "Approve your own request?" },
       resolverPolicy: "anyone",
     }, {
@@ -2135,6 +2128,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     const createdBySameRun = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_checkbox_confirmation",
+      addresseeAgentId: resolverAgentId,
       payload: {
         version: 1,
         prompt: "Approve the same run?",
@@ -3284,6 +3278,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    const defaultAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: defaultAgentId,
+      companyId,
+      name: "Default Agent",
+      role: "engineer",
+      status: "active",
+    });
     await db.insert(goals).values({
       id: goalId,
       companyId,
@@ -3298,6 +3300,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: defaultAgentId,
     });
     await db.insert(documents).values({
       id: documentId,
@@ -3412,6 +3415,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    const defaultAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: defaultAgentId,
+      companyId,
+      name: "Default Agent",
+      role: "engineer",
+      status: "active",
+    });
     await db.insert(goals).values({
       id: goalId,
       companyId,
@@ -3426,6 +3437,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: defaultAgentId,
     });
     await db.update(issues).set({ workMode: "planning" }).where(eq(issues.id, issueId));
     // Document is already at revision 2 — revision 1 is stale.
@@ -3551,6 +3563,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    const defaultAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: defaultAgentId,
+      companyId,
+      name: "Default Agent",
+      role: "engineer",
+      status: "active",
+    });
     await db.insert(goals).values({
       id: goalId,
       companyId,
@@ -3565,6 +3585,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: defaultAgentId,
     });
     await db.insert(documents).values({
       id: documentId,
@@ -3790,6 +3811,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "in_progress",
         priority: "medium",
         executionWorkspaceId,
+        assigneeAgentId: agentId,
       });
 
       const payload = kind === "request_checkbox_confirmation"
@@ -4245,6 +4267,112 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         id: created.id,
         status: "accepted",
       });
+    });
+  });
+
+  describe("guard: card creation without addressee is rejected (OPE-9150)", () => {
+    it("rejects interaction creation without addressee when recipient cannot be resolved and leaves no DB row", async () => {
+      const companyId = randomUUID();
+      const goalId = randomUUID();
+      const unassignedIssueId = randomUUID();
+      const creatorAgentId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: creatorAgentId,
+        companyId,
+        name: "Creator Agent",
+        role: "engineer",
+        status: "active",
+      });
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Goal",
+        level: "task",
+        status: "active",
+      });
+      await db.insert(issues).values({
+        id: unassignedIssueId,
+        companyId,
+        goalId,
+        title: "Unassigned Issue",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: null,
+      });
+
+      await expect(
+        interactionsSvc.create(
+          { id: unassignedIssueId, companyId },
+          {
+            kind: "request_confirmation",
+            payload: { version: 1, prompt: "Proceed?" },
+          },
+          { agentId: creatorAgentId },
+        ),
+      ).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("Cannot determine recipient for interaction"),
+      });
+
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.issueId, unassignedIssueId));
+      expect(rows).toHaveLength(0);
+    });
+
+    it("creates interaction with explicit addressee and populates route_type and timeout_at in DB and response", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Addressed interaction");
+      const creatorAgentId = randomUUID();
+      const targetAgentId = randomUUID();
+
+      await db.insert(agents).values([
+        {
+          id: creatorAgentId,
+          companyId,
+          name: "Creator",
+          role: "engineer",
+          status: "active",
+        },
+        {
+          id: targetAgentId,
+          companyId,
+          name: "Target",
+          role: "engineer",
+          status: "active",
+        },
+      ]);
+
+      const created = await interactionsSvc.create(
+        { id: issueId, companyId },
+        {
+          kind: "request_confirmation",
+          addresseeAgentId: targetAgentId,
+          payload: { version: 1, prompt: "Approve?" },
+        },
+        { agentId: creatorAgentId },
+      );
+
+      expect(created.addresseeAgentId).toBe(targetAgentId);
+      expect(created.routeType).toBe("decision");
+      expect(created.timeoutAt).toBeDefined();
+      expect(typeof created.timeoutAt).toBe("string");
+
+      const [dbRow] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(dbRow).toBeDefined();
+      expect(dbRow.routeType).toBe("decision");
+      expect(dbRow.addresseeAgentId).toBe(targetAgentId);
+      expect(dbRow.timeoutAt).toBeInstanceOf(Date);
     });
   });
 });
