@@ -935,9 +935,12 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
     // The run succeeded AFTER the decision: the rework already happened. The
-    // quiet window must own the task again, or every pass re-wakes it.
+    // quiet window must own the task again, or every pass re-wakes it. The
+    // stale decision is wired in via lastDecisionId so this exercises the
+    // actual decision-newer-than-run comparison, not the missing-pointer path.
+    const staleDecisionId = randomUUID();
     await db.insert(issueExecutionDecisions).values({
-      id: randomUUID(),
+      id: staleDecisionId,
       companyId,
       issueId,
       stageId: randomUUID(),
@@ -947,6 +950,10 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       createdAt: new Date(Date.now() - 30 * 60_000),
     });
     await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 5 * 60_000) });
+    await db
+      .update(issues)
+      .set({ executionState: { status: "changes_requested", lastDecisionId: staleDecisionId } })
+      .where(eq(issues.id, issueId));
     const deps = fakeDeps();
 
     const result = await idlePickupForAgent(deps, { id: agentId, companyId });
