@@ -67,6 +67,7 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   "swarm_matched",
   "idle_pickup",
   "issue_disposition_repair",
+  "queued_run_stale_timeout",
 ]);
 
 /**
@@ -204,6 +205,7 @@ export function isThrottleCandidateIssueRewake(input: IssueRewakeCandidateInput)
 export interface RecentIssueRunSample {
   id: string;
   status: string;
+  errorCode?: string | null;
   finishedAt: Date | null;
 }
 
@@ -242,10 +244,22 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   if (runs.length === 0) return { blocked: false, noProgressStreak: 0 };
   if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
+  // Stale queued runs never reached the adapter. Repeated cancellation is not
+  // recovery progress: freeze after two consecutive timeouts, regardless of
+  // cooldown expiry or the instance's configurable no-progress threshold.
+  let staleTimeoutStreak = 0;
+  for (const run of runs) {
+    if (run.status !== "cancelled" || run.errorCode !== "queued_run_stale_timeout" || !run.finishedAt) break;
+    staleTimeoutStreak += 1;
+  }
+  if (staleTimeoutStreak >= 2) {
+    return { blocked: true, frozen: true, noProgressStreak: staleTimeoutStreak, frozenAt: runs[0]!.finishedAt! };
+  }
+
   let noProgressStreak = 0;
   for (const run of runs) {
-    // A failed/cancelled/interrupted run breaks the streak: its follow-up is
-    // recovery, not a redundant re-poll, and must not be delayed.
+    // Ordinary failed/cancelled/interrupted runs break the no-op streak;
+    // a single stale timeout may retry once without cooldown.
     if (run.status !== "succeeded" || !run.finishedAt) break;
     if (input.runIdsWithIssueProgress.has(run.id)) break;
     noProgressStreak += 1;

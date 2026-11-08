@@ -322,6 +322,71 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect((await latestWakeRequest(agentId))?.reason).toBe("issue_assigned");
   });
 
+  it("freezes after two consecutive stale queued run cancellations and suppresses the third wake", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    async function seedStaleCancelledRun(finishedSecondsAgo: number) {
+      const runId = randomUUID();
+      const finishedAt = new Date(Date.now() - finishedSecondsAgo * 1000);
+      const startedAt = new Date(finishedAt.getTime() - 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        status: "cancelled",
+        errorCode: "queued_run_stale_timeout",
+        error: "Cancelled because it remained queued for more than 30 minutes without starting",
+        responsibleUserId: "responsible-user",
+        createdAt: startedAt,
+        startedAt,
+        finishedAt,
+        contextSnapshot: { issueId, taskKey: issueId, wakeReason: "queued_run_stale_timeout" },
+      });
+      return runId;
+    }
+
+    const staleWake = () => heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "queued_run_stale_timeout",
+      payload: { companyId, issueId },
+      contextSnapshot: { issueId, taskKey: issueId, wakeReason: "queued_run_stale_timeout" },
+      requestedByActorType: "system",
+      requestedByActorId: "system:resweep",
+    });
+
+    // Run 1 stale cancelled -> wake 1 passes (first retry allowed)
+    await seedStaleCancelledRun(120);
+    const wake1 = await staleWake();
+    expect(wake1).not.toBeNull();
+
+    // Run 2 stale cancelled -> wake 2 encounters streak of 2 stale cancellations -> freeze engaged!
+    await seedStaleCancelledRun(60);
+    const wake2 = await staleWake();
+    expect(wake2).toBeNull();
+
+    const [frozenIssue] = await db
+      .select({ blocker: issues.blockerMetadata })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(frozenIssue?.blocker?.issueRewakeFreeze).toMatchObject({
+      agentId,
+      noProgressStreak: 2,
+    });
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("2 прогонов по задаче без прогресса");
+
+    // Third auto-wake is suppressed because issue is frozen
+    const wake3 = await staleWake();
+    expect(wake3).toBeNull();
+  });
+
   it("throttles event-free re-wakes after consecutive no-progress runs and admits them again on new input", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
