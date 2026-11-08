@@ -1,5 +1,6 @@
 // myrmidon(1.6.6 REMOTE-SITES-T5): the move routes check the caller's access to the BOT's company
 // (read from the bot's own card), not to a company the request names.
+// myrmidon(1.6.7 FLEET-SITE-ENROLL): moving a bot and reading its log are for company admins.
 
 import express from "express";
 import request from "supertest";
@@ -12,8 +13,21 @@ const COMPANY_A = "22222222-2222-4222-8222-222222222222";
 const COMPANY_B = "33333333-3333-4333-8333-333333333333";
 const BOT_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
-const memberOfA = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_A] };
-const memberOfB = { type: "board", source: "session", userId: "user-b", isInstanceAdmin: false, companyIds: [COMPANY_B] };
+function boardActor(userId: string, companyId: string, role: string) {
+  return {
+    type: "board",
+    source: "session",
+    userId,
+    isInstanceAdmin: false,
+    companyIds: [companyId],
+    memberships: [{ companyId, membershipRole: role, status: "active" }],
+  };
+}
+const adminOfA = boardActor("user-a", COMPANY_A, "admin");
+const ownerOfA = boardActor("user-o", COMPANY_A, "owner");
+const memberOfA = boardActor("user-m", COMPANY_A, "member");
+const viewerOfA = boardActor("user-v", COMPANY_A, "viewer");
+const adminOfB = boardActor("user-b", COMPANY_B, "admin");
 const agentActor = { type: "agent", source: "agent_key", agentId: BOT_A, companyId: COMPANY_A, keyId: "key-a" };
 
 function move(overrides: Partial<FleetMoveRecord> = {}): FleetMoveRecord {
@@ -31,6 +45,7 @@ function move(overrides: Partial<FleetMoveRecord> = {}): FleetMoveRecord {
 }
 
 function harness() {
+  const getSiteLogs = vi.fn(async (_site: string, _companyId: string, _botKey: string, _tail?: number) => "line-1\nline-2");
   const service = {
     startMove: vi.fn(async (_params: { companyId: string; botKey: string; dstSite: string }) => move()),
     getLatestMove: vi.fn(async (_companyId: string, _botKey: string): Promise<FleetMoveRecord | null> => move()),
@@ -39,13 +54,14 @@ function harness() {
   const app = express();
   app.use((req, _res, next) => {
     const who = req.headers["x-test-actor"];
-    (req as unknown as { actor: unknown }).actor = who === "b" ? memberOfB : who === "agent" ? agentActor : memberOfA;
+    const actors: Record<string, unknown> = { b: adminOfB, agent: agentActor, owner: ownerOfA, member: memberOfA, viewer: viewerOfA };
+    (req as unknown as { actor: unknown }).actor = actors[typeof who === "string" ? who : ""] ?? adminOfA;
     next();
   });
   app.use(express.json());
-  app.use("/", fleetMoveRoutes({ service, botCompanyId, getSiteLogs: vi.fn(async () => "") }));
+  app.use("/", fleetMoveRoutes({ service, botCompanyId, getSiteLogs }));
   app.use(errorHandler);
-  return { app, service, botCompanyId };
+  return { app, service, botCompanyId, getSiteLogs };
 }
 
 describe("fleet move routes", () => {
@@ -61,6 +77,32 @@ describe("fleet move routes", () => {
     await request(app).get(`/fleet/bots/${BOT_A}/move`).set("x-test-actor", "b").expect(403);
     expect(service.startMove).not.toHaveBeenCalled();
     expect(service.getLatestMove).not.toHaveBeenCalled();
+  });
+
+  it("lets a company admin and the owner move a bot and read its status and log", async () => {
+    const { app, service, getSiteLogs } = harness();
+    for (const who of ["admin", "owner"]) {
+      await request(app).post(`/fleet/bots/${BOT_A}/move`).set("x-test-actor", who).send({ to: "vm-core" }).expect(200);
+      await request(app).get(`/fleet/bots/${BOT_A}/move`).set("x-test-actor", who).expect(200);
+      const logs = await request(app).get(`/fleet/bots/${BOT_A}/logs?site=myr-vm1&tail=5`).set("x-test-actor", who).expect(200);
+      expect(logs.text).toBe("line-1\nline-2");
+    }
+    expect(service.startMove).toHaveBeenCalledTimes(2);
+    expect(getSiteLogs).toHaveBeenCalledWith("myr-vm1", COMPANY_A, BOT_A, 5);
+  });
+
+  it("refuses a plain company member and a viewer: no move, no status, no log, and the site is not asked", async () => {
+    const { app, service, getSiteLogs } = harness();
+    for (const who of ["member", "viewer"]) {
+      await request(app).post(`/fleet/bots/${BOT_A}/move`).set("x-test-actor", who).send({ to: "vm-core" }).expect(403);
+      await request(app).post(`/api/myrmidon/fleet/bots/${BOT_A}/move`).set("x-test-actor", who).send({ to: "vm-core" }).expect(403);
+      await request(app).get(`/fleet/bots/${BOT_A}/move`).set("x-test-actor", who).expect(403);
+      await request(app).get(`/fleet/bots/${BOT_A}/logs?site=myr-vm1`).set("x-test-actor", who).expect(403);
+      await request(app).get(`/api/myrmidon/fleet/bots/${BOT_A}/logs?site=myr-vm1`).set("x-test-actor", who).expect(403);
+    }
+    expect(service.startMove).not.toHaveBeenCalled();
+    expect(service.getLatestMove).not.toHaveBeenCalled();
+    expect(getSiteLogs).not.toHaveBeenCalled();
   });
 
   it("refuses an agent key", async () => {

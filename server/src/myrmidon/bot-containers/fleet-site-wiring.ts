@@ -3,6 +3,8 @@
 // myrmidon(1.6.6 OPE-8999): binds the site enroll routes to the registry and company secrets.
 // myrmidon(1.6.6 OPE-9154): the board issues the site client certificate itself: the site-CA
 // key material is generated here, stored only as a company secret, and never returned.
+// myrmidon(1.6.7 FLEET-SITE-ENROLL): the board also generates the token of a site (a company secret
+// it names itself); the caller no longer names a secret.
 
 import { X509Certificate, createPrivateKey } from "node:crypto";
 import type { Router } from "express";
@@ -15,6 +17,7 @@ import {
   startFleetSiteCertRotationScheduler,
   type FleetSiteRoutesDeps,
 } from "./fleet-site-routes.js";
+import { FLEET_SITE_URL_ALLOWLIST_ENV, parseFleetSiteUrlAllowlist } from "./fleet-site-url-policy.js";
 import { siteHealthStore } from "./site-health-store.js";
 import { createFleetSite, deleteFleetSite, getFleetSite, listFleetSites, parseTlsCredentials, updateFleetSite, bumpFleetRegistryVersion } from "./site-registry.js";
 
@@ -44,7 +47,6 @@ export function createFleetSiteRoutesDeps(db: Db): FleetSiteRoutesDeps {
       if (!cert.ca || !cert.checkPrivateKey(key)) throw new Error("Stored site CA secret is malformed");
       return { cert: material.cert, key: material.key, subject: siteCaSubject(material.cert) };
     },
-    secretExists: async (companyId, name) => Boolean(await secrets.getByName(companyId, name)),
     writeSecret: async (companyId, name, value) => {
       const existing = await secrets.getByName(companyId, name);
       if (existing) await secrets.rotate(existing.id, { value });
@@ -56,6 +58,8 @@ export function createFleetSiteRoutesDeps(db: Db): FleetSiteRoutesDeps {
         await secrets.remove(existing.id);
       }
     },
+    // myrmidon(1.6.7 FLEET-SITE-ENROLL): read on every enroll, so a change needs no restart.
+    hostAllowlist: () => parseFleetSiteUrlAllowlist(process.env[FLEET_SITE_URL_ALLOWLIST_ENV]),
     refreshRegistry: () => { bumpFleetRegistryVersion(); },
     updateSite: async (companyId, name, patch) => {
       await updateFleetSite(db, companyId, name, patch);

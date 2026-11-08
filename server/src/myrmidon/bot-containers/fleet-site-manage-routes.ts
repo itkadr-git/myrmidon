@@ -6,12 +6,12 @@
 //
 //   GET   /myrmidon/fleet/sites/overview?companyId=     sites: status, lastSeen, capacity used/total, bots, drift, key TTL
 //   GET   /myrmidon/fleet/sites/:name/bots?companyId=   the site's bots: state, image, drift, gateway address
-//   PATCH /myrmidon/fleet/sites/:name?companyId=        labels, capacity, address, privateNetwork/tunnel (admin)
+//   PATCH /myrmidon/fleet/sites/:name?companyId=        labels, capacity, address, privateNetwork/tunnel (owner)
 //   POST  /myrmidon/fleet/sites/:name/drain?companyId=  operator drain: no new placements (admin)
 //   POST  /myrmidon/fleet/sites/:name/resume?companyId= lifts a drain (admin)
 //   POST  /myrmidon/fleet/bots/:key/restart             restart the bot's container on its site (admin)
 //   POST  /myrmidon/fleet/bots/:key/stop                stop it (admin)
-//   GET   /myrmidon/fleet/bots/:key/logs?tail=          the tail of the container log through the site-agent
+//   GET   /myrmidon/fleet/bots/:key/logs?tail=          the tail of the container log through the site-agent (admin)
 //
 // Every call that reaches a site (restart, stop, logs, resume) is refused while the board's
 // client certificate for that site has expired, and the refusal is logged as an alert: an
@@ -21,6 +21,8 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { z } from "zod";
 import { HttpError, badRequest, conflict, notFound } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, assertCompanyAdmin } from "../../routes/authz.js";
+import { assertFleetSiteOwner } from "./fleet-site-authz.js";
+import { fleetdUrlHostProblem } from "./fleet-site-url-policy.js";
 import { normalizeFleetdUrl } from "./fleet-site-routes.js";
 import { siteBadge, type FleetSiteBadge } from "./site-health-routes.js";
 import type { FleetSite, FleetSiteUpdate } from "./site-registry.js";
@@ -102,6 +104,8 @@ export interface FleetSiteManageDeps {
   readClientCertNotAfter?(site: FleetSite): Promise<Date | null>;
   /** Writes the freshly read end of validity back to the registry row (best effort, for other readers). */
   storeClientCertNotAfter?(site: FleetSite, notAfter: Date): Promise<void>;
+  /** Extra hosts (names or IP literals) the operator allows as a site address; read on every address change. */
+  fleetdHostAllowlist?(): readonly string[];
   now?: () => number;
   log?: { warn?(fields: Record<string, unknown>, message: string): void; info?(fields: Record<string, unknown>, message: string): void };
 }
@@ -163,11 +167,12 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
     return current;
   }
 
-  function companyFromQuery(req: Request, admin: boolean): string {
+  function companyFromQuery(req: Request, level: "access" | "admin" | "owner"): string {
     assertBoard(req);
     const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
     if (!companyId) throw badRequest("companyId is required");
-    if (admin) assertCompanyAdmin(req, companyId);
+    if (level === "owner") assertFleetSiteOwner(req, companyId);
+    else if (level === "admin") assertCompanyAdmin(req, companyId);
     else assertCompanyAccess(req, companyId);
     return companyId;
   }
@@ -190,7 +195,7 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleOverview(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, false);
+    const companyId = companyFromQuery(req, "access");
     const sites = await Promise.all((await deps.listSites(companyId)).map((site) => fresh(site)));
     const rows: SiteOverviewRow[] = await Promise.all(
       sites.map(async (site) => {
@@ -224,13 +229,13 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleBots(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, false);
+    const companyId = companyFromQuery(req, "access");
     const site = await requireSite(companyId, siteName(req));
     res.json({ site: site.name, bots: await deps.listSiteBots(companyId, site.name) });
   }
 
   async function handlePatch(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, true);
+    const companyId = companyFromQuery(req, "owner");
     const site = await requireSite(companyId, siteName(req));
     const parsed = patchBodySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -244,6 +249,12 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
         patch.url = normalizeFleetdUrl(body.url);
       } catch (err) {
         throw badRequest(err instanceof Error ? err.message : "invalid url");
+      }
+      // The board sends the site's token and client certificate to this address. An address the site
+      // already has is not a new destination, so only a change is held to the host rule.
+      if (patch.url !== undefined && patch.url !== site.url) {
+        const hostProblem = fleetdUrlHostProblem(patch.url, deps.fleetdHostAllowlist?.() ?? []);
+        if (hostProblem) throw badRequest(hostProblem);
       }
     }
     if (body.labels !== undefined) patch.labels = body.labels;
@@ -268,7 +279,7 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleDrain(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, true);
+    const companyId = companyFromQuery(req, "admin");
     const site = await requireSite(companyId, siteName(req));
     if (site.status === "draining") {
       // Already out of placement. An operator's press makes the drain theirs: the monitor must not lift it.
@@ -285,7 +296,7 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleResume(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, true);
+    const companyId = companyFromQuery(req, "admin");
     const site = await requireSite(companyId, siteName(req));
     if (site.status === "active") {
       res.json({ ok: true, site: site.name, status: "active", changed: false });
@@ -335,7 +346,8 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleLogs(req: Request, res: Response): Promise<void> {
-    const { botKey, companyId, site } = await botContext(req, false);
+    // The log of a bot can hold anything the bot printed: company admins only, like restart and stop.
+    const { botKey, companyId, site } = await botContext(req, true);
     const rawTail = typeof req.query.tail === "string" ? req.query.tail.trim() : "";
     let tail = DEFAULT_TAIL;
     if (rawTail) {

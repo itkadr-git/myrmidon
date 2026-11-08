@@ -313,26 +313,21 @@ Every error response follows single-line, secret-safe reason codes:
 
 1. **Host requirements**: a dedicated Linux VM with Docker (e.g. `myr-vm1`). Project-quota XFS at `/srv/myrmidon-xfs` is recommended for per-bot disk limits; on ext4 the quotas are simply absent and `volumeRoot` can point at any directory (e.g. `/srv/myrmidon-bots`).
 2. **Network**: the board must reach `fleetd` on its listen address (private LAN or tunnel). Do not publish port `9100` publicly; bind `listen` to the LAN address, not `0.0.0.0`.
-3. **Site PKI (mTLS is mandatory)**: `fleetd` serves HTTPS only, requires a client certificate signed by the site CA, and then checks the bearer token on top. It refuses to start without `siteCA`, `serverCert` and `serverKey`. The root site-CA (ECDSA P-256) is generated and stored centrally by the board in company secrets (`myrmidon-site-ca`, 10-year validity, private key never leaves the board). Upon enrollment, the board automatically issues a client certificate (valid 90 days, auto-renewed 30 days before expiration) and a server certificate for fleetd with SAN derived from the site URL. The public `ca.crt` and server certificate/key are returned in the enroll response. The operator only prepares a bearer token (at least 32 characters):
-   ```bash
-   umask 077; mkdir site-myr-vm1 && cd site-myr-vm1
-   # bearer token (fleetd requires at least 32 characters)
-   openssl rand -hex 32 > token
-   ```
-   Certificates are issued by the board; the site-CA private key is stored securely in the company and never leaves the board. The public CA certificate and fleetd server certificate are returned upon enrollment to place in `/etc/myrmidon/pki/`.
+3. **Site PKI (mTLS is mandatory)**: `fleetd` serves HTTPS only, requires a client certificate signed by the site CA, and then checks the bearer token on top. It refuses to start without `siteCA`, `serverCert` and `serverKey`. The root site-CA (ECDSA P-256) is generated and stored centrally by the board in company secrets (`myrmidon-site-ca`, 10-year validity, private key never leaves the board). Upon enrollment, the board automatically issues a client certificate (valid 90 days, auto-renewed 30 days before expiration) and a server certificate for fleetd with SAN derived from the site URL. The board also generates the bearer token of the site (random, 64 hex characters; fleetd requires at least 32), stores it in the company secret `myrmidon-fleet-site-token-<site>` and returns it once. The public `ca.crt`, the server certificate and key, and the token are all in the enroll response. The operator prepares no secret: enroll the site first (section 4.3), then configure the site agent with these values (section 4.2).
+   The site-CA private key is stored securely in the company and never leaves the board. The enroll response is shown once and carries `Cache-Control: no-store`.
 
 ---
 
 ### 4.2 Site-Agent Configuration (`myr-vm1`)
 
-Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`) and the `fleetd` binary to `/usr/local/bin/fleetd`. Create `/etc/myrmidon/fleetd.json` with permissions `0600`. The file is read with unknown keys rejected, so use exactly these names:
+Enroll the site first (section 4.3). Copy `ca.crt`, `server.crt` and `server.key` from the enroll response to `/etc/myrmidon/pki/` (key `0600`) and the `fleetd` binary to `/usr/local/bin/fleetd`. Create `/etc/myrmidon/fleetd.json` with permissions `0600`. The file is read with unknown keys rejected, so use exactly these names:
 
 ```json
 {
   "siteId": "myr-vm1",
   "epoch": 1,
   "listen": "192.0.2.10:9100",
-  "token": "<contents of the token file>",
+  "token": "<fleetd.token from the enroll response>",
   "upstream": "/var/run/docker.sock",
   "siteCA": "/etc/myrmidon/pki/ca.crt",
   "serverCert": "/etc/myrmidon/pki/server.crt",
@@ -387,7 +382,7 @@ systemctl enable --now myrmidon-fleetd
 Verify health with the client certificate (without it the TLS handshake is refused; with it but without the token the answer is `401`):
 ```bash
 curl -s --cacert ca.crt --cert client.crt --key client.key \
-  -H "Authorization: Bearer $(cat token)" https://192.0.2.10:9100/v1/health | jq .
+  -H "Authorization: Bearer $FLEETD_TOKEN" https://192.0.2.10:9100/v1/health | jq .
 ```
 
 ---
@@ -396,19 +391,13 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
 
 Sites are registered through the board API, no database edits. `MYRMIDON_FLEET_HOSTS` is a legacy bootstrap path that accepts only `http://` addresses and cannot carry mTLS material; do not use it for an mTLS site.
 
-1. Store the token secret in the company (value comes from the token file and is never part of the enroll request):
-   ```bash
-   jq -Rs '{name:"fleetd-myr-vm1-token", value:.}' < token \
-     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer ***" -H 'content-type: application/json' -d @-
-   ```
-2. Enroll the site (company owner/admin or instance admin only; viewers, members and agents get `403`):
+1. Enroll the site (company owner or instance admin only; company admins, members, viewers and agents get `403`). The board generates the bearer token of the site itself. The request never names a secret: a request with `tokenSecret` gets `400`. The host of `url` must be a private IPv4 address (10/8, 172.16/12, 192.168/16, 100.64/10) or a host listed in `MYRMIDON_FLEET_SITE_URL_ALLOWLIST`; any other host gets `400` and the board issues nothing. The address in the example is a documentation address: use the private address of your site.
    ```bash
    curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
         -H "Authorization: Bearer ***" -H 'content-type: application/json' \
         -d '{
           "name": "myr-vm1",
           "url": "https://192.0.2.10:9100",
-          "tokenSecret": "fleetd-myr-vm1-token",
           "capacity": { "maxCpus": 4, "maxMemoryMb": 32768, "maxBots": 5 },
           "gatewayPortStart": 18700,
           "gatewayPortEnd": 18799,
@@ -419,8 +408,8 @@ Sites are registered through the board API, no database edits. `MYRMIDON_FLEET_H
           "network": "myrmidon-bots"
         }'
    ```
-   The `caCert`, `caFingerprint`, and `clientCertSecretKey` fields are managed automatically by the board and rejected if passed by the client (code `400`). In the `201` response, the board returns the public CA certificate (`site.caCert`, `fleetd.caCert`) and the issued fleetd server certificate and key (`fleetd.serverCert`, `fleetd.serverKey`), which the operator stores on the site at `/etc/myrmidon/pki/`. `GET /api/companies/$COMPANY/fleet/sites` lists sites (including the public `caCert` and fingerprint, no private keys); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` removes the site with `204` and cleans up the associated client secret.
-3. The gateway port range in the profile mirrors `fleetd.json` for the operator's reference; `fleetd.json` is authoritative.
+   The `caCert`, `caFingerprint`, and `clientCertSecretKey` fields are managed automatically by the board and rejected if passed by the client (code `400`). In the `201` response (header `Cache-Control: no-store`), the board returns the public CA certificate (`site.caCert`, `fleetd.caCert`), the issued fleetd server certificate and key (`fleetd.serverCert`, `fleetd.serverKey`) and the generated bearer token (`fleetd.token`). The response is shown once: the operator stores the files on the site at `/etc/myrmidon/pki/` and the token in `fleetd.json` (section 4.2). The board keeps the token in the company secret `myrmidon-fleet-site-token-myr-vm1` and reads it from there. `GET /api/companies/$COMPANY/fleet/sites` lists sites (including the public `caCert` and fingerprint, no private keys, no token); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (company owner) removes the site with `204` and cleans up the associated client secret and the token secret the board generated. `PATCH /api/myrmidon/fleet/sites/myr-vm1?companyId=$COMPANY` (labels, capacity, address) is owner-only too, and a changed address follows the same host rule. A site enrolled before the board generated tokens keeps its own token secret; nothing changes for it.
+2. The gateway port range in the profile mirrors `fleetd.json` for the operator's reference; `fleetd.json` is authoritative.
 
 ---
 
