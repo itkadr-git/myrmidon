@@ -478,6 +478,10 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
       const closeRow = closeRows[0];
       // The loop never closed it: nothing to veto, an ordinary close applies.
       if (!closeRow) return false;
+      const createdAtIso =
+        closeRow.createdAt instanceof Date
+          ? closeRow.createdAt.toISOString()
+          : String(closeRow.createdAt);
       const offTerminalRows = await db
         .select({ id: activityLog.id })
         .from(activityLog)
@@ -488,7 +492,7 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
             eq(activityLog.entityId, issueId),
             eq(activityLog.action, "issue.updated"),
             or(eq(activityLog.actorType, "user"), eq(activityLog.actorType, "agent")),
-            sql`${activityLog.createdAt} > ${closeRow.createdAt}`,
+            sql`${activityLog.createdAt} > ${createdAtIso}`,
             // The route writes `status` plus a `_previous` block (and
             // `reopened`, `reopenedFrom`) on every status change; anything
             // moving off a terminal status is a reopen by a person, ADM or
