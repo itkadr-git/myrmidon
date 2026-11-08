@@ -232,11 +232,13 @@ MYR_SMOKE_TIMEOUT_SEC="${MYRMIDON_DEPLOY_SMOKE_TIMEOUT_SEC:-300}"
 MYR_SMOKE_INTERVAL_SEC="${MYRMIDON_DEPLOY_SMOKE_INTERVAL_SEC:-10}"
 MYR_SMOKE_COMPANY="${MYRMIDON_DEPLOY_SMOKE_COMPANY:-}"
 MYR_SMOKE_AGENT="${MYRMIDON_DEPLOY_SMOKE_AGENT:-}"
+MYR_SMOKE_MIN_HEALTHY_PERCENT="${MYRMIDON_DEPLOY_SMOKE_MIN_HEALTHY_PERCENT:-${MYRMIDON_DEPLOY_SMOKE_HEALTHY_PERCENT:-50}}"
 # myrmidon(BOT-IMAGE-ROLLOUT): the bot images of the release roll out in this
 # same run, after the components. On by default: the 03.10 incident was the
 # board moving while the bots could not follow. 0 restores the manual path
 # (and the deploy then warns, because the split is the incident).
 MYR_BOT_ROLLOUT_ENABLED="${MYRMIDON_BOT_IMAGE_ROLLOUT:-1}"
+MYR_BOT_SUMMARY="${MYRMIDON_BOT_IMAGE_ROLLOUT_SUMMARY:-$STATE_DIR/bot-image-rollout-summary.json}"
 
 # Only CI images reach production: this runs before any other action.
 [[ "$MYRMIDON_IMAGE" == "$MYR_CI_IMAGE" ]] \
@@ -580,10 +582,20 @@ preflight_all() {
 }
 preflight_all
 
-# DEPLOY-HYGIENE (OPE-5107): refuse BEFORE the first pull and the dump when
-# the filesystem of /var/lib/docker cannot hold the images of this release
-# (MYRMIDON_DEPLOY_MIN_FREE_GB, default 15 GiB). In a dry run the check is
-# reported with the current value instead.
+# DEPLOY-HYGIENE: estimate all target image layers (board, changed release
+# components and bot digests) plus the DB-dump reserve before any pull/dump.
+MYRMIDON_DEPLOY_IMAGE_REFS=("$MYRMIDON_IMAGE@$digest")
+for name in "${changed_components[@]}"; do MYRMIDON_DEPLOY_IMAGE_REFS+=("${COMP_REF[$name]}"); done
+for ((bi = 0; bi < ${#bot_digest_args[@]}; bi += 2)); do
+  kv="${bot_digest_args[bi + 1]}"; bname="${kv%%=*}"
+  case "$bname" in
+    hermes) brepo="ghcr.io/itkadr-git/myrmidon-hermes" ;;
+    hermes-dev) brepo="ghcr.io/itkadr-git/myrmidon-hermes-dev" ;;
+    hermes-node) brepo="ghcr.io/itkadr-git/myrmidon-hermes-node" ;;
+    *) continue ;;
+  esac
+  MYRMIDON_DEPLOY_IMAGE_REFS+=("$brepo@${kv#*=}")
+done
 deploy_disk_precheck deploy.sh
 # The check above covers the whole deploy: the bot-image rollout script skips
 # its own precheck and its own end-of-run image cleanup (deploy.sh runs them).
@@ -637,7 +649,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     if ((urgent)); then
       plan "urgent: steps 3 and 3b skipped; no database dump or PREDEPLOY-DB-CHECK; rollback relies on the VM's nightly backup (reason: $urgent_reason)"
     else
-      plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes)"
+      plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes); keep newest $DUMP_KEEP validated dumps by modification time"
       if ((board_changed)) && [[ "${MYRMIDON_PREDEPLOY_CHECK:-1}" == "1" ]]; then
         plan "3b. prove the image on a copy of the production database BEFORE the window (PREDEPLOY-DB-CHECK, predeploy-board-check.sh): own Postgres restored from the dump, own network, the NEW dockergate next to it; wait for status ok and walk the attention list and the main APIs; a failure stops the deploy here, production untouched"
       elif ((board_changed)); then
@@ -660,7 +672,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     plan "8. leave maintenance (the exit POST returns when the window is marked leaving; the deploy waits for the state off, MAINTENANCE_EXIT_WAIT_SEC=${MAINTENANCE_EXIT_WAIT_SEC}s); then the post-deploy fleet check (no issue blocked in the deploy window, the window retired; needs BOARD_API_URL/BOARD_COMPANY_ID, otherwise skipped)"
   fi
   if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
-    plan "10. post-deploy smoke: wait for a bot container to re-apply (bot-apply-smoke.sh, timeout ${MYR_SMOKE_TIMEOUT_SEC}s); on failure the deploy reports DEGRADED and prints the rollback commands"
+    plan "10. post-deploy smoke: wait for bot gateways to be healthy (bot-apply-smoke.sh, >=${MYR_SMOKE_MIN_HEALTHY_PERCENT}% healthy, timeout ${MYR_SMOKE_TIMEOUT_SEC}s); on failure the deploy reports DEGRADED and prints the rollback commands"
   fi
   plan "11. DEPLOY-HYGIENE: remove the component images older than ${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) per repository (MYRMIDON_DEPLOY_IMAGE_KEEP; images used by a container are always kept)"
   exit 0
@@ -1034,12 +1046,13 @@ if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
   if [[ -z "$MYR_SMOKE_COMPANY" ]]; then
     log "WARNING: post-deploy bot smoke skipped: MYRMIDON_DEPLOY_SMOKE_COMPANY is not set; the deploy cannot prove a bot re-applied"
   else
-    log "10/10 post-deploy smoke: waiting for a bot container to re-apply"
-    smoke_args=(--board-url "${BOARD_API_URL:-$MAINTENANCE_API_URL}" --company "$MYR_SMOKE_COMPANY" --timeout "$MYR_SMOKE_TIMEOUT_SEC" --interval "$MYR_SMOKE_INTERVAL_SEC")
+    log "10/10 post-deploy smoke: waiting for bot gateways to be healthy (threshold >=${MYR_SMOKE_MIN_HEALTHY_PERCENT}%)"
+    smoke_args=(--board-url "${BOARD_API_URL:-$MAINTENANCE_API_URL}" --company "$MYR_SMOKE_COMPANY" --timeout "$MYR_SMOKE_TIMEOUT_SEC" --interval "$MYR_SMOKE_INTERVAL_SEC" --min-healthy-percent "$MYR_SMOKE_MIN_HEALTHY_PERCENT")
     [[ -n "$MYR_SMOKE_AGENT" ]] && smoke_args+=(--agent "$MYR_SMOKE_AGENT")
     [[ -n "$HEALTH_TOKEN_FILE" ]] && smoke_args+=(--token-file "$HEALTH_TOKEN_FILE")
+    [[ -f "$MYR_BOT_SUMMARY" ]] && smoke_args+=(--summary "$MYR_BOT_SUMMARY")
     if ! "$MYR_SCRIPT_DIR/bot-apply-smoke.sh" "${smoke_args[@]}"; then
-      log "DEGRADED: no bot container re-applied within ${MYR_SMOKE_TIMEOUT_SEC}s"
+      log "DEPLOYED-DEGRADED: no bot container re-applied within ${MYR_SMOKE_TIMEOUT_SEC}s (bot gateways failed post-deploy health check)"
       log "Roll back the board with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
       log "Roll back a component with: $MYR_SCRIPT_DIR/rollback-component.sh --config $config --component <dockergate|fleetd>"
       exit 1

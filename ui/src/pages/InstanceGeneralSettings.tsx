@@ -13,6 +13,7 @@ import { LogOut, SlidersHorizontal } from "lucide-react";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -22,9 +23,10 @@ import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { IdleStopSettingsPanel } from "@/components/myrmidon/IdleStopSettingsPanel"; // myrmidon(OPE-7898)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
-import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
+import { RunPrioritySettingsPanel } from "@/components/myrmidon/RunPrioritySettingsPanel";
 import { GuardrailsSettingsPanel } from "@/components/myrmidon/GuardrailsSettingsPanel"; // myrmidon(1.7-SETTINGS-C)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
+import { LiteLlmBudgetSyncSettingsPanel } from "@/components/myrmidon/LiteLlmBudgetSyncSettingsPanel"; // myrmidon(SETTINGS-UI-REMAINDER)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
 import { OwnerActiveChannelSettingsPanel } from "@/components/myrmidon/OwnerActiveChannelSettingsPanel"; // myrmidon(1.7-ACTIVE-CHANNEL)
@@ -32,10 +34,14 @@ import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPan
 import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
 import { ModelApiPricingSettingsPanel } from "@/components/myrmidon/ModelApiPricingSettingsPanel"; // OPE-9499: configurable API-equivalent pool pricing
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { AttentionFeedSettingsPanel } from "@/components/myrmidon/AttentionFeedSettingsPanel"; // myrmidon(1.6.6 SETTINGS-UI C-4, OPE-11234)
+import { InputLimitSettingsPanel } from "@/components/myrmidon/InputLimitSettingsPanel";
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
+import { SharedMountSettingsPanel } from "@/components/myrmidon/SharedMountSettingsPanel";
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
 import { BotImageRolloutSettingsPanel } from "@/components/myrmidon/BotImageRolloutSettingsPanel"; // myrmidon(BOT-ROLLOUT)
+import { AutoUpdateSettingsPanel } from "@/components/myrmidon/AutoUpdateSettingsPanel"; // myrmidon(1.7-AUTO-UPDATE-B)
 import { SessionGenerationsSettingsPanel } from "@/components/myrmidon/SessionGenerationsSettingsPanel"; // myrmidon(PERF-DIET-K)
 import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
@@ -48,6 +54,9 @@ import { ModelServiceSettingsPanel } from "@/components/myrmidon/ModelServiceSet
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
+import { BoardLeasesPanel } from "@/components/myrmidon/BoardLeasesPanel"; // myrmidon(1.6.5 BOARD-PROCESSES)
+import { SystemSettingsPanel } from "@/components/myrmidon/SystemSettingsPanel"; // myrmidon(1.7, OPE-4101)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { VendorNameCheckSettingsPanel } from "@/components/myrmidon/VendorNameCheckSettingsPanel"; // myrmidon(1.7-REBRAND-F)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
@@ -131,8 +140,11 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const showKeyboardShortcuts = !hiddenSettings.has("instance.general.keyboardShortcuts");
   const showBackupRetention = !hiddenSettings.has("instance.general.backupRetention");
   const showFeedbackDataSharing = !hiddenSettings.has("instance.general.feedbackDataSharingPreference");
+  const showExecutionPolicy = !hiddenSettings.has("instance.general.executionMode");
   const showSignOut = !hiddenSettings.has("instance.general.signOut");
+  const executionMode = generalQuery.data?.executionMode ?? "any";
   const visibleTopics = [
+    ...(showExecutionPolicy ? [t("settings.executionPolicy")] : []),
     ...(showCensorUsernameInLogs ? [t("area.settings-company.instance-general-settings.topicLogDisplay")] : []),
     ...(showKeyboardShortcuts ? [t("area.settings-company.instance-general-settings.topicKeyboardShortcuts")] : []),
     ...(showBackupRetention ? [t("area.settings-company.instance-general-settings.topicBackupRetention")] : []),
@@ -172,9 +184,10 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
-      <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
+      <RunPrioritySettingsPanel />
       <GuardrailsSettingsPanel /> {/* myrmidon(1.7-SETTINGS-C) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
+      <LiteLlmBudgetSyncSettingsPanel /> {/* myrmidon(SETTINGS-UI-REMAINDER) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
       <OwnerActiveChannelSettingsPanel /> {/* myrmidon(1.7-ACTIVE-CHANNEL) */}
@@ -182,10 +195,14 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
       <ModelApiPricingSettingsPanel /> {/* OPE-9499: pool usage priced at configured API rates */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
+      <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.6 SETTINGS-UI C-4, OPE-11234) */}
+      <InputLimitSettingsPanel />
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
+      <SharedMountSettingsPanel />
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
       <BotImageRolloutSettingsPanel /> {/* myrmidon(BOT-ROLLOUT) */}
+      <AutoUpdateSettingsPanel /> {/* myrmidon(1.7-AUTO-UPDATE-B) */}
       <SessionGenerationsSettingsPanel /> {/* myrmidon(PERF-DIET-K) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
       <TeamLivenessSettingsPanel /> {/* myrmidon(TEAM-LIVENESS-SETTINGS) */}
@@ -197,6 +214,9 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ModelServiceSettingsPanel /> {/* myrmidon(1.7 SETTINGS-TO-UI D) */}
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
+      <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
+      <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
+      <SystemSettingsPanel /> {/* myrmidon(1.7, OPE-4101) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
       <VendorNameCheckSettingsPanel /> {/* myrmidon(1.7-REBRAND-F) */}
 
@@ -230,6 +250,26 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
               label={t("settings.bootstrapInvite")}
               value={healthQuery.data?.bootstrapInviteActive ? t("settings.active") : t("settings.none")}
             />
+          </div>
+        </div>
+      </section>
+      )}
+
+      {showExecutionPolicy && (
+      <section data-testid="instance-execution-policy-section">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">{t("settings.executionPolicy")}</h2>
+              <Badge variant="outline" data-testid="execution-mode-badge" className="font-mono text-xs capitalize">
+                {executionMode}
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {executionMode === "kubernetes"
+                ? t("settings.executionPolicyDescriptionKubernetes")
+                : t("settings.executionPolicyDescription")}
+            </p>
           </div>
         </div>
       </section>

@@ -93,13 +93,28 @@ test("an allowlisted span does not count as visible", () => {
 });
 
 test("strict mode fails on any visible occurrence at the baseline", () => {
-  const res = runCheck(["--target", "snapshots", "--mode", "strict"]);
+  const dir = scratchSnapshots((d) => {
+    const openapi = path.join(d, "openapi.json");
+    const body = JSON.parse(fs.readFileSync(openapi, "utf8"));
+    body.description += " Powered by Paperclip.";
+    fs.writeFileSync(openapi, `${JSON.stringify(body, null, 2)}\n`);
+  });
+  const res = runCheck(["--target", "snapshots", "--snapshots", dir, "--mode", "strict"]);
   assert.equal(res.code, 1, res.stdout);
   assert.match(res.stdout, /mode strict/);
 });
 
 test("MYRMIDON_VENDOR_NAME_CHECK_MODE overrides the policy file", () => {
-  const res = runCheck(["--target", "snapshots"], { MYRMIDON_VENDOR_NAME_CHECK_MODE: "strict" });
+  const dir = scratchSnapshots((d) => {
+    const openapi = path.join(d, "openapi.json");
+    const body = JSON.parse(fs.readFileSync(openapi, "utf8"));
+    body.description += " Powered by Paperclip.";
+    fs.writeFileSync(openapi, `${JSON.stringify(body, null, 2)}\n`);
+  });
+  const res = runCheck(
+    ["--target", "snapshots", "--snapshots", dir],
+    { MYRMIDON_VENDOR_NAME_CHECK_MODE: "strict" },
+  );
   assert.equal(res.code, 1, res.stdout);
   assert.match(res.stdout, /mode strict \(env\)/);
 });

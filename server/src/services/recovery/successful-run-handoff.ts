@@ -151,6 +151,7 @@ const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS = new Set([
   "issue is under an active pause hold",
   "corrective handoff wake already exists for this source run",
   "chat conversation already owns the next action",
+  "open pull request is waiting for CI/review external event",
 ]);
 
 export function isSuccessfulRunHandoffValidPathSkip(
@@ -491,6 +492,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
   hasActiveRoutineContinuation: boolean;
+  hasOpenPullRequestWaitingForCi?: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
 }): SuccessfulRunHandoffDecision {
@@ -527,6 +529,9 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasActiveRoutineContinuation) {
     return { kind: "skip", reason: "active routine continuation owns the next action" };
+  }
+  if (input.hasOpenPullRequestWaitingForCi) {
+    return { kind: "skip", reason: "open pull request is waiting for CI/review external event" };
   }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };

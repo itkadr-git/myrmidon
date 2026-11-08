@@ -110,6 +110,7 @@ import type { IssueScent } from "@myrmidon/shared";
 import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBlockedHasReason, isAutoUnblockCandidate } from "../myrmidon/blocked-reason-guard.js";
+import { extractReleasePrefix } from "../myrmidon/board-janitor/policy.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -9504,6 +9505,7 @@ export function issueService(db: Db) {
           and(
             eq(issues.companyId, parent.companyId),
             eq(issues.parentId, parent.id),
+            notInArray(issues.status, ["done", "cancelled"]),
           ),
         );
       if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
@@ -9985,7 +9987,7 @@ export function issueService(db: Db) {
     ) => {
       const {
         initialPlan,
-        labelIds: inputLabelIds,
+        labelIds: rawLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
         skipExecutionWorkspaceInheritance,
@@ -10000,6 +10002,7 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      let inputLabelIds = rawLabelIds;
       if (
         issueData.parentId &&
         !parentAssigneeInheritanceResolved &&
@@ -10196,6 +10199,39 @@ export function issueService(db: Db) {
             issueData.projectId = parentIssue.projectId;
           }
         }
+        if (issueData.parentId) {
+          const existingLabels = inputLabelIds && inputLabelIds.length > 0
+            ? await tx
+                .select({ id: labels.id, name: labels.name })
+                .from(labels)
+                .where(and(eq(labels.companyId, companyId), inArray(labels.id, inputLabelIds)))
+            : [];
+          const hasExplicitReleaseLabel = existingLabels.some((l) => Boolean(extractReleasePrefix(l.name)));
+          if (!hasExplicitReleaseLabel) {
+            const parentLabelRows = await tx
+              .select({ id: labels.id, name: labels.name })
+              .from(issueLabels)
+              .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+              .where(
+                and(
+                  eq(issueLabels.companyId, companyId),
+                  eq(issueLabels.issueId, issueData.parentId),
+                ),
+              );
+            const parentReleaseLabels = parentLabelRows.filter((l) => Boolean(extractReleasePrefix(l.name)));
+            if (parentReleaseLabels.length > 0) {
+              const inheritedReleaseLabelIds = parentReleaseLabels.map((l) => l.id);
+              inputLabelIds = [...new Set([...(inputLabelIds ?? []), ...inheritedReleaseLabelIds])];
+              if (
+                (!issueData.status || issueData.status === "backlog") &&
+                !issueData.assigneeAgentId &&
+                !issueData.assigneeUserId
+              ) {
+                issueData.status = "todo";
+              }
+            }
+          }
+        }
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
@@ -10290,6 +10326,7 @@ export function issueService(db: Db) {
         let projectPolicyCached: ReturnType<
           typeof parseProjectExecutionWorkspacePolicy
         > | null = null;
+        let projectDevelopmentProcessCached: Record<string, unknown> | null = null;
         let projectPolicyLoaded = false;
         const loadProjectPolicyOnce = async () => {
           if (projectPolicyLoaded) return projectPolicyCached;
@@ -10298,6 +10335,7 @@ export function issueService(db: Db) {
           const projectRow = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              developmentProcess: projects.developmentProcess,
             })
             .from(projects)
             .where(
@@ -10310,9 +10348,25 @@ export function issueService(db: Db) {
           projectPolicyCached = parseProjectExecutionWorkspacePolicy(
             projectRow?.executionWorkspacePolicy,
           );
+          projectDevelopmentProcessCached = projectRow?.developmentProcess ?? null;
           return projectPolicyCached;
         };
 
+        await loadProjectPolicyOnce();
+        const developmentProcess = projectDevelopmentProcessCached as {
+          enabled?: boolean;
+          executionPolicy?: Parameters<typeof normalizeIssueExecutionPolicy>[0];
+        } | null;
+        if (
+          issueData.executionPolicy == null &&
+          developmentProcess &&
+          developmentProcess.enabled === true &&
+          developmentProcess.executionPolicy
+        ) {
+          issueData.executionPolicy = normalizeIssueExecutionPolicy(
+            developmentProcess.executionPolicy as Parameters<typeof normalizeIssueExecutionPolicy>[0],
+          ) as unknown as Record<string, unknown> | null;
+        }
         if (
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
@@ -10484,6 +10538,7 @@ export function issueService(db: Db) {
         }
         const values = {
           ...issueData,
+          status: issueData.status ?? "backlog",
           responsibleAgentId,
           ...(issueData.sourceTrust?.disposition === "quarantined"
             ? {

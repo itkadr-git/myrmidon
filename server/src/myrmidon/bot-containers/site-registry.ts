@@ -51,6 +51,7 @@ export interface FleetSite {
   clientCert?: string | null;
   clientCertSecretKey?: string | null;
   clientCertNotAfter?: Date | null;
+  clientCertFingerprint?: string | null;
   status: string;
   capacity: FleetSiteCapacity;
   profile: FleetSiteProfile;
@@ -74,6 +75,8 @@ export interface FleetSiteInsert {
   clientCert?: string | null;
   clientCertSecretKey?: string | null;
   clientCertNotAfter?: Date | null;
+  clientCertFingerprint?: string | null;
+  certRotatedAt?: Date | null;
   status?: string;
   capacity?: FleetSiteCapacity;
   profile?: FleetSiteProfile;
@@ -114,6 +117,8 @@ export async function createFleetSite(db: Db, input: FleetSiteInsert): Promise<F
       clientCert: input.clientCert ?? null,
       clientCertSecretKey: input.clientCertSecretKey ?? null,
       clientCertNotAfter: input.clientCertNotAfter ?? null,
+      clientCertFingerprint: input.clientCertFingerprint ?? null,
+      certRotatedAt: input.certRotatedAt ?? null,
       status: input.status ?? "active",
       capacity: input.capacity ?? { maxCpus: 8, maxMemoryMb: 32768 },
       profile: input.profile ?? {},
@@ -157,6 +162,8 @@ export async function updateFleetSite(
   if (patch.clientCert !== undefined) updateData.clientCert = patch.clientCert;
   if (patch.clientCertSecretKey !== undefined) updateData.clientCertSecretKey = patch.clientCertSecretKey;
   if (patch.clientCertNotAfter !== undefined) updateData.clientCertNotAfter = patch.clientCertNotAfter;
+  if (patch.clientCertFingerprint !== undefined) updateData.clientCertFingerprint = patch.clientCertFingerprint;
+  if (patch.certRotatedAt !== undefined) updateData.certRotatedAt = patch.certRotatedAt;
   if (patch.status !== undefined) updateData.status = patch.status;
   if (patch.capacity !== undefined) updateData.capacity = patch.capacity;
   if (patch.profile !== undefined) updateData.profile = patch.profile;
@@ -286,6 +293,7 @@ export async function bootstrapFleetSitesFromEnv(
         const profile: FleetSiteProfile = {};
         if (host.hindsightUrl) profile.hindsightUrl = host.hindsightUrl;
         if (host.llmBaseUrl) profile.llmBaseUrl = host.llmBaseUrl;
+        if (host.boardAddress) profile.boardAddress = host.boardAddress;
         if (host.boardExtraHost) profile.boardExtraHost = host.boardExtraHost;
         if (host.volumeRoot) profile.volumeRoot = host.volumeRoot;
         if (host.network) profile.network = host.network;
@@ -557,7 +565,13 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         const existingFingerprint = createHash("sha256")
           .update(JSON.stringify([site.url, token ?? null, site.caCert ?? null, clientCert ?? null, clientKey ?? null]))
           .digest("hex");
-        if (clients.has(key) && clientFingerprints.get(key) === existingFingerprint) continue;
+        if (clients.has(key) && clientFingerprints.get(key) === existingFingerprint) {
+          // myrmidon(1.6.6 REMOTE-SITES-T4): same connection — keep the client, but take the fresh
+          // row: profile (privateNetwork/tunnel), status and capacity changes must reach getSite()
+          // (the hermes adapter's plain-http decision reads it) without a board restart.
+          clientSites.set(key, site);
+          continue;
+        }
         const fingerprint = existingFingerprint;
         const mtls = site.url.startsWith("https:") && Boolean(site.caCert && clientCert && clientKey);
         const requiresMtls = site.url.startsWith("https:") || Boolean(site.caCert || clientCert || clientKey);

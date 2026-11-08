@@ -293,6 +293,19 @@ describe("instance settings routes", () => {
     }
   });
 
+  it.each([true, false])("allows only instance admins to change pipeline visibility (%s)", async (isInstanceAdmin) => {
+    const app = createApp({ type: "board", userId: "user-1", source: "session", isInstanceAdmin, companyIds: ["company-1"] });
+    const getRes = await request(app).get("/api/instance/settings/experimental");
+    expect(getRes.status).toBe(200);
+    const response = await request(app).patch("/api/instance/settings/experimental").send({ enablePipelines: true });
+    expect(response.status).toBe(isInstanceAdmin ? 200 : 403);
+    if (isInstanceAdmin) {
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enablePipelines: true });
+    } else {
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    }
+  });
+
   it("accepts the instance-wide Streamlined UI preference", async () => {
     const app = await createApp({
       type: "board",
@@ -603,6 +616,87 @@ describe("instance settings routes", () => {
       feedbackDataSharingPreference: "allowed",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects non-instance-admin from updating sharedMount in general settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", role: "owner" }],
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/general")
+      .send({
+        sharedMount: {
+          enabled: true,
+          hostPath: "/data/shared",
+          writable: true,
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/instance admin/i);
+    expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+  });
+
+  it("allows instance-admin to update valid sharedMount and saves it", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", role: "owner" }],
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/general")
+      .send({
+        sharedMount: {
+          enabled: true,
+          hostPath: "/srv/bot-shared",
+          writable: false,
+          allowedBots: ["eng-1", "eng-2"],
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
+      sharedMount: {
+        enabled: true,
+        hostPath: "/srv/bot-shared",
+        writable: false,
+        allowedBots: ["eng-1", "eng-2"],
+      },
+    });
+  });
+
+  it("rejects invalid sharedMount paths on general settings update", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", role: "owner" }],
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/general")
+      .send({
+        sharedMount: {
+          enabled: true,
+          hostPath: "relative/path",
+          writable: false,
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
   });
 
   it("allows non-admin board users to read general settings", async () => {

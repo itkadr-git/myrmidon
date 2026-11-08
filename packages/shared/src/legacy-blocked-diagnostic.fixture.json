@@ -1,0 +1,58 @@
+{
+  "fixtureVersion": 1,
+  "source": "legacy-blocked-diagnostic-import",
+  "tasks": [
+    {
+      "issueId": "123e4567-e89b-42d3-a456-426614174000",
+      "identifier": "OPE-LEGACY-01",
+      "oldStatus": "blocked",
+      "oldBlockers": ["Waiting for upstream dependency"],
+      "class": "dependency",
+      "proposedOwner": "legacy-reconciliation",
+      "proposedSlaMinutes": 1440,
+      "evidence": "Legacy blocker text identifies an upstream dependency.",
+      "importKey": "legacy-blocked:v1:123e4567-e89b-42d3-a456-426614174000",
+      "blockerMetadata": {
+        "blockReason": "dependency",
+        "owner": { "agentId": "90192a57-8b26-4d3f-b65f-bd3fc7feda8b" },
+        "blockedByIssueIds": ["223e4567-e89b-42d3-a456-426614174000"],
+        "nextCheckAt": "2026-11-04T12:00:00.000Z",
+        "timeoutAt": "2026-11-10T12:00:00.000Z",
+        "escalationPolicy": "legacy-blocked-diagnostic"
+      }
+    },
+    {
+      "issueId": "123e4567-e89b-42d3-a456-426614174001",
+      "identifier": "OPE-LEGACY-02",
+      "oldStatus": "blocked",
+      "oldBlockers": ["Awaiting owner decision"],
+      "class": "human_decision",
+      "evidence": "Legacy blocker text requires a human decision.",
+      "importKey": "legacy-blocked:v1:123e4567-e89b-42d3-a456-426614174001",
+      "blockerMetadata": {
+        "blockReason": "human_decision",
+        "owner": { "userId": "323e4567-e89b-42d3-a456-426614174000" },
+        "externalRef": "legacy://OPE-LEGACY-02",
+        "nextCheckAt": "2026-11-04T12:00:00.000Z",
+        "timeoutAt": "2026-11-10T12:00:00.000Z",
+        "escalationPolicy": "legacy-blocked-diagnostic"
+      }
+    },
+    {
+      "issueId": "123e4567-e89b-42d3-a456-426614174002",
+      "identifier": "OPE-LEGACY-03",
+      "oldStatus": "blocked",
+      "oldBlockers": ["No classification evidence"],
+      "class": "unknown",
+      "evidence": "Legacy record does not contain enough evidence to classify.",
+      "importKey": "legacy-blocked:v1:123e4567-e89b-42d3-a456-426614174002",
+      "blockerMetadata": {
+        "issueRewakeFreeze": {
+          "agentId": "90192a57-8b26-4d3f-b65f-bd3fc7feda8b",
+          "frozenAt": "2026-11-03T12:00:00.000Z",
+          "noProgressStreak": 1
+        }
+      }
+    }
+  ]
+}

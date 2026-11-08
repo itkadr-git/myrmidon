@@ -8,6 +8,9 @@ import { and, eq } from "drizzle-orm";
 import { issueWorkProducts, issues, type Db } from "@myrmidon/db";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { resolveGitHubAppCredential } from "../myrmidon/github-shared-identity/resolve.js";
+import { declaredReviewedHead } from "../myrmidon/review-routing/pr-policy.js";
+import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { gitHubApiBase } from "./github-fetch.js";
 import { logger } from "../middleware/logger.js";
@@ -71,12 +74,14 @@ export function headMatches(
   return a.startsWith(b) || b.startsWith(a);
 }
 
-/** Extracts head sha from text (e.g. `head 1234567`). */
+/**
+ * Extracts the reviewed head sha from a verdict: the explicit `head 1234567`
+ * spelling first, then (myrmidon(OPE-11767)) the first bare sha token — the
+ * reviewers write `APPROVE PR #N <sha>`, which the explicit spelling alone
+ * never matched (`missing_reviewed_head` on PR #2449 and #2467).
+ */
 export function parseReviewedHead(text: string | null | undefined): string | null {
-  if (!text) return null;
-  const match = HEAD_SHA_PATTERN.exec(text);
-  if (match?.[1]) return match[1];
-  return null;
+  return declaredReviewedHead(text);
 }
 
 /** Extracts PR coordinates (repository and PR number) from text. */
@@ -167,6 +172,12 @@ export interface GitHubApprovalClient {
     label: string;
     token: string;
   }): Promise<void>;
+  removeLabel?(input: {
+    repository: string;
+    number: number;
+    label: string;
+    token: string;
+  }): Promise<void>;
   submitReview(input: {
     repository: string;
     number: number;
@@ -239,6 +250,22 @@ export function createDefaultGitHubApprovalClient(
       }
     },
 
+    async removeLabel({ repository, number, label, token }) {
+      const res = await fetchFn(
+        `${apiBase}/repos/${repository}/issues/${number}/labels/${encodeURIComponent(label)}`,
+        {
+          method: "DELETE",
+          headers: ghHeaders(token),
+        },
+      );
+      // 404: the label is not present (idempotent); treat as success.
+      if (!res.ok && res.status !== 404) {
+        const error = new Error(`GitHub removeLabel failed with HTTP ${res.status}`);
+        (error as { status?: number }).status = res.status;
+        throw error;
+      }
+    },
+
     async submitReview({ repository, number, headSha, event, body, token }) {
       const res = await fetchFn(`${apiBase}/repos/${repository}/pulls/${number}/reviews`, {
         method: "POST",
@@ -293,7 +320,36 @@ export async function resolveGitHubTokenForApproval(
   db: Db,
   companyId: string,
   repository?: string,
+  identity?: {
+    agentId?: string | null;
+    runId?: string | null;
+    issueId?: string | null;
+  },
 ): Promise<string | null> {
+  // Review approval is an operation on behalf of the reviewer run. Resolve the
+  // repository-scoped shared identity first so PAT rules (as well as Apps) are
+  // honored for repositories that are not covered by the board App.
+  if (repository && identity?.agentId && identity.runId) {
+    try {
+      const secrets = secretService(db);
+      const resolution = await resolveGitHubAppCredential(
+        db,
+        { resolveSecretValue: (companyId, secretId, version, options) => secrets.resolveSecretValue(companyId, secretId, version, options) },
+        {
+          companyId,
+          agentId: identity.agentId,
+          runId: identity.runId,
+          issueId: identity.issueId ?? null,
+          repository,
+        },
+      );
+      if (resolution.kind === "issued") return resolution.credential.token;
+      if (resolution.kind === "ambiguous" || resolution.kind === "error") return null;
+    } catch {
+      // Preserve the legacy secret fallback below for older installations.
+    }
+  }
+
   const secrets = secretService(db);
   for (const name of DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
     try {
@@ -307,7 +363,6 @@ export async function resolveGitHubTokenForApproval(
     }
   }
 
-  // Attempt shared GitHub App identity token if repository is provided
   if (repository) {
     try {
       const { readGitHubSharedIdentitySettings } = await import("../myrmidon/github-shared-identity/index.js");
@@ -367,7 +422,7 @@ export interface PropagateReviewApprovalResult {
 export interface PropagateReviewApprovalDeps {
   db: Db;
   client?: GitHubApprovalClient;
-  tokenProvider?: (companyId: string, repository?: string) => Promise<string | null>;
+  tokenProvider?: (companyId: string, repository?: string, identity?: { agentId?: string | null; runId?: string | null; issueId?: string | null }) => Promise<string | null>;
   retryOptions?: RetryOptions;
 }
 
@@ -379,7 +434,7 @@ export async function propagateReviewApprovalToPullRequest(
   input: PropagateReviewApprovalInput,
 ): Promise<PropagateReviewApprovalResult> {
   const client = deps.client ?? createDefaultGitHubApprovalClient();
-  const tokenProvider = deps.tokenProvider ?? ((c, r) => resolveGitHubTokenForApproval(deps.db, c, r));
+  const tokenProvider = deps.tokenProvider ?? ((c, r, identity) => resolveGitHubTokenForApproval(deps.db, c, r, identity));
 
   // Requirement 3: Negative path verification
   const isNonApproval =
@@ -490,7 +545,11 @@ export async function propagateReviewApprovalToPullRequest(
   }
 
   // Requirement 5: Authorization check
-  const token = await tokenProvider(input.companyId, targetRepo);
+  const token = await tokenProvider(input.companyId, targetRepo, {
+    agentId: input.actor?.agentId ?? null,
+    runId: input.actor?.runId ?? null,
+    issueId: input.issueId ?? null,
+  });
   if (!token) {
     if (input.issueId) {
       await logActivity(deps.db, {
@@ -643,6 +702,12 @@ export async function propagateReviewApprovalToPullRequest(
 
   // Check if an approving GitHub review is already submitted on this head
   let alreadyHasApprovedReview = false;
+  // myrmidon(OPE-12024): true when an APPROVED review is pinned to a commit
+  // that is NOT the current head — i.e. the head moved after that approval.
+  // The `review-approved` label event fired on the old head, so the label must
+  // be re-seated for the labeled-triggered hot-files-review workflow to fire
+  // on the current head (OPE-9646, PR #2352).
+  let hasApprovedReviewOnMovedHead = false;
   let canCheckReviews = false;
   if (typeof client.listReviews === "function") {
     canCheckReviews = true;
@@ -654,13 +719,48 @@ export async function propagateReviewApprovalToPullRequest(
       alreadyHasApprovedReview = existingReviews.some(
         (r) => r.state === "APPROVED" && (!r.commitId || headMatches(r.commitId, prDetails.headSha)),
       );
+      hasApprovedReviewOnMovedHead = existingReviews.some(
+        (r) => r.state === "APPROVED" && !!r.commitId && !headMatches(r.commitId, prDetails.headSha),
+      );
     } catch {
       // Best-effort check; proceed to ensure review/label
     }
   }
 
+  // myrmidon(OPE-12024): the `review-approved` label fires the labeled-triggered
+  // `myrmidon-hot-files-review` workflow, which sets a required status on the
+  // commit that carries the label event.  When the PR head moved after an
+  // earlier approval (force-push / rebuild), the label sits on the old head and
+  // the new head never gets the required status — GitHub blocks the merge
+  // (OPE-9646, PR #2352).  Re-seat the label: remove it, then add it again so
+  // the labeled event fires on the current head.  Only re-seat when a review
+  // approval actually exists on an older head — otherwise every propagation
+  // cycle would churn the label (remove+add) even though nothing moved.
+  let labelReseated = false;
+  if (
+    alreadyLabeled &&
+    canCheckReviews &&
+    alreadyHasApprovedReview &&
+    hasApprovedReviewOnMovedHead &&
+    typeof client.removeLabel === "function"
+  ) {
+    try {
+      await executeWithRetry(
+        () => client.removeLabel!({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+        deps.retryOptions,
+      );
+      await executeWithRetry(
+        () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+        deps.retryOptions,
+      );
+      labelReseated = true;
+    } catch (err) {
+      logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to reseat review-approved label on moved head");
+    }
+  }
+
   // If already labeled, and either client cannot inspect reviews or an approving review is already present: complete no-op
-  if (alreadyLabeled && (!canCheckReviews || alreadyHasApprovedReview)) {
+  if (alreadyLabeled && !labelReseated && (!canCheckReviews || alreadyHasApprovedReview)) {
     return {
       success: true,
       action: "noop",
@@ -674,15 +774,20 @@ export async function propagateReviewApprovalToPullRequest(
 
   // Requirement 1: Tag with review-approved and/or submit approving PR review
   let labelAdded = false;
-  if (!alreadyLabeled) {
-    try {
-      await executeWithRetry(
-        () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
-        deps.retryOptions,
-      );
+  if (!alreadyLabeled || labelReseated) {
+    if (!alreadyLabeled) {
+      try {
+        await executeWithRetry(
+          () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+          deps.retryOptions,
+        );
+        labelAdded = true;
+      } catch (err) {
+        logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to add review-approved label to PR");
+      }
+    } else {
+      // The label was just reseated (removed + re-added) on the current head.
       labelAdded = true;
-    } catch (err) {
-      logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to add review-approved label to PR");
     }
   }
 
@@ -764,10 +869,24 @@ export async function propagateReviewApprovalToPullRequest(
   };
 }
 
-/** Convenience wrapper that uses default dependencies for immediate invocation. */
+/**
+ * Convenience wrapper that uses default dependencies for immediate invocation.
+ *
+ * myrmidon(OPE-11767): an approval is also the moment the board may merge the
+ * PR itself (CI can already be green). The merge trigger is told once the
+ * propagation settled — whatever it answered: the board's merge does not
+ * depend on the label/review the propagation writes on GitHub. A listener
+ * failure never reaches the caller.
+ */
 export async function triggerReviewApprovalPropagation(
   db: Db,
   input: PropagateReviewApprovalInput,
 ): Promise<PropagateReviewApprovalResult> {
-  return propagateReviewApprovalToPullRequest({ db }, input);
+  try {
+    return await propagateReviewApprovalToPullRequest({ db }, input);
+  } finally {
+    if (input.issueId && (input.decisionOutcome == null || isApprovalOutcome(input.decisionOutcome, input.verdictBody))) {
+      notifyBoardMergeTrigger({ companyId: input.companyId, issueId: input.issueId, source: "review_approved" });
+    }
+  }
 }

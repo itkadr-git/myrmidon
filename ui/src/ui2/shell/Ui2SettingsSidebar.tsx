@@ -47,6 +47,7 @@ export function Ui2SettingsSidebar() {
         <NavLink
           key={section.key}
           to={section.path}
+          end={section.key === "general"}
           className={({ isActive }) =>
             clsx("myr-ui2-settings-item", isActive && "myr-ui2-settings-item--active")
           }

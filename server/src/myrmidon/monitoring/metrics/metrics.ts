@@ -17,18 +17,27 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, count, eq, exists, gt, gte, inArray, isNotNull, isNull, lt, notExists, sql } from "drizzle-orm";
+import type { ExecutionProjection } from "@myrmidon/shared";
+import { executionProjectionsForRuns } from "../../../services/execution-projection.js";
+import { DEVEFF_EVENT_NO_OP } from "../../../services/empty-run.js";
+import {
+  KNOWN_EXECUTION_PHASES,
+  computeRunsExecutionEvaluation,
+} from "./runs-reconnecting.js";
 import {
   agents,
   companies,
   corpusShadowLog,
   heartbeatRuns,
+  heartbeatRunEvents,
   agentWakeupRequests,
   knowledgeRevisions,
   knowledgeSources,
   issueWorkProducts,
   issueClaims,
   issues,
+  issueRelations,
   litellmCostEvents,
   type Db,
 } from "@myrmidon/db";
@@ -63,11 +72,15 @@ import {
 } from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
+import { readAgentSpendWindows } from "../../litellm-keys/key-spend.js"; // myrmidon(OPE-11776)
+import { readLitellmKeyBudgetGauges } from "../../litellm-costs/attention.js"; // myrmidon(OPE-11776)
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
 import { scentMetrics } from "../../scent/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
+import { auth401BurstMetrics, AUTH_401_REASONS, type Auth401BurstSample } from "../../auth-401-burst/index.js";
+import { datastoreRetentionMetrics } from "../../datastore-care/retention/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 import {
@@ -100,6 +113,7 @@ export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
 
 /** The scraper may pass `?window=…` (seconds) for the error window; bounded. */
 export const DEFAULT_ERROR_WINDOW_SEC = 3600;
+export const DEFAULT_ENGINEER_IDLE_WINDOW_SEC = 3600;
 const MIN_ERROR_WINDOW_SEC = 60;
 const MAX_ERROR_WINDOW_SEC = 86400;
 
@@ -138,10 +152,17 @@ export const METRIC_FAMILIES = [
   "myrmidon_deferred_issue_execution_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
+  "myrmidon_empty_runs_total",
+  "myrmidon_no_result_runs_24h",
   "myrmidon_run_duration_seconds",
   "myrmidon_knowledge_on_change_share",
   "myrmidon_knowledge_revision_delay_seconds",
+  "myrmidon_runs_execution_phase",
+  "myrmidon_runs_reconnecting_oldest_seconds",
   "myrmidon_role_queue_tasks",
+  "myrmidon_engineers_live",
+  "myrmidon_engineers_idle",
+  "myrmidon_todo_unblocked_tasks",
   "myrmidon_review_tasks_without_reviewer",
   "myrmidon_blocked_tasks_without_assignee",
   "myrmidon_code_tasks_on_noncoding_roles",
@@ -152,6 +173,8 @@ export const METRIC_FAMILIES = [
   "swarm_scent_classifier_alarm",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
+  "myrmidon_llm_key_spend_cents",
+  "myrmidon_llm_key_budget_utilization_percent",
   "myrmidon_recovery_created_total",
   "myrmidon_recovery_deduped_total",
   "myrmidon_recovery_success_total",
@@ -187,6 +210,12 @@ export const METRIC_FAMILIES = [
   // and enforcement mode, process-local like the continuation counters.
   "myrmidon_guardrail_triggers_total",
 
+  // myrmidon(OPE-11890): the product-side auth-401 burst detector — process-
+  // local sliding-window 401 counter, threshold/window from env. Replaces the
+  // paperclip-auth-401-watch host timer.
+  "myrmidon_auth_401_burst_total",
+  "myrmidon_auth_401_burst_tripped",
+
   // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors
   // by path — the adapter and the vendor path that still reads in parallel
   // (design section 4, the inbound flow).
@@ -216,13 +245,16 @@ export const METRIC_FAMILIES = [
   "blocker_root_fanout",
   "blocker_terminal_count",
   "blocker_roots_over_limit",
-
   // myrmidon(1.6.6 CAPACITY-POLICY): provider-only dashboard contract.
   "myrmidon_readiness_ratio",
   "myrmidon_queue_age_seconds",
   "myrmidon_project_share",
   "myrmidon_starvation_total",
   "myrmidon_claim_rejection_total",
+
+  // myrmidon(1.6.6 OPE-9967): retention compaction timeouts without progress
+  "myrmidon_datastore_retention_consecutive_timeouts",
+  "myrmidon_datastore_retention_timeouts_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -285,11 +317,17 @@ export interface MetricsSnapshotFields {
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
   runsFailedWindow: number;
+  /** Successful empty-response runs in the error window, by agent. */
+  emptyRunsByAgent: Array<{ agentId: string; count: number }>;
+  noResultRunsByPair24h: Array<{ agentId: string; issueId: string; count: number }>;
   /** p50/p95 of finished run durations inside the latency window (seconds). */
   runDurationSecondsP50: number | null;
   runDurationSecondsP95: number | null;
   /** Issue counts per assignee role and status. */
   roleQueueTasks: Array<{ role: string; status: string; count: number }>;
+  engineersLive?: number;
+  engineersIdle?: number;
+  todoUnblockedTasks?: number;
   reviewTasksWithoutReviewer: number;
   blockedTasksWithoutAssignee: number;
   codeTasksOnNoncodingRoles: number;
@@ -301,6 +339,13 @@ export interface MetricsSnapshotFields {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  /** Per-agent ledger spend in rolling windows, exported by the authenticated /metrics endpoint. */
+  llmKeySpend?: Array<{ companyId: string; agentId: string; window: "24h" | "7d"; cents: number }>;
+  /**
+   * Gateway spend as a percentage of the key cap, per capped bot key (OPE-11776).
+   * Read from the last evaluation held in memory — a scrape never reaches the gateway.
+   */
+  llmKeyBudgetPercent?: Array<{ companyId: string; agentId: string; percent: number }>;
   recoveryCreatedTotal?: Map<IssueRecoveryActionKind, number> | null;
   recoveryDedupedTotal?: Map<IssueRecoveryActionKind, number> | null;
   recoverySuccessTotal?: Map<IssueRecoveryActionKind, number> | null;
@@ -331,6 +376,11 @@ export interface MetricsSnapshotFields {
    * Absent/null renders HELP/TYPE with no samples.
    */
   guardrailTriggers?: GuardrailTriggerCounts | null;
+  /**
+   * myrmidon(OPE-11890): the auth-401 burst detector sample of this process
+   * (in-process, no DB). null renders HELP/TYPE with no samples.
+   */
+  auth401Burst?: Auth401BurstSample | null;
   /**
    * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counters of
    * this process (in-process, no DB). null renders HELP/TYPE with no samples; a
@@ -381,6 +431,16 @@ export interface MetricsSnapshotFields {
 
   /** OPE-9476: runs that failed before the model emitted output, per agentId. */
   failedBeforeModel?: Record<string, number> | null;
+
+  /**
+   * myrmidon(1.6.6 rc.19 MONITORING OPE-10046): live runs by projection phase.
+   */
+  runsExecutionPhase?: Array<{ phase: string; count: number }> | null;
+
+  /**
+   * myrmidon(1.6.6 rc.19 MONITORING OPE-10046): duration in seconds of the oldest run in reconnecting.
+   */
+  runsReconnectingOldestSeconds?: number | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -425,6 +485,7 @@ export interface MetricsCollectorDeps {
   errorWindowSec: number;
   /** Latency window in seconds. */
   latencyWindowSec: number;
+  engineerIdleWindowSec?: number;
   /**
    * myrmidon(1.6.6 OPE-6959): the process role stamped on every sample as the
    * `role` label. Absent → resolved from `PAPERCLIP_PROCESS_ROLE` (the same
@@ -539,6 +600,47 @@ async function readRunCounters(db: Db, now: Date): Promise<{
   };
 }
 
+async function readEmptyRunsByAgent(db: Db, windowStart: Date): Promise<Array<{ agentId: string; count: number }>> {
+  const rows = await db
+    .select({ agentId: heartbeatRuns.agentId, total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "succeeded"),
+        sql`exists (
+          select 1 from issue_comments
+          where issue_comments.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from issue_work_products
+          where issue_work_products.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from activity_log
+          where activity_log.run_id = ${heartbeatRuns.id}
+            and activity_log.action not in ('issue.comment_added', 'issue.comment.created')
+        )`,
+        gte(heartbeatRuns.finishedAt, windowStart),
+      ),
+    )
+    .groupBy(heartbeatRuns.agentId);
+  return rows.map((row) => ({ agentId: row.agentId, count: Number(row.total) }));
+}
+
+async function readNoResultRunsByPair24h(db: Db, windowStart: Date): Promise<Array<{ agentId: string; issueId: string; count: number }>> {
+  const issueId = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId')`;
+  const rows = await db
+    .select({ agentId: heartbeatRuns.agentId, issueId, total: count() })
+    .from(heartbeatRuns)
+    .where(and(
+      gte(heartbeatRuns.finishedAt, windowStart),
+      sql`${issueId} is not null`,
+      sql`exists (select 1 from ${heartbeatRunEvents} e where e.run_id = ${heartbeatRuns.id} and e.event_type = ${DEVEFF_EVENT_NO_OP})`,
+    ))
+    .groupBy(heartbeatRuns.agentId, issueId);
+  return rows.map((row) => ({ agentId: row.agentId, issueId: row.issueId, count: Number(row.total) }));
+}
+
 /** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
 export async function readAgentFailedBeforeModel(
   db: Db,
@@ -564,6 +666,74 @@ export async function readAgentFailedBeforeModel(
   } catch {
     return {};
   }
+
+}
+
+/**
+ * Reads live runs, computes execution projections, and returns phase counts and oldest reconnecting seconds.
+ * myrmidon(1.6.6 rc.19 MONITORING OPE-10046).
+ */
+async function readRunsExecutionMetrics(
+  db: Db,
+  now: Date,
+): Promise<{
+  runsExecutionPhase: Array<{ phase: string; count: number }>;
+  runsReconnectingOldestSeconds: number;
+}> {
+  const liveRuns = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      createdAt: heartbeatRuns.createdAt,
+      lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+      lastOutputAt: heartbeatRuns.lastOutputAt,
+      updatedAt: heartbeatRuns.updatedAt,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.status, "running"));
+
+  const runsByCompany = new Map<string, string[]>();
+  for (const run of liveRuns) {
+    const list = runsByCompany.get(run.companyId) ?? [];
+    list.push(run.id);
+    runsByCompany.set(run.companyId, list);
+  }
+
+  const allProjections = new Map<string, ExecutionProjection>();
+  for (const [companyId, runIds] of runsByCompany.entries()) {
+    const projections = await executionProjectionsForRuns(
+      db,
+      companyId,
+      runIds,
+      now,
+    );
+    for (const [runId, proj] of projections.entries()) {
+      allProjections.set(runId, proj);
+    }
+  }
+
+  const evaluation = computeRunsExecutionEvaluation(
+    liveRuns,
+    allProjections,
+    now,
+  );
+
+  const phaseList: Array<{ phase: string; count: number }> = [];
+  for (const phase of KNOWN_EXECUTION_PHASES) {
+    phaseList.push({ phase, count: evaluation.phaseCounts[phase] ?? 0 });
+  }
+  for (const [phase, count] of Object.entries(evaluation.phaseCounts)) {
+    if (!KNOWN_EXECUTION_PHASES.includes(phase as any)) {
+      phaseList.push({ phase, count });
+    }
+  }
+
+  return {
+    runsExecutionPhase: phaseList,
+    runsReconnectingOldestSeconds: evaluation.reconnectingOldestSeconds,
+  };
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -757,6 +927,23 @@ async function readCostWindow(db: Db, windowStart: Date): Promise<number> {
   return Number(row?.total ?? 0);
 }
 
+/**
+ * Per-agent ledger spend for the authenticated scrape (OPE-11776). The shared,
+ * cached, time-bounded read of the ledger (litellm-keys/key-spend.ts): a scrape
+ * and a key-list page load within the TTL cost one query.
+ */
+async function readKeySpend(db: Db, now: Date): Promise<NonNullable<MetricsSnapshot["llmKeySpend"]>> {
+  const rows = await readAgentSpendWindows(db, now);
+  return rows.flatMap((row) =>
+    typeof row.companyId === "string" && typeof row.agentId === "string"
+      ? [
+          { companyId: row.companyId, agentId: row.agentId, window: "24h" as const, cents: row.dailyCents },
+          { companyId: row.companyId, agentId: row.agentId, window: "7d" as const, cents: row.weeklyCents },
+        ]
+      : [],
+  );
+}
+
 /** One scrape: every family is collected, and one family's failure never kills the rest. */
 export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promise<MetricsSnapshot> {
   const collected = await collectMetricsParts(deps);
@@ -831,6 +1018,17 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readRunCounters(deps.db, now),
     { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0 },
   );
+  const runsExecution = await guarded(
+    "myrmidon_runs_execution_phase|myrmidon_runs_reconnecting_oldest_seconds",
+    () => readRunsExecutionMetrics(deps.db, now),
+    {
+      runsExecutionPhase: KNOWN_EXECUTION_PHASES.map((phase) => ({
+        phase,
+        count: 0,
+      })),
+      runsReconnectingOldestSeconds: 0,
+    },
+  );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
     () => readRunDurations(deps.db, latencyWindowStart),
@@ -853,6 +1051,27 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     "myrmidon_role_queue_tasks",
     () => readRoleQueues(deps.db),
     [] as Array<{ role: string; status: string; count: number }>,
+  );
+  const engineerAndQueue = await guarded(
+    "myrmidon_engineers_live|myrmidon_engineers_idle|myrmidon_todo_unblocked_tasks",
+    async () => {
+      const idleSince = new Date(now.getTime() - (deps.engineerIdleWindowSec ?? DEFAULT_ENGINEER_IDLE_WINDOW_SEC) * 1000);
+      const isEngineer = sql`(${agents.role} = 'engineer' or ${agents.name} like 'adm-dev-eng-%')`;
+      const live = and(isEngineer, sql`${agents.status} <> 'terminated'`, isNull(agents.pausedAt));
+      const [liveCount] = await deps.db.select({ total: count() }).from(agents).where(live);
+      const [idleCount] = await deps.db.select({ total: count() }).from(agents).where(and(live,
+        notExists(deps.db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agents.id), gte(heartbeatRuns.createdAt, idleSince)))),
+      ));
+      const [todoCount] = await deps.db.select({ total: count() }).from(issues).where(and(
+        eq(issues.status, "todo"), isNull(issues.assigneeUserId), isNull(issues.hiddenAt),
+        notExists(deps.db.select({ id: issueRelations.id }).from(issueRelations).where(and(
+          eq(issueRelations.relatedIssueId, issues.id), eq(issueRelations.type, "blocks"),
+          exists(deps.db.select({ id: issues.id }).from(issues).where(and(eq(issues.id, issueRelations.issueId), sql`${issues.status} not in ('done', 'cancelled')`))),
+        ))),
+      ));
+      return { live: Number(liveCount?.total ?? 0), idle: Number(idleCount?.total ?? 0), todo: Number(todoCount?.total ?? 0) };
+    },
+    { live: 0, idle: 0, todo: 0 },
   );
   const issueStore = createPgReviewRoutingStore(deps.db);
   const reviewTasksWithoutReviewer = await guarded(
@@ -889,6 +1108,17 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readCostWindow(deps.db, errorWindowStart),
     0,
   );
+  const llmKeySpend = await guarded(
+    "myrmidon_llm_key_spend_cents",
+    () => readKeySpend(deps.db, now),
+    [] as NonNullable<MetricsSnapshot["llmKeySpend"]>,
+  );
+  // Process-local (the sweep tick's last evaluation), so it survives a broken database.
+  const llmKeyBudgetPercent = readLitellmKeyBudgetGauges().map(({ companyId, agentId, percent }) => ({
+    companyId,
+    agentId,
+    percent,
+  }));
   const deferredIssueExecutionOver30m = await guarded(
     "myrmidon_deferred_issue_execution_over_30m",
     () => deps.db.select({ total: count() }).from(agentWakeupRequests).where(and(
@@ -908,6 +1138,16 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         .where(and(eq(heartbeatRuns.status, "failed"), gte(heartbeatRuns.finishedAt, errorWindowStart)))
         .then((rows) => Number(rows[0]?.total ?? 0)),
     0,
+  );
+  const emptyRunsByAgent = await guarded(
+    "myrmidon_empty_runs_total",
+    () => readEmptyRunsByAgent(deps.db, errorWindowStart),
+    [] as Array<{ agentId: string; count: number }>,
+  );
+  const noResultRunsByPair24h = await guarded(
+    "myrmidon_no_result_runs_24h",
+    () => readNoResultRunsByPair24h(deps.db, new Date(now.getTime() - 24 * 60 * 60 * 1000)),
+    [] as Array<{ agentId: string; issueId: string; count: number }>,
   );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
@@ -944,6 +1184,15 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     "myrmidon_guardrail_triggers_total",
     () => Promise.resolve().then(() => guardrailTriggerMetrics.read()),
     null as GuardrailTriggerCounts | null,
+  );
+
+  // myrmidon(OPE-11890): the auth-401 burst detector rides the same guarded
+  // scrape — an in-process sliding-window counter that cannot throw today,
+  // guarded anyway so a future source cannot kill the scrape.
+  const auth401Burst = await guarded(
+    "myrmidon_auth_401_burst_total|myrmidon_auth_401_burst_tripped",
+    () => Promise.resolve().then(() => auth401BurstMetrics.read()),
+    null as Auth401BurstSample | null,
   );
 
   // myrmidon(1.6.6 CONNECTOR-IN): the ingress half rides the same guarded
@@ -1022,8 +1271,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       deferredIssueExecutionOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
+      emptyRunsByAgent,
+      noResultRunsByPair24h,
       runDurationSecondsP50: durations.p50,
       runDurationSecondsP95: durations.p95,
+      runsExecutionPhase: runsExecution.runsExecutionPhase,
+      runsReconnectingOldestSeconds: runsExecution.runsReconnectingOldestSeconds,
       corpusShadowRagflowSecondsP50: shadowLatencies.ragflow.p50,
       corpusShadowRagflowSecondsP95: shadowLatencies.ragflow.p95,
       corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
@@ -1032,6 +1285,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       knowledgeRevisionDelaySecondsP50: knowledgeMetrics.delayP50,
       knowledgeRevisionDelaySecondsP95: knowledgeMetrics.delayP95,
       roleQueueTasks: roleQueues,
+      engineersLive: engineerAndQueue.live,
+      engineersIdle: engineerAndQueue.idle,
+      todoUnblockedTasks: engineerAndQueue.todo,
       reviewTasksWithoutReviewer,
       blockedTasksWithoutAssignee,
       codeTasksOnNoncodingRoles,
@@ -1039,6 +1295,8 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
+      llmKeySpend,
+      llmKeyBudgetPercent,
       recoveryCreatedTotal: new Map(recoveryCounters.created),
       recoveryDedupedTotal: new Map(recoveryCounters.deduped),
       recoverySuccessTotal: new Map(recoveryCounters.succeeded),
@@ -1049,6 +1307,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
 
       adapterFallbacks: fallbackSample,
       guardrailTriggers,
+      auth401Burst,
       singletonProxy: singletonProxySample,
 
       chatIngress,
@@ -1134,6 +1393,12 @@ export async function runMetricsSelfCheck(deps: MetricsCollectorDeps): Promise<M
 }
 
 /** Clamps the requested error window (seconds) to the documented bounds. */
+export function clampEngineerIdleWindowSec(raw: unknown): number {
+  const value = typeof raw === "string" ? Number(raw) : DEFAULT_ENGINEER_IDLE_WINDOW_SEC;
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_ENGINEER_IDLE_WINDOW_SEC;
+  return Math.min(86400, Math.max(60, Math.floor(value)));
+}
+
 export function clampErrorWindowSec(raw: unknown): number {
   const value = typeof raw === "string" ? Number(raw) : DEFAULT_ERROR_WINDOW_SEC;
   if (!Number.isFinite(value)) return DEFAULT_ERROR_WINDOW_SEC;
@@ -1293,6 +1558,24 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   );
   blocks.push(
     familyBlock(
+      "myrmidon_empty_runs_total",
+      "Successful empty-response heartbeat runs in the scrape error window, by agent.",
+      "gauge",
+      snapshot.emptyRunsByAgent.map(({ agentId, count: total }) =>
+        `myrmidon_empty_runs_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(total)}`),
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_no_result_runs_24h",
+      "No-result runs per agent and issue in the rolling 24-hour window.",
+      "gauge",
+      snapshot.noResultRunsByPair24h?.map(({ agentId, issueId, count: total }) =>
+        `myrmidon_no_result_runs_24h{${R},agent_id="${escapeLabelValue(String(agentId))}",issue_id="${escapeLabelValue(String(issueId))}"} ${formatSampleValue(total)}`) ?? [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
       "myrmidon_run_duration_seconds",
       "Run duration quantiles (finishedAt - startedAt) over the latency window.",
       "summary",
@@ -1303,6 +1586,31 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         ...(snapshot.runDurationSecondsP95 !== null
           ? [`myrmidon_run_duration_seconds{${R},quantile="0.95"} ${formatSampleValue(snapshot.runDurationSecondsP95)}`]
           : []),
+      ],
+    ),
+  );
+  const phaseSamples = (
+    snapshot.runsExecutionPhase ??
+    KNOWN_EXECUTION_PHASES.map((phase) => ({ phase, count: 0 }))
+  ).map(
+    (item) =>
+      `myrmidon_runs_execution_phase{${R},phase="${escapeLabelValue(item.phase)}"} ${formatSampleValue(item.count)}`,
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_execution_phase",
+      "Live runs (status running) by execution projection phase.",
+      "gauge",
+      phaseSamples,
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_reconnecting_oldest_seconds",
+      "Duration in seconds of the oldest run currently in reconnecting.",
+      "gauge",
+      [
+        `myrmidon_runs_reconnecting_oldest_seconds{${R}} ${formatSampleValue(snapshot.runsReconnectingOldestSeconds ?? 0)}`,
       ],
     ),
   );
@@ -1354,6 +1662,9 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       ),
     ),
   );
+  blocks.push(familyBlock("myrmidon_engineers_live", "Live, unpaused engineers.", "gauge", [`myrmidon_engineers_live{${R}} ${formatSampleValue(snapshot.engineersLive ?? 0)}`]));
+  blocks.push(familyBlock("myrmidon_engineers_idle", "Live engineers without a run in the idle window.", "gauge", [`myrmidon_engineers_idle{${R}} ${formatSampleValue(snapshot.engineersIdle ?? 0)}`]));
+  blocks.push(familyBlock("myrmidon_todo_unblocked_tasks", "Unassigned todo issues without an open blocking relation.", "gauge", [`myrmidon_todo_unblocked_tasks{${R}} ${formatSampleValue(snapshot.todoUnblockedTasks ?? 0)}`]));
   blocks.push(
     familyBlock(
       "myrmidon_review_tasks_without_reviewer",
@@ -1408,6 +1719,26 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "LLM spend collected by the gateway cost sweep inside the scrape window, in cents.",
       "counter",
       [`myrmidon_llm_cost_cents_total{${R}} ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_llm_key_spend_cents",
+      "Rolling LiteLLM ledger spend in cents by company and agent (24h and 7d).",
+      "gauge",
+      (snapshot.llmKeySpend ?? []).map(({ companyId, agentId, window, cents }) =>
+        `myrmidon_llm_key_spend_cents{${R},company_id="${escapeLabelValue(companyId)}",agent_id="${escapeLabelValue(agentId)}",window="${window}"} ${formatSampleValue(cents)}`,
+      ),
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_llm_key_budget_utilization_percent",
+      "Gateway spend as a percentage of the LiteLLM key cap, by company and agent (capped keys only; above 100 = over the cap).",
+      "gauge",
+      (snapshot.llmKeyBudgetPercent ?? []).map(({ companyId, agentId, percent }) =>
+        `myrmidon_llm_key_budget_utilization_percent{${R},company_id="${escapeLabelValue(companyId)}",agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(Math.round(percent * 10) / 10)}`,
+      ),
     ),
   );
   const recoveryCounterFamily = (
@@ -1472,6 +1803,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
   const continuationCounters = continuationDedupeMetrics.read();
+  const retention = datastoreRetentionMetrics.read();
   blocks.push(
     familyBlock(
       "myrmidon_continuation_created_total",
@@ -1484,6 +1816,18 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Continuation keys suppressed because they were already claimed, cumulative since process start.",
       "counter",
       [`myrmidon_continuation_deduped_total{${R}} ${formatSampleValue(continuationCounters.deduped)}`],
+    ),
+    familyBlock(
+      "myrmidon_datastore_retention_consecutive_timeouts",
+      "Consecutive context retention passes that timed out without progress.",
+      "gauge",
+      [`myrmidon_datastore_retention_consecutive_timeouts{${R}} ${formatSampleValue(retention.consecutiveTimeouts)}`],
+    ),
+    familyBlock(
+      "myrmidon_datastore_retention_timeouts_total",
+      "Total context retention passes that timed out without progress, cumulative since process start.",
+      "counter",
+      [`myrmidon_datastore_retention_timeouts_total{${R}} ${formatSampleValue(retention.timeoutsTotal)}`],
     ),
   );
 
@@ -1653,6 +1997,33 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
             ),
           )
         : [],
+    ),
+  );
+
+  // myrmidon(OPE-11890): the auth-401 burst detector. Per-reason cumulative
+  // counter (closed reason set only — never a header or token) plus a tripped
+  // gauge that is 1 from the first crossing until the process resets. Process-
+  // local, like the guardrail counter.
+  const auth401Burst = snapshot.auth401Burst ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_auth_401_burst_total",
+      "Authentication 401 rejections per reason, cumulative since boot. Reason is the closed-set actorNoneReason taxonomy; request credentials are never a label.",
+      "counter",
+      auth401Burst
+        ? AUTH_401_REASONS.map(
+            (reason) =>
+              `myrmidon_auth_401_burst_total{${R},reason="${escapeLabelValue(reason)}"} ${formatSampleValue(auth401Burst.counts[reason] ?? 0)}`,
+          )
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_auth_401_burst_tripped",
+      "1 from the first window that crossed MYRMIDON_AUTH_401_BURST_THRESHOLD 401s inside MYRMIDON_AUTH_401_BURST_WINDOW_SEC until the process resets the detector; 0 otherwise.",
+      "gauge",
+      auth401Burst ? [`myrmidon_auth_401_burst_tripped{${R}} ${auth401Burst.tripped ? 1 : 0}`] : [],
     ),
   );
 

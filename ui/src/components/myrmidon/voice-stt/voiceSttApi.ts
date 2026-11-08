@@ -24,6 +24,9 @@ export interface VoiceSttSettings {
   language: VoiceSttLanguage;
   diarization: boolean;
   maxDurationSec: number;
+  baseUrl: string | null;
+  keySecretConfigured: boolean;
+  deepgramKeySecretConfigured: boolean;
 }
 
 /** PATCH input — the mutable screen fields. Only changed fields are
@@ -37,8 +40,9 @@ export type VoiceSttUpdateInput = Partial<
     | "language"
     | "diarization"
     | "maxDurationSec"
+    | "baseUrl"
   >
->;
+> & { keySecret?: string | null; deepgramKeySecret?: string | null };
 
 export const voiceSttQueryKey = (companyId: string) =>
   ["myrmidon", "voice-stt", companyId] as const;

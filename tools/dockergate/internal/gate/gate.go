@@ -96,6 +96,7 @@ type Options struct {
 type DiskQuota interface {
 	Put(ctx context.Context, botKey string, hard int64) (disk.Result, error)
 	Ensure(ctx context.Context, botKey string) (int, error)
+	Remove(ctx context.Context, botKey string) error
 }
 
 // Gate is the dockergate server.
@@ -130,6 +131,7 @@ type Gate struct {
 	resolveMu     sync.Mutex
 	resolveReason string
 	resolveLogAt  time.Time
+	configMu      sync.Mutex
 }
 
 type imageEntry struct {
@@ -152,6 +154,9 @@ func New(opt Options) (*Gate, error) {
 		opt.Lstat = policy.OSLstat
 	}
 	cfg := opt.Cfg
+	if cfg.PlatformLimits == nil {
+		cfg.PlatformLimits = &config.PlatformLimits{}
+	}
 	if opt.Disk == nil {
 		opt.Disk = disk.NewQuota(cfg.VolumeRoot, nil)
 	}
@@ -260,6 +265,17 @@ func (g *Gate) onResolve(ev peer.ResolveEvent) {
 	}
 }
 
+func platformLimitsEqual(a, b *config.PlatformLimits) bool {
+	var va, vb config.PlatformLimits
+	if a != nil {
+		va = *a
+	}
+	if b != nil {
+		vb = *b
+	}
+	return va == vb
+}
+
 // reloadable reports whether a new configuration differs from the running one
 // only in what a SIGHUP may change: bots, images, network, volumeRoot, the
 // allowed extra mount sources and the package cache root. The rest needs a
@@ -267,7 +283,8 @@ func (g *Gate) onResolve(ev peer.ResolveEvent) {
 func reloadable(old, cur *config.Config) bool {
 	return old.Listen == cur.Listen && old.Upstream == cur.Upstream &&
 		old.APIVersion == cur.APIVersion && old.StatsFile == cur.StatsFile &&
-		old.Limits == cur.Limits && reflect.DeepEqual(old.Caller, cur.Caller)
+		old.Limits == cur.Limits && reflect.DeepEqual(old.Caller, cur.Caller) &&
+		platformLimitsEqual(old.PlatformLimits, cur.PlatformLimits)
 }
 
 // Reload re-reads the configuration file. An invalid file, or one that changes

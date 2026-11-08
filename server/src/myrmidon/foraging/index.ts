@@ -18,10 +18,10 @@
 
 import type { Db } from "@myrmidon/db";
 import { financeEvents } from "@myrmidon/db";
-import { secretService } from "../../services/index.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logger } from "../../middleware/logger.js";
 import { nullForagingCandidatePort, type ForagingCandidatePort } from "./domain.js";
+import { selectForagingCandidatePort } from "./candidate-routing.js";
 import { createForagingReader } from "./reader.js";
 import { readForagingSettings, resolveForagingEffectiveSettings, foragingSettingsService } from "./settings.js";
 import { createForagingService, type ForagingService } from "./service.js";
@@ -88,42 +88,33 @@ export {
   type ForagingQuarantineStore,
 } from "./knowledge-port.js";
 
-/**
- * The candidate port of the running instance.
- *
- * The port is the seam with SKILL-LIFECYCLE: a finding with a diff resolves or
- * creates the company skill, records a revision that shows the diff and moves
- * the skill to `candidate` through the lifecycle service. The wiring is one
- * call site (`foragingWiring` below), so the sweep itself never changes. When
- * the connection cannot be constructed the null port keeps findings
- * `unverified` instead of failing the pass.
- */
 export function foragingCandidatePort(db: Db): ForagingCandidatePort {
-  // myrmidon(1.7-KNOWLEDGE-L5): findings route to KNOWLEDGE first — the
-  // proposal (quarantined text in the `foraging-inbox` corpus dataset,
-  // trust=external) is the candidate_ref. If the knowledge module cannot be
-  // constructed the skill port below stays the fallback, and the null port is
-  // still the last resort.
-  try {
-    const knowledgePort = createForagingKnowledgePort({
-      knowledge: (companyId: string) => createKnowledgeModule(db, companyId),
-      quarantine: createDbForagingQuarantineStore(db),
-      log: logger,
-    });
-    return knowledgePort;
-  } catch (knowledgeError) {
-    logger.warn({ error: knowledgeError }, "foraging: knowledge port could not be constructed, falling back to skill candidates");
-  }
-  try {
-    return createForagingCandidatePort({
-      skillStore: createDbForagingSkillStore(db),
-      lifecycle: skillLifecycleService(db),
-      log: logger,
-    });
-  } catch (error) {
-    logger.warn({ error }, "foraging: candidate port could not be constructed, findings stay unverified");
-    return nullForagingCandidatePort;
-  }
+  const skillPort = (() => {
+    try {
+      return createForagingCandidatePort({
+        skillStore: createDbForagingSkillStore(db),
+        lifecycle: skillLifecycleService(db),
+        log: logger,
+      });
+    } catch (error) {
+      logger.warn({ error }, "foraging: candidate port could not be constructed");
+      return nullForagingCandidatePort;
+    }
+  })();
+  const knowledgePort = (() => {
+    try {
+      return createForagingKnowledgePort({
+        knowledge: (companyId: string) => createKnowledgeModule(db, companyId),
+        quarantine: createDbForagingQuarantineStore(db),
+        log: logger,
+      });
+    } catch (error) {
+      logger.warn({ error }, "foraging: knowledge port could not be constructed");
+      return nullForagingCandidatePort;
+    }
+  })();
+
+  return selectForagingCandidatePort(skillPort, knowledgePort);
 }
 
 export interface ForagingWiring {
@@ -135,19 +126,12 @@ export interface ForagingWiring {
 /** The store, the reader and the service bound to the database. */
 export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): ForagingWiring {
   const store = createDbForagingStore(db);
-  const secrets = secretService(db);
   const settings = instanceSettingsService(db);
   const service = createForagingService({
     store,
     reader: createForagingReader({
       env,
       minHostIntervalMs: readForagingSettings(env).minHostIntervalMs,
-      readKey: async (companyId, secretName) => {
-        if (!secretName) return null;
-        const row = await secrets.getByName(companyId, secretName);
-        if (!row) return null;
-        return secrets.resolveSecretValue(companyId, row.id, "latest");
-      },
     }),
     candidatePort: foragingCandidatePort(db),
     // myrmidon(1.6.3-FORAGING-IDLE-GATE): the per-role idle check reads the

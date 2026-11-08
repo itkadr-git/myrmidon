@@ -12,6 +12,7 @@ import type {
   FinanceByKind,
   FinanceEvent,
   ProviderQuotaResult,
+  ProviderUsageAggregate,
 } from "@myrmidon/shared";
 import { api } from "./client";
 
@@ -36,6 +37,8 @@ function dateParams(from?: string, to?: string, limit?: number): string {
 }
 
 export const costsApi = {
+  providerUsage: (companyId: string) =>
+    api.get<{ thresholdPercent: number; usage: ProviderUsageAggregate[] }>(`/companies/${companyId}/provider-usage`),
   summary: (companyId: string, from?: string, to?: string) =>
     api.get<CostSummary>(`/companies/${companyId}/costs/summary${dateParams(from, to)}`),
   // myrmidon(1.6.3 PROMPT-BUDGET D): the by-agent rows also carry the fleet

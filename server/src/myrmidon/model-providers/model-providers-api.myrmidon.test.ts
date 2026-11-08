@@ -134,6 +134,15 @@ function fakeService() {
       });
       return providerView(input.providerId);
     },
+    async captureKeyRotationSnapshot() {
+      return {
+        secretId: "secret-1",
+        secretValue: KEY_VALUE,
+        models: [],
+        keyValidatedAt: null,
+      };
+    },
+    async rollbackProviderKey() {},
     async patchProvider(input) {
       calls.push({ op: "patch", companyId: input.companyId, providerId: input.providerId, body: input.body });
       return providerView(input.providerId);
@@ -172,6 +181,10 @@ function fakeService() {
       calls.push({ op: "checkToolCallCompatibility", companyId: input.companyId, providerId: input.providerId });
       return providerView(input.providerId);
     },
+    async checkPackageExpirations(companyId, options) {
+      calls.push({ op: "checkPackageExpirations", companyId, body: options });
+      return [];
+    },
     async listChannels(companyId, providerId) {
       calls.push({ op: "listChannels", companyId, providerId });
       return {
@@ -200,6 +213,25 @@ function fakeService() {
     },
     listAvailableTypes: () => listAvailableModelProviderTypes(),
     syncPoolSignals: async () => [],
+    oauthBegin: async () => ({
+      verificationUri: "http://localhost:8895/auth",
+      userCode: "TEST-CODE",
+      accountNumber: 1,
+      expiresInSec: 900,
+      intervalSec: 5,
+    }),
+    oauthStatus: async () => ({
+      status: "pending",
+      accountNumber: 1,
+    }),
+    oauthComplete: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
+    oauthRefresh: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
   };
   return { service, calls };
 }

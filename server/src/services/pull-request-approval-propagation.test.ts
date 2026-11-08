@@ -57,6 +57,20 @@ describe("pull-request-approval-propagation", () => {
       expect(parseReviewedHead("VERDICT: APPROVE looks good to me")).toBe(null);
       expect(parseReviewedHead(null)).toBe(null);
     });
+
+    // myrmidon(OPE-11767): the reviewers write `APPROVE PR #N <sha>`; the explicit
+    // `head <sha>` spelling alone left PR #2449 and #2467 with `missing_reviewed_head`.
+    it("reads the bare sha of an `APPROVE PR #N <sha>` verdict", () => {
+      const sha = "28f15c1be15204153f0e06464842d88875c373f8";
+      expect(parseReviewedHead(`APPROVE PR #2467 ${sha}\nГолова: ${sha}. CI завершён успешно.`)).toBe(sha);
+      expect(parseReviewedHead("APPROVE PR #2449 d75e816fcea7d115ababc4dad032687ffc8ed14c\nТочный head подтверждён")).toBe(
+        "d75e816fcea7d115ababc4dad032687ffc8ed14c",
+      );
+      // The explicit spelling still wins over a bare sha earlier in the text.
+      expect(parseReviewedHead("old 1111aaa rejected; APPROVE head 2222bbb")).toBe("2222bbb");
+      // A plain number is not a sha.
+      expect(parseReviewedHead("APPROVE PR #2467, issue 1234567890")).toBe(null);
+    });
   });
 
   describe("parsePullRequestCoordinates", () => {
@@ -398,6 +412,7 @@ describe("pull-request-approval-propagation", () => {
           labels: [REVIEW_APPROVED_LABEL, "ready"], // Already has review-approved!
         }),
         addLabel: vi.fn(),
+        removeLabel: vi.fn(),
         submitReview: vi.fn(),
         listReviews: vi.fn().mockResolvedValue([
           { id: 1, state: "APPROVED", commitId: defaultHeadSha },
@@ -424,6 +439,7 @@ describe("pull-request-approval-propagation", () => {
       expect(result.action).toBe("noop");
       expect(result.reason).toBe("already_labeled");
       expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.removeLabel).not.toHaveBeenCalled();
       expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
@@ -461,6 +477,107 @@ describe("pull-request-approval-propagation", () => {
       expect(result.success).toBe(true);
       expect(mockClient.addLabel).not.toHaveBeenCalled();
       expect(mockClient.submitReview).toHaveBeenCalled();
+    });
+
+    // myrmidon(OPE-12024, OPE-9646): when the head moved after an earlier
+    // approval, the label sits on the old head and the labeled-triggered
+    // hot-files-review workflow never fires on the new one. The propagation
+    // must reseat the label (remove + add) so the labeled event fires on the
+    // current head.
+    it("reseats review-approved when the PR head moved after an earlier approval", async () => {
+      const db = createMockDb();
+      const oldHeadSha = "old-head-sha";
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: defaultHeadSha,
+          labels: [REVIEW_APPROVED_LABEL],
+        }),
+        addLabel: vi.fn(),
+        removeLabel: vi.fn(),
+        submitReview: vi.fn(),
+        listReviews: vi.fn().mockResolvedValue([
+          // Approval pinned to the pre-rebuild head — the head moved after it.
+          { id: 0, state: "APPROVED", commitId: oldHeadSha },
+          // Re-approval on the current head after the rebuild.
+          { id: 1, state: "APPROVED", commitId: defaultHeadSha },
+        ]),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          headSha: defaultHeadSha,
+          decisionOutcome: "approved",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe("propagated");
+      expect(result.labelAdded).toBe(true);
+      expect(mockClient.removeLabel).toHaveBeenCalledWith({
+        repository: "itkadr-git/myrmidon",
+        number: 123,
+        label: REVIEW_APPROVED_LABEL,
+        token: "mock-token",
+      });
+      expect(mockClient.addLabel).toHaveBeenCalledWith({
+        repository: "itkadr-git/myrmidon",
+        number: 123,
+        label: REVIEW_APPROVED_LABEL,
+        token: "mock-token",
+      });
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
+    });
+
+    it("keeps noop already_labeled when the client cannot reseat the label", async () => {
+      const db = createMockDb();
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: defaultHeadSha,
+          labels: [REVIEW_APPROVED_LABEL],
+        }),
+        addLabel: vi.fn(),
+        submitReview: vi.fn(),
+        listReviews: vi.fn().mockResolvedValue([
+          { id: 1, state: "APPROVED", commitId: defaultHeadSha },
+        ]),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          headSha: defaultHeadSha,
+          decisionOutcome: "approved",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe("noop");
+      expect(result.reason).toBe("already_labeled");
+      expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
     it("authorization: fails safely and logs failure when no token is available", async () => {

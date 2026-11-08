@@ -63,10 +63,161 @@ export function emptyCatalogSignalForSweep(companyId: string, activityAt: string
 }
 
 // ---------------------------------------------------------------------------
+// LiteLLM key budget signals
+// ---------------------------------------------------------------------------
+
+export const LITELLM_BUDGET_ATTENTION_DEDUP_PREFIX = "litellm_budget:";
+export const LITELLM_NEAR_CAP_PERCENT = 80;
+export const LITELLM_ANOMALY_MULTIPLIER = 2;
+/** Below this daily spend (cents) a jump is noise, not an anomaly. */
+export const LITELLM_ANOMALY_MIN_DAILY_CENTS = 100;
+/** Days of history before the last 24 h that make the anomaly baseline. */
+const ANOMALY_BASELINE_DAYS = 6;
+
+export type LitellmBudgetSignalKind = "near_cap" | "exhausted" | "daily_anomaly";
+
+export interface LitellmBudgetAttentionSignal {
+  dedupKey: string;
+  companyId: string;
+  agentId: string;
+  kind: LitellmBudgetSignalKind;
+  severity: AttentionSeverity;
+  title: string;
+  whyNow: string;
+  summary: string;
+  activityAt: string;
+  observedPercent: number;
+  dailySpendCents: number;
+  weeklySpendCents: number;
+  capCents: number;
+}
+
+function litellmBudgetDedupKey(companyId: string, agentId: string, kind: LitellmBudgetSignalKind): string {
+  return `${LITELLM_BUDGET_ATTENTION_DEDUP_PREFIX}${kind}:${companyId}:${agentId}`;
+}
+
+/**
+ * Pure classification for one key. Gateway cumulative spend is used for cap
+ * utilization; the board ledger's daily/weekly spend is used for anomaly
+ * detection: the last 24 h against the average day of the six days before
+ * them. A key with no earlier spend has no baseline, so a brand-new key is
+ * not an anomaly. The card lands in the board attention feed (`litellm_budget`),
+ * which dispatches to the owner via the Telegram errors channel (severity
+ * high/critical) and daily digest spend section.
+ */
+export function litellmBudgetSignalsForKey(input: {
+  companyId: string;
+  agentId: string;
+  agentName?: string | null;
+  capCents: number | null;
+  gatewaySpendCents: number | null;
+  dailySpendCents: number;
+  weeklySpendCents: number;
+  activityAt: string;
+  anomalyMultiplier?: number;
+}): LitellmBudgetAttentionSignal[] {
+  const signals: LitellmBudgetAttentionSignal[] = [];
+  const name = input.agentName?.trim() || input.agentId;
+  const cap = input.capCents ?? 0;
+  const observed = input.gatewaySpendCents ?? 0;
+  const percent = cap > 0 && input.gatewaySpendCents != null ? (observed / cap) * 100 : null;
+  const base = {
+    companyId: input.companyId,
+    agentId: input.agentId,
+    activityAt: input.activityAt,
+    observedPercent: percent ?? 0,
+    dailySpendCents: input.dailySpendCents,
+    weeklySpendCents: input.weeklySpendCents,
+    capCents: cap,
+  };
+  if (percent != null && percent >= 100) {
+    signals.push({
+      ...base,
+      dedupKey: litellmBudgetDedupKey(input.companyId, input.agentId, "exhausted"),
+      kind: "exhausted",
+      severity: "critical",
+      title: `LiteLLM key exhausted: ${name}`,
+      whyNow: `Gateway spend is ${percent.toFixed(1)}% of the key cap.`,
+      summary: "The LiteLLM key has reached or exceeded its configured cap.",
+    });
+  } else if (percent != null && percent >= LITELLM_NEAR_CAP_PERCENT) {
+    signals.push({
+      ...base,
+      dedupKey: litellmBudgetDedupKey(input.companyId, input.agentId, "near_cap"),
+      kind: "near_cap",
+      severity: "high",
+      title: `LiteLLM key near cap: ${name}`,
+      whyNow: `Gateway spend is ${percent.toFixed(1)}% of the key cap.`,
+      summary: "The LiteLLM key has reached the 80% budget warning threshold.",
+    });
+  }
+  const multiplier = input.anomalyMultiplier ?? LITELLM_ANOMALY_MULTIPLIER;
+  const baselineDailyAverage = Math.max(0, input.weeklySpendCents - input.dailySpendCents) / ANOMALY_BASELINE_DAYS;
+  if (
+    input.dailySpendCents >= LITELLM_ANOMALY_MIN_DAILY_CENTS
+    && baselineDailyAverage > 0
+    && input.dailySpendCents >= baselineDailyAverage * multiplier
+  ) {
+    signals.push({
+      ...base,
+      dedupKey: litellmBudgetDedupKey(input.companyId, input.agentId, "daily_anomaly"),
+      kind: "daily_anomaly",
+      severity: "high",
+      title: `LiteLLM daily spend anomaly: ${name}`,
+      whyNow: `Spend over the last 24 h is ${input.dailySpendCents} cents versus an average of ${Math.round(baselineDailyAverage)} cents per day over the previous ${ANOMALY_BASELINE_DAYS} days.`,
+      summary: `Daily spend is at least ${multiplier}x the average of the previous ${ANOMALY_BASELINE_DAYS} days.`,
+    });
+  }
+  return signals;
+}
+
+// ---------------------------------------------------------------------------
 // Process-level registry the attention feed reads
 // ---------------------------------------------------------------------------
 
 const signalByCompany = new Map<string, EmptyCatalogAttentionSignal>();
+const budgetSignalsByCompany = new Map<string, LitellmBudgetAttentionSignal[]>();
+
+/**
+ * Record the latest key-budget classification for the attention feed. A signal
+ * that was already recorded keeps its first `activityAt`: the card is the same
+ * card on every evaluation, it must not jump to the top of the feed each time.
+ */
+export function recordLitellmBudgetSignals(companyId: string, signals: LitellmBudgetAttentionSignal[]): void {
+  const previous = new Map((budgetSignalsByCompany.get(companyId) ?? []).map((signal) => [signal.dedupKey, signal]));
+  budgetSignalsByCompany.set(
+    companyId,
+    signals.map((signal) => {
+      const earlier = previous.get(signal.dedupKey);
+      return earlier ? { ...signal, activityAt: earlier.activityAt } : signal;
+    }),
+  );
+}
+
+/** Read the latest key-budget classifications recorded by the gateway-key projection. */
+export function readLitellmBudgetSignals(companyId: string): LitellmBudgetAttentionSignal[] {
+  return budgetSignalsByCompany.get(companyId) ?? [];
+}
+
+/** One capped key's use of its cap, for the authenticated metrics scrape. */
+export interface LitellmKeyBudgetGauge {
+  companyId: string;
+  agentId: string;
+  /** Gateway spend as a percentage of the key cap (can pass 100). */
+  percent: number;
+}
+
+const budgetGaugesByCompany = new Map<string, LitellmKeyBudgetGauge[]>();
+
+/** Replace the capped-key gauges of one company with the latest evaluation. */
+export function recordLitellmKeyBudgetGauges(companyId: string, gauges: LitellmKeyBudgetGauge[]): void {
+  budgetGaugesByCompany.set(companyId, gauges);
+}
+
+/** The latest gauges of every company; the scrape reads memory, never the gateway. */
+export function readLitellmKeyBudgetGauges(): LitellmKeyBudgetGauge[] {
+  return [...budgetGaugesByCompany.values()].flat();
+}
 
 /**
  * Records the outcome of one sweep's catalog refresh. `catalogSize` is the
@@ -90,7 +241,13 @@ export function readEmptyCatalogSignal(companyId: string): EmptyCatalogAttention
   return signalByCompany.get(companyId) ?? null;
 }
 
+export function resetLitellmBudgetSignals(): void {
+  budgetSignalsByCompany.clear();
+  budgetGaugesByCompany.clear();
+}
+
 /** Forget every recorded signal: tests, and a disabled sweep clears its cards. */
 export function resetEmptyCatalogSignals(): void {
   signalByCompany.clear();
+  resetLitellmBudgetSignals();
 }

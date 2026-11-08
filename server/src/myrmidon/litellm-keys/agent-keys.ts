@@ -10,7 +10,8 @@ import {
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
 import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
-import type { KeyBudgetLimitView } from "./key-budget-adapter.js";
+import { keyBudgetUsage, type KeyBudgetLimitView, type KeyBudgetUsageView } from "./key-budget-adapter.js";
+import { AGENT_SPEND_WINDOW_MS, readAgentSpendWindows, type AgentSpendWindow } from "./key-spend.js";
 
 /**
  * myrmidon(M2-B): one LLM gateway virtual key per agent, held in the company
@@ -60,6 +61,11 @@ export interface AgentGatewayKeyDeps {
   deleteSecret?(secretId: string): Promise<void>;
   /** The key-management port of the gateway, built from the admin key. */
   gateway(input: { baseUrl: string; adminKey: string }): GatewayKeyAdminPort;
+  /**
+   * Ledger spend per agent over the last 24 h / 7 days (OPE-11776). Absent: the
+   * shared, cached, time-bounded read of litellm_cost_events (key-spend.ts).
+   */
+  readSpendWindows?(): Promise<AgentSpendWindow[]>;
   env?: NodeJS.ProcessEnv;
   log?: { info(fields: object, message: string): void; warn(fields: object, message: string): void };
 }
@@ -80,7 +86,7 @@ export interface GatewayKeyAdminPort {
    */
   setKeyAllowedModels?(input: { alias: string; models: string[] }): Promise<boolean>;
   /** Reads key metadata from the gateway (such as model allowlist). */
-  getKeyInfo?(input: { alias: string }): Promise<{ models?: string[] } | null>;
+  getKeyInfo?(input: { alias: string }): Promise<{ models?: string[]; maxBudgetUsd?: number | null; spendUsd?: number | null } | null>;
 }
 
 /** What a card's gateway key looks like to a caller: never the value itself. */
@@ -102,6 +108,12 @@ export interface AgentGatewayKeyView {
   models?: string[];
   /** Key budget limit projected from the OPE-8675 budget projection. */
   budget?: KeyBudgetLimitView | null;
+  /** LiteLLM /key/info cap in USD; null when unavailable or uncapped. */
+  maxBudgetUsd?: number | null;
+  /** Gateway's cumulative spend in USD for this key, for cap comparison. */
+  gatewaySpendUsd?: number | null;
+  /** Spend facts from the board ledger (OPE-11776). */
+  usage?: KeyBudgetUsageView | null;
 }
 
 export interface AgentGatewayKeyInput {
@@ -364,20 +376,42 @@ export async function listAgentGatewayKeys(
     }
   }
 
+  // Ledger spend (OPE-11776). The read is shared with the key-usage report,
+  // cached and time-bounded (key-spend.ts); the key list must still answer when
+  // it fails — key management does not depend on the ledger. The attention
+  // signals are not raised from here: key-budgets.ts raises them for the bot
+  // keys, on the sweep's cadence.
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - AGENT_SPEND_WINDOW_MS);
+  let spendByAgent: Map<string, AgentSpendWindow> | null = null;
+  try {
+    const windows = await (deps.readSpendWindows ? deps.readSpendWindows() : readAgentSpendWindows(deps.db, now));
+    spendByAgent = new Map(windows.filter((spent) => spent.companyId === companyId).map((spent) => [spent.agentId, spent]));
+  } catch (err) {
+    deps.log?.warn({ err, companyId }, "LiteLLM ledger spend read failed; key usage is unavailable");
+  }
+
   const views: AgentGatewayKeyView[] = [];
   for (const row of rows) {
     const secretName = agentKeySecretName({ agentId: row.id, agentSlug: row.name });
     const value = await deps.readSecretValue(companyId, secretName);
     let models: string[] | undefined;
+    let maxBudgetUsd: number | null = null;
+    let gatewaySpendUsd: number | null = null;
     if (value && gw?.getKeyInfo) {
       try {
         const info = await gw.getKeyInfo({ alias: secretName });
-        if (info) models = info.models ?? [];
+        if (info) {
+          models = info.models ?? [];
+          maxBudgetUsd = info.maxBudgetUsd ?? null;
+          gatewaySpendUsd = info.spendUsd ?? null;
+        }
       } catch {
         // non-fatal
       }
     }
     let budget: KeyBudgetLimitView | null = null;
+    let usage: KeyBudgetUsageView | null = null;
     if (projection && row.role) {
       const match = projection.limits.find(
         (limit) => limit.level === "caste" && limit.scopeId === row.role && limit.amountUsd > 0,
@@ -392,6 +426,15 @@ export async function listAgentGatewayKeys(
         };
       }
     }
+    // No ledger read, no ledger numbers: zeros here would read as "spent nothing".
+    if (value && spendByAgent) {
+      const spent = spendByAgent.get(row.id);
+      usage = keyBudgetUsage(spent?.dailyCents ?? 0, maxBudgetUsd ?? 0, windowStart, {
+        capSpentCents: gatewaySpendUsd == null ? undefined : gatewaySpendUsd * 100,
+        weeklySpentCents: spent?.weeklyCents ?? 0,
+        zeroCostEvents: spent?.zeroCostEvents ?? 0,
+      });
+    }
     views.push({
       agentId: row.id,
       agentName: row.name,
@@ -402,6 +445,9 @@ export async function listAgentGatewayKeys(
       canManageKeys: settings.canManageKeys,
       ...(models !== undefined ? { models } : {}),
       budget,
+      maxBudgetUsd,
+      gatewaySpendUsd,
+      usage,
     });
   }
   return views;
@@ -565,6 +611,27 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     return { status: response.status, body: parsed };
   }
 
+  async function get(path: string): Promise<{ status: number; body: unknown }> {
+    const response = await fetch(url(path), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${adminKey}` },
+    });
+    const text = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    if (!response.ok) {
+      throw unprocessable(`LLM gateway ${path.split("?")[0]} answered ${response.status}`, {
+        code: "gateway_key_request_failed",
+        status: response.status,
+      });
+    }
+    return { status: response.status, body: parsed };
+  }
+
   return {
     async createKey({ alias, value, models }) {
       await post("/key/generate", {
@@ -592,10 +659,31 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
       return response.status !== 404;
     },
     async getKeyInfo({ alias }) {
-      const response = await post("/key/info", { key_alias: alias }, { okStatuses: [200, 404] });
-      if (response.status === 404 || !response.body) return null;
-      const body = response.body as { info?: { models?: string[] }; models?: string[] };
-      return { models: body.info?.models ?? body.models ?? [] };
+      // The gateway has no lookup by alias on /key/info (it is GET-only, by key
+      // value or hash: a POST answers 405). /key/list filters by alias, exact
+      // match, and with return_full_object answers the key objects.
+      const response = await get(
+        `/key/list?key_alias=${encodeURIComponent(alias)}&return_full_object=true&size=1`,
+      );
+      const keys = (response.body as { keys?: unknown } | null)?.keys;
+      const found = Array.isArray(keys)
+        ? keys.find(
+            (entry): entry is { key_alias?: unknown; models?: unknown; max_budget?: unknown; spend?: unknown } =>
+              typeof entry === "object" && entry !== null && (entry as { key_alias?: unknown }).key_alias === alias,
+          )
+        : undefined;
+      if (!found) return null;
+      const rawBudget = found.max_budget;
+      const rawSpend = found.spend;
+      return {
+        models: Array.isArray(found.models)
+          ? found.models.filter((model): model is string => typeof model === "string")
+          : [],
+        maxBudgetUsd: typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget > 0
+          ? rawBudget : null,
+        spendUsd: typeof rawSpend === "number" && Number.isFinite(rawSpend) && rawSpend >= 0
+          ? rawSpend : null,
+      };
     },
   };
 }

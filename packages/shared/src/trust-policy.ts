@@ -38,6 +38,11 @@ export interface LowTrustReviewPresetPolicy {
   rawOutputDisposition: typeof LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION;
 }
 
+export interface AgentVisibilityAuthorizationPolicy extends Record<string, unknown> {
+  mode?: "discoverable" | "private";
+  hiddenFromDefaultDirectory?: boolean;
+}
+
 export interface AssignmentAuthorizationPolicy extends Record<string, unknown> {
   mode?: "company_default" | "protected";
   /** @deprecated Use `protectedAgent.blockAssignment`. */
@@ -58,8 +63,10 @@ export interface TrustAuthorizationPolicy extends Record<string, unknown> {
   trustPreset?: TrustPreset;
   reviewPreset?: LowTrustReviewPresetPolicy;
   trustBoundary?: LowTrustBoundary;
+  agentVisibility?: AgentVisibilityAuthorizationPolicy;
   assignmentPolicy?: AssignmentAuthorizationPolicy;
   protectedAgent?: ProtectedAgentAuthorizationPolicy;
+  managedBy?: unknown;
 }
 
 export type SourceTrustArtifactKind = "issue" | "comment" | "document" | "work_product";

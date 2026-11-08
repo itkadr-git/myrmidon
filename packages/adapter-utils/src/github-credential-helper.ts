@@ -86,7 +86,7 @@ async function main() {
   let response = null;
   try {
     const attempt = await paperclipRequestBrokerCredentials(
-      process.env, paperclipBrokerCandidateUrls(process.env),
+      process.env, paperclipBrokerCandidateUrls({ ...process.env, MYRMIDON_BOT_BOARD_URL: process.env.MYRMIDON_BOT_BOARD_URL || 'http://paperclip-server-1:3100' }),
       { totalTimeoutMs: TOTAL_TIMEOUT_MS }, repository);
     response = attempt.response;
   } catch { response = null; }

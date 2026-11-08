@@ -43,6 +43,7 @@ var allowedTable = []allowedEntry{
 	{ID: A17, Method: "POST", Template: "containers/{name}/stop?t=30&myrmidon-idle=true", Suffixes: []string{""}},
 	{ID: A11, Method: "POST", Template: "containers/{name}/restart?t=30", Suffixes: []string{""}},
 	{ID: A18, Method: "POST", Template: "containers/{name}/update", Suffixes: []string{""}},
+	{ID: A20, Method: "PUT", Template: "containers/{name}/config/update", Suffixes: []string{""}},
 	{ID: A12, Method: "POST", Template: "containers/{name}/rename?name={mainName}", Suffixes: []string{".next"}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + cloneReportQuery, Suffixes: []string{""}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + LegacyCloneReportQuery, Suffixes: []string{""}},
@@ -131,7 +132,7 @@ func TestAllowedTableMatchesParse(t *testing.T) {
 			}
 		}
 	}
-	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A16, A19} {
+	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A16, A19, A20} {
 		if !seen[id] {
 			t.Errorf("route %s is not in the allowed table", id)
 		}

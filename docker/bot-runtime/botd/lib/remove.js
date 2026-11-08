@@ -11,6 +11,17 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const WRITE_AND_SEARCH = fs.constants.W_OK | fs.constants.X_OK;
+
+function checkRemovalAccess(abs) {
+  const st = fs.lstatSync(abs);
+  // unlink() is authorized by the containing directory, not by the file. A
+  // directory removal additionally needs write+search access on that directory
+  // because rmSync must remove its children.
+  fs.accessSync(path.dirname(abs), WRITE_AND_SEARCH);
+  if (st.isDirectory()) fs.accessSync(abs, WRITE_AND_SEARCH);
+}
+
 export function inside(root, p) {
   const rel = path.relative(root, p);
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
@@ -59,7 +70,7 @@ export function guardedRemove(p, roots) {
   // foreign files deeper inside an owned tree still fail mid-removal, and the error
   // is the same deferred one (the survivors stay for the next pass and the owner).
   try {
-    fs.accessSync(abs, fs.constants.W_OK | fs.constants.X_OK);
+    checkRemovalAccess(abs);
   } catch (err) {
     throw deferredIfPermission(err, abs);
   }

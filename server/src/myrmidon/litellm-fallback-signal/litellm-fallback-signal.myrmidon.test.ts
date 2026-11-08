@@ -8,6 +8,7 @@ import {
   fallbackWhyNow,
   readFallbackSignalSettings,
   readModelFallbackSignals,
+  readModelFallbackDeadendSignals,
   recordModelFallbackSignals,
   resetModelFallbackSignals,
   shareClearsSignal,
@@ -300,6 +301,25 @@ describe("myrmidon(BOT-RUNTIME-TUNING D) sweep", () => {
     expect(result.companies).toBe(2);
     expect(result.signals).toBe(1);
     expect(readModelFallbackSignals(COMPANY)).toHaveLength(1);
+  });
+
+  it("raises a dead-end signal for a failed live request and clears it on the next clean sweep", async () => {
+    await sweepModelFallbackSignals(deps([entry({ requestId: "failed-1", status: "failure", attemptedFallbacks: 2 })]), SETTINGS);
+    expect(readModelFallbackDeadendSignals(COMPANY)).toEqual([
+      expect.objectContaining({ requestId: "failed-1", model: "model-primary", agentId: AGENT_A }),
+    ]);
+    await sweepModelFallbackSignals(deps([entry({ requestId: "ok-1", status: "success" })]), SETTINGS);
+    expect(readModelFallbackDeadendSignals(COMPANY)).toEqual([]);
+  });
+
+  it("does not signal an ordinary provider failure without attempted fallbacks", async () => {
+    await sweepModelFallbackSignals(deps([entry({ status: "failure", attemptedFallbacks: 0 })]), SETTINGS);
+    expect(readModelFallbackDeadendSignals(COMPANY)).toEqual([]);
+  });
+
+  it("does not signal a provider retry when the request ultimately succeeds", async () => {
+    await sweepModelFallbackSignals(deps([entry({ status: "success", attemptedFallbacks: 2 })]), SETTINGS);
+    expect(readModelFallbackDeadendSignals(COMPANY)).toEqual([]);
   });
 });
 

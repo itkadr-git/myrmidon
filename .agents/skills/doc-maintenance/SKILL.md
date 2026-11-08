@@ -197,3 +197,16 @@ When the skill completes, report:
 - How many doc edits were made (and to which files)
 - PR link (if edits were made)
 - Any follow-up items that need larger doc work
+
+## Docs chain
+
+The documentation maintenance process follows a strict two-stage contract across pull requests:
+
+1. **Trigger**: When a PR modifying user-facing behavior, interfaces, or documentation is merged.
+2. **Stage 1 (EN)**: Creates an **EN docs task** to audit and update English documentation (`README.md`, `doc/SPEC.md`, `doc/PRODUCT.md`) and double-check agent skills in `.agents/skills/`.
+3. **Stage 2 (RU)**: Once the EN documentation PR is merged into `main`, a task is spawned for **RU changed sections** to localize strictly the modified sections with an explicit reference back to the original source PR.
+4. **Safety & Execution Rules**:
+   - Mandatory reviewer/human review — **no auto-merge** is permitted on documentation PRs.
+   - Run limits per PR are enforced to avoid agent loops.
+   - Full contract specifications and task templates are defined in `doc/DOCS-CHAIN.md`.
+

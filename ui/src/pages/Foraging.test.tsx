@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Foraging } from "./Foraging";
+import { i18n } from "@/i18n";
 import type {
   ForagingBudgetView,
   ForagingFinding,
@@ -15,6 +16,7 @@ import type {
 } from "@/api/foraging";
 
 const sourcesMock = vi.hoisted(() => vi.fn());
+const saveSourceMock = vi.hoisted(() => vi.fn());
 const findingsMock = vi.hoisted(() => vi.fn());
 const budgetMock = vi.hoisted(() => vi.fn());
 // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the idle gate and the history.
@@ -35,7 +37,7 @@ vi.mock("@/api/foraging", async () => {
       idleGate: (...args: unknown[]) => idleGateMock(...args),
       setIdleGate: (...args: unknown[]) => setIdleGateMock(...args),
       passes: (...args: unknown[]) => passesMock(...args),
-      saveSource: vi.fn(),
+      saveSource: (...args: unknown[]) => saveSourceMock(...args),
       removeSource: vi.fn(),
       sweep: vi.fn(),
     },
@@ -155,6 +157,7 @@ function text() {
 
 beforeEach(() => {
   sourcesMock.mockResolvedValue({ sources: [source()], enabled: true });
+  saveSourceMock.mockResolvedValue(source({ enabled: false }));
   findingsMock.mockResolvedValue({ findings: [finding()], enabled: true });
   budgetMock.mockResolvedValue(budget);
   idleGateMock.mockResolvedValue(idleGate());
@@ -168,6 +171,7 @@ afterEach(async () => {
   });
   container?.remove();
   queryClient?.clear();
+  await i18n.changeLanguage("en");
   vi.clearAllMocks();
 });
 
@@ -178,6 +182,43 @@ describe("myrmidon(1.6-FORAGE) Foraging page", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("engineer");
     expect(rows[0].textContent).toContain("https://example.com/changelog");
+  });
+
+  it("saves a disabled source without losing its role, URL or kind", async () => {
+    await renderAndSee("foraging-source-enabled-toggle");
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]') as HTMLElement;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { toggle.click(); });
+    expect(saveSourceMock).toHaveBeenCalledWith("company-1", {
+      role: "engineer", url: "https://example.com/changelog", kind: "url", enabled: false,
+    });
+  });
+
+  it("shows localized source status and toggle label from GET in EN and RU", async () => {
+    sourcesMock.mockResolvedValue({ sources: [source({ enabled: false })], enabled: true });
+    await i18n.changeLanguage("en");
+    await renderAndSee("foraging-source-status");
+    const status = container.querySelector('[data-testid="foraging-source-status"]');
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]');
+    expect(status?.textContent).toBe("Paused");
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(toggle?.getAttribute("aria-label")).toBe("Toggle https://example.com/changelog");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(status?.textContent).toBe("На паузе");
+    expect(toggle?.getAttribute("aria-label")).toBe("Переключить https://example.com/changelog");
+  });
+
+  it("keeps a failed toggle visible without changing the GET status", async () => {
+    saveSourceMock.mockRejectedValue(new Error("Board access required"));
+    await renderAndSee("foraging-source-enabled-toggle");
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]') as HTMLElement;
+    await act(async () => { toggle.click(); });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="foraging-source-toggle-error"]')?.textContent)
+        .toContain("Board access required");
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector('[data-testid="foraging-source-status"]')?.textContent).toBe("Active");
   });
 
   it("shows the findings with their lifecycle state and diff size", async () => {

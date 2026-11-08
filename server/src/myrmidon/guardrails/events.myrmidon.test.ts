@@ -380,11 +380,13 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): routes", () => {
   afterEach(async () => {
     await db.delete(guardrailEvents);
     await db.delete(activityLog);
+    await db.delete(agents);
   });
 
   afterAll(async () => {
     await db.delete(guardrailEvents);
     await db.delete(activityLog);
+    await db.delete(agents);
     await db.delete(companies);
     await tempDb?.cleanup();
   });
@@ -443,5 +445,85 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): routes", () => {
     const res = await request(app(boardActor(companyId))).get(`${base(companyId)}?limit=1`).expect(200);
     expect(res.body.count).toBe(0);
     expect(res.body.events).toEqual([]);
+  });
+
+  it("stores and lists events with rule, mode, level, agent, decision and filters via API", async () => {
+    const [testAgent] = await db
+      .insert(agents)
+      .values({ companyId, name: "guard-test-agent" })
+      .returning();
+
+    await recordGuardrailEvent(db, {
+      companyId,
+      issueId: null,
+      runId: null,
+      kind: "secret",
+      rule: "secret_leak_v1",
+      mode: "block",
+      level: "agent",
+      agentId: testAgent.id,
+      decision: "block",
+      surface: "run_output",
+      severity: "error",
+      snippet: "masked test snippet",
+      occurredAt: new Date(),
+    });
+
+    await recordGuardrailEvent(db, {
+      companyId,
+      issueId: null,
+      runId: null,
+      kind: "pii",
+      rule: "pii_leak_v1",
+      mode: "flag",
+      level: "company",
+      agentId: null,
+      decision: "flag",
+      surface: "run_output",
+      severity: "warn",
+      snippet: "pii masked snippet",
+      occurredAt: new Date(Date.now() - 1000),
+    });
+
+    // 1. Direct listGuardrailEvents test
+    const all = await listGuardrailEvents(db, companyId);
+    expect(all.length).toBe(2);
+    const first = all[0]!;
+    expect(first.rule).toBe("secret_leak_v1");
+    expect(first.mode).toBe("block");
+    expect(first.level).toBe("agent");
+    expect(first.agentId).toBe(testAgent.id);
+    expect(first.agent).toBe(testAgent.id);
+    expect(first.decision).toBe("block");
+    expect(first.ts).toBeDefined();
+
+    // 2. API list endpoint verification
+    const apiRes = await request(app(boardActor(companyId))).get(`${base(companyId)}`).expect(200);
+    expect(apiRes.body.count).toBe(2);
+    expect(apiRes.body.events[0].rule).toBe("secret_leak_v1");
+    expect(apiRes.body.events[0].mode).toBe("block");
+    expect(apiRes.body.events[0].level).toBe("agent");
+    expect(apiRes.body.events[0].agent).toBe(testAgent.id);
+    expect(apiRes.body.events[0].decision).toBe("block");
+
+    // 3. API filter by rule
+    const ruleRes = await request(app(boardActor(companyId))).get(`${base(companyId)}?rule=secret_leak_v1`).expect(200);
+    expect(ruleRes.body.count).toBe(1);
+    expect(ruleRes.body.events[0].rule).toBe("secret_leak_v1");
+
+    // 4. API filter by mode
+    const modeRes = await request(app(boardActor(companyId))).get(`${base(companyId)}?mode=flag`).expect(200);
+    expect(modeRes.body.count).toBe(1);
+    expect(modeRes.body.events[0].rule).toBe("pii_leak_v1");
+
+    // 5. API filter by agent
+    const agentRes = await request(app(boardActor(companyId))).get(`${base(companyId)}?agent=${testAgent.id}`).expect(200);
+    expect(agentRes.body.count).toBe(1);
+    expect(agentRes.body.events[0].agent).toBe(testAgent.id);
+
+    // 6. API filter by decision
+    const decisionRes = await request(app(boardActor(companyId))).get(`${base(companyId)}?decision=block`).expect(200);
+    expect(decisionRes.body.count).toBe(1);
+    expect(decisionRes.body.events[0].decision).toBe("block");
   });
 });

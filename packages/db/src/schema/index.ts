@@ -139,6 +139,10 @@ export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { heartbeatRunContinuations } from "./heartbeat_run_continuations.js";
 export { issueContinuationKeys } from "./issue_continuation_keys.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
+export { providerUsageSnapshots, providerUsageEventReceipts } from "./provider_usage_snapshots.js";
+export { providerUsageWarningDeliveries } from "./provider_usage_warning_deliveries.js";
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace.
+export { llmCallTraces } from "./llm_call_traces.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
@@ -159,6 +163,7 @@ export { managedAgentProfiles } from "./managed_agent_profiles.js";
 export { remoteAgentProfiles } from "./remote_agent_profiles.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
+export { companySecretGitHubAppInstallations } from "./company_secret_github_app_installations.js";
 export { companySecretProposals } from "./company_secret_proposals.js";
 export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
@@ -343,3 +348,5 @@ export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
 export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
 // myrmidon(OPE-9187): idempotency journal for legacy blocked imports.
 export { legacyBlockedImports } from "./legacy_blocked_imports.js";
+// myrmidon(1.7-REDACT): redaction substitutions with expiry TTL
+export { redactionSubstitutions } from "./redaction_substitutions.js";

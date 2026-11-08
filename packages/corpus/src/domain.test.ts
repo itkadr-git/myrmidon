@@ -19,8 +19,8 @@ describe("corpus domain", () => {
     expect(isCorpusParseStatus("unknown")).toBe(false);
   });
 
-  it("uses the pilot-proven embedding defaults", () => {
-    expect(CORPUS_DEFAULT_EMBEDDING_MODEL).toBe("dashscope-text-embedding-v4");
+  it("uses the corpus embedding default with 1024 dimensions", () => {
+    expect(CORPUS_DEFAULT_EMBEDDING_MODEL).toBe("corpus-embed-pplx-0.6b");
     expect(CORPUS_EMBEDDING_DIMENSIONS).toBe(1024);
   });
 

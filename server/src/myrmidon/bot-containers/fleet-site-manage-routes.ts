@@ -6,7 +6,7 @@
 //
 //   GET   /myrmidon/fleet/sites/overview?companyId=     sites: status, lastSeen, capacity used/total, bots, drift, key TTL
 //   GET   /myrmidon/fleet/sites/:name/bots?companyId=   the site's bots: state, image, drift, gateway address
-//   PATCH /myrmidon/fleet/sites/:name?companyId=        labels, capacity, address (admin)
+//   PATCH /myrmidon/fleet/sites/:name?companyId=        labels, capacity, address, privateNetwork/tunnel (admin)
 //   POST  /myrmidon/fleet/sites/:name/drain?companyId=  operator drain: no new placements (admin)
 //   POST  /myrmidon/fleet/sites/:name/resume?companyId= lifts a drain (admin)
 //   POST  /myrmidon/fleet/bots/:key/restart             restart the bot's container on its site (admin)
@@ -42,6 +42,11 @@ const patchBodySchema = z
       })
       .strict()
       .optional(),
+    // myrmidon(1.6.6 REMOTE-SITES-T4): the site's network profile was settable only at enroll,
+    // so a site enrolled without `privateNetwork` (an IPsec-internal address) could never get
+    // it: the hermes adapter then refuses its plain-http gateway. Merged into the stored profile.
+    privateNetwork: z.boolean().optional(),
+    tunnel: z.boolean().optional(),
   })
   .strict();
 
@@ -232,7 +237,7 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
       throw badRequest(`Invalid site update: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
     }
     const body = parsed.data;
-    if (Object.keys(body).length === 0) throw badRequest("Nothing to update: url, labels or capacity expected");
+    if (Object.keys(body).length === 0) throw badRequest("Nothing to update: url, labels, capacity, privateNetwork or tunnel expected");
     const patch: FleetSiteUpdate = {};
     if (body.url !== undefined) {
       try {
@@ -249,6 +254,13 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
         throw badRequest(`capacity.maxBots (${body.capacity.maxBots}) exceeds the gateway port range (${end - start + 1} ports)`);
       }
       patch.capacity = body.capacity;
+    }
+    if (body.privateNetwork !== undefined || body.tunnel !== undefined) {
+      patch.profile = {
+        ...site.profile,
+        ...(body.privateNetwork !== undefined ? { privateNetwork: body.privateNetwork } : {}),
+        ...(body.tunnel !== undefined ? { tunnel: body.tunnel } : {}),
+      };
     }
     const updated = await deps.updateSite(companyId, site.name, patch);
     if (!updated) throw notFound(`Site "${site.name}" not found`);

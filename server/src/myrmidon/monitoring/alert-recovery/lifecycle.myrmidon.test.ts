@@ -438,6 +438,7 @@ describe("alert recovery lifecycle", () => {
       "disk-space-low",
       "host-unreachable",
       "metrics-scrape-failing",
+      "runs-reconnecting",
       "generic",
     ]);
     expect(view.runbooks[0].document).toBe("docs/myrmidon/runbooks/disk-space-low.md");

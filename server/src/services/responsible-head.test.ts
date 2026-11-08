@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveAgentHeadId,
+  resolveAgentManagerChainIds,
   resolveCompanyDomainHeadId,
   resolveResponsibleHeadAgentId,
 } from "./responsible-head.js";
@@ -149,6 +150,80 @@ describe("resolveAgentHeadId", () => {
     const headId = await resolveAgentHeadId(stepDb as any, "comp-1", "agent-eng");
     expect(headId).toBe("agent-adm");
   });
+
+  it("returns null if the root agent in the chain is paused or non-invokable", async () => {
+    const agentMap: Record<string, AgentRecord> = {
+      "agent-eng": {
+        id: "agent-eng",
+        companyId: "comp-1",
+        name: "adm-dev-eng-23",
+        status: "active",
+        reportsTo: "agent-paused-lead",
+        createdAt: new Date("2026-02-01"),
+      },
+      "agent-paused-lead": {
+        id: "agent-paused-lead",
+        companyId: "comp-1",
+        name: "adm-dev-lead",
+        status: "paused",
+        reportsTo: null,
+        createdAt: new Date("2026-01-15"),
+      },
+    };
+
+    let callIndex = 0;
+    const stepDb = {
+      select: () => ({
+        from: () => ({
+          where: () => {
+            const res = agentMap[callIndex === 0 ? "agent-eng" : "agent-paused-lead"];
+            callIndex++;
+            return res ? [res] : [];
+          },
+        }),
+      }),
+    };
+
+    const headId = await resolveAgentHeadId(stepDb as any, "comp-1", "agent-eng");
+    expect(headId).toBeNull();
+  });
+
+  it("breaks cycles gracefully and returns null when cyclic reportsTo has no invokable root", async () => {
+    const agentMap: Record<string, AgentRecord> = {
+      "agent-a": {
+        id: "agent-a",
+        companyId: "comp-1",
+        name: "agent-a",
+        status: "active",
+        reportsTo: "agent-b",
+        createdAt: new Date("2026-02-01"),
+      },
+      "agent-b": {
+        id: "agent-b",
+        companyId: "comp-1",
+        name: "agent-b",
+        status: "active",
+        reportsTo: "agent-a",
+        createdAt: new Date("2026-01-15"),
+      },
+    };
+
+    let callIndex = 0;
+    const stepDb = {
+      select: () => ({
+        from: () => ({
+          where: () => {
+            const res = agentMap[callIndex % 2 === 0 ? "agent-a" : "agent-b"];
+            callIndex++;
+            return res ? [res] : [];
+          },
+        }),
+      }),
+    };
+
+    const headId = await resolveAgentHeadId(stepDb as any, "comp-1", "agent-a");
+    expect(headId).toBeNull();
+  });
 });
 
 describe("resolveCompanyDomainHeadId", () => {
@@ -253,5 +328,70 @@ describe("resolveResponsibleHeadAgentId", () => {
 
     const headId = await resolveResponsibleHeadAgentId(mockDb as any, "comp-1", {});
     expect(headId).toBe("agent-adm");
+  });
+});
+
+describe("resolveAgentManagerChainIds", () => {
+  // One select(...).from(...).where(...) per hop, in call order: the start
+  // agent first, then each manager in turn.
+  function readerReturning(rows: Array<Record<string, unknown> | undefined>) {
+    let call = 0;
+    return {
+      select: () => ({
+        from: () => ({
+          where: () => {
+            const row = rows[call++];
+            return row ? [row] : [];
+          },
+        }),
+      }),
+    };
+  }
+
+  it("returns the managers nearest first and keeps every level up to the root", async () => {
+    const reader = readerReturning([
+      { id: "eng", reportsTo: "lead", status: "active" },
+      { id: "lead", reportsTo: "adm", status: "active" },
+      { id: "adm", reportsTo: null, status: "active" },
+    ]);
+
+    await expect(resolveAgentManagerChainIds(reader as any, "comp-1", "eng")).resolves.toEqual([
+      "lead",
+      "adm",
+    ]);
+  });
+
+  it("is empty for an agent that reports to nobody", async () => {
+    const reader = readerReturning([{ id: "adm", reportsTo: null, status: "active" }]);
+
+    await expect(resolveAgentManagerChainIds(reader as any, "comp-1", "adm")).resolves.toEqual([]);
+  });
+
+  it("skips a paused manager but still climbs to the next one", async () => {
+    const reader = readerReturning([
+      { id: "eng", reportsTo: "lead", status: "active" },
+      { id: "lead", reportsTo: "adm", status: "paused" },
+      { id: "adm", reportsTo: null, status: "active" },
+    ]);
+
+    await expect(resolveAgentManagerChainIds(reader as any, "comp-1", "eng")).resolves.toEqual(["adm"]);
+  });
+
+  it("stops at a manager that does not exist", async () => {
+    const reader = readerReturning([
+      { id: "eng", reportsTo: "ghost", status: "active" },
+      undefined,
+    ]);
+
+    await expect(resolveAgentManagerChainIds(reader as any, "comp-1", "eng")).resolves.toEqual([]);
+  });
+
+  it("does not loop on a reportsTo cycle", async () => {
+    const reader = readerReturning([
+      { id: "a", reportsTo: "b", status: "active" },
+      { id: "b", reportsTo: "a", status: "active" },
+    ]);
+
+    await expect(resolveAgentManagerChainIds(reader as any, "comp-1", "a")).resolves.toEqual(["b"]);
   });
 });

@@ -451,6 +451,9 @@ export type IssueTreeHoldStatus = (typeof ISSUE_TREE_HOLD_STATUSES)[number];
 export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_active_runs_finish"] as const;
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
+export const ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY = "acceptance-scenarios" as const;
+export type IssueAcceptanceScenariosDocumentKey = typeof ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY;
+
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
 export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
 export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}" as const;
@@ -773,6 +776,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "run",
   "tool_connection",
   "system",
+  "github_actions",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
 

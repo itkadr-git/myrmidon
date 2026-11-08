@@ -715,4 +715,47 @@ describe("HTTP logger redaction", () => {
       });
     },
   );
+
+  it("redacts invite tokens in URLs, params, headers, and request bodies (OPE-11891)", async () => {
+    const inviteToken = "pcp_invite_secret_token_1234567890";
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)),
+    );
+    app.all("/api/invites/:token", (req, res) => {
+      (res as any).__errorContext = {
+        error: { message: `bad invite ${inviteToken}` },
+        reqBody: req.body,
+        reqParams: req.params,
+      };
+      res.status(404).json({ error: "Not found" });
+    });
+    app.post("/api/companies/:companyId/invites", (req, res) => {
+      (res as any).__errorContext = {
+        error: { message: "validation failed" },
+        reqBody: req.body,
+      };
+      res.status(500).json({ error: "Failed" });
+    });
+
+    await request(app)
+      .get(`/api/invites/${inviteToken}`)
+      .set("x-invite-token", inviteToken);
+
+    await request(app)
+      .post("/api/companies/company-123/invites")
+      .send({ inviteToken, note: "test" });
+
+    const output = chunks.join("");
+    expect(output.length).toBeGreaterThan(0);
+    expect(output).not.toContain(inviteToken);
+  });
 });

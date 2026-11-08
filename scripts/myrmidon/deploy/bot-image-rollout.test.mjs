@@ -284,7 +284,7 @@ function imageJson(digest) {
  */
 function sandbox({
   agents = [
-    { id: "77777777-7777-4777-8777-777777777777", image: `${BOT_DEV}@${OLD_DEV}`, memoryMb: 4096, cpus: 2, pidsLimit: 1024 },
+    { id: "77777777-7777-4777-8777-777777777777", image: `${BOT_DEV}@${OLD_DEV}`, memoryMb: 4096, cpus: 2, pidsLimit: 1024, updatedMemoryMb: 3072, updatedCpus: 1.5, updatedPidsLimit: 768 },
     { id: "88888888-8888-4888-8888-888888888888", image: `${BOT}@${OLD_DEV}`, memoryMb: 2048, cpus: 1, pidsLimit: 512 },
   ],
   dockergateConfig,
@@ -311,6 +311,11 @@ function sandbox({
   fs.writeFileSync(path.join(bin, "ssh"), FAKE_SSH, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "scp"), FAKE_SCP, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "systemctl"), FAKE_SYSTEMCTL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), `#!/usr/bin/env bash
+echo "Filesystem 1K-blocks Used Available Use% Mounted on"
+echo "/dev/sda1 100000000 10000000 90000000 10% /"
+exit 0
+`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "dg-sim"), FAKE_DG_SIM, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "dg.log"), "");
   fs.writeFileSync(path.join(dir, "calls.log"), "");
@@ -353,9 +358,9 @@ function sandbox({
           container: {
             enabled: true,
             image: a.image,
-            memoryMb: a.memoryMb ?? 2048,
-            cpus: a.cpus ?? 1,
-            pidsLimit: a.pidsLimit ?? 512,
+            memoryMb: a.updatedMemoryMb ?? a.memoryMb ?? 2048,
+            cpus: a.updatedCpus ?? a.cpus ?? 1,
+            pidsLimit: a.updatedPidsLimit ?? a.pidsLimit ?? 512,
           },
         },
       })),
@@ -431,6 +436,7 @@ function sandbox({
       `BOARD_API_URL=http://127.0.0.1:3100/api`,
       `BOARD_TOKEN_FILE=${tokenFile}`,
       `BOARD_COMPANY_ID=${COMPANY}`,
+      "MYRMIDON_DEPLOY_POSTCHECK_RUNS=0",
       `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG=${dgConfig}`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND='jq -e . "$MYR_BOT_CFG_FILE" >/dev/null'`,
       "MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND=dg-sim",
@@ -462,7 +468,7 @@ function sandbox({
 }
 
 function cleanEnv(sb, extra = {}) {
-  const env = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, MYRMIDON_DEPLOY_MIN_FREE_GB: "10", ...extra };
+  const env = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, MYRMIDON_DEPLOY_MIN_FREE_GB: "0", ...extra };
   delete env.BASH_ENV;
   delete env.ENV;
   return env;
@@ -479,6 +485,42 @@ function run(sb, script, args) {
   );
   return { code: result.status, out: `${result.stdout}${result.stderr}` };
 }
+
+function setAgents(sb, containers) {
+  const agents = containers.map((container, index) => ({
+    id: `bot-${index + 1}`,
+    adapterType: "hermes_gateway",
+    status: "idle",
+    adapterConfig: { container: { enabled: true, ...container } },
+  }));
+  fs.writeFileSync(path.join(sb.dir, "agents.json"), JSON.stringify(agents));
+}
+
+describe("bot-image-rollout.sh: memory limit validation", () => {
+  it("normalizes supported memory units and rejects malformed limits", () => {
+    const sb = sandbox({
+      agents: [
+        { id: "bot-1", image: `${BOT}@${OLD_DEV}`, memoryMb: "512m", cpus: 2, pidsLimit: 128 },
+        { id: "bot-2", image: `${BOT}@${OLD_DEV}`, memoryMb: "2GiB", cpus: 2, pidsLimit: 128 },
+        { id: "bot-3", image: `${BOT}@${OLD_DEV}`, adapterConfig: { container: { enabled: true, image: `${BOT}@${OLD_DEV}`, memoryMb: null, cpus: 2, pidsLimit: 128 } } },
+      ],
+    });
+    const cfg = dockergateConfig(sb);
+    cfg.bots = [];
+    fs.writeFileSync(sb.dgConfig, JSON.stringify(cfg));
+    const valid = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(valid.code, 0, valid.out);
+    const enrolled = dockergateConfig(sb).bots;
+    assert.deepEqual(enrolled.find((bot) => bot.botKey === "bot-1").maxMemoryMb, 512);
+    assert.deepEqual(enrolled.find((bot) => bot.botKey === "bot-2").maxMemoryMb, 2048);
+    assert.deepEqual(enrolled.find((bot) => bot.botKey === "bot-3").maxMemoryMb, 1024);
+
+    const invalidSb = sandbox({ agents: [{ id: "bot-invalid", image: `${BOT}@${OLD_DEV}`, memoryMb: "2G", cpus: 2, pidsLimit: 128 }] });
+    const invalid = run(invalidSb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.out, /memoryMb/);
+  });
+});
 
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
 const calls = (sb) => read(path.join(sb.dir, "calls.log"));
@@ -535,8 +577,68 @@ describe("bot-image-rollout.sh", () => {
     assert.equal(enrolled.maxMemoryMb, 2048);
     assert.equal(enrolled.maxCpus, 1);
     assert.equal(enrolled.maxPids, 512);
-    // The already-enrolled bot keeps its limits (no duplicate).
+    // The already-enrolled bot also follows its updated card limits.
+    const existing = cfg.bots.find((b) => b.botKey === "77777777-7777-4777-8777-777777777777");
+    assert.equal(existing.maxMemoryMb, 3072);
+    assert.equal(existing.maxCpus, 1.5);
+    assert.equal(existing.maxPids, 768);
     assert.equal(cfg.bots.filter((b) => b.botKey === "77777777-7777-4777-8777-777777777777").length, 1);
+  });
+
+  it("updates enrolled bot limits from card and eliminates duplicates (OPE-10761)", () => {
+    // Initial dockergate config has bot with old limits (1024/1/512) and a duplicate entry
+    const initialBots = [
+      { botKey: "77777777-7777-4777-8777-777777777777", maxMemoryMb: 1024, maxCpus: 1, maxPids: 512, scopeInstances: ["scope-a"] },
+      { botKey: "77777777-7777-4777-8777-777777777777", maxMemoryMb: 1024, maxCpus: 1, maxPids: 512 },
+    ];
+    // Card has updated limits 4096 / 2 / 1024
+    const agents = [
+      {
+        id: "77777777-7777-4777-8777-777777777777",
+        image: `${BOT_DEV}@${OLD_DEV}`,
+        memoryMb: 4096,
+        cpus: 2,
+        pidsLimit: 1024,
+      },
+    ];
+    const sb = sandbox({
+      agents,
+      dockergateConfig: JSON.stringify({
+        listen: "/run/myrmidon-dockergate/engine.sock",
+        upstream: "/var/run/docker.sock",
+        apiVersion: "1.45",
+        caller: { container: "paperclip-server-1", containerLabels: { "com.docker.compose.project": "paperclip" }, argv: ["node"], uid: 1000, gid: 1000, mode: "uid" },
+        volumeRoot: "/srv/test-bots",
+        network: "myrmidon-bots",
+        images: [`${BOT_DEV}@${OLD_DEV}`],
+        mountSources: [],
+        bots: initialBots,
+        limits: {},
+        statsFile: "/tmp/dockergate-stats.json",
+      }, null, 2),
+    });
+
+    // First run updates enrollment from card (4096 / 2) and collapses duplicates
+    const res1 = run(sb, "bot-image-rollout.sh", ["--phase", "config", "--resolution", "tag", "--ref", VERSION]);
+    assert.equal(res1.code, 0, res1.out);
+
+    let cfg = dockergateConfig(sb);
+    let botEntries = cfg.bots.filter((b) => b.botKey === "77777777-7777-4777-8777-777777777777");
+    assert.equal(botEntries.length, 1, "exactly one entry for the bot");
+    assert.equal(botEntries[0].maxMemoryMb, 4096, "memory updated to card 4096");
+    assert.equal(botEntries[0].maxCpus, 2, "cpus updated to card 2");
+    assert.equal(botEntries[0].maxPids, 1024, "pidsLimit updated to card 1024");
+    assert.deepEqual(botEntries[0].scopeInstances, ["scope-a"], "preserves scopeInstances");
+
+    // Second run (repeated generation) does not create duplicates
+    const res2 = run(sb, "bot-image-rollout.sh", ["--phase", "config", "--resolution", "tag", "--ref", VERSION]);
+    assert.equal(res2.code, 0, res2.out);
+
+    cfg = dockergateConfig(sb);
+    botEntries = cfg.bots.filter((b) => b.botKey === "77777777-7777-4777-8777-777777777777");
+    assert.equal(botEntries.length, 1, "repeated generation does not produce duplicates");
+    assert.equal(botEntries[0].maxMemoryMb, 4096);
+    assert.equal(botEntries[0].maxCpus, 2);
   });
 
   it("switches every bot card to the release image of its variant, one at a time", () => {

@@ -104,12 +104,15 @@ export function resolveBudgetLimitsSignalOnly(
   return { signalOnly: normalized.signalOnly, source: "default" };
 }
 
+/** Maximum amount a single limit row (or agent monthly budget) may be configured for ($10,000,000). */
+export const MAX_BUDGET_LIMIT_CENTS = 1_000_000_000;
+
 // --- limit rows ----------------------------------------------------------------
 
 /** Body of `PUT …/budget-limits/limits/:level/:ref` — the full limit row. */
 export const budgetLimitUpsertSchema = z
   .object({
-    amountCents: z.number().int().min(0).max(1_000_000_000),
+    amountCents: z.number().int().min(0).max(MAX_BUDGET_LIMIT_CENTS),
     period: z.enum(BUDGET_LIMIT_PERIODS).default("calendar_month_utc"),
     mode: z.enum(BUDGET_LIMIT_MODES).default("hard"),
     isActive: z.boolean().default(true),
@@ -259,3 +262,60 @@ export function budgetLimitsReportToCsv(rows: BudgetLimitReportRow[]): string {
   }
   return lines.join("\n");
 }
+
+// --- warning thresholds (80% and 95%) -----------------------------------------
+
+export const BUDGET_LIMIT_WARNING_THRESHOLDS = [80, 95] as const;
+export type BudgetLimitWarningThreshold = (typeof BUDGET_LIMIT_WARNING_THRESHOLDS)[number];
+
+export const budgetLimitWarningThresholdSchema = z.union([
+  z.literal(80),
+  z.literal(95),
+  z.literal("80").transform(() => 80 as const),
+  z.literal("95").transform(() => 95 as const),
+]);
+
+export interface BudgetLimitUsageView extends BudgetLimitView {
+  spentCents: number;
+  events: number;
+  overLimit: boolean;
+  warningThreshold: BudgetLimitWarningThreshold | null;
+}
+
+/**
+ * Evaluates whether spend has reached or crossed a warning threshold (80% or 95%)
+ * of an active budget limit.
+ * Returns:
+ * - 95 when spentCents is at least 95% of amountCents (near exhaustion / critical)
+ * - 80 when spentCents is at least 80% (and less than 95%) of amountCents
+ * - null when under 80%, limit is inactive, amountCents is non-positive, or spentCents is non-positive
+ */
+export function getBudgetLimitWarningThreshold(
+  limit: { amountCents: number; isActive: boolean } | null | undefined,
+  spentCents: number | null | undefined,
+): BudgetLimitWarningThreshold | null {
+  if (!limit || !limit.isActive || typeof limit.amountCents !== "number" || limit.amountCents <= 0) {
+    return null;
+  }
+  if (typeof spentCents !== "number" || spentCents <= 0) {
+    return null;
+  }
+  const percent = (spentCents / limit.amountCents) * 100;
+  if (percent >= 95) return 95;
+  if (percent >= 80) return 80;
+  return null;
+}
+
+/**
+ * Predicate checking whether spend has reached or crossed the given warning threshold.
+ */
+export function isBudgetLimitApproaching(
+  limit: { amountCents: number; isActive: boolean } | null | undefined,
+  spentCents: number | null | undefined,
+  threshold: BudgetLimitWarningThreshold = 80,
+): boolean {
+  const reached = getBudgetLimitWarningThreshold(limit, spentCents);
+  if (reached === null) return false;
+  return reached >= threshold;
+}
+

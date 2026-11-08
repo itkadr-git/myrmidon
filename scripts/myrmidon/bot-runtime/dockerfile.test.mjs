@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -12,6 +13,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const IMAGE_DIR = path.join(ROOT, "docker/bot-runtime");
 const dockerfile = fs.readFileSync(path.join(IMAGE_DIR, "Dockerfile"), "utf8");
 const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/myrmidon-bot-image.yml"), "utf8");
+
+it("pins the async writer-acquire scanner fail-closed patch", () => {
+  const patch = fs.readFileSync(path.join(IMAGE_DIR, "patches/22-async-writer-acquire.patch"), "utf8");
+  const registry = JSON.parse(fs.readFileSync(path.join(ROOT, "scripts/myrmidon/hermes-upstream/deltas.json"), "utf8"));
+  const delta = registry.deltas.find((item) => item.id === "22-async-state-db-writer-acquire");
+  assert.ok(delta, "writer acquire delta must be registered");
+  assert.match(patch, /SidecarScanIncompleteError/);
+  assert.match(patch, /raise SidecarScanIncompleteError/);
+  assert.match(delta.files.join(" "), /hermes_state_dbfile\.py/);
+  assert.match(patch, /myrmidon\(G1\)/);
+  assert.match(delta.reason, /worker-owned async writer acquire/);
+  assert.match(patch, /async def acquire_async/);
+  assert.match(patch, /close_all_db_handles_async/);
+});
 
 // The Dockerfile documents, in a comment, that it deliberately does not
 // install media tools — so "no media tools" is checked against the
@@ -237,7 +252,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // build-time run; 09-run-scoped-github-broker has
     // github_broker_run_scope.py (contextvar binding + child-env bridge).
     const patchTestRuns = [...dockerfileInstructions.matchAll(/^RUN [^\n]*\/tmp\/patch-tests\/(\S+\.py)\s+\/opt\/hermes-src$/gm)].map((m) => m[1]);
-    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py", "run_skills_materialize.py"]) {
+    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py", "run_skills_materialize.py", "undefined_names.py", "vacuum_by_freelist.py"]) {
       assert.ok(
         patchTestRuns.includes(regression),
         `expected a build-time run of docker/bot-runtime/tests/${regression}`,
@@ -257,6 +272,16 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // Dockerfile here: the instruction list above has its comment lines stripped, so its
     // offsets do not address the file it came from.
     assert.doesNotMatch(dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime")), /patch-tests/);
+  });
+
+  it("rejects undefined names in patched modules like missing SessionStore in run_startup.py (#1381, OPE-10755)", () => {
+    const script = path.join(IMAGE_DIR, "tests/undefined_names.py");
+    assert.ok(fs.existsSync(script), "docker/bot-runtime/tests/undefined_names.py must exist");
+
+    const res = spawnSync("python3", [script, "--regression-test-only"], {
+      encoding: "utf8",
+    });
+    assert.strictEqual(res.status, 0, `undefined_names.py --regression-test-only failed: ${res.stderr || res.stdout}`);
   });
 
   it("redirects hermes' lazy installs and write tools off the sealed, read-only venv", () => {
@@ -280,6 +305,12 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // own /home/<user> unwritable at runtime.
     assert.doesNotMatch(dockerfile, /HOME=\/home\/bot/);
     assert.match(dockerfile, /HOME=\/data\/hermes/);
+  });
+
+  it("keeps Cargo build output in the durable per-agent cache, not a workspace", () => {
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+    assert.match(runtimeStage, /^\s*CARGO_TARGET_DIR=\/data\/hermes\/\.cache\/cargo-target(?:\s|$)/m);
+    assert.doesNotMatch(runtimeStage, /^\s*CARGO_TARGET_DIR=\/(?:workspace|scratch)(?:\/|\s|$)/m);
   });
 
   it("strips the clone's .git history before the runtime stage copies /opt/hermes-src", () => {
@@ -319,6 +350,13 @@ describe("docker/bot-runtime/patches/", () => {
       // Comments in code are English (CONVENTIONS.md §8); a Cyrillic comment means a
       // reference-checkout patch was copied instead of rewritten.
       assert.doesNotMatch(patch, /[\u0400-\u04FF]/, `${file} must be written in English`);
+      if (file === "22-async-writer-acquire.patch") {
+        assert.match(patch, /class SidecarScanIncompleteError/);
+        assert.match(patch, /async def acquire_async/);
+        assert.match(patch, /close_all_db_handles_async/);
+        assert.match(patch, /myrmidon\(G1\)/);
+        continue;
+      }
       // Every edit to hermes code carries the fork label (CONVENTIONS.md §8).
       assert.match(patch, /myrmidon\(G1\)/, `${file} must carry the myrmidon(G1) label`);
     }
@@ -331,6 +369,34 @@ describe("docker/bot-runtime/patches/", () => {
     const numbers = files.map((f) => f.match(/^(\d\d)-/)?.[1]);
     assert.ok(numbers.every((n) => n !== undefined), `every patch needs an NN- prefix: ${files.join(", ")}`);
     assert.equal(new Set(numbers).size, numbers.length, "patch numbers must be unique");
+  });
+
+  it("recognises the wake message the hermes_gateway adapter builds (measure A went dead once, at the product rename)", () => {
+    // 16-context-economy.patch finds a board wake message by the identity head and the section
+    // markers that buildInput() writes. When the adapter renamed "Paperclip runtime identity:" to
+    // "Myrmidon runtime identity:" the patch kept matching the old head, measure A never fired again
+    // and its build-time test (fixtures frozen at the old shape) stayed green. Tie the two together.
+    const adapter = fs.readFileSync(
+      path.join(ROOT, "packages/adapters/hermes/src/gateway/server/execute.ts"),
+      "utf8",
+    );
+    const utils = fs.readFileSync(path.join(ROOT, "packages/adapter-utils/src/server-utils.ts"), "utf8");
+    const patch = fs.readFileSync(path.join(IMAGE_DIR, "patches/16-context-economy.patch"), "utf8");
+    const head = adapter.match(/"([A-Za-z]+ runtime identity:)",/);
+    assert.ok(head, "buildInput() must keep writing a '<Product> runtime identity:' head");
+    assert.ok(patch.includes(`"${head[1]}"`), `patch 16 must recognise the adapter's wake head "${head[1]}"`);
+    for (const marker of ["Execution contract:", "Structured wake payload JSON:"]) {
+      assert.ok(adapter.includes(`"${marker}"`), `buildInput() no longer writes "${marker}"`);
+      assert.ok(patch.includes(`"${marker}"`), `patch 16 must recognise "${marker}"`);
+    }
+    assert.ok(adapter.includes("`- Run ID: ${"), "buildInput() no longer writes the '- Run ID:' line");
+    assert.ok(patch.includes('"- Run ID:"'), "patch 16 must recognise the '- Run ID:' line");
+    assert.ok(utils.includes("## Current request and continuation context"));
+    assert.ok(patch.includes('"## Current request and continuation context"'));
+    for (const section of ["Wake Payload", "Resume Delta"]) {
+      assert.ok(utils.includes(`## \${PRODUCT_NAME} ${section}`), `the wake renderer no longer writes the ${section} section`);
+      assert.ok(patch.includes(`"## Myrmidon ${section}"`), `patch 16 must recognise the "## Myrmidon ${section}" section`);
+    }
   });
 
   it("retries a state-database read that finds the database locked, with fixed bounds", () => {
@@ -640,6 +706,15 @@ describe("myrmidon-bot-image.yml", () => {
   it("builds on push to main and myr-v* tags", () => {
     assert.match(workflow, /branches: \[main\]/);
     assert.match(workflow, /tags: \["myr-v\*"\]/);
+  });
+
+  it("runs gateway smoke-start on pull requests for every built image variant (OPE-10755)", () => {
+    const smokeScript = path.join(IMAGE_DIR, "smoke-start.sh");
+    assert.ok(fs.existsSync(smokeScript), "docker/bot-runtime/smoke-start.sh must exist");
+    assert.strictEqual((fs.statSync(smokeScript).mode & 0o111) !== 0, true, "smoke-start.sh must be executable");
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes:pr-check/);
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes-node:pr-check/);
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes-dev:pr-check/);
   });
 
   // myrmidon(1.6.5 BOT-DISK-H1c): the real git leaves PATH, the wrapper answers /usr/bin/git.

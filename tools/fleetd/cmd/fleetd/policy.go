@@ -51,17 +51,27 @@ func errForbidden(reason string) error {
 
 func errConflict(reason string) error { return &apiError{status: http.StatusConflict, reason: reason} }
 
-func (s *server) imageAllowed(image string) bool {
-	if !strings.Contains(image, "@sha256:") {
+// isImageAllowed verifies that the image specifies a non-empty sha256 digest and matches
+// either an exact allowed entry or an allowed pattern ending with '*' (e.g. 'repo@sha256:*').
+func isImageAllowed(image string, allowedImages []string) bool {
+	if len(allowedImages) == 0 {
 		return false
 	}
-	for _, allowed := range s.cfg.Images {
-		prefix, _, ok := strings.Cut(allowed, "*")
-		if (ok && strings.HasPrefix(image, prefix)) || (!ok && image == allowed) {
+	repo, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || repo == "" || digest == "" || strings.ContainsAny(image, " 	\r\n") {
+		return false
+	}
+	for _, allowed := range allowedImages {
+		prefix, _, hasWildcard := strings.Cut(allowed, "*")
+		if (hasWildcard && strings.HasPrefix(image, prefix)) || (!hasWildcard && image == allowed) {
 			return true
 		}
 	}
 	return false
+}
+
+func (s *server) imageAllowed(image string) bool {
+	return isImageAllowed(image, s.cfg.Images)
 }
 
 // botVolumes are the per-bot directories under volumeRoot/<botKey> that the
@@ -325,8 +335,26 @@ func (s *server) writeProfileFile(realRoot string, f profileFile) error {
 		return e
 	}
 	_ = os.Chown(tmpName, botUID, botUID) // best effort: fleetd may run unprivileged
-	_ = os.Chown(dir, botUID, botUID)
+	chownDirsUp(realRoot, realDir)
 	return os.Rename(tmpName, target)
+}
+
+// chownDirsUp gives the bot user every directory from dir up to, but not
+// including, realRoot (the root of the bot volume stays as the volume rules
+// require). MkdirAll creates the missing intermediate directories as the
+// fleetd user, so chowning only the file's own directory left e.g.
+// hermes/skills and hermes/skills/paperclip-managed root-owned with mode 0700,
+// and the bot could not read its managed skills ("Permission denied:
+// /data/hermes/skills/paperclip-managed", T4 canary on myr-vm1, 08.11).
+// Best effort like the file chown above: fleetd may run unprivileged.
+func chownDirsUp(realRoot, dir string) {
+	for d := dir; ; d = filepath.Dir(d) {
+		rel, err := filepath.Rel(realRoot, d)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+			return
+		}
+		_ = lchown(d, botUID, botUID)
+	}
 }
 
 // fillApplied sets the applied profile hashes of a status from the marker.

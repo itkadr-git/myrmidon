@@ -9,15 +9,18 @@
 // (and optionally enables native `gh pr merge --auto --squash`) on a pull request
 // only when ALL of this holds:
 //   1. the main branch CI is green right now: the newest `CI result` check run on
-//      the main head is `completed success`. If main is red, pending, running, or
-//      has no registered run, merge / auto-merge is held and backoff is applied;
+//      the main head that is a verdict (not `skipped`) is `completed success`. If
+//      main is red, pending, running, or has no registered run, merge / auto-merge
+//      is held and backoff is applied;
 //   2. the newest verdict line about that PR is an approval (a later RETURN,
 //      DEFERRED, or an unclear line cancels it);
 //   3. the PR is open and not a draft;
 //   4. the head did not move after the verdict: a verdict that names a head sha
 //      must match the current head; a verdict without one must be newer than the
 //      head commit;
-//   5. the check run `CI result` of the head commit is `success`;
+//   5. the check run `CI result` of the head commit is `success`: the newest run
+//      that is a verdict; a `skipped` run (the label-event runs of the workflow
+//      skip `CI result`) is passed over and never hides an earlier result;
 //   6. the PR base is not behind main: the PR's `base.sha` equals the current
 //      main head. A stale base never merges — the script asks GitHub to
 //      update-branch and waits for a fresh green CI on the new head;
@@ -25,6 +28,11 @@
 //      `packages/db/src/migrations/NNNN_*.sql` or `meta/NNNN_snapshot.json` file,
 //      or adds a snapshot numbered below the newest one already on main, is
 //      refused (no label, no auto-merge; an armed auto-merge is disabled).
+//   8. exact-head arm (OPE-12186): the arm command is
+//      `gh pr merge --auto --squash --match-head-commit <headSha>` — GitHub may
+//      only merge the head the verdict approved, never a commit that lands
+//      between the arm and the merge. Without a head sha auto-merge is not
+//      armed (the label is still applied).
 // A PR whose head moved after an approval is reported as `needs-rereview` (the
 // reviewer must look at the new commits only); the script never labels it.
 //
@@ -32,16 +40,16 @@
 // and state is preserved. Once main turns green, merge resumes and backoff is reset.
 // Repeated runs are safe and idempotent.
 //
-// Usage (run it every few minutes from the operator host or devflow cron):
+// Usage (run it from CI or a Myrmidon worker; no host-installed scripts are needed):
 //   node scripts/myrmidon/review-approve-label.mjs --repo owner/name \
-//        --verdicts <file.json> | --psql-cmd '<command that runs psql -At and reads SQL on stdin>' \
 //        [--since-hours 48] [--reviewer-pattern '^adm-dev-review'] [--dry-run] [--json] \
 //        [--check-main] [--base-branch main] [--auto-merge] [--state-file <path>]
 //   node scripts/myrmidon/review-approve-label.mjs --print-sql [--since-hours 48]
 //
-// The verdict file is a JSON array of {id, issueId, createdAt, authorName, body}.
-// GitHub is reached with `gh api` and `gh pr merge` (GH_TOKEN must be allowed to edit labels and merge); the
-// token is never printed. Exit code: 0 ok, 1 a GitHub/board call failed, 2 usage.
+// Verdicts are fetched from the Myrmidon REST API using PAPERCLIP_API_URL,
+// PAPERCLIP_COMPANY_ID, and PAPERCLIP_API_KEY. PAPERCLIP_RUN_ID is forwarded
+// as X-Paperclip-Run-Id for board requests. Exit code: 0 ok, 1 a board/GitHub
+// call failed, 2 usage.
 
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -52,6 +60,41 @@ const execFileAsync = promisify(execFile);
 
 export const APPROVED_LABEL = "review-approved";
 export const CI_CHECK_NAME = "CI result";
+/** Check runs are read in pages of 100; one head never has anywhere near this many `CI result` runs. */
+const CHECK_RUNS_MAX_PAGES = 10;
+/**
+ * Conclusions of a completed `CI result` run that say nothing about the head.
+ * The workflow skips `CI result` on label events (all but `full-ci`), so a
+ * `skipped` run is always newer than the real one after a label is put on the
+ * pull request; it is not a verdict and must never hide the real result.
+ * `cancelled` / `timed_out` / `neutral` are NOT listed: they are real outcomes
+ * and are never read as `success`.
+ */
+export const NOT_A_VERDICT_CONCLUSIONS = new Set(["skipped"]);
+
+/**
+ * The state of the `CI result` check from ITS check runs of one commit.
+ * Runs are walked newest first (`started_at`, then the run id): a completed
+ * `skipped` run is passed over; the first other run decides, a run still
+ * queued / in progress answers its status (pending for the caller). A commit
+ * with no `CI result` run is "missing"; one whose runs are all skipped has no
+ * verdict yet and is "pending".
+ */
+export function selectCiResultConclusion(checkRuns, name = CI_CHECK_NAME) {
+  const named = (Array.isArray(checkRuns) ? checkRuns : []).filter((item) => item && item.name === name);
+  if (named.length === 0) return "missing";
+  const newestFirst = [...named].sort(
+    (a, b) =>
+      String(b.started_at ?? "").localeCompare(String(a.started_at ?? "")) || Number(b.id ?? 0) - Number(a.id ?? 0),
+  );
+  for (const run of newestFirst) {
+    if (run.status !== "completed") return run.status ?? "pending";
+    const conclusion = run.conclusion ?? "unknown";
+    if (NOT_A_VERDICT_CONCLUSIONS.has(conclusion)) continue;
+    return conclusion;
+  }
+  return "pending";
+}
 export const MIGRATION_SQL_RE = /^packages\/db\/src\/migrations\/(\d{4})_[^/]*\.sql$/;
 export const MIGRATION_SNAPSHOT_RE = /^packages\/db\/src\/migrations\/meta\/(\d{4})_snapshot\.json$/;
 
@@ -230,6 +273,8 @@ export function decideApproveLabel({
   mainGreen = true,
   isMainRed = false,
   baseBehind = false,
+  basePr = null,
+  cannotRetarget = false,
   migrationViolation = null,
   autoMerge = false,
 }) {
@@ -265,6 +310,28 @@ export function decideApproveLabel({
       return { action: "hold", disableAutoMerge: true, reason: "base-behind" };
     }
     return { action: "hold", reason: "base-behind" };
+  }
+
+  // Stacked PR base check (OPE-10815): if the PR's base is neither defaultBranch nor rel/*,
+  // check the PR of that base. If it's already merged or closed, the PR cannot be merged into
+  // the dead base branch.
+  const defaultBranch = pr.defaultBranch || "main";
+  const isBaseDelivering = !pr.baseRef || pr.baseRef === defaultBranch || pr.baseRef.startsWith("rel/");
+  if (!isBaseDelivering && basePr && (basePr.merged || basePr.state === "closed")) {
+    if (cannotRetarget) {
+      return {
+        action: "refuse",
+        reason: "cannot-retarget-base-to-main",
+        disableAutoMerge: Boolean(pr.autoMerge),
+        removeLabel: Boolean(pr.labels && pr.labels.includes(APPROVED_LABEL)),
+      };
+    }
+    return {
+      action: "hold",
+      reason: "base-retargeted-waiting-ci",
+      retargetBase: defaultBranch,
+      disableAutoMerge: Boolean(pr.autoMerge),
+    };
   }
 
   const alreadyLabeled = pr.labels.includes(APPROVED_LABEL);
@@ -360,9 +427,27 @@ export function createGitHubPort(repo, options = {}) {
         merged: Boolean(data.merged_at) || Boolean(data.merged),
         headSha: data.head?.sha ?? null,
         baseSha: data.base?.sha ?? null,
+        baseRef: data.base?.ref ?? null,
+        defaultBranch: data.base?.repo?.default_branch ?? "main",
         labels: (data.labels ?? []).map((label) => label.name),
         autoMerge: Boolean(data.auto_merge || data.autoMergeRequest),
       };
+    },
+    async updatePullRequestBase(number, base) {
+      await run(["-X", "PATCH", `repos/${repo}/pulls/${number}`, "-f", `base=${base}`]);
+    },
+    async findPullRequestByHead(headBranch) {
+      const owner = repo.split("/")[0];
+      const data = await run([`repos/${repo}/pulls?head=${encodeURIComponent(`${owner}:${headBranch}`)}&state=all`]);
+      if (Array.isArray(data) && data.length > 0) {
+        const item = data[0];
+        return {
+          number: item.number,
+          state: item.state,
+          merged: Boolean(item.merged_at || item.merged),
+        };
+      }
+      return null;
     },
     async pullRequestFiles(number) {
       const data = await run([`repos/${repo}/pulls/${number}/files?per_page=100`]);
@@ -396,11 +481,21 @@ export function createGitHubPort(repo, options = {}) {
       return value ? new Date(value) : null;
     },
     async ciConclusion(sha) {
-      const data = await run([`repos/${repo}/commits/${sha}/check-runs?per_page=100`]);
-      const runs = (data.check_runs ?? []).filter((item) => item.name === CI_CHECK_NAME);
-      if (runs.length === 0) return "missing";
-      const newest = runs.sort((a, b) => String(b.started_at ?? "").localeCompare(String(a.started_at ?? "")))[0];
-      return newest.status === "completed" ? (newest.conclusion ?? "unknown") : newest.status;
+      // `filter=all`, as the board-side merge reader does: the default
+      // `filter=latest` keeps only the newest run of every check suite, so a
+      // rerun inside one suite would hide the attempt before it. The selection
+      // of the verdict among the runs is selectCiResultConclusion's.
+      const runs = [];
+      for (let page = 1; page <= CHECK_RUNS_MAX_PAGES; page += 1) {
+        const data = await run([
+          `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(CI_CHECK_NAME)}&filter=all&per_page=100&page=${page}`,
+        ]);
+        const batch = data.check_runs ?? [];
+        runs.push(...batch);
+        const total = typeof data.total_count === "number" ? data.total_count : batch.length;
+        if (batch.length === 0 || runs.length >= total) break;
+      }
+      return selectCiResultConclusion(runs);
     },
     async mainHeadSha(baseBranch = DEFAULT_BASE_BRANCH) {
       const data = await run([`repos/${repo}/commits/${baseBranch}`]);
@@ -443,8 +538,9 @@ export function createGitHubPort(repo, options = {}) {
     async addLabel(number) {
       await run(["-X", "POST", `repos/${repo}/issues/${number}/labels`, "-f", `labels[]=${APPROVED_LABEL}`]);
     },
-    async enableAutoMerge(number) {
-      await runPr(["merge", String(number), "-R", repo, "--auto", "--squash"]);
+    async enableAutoMerge(number, headSha) {
+      if (!headSha) throw new Error(`enableAutoMerge(${number}): head sha is required — refusing to arm auto-merge without --match-head-commit`);
+      await runPr(["merge", String(number), "-R", repo, "--auto", "--squash", "--match-head-commit", headSha]);
     },
     async disableAutoMerge(number) {
       await runPr(["merge", String(number), "-R", repo, "--disable-auto"]);
@@ -645,6 +741,30 @@ export async function runOnce({
           continue;
         }
       }
+
+      // Stacked PR base check (OPE-10815): if base is non-main, non-rel/*, inspect base PR
+      let basePr = null;
+      let cannotRetarget = false;
+      const defaultBranch = pr.defaultBranch || "main";
+      const isBaseDelivering = !pr.baseRef || pr.baseRef === defaultBranch || pr.baseRef.startsWith("rel/");
+      if (pr.state === "open" && !pr.draft && !isBaseDelivering && typeof github.findPullRequestByHead === "function") {
+        try {
+          basePr = await github.findPullRequestByHead(pr.baseRef);
+          if (basePr && (basePr.merged || basePr.state === "closed")) {
+            if (!dryRun && typeof github.updatePullRequestBase === "function") {
+              try {
+                await github.updatePullRequestBase(prNumber, defaultBranch);
+              } catch (err) {
+                cannotRetarget = true;
+                log(`PR #${prNumber}: failed to retarget base to ${defaultBranch}: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+          }
+        } catch (err) {
+          log(`PR #${prNumber}: failed to inspect base PR for ${pr.baseRef}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       const decision = decideApproveLabel({
         verdict,
         pr,
@@ -654,6 +774,8 @@ export async function runOnce({
         mainGreen: mainGreen && mainMigrationListOk,
         isMainRed: holdAutoMerge,
         baseBehind,
+        basePr,
+        cannotRetarget,
         migrationViolation,
         autoMerge: autoMerge && !holdAutoMerge,
       });
@@ -663,7 +785,13 @@ export async function runOnce({
           await github.addLabel(prNumber);
         }
         if (decision.autoMerge) {
-          await github.enableAutoMerge(prNumber);
+          if (pr.headSha) {
+            await github.enableAutoMerge(prNumber, pr.headSha);
+          } else {
+            // Fail closed (OPE-12186): without a head sha the merge could land a
+            // commit newer than the approved one — arm nothing, keep the label.
+            log(`PR #${prNumber}: head sha unknown — auto-merge not armed (label kept).`);
+          }
         }
       }
       if (decision.action === "refuse" && !dryRun) {
@@ -761,21 +889,53 @@ export async function main(argv, io = {}) {
       return 0;
     }
     if (!args.repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repo)) throw new Error("--repo owner/name is required");
-    if (Boolean(args.verdicts) === Boolean(args.psqlCmd)) throw new Error("give exactly one of --verdicts <file> or --psql-cmd <command>");
+    if (!args.verdicts && !args.psqlCmd && !io.fetchImpl && (!process.env.PAPERCLIP_API_KEY || !process.env.PAPERCLIP_COMPANY_ID)) throw new Error("give exactly one of --verdicts <file> or --psql-cmd <command>");
     new RegExp(args.reviewerPattern);
   } catch (e) {
     err(e instanceof Error ? e.message : String(e));
     return 2;
   }
   let comments;
-  try {
-    comments = args.verdicts
-      ? JSON.parse(fs.readFileSync(args.verdicts, "utf8"))
-      : await (io.readFromPsql ?? readVerdictsFromPsql)(args.psqlCmd, boardVerdictSql(args.sinceHours));
-    if (!Array.isArray(comments)) throw new Error("the verdict source is not a JSON array");
-  } catch (e) {
-    err(`cannot read the verdicts: ${e instanceof Error ? e.message : String(e)}`);
-    return 1;
+  if (args.verdicts || args.psqlCmd) {
+    try {
+      comments = args.verdicts
+        ? JSON.parse(fs.readFileSync(args.verdicts, "utf8"))
+        : await (io.readFromPsql ?? readVerdictsFromPsql)(args.psqlCmd, boardVerdictSql(args.sinceHours));
+      if (!Array.isArray(comments)) throw new Error("the verdict source is not a JSON array");
+    } catch (e) {
+      err(`cannot read the verdicts: ${e instanceof Error ? e.message : String(e)}`);
+      return 1;
+    }
+  } else {
+    const apiUrl = process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100";
+    const apiKey = process.env.PAPERCLIP_API_KEY;
+    const companyId = process.env.PAPERCLIP_COMPANY_ID;
+    if (!apiKey || !companyId) {
+      err("PAPERCLIP_API_KEY and PAPERCLIP_COMPANY_ID are required");
+      return 1;
+    }
+    const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+    if (process.env.PAPERCLIP_RUN_ID) headers["X-Paperclip-Run-Id"] = process.env.PAPERCLIP_RUN_ID;
+    const get = async (path) => {
+      const response = await (io.fetchImpl ?? fetch)(`${apiUrl.replace(/\/$/, "")}${path}`, { headers });
+      if (!response.ok) throw new Error(`GET ${path} failed: ${response.status}`);
+      return response.json();
+    };
+    try {
+      const issues = await get(`/api/companies/${encodeURIComponent(companyId)}/issues?limit=200&view=compact`);
+      const cutoff = Date.now() - args.sinceHours * 60 * 60 * 1000;
+      comments = [];
+      for (const issue of issues) {
+        const issueComments = await get(`/api/issues/${encodeURIComponent(issue.id)}/comments`);
+        for (const comment of issueComments) {
+          if (new Date(comment.createdAt).getTime() < cutoff) continue;
+          comments.push({ ...comment, authorName: comment.authorName ?? comment.author?.name ?? "" });
+        }
+      }
+    } catch (e) {
+      err(`cannot read verdicts from Myrmidon API: ${e instanceof Error ? e.message : String(e)}`);
+      return 1;
+    }
   }
   const github = io.github ?? createGitHubPort(args.repo);
   const stateStore = io.stateStore ?? (args.stateFile ? createFileStateStore(args.stateFile) : null);

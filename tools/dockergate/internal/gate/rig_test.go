@@ -250,6 +250,15 @@ func (r *rig) setCred(pid int, uid, gid uint32) {
 	r.cred = peer.Cred{PID: pid, UID: uid, GID: gid}
 }
 
+func (r *rig) addSiblingProcess(pid int) {
+	r.t.Helper()
+	if r.proc == nil {
+		r.t.Fatal("sibling process requires container-caller mode")
+	}
+	leaf := "docker-" + boardID + ".scope"
+	r.proc.add(pid, fproc{comm: "node", ppid: tiniPID, start: 1020, uid: 1000, gid: 1000, argv: []string{"node", "server.js"}, leaf: leaf})
+}
+
 func (r *rig) lstat(p string) (policy.FileInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -308,6 +317,7 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 		Bots:             []config.Bot{{BotKey: m.BotKey, MaxMemoryMB: 2048, MaxCPUs: 4, MaxPids: 2048}},
 		Limits:           lim,
 		StatsFile:        filepath.Join(dir, "stats.json"),
+		PlatformLimits:   &config.PlatformLimits{},
 	}
 	r := &rig{
 		t: t, dir: dir, d: d, m: m, cfg: cfg, log: &syncBuf{}, sock: cfg.Listen,
@@ -341,12 +351,20 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 	})
 
 	gopt := gate.Options{
-		Cfg: cfg, ConfigHash: "test", Version: "test", Log: r.log,
+		ConfigPath: filepath.Join(dir, "config.json"),
+		Cfg:        cfg, ConfigHash: "test", Version: "test", Log: r.log,
 		Cred: r.credFn, Lstat: r.lstat, Disk: o.disk, DiskHost: o.diskHost, Oom: o.oom,
 		DisableOomLoop: !o.enableOomLoop,
 	}
 	if r.proc != nil {
 		gopt.Proc = r.proc
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(gopt.ConfigPath, data, 0600); err != nil {
+		t.Fatalf("write config file: %v", err)
 	}
 	g, err := gate.New(gopt)
 	if err != nil {

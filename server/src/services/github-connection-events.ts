@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  activityLog,
   connectionEventDeliveries,
   connectionGrants,
   externalObjects,
@@ -10,7 +11,7 @@ import {
   toolConnections,
   type Db,
 } from "@myrmidon/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   logActivity,
   publishActivity,
@@ -27,6 +28,7 @@ import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -45,6 +47,13 @@ export type GitHubConnectionEventPollResult = {
   duplicate: number;
   ignored: number;
   failed: number;
+};
+
+export type GitHubEventsWatchdogResult = {
+  scannedCompanies: number;
+  activePrCount: number;
+  alarmsCreated: number;
+  alarmsResolved: number;
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -132,24 +141,48 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       baseSha: commitSha(payload.baseSha),
     });
   }
-  if (event.event === "workflow_run" || event.event === "check_suite") {
-    const workflowPullRequests = record(payload.workflowRun).pullRequests;
+  if (event.event === "workflow_run" || event.event === "check_suite" || event.event === "check_run") {
+    const rawCheckRun = record(payload.check_run);
+    const rawCheckSuite = record(payload.check_suite);
+    const rawWorkflowRun = record(payload.workflow_run);
+    const checkSuite = record(payload.checkSuite) ?? rawCheckSuite;
+    const checkRun = record(payload.checkRun) ?? rawCheckRun;
+    const workflowRun = record(payload.workflowRun) ?? rawWorkflowRun;
+
+    const workflowPullRequests = workflowRun.pullRequests ?? workflowRun.pull_requests;
     const workflowPullRequestNumber = Array.isArray(workflowPullRequests) ? positiveInteger(record(workflowPullRequests[0]).number) : null;
-    const checkPullRequests = record(payload.checkSuite).pullRequests;
+    const checkPullRequests = checkSuite.pullRequests ?? checkSuite.pull_requests;
     const checkPullRequestNumber = Array.isArray(checkPullRequests) ? positiveInteger(record(checkPullRequests[0]).number) : null;
+    const checkRunPullRequests = checkRun.pullRequests ?? checkRun.pull_requests;
+    const checkRunPullRequestNumber = Array.isArray(checkRunPullRequests) ? positiveInteger(record(checkRunPullRequests[0]).number) : null;
     const pullRequest = record(payload.pullRequest);
+
+    const headSha = commitSha(payload.headSha)
+      ?? commitSha(checkRun.head_sha)
+      ?? commitSha(checkRun.headSha)
+      ?? commitSha(checkSuite.head_sha)
+      ?? commitSha(checkSuite.headSha)
+      ?? commitSha(workflowRun.head_sha)
+      ?? commitSha(workflowRun.headSha);
+
+    const conclusion = boundedString(payload.conclusion ?? checkRun.conclusion ?? checkSuite.conclusion ?? workflowRun.conclusion, 40);
+    const status = boundedString(payload.status ?? checkRun.status ?? checkSuite.status ?? workflowRun.status, 40);
+    const runId = identifier(payload.runId ?? checkRun.id ?? workflowRun.id);
+    const checkSuiteId = identifier(payload.checkSuiteId ?? checkSuite.id ?? record(checkRun.check_suite ?? checkRun.checkSuite).id);
+    const htmlUrl = githubUrl(payload.htmlUrl ?? checkRun.html_url ?? checkRun.htmlUrl ?? checkSuite.html_url ?? checkSuite.htmlUrl ?? workflowRun.html_url ?? workflowRun.htmlUrl);
+
     return compact({
       ...base,
       action: boundedString(payload.action, 100),
-      repository: boundedString(payload.repository, 300),
-      number: workflowPullRequestNumber ?? checkPullRequestNumber ?? positiveInteger(payload.number),
-      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkPullRequestNumber ?? workflowPullRequestNumber ?? positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number),
-      headSha: commitSha(payload.headSha),
-      conclusion: boundedString(payload.conclusion, 40),
-      status: boundedString(payload.status, 40),
-      runId: identifier(payload.runId),
-      checkSuiteId: identifier(payload.checkSuiteId),
-      htmlUrl: githubUrl(payload.htmlUrl),
+      repository: boundedString(payload.repository ?? record(payload.repository).full_name, 300),
+      number: checkRunPullRequestNumber ?? workflowPullRequestNumber ?? checkPullRequestNumber ?? positiveInteger(payload.number),
+      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkRunPullRequestNumber ?? checkPullRequestNumber ?? workflowPullRequestNumber ?? positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number),
+      headSha,
+      conclusion,
+      status,
+      runId,
+      checkSuiteId,
+      htmlUrl,
     });
   }
   if (event.event === "installation_repositories") {
@@ -188,9 +221,17 @@ function bindingRows(rows: Array<{
       ? `agent:${grant.subjectAgentId}`
       : grant.kind === "user" && grant.subjectUserId
         ? grant.subjectUserId
-        : null;
+        : typeof oauth.connectorSubjectUserId === "string" && oauth.connectorSubjectUserId.length > 0
+          ? oauth.connectorSubjectUserId
+          : typeof oauth.connectorSubjectAgentId === "string" && oauth.connectorSubjectAgentId.length > 0
+            ? `agent:${oauth.connectorSubjectAgentId}`
+            : grant.createdByUserId ?? (grant.kind === "organization" ? `company:${grant.companyId}` : null);
     if (!subject) return [];
-    return github.installationIds.map((installationId) => ({
+    const rawInstallationIds = github.installationIds;
+    const installationIds = Array.isArray(rawInstallationIds)
+      ? rawInstallationIds.map((id) => String(id)).filter(Boolean)
+      : [];
+    return installationIds.map((installationId) => ({
       id: `${grant.id}_${installationId}`,
       companyId: grant.companyId,
       connectionId: connection.id,
@@ -272,12 +313,13 @@ export function githubConnectionEventService(
   }
 
   async function applyCiCompletionEvent(companyId: string, event: LeasedEvent, database: Db = db) {
-    if (event.event !== "workflow_run" && event.event !== "check_suite") return;
+    if (event.event !== "workflow_run" && event.event !== "check_suite" && event.event !== "check_run") return;
     const payload = event.payload;
-    const status = stringValue(payload.status);
+    const status = stringValue(payload.status) ?? (stringValue(payload.conclusion) ? "completed" : null);
     const conclusion = stringValue(payload.conclusion);
     if (!status || !["queued", "in_progress", "completed"].includes(status)) return;
-    const repository = stringValue(payload.repository);
+    const repositoryValue = payload.repository;
+    const repository = stringValue(repositoryValue) ?? stringValue(record(repositoryValue).full_name);
     const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number) ?? positiveInteger(payload.checkSuitePullRequestNumber);
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
@@ -332,6 +374,13 @@ export function githubConnectionEventService(
         },
         updatedAt: currentTime,
       }).where(eq(issueWorkProducts.id, product.id));
+    }
+
+    // myrmidon(OPE-11767): a successful CI run may be the moment an approved
+    // pull request becomes mergeable; the board's merge re-reads the required
+    // checks itself, so this only announces where to look.
+    if (!active && conclusion === "success") {
+      notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" });
     }
 
     if (!options.assignmentWakeup || !conclusion || active) return;
@@ -775,7 +824,7 @@ export function githubConnectionEventService(
           },
         }, postCommitPublications);
       };
-      if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "installation" || event.event === "installation_repositories") {
+      if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "check_run" || event.event === "installation" || event.event === "installation_repositories") {
         await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
       } else {
         await applyAndFinalize(db);
@@ -825,61 +874,270 @@ export function githubConnectionEventService(
         nextPollAt = now().getTime() + 5 * 60_000;
         return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
       }
-      const first = bindings[0]!;
-      const lease = await connector.leaseEvents({ subject: first.subject, companyId: first.companyId });
-      if (!lease) {
-        emptyPolls += 1;
-        nextPollAt = now().getTime() + Math.min(5 * 60_000, 5_000 * (2 ** Math.min(emptyPolls, 6)));
-        return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
+
+      const targetMap = new Map<string, { subject: string; companyId: string }>();
+      for (const binding of bindings) {
+        const key = `${binding.companyId}:${binding.subject}`;
+        if (!targetMap.has(key)) {
+          targetMap.set(key, { subject: binding.subject, companyId: binding.companyId });
+        }
       }
-      emptyPolls = 0;
-      nextPollAt = now().getTime() + 5_000;
-      const result: GitHubConnectionEventPollResult = {
-        leased: lease.events.length,
+
+      const totalResult: GitHubConnectionEventPollResult = {
+        leased: 0,
         processed: 0,
         duplicate: 0,
         ignored: 0,
         failed: 0,
       };
-      const acknowledge: string[] = [];
-      for (const event of lease.events) {
-        const matched = bindings.filter((binding) => event.bindingIds.includes(binding.id));
-        if (matched.length === 0) {
-          result.ignored += 1;
-          acknowledge.push(event.id);
+
+      let anyLeased = false;
+
+      for (const target of targetMap.values()) {
+        let lease;
+        try {
+          lease = await connector.leaseEvents({ subject: target.subject, companyId: target.companyId });
+        } catch {
+          totalResult.failed += 1;
           continue;
         }
-        try {
-          const companies = new Map<string, GitHubBinding[]>();
-          for (const binding of matched) companies.set(binding.companyId, [...(companies.get(binding.companyId) ?? []), binding]);
-          for (const [companyId, companyBindings] of companies) {
-            const status = await processForCompany(companyId, companyBindings, event);
-            result[status] += 1;
+        if (!lease || !Array.isArray(lease.events) || lease.events.length === 0) {
+          continue;
+        }
+        anyLeased = true;
+        totalResult.leased += lease.events.length;
+        const acknowledge: string[] = [];
+        for (const event of lease.events) {
+          const matched = bindings.filter((binding) => event.bindingIds.includes(binding.id));
+          if (matched.length === 0) {
+            totalResult.ignored += 1;
+            acknowledge.push(event.id);
+            continue;
           }
-          acknowledge.push(event.id);
-          if (event.event === "installation" && (event.action === "deleted" || event.action === "suspend")) {
-            await Promise.all(matched.map((binding) => connector.setWebhookBinding({
-              subject: binding.subject,
-              companyId: binding.companyId,
-              id: binding.id,
-              installationId: binding.installationId,
-              connectionId: binding.connectionId,
-              grantId: binding.grantId,
-              active: false,
-            })));
+          try {
+            const companies = new Map<string, GitHubBinding[]>();
+            for (const binding of matched) companies.set(binding.companyId, [...(companies.get(binding.companyId) ?? []), binding]);
+            for (const [companyId, companyBindings] of companies) {
+              const status = await processForCompany(companyId, companyBindings, event);
+              totalResult[status] += 1;
+            }
+            acknowledge.push(event.id);
+            if (event.event === "installation" && (event.action === "deleted" || event.action === "suspend")) {
+              await Promise.all(matched.map((binding) => connector.setWebhookBinding({
+                subject: binding.subject,
+                companyId: binding.companyId,
+                id: binding.id,
+                installationId: binding.installationId,
+                connectionId: binding.connectionId,
+                grantId: binding.grantId,
+                active: false,
+              })));
+            }
+          } catch {
+            totalResult.failed += 1;
           }
-        } catch {
-          result.failed += 1;
+        }
+        if (acknowledge.length > 0) {
+          try {
+            await connector.acknowledgeEvents({
+              subject: target.subject,
+              companyId: target.companyId,
+              leaseId: lease.leaseId,
+              deliveryIds: acknowledge,
+            });
+          } catch {
+            totalResult.failed += 1;
+          }
         }
       }
-      if (acknowledge.length > 0) {
-        await connector.acknowledgeEvents({
-          subject: first.subject,
-          companyId: first.companyId,
-          leaseId: lease.leaseId,
-          deliveryIds: acknowledge,
-        });
+
+      if (!anyLeased) {
+        emptyPolls += 1;
+        nextPollAt = now().getTime() + Math.min(5 * 60_000, 5_000 * (2 ** Math.min(emptyPolls, 6)));
+      } else {
+        emptyPolls = 0;
+        nextPollAt = now().getTime() + 5_000;
       }
+
+      return totalResult;
+    },
+
+    async sweepWatchdog(currentTime: Date = now()): Promise<GitHubEventsWatchdogResult> {
+      const bindings = await activeBindings();
+      const companyIds = Array.from(new Set(bindings.map((b) => b.companyId)));
+      const rawThreshold = Number(process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN ?? process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN);
+      const thresholdMin = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : 15;
+      const staleThresholdMs = thresholdMin * 60 * 1000;
+      const ciStaleThresholdMs = Math.max(staleThresholdMs, 30 * 60 * 1000);
+
+      const result: GitHubEventsWatchdogResult = {
+        scannedCompanies: companyIds.length,
+        activePrCount: 0,
+        alarmsCreated: 0,
+        alarmsResolved: 0,
+      };
+
+      for (const companyId of companyIds) {
+        const activePrs = await db.select({
+          product: issueWorkProducts,
+          issue: issues,
+        })
+          .from(issueWorkProducts)
+          .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+          .where(and(
+            eq(issueWorkProducts.companyId, companyId),
+            eq(issueWorkProducts.type, "pull_request"),
+            eq(issueWorkProducts.provider, "github"),
+            inArray(issues.status, ["in_progress", "in_review"]),
+          ));
+
+        const nonClosedPrs = activePrs.filter(({ product }) => product.status !== "closed" && product.status !== "merged");
+        result.activePrCount += nonClosedPrs.length;
+
+        const alarmKey = `github-events-silence:${companyId}`;
+        const existingAlarms = await db.select().from(issues).where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "github_events_silence"),
+          eq(issues.originId, companyId),
+        ));
+        const existingAlarm = existingAlarms[0] ?? null;
+
+        if (nonClosedPrs.length === 0) {
+          if (existingAlarm && existingAlarm.status !== "done" && existingAlarm.status !== "cancelled") {
+            await db.update(issues).set({
+              status: "done",
+              updatedAt: currentTime,
+            }).where(eq(issues.id, existingAlarm.id));
+            await db.insert(issueComments).values({
+              companyId,
+              issueId: existingAlarm.id,
+              authorType: "system",
+              body: "Все активные PR закрыты или влиты. Тревога по тишине событий GitHub снята.",
+              createdAt: currentTime,
+              updatedAt: currentTime,
+            });
+            result.alarmsResolved += 1;
+          }
+          continue;
+        }
+
+        const [lastActivity] = await db.select({ createdAt: activityLog.createdAt })
+          .from(activityLog)
+          .where(and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.action, "tool_connection.webhook_processed"),
+          ))
+          .orderBy(desc(activityLog.createdAt))
+          .limit(1);
+
+        let lastEventAtMs: number | null = lastActivity?.createdAt ? new Date(lastActivity.createdAt).getTime() : null;
+
+        for (const binding of bindings.filter((b) => b.companyId === companyId)) {
+          const lastWebhookAt = binding.providerTenant?.github?.lastWebhookAt;
+          if (lastWebhookAt) {
+            const ms = new Date(lastWebhookAt).getTime();
+            if (!Number.isNaN(ms) && (!lastEventAtMs || ms > lastEventAtMs)) {
+              lastEventAtMs = ms;
+            }
+          }
+        }
+
+        const [lastCiDelivery] = await db.select({ createdAt: connectionEventDeliveries.createdAt })
+          .from(connectionEventDeliveries)
+          .where(and(
+            eq(connectionEventDeliveries.companyId, companyId),
+            eq(connectionEventDeliveries.provider, "github"),
+            inArray(connectionEventDeliveries.event, ["check_run", "check_suite", "workflow_run", "status"]),
+          ))
+          .orderBy(desc(connectionEventDeliveries.createdAt))
+          .limit(1);
+
+        const lastCiEventAtMs: number | null = lastCiDelivery?.createdAt
+          ? new Date(lastCiDelivery.createdAt).getTime()
+          : null;
+
+        const isGeneralSilent = !lastEventAtMs || (currentTime.getTime() - lastEventAtMs > staleThresholdMs);
+        const isCiSilent = !lastCiEventAtMs || (currentTime.getTime() - lastCiEventAtMs > ciStaleThresholdMs);
+        const isSilent = isGeneralSilent || isCiSilent;
+
+        if (isSilent) {
+          const silenceMin = lastEventAtMs
+            ? Math.max(thresholdMin, Math.round((currentTime.getTime() - lastEventAtMs) / 60000))
+            : thresholdMin;
+          const ciSilenceMin = lastCiEventAtMs
+            ? Math.round((currentTime.getTime() - lastCiEventAtMs) / 60000)
+            : null;
+          const silenceReason = isGeneralSilent
+            ? `события GitHub не поступают ${silenceMin} мин`
+            : `события CI (check_run/workflow_run) не поступают ${ciSilenceMin ?? "∞"} мин`;
+          const description = [
+            `## Тревога: ${silenceReason} на доску`,
+            "",
+            `- Активных PR в работе: ${nonClosedPrs.length}`,
+            `- Последнее общее событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "никогда"} (${silenceMin} мин назад)`,
+            `- Последнее событие CI: ${lastCiEventAtMs ? new Date(lastCiEventAtMs).toISOString() : "никогда"} (${ciSilenceMin !== null ? `${ciSilenceMin} мин назад` : "события CI отсутствуют"})`,
+            `- Порог тишины общих событий: ${thresholdMin} мин`,
+            `- Порог тишины событий CI: ${Math.round(ciStaleThresholdMs / 60000)} мин`,
+            "",
+            "События GitHub CI необходимы для автоматического снятия гейта Review CI wait и возврата задач инженерам при сбоях.",
+            "",
+            "### Что проверить:",
+            "1. Подписку GitHub App на события check_run, check_suite, workflow_run, status.",
+            "2. Статус webhook в GitHub App и облачного коннектора.",
+            "3. Ответы leaseEvents коннектора и логи сервера.",
+            "4. Значение webhookHealth в подключениях компании.",
+            "",
+            "_Сторож закроет эту задачу автоматически, когда события GitHub и CI снова начнут обрабатываться доской._",
+          ].join("\n");
+
+          if (!existingAlarm) {
+            await db.insert(issues).values({
+              companyId,
+              title: `1.6.6 P1 ALARM: ${silenceReason} при открытых PR`,
+              description,
+              status: "todo",
+              priority: "high",
+              originKind: "github_events_silence",
+              originId: companyId,
+              createdAt: currentTime,
+              updatedAt: currentTime,
+            });
+            result.alarmsCreated += 1;
+          } else if (existingAlarm.status === "done" || existingAlarm.status === "cancelled") {
+            await db.update(issues).set({
+              status: "todo",
+              description,
+              updatedAt: currentTime,
+            }).where(eq(issues.id, existingAlarm.id));
+            await db.insert(issueComments).values({
+              companyId,
+              issueId: existingAlarm.id,
+              authorType: "system",
+              body: `Тревога возобновлена: ${silenceReason} при ${nonClosedPrs.length} активных PR.`,
+              createdAt: currentTime,
+              updatedAt: currentTime,
+            });
+            result.alarmsCreated += 1;
+          }
+        } else {
+          if (existingAlarm && existingAlarm.status !== "done" && existingAlarm.status !== "cancelled") {
+            await db.update(issues).set({
+              status: "done",
+              updatedAt: currentTime,
+            }).where(eq(issues.id, existingAlarm.id));
+            await db.insert(issueComments).values({
+              companyId,
+              issueId: existingAlarm.id,
+              authorType: "system",
+              body: `События GitHub и CI снова поступают. Последнее общее событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "неизвестно"}, последнее событие CI: ${lastCiEventAtMs ? new Date(lastCiEventAtMs).toISOString() : "неизвестно"}. Тревога снята.`,
+              createdAt: currentTime,
+              updatedAt: currentTime,
+            });
+            result.alarmsResolved += 1;
+          }
+        }
+      }
+
       return result;
     },
   };

@@ -113,7 +113,7 @@ const COOLING_TERMINAL_STATUSES = ["succeeded", "failed", "timed_out", "cancelle
  * `updatedAt` after `finishedAt` unconditionally, so it would always lift the
  * window of exactly the runs the cooling exists for.
  */
-const MOVEMENT_ACTIVITY_ACTIONS = [
+export const MOVEMENT_ACTIVITY_ACTIONS = [
   "issue.updated",
   "issue.comment_added",
   "issue.comment.created",
@@ -121,7 +121,17 @@ const MOVEMENT_ACTIVITY_ACTIONS = [
   "issue.attachment_added",
   "issue.thread_interaction_answered",
   "issue.thread_interaction_accepted",
+  "issue.blockers_resolved_wake_emitted",
+  "issue.work_product_updated",
+  "myrmidon.task_pr_sync.settled",
+  "myrmidon.task_pr_sync.returned",
 ];
+export const EXTERNAL_SYSTEM_MOVEMENTS = new Set([
+  "issue.blockers_resolved_wake_emitted",
+  "issue.work_product_updated",
+  "myrmidon.task_pr_sync.settled",
+  "myrmidon.task_pr_sync.returned",
+]);
 const HEALTHY_LIVENESS = new Set(["advanced", "completed", "followup_scheduled"]);
 
 export interface IssueCoolingStatus {
@@ -144,11 +154,72 @@ export const NOT_COOLING: IssueCoolingStatus = {
   nextWakeAt: null,
 };
 
+/**
+ * Error codes representing infrastructure failures (gateway, container, rollout/drain)
+ * that must not be counted as stale and must not start task cooling (§4.3, OPE-10784).
+ */
+export const INFRA_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
+  // Gateway failures
+  "hermes_gateway_connect_failed",
+  "hermes_gateway_timeout",
+  "hermes_gateway_create_timeout",
+  "hermes_gateway_health_unreachable",
+  "hermes_gateway_health_failed",
+  "hermes_gateway_rate_limited",
+  "hermes_gateway_upstream_error",
+  "hermes_gateway_predecessor_running",
+  "hermes_gateway_cancelled",
+  "openclaw_gateway_connect_failed",
+  "openclaw_gateway_timeout",
+  "openclaw_gateway_upstream_error",
+  "openclaw_gateway_request_failed",
+  "openclaw_gateway_cancelled",
+  // Container & process lifecycle
+  "process_lost",
+  "setup_failed",
+  "agent_paused",
+  "site_lost",
+  "controller_lease_lost",
+  "legacy_controller_lease_lost",
+  "native_session_lease_lost",
+  "transient_network_error",
+  // Rollout / drain / shutdown
+  "server_shutdown_interrupted",
+  "myrmidon_maintenance_interrupted",
+]);
+
+export const INFRA_CANCELLATION_CODES: ReadonlySet<string> = new Set([
+  "drain",
+  "deploy",
+  "server_shutdown",
+  "maintenance",
+]);
+
+export function isInfraRun(row: {
+  errorCode?: string | null;
+  cancellationCode?: string | null;
+}): boolean {
+  for (const c of [row.errorCode, row.cancellationCode]) {
+    if (!c) continue;
+    if (INFRA_FAILURE_ERROR_CODES.has(c)) return true;
+    if (INFRA_CANCELLATION_CODES.has(c)) return true;
+    if (c.startsWith("hermes_gateway_") && c !== "hermes_gateway_run_failed") return true;
+    if (c.startsWith("openclaw_gateway_")) return true;
+  }
+  return false;
+}
+
 function runIsStale(
-  row: { status: string; livenessState: string | null },
+  row: {
+    status: string;
+    livenessState: string | null;
+    errorCode?: string | null;
+    cancellationCode?: string | null;
+  },
   issueStatus: string,
 ): boolean {
   if (row.status === "cancelled") return false;
+  if (isInfraRun(row)) return false;
   if (row.status === "failed" || row.status === "timed_out") return true;
   if (row.livenessState === "blocked" || row.livenessState === "needs_followup") return true;
   return (
@@ -162,6 +233,8 @@ function runIsStale(
 export interface CoolingRun {
   agentId: string | null;
   status: string;
+  errorCode?: string | null;
+  cancellationCode?: string | null;
   livenessState: string | null;
   finishedAt: Date | null;
   startedAt: Date | null;
@@ -174,6 +247,7 @@ export interface TaskMovement {
   actorType: "user" | "agent" | "system";
   /** Agent id for `agent` actors; user id for `user`; free text for `system`. */
   actorId: string | null;
+  action?: string;
 }
 
 /**
@@ -187,7 +261,7 @@ export interface TaskMovement {
 export function isRealTaskMovement(m: TaskMovement, runAgentId: string | null): boolean {
   if (m.actorType === "user") return true;
   if (m.actorType === "agent") return !!m.actorId && m.actorId !== runAgentId;
-  return false;
+  return m.action !== undefined && EXTERNAL_SYSTEM_MOVEMENTS.has(m.action);
 }
 
 /**
@@ -205,11 +279,11 @@ export function decideIssueCooling(input: {
 }): IssueCoolingStatus {
   const { runs, issueStatus, settings, now } = input;
   if (runs.length === 0) return NOT_COOLING;
-  // A board/reassignment cancellation is not stale and cannot become the
-  // cooling anchor. Keep the most recent actual stale-capable run as the
-  // anchor so the cancellation neither starts a cooldown nor erases a still
-  // active window from an earlier stale run.
-  const last = runs.find((row) => row.status !== "cancelled");
+  // A board/reassignment cancellation or an infra failure is not stale and
+  // cannot become the cooling anchor. Keep the most recent actual
+  // stale-capable run as the anchor so neither starts a cooldown nor erases a
+  // still active window from an earlier stale run.
+  const last = runs.find((row) => row.status !== "cancelled" && !isInfraRun(row));
   if (!last) return NOT_COOLING;
   const finishedAt = last.finishedAt;
   if (!finishedAt) return NOT_COOLING;
@@ -226,7 +300,7 @@ export function decideIssueCooling(input: {
   let staleCount = 0;
   for (let i = 0; i < runs.length; i += 1) {
     const row = runs[i]!;
-    if (row.status === "cancelled") continue;
+    if (row.status === "cancelled" || isInfraRun(row)) continue;
     const healthy = row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
     if (healthy) break;
     if (i > 0 && row.finishedAt) {
@@ -279,6 +353,8 @@ export async function isIssueCoolingDown(
       .select({
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        cancellationCode: sql<string | null>`${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code'`,
         livenessState: heartbeatRuns.livenessState,
         finishedAt: heartbeatRuns.finishedAt,
         startedAt: heartbeatRuns.startedAt,
@@ -350,6 +426,7 @@ async function taskMovements(
       at: activityLog.createdAt,
       actorType: activityLog.actorType,
       actorId: activityLog.actorId,
+      action: activityLog.action,
     })
     .from(activityLog)
     .where(
@@ -370,7 +447,7 @@ async function taskMovements(
   }
   for (const a of acts) {
     const t = a.actorType === "user" || a.actorType === "agent" ? a.actorType : "system";
-    out.push({ at: a.at.getTime(), actorType: t, actorId: a.actorId });
+    out.push({ at: a.at.getTime(), actorType: t, actorId: a.actorId, action: a.action });
   }
   return out;
 }

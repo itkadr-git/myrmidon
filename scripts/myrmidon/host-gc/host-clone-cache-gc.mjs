@@ -217,6 +217,47 @@ function scanBuildCaches(root, now, ttlHours) {
   return results;
 }
 
+function issueIdentifierFromCloneName(name) {
+  return name.split("@")[0];
+}
+
+export async function fetchIssueStatus(identifier, {
+  baseUrl = process.env.BOARD_API_URL,
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!baseUrl || typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const url = `${baseUrl.replace(/\/$/, "")}/api/issues/${encodeURIComponent(identifier)}`;
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const response = await fetchImpl(url, { headers });
+    if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+    const issue = await response.json();
+    if (!issue || typeof issue.status !== "string") return { ok: false, reason: "issue-not-found" };
+    return { ok: true, status: issue.status };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+export async function filterClosedTaskClones(clones, options = {}) {
+  const candidates = [];
+  const skipped = [];
+  for (const clone of clones) {
+    const identifier = issueIdentifierFromCloneName(clone.name);
+    const result = await fetchIssueStatus(identifier, options);
+    if (!result.ok) {
+      skipped.push({ ...clone, identifier, reason: result.reason });
+    } else if (!["done", "cancelled"].includes(result.status)) {
+      skipped.push({ ...clone, identifier, status: result.status, reason: "issue-status" });
+    } else {
+      candidates.push({ ...clone, identifier, issueStatus: result.status });
+    }
+  }
+  return { candidates, skipped };
+}
+
 // --- Atomic deletion --------------------------------------------------------
 
 export function atomicDrop(filePath, expectedRoot) {
@@ -264,19 +305,28 @@ function archiveClone(clonePath, archiveRoot) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
-  const archivePath = path.join(archiveRoot, `${name}-${ts}.tar.zst`);
-  // We use tar command for speed; zstd via pipe if available
-  const r = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
-  if (r.status !== 0) throw new Error(`archive failed for ${clonePath}: ${r.stderr}`);
-  // Verify archive
-  const v = spawnSync("bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`], { timeout: 60000 });
-  if (v.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
+  const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
+  const extension = hasZstd ? "tar.zst" : "tar.gz";
+  const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
+  let result;
+  let verify;
+  if (hasZstd) {
+    // Prefer zstd, but do not make archival depend on an optional host binary.
+    result = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
+    verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
+  } else {
+    result = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(clonePath), name], { timeout: 120000 });
+    verify = ["tar", ["-tzf", archivePath]];
+  }
+  if (result.status !== 0) throw new Error(`archive failed for ${clonePath}: ${result.stderr}`);
+  const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
+  if (verification.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
   return archivePath;
 }
 
 // --- Main -------------------------------------------------------------------
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv);
   const now = Date.now();
 
@@ -295,7 +345,17 @@ function main() {
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
-    for (const c of clones) {
+    const cloneStatuses = await filterClosedTaskClones(clones);
+    for (const skipped of cloneStatuses.skipped) {
+      journalRecord(args.journal, {
+        event: "clone-skipped",
+        path: skipped.path,
+        identifier: skipped.identifier,
+        status: skipped.status,
+        reason: skipped.reason,
+      });
+    }
+    for (const c of cloneStatuses.candidates) {
       if (c.safeToRemove) {
         plan.clones.push({ ...c, action: "remove" });
       } else {
@@ -366,5 +426,8 @@ function main() {
 
 // Only run main when executed directly (not when imported by tests)
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
-  main();
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
 }

@@ -74,6 +74,10 @@ const SENSITIVE_KEYS = new Set<string>([
   "browsercode",
   "authorization_code",
   "authorizationcode",
+  // Invite tokens carried in JSON bodies or params (OPE-11891).
+  "invitetoken",
+  "invite_token",
+  "invite",
   // The workspace login handoff ticket (PAP-17572). It is a signed bearer
   // credential carried as a query parameter, so it must never reach a log line
   // even though the exchange itself answers 302.
@@ -106,6 +110,11 @@ const URLISH_KEYS = new Set<string>([
   // credentials are stripped (SR-5 backstop).
   "loginurl",
   "login_url",
+  // URLs in invite responses or error contexts (OPE-11891).
+  "inviteurl",
+  "invite_url",
+  "invitepath",
+  "invite_path",
 ]);
 
 function isSensitiveKey(key: string): boolean {
@@ -120,13 +129,23 @@ function isUrlishKey(key: string): boolean {
 // segment (/password-set/<token>), which the query/fragment policy does not see.
 // Applies to the board page and to any API path ending in /password-set/<token>.
 const PASSWORD_SET_PATH_TOKEN = /(\/password-set\/)[^/?#\s]+/gi;
+// myrmidon(OPE-11891): invite tokens in URLs /invites/<token> or /invite/<token>
+const INVITE_PATH_TOKEN = /(\/(?:api\/)?invites?\/)[^/?#\s]+/gi;
 
 export function maskPasswordSetToken(value: string): string {
   return value.replace(PASSWORD_SET_PATH_TOKEN, "$1[redacted]");
 }
 
+export function maskInviteToken(value: string): string {
+  return value.replace(INVITE_PATH_TOKEN, "$1[redacted]");
+}
+
+export function maskPathTokens(value: string): string {
+  return maskInviteToken(maskPasswordSetToken(value));
+}
+
 export function stripSecretBearingUrlParts(value: string): string {
-  return maskPasswordSetToken(stripQueryAndCredentials(value));
+  return maskPathTokens(stripQueryAndCredentials(value));
 }
 
 function stripQueryAndCredentials(value: string): string {

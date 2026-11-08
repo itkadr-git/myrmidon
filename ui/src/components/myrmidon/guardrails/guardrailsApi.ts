@@ -30,7 +30,14 @@ export interface GuardrailEventFilters {
   severity?: string;
   surface?: string;
   runId?: string;
+  rule?: string;
+  mode?: string;
+  level?: string;
+  agentId?: string;
+  agent?: string;
+  decision?: string;
   limit?: number;
+  offset?: number;
 }
 
 /** myrmidon(1.6.6 OPE-8319): the stored document plus the server-resolved effective detector config. */
@@ -52,6 +59,13 @@ export interface GuardrailEventRow {
   issueId: string | null;
   snippet: string | null;
   occurredAt: string;
+  rule?: string | null;
+  mode?: string | null;
+  level?: string | null;
+  agentId?: string | null;
+  agent?: string | null;
+  decision?: string | null;
+  ts?: string | null;
 }
 
 export const guardrailsApi = {
@@ -69,9 +83,16 @@ export const guardrailsApi = {
     if (filters.severity) params.set("severity", filters.severity);
     if (filters.surface) params.set("surface", filters.surface);
     if (filters.runId) params.set("runId", filters.runId);
-    if (filters.limit) params.set("limit", String(filters.limit));
+    if (filters.rule) params.set("rule", filters.rule);
+    if (filters.mode) params.set("mode", filters.mode);
+    if (filters.level) params.set("level", filters.level);
+    if (filters.agentId) params.set("agentId", filters.agentId);
+    if (filters.agent) params.set("agent", filters.agent);
+    if (filters.decision) params.set("decision", filters.decision);
+    if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+    if (filters.offset !== undefined) params.set("offset", String(filters.offset));
     const qs = params.toString();
-    return api.get<{ events: GuardrailEventRow[]; count: number; limit: number }>(
+    return api.get<{ events: GuardrailEventRow[]; count: number; limit: number; offset: number }>(
       `${base(companyId)}/events${qs ? `?${qs}` : ""}`,
     );
   },
