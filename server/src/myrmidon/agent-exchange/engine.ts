@@ -246,7 +246,7 @@ async function runParticipantCall(
       costCents,
       completedAt: now(deps),
     });
-    return { tokens: result.promptTokens + result.completionTokens, costCents };
+    return { tokens: result.promptTokens + result.completionTokens, costCents, interrupted: false };
   } catch (error) {
     await deps.store.updateMessage(messageId, {
       status: "error",
