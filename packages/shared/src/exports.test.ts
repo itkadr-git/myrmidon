@@ -33,6 +33,9 @@ describe("shared export surface snapshot (OPE-9341)", () => {
     expect(typeof shared.mergeCapacityPolicyPatch).toBe("function");
     expect(shared.agentAdapterTypeSchema).toBeDefined();
     expect(shared.RUNNER_GOAL_MAX_OBJECTIVE_CHARS).toBeDefined();
+    expect(shared.ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY).toBe("acceptance-scenarios");
+    expect(shared.acceptanceScenarioSchema).toBeDefined();
+    expect(shared.acceptanceScenariosDocumentSchema).toBeDefined();
   });
 
   it("exports key Myrmidon domain contracts through the myrmidon barrel", () => {
@@ -42,6 +45,9 @@ describe("shared export surface snapshot (OPE-9341)", () => {
     expect(myrmidon.INTERACTION_ROUTE_TYPES).toBeDefined();
     expect(myrmidon.recoveryFactoryRequestSchema).toBeDefined();
     expect(typeof myrmidon.mergeCapacityPolicyPatch).toBe("function");
+    expect(myrmidon.ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY).toBe("acceptance-scenarios");
+    expect(myrmidon.acceptanceScenarioSchema).toBeDefined();
+    expect(myrmidon.acceptanceScenariosDocumentSchema).toBeDefined();
   });
 
   it("functional execution of exported contracts works as expected", () => {
@@ -54,6 +60,27 @@ describe("shared export surface snapshot (OPE-9341)", () => {
 
     expect(Array.isArray(shared.INTERACTION_ROUTE_TYPES)).toBe(true);
     expect(shared.INTERACTION_ROUTE_TYPES).toContain("decision");
+
+    // Acceptance scenario parsing and falsifiedWhen enforcement (OPE-12172)
+    const validScenario = {
+      id: "SCEN-EXPORT-001",
+      title: "Export snapshot scenario",
+      given: "packages/shared barrel is loaded",
+      when: "reading contract exports",
+      then: "all symbols are defined",
+      falsifiedWhen: "contract symbol is missing from exports",
+      testRefs: ["packages/shared/src/exports.test.ts"],
+    };
+    const parsed = shared.acceptanceScenarioSchema.parse(validScenario);
+    expect(parsed.id).toBe("SCEN-EXPORT-001");
+    expect(parsed.falsifiedWhen).toBe("contract symbol is missing from exports");
+
+    // Must reject scenario without falsifiedWhen
+    const invalidScenario = {
+      id: "SCEN-EXPORT-002",
+      title: "Missing falsifiedWhen",
+    };
+    expect(() => shared.acceptanceScenarioSchema.parse(invalidScenario)).toThrow();
   });
 });
 

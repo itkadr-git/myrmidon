@@ -76,6 +76,7 @@ const apiPrefixes: Record<string, string> = {
   "status-cards.ts": "/api",
   // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): system update checks mount under /api.
   "system-updates.ts": "/api",
+  "intake.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
@@ -101,6 +102,8 @@ const explicitOpenApiCoverageExclusions = new Set<string>([
   "audit.ts",
   // Mounted directly by app.ts; its routes are documented in openapi.ts.
   "admin-assistant.ts",
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10218): project-scoped system maintenance window API.
+  "system.ts",
 ]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // These webhook handlers are mounted outside the scanner's route-file map.
@@ -194,6 +197,9 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
     (file === "chat-channels.ts" || file === "email.ts") &&
     routePath.startsWith("/api/chat-webhooks/")
   ) {
+    return routePath;
+  }
+  if (file === "intake.ts" && routePath.startsWith("/api/intake/")) {
     return routePath;
   }
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
