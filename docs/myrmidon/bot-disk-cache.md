@@ -568,7 +568,7 @@ its default:
 | `pnpmImportMethod` | `hardlink` | `hardlink`, `clone-or-copy` or `copy` (above) |
 | `uvCacheDir` | `/cache/uv` | The shared uv cache; a path under `<sharedPackageCachePath>` by contract, a bot-tree path with a warning (Shared uv cache above) |
 | `uvLinkMode` | `clone` | `UV_LINK_MODE`: `clone`, `hardlink` or `copy`; `symlink` is refused (Shared uv cache above) |
-| `sharedCacheRoles` | `engineer`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; other bots get none and are not recreated when the cache is enabled |
+| `sharedCacheRoles` | `engineer`, `lead`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; `lead` joined the coding roles (OPE-12384). Other bots get none and are not recreated when the cache is enabled |
 | `idleTtlMs`, `enabled` | 6 h, on | The draft lifecycle of BOT-DISK A, which the clone hygiene follows |
 
 ## Bot cache lifecycle and pressure cleanup (1.6.6 BOT-DISK-H)

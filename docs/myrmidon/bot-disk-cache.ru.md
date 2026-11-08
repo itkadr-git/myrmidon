@@ -569,7 +569,7 @@ bots»); PATCH с одним ключом сохраняет остальные,
 | `pnpmImportMethod` | `hardlink` | `hardlink`, `clone-or-copy` или `copy` (выше) |
 | `uvCacheDir` | `/cache/uv` | Общий кэш uv; по контракту путь под `<sharedPackageCachePath>`, путь в дереве бота — с предупреждением (см. «Общий кэш uv» выше) |
 | `uvLinkMode` | `clone` | `UV_LINK_MODE`: `clone`, `hardlink` или `copy`; `symlink` отклоняется (см. «Общий кэш uv» выше) |
-| `sharedCacheRoles` | `engineer`, `reviewer`, `devops`, `release`, `qa` | Роли, чьи боты получают монтирования кэша и зеркал; остальные не получают и не пересоздаются при включении кэша |
+| `sharedCacheRoles` | `engineer`, `lead`, `reviewer`, `devops`, `release`, `qa` | Роли, чьи боты получают монтирования кэша и зеркал; `lead` в области по умолчанию вместе с инженерными ролями (OPE-12384). Остальные не получают и не пересоздаются при включении кэша |
 | `idleTtlMs`, `enabled` | 6 ч, вкл. | Жизненный цикл черновиков BOT-DISK A, которому следует гигиена клонов |
 
 ## Жизненный цикл кэша бота и очистка при давлении (1.6.6 BOT-DISK-H)

@@ -388,10 +388,13 @@ export const BOT_DISK_DEFAULT_GIT_MIRROR_REPOS: readonly string[] = Object.freez
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the agent roles (`agents.role`) whose bots get the
- * shared package cache and the git mirror mounts. Every other bot (marketing,
- * support, ...) gets no cache mount, so enabling the cache does not recreate it.
+ * shared package cache and the git mirror mounts. `lead` is in the default scope
+ * (OPE-12384): a lead bot runs the same devbuild/build toolchain on the same
+ * repositories as the engineers it reviews, so it needs the same caches. Every
+ * other bot (marketing, support, ...) gets no cache mount, so enabling the cache
+ * does not recreate it.
  */
-export const BOT_DISK_DEFAULT_SHARED_CACHE_ROLES: readonly string[] = ["engineer", "reviewer", "devops", "release", "qa"];
+export const BOT_DISK_DEFAULT_SHARED_CACHE_ROLES: readonly string[] = ["engineer", "lead", "reviewer", "devops", "release", "qa"];
 export const BOT_DISK_MAX_SHARED_CACHE_ROLES = 50;
 
 const sharedCacheRolesSchema = z
