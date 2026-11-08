@@ -36087,6 +36087,19 @@ export function heartbeatService(
         else skipped += 1;
       }
 
+      // myrmidon(OPE-12178): a new tick clears the per-company quota of new
+      // reviewer wakes; the review admission sites spend from it. Cleared
+      // before the monitors are dispatched so a wake a previous tick deferred
+      // on quota is the first thing this tick's fresh budget can admit.
+      try {
+        const { clearReviewWakesQuotas } = await import(
+          "../myrmidon/review-stage-recovery/review-wakes-quota.js"
+        );
+        clearReviewWakesQuotas(now);
+      } catch (err) {
+        logger.warn({ err }, "failed to clear the reviewer-wake quota buckets");
+      }
+
       const issueMonitors = await tickDueIssueMonitors(now);
 
       return {

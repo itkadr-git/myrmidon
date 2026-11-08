@@ -25,6 +25,12 @@ export const REVIEW_CI_WAIT_INTERVAL_MS = 10 * 60 * 1000;
 /** CI waits per review stage (18 x 10 min = 3 h); afterwards the normal retry/escalation applies. */
 export const REVIEW_CI_WAIT_MAX_ATTEMPTS = 18;
 
+export {
+  REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
+  type ReviewWakesQuota,
+  admitReviewerUnderWakesQuota,
+} from "./review-wakes-quota.js";
+
 /**
  * Reviewer re-wakes for a missing decision before the board escalation. The
  * first one is the release tail's own review-participant recovery run; the
