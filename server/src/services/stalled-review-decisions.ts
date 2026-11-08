@@ -14,6 +14,7 @@ import {
   type IssuePostCommitAction,
 } from "./issues.js";
 import { triggerReviewApprovalPropagation } from "./pull-request-approval-propagation.js";
+import { extractReviewVerdictRecord } from "../myrmidon/review-verdict/record.js";
 
 export interface StalledReviewDecisionActor {
   userId: string;
@@ -134,6 +135,10 @@ export function stalledReviewDecisionService(db: Db) {
           issueId: result.issue.id,
           decisionOutcome: "approved",
           verdictBody: input.note ?? null,
+          verdictRecord: extractReviewVerdictRecord({
+            outcome: "approved",
+            body: input.note ?? null,
+          }),
           actor: {
             actorType: "user",
             actorId: input.actor.userId,

@@ -11,6 +11,9 @@ import { secretService } from "./secrets.js";
 import { resolveGitHubAppCredential } from "../myrmidon/github-shared-identity/resolve.js";
 import { declaredReviewedHead } from "../myrmidon/review-routing/pr-policy.js";
 import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
+import {
+  type ReviewVerdictRecord,
+} from "../myrmidon/review-verdict/record.js";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { gitHubApiBase } from "./github-fetch.js";
 import { logger } from "../middleware/logger.js";
@@ -32,7 +35,13 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export function isApprovalOutcome(
   outcome?: string | null,
   verdictBody?: string | null,
+  verdictRecord?: ReviewVerdictRecord | null,
 ): boolean {
+  // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the structured record is
+  // authoritative when present — the decision text is not re-parsed.
+  if (verdictRecord) {
+    return verdictRecord.reviewDecision === "approved";
+  }
   if (outcome) {
     const o = outcome.trim().toLowerCase();
     if (o === "approved" || o === "approve") {
@@ -399,6 +408,12 @@ export interface PropagateReviewApprovalInput {
   reviewedHeadSha?: string | null;
   decisionOutcome?: string | null;
   verdictBody?: string | null;
+  /**
+   * myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the structured verdict record
+   * extracted once at decision time. When present it is authoritative and the
+   * verdict text is not re-parsed; null keeps the legacy text fallback.
+   */
+  verdictRecord?: ReviewVerdictRecord | null;
   actor?: {
     actorType: "agent" | "user" | "system" | "plugin";
     actorId: string;
@@ -436,10 +451,17 @@ export async function propagateReviewApprovalToPullRequest(
   const client = deps.client ?? createDefaultGitHubApprovalClient();
   const tokenProvider = deps.tokenProvider ?? ((c, r, identity) => resolveGitHubTokenForApproval(deps.db, c, r, identity));
 
+  // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): an explicit structured record
+  // wins; a record may also arrive via the issue's execution state when the
+  // caller passes state instead of a parsed record. Without a record the
+  // legacy text parsing below stays as the fallback for old tickets.
+  const verdictRecord = input.verdictRecord ?? null;
+
   // Requirement 3: Negative path verification
-  const isNonApproval =
-    (input.decisionOutcome != null && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) ||
-    (input.verdictBody != null && NON_APPROVAL_VERDICT_PATTERN.test(input.verdictBody));
+  const isNonApproval = verdictRecord
+    ? verdictRecord.reviewDecision !== "approved"
+    : (input.decisionOutcome != null && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) ||
+      (input.verdictBody != null && NON_APPROVAL_VERDICT_PATTERN.test(input.verdictBody));
   if (isNonApproval) {
     if (input.issueId) {
       await logActivity(deps.db, {
@@ -460,10 +482,14 @@ export async function propagateReviewApprovalToPullRequest(
     return { success: false, action: "skipped", reason: "non_approval" };
   }
 
-  // Determine target PR coordinates and reviewed head
+  // Determine target PR coordinates and reviewed head. The structured record's
+  // head sha comes before re-parsing the verdict text (OPE-12181).
   let targetRepo = input.repository ?? null;
   let targetNumber = input.number ?? null;
-  let reviewedHead = input.reviewedHeadSha ?? parseReviewedHead(input.verdictBody) ?? input.headSha ?? null;
+  let reviewedHead = input.reviewedHeadSha ??
+    verdictRecord?.headSha ??
+    parseReviewedHead(input.verdictBody) ??
+    input.headSha ?? null;
 
   let matchedWorkProduct: typeof issueWorkProducts.$inferSelect | null = null;
 
@@ -520,7 +546,8 @@ export async function propagateReviewApprovalToPullRequest(
     }
   }
 
-  // Fall back to parsing PR from verdictBody or issue description
+  // Fall back to parsing PR from verdictBody or issue description. With a
+  // structured record the PR number comes from data first (OPE-12181).
   if ((!targetRepo || !targetNumber) && (input.verdictBody || input.issueId)) {
     let contextText = input.verdictBody ?? "";
     if (input.issueId && !contextText) {
@@ -532,6 +559,9 @@ export async function propagateReviewApprovalToPullRequest(
           .limit(1);
         contextText = issueRow?.description ?? "";
       } catch {}
+    }
+    if (!targetNumber && verdictRecord?.pullRequestNumber) {
+      targetNumber = verdictRecord.pullRequestNumber;
     }
     const parsed = parsePullRequestCoordinates(contextText, targetRepo);
     if (parsed) {
@@ -885,7 +915,9 @@ export async function triggerReviewApprovalPropagation(
   try {
     return await propagateReviewApprovalToPullRequest({ db }, input);
   } finally {
-    if (input.issueId && (input.decisionOutcome == null || isApprovalOutcome(input.decisionOutcome, input.verdictBody))) {
+    if (input.issueId && (input.verdictRecord
+      ? input.verdictRecord.reviewDecision === "approved"
+      : (input.decisionOutcome == null || isApprovalOutcome(input.decisionOutcome, input.verdictBody)))) {
       notifyBoardMergeTrigger({ companyId: input.companyId, issueId: input.issueId, source: "review_approved" });
     }
   }
