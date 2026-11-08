@@ -59,8 +59,12 @@ describe("buildDigestSections + renderDigestBody", () => {
     const bySection = Object.fromEntries(views.map((view) => [view.section, view.lines]));
     expect(bySection.done).toEqual(["- ABC-1 Fix the flaky test"]);
     // STACK-WATCH-LIVE: stack_update (lagging or stale stack component) lands
-    // in blocked alongside the failed run.
-    expect(bySection.blocked).toEqual(["- agent-a run failed", "- New upstream release"]);
+    // in blocked alongside the blocker attention and the failed run.
+    expect(bySection.blocked).toEqual([
+      "- Waiting on a review",
+      "- agent-a run failed",
+      "- New upstream release",
+    ]);
     expect(bySection.needs_decision).toHaveLength(4); // decision + interaction + budget alert + litellm budget
     expect(bySection.spend).toEqual(["- company budget warning", "- LiteLLM key near cap: bot-1"]);
     // Unknown source kinds contribute nothing.

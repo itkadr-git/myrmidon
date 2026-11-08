@@ -36,7 +36,13 @@ import {
   type StackHttpResponse,
 } from "./releases.js";
 import { readStackCheckIntervalSec, readStackGithubToken } from "./settings.js";
-import { seedStackDocument, type StackDocument, type StackLocalState } from "./domain.js";
+import {
+  seedStackDocument,
+  type StackDocument,
+  type StackLocalState,
+  type StackReleaseSource,
+  type StackSnapshot,
+} from "./domain.js";
 import { readStackDocument, writeStackDocument } from "./store.js";
 import { stackRegistryRoutes } from "./routes.js";
 
@@ -77,6 +83,29 @@ function documentWithLocal(overrides: Record<string, Partial<StackLocalState>>):
       overrides[component.name]
         ? { ...component, local: { ...component.local, ...overrides[component.name] } }
         : component,
+    ),
+  };
+}
+
+/** A check fixture that leaves only `githubCheckable` on the github path, so
+ *  a route can count network calls without interference from the other seeded
+ *  github components (a 404/403 on their URLs would otherwise trigger the
+ *  retry or patch-eval calls too). */
+function documentWithOnlyCheckable(
+  githubCheckable: string,
+  overrides: Record<string, Partial<StackLocalState>>,
+): StackDocument {
+  const doc = documentWithLocal(overrides);
+  return {
+    ...doc,
+    components: doc.components.map((component): StackSnapshot =>
+      component.name === githubCheckable
+        ? component
+        : {
+            ...component,
+            releaseSource: "manual" as StackReleaseSource,
+            upstream: { kind: "manual" },
+          },
     ),
   };
 }
@@ -327,9 +356,9 @@ describeEmbeddedPostgres("stack release check", () => {
   });
 
   it("records a per-component HTTP error without failing the whole check", async () => {
-    await writeStackDocument(db, documentWithLocal({ langfuse: { version: "langfuse/langfuse:3.0.0" } }));
+    await writeStackDocument(db, documentWithOnlyCheckable("langfuse", { langfuse: { version: "langfuse/langfuse:3.0.0" } }));
     const port = fakePort({ "repos/langfuse/langfuse/releases": { status: 403, json: null } });
-    const next = await checkStackReleases(db, { fetchJson: port, now: NOW, collect: false });
+    const next = await checkStackReleases(db, { fetchJson: port, now: NOW, retryDelayMs: 0, collect: false });
     const langfuse = next.components.find((c) => c.name === "langfuse")!;
     expect(langfuse.upstreamState?.error).toBe("github 403");
     expect(langfuse.upstreamState?.latest).toBeNull();
@@ -510,7 +539,7 @@ describeEmbeddedPostgres("stack release check", () => {
   });
 
   it("retries once after the configured delay on 403 before declaring stale", async () => {
-    await writeStackDocument(db, documentWithLocal({ langfuse: { version: "langfuse/langfuse:3.0.0" } }));
+    await writeStackDocument(db, documentWithOnlyCheckable("langfuse", { langfuse: { version: "langfuse/langfuse:3.0.0" } }));
     let calls = 0;
     const port: StackFetchJson = async () => {
       calls += 1;
