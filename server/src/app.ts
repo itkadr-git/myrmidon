@@ -138,6 +138,7 @@ import {
   bindModelProviderPluginLifecycle,
   myrmidonAgentExchangeRoutes,
   myrmidonAgentExchangeFeedRoutes,
+  myrmidonBillingWebhookRoutes,
   myrmidonBaselineRoutes,
   myrmidonBotEgressRoutes,
   myrmidonBotCanaryRoutes,
@@ -1254,6 +1255,7 @@ export async function createApp(
   api.use(myrmidonLitellmAuditRoutes(db)); // myrmidon(OPE-9857): LiteLLM settings audit log and safe rollback
   api.use(myrmidonAgentExchangeRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards
   api.use(myrmidonAgentExchangeFeedRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-B): owner feed + «to skill» candidate
+  api.use(myrmidonBillingWebhookRoutes(db)); // myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093): payment webhook event log
   api.use(myrmidonBaselineRoutes(db)); // myrmidon(1.6-BASELINE): cycle/review/return/blocked/run/cost metrics
   api.use(myrmidonBotEgressRoutes(db)); // myrmidon(EGRESS-B)
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
