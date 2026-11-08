@@ -19804,7 +19804,14 @@ export function heartbeatService(
     // created/exited container must be started before the gateway is contacted.
     // Keep this before any adapter execution so a failed start is not reported
     // as a gateway connection failure.
-    const idleStopService = getIdleStopService();
+    // Only a container-backed Hermes agent has an IDLE-STOP runtime. In
+    // particular, a transient retry of omp_local/codex_local must follow the
+    // same adapter dispatch path as its first attempt, without dockergate.
+    const idleStopService =
+      agent.adapterType === "hermes_gateway" &&
+      parseObject(parseObject(agent.adapterConfig).container).enabled === true
+        ? getIdleStopService()
+        : null;
     if (idleStopService) {
       try {
         await idleStopService.ensureStartedAndHealthy(claimed.agentId);
