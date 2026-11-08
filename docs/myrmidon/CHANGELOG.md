@@ -10,6 +10,111 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+## 1.6.7
+
+### An approved pull request whose head moved goes back to the implementer instead of waiting forever
+
+The board merge loop only merges the head a review verdict names. When the branch moved after
+the approval (a new push, or the base merged in), the loop skipped the pull request silently and
+nobody was asked to look again: approved PRs sat open for a day with green CI. Now, when the verdict
+names another head, the task goes back to the implementer with a "head moved after approval" note,
+the same path as a conflict or a branch behind its base; the implementer resubmits and the reviewer
+approves the current head. A verdict that names no head is still skipped.
+
+### One informational docs reminder comment on PRs that change API/schema/capability
+
+A new GitHub Actions workflow (`.github/workflows/myrmidon-docs-reminder.yml`)
+posts exactly one non-blocking comment when a pull request changes the API,
+schema, or generated capability surface (`packages/paperclip-runner/generated/capability/`,
+`server/**` schema files, `.agents/schemas/`) but ships neither a change
+fragment (`docs/myrmidon/changes/`) nor a skill reference update
+(`skills/myrmidon/references/`). The reminder is guarded by the
+`<!-- docs-reminder -->` marker, so it is posted once per PR no matter how
+many pushes; it never fails CI (docs-only and fork paths exit 0 silently).
+Fragments stay mandatory only at the release cut
+(`scripts/myrmidon/release/collect-fragments.mjs`); the reminder is a hint,
+not a gate.
+
+### Remote sites: fleet restart/stop/logs reach the site, the network profile is editable, a new bot's first apply no longer races
+
+- Fleet bot actions (`POST /api/myrmidon/fleet/bots/:key/restart|stop`, `GET …/logs`) looked up the site transport
+  as `companyId:siteName`, while the client manager keys it as `companyId/siteName` (`fleetSiteKey`): every call
+  answered 502 "no valid mTLS client certificate". The lookups now use `fleetSiteKey`.
+- The same `companyId:siteName` lookup broke the bot move between sites (`fleet-move-wiring`); fixed the same way.
+- The fleet client manager kept the old site row when a refresh found the connection unchanged, so a changed
+  profile, status or capacity never reached `getSite()` (the hermes adapter's plain-http check) until a restart.
+  The fresh row now replaces the cached one; the client is kept.
+- `PATCH /api/myrmidon/fleet/sites/:name` accepts `privateNetwork` and `tunnel` and merges them into the stored
+  site profile (admin only). A site enrolled without `privateNetwork` could not get it later, and the hermes
+  adapter refused its plain-http gateway on an IPsec-internal address.
+- The bot profile compiler ensures the card's board API key before the parallel block: the MCP source listing
+  ensures it too, and on a new bot's first apply the two concurrent get-or-create calls both created the
+  secret ("Secret already exists: …-paperclip-api-key").
+
+### TASK-CARD-READINESS-2: Task card readiness server gate
+
+- Server-side readiness check for task cards (`assertTaskCardReady`) based on the slice-1 evaluation engine.
+- Rejects incomplete cards with 422 `task_card_not_ready` in `enforce` mode; logs a warning during the 3-day grace period or when `MYRMIDON_TASK_CARD_GATE_MODE=warning`.
+
+### The block owner's unblock wake is no longer cancelled as "assignee changed"
+
+When the board blocks an issue and wakes its block owner with `issue_unblock_requested`
+(stranded-issue disposition, routable blocked issues), that owner — typically a senior
+agent asked to assign a final status — is usually not the assignee. The queued-run gate
+cancelled every such run as `issue_assignee_changed`, so the block could never be resolved
+and the same owner was woken again and again (on 2026-11-08 the operator agent spent 36 runs
+in an hour on two issues this way). The gate now lets the run start when it is an automation
+`issue_unblock_requested` wake, the issue is still `blocked`, and the run's agent is the
+recorded block owner (`blockerMetadata.owner` or `unblockDescriptor.owner`); any other
+non-assignee is cancelled as before, and a terminal issue still stops the run.
+
+### AGENT-EXCHANGE: experience exchange rooms in the agent card (OPE-12078)
+
+- Domain foundation for agent-to-agent experience exchange outside tickets
+  (roadmap-v1 §3.3, OPE-3965): types and Zod validation for `ExchangeRoom`
+  (2–4 agent participants, topic, cost_limit_cents, state
+  open|finalizing|closed), `ExchangeMessage` (agent_id, content, tokens_used),
+  the finisher and the stop valve (`server/src/myrmidon/agent-exchange/`).
+- Pure lifecycle operations: room creation enforces 2–4 participants (a 5th is
+  rejected with `too_many_participants`), participant/message addition,
+  finalizing and orderly close; pulling the stop valve instantly transitions
+  the room to `closed` (as does exceeding cost_limit_cents).
+
+### Docs: register the second vendor attribution spelling kept by the brand guards
+
+- PR #2103 (1.7 REBRAND F) extended the exact allowlists of the doc-side brand
+  guards `scripts/myrmidon/docs-branding-guard.mjs` and
+  `scripts/myrmidon/brand-release-audit.mjs` with the second legal-attribution
+  spelling `Base: Paperclip` — the localized "Upstream base … (MIT)"
+  provenance line that About and the exported README render — next to the
+  existing `Based on Paperclip`. The guides that enumerate what stays under
+  the vendor name on purpose (`docs/myrmidon/guides/docs-branding.md` and
+  `docs/myrmidon/guides/docs-branding.ru.md`) still named only the one
+  attribution line; they now record the second spelling as deliberate,
+  attribution-scoped, and covered by the build-side vendor-name gate content
+  patterns. Docs only: no behavior change.
+
+### Release reconciliation service and tests (1.7 STACK-UPDATES-B, OPE-12044)
+
+- Added standalone release reconciliation module under `server/src/myrmidon/release-reconciliation/`
+  with config reader, mockable GitHub client, in-memory issue sink, and reconciliation service.
+- Normalises release and vendor tag versions (stripping `v`/`V`, `myr-v`, and image prefixes),
+  detects divergences, and generates structured draft tasks with change summaries.
+- Configurable via environment variables: `MYRMIDON_VENDOR_GITHUB_REPO`, `MYRMIDON_GITHUB_API_BASE`,
+  `MYRMIDON_VENDOR_TAG`, `MYRMIDON_RELEASE_RECONCILIATION_INTERVAL_SEC`, and `MYRMIDON_RELEASE_TASK_COMPANY_ID`.
+
+### Corpus: a failed document is parsed again with one button in the board UI (1.6.7 CORPUS-UI, OPE-12058)
+
+- The documents table of the knowledge corpus screen shows a «Reparse» button for every document whose
+  parse has failed (the RU text is «Разобрать заново»). It calls the reparse route the server half
+  shipped in OPE-12029 (`POST /api/myrmidon/companies/:companyId/corpus/documents/:documentId/reparse`,
+  `202 {document, job}`) — before this change the screen called the non-existent `…/retry` route and the
+  button answered 404. The row is replaced with the returned document at once (back to `queued`, error
+  cleared) and then confirmed by a refetch, so the list never keeps showing a stale `failed` row.
+- Refusals of the route surface with their response text: `409 document_not_failed` / `409
+  document_has_no_stored_bytes`, `422` when the embedder is not configured, `502 enqueue_failed` — the
+  screen shows the `message` field of the error body (the human text), not the machine token.
+
 ## 1.6.6
 
 ### IDLE-STOP: stop idle bot containers, wake on demand with health check (IDLE-STOP)
@@ -3780,7 +3885,6 @@ in the middle of a session. Every setting is a key of the `context_economy:` blo
   run-backed wake keeps the key, run-backed or running duplicates are re-keyed with audit
   metadata and keep their status, and only duplicates that never acquired a run are
   marked `skipped`. Running work is never cancelled.
-
 
 ### Merge queue: CI checks the candidate commit on top of fresh main (MERGE-QUEUE)
 
