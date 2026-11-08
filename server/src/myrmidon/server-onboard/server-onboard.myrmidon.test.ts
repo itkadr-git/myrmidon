@@ -66,10 +66,10 @@ function createMocks() {
     },
     async createJob(input) { return createJob(input); },
     async claimNext(companyId: string) {
-      const job = store.jobs.find((j: any) => j.status === "pending" && j.companyId === companyId);
+      const job = store.jobs.find((j: any) => (j.status === "pending" || (j.status === "claimed" && j.secretConsumed)) && j.companyId === companyId);
       if (!job) return null;
       job.status = "claimed";
-      job.startedAt = new Date().toISOString();
+      if (!job.startedAt) job.startedAt = new Date().toISOString();
       const server = store.servers.find((s: any) => s.id === job.serverId);
       return {
         job,

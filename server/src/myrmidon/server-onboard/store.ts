@@ -201,8 +201,9 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const rows = await db.execute(sql`
         WITH next_job AS (
           SELECT id FROM myrmidon_fleet_onboard_jobs
-          WHERE status = 'pending' AND company_id = ${companyId}::uuid
-          ORDER BY created_at ASC
+          WHERE (status = 'pending' OR (status = 'claimed' AND secret_consumed_at IS NOT NULL))
+            AND company_id = ${companyId}::uuid
+          ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED
         )
