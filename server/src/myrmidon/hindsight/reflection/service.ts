@@ -179,7 +179,7 @@ export interface ReflectionService {
   /** Categorize a failure event (throws on unknown input). */
   categorize(input: FailureCategorizationInput): FailureKind;
   /** Create a schema-valid lesson record (30-day default expiry). */
-  createLesson(input: CreateLessonRecordInput): LessonRecord;
+  createLesson(input: CreateLessonRecordInput, options?: CreateLessonOptions): LessonRecord;
   /** Build + validate the hindsight payload for a lesson. */
   prepareRetainPayload(
     lesson: LessonRecord,
@@ -205,8 +205,8 @@ export function createReflectionService(deps: ReflectionServiceDeps = {}): Refle
     categorize(input: FailureCategorizationInput): FailureKind {
       return categorizeFailure(input);
     },
-    createLesson(input: CreateLessonRecordInput): LessonRecord {
-      return createLessonRecord(input, { clock, defaultTtlDays });
+    createLesson(input: CreateLessonRecordInput, options?: CreateLessonOptions): LessonRecord {
+      return createLessonRecord(input, { clock, defaultTtlDays, ...options });
     },
     prepareRetainPayload(
       lesson: LessonRecord,

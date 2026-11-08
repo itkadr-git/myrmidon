@@ -25,6 +25,7 @@ export interface LessonRecord {
   issueKey?: string | null;
   runId?: string | null;
   dedupKey?: string | null;
+  [key: string]: unknown;
 }
 
 export interface CreateLessonRecordInput {
