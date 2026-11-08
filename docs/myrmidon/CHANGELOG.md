@@ -12,6 +12,25 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### A bot's npx and cargo caches stay under a byte quota (OPE-12110)
+
+One bot grew `hermes/.npm/_npx` by 2.2 GB in 45 minutes (npx fetched a whole vendor package with all
+its binaries), and a Rust `target/` in a task working copy reached 2.4 GB. botd now bounds both:
+
+- `hermes/.npm/_npx`: entries older than 24 h are removed, and when the rest weighs more than the
+  quota (512 MiB per bot) the entries written longest ago go first, until it fits.
+- `hermes/.cache/cargo-target`, the per-bot `CARGO_TARGET_DIR` the bot image already sets (outside
+  every task working copy): quota 2 GiB per bot, whole profile dirs (`debug`, `release`, a target
+  triple) removed least recently written first. A bot that never builds Rust has no such directory
+  and nothing creates it.
+
+Both passes work on whole entries, never remove a path a process holds open, and never touch an entry
+written in the last 15 minutes (an install or a build may still be going), so a quota can stay
+exceeded for one pass. Each eviction is a line in the botd log. The quotas are set with
+`MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES` and `MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES` on the botd process.
+
+## 1.6.7
+
 ### Corpus: the full-text part of a search has a time bound, and the two parts run side by side (1.6.7 CORPUS-SEARCH)
 
 - A search of the knowledge corpus ranks chunks twice: by vector distance and by full text. The full-text
