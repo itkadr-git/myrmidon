@@ -66,7 +66,7 @@ jobs:
 
   db-migration-smoke:
     name: Synthetic DB Migration Smoke (${{ matrix.release }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -118,8 +118,9 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client-16
-          # The ubuntu-26.04 runner image preinstalls client 18, and pg_wrapper
-          # dispatches to the newest major: pg_dump 18 writes `SET
+          # ubuntu-24.04 ships client 16 in its apt archive; the ubuntu-26.04
+          # image does not (postgresql-client-16 is "unable to locate" there)
+          # and preinstalls client 18. pg_dump 18 writes `SET
           # transaction_timeout` into plain dumps, which the postgres:16 service
           # rejects mid-restore (psql exits 3, Node sees EPIPE). Prepend the
           # pinned 16 binary dir so pg_dump/psql/pg_restore resolve to 16.
@@ -238,7 +239,7 @@ jobs:
 
   vendor-live-seed-1012:
     name: Vendor Live Seed & Verification (v2026.1012.0)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     services:
@@ -277,8 +278,9 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client-16
-          # The ubuntu-26.04 runner image preinstalls client 18, and pg_wrapper
-          # dispatches to the newest major: pg_dump 18 writes `SET
+          # ubuntu-24.04 ships client 16 in its apt archive; the ubuntu-26.04
+          # image does not (postgresql-client-16 is "unable to locate" there)
+          # and preinstalls client 18. pg_dump 18 writes `SET
           # transaction_timeout` into plain dumps, which the postgres:16 service
           # rejects mid-restore (psql exits 3, Node sees EPIPE). Prepend the
           # pinned 16 binary dir so pg_dump/psql/pg_restore resolve to 16.
