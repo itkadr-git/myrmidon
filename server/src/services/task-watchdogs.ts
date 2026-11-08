@@ -1572,17 +1572,17 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return { state: classification.state, reason: classification.reason, classification };
     }
 
-    if (watchdog.lastTriggeredAt && watchdog.lastObservedFingerprint === classification.stopFingerprint) {
-      const lastTriggeredMs = toEpochMs(watchdog.lastTriggeredAt);
-      const nowMs = Date.now();
-      const cooldownMs = TASK_WATCHDOG_REWAKE_COOLDOWN_MS;
-      if (lastTriggeredMs != null && nowMs - lastTriggeredMs < cooldownMs) {
-        return {
-          state: "skipped" as const,
-          reason: "rewake_cooldown",
-          classification,
-        };
-      }
+    if (rewakeCooldownActive({
+      lastTriggeredAt: watchdog.lastTriggeredAt,
+      lastObservedFingerprint: watchdog.lastObservedFingerprint,
+      stopFingerprint: classification.stopFingerprint,
+      cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
+    })) {
+      return {
+        state: "skipped" as const,
+        reason: "rewake_cooldown",
+        classification,
+      };
     }
 
     const existingWatchdogIssueId = watchdog.watchdogIssueId ?? (await findTaskWatchdogIssue(
