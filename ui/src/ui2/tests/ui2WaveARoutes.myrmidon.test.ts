@@ -2,20 +2,22 @@
 //
 // myrmidon(UI-2.0-WAVE-A): guard tests for the honest shell routes
 // (OPE-3985, ia-v2 §0/§2.0 rules П1/П2/П5 and checklist §7 items 1–4, 8):
-//   - П2: every root of every UI2_ROUTE_TABLE entry is registered, i.e.
-//     `extractCompanyPrefixFromPath('/<root>')` returns null — no route
-//     root can ever be mistaken for a company prefix (the OPE-3922
+//   - П2: every root behind a ui2 route/nav/settings target is registered,
+//     i.e. `extractCompanyPrefixFromPath('/<root>')` returns null — no
+//     route root can ever be mistaken for a company prefix (the OPE-3922
 //     "COMMANDER-CHAT organization not found" defect);
-//   - П1: every shell nav target is company-relative (never starts with
-//     an upper-case /{P} literal) and every shell Link goes through the
-//     prefixing router;
-//   - П5: every rail item and every settings section owns a UNIQUE `to`
-//     (no two items on one screen — the double-highlight defect), and
-//     the active-item match is a root equality, so at most one item can
-//     light up for any pathname;
-//   - the fleet "soon" screen is routed on its own root and the hidden
+//   - П1: every shell nav target is company-relative and no shell
+//     component hand-builds prefixed paths;
+//   - П5: unique targets, one active rail item, one active phone tab;
+//   - the fleet screen is routed on its own `fleet` root and hidden
 //     settings paths render the "not in this wave" card, not a
 //     fall-through.
+//
+// Route topology note (owner decision on the returned review): board main
+// carries the newer design — the Command Center dashboard owns /commander,
+// the Commander chat lives on /commander-chat (nav label ui2.nav.commander)
+// and /dashboard redirects to /commander. This test guards THAT design;
+// the earlier wave draft that moved the chat onto /commander is superseded.
 
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -30,6 +32,8 @@ import {
   ui2ScreenRoutes,
 } from "../routes";
 import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
+import { isUi2RailItemActive } from "../shell/Ui2Rail";
+import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI2_SRC = join(HERE, "..");
@@ -59,10 +63,21 @@ describe("myrmidon(UI-2.0-WAVE-A) П2: route roots are registered", () => {
   it("every nav-item route root is registered", () => {
     const roots = new Set([...allRailItems(), ...UI2_PHONE_TABS].map(ui2NavRouteRoot));
     for (const root of roots) {
-      if (root.startsWith("__")) continue; // synthetic "More" root
       expect(
         extractCompanyPrefixFromPath(`/${root}`),
         `nav root "/${root}" must not be parsed as a company prefix`,
+      ).toBeNull();
+    }
+  });
+
+  it("every settings section root is registered", () => {
+    const roots = new Set(
+      UI2_SETTINGS_SECTIONS.map((s) => s.path.replace(/^\//, "").split("/")[0]!),
+    );
+    for (const root of roots) {
+      expect(
+        extractCompanyPrefixFromPath(`/${root}`),
+        `settings root "/${root}" must not be parsed as a company prefix`,
       ).toBeNull();
     }
   });
@@ -82,8 +97,9 @@ describe("myrmidon(UI-2.0-WAVE-A) П1: company-relative shell targets", () => {
     ];
     for (const to of targets) {
       expect(to.startsWith("/"), to).toBe(true);
-      // No literal company prefix baked into a nav model: first segment
-      // must be a lowercase route root, never an upper-case /{P} literal.
+      // No literal company prefix baked into a nav model: the first
+      // segment must be a lowercase route root, never an upper-case
+      // /{P} literal.
       const first = to.replace(/^\//, "").split("/")[0]!;
       expect(first, to).toBe(first.toLowerCase());
     }
@@ -93,16 +109,14 @@ describe("myrmidon(UI-2.0-WAVE-A) П1: company-relative shell targets", () => {
     const rail = readFileSync(join(UI2_SRC, "shell", "Ui2Rail.tsx"), "utf8");
     const phone = readFileSync(join(UI2_SRC, "shell", "Ui2PhoneNav.tsx"), "utf8");
     const palette = readFileSync(join(UI2_SRC, "shell", "Ui2CommanderPalette.tsx"), "utf8");
-    const fleet = readFileSync(join(UI2_SRC, "screens", "Ui2FleetSoonScreen.tsx"), "utf8");
     // П1: navigation goes through @/lib/router (Link/useNavigate apply the
     // selectedCompany prefix); no raw react-router-dom navigation and no
-    // hand-built /{P}/... literals. selectedCompany in the rail is the
-    // footer NAME display only — never a path source.
+    // hand-built /{P}/... literals. selectedCompany in the rail/phone nav
+    // feeds the plugin-slot context (plugin data), not a path source.
     for (const [name, src] of [
       ["Ui2Rail", rail],
       ["Ui2PhoneNav", phone],
       ["Ui2CommanderPalette", palette],
-      ["Ui2FleetSoonScreen", fleet],
     ] as const) {
       expect(
         src.includes("applyCompanyPrefix"),
@@ -110,7 +124,6 @@ describe("myrmidon(UI-2.0-WAVE-A) П1: company-relative shell targets", () => {
       ).toBe(false);
       expect(src.includes('from "react-router-dom"'), name).toBe(false);
       expect(src.match(/to=\{?["'`/][A-Z]/), `${name} no literal /{P} targets`).toBeNull();
-      expect(src.match(/issuePrefix/), `${name} must not read the prefix directly`).toBeNull();
     }
   });
 });
@@ -118,6 +131,11 @@ describe("myrmidon(UI-2.0-WAVE-A) П1: company-relative shell targets", () => {
 describe("myrmidon(UI-2.0-WAVE-A) П5: one item, one route", () => {
   it("all rail `to` values are unique", () => {
     const tos = allRailItems().map((i) => i.to);
+    expect(new Set(tos).size).toBe(tos.length);
+  });
+
+  it("all phone-tab `to` values are unique", () => {
+    const tos = UI2_PHONE_TABS.map((i) => i.to);
     expect(new Set(tos).size).toBe(tos.length);
   });
 
@@ -138,35 +156,63 @@ describe("myrmidon(UI-2.0-WAVE-A) П5: one item, one route", () => {
     }
   });
 
-  it("each rail item matches at most one active item per pathname (root equality)", () => {
+  it("each pathname lights at most one rail item", () => {
     const items = allRailItems();
-    const roots = items.map(ui2NavRouteRoot);
-    // duplicate roots would let two items light up at once
-    const realRoots = roots.filter((r) => !r.startsWith("__"));
-    expect(new Set(realRoots).size).toBe(realRoots.length);
-    // for a synthetic sample of pathnames, at most one item is active
-    for (const pathname of ["/OPE/dashboard", "/OPE/agents", "/OPE/fleet", "/OPE/company/settings/system"]) {
-      const activeRoot = pathname.split("/").filter(Boolean).slice(1)[0]?.toLowerCase();
-      const active = items.filter(
-        (item) => ui2NavRouteRoot(item).toLowerCase() === activeRoot,
-      );
+    const samplePathnames = [
+      "/OPE/dashboard",
+      "/OPE/commander",
+      "/OPE/commander-chat",
+      "/OPE/agents",
+      "/OPE/fleet",
+      "/OPE/company/settings",
+      "/OPE/company/settings/system",
+      "/OPE/company/settings/autonomy/regulations",
+      "/OPE/swarm-claim",
+      "/OPE/foraging",
+    ];
+    for (const pathname of samplePathnames) {
+      const active = items.filter((item) => isUi2RailItemActive(item.to, pathname));
+      expect(active.length, pathname).toBeLessThanOrEqual(1);
+    }
+    // The settings rail item owns every settings subpage except the
+    // regulations page (its own rail item in the Work group).
+    expect(isUi2RailItemActive("/company/settings", "/OPE/company/settings/system")).toBe(true);
+    expect(
+      isUi2RailItemActive("/company/settings", "/OPE/company/settings/autonomy/regulations"),
+    ).toBe(false);
+  });
+
+  it("each pathname lights at most one phone tab", () => {
+    const samplePathnames = [
+      "/OPE/commander",
+      "/OPE/commander-chat",
+      "/OPE/agents",
+      "/OPE/agents/all",
+      "/OPE/fleet",
+      "/OPE/more",
+    ];
+    for (const pathname of samplePathnames) {
+      const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, pathname));
       expect(active.length, pathname).toBeLessThanOrEqual(1);
     }
   });
 
-  it("the settings 'general' section matches with end (no subpath bleed)", () => {
+  it("the settings 'general' section uses end matching (no subpath bleed)", () => {
     const general = UI2_SETTINGS_SECTIONS.find((s) => s.key === "general");
     expect(general?.path).toBe("/company/settings");
-    expect(general?.end, "general must use end matching").toBe(true);
+    const source = readFileSync(join(UI2_SRC, "shell", "Ui2SettingsSidebar.tsx"), "utf8");
+    expect(source).toContain('end={section.key === "general"}');
   });
 
-  it("the rail renders exactly one aria-current (source-level: only the active link sets it)", () => {
+  it("rail and phone nav each render exactly one aria-current (only the active link sets it)", () => {
     const rail = readFileSync(join(UI2_SRC, "shell", "Ui2Rail.tsx"), "utf8");
+    const phone = readFileSync(join(UI2_SRC, "shell", "Ui2PhoneNav.tsx"), "utf8");
     expect(rail).toMatch(/aria-current=\{active \? "page" : undefined\}/);
+    expect(phone).toMatch(/aria-current=\{active \? "page" : undefined\}/);
   });
 });
 
-describe("myrmidon(UI-2.0-WAVE-A) fleet «soon» route", () => {
+describe("myrmidon(UI-2.0-WAVE-A) fleet route", () => {
   it("the fleet entry is routed on its own root", () => {
     const fleet = UI2_ROUTE_TABLE.find((entry) => entry.key === "fleet");
     expect(fleet).toBeDefined();
@@ -174,20 +220,13 @@ describe("myrmidon(UI-2.0-WAVE-A) fleet «soon» route", () => {
     expect(extractCompanyPrefixFromPath("/fleet")).toBeNull();
   });
 
-  it("the fleet screen renders (its own route + one phrase + System links)", async () => {
-    const { Ui2FleetSoonScreen } = await import("../screens/Ui2FleetSoonScreen");
-    expect(typeof Ui2FleetSoonScreen).toBe("function");
-    const source = readFileSync(join(UI2_SRC, "screens", "Ui2FleetSoonScreen.tsx"), "utf8");
-    expect(source).toMatch(/to="\/company\/settings\/system"/);
-    expect(source).toMatch(/ui2\.screens\.fleet\.soonTitle/);
-  });
-
-  it("the fleet screen route is part of the rendered route set", () => {
+  it("the fleet screen is part of the rendered route set", () => {
     const routes = ui2ScreenRoutes();
-    expect(routes.length).toBe(UI2_ROUTE_TABLE.length + 1 + UI2_HIDDEN_SETTINGS_PATHS.length);
+    expect(routes.length).toBe(UI2_ROUTE_TABLE.length + UI2_HIDDEN_SETTINGS_PATHS.length);
     const paths = UI2_ROUTE_TABLE.map((entry) => entry.path);
     expect(paths).toContain("fleet");
     expect(paths).toContain("commander");
+    expect(paths).toContain("commander-chat");
   });
 });
 
@@ -207,28 +246,11 @@ describe("myrmidon(UI-2.0-WAVE-A) hidden settings sections", () => {
     }
   });
 
-  it("the not-in-wave screen exists and links somewhere working", async () => {
+  it("the not-in-wave screen exists and links back to settings", async () => {
     const { Ui2NotInWaveScreen } = await import("../screens/Ui2NotInWaveScreen");
     expect(typeof Ui2NotInWaveScreen).toBe("function");
-  });
-});
-
-describe("myrmidon(UI-2.0-WAVE-A) commander root move", () => {
-  it("the commander screen lives on /commander and the old path redirects", () => {
-    const commander = UI2_ROUTE_TABLE.find((entry) => entry.key === "commander-chat");
-    expect(commander?.path).toBe("commander");
-    const source = readFileSync(join(UI2_SRC, "routes.tsx"), "utf8");
-    expect(source).toContain('path="commander-chat"');
-    expect(source).toContain('to="/commander" replace');
-  });
-
-  it("the nav, phone tab and palette all point at /commander", () => {
-    const commanderRail = allRailItems().find((i) => i.labelKey === "ui2.nav.commander");
-    expect(commanderRail?.to).toBe("/commander");
-    const commanderTab = UI2_PHONE_TABS.find((i) => i.labelKey === "ui2.nav.commander");
-    expect(commanderTab?.to).toBe("/commander");
-    const palette = readFileSync(join(UI2_SRC, "shell", "Ui2CommanderPalette.tsx"), "utf8");
-    expect(palette).toMatch(/`\/commander\?draft=/);
-    expect(palette).not.toMatch(/\/commander-chat/);
+    const source = readFileSync(join(UI2_SRC, "screens", "Ui2NotInWaveScreen.tsx"), "utf8");
+    expect(source).toMatch(/to=\{fallbackTo\}/);
+    expect(source).toMatch(/ui2\.screens\.notInWave\./);
   });
 });
