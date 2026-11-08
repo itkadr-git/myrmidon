@@ -12,6 +12,158 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### Corpus: the full-text part of a search has a time bound, and the two parts run side by side (1.6.7 CORPUS-SEARCH)
+
+- A search of the knowledge corpus ranks chunks twice: by vector distance and by full text. The full-text
+  part of a natural-language question matched a large part of a big corpus and scored every match, and it
+  also computed a trigram `similarity` over the whole text of every match. On a corpus of 285 000 chunks
+  it took 9.8 s on average and up to 104 s, while the vector part took 0.4 s.
+- The full-text part now runs in its own transaction with `statement_timeout` of 800 ms (new option
+  `fullTextTimeoutMs`; `0` sets no bound of its own). When the server cancels it, the search answers from
+  the vector part alone, and the server log gets a warning with the company, the datasets, the length of
+  the query text and the time used. Every other error is still an error. A search that has no vector
+  part (a text-only search) has nothing to fall back on, so it returns the cancel error and not an empty
+  list.
+- The vector part and the full-text part run at the same time, each in its own transaction on its own
+  pooled connection, so a search takes the longer of the two and not their sum. A search holds two
+  connections while it runs.
+- For a question without the substring match, `similarity` now runs only over the best 1 000 chunks by
+  `ts_rank` (new option `fullTextRerankPool`; `0` brings the old statement back). Short query texts and
+  identifiers keep their statement and their order.
+
+### Remote sites: plain http is checked against the site record, fleet calls are audited, snapshots drop secret files
+
+- The hermes adapter allowed plain http to a bot gateway on a remote site when only the host name matched the site.
+  It now needs all of these: the site is active and marked `privateNetwork` or `tunnel`; the site address and the
+  target are IP literals in a private range (RFC 1918, RFC 6598 shared address space or loopback); the target host is the site host;
+  and the target port is inside the gateway port range of the site record (`gatewayPortStart`..`gatewayPortEnd`).
+  A site record without a port range allows no plain-http port. The `dangerouslyAllowInsecureRemoteHttp` flag of a
+  card is not changed.
+- The site registry is the only source of the site. The `fleetSite` and `fleetSites` fields of a card were read
+  before the registry and could describe a site that does not exist; they are not read any more.
+- `PATCH /api/myrmidon/fleet/sites/:name` takes `privateNetwork: true` and `tunnel: true` for a private IP address of
+  the site only (400 otherwise), and a site that carries a flag cannot be moved to another kind of address unless
+  the flags are cleared in the same request. The request also takes `gatewayPortStart` and `gatewayPortEnd`, so a
+  site that has no range (the env bootstrap writes none) can get one.
+- `MYRMIDON_FLEET_HOSTS` is deprecated. An `http://` address in it (`url`, `hindsightUrl`, `llmBaseUrl`) must now be
+  a private IP literal; a DNS name or a public address is refused. The board logs a warning at start while the
+  variable is set. Register sites with `POST /api/companies/:companyId/fleet/sites` instead.
+- Control calls on remote sites leave a row in the company activity log: `fleet.site.enroll`, `fleet.site.patch`,
+  `fleet.site.drain`, `fleet.site.resume`, `fleet.site.delete`, `fleet.bot.restart`, `fleet.bot.stop`,
+  `fleet.bot.move`, `fleet.bot.logs` (entity `fleet_site` or `agent`). A row says who, what, the outcome
+  (`ok`, `denied`, `rejected`, `failed`) and a few non-secret facts. It never holds a token, a secret name, a
+  certificate or a log. Only an actor of the company writes into its trail. Reading a log is recorded once a minute
+  per actor and bot.
+- The replica store no longer keeps the secret profile files. A stored snapshot leaves out `hermes/.env` and
+  `hermes/config.yaml` (the files the profile compiler writes as secrets), and its manifest is rewritten to match.
+  The apply that follows every restore writes the files again. A snapshot that cannot be read and checked in full is
+  refused, and the previous replica stays. Replicas that were stored before this change are replaced on the next two
+  snapshot passes.
+
+### Remote sites: the board generates the site token, enroll is owner-only and limited to private addresses, bots of remote sites no longer break the local bot lists
+
+- `POST /api/companies/:companyId/fleet/sites` no longer takes `tokenSecret`. The field named any secret of the company, and the board then sent the value of that secret as a bearer token, together with its client certificate, to the address from the same request. The board now generates a random token for each new site, keeps it in the company secret `myrmidon-fleet-site-token-<site>`, and returns it once in the enroll answer as `fleetd.token`. Put it in the `token` key of `fleetd.json`. A request that carries `tokenSecret` gets `400`. A site that is already enrolled keeps its own token secret and needs no action.
+- The host of a site address (enroll, and a changed `url` in `PATCH`) must be a private IPv4 address (10/8, 172.16/12, 192.168/16, 100.64/10) or a host listed in the new setting `MYRMIDON_FLEET_SITE_URL_ALLOWLIST`. Any other host gets `400` and the board issues no certificate and no key. A `PATCH` that leaves the stored address as it is is not checked again.
+- Enroll, `PATCH` and delete of a site are for the company owner (and the instance admin). Before, a company admin could do it. Drain, resume, restart and stop stay open to the company admin.
+- Moving a bot to another site, reading the status of a move and reading the log of a bot of a remote site (`/fleet/bots/:key/move`, `/fleet/bots/:key/logs`, `/api/myrmidon/fleet/bots/:key/logs`) need a company admin. Before, any member of the company could do it.
+- The enroll answer carries `Cache-Control: no-store`: it holds the server key and the token.
+- Deleting a site also deletes the token secret that the board generated for it. The token secret of an older site is never deleted with the site.
+- The fleet router lists bots per host. `list` and `listRunning` sent every bot key to the local driver and to every site. The local dockergate refused each bot of a remote site (`bot_not_enrolled`), and one refused call failed the whole list, so the clone-report pass and the idle sweep saw no bot. Now each host gets only the bots of its own cards. A host that fails no longer fails the list: the failure is logged (`fleet routing: a host could not be listed`), and the list fails only when no host answered. The clone-report key list and the disk-quota sweep skip bots that run on a remote site.
+
+### fleetd: audit log, request limits, client certificate allowlist and clean-up
+
+- fleetd writes one JSON audit line per API request to stdout (the journal): time, route, method,
+  bot key, status, the SHA-256 of the client certificate and the duration. Bodies, query strings
+  and tokens are not logged.
+- A JSON request body is limited to 1 MiB. A restore is limited to 20 GiB of file content and
+  2,000,000 archive entries; above that it answers `413 restore_too_large` and changes nothing.
+  The HTTP server now has header, read and idle timeouts. It has no write timeout, so a long
+  snapshot is not cut.
+- New optional key `clientCertSha256` in `fleetd.json`: a list of SHA-256 fingerprints of the
+  client certificates that may call the API. When the list is set, fleetd refuses any other
+  certificate in the TLS handshake. When it is empty or absent, nothing changes. The board renews
+  its client certificate, so do not pin a fingerprint without a plan for the renewal.
+- fleetd removes the `.replaced-*` and `.quarantined-*` directories that are older than 7 days
+  from the volume root, at start and then every 24 hours.
+- The out-of-memory listener now also reports the containers that fleetd creates itself
+  (`fleet-<botKey>`), not only `myrmidon-bot-*`.
+- A systemd drop-in with sandboxing options for the fleetd unit is added in
+  `docs/myrmidon/fleetd/myrmidon-fleetd.service.d/`.
+
+### fleetd on a remote site: a safe marker read, the same container template, writable caches
+
+- A bot can no longer stall or exhaust fleetd through its applied marker. fleetd runs as root and
+  reads `hermes/.myrmidon/applied.json` from a directory the bot owns. It now opens the file without
+  following a symlink and without blocking, accepts only a regular file, and reads at most 64 KiB.
+  A symlink, a FIFO, a directory or a larger file counts as "no marker".
+- A container on a remote site now gets the template of the board host: `/tmp` as a tmpfs, an init
+  process, the `on-failure` restart policy, and `MemorySwap` equal to `Memory`. A container that
+  exists already gets the template at its next recreate.
+- fleetd refuses a spec with `cpus` below 0.01 (a tiny value used to round to "no CPU limit"), with
+  a `gatewayPort` outside 1024-65535, or with a `boardExtraHost` that differs from the site's own.
+  The answer is `spec_invalid`. The board address in a container always comes from the site
+  configuration.
+- New configuration key `writableMountRoots` (default: empty). An extra mount without `readOnly` is
+  accepted only when its source, with symlinks resolved, is inside one of these directories (and
+  inside `allowedMounts`). Work bots can use their shared package caches on a remote site. Roll out
+  the new binary before the configuration that uses the key.
+
+### Gateway channels and fallbacks managed from the board (LITELLM-BOARD)
+
+- `GET /api/myrmidon/companies/:companyId/litellm/channels` lists the gateway deployments again. The
+  model-provider routes are mounted first and used to answer that path with
+  `{channels: [], enabled: false}`. They now serve only
+  `/model-providers/litellm/channels`, the model-group list of the provider screen.
+- The fallback topology lives in the gateway only. `GET .../litellm/fallbacks` reads the live router
+  settings; `PUT .../litellm/fallbacks` sends the whole list with `POST /config/update`. The board no
+  longer keeps a copy of the topology in its own database, and a save the gateway refuses is no longer
+  reported as stored. A `PUT` without a `chains` list answers 400 instead of clearing the list.
+- The model catalog reads the provider of a model from `model_info.litellm_provider`
+  (`custom_llm_provider` stays as the second choice). Before, every catalog row had no provider and
+  every fallback save was refused for it.
+- A fallback inside one provider (for example `zai-glm-5.3` to `zai-glm-5.3-flash`) is allowed. The
+  answer lists it in `warnings`, as it lists a model whose provider the catalog does not know. A target
+  that is not in the catalog, a loop, a free channel after a paid one and a cheaper channel after a
+  dearer one are still refused with 422.
+- `PUT .../litellm/fallbacks` stays behind the admin-key setting. Without it the answer is 503 with
+  `code: litellm_gateway_not_configured` and `missing` — the names of the variables to set.
+
+### Board-to-gateway sync: provider and channel keys, order, pause, names, agent keys
+
+The board registered models and channels in LiteLLM in ways the gateway ignores or rejects. All of it is
+now checked against LiteLLM v1.104.1.
+
+- **Keys travel as values.** LiteLLM has no secret manager here, so a `secrets/<name>` reference was stored
+  as the key, and a plugin model went out with an empty one. The board now resolves the company secret and
+  sends its value, for provider models, plugin models, channels and the startup reconciliation (which built
+  its sync service without a resolver and failed on the first enabled model of a company). A secret with no
+  value is an error, never an empty key.
+- **Order is `litellm_params.order`.** `/model/update` writes only `litellm_params`, so the order, priority and
+  disabled flags the board put in `model_info` were dropped. `priority`, `disabled` and `provider` are not
+  LiteLLM parameters and are no longer sent. A deployment without an order is only used when no ordered one
+  of its group is healthy.
+- **Disabling a channel pauses it.** LiteLLM has no `disabled` parameter; it has a pause flag. Disabling calls
+  `/model/block`, enabling calls `/model/unblock`; the router skips a paused deployment, and the definition
+  and the stored key stay in the gateway. Only deployments stored in the gateway database can be paused. A
+  channel can be created paused.
+- **Removing a model works.** `/model/delete` takes only a deployment id; the board sent model names and every
+  removal failed. It now looks the deployments up and deletes them by id. Switching a model off removes only
+  the deployment on the provider's own endpoint; deployments from the static gateway config are never touched.
+- **Key rotation keeps the group's other channels.** Rotating a provider key updated the first deployment under
+  the model name and deleted the other ones. It now rotates only the deployment on the provider's endpoint and
+  never deletes a channel on another endpoint.
+- **The registry name can be set.** The model's LiteLLM name was always `<type>/<model name>`, so it could not
+  match a group that already exists (`kimi/kimi-for-coding`). It can now be given when the provider is created
+  (`litellmModelNames`) and changed with the model update (`litellmModelName`, while the model is disabled).
+  The upstream model is always the provider's own model name. Registering the same name on the same endpoint
+  again no longer adds a second deployment.
+- **Agent keys are found where agents keep them.** The allowlist update looked for a `llm-gateway-key-<name>-<id>`
+  secret that live agents do not have. It now follows the card's key binding (`MYRMIDON_LLM_API_KEY`, else
+  `apiKey`) to the secret value and updates the key through `/key/update` by its sha256. Keys that allow all
+  models are still left alone, and an empty allowlist is still never sent when models are switched off.
+
+## 1.6.7
+
 ### Native runner: Codex can use an OpenAI-compatible gateway
 
 The native runner passes only an allowlist of environment variables to the Codex app-server. The
