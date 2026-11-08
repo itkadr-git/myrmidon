@@ -7,7 +7,7 @@ import {
 import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import { Link } from "@/lib/router";
 import { useTranslation } from "@/i18n";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 // OPE-7935: Command Center (Dashboard) UI-2.0 screen part 1
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
