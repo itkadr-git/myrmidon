@@ -618,11 +618,15 @@ function selectStageParticipant(
   stage: IssueExecutionStage,
   opts?: {
     preferred?: IssueExecutionStagePrincipal | null;
-    exclude?: IssueExecutionStagePrincipal | null;
+    exclude?: IssueExecutionStagePrincipal | IssueExecutionStagePrincipal[] | null;
     candidateLoads?: ReadonlyMap<string, number>;
   },
 ): IssueExecutionStagePrincipal | null {
-  const participants = stage.participants.filter((participant) => !principalsEqual(participant, opts?.exclude ?? null));
+  const rawExclude = opts?.exclude ?? null;
+  const excluded = Array.isArray(rawExclude) ? rawExclude : rawExclude ? [rawExclude] : [];
+  const participants = stage.participants.filter(
+    (participant) => !excluded.some((candidate) => principalsEqual(participant, candidate)),
+  );
   if (participants.length === 0) return null;
   if (opts?.preferred) {
     const preferred = participants.find((participant) => principalsEqual(participant, opts.preferred ?? null));
@@ -876,6 +880,12 @@ function clearExecutionStatePatch(input: {
   }
 }
 
+/**
+ * myrmidon(OPE-12231): everyone who is currently doing (or just finished) the
+ * work — the assignee and the resubmitting actor — must never be selected as
+ * the reviewer of their own stage.
+ */
+
 function canAutoSkipPendingStage(input: {
   stage: IssueExecutionStage;
   returnAssignee: IssueExecutionStagePrincipal | null;
@@ -888,11 +898,51 @@ function canAutoSkipPendingStage(input: {
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
 }
 
+/**
+ * myrmidon(OPE-12231): REVIEW-INDEPENDENCE. Everyone who is doing (or just
+ * finished) the work — the issue assignee, the submitting actor and the
+ * persisted return assignee — is excluded from reviewer selection for the
+ * next stage, on top of whatever single-principal exclusion the caller
+ * already passes (historically the return assignee).
+ *
+ * During review the issue assignee is the reviewer, not the executor, so it
+ * stays eligible (and keeps its sticky escalated hold). The same holds for
+ * a blocked-review restart, where the previous reviewer must be preserved
+ * verbatim (review-stage-restart semantics, OPE-10045). In every other
+ * status the assignee — and, unless the board is driving, the submitting
+ * actor — are the executors of the submitted work.
+ */
+function executorPrincipals(input: {
+  issue: IssueLike;
+  existingState: IssueExecutionState | null;
+  actor: IssueExecutionStagePrincipal | null;
+  allowBoardOverride?: boolean;
+}): IssueExecutionStagePrincipal[] {
+  const principals: IssueExecutionStagePrincipal[] = [];
+  const add = (principal: IssueExecutionStagePrincipal | null) => {
+    if (principal && !principals.some((candidate) => principalsEqual(candidate, principal))) {
+      principals.push(principal);
+    }
+  };
+  add(input.existingState?.returnAssignee ?? null);
+  if (input.issue.status !== "in_review" && input.issue.status !== "blocked") {
+    add(assigneePrincipal(input.issue));
+    if (!input.allowBoardOverride) add(input.actor);
+  }
+  return principals;
+}
+
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentAssignee = assigneePrincipal(input.issue);
   const actor = actorPrincipal(input.actor);
+  const excludedExecutors = executorPrincipals({
+    issue: input.issue,
+    existingState,
+    actor,
+    allowBoardOverride: input.allowBoardOverride,
+  });
   const requestedAssigneePatchProvided =
     input.requestedAssigneePatch.assigneeAgentId !== undefined || input.requestedAssigneePatch.assigneeUserId !== undefined;
   const explicitAssignee = assigneePrincipal(input.requestedAssigneePatch);
@@ -973,7 +1023,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     const currentParticipant =
       existingState?.currentParticipant ??
       selectStageParticipant(activeStage, {
-        exclude: existingState?.returnAssignee ?? null,
+        exclude: [
+          existingState?.returnAssignee ?? null,
+          ...excludedExecutors,
+        ],
       });
     if (!currentParticipant) {
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
@@ -1036,7 +1089,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         !principalsEqual(currentParticipant, actor)) {
       const participant = selectStageParticipant(activeStage, {
         preferred: explicitAssignee ?? existingState?.currentParticipant ?? null,
-        exclude: existingState?.returnAssignee ?? null,
+        exclude: [
+          existingState?.returnAssignee ?? null,
+          ...excludedExecutors,
+        ],
       });
       if (!participant) {
         clearExecutionStatePatch({
@@ -1092,7 +1148,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
         const participant = selectStageParticipant(nextStage, {
           preferred: explicitAssignee,
-          exclude: existingState?.returnAssignee ?? null,
+          exclude: [
+            existingState?.returnAssignee ?? null,
+            ...excludedExecutors,
+          ],
         });
         if (!participant) {
           throw unprocessable(`No eligible ${nextStage.type} participant is configured for this issue`);
@@ -1384,12 +1443,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee ?? input.restartPreferredParticipant ?? null,
-    exclude:
+    exclude: [
       pendingStage.type === "review"
         ? (returnAssignee ?? participantExclusion)
         : (pendingStage.participants.length === 1 && stageHasParticipant(pendingStage, participantExclusion)
             ? returnAssignee
             : participantExclusion),
+      ...excludedExecutors,
+    ],
     candidateLoads: input.candidateLoads,
   });
   while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })) {
@@ -1415,7 +1476,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         existingState?.status === CHANGES_REQUESTED_STATUS
           ? explicitAssignee ?? existingState.currentParticipant ?? null
           : explicitAssignee,
-      exclude: participantExclusion,
+      exclude: [participantExclusion, ...excludedExecutors],
       candidateLoads: input.candidateLoads,
     });
   }
