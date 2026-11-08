@@ -35398,12 +35398,10 @@ export function heartbeatService(
       actorShape?: string,
       wakeReason?: string,
       hasResult = false,
+      before?: Date,
     ): Promise<string> => {
-      const [agg] = await db
-        .select({
-          rowCount: sql<number>`count(*)::int`,
-          maxUpdatedAt: sql<string | null>`max(${heartbeatRuns.updatedAt})`,
-        })
+      const recent = db
+        .select({ updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(
           and(
@@ -35413,8 +35411,18 @@ export function heartbeatService(
               ? sql`(${heartbeatRuns.contextWakeReason} = ${wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${wakeReason})`
               : sql`true`,
             hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+            before ? lt(heartbeatRuns.createdAt, before) : sql`true`,
           ),
-        );
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(Math.max(1, Math.min(1000, limit ?? 200)))
+        .as("recent_heartbeat_runs");
+      const [agg] = await db
+        .select({
+          rowCount: sql<number>`count(*)::int`,
+          maxUpdatedAt: sql<string | null>`max(${recent.updatedAt})`,
+        })
+        .from(recent);
       return versionKeyEtag("heartbeat-runs-list", [
         companyId,
         agentId ?? "all",
@@ -35423,6 +35431,7 @@ export function heartbeatService(
         actorShape ?? "all",
         wakeReason ?? "all",
         hasResult ? "with-result" : "all-results",
+        before?.toISOString() ?? "latest",
         agg?.rowCount ?? 0,
         agg?.maxUpdatedAt ?? null,
       ]);
@@ -35431,7 +35440,7 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean } = {},
+      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean; before?: Date } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -35463,11 +35472,13 @@ export function heartbeatService(
               ? sql`(${heartbeatRuns.contextWakeReason} = ${options.wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${options.wakeReason})`
               : sql`true`,
             options.hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+            options.before ? lt(heartbeatRuns.createdAt, options.before) : sql`true`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const effectiveLimit = Math.max(1, Math.min(1000, limit ?? 200));
+      const rows = await query.limit(effectiveLimit);
       return rows.map((row) => {
         const {
           contextIssueId,
