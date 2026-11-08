@@ -218,7 +218,7 @@ async function runParticipantCall(
   participant: AgentExchangeParticipantSpec,
   userPrompt: string,
   active: AbortController | null,
-): Promise<{ tokens: number; costCents: number; interrupted?: boolean }> {
+): Promise<{ tokens: number; costCents: number; interrupted: boolean }> {
   void room;
   try {
     const result = await deps.models.call({
@@ -256,7 +256,7 @@ async function runParticipantCall(
       completedAt: now(deps),
     });
     if (isStopInterruption(error)) return { tokens: 0, costCents: 0, interrupted: true };
-    return { tokens: 0, costCents: 0 };
+    return { tokens: 0, costCents: 0, interrupted: false };
   }
 }
 
@@ -285,7 +285,7 @@ async function runRound(
   const active = new AbortController();
   activeRounds.set(room.id, active);
   try {
-    const calls: Array<Promise<{ tokens: number; costCents: number }>> = [];
+    const calls: Array<Promise<{ tokens: number; costCents: number; interrupted: boolean }>> = [];
     for (let index = 0; index < participants.length; index += 1) {
       const participant = participants[index];
       const prompt = buildParticipantPrompt({ round, openingPrompt, previousRoundAnswers });
@@ -295,11 +295,11 @@ async function runRound(
       calls.push(runParticipantCall(deps, room, cell.id, participant, prompt, active));
     }
     const results = await Promise.all(calls);
-    return results.reduce(
+    return results.reduce<{ tokens: number; costCents: number; interrupted: boolean }>(
       (acc, r) => ({
         tokens: acc.tokens + r.tokens,
         costCents: acc.costCents + r.costCents,
-        interrupted: acc.interrupted || r.interrupted === true,
+        interrupted: acc.interrupted || r.interrupted,
       }),
       { tokens: 0, costCents: 0, interrupted: false },
     );
