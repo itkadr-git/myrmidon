@@ -222,6 +222,87 @@ describe("review rework decision table", () => {
     expect(decision.outcome).toBe("closed");
   });
 
+  it("OPE-12260: a reopen after a loop close vetoes the automatic done — the task goes back for acceptance", () => {
+    const decision = decideReviewRework(
+      facts({
+        task: task({ status: "in_review" }),
+        prs: [pr({ state: "merged" })],
+        reopenedAfterLoopClose: true,
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "await_acceptance",
+      prRefs: ["acme/repo#484"],
+      outcome: "merged",
+      assigneeAgentId: "author-agent",
+    });
+  });
+
+  it("OPE-12260: the acceptance ladder falls to the delivering task, then the review assignee", () => {
+    const nobody = decideReviewRework(
+      facts({
+        task: task({ status: "in_review", returnAssigneeAgentId: null }),
+        prs: [pr({ state: "merged" })],
+        reopenedAfterLoopClose: true,
+        deliveringTaskAssigneeAgentId: null,
+      }),
+    );
+    if (nobody.kind !== "await_acceptance") throw new Error("expected await_acceptance");
+    expect(nobody.assigneeAgentId).toBe("reviewer-agent");
+  });
+
+  it("OPE-12260: a live-acceptance criterion in the description holds the close (RU and EN)", () => {
+    for (const description of [
+      "Критерий: живая приёмка на бою.",
+      "приёмка проводится оператором вручную",
+      "Операторский шаг после выката обязателен",
+      "Acceptance: live acceptance on production",
+      "needs manual acceptance by the operator",
+    ]) {
+      const decision = decideReviewRework(
+        facts({ task: task({ status: "in_review", description }), prs: [pr({ state: "merged" })] }),
+      );
+      if (decision.kind !== "await_acceptance") {
+        throw new Error(`expected await_acceptance for ${description}`);
+      }
+    }
+  });
+
+  it("OPE-12260: a plain description still closes as before", () => {
+    const decision = decideReviewRework(
+      facts({
+        task: task({ status: "in_review", description: "fix the bug, tests in CI" }),
+        prs: [pr({ state: "merged" })],
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "close_review",
+      prRefs: ["acme/repo#484"],
+      outcome: "merged",
+    });
+  });
+
+  it("OPE-12260: a pass after the acceptance handoff neither closes nor repeats the comment", () => {
+    const decision = decideReviewRework(
+      facts({
+        task: task({ status: "in_review" }),
+        prs: [pr({ state: "merged" })],
+        reopenedAfterLoopClose: true,
+        comments: [
+          returnComment(),
+          {
+            id: "handoff",
+            body:
+              "Code merged; acceptance pending by the review-return loop: PR acme/repo#484 is merged, but the" +
+              " task names a live / operator acceptance step.",
+            createdAt: NOW,
+          },
+        ],
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop", reason: "acceptance_already_waiting" });
+  });
+
   it("a merged PR with an open sibling keeps the review alive", () => {
     const decision = decideReviewRework(
       facts({

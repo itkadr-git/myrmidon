@@ -71,11 +71,13 @@ const apiPrefixes: Record<string, string> = {
   "routines.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
+  "status-strip.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
   // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): system update checks mount under /api.
   "system-updates.ts": "/api",
+  "intake.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
@@ -196,6 +198,9 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
     (file === "chat-channels.ts" || file === "email.ts") &&
     routePath.startsWith("/api/chat-webhooks/")
   ) {
+    return routePath;
+  }
+  if (file === "intake.ts" && routePath.startsWith("/api/intake/")) {
     return routePath;
   }
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {

@@ -189,15 +189,19 @@ test('gitleaks binary archive hash verification and secret scanning', async () =
   const archive = join(scannerDir, 'gitleaks.tar.gz');
   const previousPath = process.env.PATH || '';
   try {
-    assert.equal(
-      spawnSync('curl', [
+    let curlStatus = 1;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const res = spawnSync('curl', [
         '-fsSL',
         'https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz',
         '-o',
         archive,
-      ]).status,
-      0
-    );
+      ]);
+      curlStatus = res.status;
+      if (curlStatus === 0) break;
+      spawnSync('sleep', ['2']);
+    }
+    assert.equal(curlStatus, 0);
     const hash = createHash('sha256').update(readFileSync(archive)).digest('hex');
     assert.equal(
       hash,
