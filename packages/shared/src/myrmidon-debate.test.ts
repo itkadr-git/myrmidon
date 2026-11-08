@@ -313,7 +313,7 @@ describe("myrmidon(1.7-DEBATE-PERSIST): the round protocol document", () => {
     const outcome = await runDebate({
       question: "q",
       settings: settings({ rounds: 1 }),
-      call: fakeCall({ critic: "done agree" }, undefined, recorder),
+      call: fakeCall({ critic: `nothing left to attack. ${DEBATE_AGREE_MARKER}` }, undefined, recorder),
       onRoundComplete: async (entry) => {
         sinkEntries.push({ ...entry, recordedAt: "2026-11-08T12:00:00.000Z" });
         if (sinkEntries.length === 2) throw new Error("sink is broken on the second append");
@@ -339,18 +339,19 @@ describe("myrmidon(1.7-DEBATE-PERSIST): the round protocol document", () => {
 
   it("a replica longer than the per-entry cap is truncated and marked (documents contract)", async () => {
     const longText = "x".repeat(DEBATE_PROTOCOL_TEXT_LIMIT + 5000);
-    const captured: string[] = [];
+    const captured: number[] = [];
     await runDebate({
       question: "q",
       settings: settings({ rounds: 1 }),
       call: fakeCall({ default: longText }),
       onRoundComplete: async (entry) => {
-        captured.push(entry.text.length > DEBATE_PROTOCOL_TEXT_LIMIT ? "truncated" : "full");
+        captured.push(entry.text.length);
       },
     });
-    // The engine hands the raw text to the sink; the service-level sink applies
+    // The engine hands the raw text to the sink untruncated (every entry is
+    // exactly `longText.length` chars); the service-level sink applies
     // the cap before writing — this test pins the engine's raw-handoff side.
-    expect(captured.every((c) => c === "full")).toBe(true);
+    expect(captured.every((len) => len === longText.length)).toBe(true);
     const marked = renderDebateProtocolDocument({
       question: "q",
       runId: "run-2",

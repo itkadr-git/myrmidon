@@ -270,8 +270,9 @@ describe("myrmidon(1.7-DEBATE-ASYM-A): the debate service", () => {
       "critic:1:false",
       "judge:1:false",
     ]);
-    // The protocol document is the last write and carries the whole transcript.
-    const protocolDoc = h.documents.find((d) => d.key === DEBATE_PROTOCOL_DOCUMENT_KEY)!;
+    // The protocol document's LAST write (the finished stamp) carries the
+    // whole transcript; earlier writes are the running snapshots checked below.
+    const protocolDoc = h.documents.filter((d) => d.key === DEBATE_PROTOCOL_DOCUMENT_KEY).at(-1)!;
     expect(protocolDoc).toBeTruthy();
     const parsed = parseDebateProtocolDocument(protocolDoc.body);
     expect(parsed).not.toBeNull();
