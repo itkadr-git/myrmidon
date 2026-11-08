@@ -742,6 +742,9 @@ const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "CODEX_HOME",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
+    // The OpenAI-compatible endpoint of the built-in provider (an LLM gateway).
+    // An address, not a credential; without it the API key goes to api.openai.com.
+    "OPENAI_BASE_URL",
     "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
 ];
 
@@ -4420,6 +4423,12 @@ done
         }
         assert!(!GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&"GIT_CONFIG_KEY_32"));
         assert!(!GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&"GIT_CONFIG_VALUE_32"));
+    }
+
+    #[test]
+    fn codex_provider_passes_the_openai_compatible_endpoint() {
+        assert!(CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"OPENAI_BASE_URL"));
+        assert!(!OPENCODE_PROVIDER_ENVIRONMENT_KEYS.contains(&"OPENAI_BASE_URL"));
     }
 
     #[test]
