@@ -68,10 +68,10 @@ die() { printf '[bot-memory-smoke] ERROR: %s\n' "$*" >&2; exit 2; }
 
 input_file=""
 manifest_file=""
-board_url="${PAPERCLIP_API_URL:-${BOARD_API_URL:-}}"
-company_id="${PAPERCLIP_COMPANY_ID:-${BOARD_COMPANY_ID:-}}"
+board_url="${MYRMIDON_API_URL:-${PAPERCLIP_API_URL:-${BOARD_API_URL:-}}}"
+company_id="${MYRMIDON_COMPANY_ID:-${PAPERCLIP_COMPANY_ID:-${BOARD_COMPANY_ID:-}}}"
 token_file="${BOARD_TOKEN_FILE:-}"
-api_key="${PAPERCLIP_API_KEY:-}"
+api_key="${MYRMIDON_API_KEY:-${PAPERCLIP_API_KEY:-}}"
 default_mem_mb=1024
 hot_mem_mb=1536
 hot_bots_raw="887ed69b-5982-4572-a151-f8c809543f29,90192a57-8b26-4d3f-b65f-bd3fc7feda8b,adm-dev-eng-10,adm-dev-eng-8"

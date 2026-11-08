@@ -12,8 +12,12 @@
 // run that hit the call limit after making changes (patch, write_file, a
 // terminal command that writes: `writeCalls` in the guard statistics) is a run
 // that was working, not looping, so the board continues it the way it continues
-// a run that ran out of turns (RUN-GUARD-CONTINUE), within the same attempt
-// ceiling. When that ceiling is spent the stop is final again.
+// a run that ran out of turns (RUN-GUARD-CONTINUE). These continuations have
+// their own ceiling (`heartbeat.runGuardContinuation.maxAttempts`, default 6,
+// at most 20) and do not spend the max-turn ceiling
+// (`heartbeat.maxTurnContinuation.maxAttempts`): a chain of productive runs of
+// 150 calls each is not a loop. When the own ceiling is spent, or the last run
+// changed nothing, the stop is final again.
 //
 // This module holds the pure parts: recognising a guard-stopped run, whether it
 // continues, and the comment text. The wiring is in services/heartbeat.ts (stop
@@ -108,6 +112,73 @@ export function shouldContinueAfterRunGuardStop(
     return true;
   }
   return false;
+}
+
+/** Default ceiling of call-limit continuations along one chain (RUN-GUARD-CONTINUE). */
+export const RUN_GUARD_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 6;
+/** Upper bound of `heartbeat.runGuardContinuation.maxAttempts`, whatever the agent config says. */
+export const RUN_GUARD_CONTINUATION_MAX_ATTEMPTS_CAP = 20;
+/**
+ * Run context key that counts the call-limit continuations already made along the
+ * chain. Retries copy the run context, so the count travels with the chain; the
+ * shared chain counter (`scheduledRetryAttempt`) also counts max-turn continuations,
+ * which is why the two ceilings are told apart by this key.
+ */
+export const RUN_GUARD_CONTINUATION_CONTEXT_KEY = "runGuardContinuationAttempts";
+
+export interface RunGuardContinuationPolicy {
+  enabled: boolean;
+  maxAttempts: number;
+}
+
+/**
+ * The call-limit continuation policy of an agent: `runtimeConfig.heartbeat.runGuardContinuation`
+ * (`enabled`, default true; `maxAttempts`, default 6, clamped to 0..20; 0 turns it off).
+ */
+export function parseRunGuardContinuationPolicy(runtimeConfig: unknown): RunGuardContinuationPolicy {
+  const configured = asRecord(asRecord(asRecord(runtimeConfig)?.heartbeat)?.runGuardContinuation);
+  const raw = configured?.maxAttempts;
+  const maxAttempts =
+    typeof raw === "number" && Number.isFinite(raw)
+      ? Math.floor(raw)
+      : RUN_GUARD_CONTINUATION_DEFAULT_MAX_ATTEMPTS;
+  return {
+    enabled: typeof configured?.enabled === "boolean" ? configured.enabled : true,
+    maxAttempts: Math.max(0, Math.min(RUN_GUARD_CONTINUATION_MAX_ATTEMPTS_CAP, maxAttempts)),
+  };
+}
+
+/** How many call-limit continuations the chain of this run has already made (0 for a run outside one). */
+export function readRunGuardContinuationCount(run: { contextSnapshot?: unknown } | null | undefined): number {
+  return readCount(asRecord(run?.contextSnapshot)?.[RUN_GUARD_CONTINUATION_CONTEXT_KEY]);
+}
+
+/**
+ * The ceiling to hand the retry scheduler for the next call-limit continuation, or
+ * null when the chain has spent its own ceiling. The scheduler counts along the shared
+ * chain counter (`scheduledRetryAttempt` of the stopped run), so the ceiling is that
+ * counter plus what is left of the own ceiling.
+ */
+export function runGuardContinuationSchedulerCeiling(input: {
+  scheduledRetryAttempt: number | null | undefined;
+  continuationsMade: number;
+  maxAttempts: number;
+}): number | null {
+  const left = input.maxAttempts - input.continuationsMade;
+  if (left <= 0) return null;
+  return readCount(input.scheduledRetryAttempt) + left;
+}
+
+/**
+ * The ceiling to hand the retry scheduler for the next max-turn continuation: the
+ * policy ceiling plus the call-limit continuations of the chain, which share the
+ * chain counter but do not spend this ceiling.
+ */
+export function maxTurnContinuationSchedulerCeiling(
+  policyMaxAttempts: number,
+  run: { contextSnapshot?: unknown } | null | undefined,
+): number {
+  return policyMaxAttempts + readRunGuardContinuationCount(run);
 }
 
 /**
