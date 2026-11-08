@@ -161,6 +161,26 @@ describe("myrmidon(1.7) behavior settings: reading the effective values", () => 
     expect(res.body.sources.debug_mode).toBe("env");
   });
 
+  it("answers { settings, sources } with no values[] and carries every runs-queue key", async () => {
+    // myrmidon(1.6.7 SETTINGS-GENERAL-CRASH): the Runs & Queue tab of
+    // Settings -> General reads exactly this body. It used to read a `values[]`
+    // array the server never sent, and the page fell to the error screen.
+    const { app } = harness();
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+
+    expect(Object.keys(res.body).sort()).toEqual(["settings", "sources"]);
+    expect(res.body.values).toBeUndefined();
+    const runsQueueKeys = behaviorSettingRegistry
+      .getAll()
+      .filter((def) => def.section === "runs-queue")
+      .map((def) => def.key);
+    expect(runsQueueKeys.length).toBeGreaterThan(0);
+    for (const key of runsQueueKeys) {
+      expect(key in res.body.settings, key).toBe(true);
+      expect(["ui", "env", "default"], key).toContain(res.body.sources[key]);
+    }
+  });
+
   it("reports the stored settings as the source once they exist", async () => {
     const { app } = harness({
       stored: { debug_mode: true, max_concurrent_agents: 10 },
