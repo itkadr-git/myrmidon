@@ -57,7 +57,7 @@ describe("Ui2SettingsSidebar", () => {
     expect(nav).not.toBeNull();
 
     // Check all 10 sections are present
-    expect(UI2_SETTINGS_SECTIONS).toHaveLength(10);
+    expect(UI2_SETTINGS_SECTIONS).toHaveLength(11);
     for (const section of UI2_SETTINGS_SECTIONS) {
       const link = nav?.querySelector(`a[href$="${section.path}"]`);
       expect(link).not.toBeNull();
