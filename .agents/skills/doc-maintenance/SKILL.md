@@ -4,6 +4,15 @@ description: >
   Audit README, SPEC, and PRODUCT docs against recent git history for drift and
   make minimal PR-ready edits. Use when asked to review docs for accuracy, after
   major feature merges, or on a schedule.
+key: paperclipai/bundled/docs/doc-maintenance
+recommendedForRoles:
+  - engineer
+  - product
+  - devrel
+tags:
+  - docs
+  - documentation
+  - release-notes
 ---
 
 # Doc Maintenance Skill

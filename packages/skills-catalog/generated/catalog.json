@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@myrmidon/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-10-02T16:17:16.570Z",
+  "generatedAt": "2026-11-08T18:37:46.820Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -11,7 +11,7 @@
       "category": "docs",
       "slug": "doc-maintenance",
       "name": "doc-maintenance",
-      "description": "Keep project docs aligned with recent code and feature changes — detect drift, update affected pages, and add release-relevant notes without rewriting unchanged sections.",
+      "description": "Audit README, SPEC, and PRODUCT docs against recent git history for drift and make minimal PR-ready edits. Use when asked to review docs for accuracy, after major feature merges, or on a schedule.",
       "path": "catalog/bundled/docs/doc-maintenance",
       "entrypoint": "SKILL.md",
       "trustLevel": "markdown_only",
@@ -32,11 +32,23 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4478,
-          "sha256": "fb0353386c5e5e5e13bcbb3233f044e3dccecf371f429d6328f26c26d7cb6169"
+          "sizeBytes": 7687,
+          "sha256": "c6f26cac78bcc55080ac1736887813946c7a61a6ce8be0e8915c771c89c6b4a4"
+        },
+        {
+          "path": "references/audit-checklist.md",
+          "kind": "reference",
+          "sizeBytes": 2720,
+          "sha256": "f433db2f68106655527738f8d0024e178a1e54a2ed3bac5dcccad733922b232d"
+        },
+        {
+          "path": "references/section-map.md",
+          "kind": "reference",
+          "sizeBytes": 1410,
+          "sha256": "1650844b0267d20bb5181ee6c4d64895f2a2a3b0f3735a7ad3794937dff2aa39"
         }
       ],
-      "contentHash": "sha256:2e02299210fd17c1fe1867b4ee8c144a11b6fe1fe481f83b8268cfbaaf10f9aa"
+      "contentHash": "sha256:1f3d0166a804b0bb5772f8f5d7dbc3848f1bd5fdced0a58587d022a745c2410c"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:issue-triage",
