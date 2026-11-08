@@ -48,10 +48,9 @@ concurrency:
   # by any other label (review-in-progress, needs-rebase, ...) goes to its own
   # group, so it cannot cancel the real run, and every job in it is skipped.
   group: myrmidon-ci-${{ (contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && 'release-' || '' }}${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && '' || '-label-noop' }}
-  # 31.10: only PR runs cancel each other. A push to main never cancels the main CI in flight: with a 4+ h hosted
-  # queue every auto-merge restarted main CI from the back of the queue and main never got a verdict.
+  # OPE-12103: PR runs and pushes to main cancel superseded runs.
   # Manual re-runs (run_attempt > 1) do not cancel the current head run.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+  cancel-in-progress: ${{ (github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"

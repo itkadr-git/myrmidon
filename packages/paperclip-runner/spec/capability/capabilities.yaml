@@ -340,6 +340,21 @@
       ]
     },
     {
+      "id": "skill:skills/paperclip/references/tasks-blockers-approvals.md:engineer-gate-422-naming-the-caste-and-re-casting-the-task:65",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/tasks-blockers-approvals.md:65",
+      "title": "Engineer gate 422: naming the caste and re-casting the task",
+      "expectedSemantics": "Skill guidance headed “Engineer gate 422: naming the caste and re-casting the task”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/tasks-blockers-approvals.md:65"
+      ]
+    },
+    {
       "id": "skill:skills/paperclip/references/interactions-and-decisions.md:issue-thread-interactions:3",
       "sourceKind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/interactions-and-decisions.md:3",

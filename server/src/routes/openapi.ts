@@ -3986,6 +3986,33 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
+// myrmidon(OPE-12116): user block/unblock operator and password reset
+registry.registerPath({
+  method: "patch",
+  path: "/api/users/{userId}/block",
+  tags: ["users"],
+  summary: "Block or unblock a user instance-wide with audit logging",
+  request: {
+    params: z.object({ userId: z.string() }),
+    body: jsonBody(z.object({
+      blocked: z.boolean().default(true),
+      reason: z.string().trim().max(1000).optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/users/{userId}/reset-password",
+  tags: ["users"],
+  summary: "Issue a one-time password reset token for a user without SMTP",
+  request: {
+    params: z.object({ userId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/users/{userId}/block",
@@ -5673,6 +5700,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/status-strip",
+  tags: ["sidebar"],
+  summary: "Get the UI2 header status strip for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/sidebar-badges",
   tags: ["sidebar"],
   summary: "Get sidebar badge counts",
@@ -6485,6 +6521,14 @@ for (const path of ["/api/updates/settings", "/api/updates", "/api/myrmidon/upda
   });
   registry.registerPath({
     method: "put",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "post",
     path,
     tags: ["instance"],
     summary: "Replace auto-update settings",

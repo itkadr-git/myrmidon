@@ -50,7 +50,7 @@ import {
   isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
-import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
+import { AGENT_CHAT_DIRECTIVE, conversationReplay, deliverConversationComments, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
 import { INPUT_LIMIT_CONFIG_KEY } from "@myrmidon/adapter-utils/input-limit";
 import {
@@ -19804,7 +19804,14 @@ export function heartbeatService(
     // created/exited container must be started before the gateway is contacted.
     // Keep this before any adapter execution so a failed start is not reported
     // as a gateway connection failure.
-    const idleStopService = getIdleStopService();
+    // Only a container-backed Hermes agent has an IDLE-STOP runtime. In
+    // particular, a transient retry of omp_local/codex_local must follow the
+    // same adapter dispatch path as its first attempt, without dockergate.
+    const idleStopService =
+      agent.adapterType === "hermes_gateway" &&
+      parseObject(parseObject(agent.adapterConfig).container).enabled === true
+        ? getIdleStopService()
+        : null;
     if (idleStopService) {
       try {
         await idleStopService.ensureStartedAndHealthy(claimed.agentId);
@@ -31618,6 +31625,15 @@ export function heartbeatService(
 
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
+      // A conversation comment is already committed and remains in the
+      // undelivered-comment outbox until resume. Do not manufacture a failed
+      // run (or turn the accepted POST into a 409); no receipt is written, so
+      // delivery can retry this exact comment after the pause is lifted.
+      if (invokability.reason === "paused" && wakeCommentId && issueId &&
+          opts.idempotencyKey === `conversation-comment:${wakeCommentId}` &&
+          await getIssueExecutionContext(agent.companyId, issueId).then(isConversation)) {
+        return null;
+      }
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
         await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
@@ -35389,12 +35405,10 @@ export function heartbeatService(
       actorShape?: string,
       wakeReason?: string,
       hasResult = false,
+      before?: Date,
     ): Promise<string> => {
-      const [agg] = await db
-        .select({
-          rowCount: sql<number>`count(*)::int`,
-          maxUpdatedAt: sql<string | null>`max(${heartbeatRuns.updatedAt})`,
-        })
+      const recent = db
+        .select({ updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(
           and(
@@ -35404,8 +35418,18 @@ export function heartbeatService(
               ? sql`(${heartbeatRuns.contextWakeReason} = ${wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${wakeReason})`
               : sql`true`,
             hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+            before ? lt(heartbeatRuns.createdAt, before) : sql`true`,
           ),
-        );
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(Math.max(1, Math.min(1000, limit ?? 200)))
+        .as("recent_heartbeat_runs");
+      const [agg] = await db
+        .select({
+          rowCount: sql<number>`count(*)::int`,
+          maxUpdatedAt: sql<string | null>`max(${recent.updatedAt})`,
+        })
+        .from(recent);
       return versionKeyEtag("heartbeat-runs-list", [
         companyId,
         agentId ?? "all",
@@ -35414,6 +35438,7 @@ export function heartbeatService(
         actorShape ?? "all",
         wakeReason ?? "all",
         hasResult ? "with-result" : "all-results",
+        before?.toISOString() ?? "latest",
         agg?.rowCount ?? 0,
         agg?.maxUpdatedAt ?? null,
       ]);
@@ -35422,7 +35447,7 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean } = {},
+      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean; before?: Date } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -35454,11 +35479,13 @@ export function heartbeatService(
               ? sql`(${heartbeatRuns.contextWakeReason} = ${options.wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${options.wakeReason})`
               : sql`true`,
             options.hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+            options.before ? lt(heartbeatRuns.createdAt, options.before) : sql`true`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const effectiveLimit = Math.max(1, Math.min(1000, limit ?? 200));
+      const rows = await query.limit(effectiveLimit);
       return rows.map((row) => {
         const {
           contextIssueId,
@@ -35779,6 +35806,21 @@ export function heartbeatService(
     // Its sole caller is the agent resume route.
     resumeAgentAfterPause: async (agentId: string) => {
       const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      // A paused conversation's accepted comments have no wake receipt until
+      // delivery succeeds. Resume drains that durable outbox as well as the
+      // ordinary assigned-issue queue (which excludes in_review chats).
+      const conversations = await db.select({
+        id: issues.id,
+        companyId: issues.companyId,
+        conversationAgentId: issues.conversationAgentId,
+      }).from(issues).where(and(
+        eq(issues.assigneeAgentId, agentId),
+        isNotNull(issues.conversationAgentId),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ));
+      for (const conversation of conversations) {
+        await deliverConversationComments(db, conversation, enqueueWakeup);
+      }
       // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
       // — the board matcher gives it its own ready task, else a ready task of
       // its caste (design §3.5). Respect the same instance/card switch as idle

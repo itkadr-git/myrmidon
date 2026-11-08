@@ -4,7 +4,7 @@ import type { ExternalObjectCanonicalUrl } from "@myrmidon/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 export { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
-import { recordGitHubRequest } from "./github-rate-limit.js";
+import { getGitHubRateLimitResetEpochSeconds, isGitHubRateLimited, recordGitHubRequest } from "./github-rate-limit.js";
 import { secretService } from "./secrets.js";
 import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
 import { isRepositoryAllowed, normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
@@ -475,6 +475,106 @@ export async function defaultTokenProvider(
   return null;
 }
 
+// myrmidon(OPE-12397): the provider's read cache, one per process. Every caller (review
+// rework, merge details, CI resolver, work-products refresh) passes an object without an etag,
+// so each of its reads was a full GET 200: ~94 open pull requests cost 4-5k requests an hour
+// and used up the App's 5000/h budget, after which the CI gate of the review went blind.
+// An object is served from memory for MYRMIDON_GITHUB_OBJECT_CACHE_TTL_SEC (0 = cache off) and
+// a merged / closed / not found one for MYRMIDON_GITHUB_OBJECT_TERMINAL_TTL_SEC; after that the
+// read is conditional (If-None-Match; a 304 costs no rate limit), reads of one object that run
+// in parallel share one request, and nothing is asked while the shared rate-limit state says
+// the budget is gone (the cached result, even an expired one, is returned instead).
+const GITHUB_OBJECT_CACHE_TTL_ENV = "MYRMIDON_GITHUB_OBJECT_CACHE_TTL_SEC";
+const GITHUB_OBJECT_TERMINAL_TTL_ENV = "MYRMIDON_GITHUB_OBJECT_TERMINAL_TTL_SEC";
+const DEFAULT_GITHUB_OBJECT_CACHE_TTL_SECONDS = 120;
+const DEFAULT_GITHUB_OBJECT_TERMINAL_TTL_SECONDS = 1800;
+export const GITHUB_OBJECT_CACHE_MAX_ENTRIES = 5000;
+
+interface CachedGitHubObject {
+  etag: string | null;
+  result: ExternalObjectResolveResult;
+  fetchedAt: number;
+  terminal: boolean;
+}
+
+/** key -> the last good read; insertion order is age order, the oldest goes first. */
+const objectCache = new Map<string, CachedGitHubObject>();
+/** key -> the read that is on the wire now. */
+const objectReads = new Map<string, Promise<ExternalObjectResolveResult>>();
+/** Bumped on every invalidation: a read that started before it must not be stored. */
+let objectCacheEpoch = 0;
+
+function readTtlSeconds(name: string, fallback: number) {
+  const raw = process.env[name]?.trim();
+  return raw && /^\d+$/.test(raw) ? Number(raw) : fallback;
+}
+
+function objectCacheTail(repository: string, pathKind: GitHubObjectIdentity["pathKind"], number: number) {
+  return `${repository.toLowerCase()}|${pathKind}|${number}`;
+}
+
+// The answer depends on the token only through the company that owns it, so the company is in
+// the key: one company's private-repository read is never served to another.
+function objectCacheKey(companyId: string, identity: GitHubObjectIdentity) {
+  return `${companyId}|${identity.host}|${objectCacheTail(`${identity.owner}/${identity.repo}`, identity.pathKind, identity.number)}`;
+}
+
+/**
+ * Forgets the cached read of one pull request (every company and host), also the read that is
+ * on the wire now: call it when the board itself changed the PR, e.g. merged it.
+ */
+export function invalidateGitHubPullRequestCache(repository: string, number: number) {
+  objectCacheEpoch += 1;
+  const tail = `|${objectCacheTail(repository, "pull", number)}`;
+  for (const key of objectCache.keys()) {
+    if (key.endsWith(tail)) objectCache.delete(key);
+  }
+  for (const key of objectReads.keys()) {
+    if (key.endsWith(tail)) objectReads.delete(key);
+  }
+}
+
+export function resetGitHubObjectCacheForTests() {
+  objectCacheEpoch += 1;
+  objectCache.clear();
+  objectReads.clear();
+}
+
+function rememberGitHubObject(key: string, result: ExternalObjectResolveResult) {
+  if (!result.ok) return;
+  const { snapshot } = result;
+  const data = asRecord(snapshot.data);
+  // Not final whatever the state says: a merged PR whose merge commit the default branch does
+  // not reach yet (the /compare verdict can still flip, and a 304 would replay it), and a
+  // "not found" that an anonymous read got (a missing token, not a missing PR).
+  const reachabilityOpen = data?.mergeCommitReachable === false;
+  const anonymousNotFound = data?.notFound === true && data?.authenticated === false;
+  objectCache.delete(key);
+  while (objectCache.size >= GITHUB_OBJECT_CACHE_MAX_ENTRIES) {
+    const oldest = objectCache.keys().next().value;
+    if (oldest === undefined) break;
+    objectCache.delete(oldest);
+  }
+  objectCache.set(key, {
+    etag: reachabilityOpen ? null : snapshot.etag ?? null,
+    result,
+    fetchedAt: Date.now(),
+    terminal: snapshot.isTerminal === true && !reachabilityOpen && !anonymousNotFound,
+  });
+}
+
+/** The answer GitHub's own 403 "rate limit" gets above, for a read that was not sent at all. */
+function rateLimitedResult(): ExternalObjectResolveResult {
+  const resetAt = getGitHubRateLimitResetEpochSeconds();
+  return {
+    ok: false,
+    liveness: "unreachable",
+    errorCode: "github_rate_limited",
+    errorMessage: "GitHub rate limit reached while refreshing this object.",
+    retryAfterSeconds: resetAt ? Math.max(1, resetAt - Math.floor(Date.now() / 1000)) : GITHUB_OBJECT_TTL_SECONDS,
+  };
+}
+
 export function createGitHubExternalObjectProvider(
   db: Db,
   opts: GitHubExternalObjectProviderOptions = {},
@@ -507,10 +607,9 @@ export function createGitHubExternalObjectProvider(
   };
 
   function resolver(objectType: GitHubObjectIdentity["objectType"]): ExternalObjectResolver {
-    return {
-      providerKey: "github",
-      objectType,
-      async resolve({ companyId, object }) {
+    // myrmidon(OPE-12397): the read itself, as before; `resolve` further down puts the cache in front of it.
+    const network = {
+      async resolve({ companyId, object, cached }: Parameters<ExternalObjectResolver["resolve"]>[0] & { cached?: CachedGitHubObject }): Promise<ExternalObjectResolveResult> {
         const identity = parseGitHubObject(object);
         if (!identity || identity.objectType !== objectType) {
           return {
@@ -542,6 +641,7 @@ export function createGitHubExternalObjectProvider(
         };
         if (token) headers.authorization = `Bearer ${token}`;
         if (object?.etag) headers["if-none-match"] = object.etag;
+        else if (cached?.etag) headers["if-none-match"] = cached.etag;
 
         const apiKind = objectType === "pull_request" ? "pulls" : "issues";
         const url = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/${apiKind}/${identity.number}`;
@@ -561,6 +661,8 @@ export function createGitHubExternalObjectProvider(
         }
 
         if (response.status === 304) {
+          // myrmidon(OPE-12397): a 304 to the cache's own etag replays the cached result; an etag the caller passed keeps its old meaning.
+          if (cached && !object?.etag) return cached.result;
           return {
             ok: true,
             snapshot: {
@@ -620,7 +722,8 @@ export function createGitHubExternalObjectProvider(
           if (merged) {
             if (!baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/")) {
               mergeCommitReachable = true;
-            } else if (mergeCommitSha) {
+            } else if (mergeCommitSha && !isGitHubRateLimited()) {
+              // myrmidon(OPE-12397): no /compare once the budget is gone; the verdict stays "not reached" and is asked again later.
               try {
                 const compareUrl = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/compare/${encodeURIComponent(defaultBranch)}...${encodeURIComponent(mergeCommitSha)}`;
                 const compareRes = await fetchImpl(compareUrl, { headers });
@@ -650,6 +753,37 @@ export function createGitHubExternalObjectProvider(
           ok: true,
           snapshot: issueSnapshot(identity, body, etag),
         };
+      },
+    };
+
+    return {
+      providerKey: "github",
+      objectType,
+      async resolve({ companyId, object }) {
+        const identity = parseGitHubObject(object);
+        if (!identity || identity.objectType !== objectType) return network.resolve({ companyId, object });
+
+        const ttlMs = readTtlSeconds(GITHUB_OBJECT_CACHE_TTL_ENV, DEFAULT_GITHUB_OBJECT_CACHE_TTL_SECONDS) * 1000;
+        const terminalTtlMs = readTtlSeconds(GITHUB_OBJECT_TERMINAL_TTL_ENV, DEFAULT_GITHUB_OBJECT_TERMINAL_TTL_SECONDS) * 1000;
+        const key = objectCacheKey(companyId, identity);
+        const cached = ttlMs > 0 ? objectCache.get(key) : undefined;
+        if (cached && Date.now() - cached.fetchedAt < (cached.terminal ? terminalTtlMs : ttlMs)) return cached.result;
+        if (isGitHubRateLimited()) return cached ? cached.result : rateLimitedResult();
+        if (ttlMs === 0) return network.resolve({ companyId, object });
+
+        const running = objectReads.get(key);
+        if (running) return running;
+        const epoch = objectCacheEpoch;
+        const read: Promise<ExternalObjectResolveResult> = network.resolve({ companyId, object, cached })
+          .then((result) => {
+            if (epoch === objectCacheEpoch) rememberGitHubObject(key, result);
+            return result;
+          })
+          .finally(() => {
+            if (objectReads.get(key) === read) objectReads.delete(key);
+          });
+        objectReads.set(key, read);
+        return read;
       },
     };
   }

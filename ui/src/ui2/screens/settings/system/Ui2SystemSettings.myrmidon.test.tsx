@@ -33,6 +33,20 @@ vi.mock("@/api/activity", () => ({
   activityApi: mockActivityApi,
 }));
 
+// myrmidon(OPE-12046): the SWEEP-2 read-only "Fine settings" block reads the
+// behavior-settings API on mount; stub it so the screen test never fetches.
+const mockBehaviorApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getDefinitions: vi.fn(),
+}));
+
+vi.mock("@/api/myrmidonBehaviorSettings", () => ({
+  behaviorSettingsQueryKey: ["myrmidon", "behavior-settings"] as const,
+  behaviorSettingsApi: mockBehaviorApi,
+  getBehaviorSettings: () => mockBehaviorApi.get(),
+  getBehaviorSettingsDefinitions: () => mockBehaviorApi.getDefinitions(),
+}));
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
@@ -124,6 +138,13 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
         createdAt: "2026-10-02T11:30:00.000Z",
       },
     ]);
+    mockBehaviorApi.get.mockResolvedValue({
+      settings: { debug_mode: false },
+      sources: { debug_mode: "default" },
+    });
+    mockBehaviorApi.getDefinitions.mockResolvedValue([
+      { key: "debug_mode", envName: "MYRMIDON_DEBUG_MODE", default: false, scope: "instance", section: "system", valueType: "boolean" },
+    ]);
   });
 
   afterEach(() => {
@@ -178,5 +199,17 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
     expect(link).not.toBeNull();
     expect(link?.getAttribute("href")).toBe("/company/settings/secrets");
     expect(container.querySelector('[data-testid^="ui2-secret-setting-"]')).toBeNull();
+  });
+
+  it("myrmidon(OPE-12046): mounts the read-only fine-settings block fed by the behavior-settings API", async () => {
+    await renderScreen();
+
+    expect(mockBehaviorApi.get).toHaveBeenCalled();
+    const row = container.querySelector('[data-testid="ui2-fine-row-debug_mode"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("false");
+    // Nothing on the fine-settings block writes.
+    const fineTable = container.querySelector("table.ui2-fine");
+    expect(fineTable?.querySelector("input, textarea, select")).toBeNull();
   });
 });

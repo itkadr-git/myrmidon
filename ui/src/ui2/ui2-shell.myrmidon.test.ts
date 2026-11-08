@@ -90,6 +90,7 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
       "more",
       "quality",
       "settings-autonomy-regulations",
+      "settings-channels",
       "settings-language",
       "settings-runs-queue",
       "settings-system",

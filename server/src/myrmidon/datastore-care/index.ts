@@ -100,6 +100,7 @@ function collectSnapshotWith(
       now,
       topQueries: settings.topQueries,
       backupDir: settings.backupDir,
+      backupExternal: settings.externalBackupLabel,
       optionalMetrics: settings.optionalMetrics,
     },
     { connection: drizzleQueryPort(db, target.connectionRef || BOARD_CONNECTION_REF) },

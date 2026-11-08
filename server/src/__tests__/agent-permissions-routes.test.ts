@@ -707,9 +707,12 @@ describe.sequential("agent permission routes", () => {
     expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
       companyId,
       undefined,
-      undefined,
+      200,
       false,
       '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+      undefined,
+      false,
+      undefined,
     );
 
     redactionEnabled = true;
@@ -726,9 +729,12 @@ describe.sequential("agent permission routes", () => {
     expect(mockHeartbeatService.listVersionKey).toHaveBeenLastCalledWith(
       companyId,
       undefined,
-      undefined,
+      200,
       false,
       '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+      undefined,
+      false,
+      undefined,
     );
   }, 20_000);
 
@@ -756,17 +762,18 @@ describe.sequential("agent permission routes", () => {
     expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
       companyId,
       agentId,
-      undefined,
+      200,
       false,
       expect.any(String),
       "issue_commented",
       true,
+      undefined,
     );
     expect(mockHeartbeatService.list).toHaveBeenCalledWith(
       companyId,
       agentId,
-      undefined,
-      { summary: false, wakeReason: "issue_commented", hasResult: true },
+      200,
+      { summary: false, wakeReason: "issue_commented", hasResult: true, before: undefined },
     );
   }, 20_000);
 
@@ -786,17 +793,18 @@ describe.sequential("agent permission routes", () => {
     expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
       companyId,
       "agent-1",
-      undefined,
+      200,
       false,
       '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
       "issue_commented",
       true,
+      undefined,
     );
     expect(mockHeartbeatService.list).toHaveBeenCalledWith(
       companyId,
       "agent-1",
-      undefined,
-      { summary: false, wakeReason: "issue_commented", hasResult: true },
+      200,
+      { summary: false, wakeReason: "issue_commented", hasResult: true, before: undefined },
     );
   });
 

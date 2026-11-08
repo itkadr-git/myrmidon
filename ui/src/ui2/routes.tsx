@@ -31,6 +31,7 @@ import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
 import { Ui2Regulations } from "./screens/knowledge/Ui2Regulations";
 import { Ui2SystemScreen } from "./screens/system/Ui2SystemScreen";
 import { Ui2QualityScreen } from "./screens/quality/Ui2QualityScreen";
+import { Ui2ChannelsSettings } from "./screens/settings/channels/Ui2ChannelsSettings";
 import { Ui2PhoneMore } from "./screens/more/Ui2PhoneMore";
 
 export type Ui2ScreenKey =
@@ -41,6 +42,7 @@ export type Ui2ScreenKey =
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
+  | "settings-channels"
   | "commander"
   | "commander-chat"
   | "fleet"
@@ -130,6 +132,13 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     path: "company/settings/language",
     titleKey: "ui2.screens.language",
     element: ui2Screen(<Ui2LanguageSettings />),
+    legacyPath: "/company/settings",
+  },
+  {
+    key: "settings-channels",
+    path: "company/settings/channels",
+    titleKey: "ui2.screens.channels",
+    element: ui2Screen(<Ui2ChannelsSettings />),
     legacyPath: "/company/settings",
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat — own route under the ui2

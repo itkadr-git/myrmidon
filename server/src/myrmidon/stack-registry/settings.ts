@@ -1,6 +1,7 @@
 // Stack registry (SUA, part B) settings. See docs/myrmidon/SETTINGS.md.
 
 import { liveSavedSetting } from "../behavior-settings/live.js";
+import { STACK_BACKLOG_LAG_DEFAULT } from "./backlog-draft.js";
 
 export const STACK_CHECK_INTERVAL_ENV = "MYRMIDON_STACK_CHECK_INTERVAL_SEC";
 
@@ -45,4 +46,18 @@ export const STACK_OSV_API_BASE_ENV = "MYRMIDON_STACK_OSV_API_BASE";
 export function readStackOsvApiBase(env: NodeJS.ProcessEnv = process.env): string | null {
   const raw = env[STACK_OSV_API_BASE_ENV]?.trim();
   return raw ? raw : null;
+}
+
+export const STACK_BACKLOG_LAG_RELEASES_ENV = "MYRMIDON_STACK_BACKLOG_LAG_RELEASES";
+
+/**
+ * Minimum upstream lag in releases that warrants a backlog draft task.
+ * Defaults to 2.
+ */
+export function readStackBacklogLagReleases(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[STACK_BACKLOG_LAG_RELEASES_ENV]?.trim();
+  if (!raw) return STACK_BACKLOG_LAG_DEFAULT;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) return STACK_BACKLOG_LAG_DEFAULT;
+  return value;
 }
