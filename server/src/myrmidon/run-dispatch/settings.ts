@@ -16,6 +16,7 @@
 
 import { eq } from "drizzle-orm";
 import { instanceSettings, type Db } from "@myrmidon/db";
+import { processRole } from "../../services/process-role.js";
 
 /** The `general.processes` key inside `instance_settings.general`. */
 export const RUN_DISPATCH_SETTINGS_KEY = "processes";
@@ -65,11 +66,13 @@ function readProcessesRecord(general: unknown): Record<string, unknown> | null {
 }
 
 function resolveMode(raw: unknown): RunStartDispatchMode {
-  if (typeof raw !== "string") return DEFAULT_RUN_START_DISPATCH;
+  const role = processRole().role;
+  const splitDefault = role !== "all" ? "notify" : DEFAULT_RUN_START_DISPATCH;
+  if (typeof raw !== "string") return splitDefault;
   const normalized = raw.trim().toLowerCase();
   return (RUN_START_DISPATCH_MODES as readonly string[]).includes(normalized)
     ? (normalized as RunStartDispatchMode)
-    : DEFAULT_RUN_START_DISPATCH;
+    : splitDefault;
 }
 
 function resolveIntervalSec(raw: unknown): number {

@@ -244,6 +244,12 @@ PSI cpu `some avg10`. Load average уходит в конец как явно в
 
 Изоляция включается отдельно для агента в конфигурации адаптера Hermes (`adapterConfig`), а не переменной окружения инстанса. Если не заданы `filesystemScope` и `networkScope`, выполнение остаётся без песочницы. Задайте `filesystemScope: "workspace"` для границы Bubblewrap только на workspace. `filesystemSandboxCommand` выбирает исполняемый файл (по умолчанию `bwrap`), а `filesystemExtraPaths` перечисляет дополнительные доступные песочнице пути. Для сети задайте `networkScope: "deny"` или `"allowlist"` вместе с `networkAllowlist`, содержащим разрешённые хосты/origin. URL API control plane доверен для runtime-соединения адаптера. Эти настройки действуют только на `hermes_local`; Bubblewrap должен быть установлен на хосте агента.
 
+**Песочница нативного раннера Codex и User Namespaces (OPE-12274):**
+Для нативного выполнения Codex (`paperclip_runner`) внутренняя песочница Codex (`bwrap`) намеренно **не** отключается (её отключение позволило бы агентам читать секреты контейнера доски). Вместо этого среда контейнера должна поддерживать непривилегированные user namespaces (`userns`). Контейнеру доски требуются:
+1. `--security-opt seccomp=path/to/myrmidon-board-userns.json` (пользовательский seccomp-профиль, разрешающий `clone, unshare, mount, umount2, pivot_root, setns`).
+2. `--security-opt apparmor=unconfined` (для разрешения операций монтирования, требуемых bwrap).
+Если user namespaces недоступны, инициализация раннера завершается понятной ошибкой `codex_sandbox_unavailable` с подсказкой вместо падения на `session.open`.
+
 ## Трек 4 — чаты и навыки
 
 | Переменная | Функция | По умолчанию | Что делает | Как выключить / особое |
