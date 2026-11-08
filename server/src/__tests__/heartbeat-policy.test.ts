@@ -162,6 +162,8 @@ describe("task retry policy: exponential backoff with a ceiling", () => {
       now: NOW,
       // Deliberately unreachable attempt counts: the point is the delay
       // ceiling, so maxAttempts is raised above the series length.
+      // multiplier=60: attempt 1 waits the base (under the ceiling), every
+      // attempt from the second one is raw-capped at HALF_HOUR.
       settings: settings({
         maxAttempts: 10,
         multiplier: 60,
@@ -171,13 +173,16 @@ describe("task retry policy: exponential backoff with a ceiling", () => {
     });
     for (const decision of long) {
       if (!decision.retry) continue;
-      expect(decision.rawDelayMs).toBeGreaterThan(HALF_HOUR);
+      // Whatever the raw exponential value, the scheduled wait never leaves
+      // the ceiling band: at most ceiling × (1 + jitterRatio).
       expect(decision.delayMs).toBeLessThanOrEqual(HALF_HOUR * 1.1);
     }
-    // The capped arithmetic is shared with the run policy (RETRY-UNIFIED).
+    // The capped arithmetic is shared with the run policy (RETRY-UNIFIED):
+    // attempt 1 (60 s) is under the 30-minute ceiling, attempts 2+ are raw-
+    // capped at it — base × 60^(n−1) grows past the ceiling immediately.
     expect(
       long.map((d) => (d.retry ? d.rawDelayMs >= HALF_HOUR : null)),
-    ).toEqual([false, false, true, true, true]);
+    ).toEqual([false, true, true, true, true]);
   });
 
   it("a delay never falls below the floor the run policy enforces", () => {
@@ -221,7 +226,10 @@ describe("task retry policy: the attempt counter", () => {
         failTransient(),
       ],
       now: NOW,
-      settings: settings({ maxAttempts: 1, jitterRatio: 0 }),
+      // The pre-dispatch budget (maxAttempts) allows exactly these two
+      // pre-dispatch retries to be scheduled; only the third consecutive
+      // pre-dispatch failure would be refused.
+      settings: settings({ maxAttempts: 2, jitterRatio: 0 }),
     });
     // The two pre-dispatch failures schedule their retries (bounded budget),
     // but the counter stays at zero; the real attempt is the first one.

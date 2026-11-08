@@ -311,11 +311,15 @@ export function planTaskRetry(input: PlanTaskRetryInput): TaskRetryDecision {
   if (input.failure.beforeDispatch) {
     // Pre-dispatch failures bypass the attempt counter but only within their
     // own budget, so an adapter that never dispatches cannot spin for ever on
-    // "the counter never moves". `maxAttempts` (not the classification ceiling)
-    // is the shared bound: once the transcript carries maxAttempts consecutive
-    // pre-dispatch failures with no intervening real attempt, the schedule
-    // stops queueing new ones.
-    if (countPreDispatchFailures(series) >= Math.max(0, settings.maxAttempts)) {
+    // "the counter never moves". The budget is the pre-dispatch failures
+    // INCLUDING the current one: the (settings.maxAttempts + 1)-th consecutive
+    // pre-dispatch failure with no intervening real attempt is the first one
+    // the schedule refuses to queue — maxAttempts pre-dispatch retries are
+    // scheduled, the next failure is the blocked one.
+    if (
+      countPreDispatchFailures(seriesWithCurrent) >
+      Math.max(0, settings.maxAttempts)
+    ) {
       return {
         retry: false,
         reason: "pre_dispatch_limit_reached",
@@ -384,6 +388,12 @@ export function planTaskRetrySeries(
 ): TaskRetryDecision[] {
   const decisions: TaskRetryDecision[] = [];
   let history: TaskRetryAttemptFailure[] = [];
+  // One continuous jitter stream for the whole series: the seeded default is
+  // derived from the full-series fingerprint once, and a caller-pinned source
+  // advances across attempts exactly like the seeded default — so a pinned
+  // source reproduces the seeded schedule decision for decision.
+  const random =
+    input.random ?? seededRandom(taskRetrySeriesFingerprint(input.series));
   for (const failure of input.series) {
     decisions.push(
       planTaskRetry({
@@ -393,7 +403,7 @@ export function planTaskRetrySeries(
         series: history,
         now: input.now,
         settings: input.settings,
-        random: input.random,
+        random,
       }),
     );
     history = [...history, failure];
