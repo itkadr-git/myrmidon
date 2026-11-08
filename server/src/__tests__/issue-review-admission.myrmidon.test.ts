@@ -24,7 +24,7 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } from "../myrmidon/review-stage-recovery/policy.js";
+import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, reviewAdmissionDedupKey } from "../myrmidon/review-stage-recovery/policy.js";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
 
 // myrmidon(REVIEW-ADMISSION): issue transition to in_review and reviewer wake
@@ -162,7 +162,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
 
     expect(response.status).toBe(200);
     const wakes = await ctx.db.select().from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+      .where(eq(agentWakeupRequests.idempotencyKey, reviewAdmissionDedupKey({ issueId, headSha: "head-abc", agentId: reviewerAgentId })));
     expect(wakes).toHaveLength(0);
     const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue?.executionPolicy).toMatchObject({ monitor: { serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } });
@@ -210,7 +210,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue?.status).toBe("in_review");
     const wakes = await ctx.db.select().from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+      .where(eq(agentWakeupRequests.idempotencyKey, reviewAdmissionDedupKey({ issueId, headSha: "head-abc", agentId: reviewerAgentId })));
     expect(wakes).toHaveLength(0);
   });
 
@@ -258,7 +258,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(eq(activityLog.entityId, issueId));
     expect(events.filter((event) => event.action === "review_ci_unreadable")).toHaveLength(1);
     const wakes = await ctx.db.select().from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+      .where(eq(agentWakeupRequests.idempotencyKey, reviewAdmissionDedupKey({ issueId, headSha: "head-abc", agentId: reviewerAgentId })));
     expect(wakes).toHaveLength(0);
   });
 
@@ -328,7 +328,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(
         eq(
           agentWakeupRequests.idempotencyKey,
-          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+          reviewAdmissionDedupKey({ issueId, headSha: "head-abc", agentId: reviewerAgentId }),
         ),
       );
     expect(wakes).toHaveLength(1);
@@ -419,7 +419,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(
         eq(
           agentWakeupRequests.idempotencyKey,
-          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+          reviewAdmissionDedupKey({ issueId, headSha: "head-fail", agentId: reviewerAgentId }),
         ),
       );
     expect(wakes).toHaveLength(0);
@@ -505,7 +505,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(
         eq(
           agentWakeupRequests.idempotencyKey,
-          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+          reviewAdmissionDedupKey({ issueId, headSha: "head-fail", agentId: reviewerAgentId }),
         ),
       );
     expect(wakes).toHaveLength(1);
@@ -576,10 +576,115 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(
         eq(
           agentWakeupRequests.idempotencyKey,
-          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+          reviewAdmissionDedupKey({ issueId, headSha: "head-abc", agentId: reviewerAgentId }),
         ),
       );
     expect(wakes).toHaveLength(1);
+  });
+
+  it("myrmidon(OPE-12177): re-wakes with the same head dedup, a moved head wakes again, no SHA falls back", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission head-keyed dedup");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Head-keyed Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const stageId = randomUUID();
+    const policy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review" as const,
+          participants: [{ type: "agent" as const, agentId: reviewerAgentId }],
+        },
+      ],
+    };
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Head-keyed review admission dedup",
+      status: "todo",
+      priority: "medium",
+      executionPolicy: policy,
+    });
+
+    // The legacy agent-keyed row the fallback must target when no head SHA is
+    // readable: the route's CI stub also returns headSha, but without a PR
+    // work product the stored-metadata read has nothing to refresh the key
+    // from — and the stub only serves the CI-gated candidate block.
+    let routesHead: string | null = "head-abc";
+    const routes = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({
+        state: "complete" as const,
+        pullRequestUrl: "https://github.com/acme/app/pull/7",
+        headSha: routesHead,
+      }),
+      resolveReviewAdmissionHeadSha: async () => routesHead,
+    });
+    const app = routeApp(ctx.db, actor, routes as any);
+    const sameHeadKey = reviewAdmissionDedupKey({ issueId, headSha: "head-abc", agentId: reviewerAgentId });
+    const movedHeadKey = reviewAdmissionDedupKey({ issueId, headSha: "head-def", agentId: reviewerAgentId });
+    const legacyKey = reviewAdmissionDedupKey({ issueId, headSha: null, agentId: reviewerAgentId });
+
+    const firstRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy });
+    expect(firstRes.status).toBe(200);
+    const firstWakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, sameHeadKey));
+    expect(firstWakes).toHaveLength(1);
+    expect(firstWakes[0]?.agentId).toBe(reviewerAgentId);
+
+    // Same issue + same head: the wake is idempotent — no second admission row.
+    const replayRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy });
+    expect(replayRes.status).toBe(200);
+    expect(
+      await ctx.db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, sameHeadKey)),
+    ).toHaveLength(1);
+
+    // The head moved (a pushed fix): the new head must produce a new wake.
+    routesHead = "head-def";
+    const movedRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy });
+    expect(movedRes.status).toBe(200);
+    const movedWakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, movedHeadKey));
+    expect(movedWakes).toHaveLength(1);
+    expect(movedWakes[0]?.agentId).toBe(reviewerAgentId);
+
+    // No SHA readable at all: the legacy agent-keyed key is used so such
+    // boards keep deduplicating exactly as before.
+    routesHead = null;
+    const fallbackRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy });
+    expect(fallbackRes.status).toBe(200);
+    const fallbackWakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, legacyKey));
+    expect(fallbackWakes).toHaveLength(1);
+    expect(fallbackWakes[0]?.agentId).toBe(reviewerAgentId);
   });
 
   it("routes a review PATCH to a reviewer whose model differs from the author", async () => {
@@ -648,12 +753,12 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     const wakes = await ctx.db
       .select()
       .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${selectedReviewerId}`));
+      .where(eq(agentWakeupRequests.idempotencyKey, reviewAdmissionDedupKey({ issueId, headSha: null, agentId: selectedReviewerId })));
     expect(wakes).toHaveLength(1);
     const rejectedCandidateWakes = await ctx.db
       .select()
       .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${sameModelReviewerId}`));
+      .where(eq(agentWakeupRequests.idempotencyKey, reviewAdmissionDedupKey({ issueId, headSha: null, agentId: sameModelReviewerId })));
     expect(rejectedCandidateWakes).toHaveLength(0);
   });
 
@@ -771,7 +876,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(
         eq(
           agentWakeupRequests.idempotencyKey,
-          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+          reviewAdmissionDedupKey({ issueId, headSha: null, agentId: reviewerAgentId }),
         ),
       );
     expect(wakes).toHaveLength(0);

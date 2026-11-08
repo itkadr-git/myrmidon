@@ -57,6 +57,32 @@ export const REVIEW_CI_WAIT_RECOVERY_INSTRUCTION =
  */
 export const REVIEW_CI_FINAL_CHECK_NAME = "CI result";
 
+/**
+ * myrmidon(OPE-12177): the idempotency-key namespace of review-admission
+ * wakeups. The key deduplicates wakes per issue, so every writer must build it
+ * with `reviewAdmissionDedupKey` — never interpolate a custom tail.
+ */
+export const REVIEW_ADMISSION_KEY_PREFIX = "issue-review-admission:";
+
+/**
+ * myrmidon(OPE-12177): dedup key of a review-admission wake. The tail is the
+ * exact PR head the admission decision was made on, so the same head never
+ * wakes the reviewer twice (idempotency) while a pushed fix — a new head —
+ * produces a fresh key and a fresh wake. Without a head SHA (no PR work
+ * product, or a board that cannot read one) the legacy agent-keyed format is
+ * kept, so those boards dedup exactly as before.
+ */
+export function reviewAdmissionDedupKey(input: {
+  issueId: string;
+  headSha?: string | null;
+  agentId: string;
+}): string {
+  const headSha = typeof input.headSha === "string" ? input.headSha.trim() : "";
+  return headSha
+    ? `${REVIEW_ADMISSION_KEY_PREFIX}${input.issueId}:${headSha}`
+    : `${REVIEW_ADMISSION_KEY_PREFIX}${input.issueId}:${input.agentId}`;
+}
+
 /** CI on the head of the issue's open pull request, as far as the board can read it. */
 export type ReviewPullRequestCiState =
   /** The final `CI result` check of the head is missing or not completed yet. */
