@@ -98,6 +98,7 @@
   "api.use(myrmidonLitellmAuditRoutes(db))",
   "api.use(myrmidonAgentExchangeRoutes(db))",
   "api.use(myrmidonAgentExchangeFeedRoutes(db))",
+  "api.use(myrmidonBillingWebhookRoutes(db))",
   "api.use(myrmidonBaselineRoutes(db))",
   "api.use(myrmidonBotEgressRoutes(db))",
   "api.use(myrmidonBotCanaryRoutes(db))",
