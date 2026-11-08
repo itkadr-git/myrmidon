@@ -71,6 +71,7 @@ const apiPrefixes: Record<string, string> = {
   "routines.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
+  "status-strip.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
