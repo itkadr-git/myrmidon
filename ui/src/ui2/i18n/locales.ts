@@ -150,6 +150,10 @@ const en = {
   "ui2.screens.more.links.quality": "Quality",
   "ui2.screens.more.links.settings": "Settings",
   "ui2.screens.more.links.agentCard": "Agent card",
+  "ui2.screens.notInWave.title": "Not in this wave yet",
+  "ui2.screens.notInWave.body":
+    "This section has no screen in the current wave of the new interface.",
+  "ui2.screens.notInWave.link": "Back to Settings",
 
   "ui2.commander.title": "Command Center",
   "ui2.commander.subtitle": "Your company's current state and what needs attention.",
@@ -833,6 +837,10 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.screens.more.links.quality": "Качество",
   "ui2.screens.more.links.settings": "Настройки",
   "ui2.screens.more.links.agentCard": "Карточка агента",
+  "ui2.screens.notInWave.title": "Ещё не в этой волне",
+  "ui2.screens.notInWave.body":
+    "У этого раздела пока нет экрана в текущей волне нового интерфейса.",
+  "ui2.screens.notInWave.link": "Вернуться в настройки",
 
   "ui2.commander.title": "Командный центр",
   "ui2.commander.subtitle": "Текущее состояние компании и то, что требует внимания.",
