@@ -532,7 +532,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
 });
 
 describe("site-registry — env bootstrap tenant scope", () => {
-  const HOSTS = JSON.stringify([{ name: "myr-vm1", url: "http://myr-vm1.example.test:9443", tokenSecret: "tok" }]);
+  const HOSTS = JSON.stringify([{ name: "myr-vm1", url: "http://10.0.0.50:9443", tokenSecret: "tok" }]);
   const mkDb = (companyIds: string[]) => {
     const inserted: Array<{ companyId: string }> = [];
     const db = {
@@ -589,6 +589,33 @@ describe("site-registry — env bootstrap tenant scope", () => {
     expect(res).toEqual({ inserted: 0, updated: 0 });
     expect(update).not.toHaveBeenCalled();
     expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("warns that the variable is deprecated, once per start, whether or not it parses", async () => {
+    const { db } = mkDb(["c1"]);
+    const warns: Array<{ fields: unknown; message: string }> = [];
+    const log = { warn: (fields: object, message: string) => warns.push({ fields, message }) };
+    await bootstrapFleetSitesFromEnv(db, { MYRMIDON_FLEET_HOSTS: HOSTS } as any, log);
+    const deprecations = warns.filter((w) => w.message.includes("is deprecated"));
+    expect(deprecations).toHaveLength(1);
+    expect(deprecations[0].message).toContain("POST /companies/:companyId/fleet/sites");
+    expect(JSON.stringify(warns)).not.toContain("10.0.0.50");
+
+    // a value that does not parse (plain http to a public address) still gets the warning, and nothing is seeded
+    const bad = JSON.stringify([{ name: "site-a", url: "http://site-a.example.test:9443", tokenSecret: "tok" }]);
+    const failed: string[] = [];
+    const res = await bootstrapFleetSitesFromEnv(db, { MYRMIDON_FLEET_HOSTS: bad } as any, { warn: (_f: object, m: string) => failed.push(m) });
+    expect(res).toEqual({ inserted: 0, updated: 0 });
+    expect(failed.some((m) => m.includes("is deprecated"))).toBe(true);
+    expect(failed.some((m) => m.includes("failed to parse MYRMIDON_FLEET_HOSTS"))).toBe(true);
+  });
+
+  it("says nothing when the variable is not set", async () => {
+    const { db } = mkDb(["c1"]);
+    const warns: string[] = [];
+    await bootstrapFleetSitesFromEnv(db, {} as any, { warn: (_f: object, m: string) => warns.push(m) });
+    await bootstrapFleetSitesFromEnv(db, { MYRMIDON_FLEET_HOSTS: "  " } as any, { warn: (_f: object, m: string) => warns.push(m) });
+    expect(warns).toEqual([]);
   });
 
   it("bootstraps the only company of a single-company installation", async () => {

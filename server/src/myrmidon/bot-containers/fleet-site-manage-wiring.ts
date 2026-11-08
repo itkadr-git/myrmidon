@@ -10,6 +10,8 @@ import { agents, myrmidonFleetSites, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { HERMES_GATEWAY_ADAPTER_TYPE } from "./agents-query.js";
 import { BOT_CONTAINER_DEFAULTS } from "./agent-config.js";
+import { fleetAuditDeps } from "./fleet-audit-wiring.js";
+import { withFleetAudit } from "./fleet-audit.js";
 import { createFleetMoveContext } from "./fleet-move-wiring.js";
 import { createSiteAgentClient } from "./site-agent-client.js";
 import { fleetSiteManageRoutes, type BotCardView, type SiteBotView, type SiteLoad } from "./fleet-site-manage-routes.js";
@@ -48,7 +50,7 @@ function positive(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClientManager | (() => FleetClientManager | null)): Router {
+function createFleetSiteManageRouter(db: Db, clientManager?: FleetClientManager | (() => FleetClientManager | null)): Router {
   const moves = createFleetMoveContext(db, clientManager);
   const currentClientManager = () => typeof clientManager === "function" ? clientManager() ?? undefined : clientManager;
   const health = siteHealthStore(db);
@@ -225,4 +227,9 @@ export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClien
 
     log: logger,
   });
+}
+
+/** The fleet screen's routes; patch, drain, resume, restart, stop and logs leave a row in the company's activity log (fleet-audit.ts). */
+export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClientManager | (() => FleetClientManager | null)): Router {
+  return withFleetAudit(createFleetSiteManageRouter(db, clientManager), fleetAuditDeps(db));
 }

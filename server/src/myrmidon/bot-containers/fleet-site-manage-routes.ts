@@ -24,6 +24,7 @@ import { assertBoard, assertCompanyAccess, assertCompanyAdmin } from "../../rout
 import { normalizeFleetdUrl } from "./fleet-site-routes.js";
 import { siteBadge, type FleetSiteBadge } from "./site-health-routes.js";
 import type { FleetSite, FleetSiteUpdate } from "./site-registry.js";
+import { isPrivateUrl } from "./private-address.js";
 
 const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/;
 const DEFAULT_TAIL = 100;
@@ -47,8 +48,50 @@ const patchBodySchema = z
     // it: the hermes adapter then refuses its plain-http gateway. Merged into the stored profile.
     privateNetwork: z.boolean().optional(),
     tunnel: z.boolean().optional(),
+    // myrmidon(fleet-site audit): the adapter opens plain http only to a port inside this range of the
+    // record, so the range is editable here: a site that came without one (the env bootstrap writes
+    // none) would otherwise be stuck. Send both ends, or one end to move the stored range.
+    gatewayPortStart: z.number().int().min(1024).max(65535).optional(),
+    gatewayPortEnd: z.number().int().min(1024).max(65535).optional(),
   })
   .strict();
+
+export type SitePatchBody = z.infer<typeof patchBodySchema>;
+
+/**
+ * The gateway port range after the request: the end(s) sent over the stored one(s); null when the
+ * request does not touch the range. A range needs both ends, in order.
+ */
+function patchedPortRange(site: FleetSite, body: SitePatchBody): { start: number; end: number } | null {
+  if (body.gatewayPortStart === undefined && body.gatewayPortEnd === undefined) return null;
+  const start = body.gatewayPortStart ?? site.profile.gatewayPortStart;
+  const end = body.gatewayPortEnd ?? site.profile.gatewayPortEnd;
+  if (start === undefined || end === undefined) {
+    throw badRequest("gatewayPortStart and gatewayPortEnd: send both ends, the site has no stored range to complete");
+  }
+  if (start > end) throw badRequest(`gatewayPortStart (${start}) is above gatewayPortEnd (${end})`);
+  return { start, end };
+}
+
+/**
+ * myrmidon(fleet-site audit): privateNetwork / tunnel are an operator's claim that the link to the site
+ * is private. They open plain http to the site's bot gateways, so the claim is taken only for a private
+ * IP address of the site (RFC 1918, RFC 6598 shared address space, loopback), and a site that carries
+ * it cannot be moved to another kind of address. The adapter checks the address again at connect time.
+ */
+export function assertPrivateAddressRules(site: FleetSite, body: SitePatchBody, patch: FleetSiteUpdate): void {
+  const address = patch.url ?? site.url;
+  const marksPrivate = body.privateNetwork === true || body.tunnel === true;
+  const profile = patch.profile ?? site.profile;
+  const keepsFlag = profile.privateNetwork === true || profile.tunnel === true;
+  if (!marksPrivate && !(body.url !== undefined && keepsFlag)) return;
+  if (isPrivateUrl(address)) return;
+  throw badRequest(
+    marksPrivate
+      ? `${body.privateNetwork === true ? "privateNetwork" : "tunnel"}: the site address is not a private IP address (RFC 1918, RFC 6598 shared address space or loopback); plain-http gateways are allowed on a private network only`
+      : "url: the site is marked private, so its address must be a private IP address (RFC 1918, RFC 6598 shared address space or loopback); clear privateNetwork and tunnel in the same request to use another address",
+  );
+}
 
 /** What the board knows about the load on one site; a field is null when it could not be read. */
 export interface SiteLoad {
@@ -248,20 +291,29 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
     }
     if (body.labels !== undefined) patch.labels = body.labels;
     if (body.capacity !== undefined) {
-      const start = site.profile.gatewayPortStart;
-      const end = site.profile.gatewayPortEnd;
+      const start = body.gatewayPortStart ?? site.profile.gatewayPortStart;
+      const end = body.gatewayPortEnd ?? site.profile.gatewayPortEnd;
       if (body.capacity.maxBots !== undefined && start !== undefined && end !== undefined && body.capacity.maxBots > end - start + 1) {
         throw badRequest(`capacity.maxBots (${body.capacity.maxBots}) exceeds the gateway port range (${end - start + 1} ports)`);
       }
       patch.capacity = body.capacity;
     }
-    if (body.privateNetwork !== undefined || body.tunnel !== undefined) {
+    const portRange = patchedPortRange(site, body);
+    if (portRange !== null && body.capacity === undefined) {
+      const maxBots = site.capacity.maxBots;
+      if (maxBots !== undefined && maxBots > portRange.end - portRange.start + 1) {
+        throw badRequest(`capacity.maxBots (${maxBots}) exceeds the gateway port range (${portRange.end - portRange.start + 1} ports)`);
+      }
+    }
+    if (body.privateNetwork !== undefined || body.tunnel !== undefined || portRange !== null) {
       patch.profile = {
         ...site.profile,
         ...(body.privateNetwork !== undefined ? { privateNetwork: body.privateNetwork } : {}),
         ...(body.tunnel !== undefined ? { tunnel: body.tunnel } : {}),
+        ...(portRange !== null ? { gatewayPortStart: portRange.start, gatewayPortEnd: portRange.end } : {}),
       };
     }
+    assertPrivateAddressRules(site, body, patch);
     const updated = await deps.updateSite(companyId, site.name, patch);
     if (!updated) throw notFound(`Site "${site.name}" not found`);
     res.json({ ok: true, site: updated.name });
