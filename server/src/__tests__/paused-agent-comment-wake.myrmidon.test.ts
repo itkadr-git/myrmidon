@@ -17,6 +17,7 @@ import {
 import { issueService } from "../services/issues.js";
 import { deliverConversationComments } from "../services/agent-conversations.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
@@ -62,6 +63,10 @@ const support = await getEmbeddedPostgresTestSupport();
         pauseReason: "manual",
         pausedAt: new Date(),
         adapterType: "process",
+      });
+
+      await instanceSettingsService(db).updateExperimental({
+        enableAgentChat: true,
       });
     }, 60000);
 
