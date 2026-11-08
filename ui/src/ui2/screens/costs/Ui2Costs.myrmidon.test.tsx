@@ -243,7 +243,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     await renderScreen();
 
     expect(container.querySelector(".ui2-costs-agents")).toBeNull();
-    expect(container.textContent).toContain("No spend in this period");
+    expect(container.textContent).toContain("No spend is recorded for this window.");
   });
 
   it("keeps the zero budget amount without a redundant budget hint", async () => {
@@ -279,7 +279,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     await renderScreen();
     expect(container.textContent).toContain("Could not load this data. Try again.");
     expect(container.textContent).toContain("daily endpoint unavailable");
-    expect(container.querySelector(".ui2-costs-daily-chart")).toBeNull();
+    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
     expect(container.querySelector(".ui2-costs-issues")).not.toBeNull();
   });
 
@@ -287,7 +287,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     mockCostsApi.byDay.mockResolvedValue([]);
     mockCostsApi.byIssue.mockResolvedValue([]);
     await renderScreen();
-    expect(container.querySelector(".ui2-costs-daily-chart")).toBeNull();
+    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
     expect(container.textContent).toContain("No spend is recorded");
     expect(container.textContent).toContain("No expensive tasks");
   });
@@ -297,7 +297,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(container.textContent).toContain("$1,574.00");
     expect(container.textContent).toContain("OPE-123 · Expensive task");
     expect(container.querySelector('.ui2-costs-issues a')?.getAttribute("href")).toBe("/OPE-123");
-    const chart = container.querySelector(".ui2-costs-daily-chart");
+    const chart = container.querySelector(".ui2-costs-chart");
     expect(chart?.textContent).toContain("$574.00");
     expect(chart?.textContent).toContain("$1,574.00");
     expect(chart?.getAttribute("data-total-cents")).toBe("157400");
