@@ -1,12 +1,18 @@
 // myrmidon(1.6.6 OPE-10039): Periodic bot runtime cache hygiene.
 // Removes stale npm (_cacache, _npx), uv, and terminal-output files older
 // than their configured mtime TTLs.
+// myrmidon(OPE-12110): two byte quotas on top of the age rules, both evicting
+// whole entries, oldest mtime first (LRU by mtime), never an open path:
+//   * `hermes/.npm/_npx`            - `npmNpxQuotaBytes`, 512 MiB per bot;
+//   * `hermes/.cache/cargo-target`  - `cargoTargetQuotaBytes`, 2 GiB per bot
+//     (the per-bot `CARGO_TARGET_DIR` the image sets, outside every task tree).
 // Protects any file or directory currently open by a process.
 
 import fs from "node:fs";
 import path from "node:path";
 
-const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 
 export const HYGIENE_DEFAULTS = Object.freeze({
   npmCacheTtlHours: 48, // 2 days
@@ -14,7 +20,27 @@ export const HYGIENE_DEFAULTS = Object.freeze({
   npmCacheCapBytes: 1024 * 1024 * 1024, // 1 GiB
   uvCacheTtlHours: 168, // 7 days
   terminalOutputTtlHours: 24, // 24 hours
+  // myrmidon(OPE-12110): total ceiling for `hermes/.npm/_npx`, in bytes. An
+  // `npx` run of a vendor CLI installs a whole package tree under `_npx/<hash>`;
+  // one bot reached 2.2 GB in 45 minutes. TTL alone never caught it, because
+  // the trees were written continuously and stayed "fresh".
+  npmNpxQuotaBytes: 512 * 1024 * 1024, // 512 MiB
+  // myrmidon(OPE-12110): total ceiling for the per-bot cargo target dir
+  // (`hermes/.cache/cargo-target`); a Rust `target/` reached 2.4 GB in a task tree.
+  cargoTargetQuotaBytes: 2 * 1024 * 1024 * 1024, // 2 GiB
+  // myrmidon(OPE-12110): a quota pass never evicts an entry written within this
+  // window: an npx install or a cargo build that is still going has not opened
+  // the file yet, or holds it only between two writes.
+  quotaFreshGraceMinutes: 15,
 });
+
+/** Where the per-bot cargo target dir lives under HERMES_HOME (the image's `CARGO_TARGET_DIR`). */
+export const CARGO_TARGET_SUBPATH = path.join(".cache", "cargo-target");
+
+/** Absolute path of the per-bot cargo target dir for a given HERMES_HOME. */
+export function cargoTargetDir(hermesHome) {
+  return path.join(hermesHome, CARGO_TARGET_SUBPATH);
+}
 
 /**
  * Collect all open file targets and working directories from /proc/<pid>/fd and /proc/<pid>/cwd.
@@ -143,9 +169,79 @@ export function cleanTargetDir(rootDir, ttlMs, nowMs, openPaths) {
 }
 
 /**
+ * Size, file count and newest mtime of one cache entry (a directory): the entry
+ * itself and its whole subtree. Symlinks are measured as links, never followed.
+ * Throws when the entry directory itself is unreadable (the caller leaves it
+ * alone); an unreadable descendant is skipped.
+ */
+function measureEntry(entryDir) {
+  const m = { size: 0, files: 0, newest: fs.statSync(entryDir).mtimeMs };
+  const walk = (dir) => {
+    for (const child of fs.readdirSync(dir, { withFileTypes: true })) {
+      const childPath = path.join(dir, child.name);
+      try {
+        const st = fs.lstatSync(childPath);
+        m.newest = Math.max(m.newest, st.mtimeMs);
+        // Walk the full subtree: cacache content/index leaves are nested several
+        // levels deep, and a recently written blob keeps its shard fresh.
+        if (st.isDirectory()) {
+          walk(childPath);
+        } else {
+          m.size += st.size;
+          m.files += 1;
+        }
+      } catch {}
+    }
+  };
+  walk(entryDir);
+  return m;
+}
+
+/**
+ * The byte quota of one cache root (myrmidon OPE-12110): when the entries that
+ * survived the age pass still weigh more than `quotaBytes`, whole entries are
+ * removed LRU by mtime - the one whose newest write is oldest goes first - until
+ * the total fits. An entry is never evicted when
+ *   - a live process holds it open (fd or cwd at or under it; its bytes still
+ *     count against the quota), or
+ *   - it was written within `freshGraceMs` (an install or build still going).
+ * So the quota can stay exceeded for a pass; the next pass retries.
+ *
+ * `units` are `{ path, size, files, newest, open }`. Returns the counters of
+ * this pass only; the caller merges them into its own result.
+ */
+function evictOldestToQuota(units, quotaBytes, nowMs, freshGraceMs) {
+  const out = { quotaEvicted: 0, quotaSkippedFresh: 0, cleanedFiles: 0, cleanedBytes: 0, keptBytes: 0 };
+  let total = units.reduce((sum, u) => sum + u.size, 0);
+  if (quotaBytes > 0 && total > quotaBytes) {
+    const oldestFirst = [...units].sort((a, b) => a.newest - b.newest || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    for (const u of oldestFirst) {
+      if (total <= quotaBytes) break;
+      if (u.open) continue;
+      if (nowMs - u.newest < freshGraceMs) {
+        out.quotaSkippedFresh += 1;
+        continue;
+      }
+      try {
+        fs.rmSync(u.path, { recursive: true, force: true });
+      } catch {
+        // left in place: it still counts toward the total, as it still occupies it
+        continue;
+      }
+      total -= u.size;
+      out.cleanedFiles += u.files;
+      out.cleanedBytes += u.size;
+      out.quotaEvicted += 1;
+    }
+  }
+  out.keptBytes = total;
+  return out;
+}
+
+/**
  * Removes stale whole cache entries from an entry-based cache root (npm `_npx/<hash>`,
  * `_cacache` content/index shard dirs). An entry is one immediate child directory of
- * `rootDir`: it is deleted as a unit or kept as a unit — never file-by-file, which
+ * `rootDir`: it is deleted as a unit or kept as a unit - never file-by-file, which
  * would corrupt a half-loaded npx package or an npm cache shard.
  *
  * An entry is stale when its NEWEST mtime across the entry and all descendants is older
@@ -153,69 +249,50 @@ export function cleanTargetDir(rootDir, ttlMs, nowMs, openPaths) {
  *
  * An entry is protected when any open fd or process cwd lies at or under it
  * (prefix check via `isPathOpen`): a running npx MCP server keeps its entry.
+ *
+ * With `quotaBytes > 0` (myrmidon OPE-12110, `_npx` only) a second pass bounds the
+ * root: if the entries that survived the age pass still exceed the quota, the
+ * least recently written go first (see `evictOldestToQuota`). The quota pass is
+ * reported apart from the age pass (`quotaEvicted`, `quotaSkippedFresh`, `keptBytes`).
  */
-export function cleanEntryCache(rootDir, ttlMs, nowMs, openPaths) {
-  const result = { cleanedFiles: 0, cleanedBytes: 0, skippedOpen: 0, keptFresh: 0 };
+export function cleanEntryCache(rootDir, ttlMs, nowMs, openPaths, quotaBytes = 0, quotaFreshGraceMs = 0) {
+  const result = {
+    cleanedFiles: 0,
+    cleanedBytes: 0,
+    skippedOpen: 0,
+    keptFresh: 0,
+    quotaEvicted: 0,
+    quotaSkippedFresh: 0,
+    keptBytes: 0,
+  };
   let entries = [];
   try {
     entries = fs.readdirSync(rootDir, { withFileTypes: true });
   } catch {
     return result;
   }
+
+  const survivors = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const candidate = path.join(rootDir, entry.name);
     try {
-      // Newest mtime/atime across the entry dir and its immediate children: an entry
-      // recently read (atime) or written (mtime) is fresh, one untouched past the
-      // TTL is stale and goes as a whole.
-      let newest = 0;
-      const note = (st) => {
-        newest = Math.max(newest, st.mtimeMs);
-      };
-      const noteTree = (dir) => {
-        for (const child of fs.readdirSync(dir, { withFileTypes: true })) {
-          const childPath = path.join(dir, child.name);
-          try {
-            const st = fs.lstatSync(childPath);
-            note(st);
-            // Walk the full subtree: cacache content/index leaves are nested
-            // several levels deep, and a recently accessed blob keeps its shard.
-            if (st.isDirectory()) noteTree(childPath);
-          } catch {}
-        }
-      };
-      note(fs.statSync(candidate));
-      noteTree(candidate);
+      const { size, files, newest } = measureEntry(candidate);
+      const open = isPathOpen(candidate, openPaths);
+      const unit = { path: candidate, size, files, newest, open };
       if (nowMs - newest < ttlMs) {
         result.keptFresh += 1;
+        survivors.push(unit);
         continue;
       }
-      if (isPathOpen(candidate, openPaths)) {
+      if (open) {
+        // Stale but held by a live process: never evicted - neither by age nor
+        // by the quota - and its bytes still count against the ceiling.
         result.skippedOpen += 1;
+        survivors.push(unit);
         continue;
       }
-      // measure before removing: the report shows how many files/bytes went away
-      let size = 0;
-      let files = 0;
-      const walk = (dir) => {
-        for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
-          const p = path.join(dir, item.name);
-          let st;
-          try {
-            st = fs.lstatSync(p);
-          } catch {
-            continue;
-          }
-          if (st.isDirectory()) {
-            walk(p);
-          } else {
-            size += st.size;
-            files += 1;
-          }
-        }
-      };
-      walk(candidate);
+      // Stale: the whole entry goes, and the report shows how much went away.
       fs.rmSync(candidate, { recursive: true, force: true });
       result.cleanedFiles += files;
       result.cleanedBytes += size;
@@ -223,6 +300,85 @@ export function cleanEntryCache(rootDir, ttlMs, nowMs, openPaths) {
       // unreadable entry: leave it exactly where it is
     }
   }
+
+  if (quotaBytes > 0 && survivors.length > 0) {
+    const q = evictOldestToQuota(survivors, quotaBytes, nowMs, quotaFreshGraceMs);
+    result.cleanedFiles += q.cleanedFiles;
+    result.cleanedBytes += q.cleanedBytes;
+    result.quotaEvicted = q.quotaEvicted;
+    result.quotaSkippedFresh = q.quotaSkippedFresh;
+    result.keptBytes = q.keptBytes;
+  }
+
+  return result;
+}
+
+/**
+ * Byte quota for the per-bot cargo target dir (myrmidon OPE-12110): the image sets
+ * `CARGO_TARGET_DIR=/data/hermes/.cache/cargo-target`, so every task of a bot builds
+ * into that one directory, outside the task working trees. Its children
+ * (`debug`, `release`, `<triple>/...`, `doc`) are the eviction units: removing one
+ * costs a rebuild and nothing else, while half a profile dir would leave cargo
+ * fingerprints pointing at missing artifacts. Same rules as `_npx`: whole entries,
+ * LRU by mtime, open paths and entries written inside the fresh-grace window stay.
+ *
+ * A missing directory is a clean no-op (a bot that never ran cargo has none, and
+ * nothing creates it here). A directory that resolves outside `options.root`
+ * (a symlink out of HERMES_HOME) is left alone: botd never deletes through it.
+ */
+export function cleanCargoTarget(targetDir, options = {}) {
+  const nowMs = options.nowMs ?? Date.now();
+  const result = {
+    cleanedFiles: 0,
+    cleanedBytes: 0,
+    skippedOpen: 0,
+    keptFresh: 0,
+    quotaEvicted: 0,
+    quotaSkippedFresh: 0,
+    keptBytes: 0,
+  };
+  const quotaBytes = options.quotaBytes ?? HYGIENE_DEFAULTS.cargoTargetQuotaBytes;
+  if (!(quotaBytes > 0)) return result;
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(targetDir, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+  if (options.root) {
+    try {
+      const real = fs.realpathSync(targetDir);
+      const root = fs.realpathSync(options.root);
+      if (real !== root && !real.startsWith(`${root}${path.sep}`)) {
+        result.refused = "outside-home";
+        return result;
+      }
+    } catch {
+      return result;
+    }
+  }
+
+  const units = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(targetDir, entry.name);
+    try {
+      const { size, files, newest } = measureEntry(candidate);
+      const open = isPathOpen(candidate, options.openPaths);
+      if (open) result.skippedOpen += 1;
+      units.push({ path: candidate, size, files, newest, open });
+    } catch {
+      // unreadable entry: leave it exactly where it is
+    }
+  }
+
+  const q = evictOldestToQuota(units, quotaBytes, nowMs, options.freshGraceMs ?? 0);
+  result.cleanedFiles = q.cleanedFiles;
+  result.cleanedBytes = q.cleanedBytes;
+  result.quotaEvicted = q.quotaEvicted;
+  result.quotaSkippedFresh = q.quotaSkippedFresh;
+  result.keptBytes = q.keptBytes;
   return result;
 }
 
@@ -380,10 +536,15 @@ export async function cleanCaches(options = {}) {
     uvCacheTtlMs: (options.limits?.uvCacheTtlHours ?? options.uvCacheTtlHours ?? HYGIENE_DEFAULTS.uvCacheTtlHours) * HOUR,
     terminalOutputTtlMs: (options.limits?.terminalOutputTtlHours ?? options.terminalOutputTtlHours ?? HYGIENE_DEFAULTS.terminalOutputTtlHours) * HOUR,
     npmCacheCapBytes: options.limits?.npmCacheCapBytes ?? options.npmCacheCapBytes ?? HYGIENE_DEFAULTS.npmCacheCapBytes,
+    npmNpxQuotaBytes: options.limits?.npmNpxQuotaBytes ?? options.npmNpxQuotaBytes ?? HYGIENE_DEFAULTS.npmNpxQuotaBytes,
+    cargoTargetQuotaBytes: options.limits?.cargoTargetQuotaBytes ?? options.cargoTargetQuotaBytes ?? HYGIENE_DEFAULTS.cargoTargetQuotaBytes,
+    quotaFreshGraceMs: (options.limits?.quotaFreshGraceMinutes ?? options.quotaFreshGraceMinutes ?? HYGIENE_DEFAULTS.quotaFreshGraceMinutes) * MINUTE,
   };
 
-  // A live run may be using an npx install right now; the ceiling is skipped then
-  // (same rule the repack pass follows for `idle`).
+  // A live run may be using an npx install right now; the whole-`.npm` cap below is
+  // skipped then (same rule the repack pass follows for `idle`). The `_npx` and
+  // cargo quotas above are not: they spare open entries and entries written inside
+  // the fresh-grace window instead.
   const live = options.live === true;
 
   const uvCacheDir = options.uvCacheDir || path.join(hermesHome, ".cache", "uv");
@@ -414,12 +575,44 @@ export async function cleanCaches(options = {}) {
       : t.name === "npm-cacache" || t.name === "npm-cacache-index"
         ? limits.npmCacheTtlMs
         : limits.terminalOutputTtlMs;
-    const res = t.mode === "walk" ? cleanTargetDir(t.dir, ttlMs, nowMs, openPaths) : cleanEntryCache(t.dir, ttlMs, nowMs, openPaths);
+    // myrmidon(OPE-12110): only the `_npx` root carries the byte ceiling here;
+    // the cacache shards and terminal output stay TTL-only (the whole `.npm`
+    // has its own cap below), and the cargo target dir is handled after the loop.
+    const quotaBytes = t.name === "npm-npx" ? limits.npmNpxQuotaBytes : 0;
+    const res = t.mode === "walk"
+      ? cleanTargetDir(t.dir, ttlMs, nowMs, openPaths)
+      : cleanEntryCache(t.dir, ttlMs, nowMs, openPaths, quotaBytes, limits.quotaFreshGraceMs);
     targetResults[t.name] = res;
     totalFiles += res.cleanedFiles;
     totalBytes += res.cleanedBytes;
     totalSkippedOpen += res.skippedOpen;
     totalKept += res.keptFresh;
+    if (t.name === "npm-npx" && res.quotaEvicted > 0 && typeof options.log === "function") {
+      options.log(`botd hygiene: npx quota ${limits.npmNpxQuotaBytes} bytes exceeded, evicted ${res.quotaEvicted} entries oldest-first, kept ${res.keptBytes} bytes`);
+    }
+  }
+
+  // myrmidon(OPE-12110): the per-bot cargo target dir (`CARGO_TARGET_DIR`), a byte
+  // quota with LRU-by-mtime eviction of its profile dirs. Not skipped on a live
+  // run: an entry written in the last `quotaFreshGraceMinutes` or held open by a
+  // process (a build in flight) is never evicted, so a running build keeps its
+  // artifacts and only an idle profile dir goes.
+  const cargo = cleanCargoTarget(options.cargoTargetDir || cargoTargetDir(hermesHome), {
+    nowMs,
+    quotaBytes: limits.cargoTargetQuotaBytes,
+    openPaths,
+    freshGraceMs: limits.quotaFreshGraceMs,
+    root: hermesHome,
+  });
+  targetResults["cargo-target"] = cargo;
+  totalFiles += cargo.cleanedFiles;
+  totalBytes += cargo.cleanedBytes;
+  totalSkippedOpen += cargo.skippedOpen;
+  if (cargo.quotaEvicted > 0 && typeof options.log === "function") {
+    options.log(`botd hygiene: cargo target quota ${limits.cargoTargetQuotaBytes} bytes exceeded, evicted ${cargo.quotaEvicted} entries oldest-first, kept ${cargo.keptBytes} bytes`);
+  }
+  if (cargo.refused && typeof options.log === "function") {
+    options.log(`botd hygiene: cargo target dir not touched (${cargo.refused})`);
   }
 
   // Size ceiling last: the TTL pass above frees what it can, then the cap evicts

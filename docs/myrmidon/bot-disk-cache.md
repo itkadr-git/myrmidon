@@ -577,13 +577,18 @@ its default:
 
 | Key | Default | Meaning |
 |---|---:|---|
-| `npmCacheTtlHours` | `48` | Maximum mtime age for npm `_cacache` entries/root shards and `_npx` package entries |
+| `npmCacheTtlHours` | `48` | Maximum mtime age for npm `_cacache` entries/root shards (`_npx` package entries use `npxTtlHours`) |
 | `uvCacheTtlHours` | `168` (7 days) | Age used for uv cache maintenance |
 | `terminalOutputTtlHours` | `24` | Maximum mtime age for `cache/terminal-output` entries |
 | `scratchTtlHours` | existing default | Maximum mtime age for scratch files; evaluated on every maintenance pass |
 | `sessionRetentionDays` | existing default | Retention for bot session data |
+| `npxTtlHours` | `24` | Maximum mtime age for `hermes/.npm/_npx/<hash>` entries (env `MYRMIDON_BOTD_NPX_TTL_HOURS`) |
+| `npmNpxQuotaBytes` | `536870912` (512 MiB) | Byte quota of `hermes/.npm/_npx` per bot; past it the entries written longest ago are removed first (env `MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES`) |
+| `cargoTargetQuotaBytes` | `2147483648` (2 GiB) | Byte quota of the per-bot cargo target dir `hermes/.cache/cargo-target` (the image's `CARGO_TARGET_DIR`); past it whole profile dirs (`debug`, `release`, `<triple>`) are removed, least recently written first (env `MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES`) |
 
 The cleanup is mtime-based and never removes a path that is open or contains an open file descriptor or current working directory. Open-path protection is prefix-based: an open descendant protects its whole cache entry. npm `_npx/<hash>` directories and npm content/index shards are removed as whole entries; files are never deleted one by one inside those trees. uv is maintained with `uv cache prune`; under hard pressure botd may use `uv cache clean` rather than walking the cache. A failed or skipped cleanup is reported in the botd maintenance log with the reason and bytes reclaimed.
+
+**Byte quotas for `_npx` and the cargo target dir (OPE-12110).** An `npx` run of a vendor CLI can pull a whole package tree into `_npx/<hash>` (2.2 GB in 45 minutes on one bot), and a Rust `target/` inside a task tree reached 2.4 GB. The image therefore sets `CARGO_TARGET_DIR=/data/hermes/.cache/cargo-target` (a directory cargo creates on first use; a bot that never builds Rust has none), and botd bounds both directories with the quotas above, with the same rules as the age pass: whole entries only, never a path that is open or holds an open file descriptor or working directory, mtime-based. After the age pass, if the entries that remain still exceed the quota, they are removed oldest-first by their newest mtime until the total fits. An entry written within the last 15 minutes is never removed by a quota pass (an install or a build may still be going), so the quota can stay exceeded for one pass. The `_npx` and cargo units are the immediate children of their root; a removed cargo profile dir costs a rebuild and nothing else. The board's desired state does not carry these keys today, so they are set with the environment variable of the botd process; a `grace` value, if the board ever sends one, wins over the environment, and zero or absent means the default. The botd log reports an eviction as `botd hygiene: npx quota <bytes> bytes exceeded, evicted N entries oldest-first, kept <bytes> bytes` and `botd hygiene: cargo target quota ...`.
 
 When disk pressure is `soft` or `hard`, botd schedules a local-only pressure cleanup outside the normal cadence. This pass does not poll desired state or send a disk report early: those remain bounded by their normal report cadence. Pressure passes have a floor of 60 seconds and back off when a pass frees no bytes, so a failing board cannot turn pressure into a request storm.
 

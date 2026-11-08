@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import {
+  CARGO_TARGET_SUBPATH,
+  cargoTargetDir,
   cleanCaches,
+  cleanCargoTarget,
   cleanEntryCache,
   cleanTargetDir,
   cleanUvCache,
@@ -13,6 +16,7 @@ import {
   HYGIENE_DEFAULTS,
   isPathOpen,
 } from "../../../docker/bot-runtime/botd/lib/hygiene.js";
+import { RULE_DEFAULTS } from "../../../docker/bot-runtime/botd/lib/rules.js";
 
 const HOUR = 60 * 60 * 1000;
 
@@ -409,5 +413,270 @@ describe("botd hygiene: cache cleanup by mtime", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+// myrmidon(OPE-12110): byte quotas for `hermes/.npm/_npx` and the per-bot cargo
+// target dir. Fixtures use real files and utimes, no mocks of the filesystem.
+const MINUTE = 60 * 1000;
+const KIB = 1024;
+const MIB = 1024 * KIB;
+const GIB = 1024 * MIB;
+
+/** `<root>/<name>/blob` of `bytes` bytes; the file and its directory get mtime = now - ageMs. */
+function makeEntry(root, name, bytes, ageMs, now) {
+  const dir = path.join(root, name);
+  fs.mkdirSync(dir, { recursive: true });
+  const blob = path.join(dir, "blob");
+  fs.writeFileSync(blob, Buffer.alloc(bytes, 1));
+  const when = new Date(now - ageMs);
+  fs.utimesSync(blob, when, when);
+  fs.utimesSync(dir, when, when);
+  return dir;
+}
+
+describe("botd hygiene: _npx age and quota (OPE-12110)", () => {
+  it("ships the documented defaults: 24 h age, 512 MiB _npx quota, 2 GiB cargo quota", () => {
+    assert.equal(HYGIENE_DEFAULTS.npxTtlHours, 24);
+    assert.equal(HYGIENE_DEFAULTS.npmNpxQuotaBytes, 512 * MIB);
+    assert.equal(HYGIENE_DEFAULTS.cargoTargetQuotaBytes, 2 * GIB);
+    assert.equal(RULE_DEFAULTS.npmNpxQuotaBytes, HYGIENE_DEFAULTS.npmNpxQuotaBytes);
+    assert.equal(RULE_DEFAULTS.cargoTargetQuotaBytes, HYGIENE_DEFAULTS.cargoTargetQuotaBytes);
+  });
+
+  it("evicts _npx entries older than 24 h and keeps younger ones (cleanCaches defaults)", async () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const npx = path.join(tmp, ".npm", "_npx");
+      const stale = makeEntry(npx, "stale", 100, 25 * HOUR, now);
+      const young = makeEntry(npx, "young", 100, 23 * HOUR, now);
+      const lines = [];
+      const result = await cleanCaches({ hermesHome: tmp, now, openPaths: new Set(), log: (l) => lines.push(l) });
+      assert.equal(fs.existsSync(stale), false);
+      assert.equal(fs.existsSync(young), true);
+      assert.equal(result.targets["npm-npx"].cleanedFiles, 1);
+      assert.equal(result.targets["npm-npx"].quotaEvicted, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("over the quota evicts the oldest entries first, by mtime, until the total fits", async () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const npx = path.join(tmp, ".npm", "_npx");
+      // all younger than the 24 h age rule and older than the fresh-grace window
+      const oldest = makeEntry(npx, "h-oldest", 200 * KIB, 10 * HOUR, now);
+      const middle = makeEntry(npx, "h-middle", 200 * KIB, 5 * HOUR, now);
+      const newest = makeEntry(npx, "h-newest", 200 * KIB, 1 * HOUR, now);
+      // LRU is by mtime: a fresh atime on the oldest entry does not save it
+      const touched = new Date(now);
+      fs.utimesSync(path.join(oldest, "blob"), touched, new Date(now - 10 * HOUR));
+
+      const lines = [];
+      const result = await cleanCaches({
+        hermesHome: tmp,
+        now,
+        openPaths: new Set(),
+        limits: { npmNpxQuotaBytes: 450 * KIB },
+        log: (l) => lines.push(l),
+      });
+      assert.equal(fs.existsSync(oldest), false, "the oldest entry goes first");
+      assert.equal(fs.existsSync(middle), true);
+      assert.equal(fs.existsSync(newest), true);
+      const r = result.targets["npm-npx"];
+      assert.equal(r.quotaEvicted, 1);
+      assert.equal(r.keptBytes, 400 * KIB);
+      assert.ok(lines.some((l) => /npx quota 460800 bytes exceeded, evicted 1 entries/.test(l)), lines.join("\n"));
+
+      // a tighter quota takes the next oldest too, and stops as soon as the total fits
+      const again = cleanEntryCache(npx, 24 * HOUR, now, new Set(), 250 * KIB, 15 * MINUTE);
+      assert.equal(fs.existsSync(middle), false);
+      assert.equal(fs.existsSync(newest), true);
+      assert.equal(again.quotaEvicted, 1);
+      assert.equal(again.keptBytes, 200 * KIB);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("the quota spares an entry a process holds open and one written inside the fresh-grace window", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const npx = path.join(tmp, "_npx");
+      const heldDir = makeEntry(npx, "held", 300 * KIB, 8 * HOUR, now);
+      const writing = makeEntry(npx, "writing", 300 * KIB, 2 * MINUTE, now);
+      const idle = makeEntry(npx, "idle", 300 * KIB, 4 * HOUR, now);
+      const open = new Set([path.join(heldDir, "blob")]);
+      const result = cleanEntryCache(npx, 24 * HOUR, now, open, 100 * KIB, 15 * MINUTE);
+      assert.equal(fs.existsSync(heldDir), true, "open entry stays");
+      assert.equal(fs.existsSync(writing), true, "entry written 2 minutes ago stays");
+      assert.equal(fs.existsSync(idle), false, "the idle entry is the only one evictable");
+      assert.equal(result.quotaEvicted, 1);
+      assert.equal(result.quotaSkippedFresh, 1);
+      assert.equal(result.keptBytes, 600 * KIB, "kept bytes still count what could not be evicted");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("without a quota nothing is evicted for size, only for age", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const npx = path.join(tmp, "_npx");
+      makeEntry(npx, "a", 300 * KIB, 3 * HOUR, now);
+      makeEntry(npx, "b", 300 * KIB, 2 * HOUR, now);
+      const result = cleanEntryCache(npx, 24 * HOUR, now, new Set());
+      assert.equal(fs.readdirSync(npx).length, 2);
+      assert.equal(result.quotaEvicted, 0);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("botd hygiene: cargo target quota (OPE-12110)", () => {
+  it("over the quota evicts whole profile dirs, oldest mtime first, until the total fits", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const target = cargoTargetDir(tmp);
+      const triple = makeEntry(target, "x86_64-unknown-linux-gnu", 300 * KIB, 9 * HOUR, now);
+      const debug = makeEntry(target, "debug", 300 * KIB, 5 * HOUR, now);
+      const release = makeEntry(target, "release", 300 * KIB, 1 * HOUR, now);
+      fs.writeFileSync(path.join(target, "CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n");
+
+      const first = cleanCargoTarget(target, { nowMs: now, quotaBytes: 700 * KIB, openPaths: new Set(), freshGraceMs: 15 * MINUTE, root: tmp });
+      assert.equal(fs.existsSync(triple), false, "the oldest profile dir goes first");
+      assert.equal(fs.existsSync(debug), true);
+      assert.equal(fs.existsSync(release), true);
+      assert.equal(first.quotaEvicted, 1);
+      assert.equal(first.keptBytes, 600 * KIB);
+      assert.equal(first.cleanedBytes, 300 * KIB);
+
+      const second = cleanCargoTarget(target, { nowMs: now, quotaBytes: 400 * KIB, openPaths: new Set(), freshGraceMs: 15 * MINUTE, root: tmp });
+      assert.equal(fs.existsSync(debug), false);
+      assert.equal(fs.existsSync(release), true, "the newest survives");
+      assert.equal(second.quotaEvicted, 1);
+      assert.equal(second.keptBytes, 300 * KIB);
+      assert.equal(fs.existsSync(path.join(target, "CACHEDIR.TAG")), true, "top-level files are not evictable units");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("under the quota, or with an open or just-written profile dir, nothing needed is removed", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const target = cargoTargetDir(tmp);
+      const debug = makeEntry(target, "debug", 300 * KIB, 5 * HOUR, now);
+      const release = makeEntry(target, "release", 300 * KIB, 3 * MINUTE, now);
+      const under = cleanCargoTarget(target, { nowMs: now, quotaBytes: 1 * MIB, openPaths: new Set(), freshGraceMs: 15 * MINUTE, root: tmp });
+      assert.equal(under.quotaEvicted, 0);
+      assert.equal(fs.existsSync(debug) && fs.existsSync(release), true);
+
+      // over the quota: the build in flight (debug holds an open fd, release was written 3 minutes ago) stays
+      const busy = cleanCargoTarget(target, {
+        nowMs: now,
+        quotaBytes: 100 * KIB,
+        openPaths: new Set([path.join(debug, "blob")]),
+        freshGraceMs: 15 * MINUTE,
+        root: tmp,
+      });
+      assert.equal(busy.quotaEvicted, 0);
+      assert.equal(busy.skippedOpen, 1);
+      assert.equal(busy.quotaSkippedFresh, 1);
+      assert.equal(fs.existsSync(debug) && fs.existsSync(release), true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("a bot without a cargo target dir is a no-op and the dir is not created", async () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const result = await cleanCaches({ hermesHome: tmp, now: Date.now(), openPaths: new Set() });
+      assert.equal(fs.existsSync(cargoTargetDir(tmp)), false);
+      assert.equal(fs.existsSync(path.join(tmp, ".cache")), false);
+      assert.equal(result.targets["cargo-target"].quotaEvicted, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("cleanCaches applies cargoTargetQuotaBytes from limits and journals the eviction", async () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const target = cargoTargetDir(tmp);
+      const old = makeEntry(target, "debug", 300 * KIB, 6 * HOUR, now);
+      const recent = makeEntry(target, "release", 300 * KIB, 2 * HOUR, now);
+      const lines = [];
+      const result = await cleanCaches({
+        hermesHome: tmp,
+        now,
+        openPaths: new Set(),
+        limits: { cargoTargetQuotaBytes: 400 * KIB },
+        log: (l) => lines.push(l),
+      });
+      assert.equal(fs.existsSync(old), false);
+      assert.equal(fs.existsSync(recent), true);
+      assert.equal(result.targets["cargo-target"].quotaEvicted, 1);
+      assert.equal(result.cleanedBytes, 300 * KIB);
+      assert.ok(lines.some((l) => /cargo target quota 409600 bytes exceeded, evicted 1 entries/.test(l)), lines.join("\n"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("never deletes through a cargo target dir that is a symlink out of HERMES_HOME", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const home = path.join(tmp, "home");
+      const elsewhere = path.join(tmp, "elsewhere");
+      const victim = makeEntry(elsewhere, "debug", 300 * KIB, 9 * HOUR, now);
+      fs.mkdirSync(path.join(home, ".cache"), { recursive: true });
+      fs.symlinkSync(elsewhere, cargoTargetDir(home));
+      const result = cleanCargoTarget(cargoTargetDir(home), { nowMs: now, quotaBytes: 1 * KIB, openPaths: new Set(), freshGraceMs: 0, root: home });
+      assert.equal(result.refused, "outside-home");
+      assert.equal(fs.existsSync(victim), true);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("botd hygiene: CARGO_TARGET_DIR points outside the working trees (OPE-12110)", () => {
+  const dockerfile = fs.readFileSync(new URL("../../../docker/bot-runtime/Dockerfile", import.meta.url), "utf8");
+  const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+  const envValue = /^\s*CARGO_TARGET_DIR=(\S+)/m.exec(runtimeStage)?.[1];
+
+  it("the runtime image sets CARGO_TARGET_DIR, so cargo never creates target/ in a checkout", () => {
+    assert.ok(envValue, "the runtime stage must set CARGO_TARGET_DIR");
+    assert.ok(path.isAbsolute(envValue));
+    for (const workTree of ["/workspace", "/scratch", "/workspace/OPE-12110", "/scratch/OPE-12110/repo"]) {
+      const rel = path.relative(workTree, envValue);
+      assert.ok(rel.startsWith(".."), `${envValue} must not be inside ${workTree}`);
+    }
+  });
+
+  it("is exactly the directory botd keeps under its quota, inside the bot's home", () => {
+    assert.equal(envValue, cargoTargetDir("/data/hermes"));
+    assert.equal(CARGO_TARGET_SUBPATH, path.join(".cache", "cargo-target"));
+  });
+
+  it("botd reads both quotas from the grace and from env, in the routine and the pressure pass", () => {
+    const botd = fs.readFileSync(new URL("../../../docker/bot-runtime/botd/botd", import.meta.url), "utf8");
+    for (const name of ["MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES", "MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES"]) {
+      assert.equal(botd.split(name).length - 1, 2, `${name} must feed both cleanCaches calls`);
+    }
+    assert.match(botd, /pick\(g\.npmNpxQuotaBytes,/);
+    assert.match(botd, /pick\(g\.cargoTargetQuotaBytes,/);
   });
 });
