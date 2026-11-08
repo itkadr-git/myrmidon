@@ -404,8 +404,15 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("in_review");
     // myrmidon(OPE-12176): a red head must not reach the reviewer: no wake, a
-    // CI-wait monitor with the failed-check reason instead.
-    expect(res.body.executionState?.currentParticipant).toBeUndefined();
+    // CI-wait monitor with the failed-check reason instead. The stage keeps its
+    // pending participant: the CI-wait monitor dispatches its recovery wake
+    // through `executionState.currentParticipant` (heartbeat.ts), so removing
+    // it here would leave the wait with no one to wake. The wake suppression is
+    // asserted by the zero rows below.
+    expect(res.body.executionState?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: reviewerAgentId,
+    });
     const wakes = await ctx.db
       .select()
       .from(agentWakeupRequests)
