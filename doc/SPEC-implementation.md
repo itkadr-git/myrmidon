@@ -276,7 +276,8 @@ Invariants:
 - while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
 - the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
 - task-card readiness gate: when an explicit client request creates an engineer-required issue directly in `todo`, or moves an existing engineer-required issue into `todo`, the server checks the task-card sections and acceptance claims before the write. In enforce mode it returns `422` with code `task_card_not_ready` and the violation list; the transaction does not change status. In warning mode the write proceeds and the violation is logged. Automatic transitions (including resolved-blocker returns), imports, and internal recovery calls do not opt into this client-transition gate.
-- engineer-required is derived from the existing `requiresEngineer(...)` predicate (engineer caste/label and other checkout-required execution paths); non-engineer issues are not checked.
+- engineer-required is derived from the existing `requiresEngineer(...)` predicate (engineer caste/label and other checkout-required execution paths); non-engineer issues are not checked. On issue create the gate reads only the explicit create-body signals (a pinned `casteKey: "engineer"` or a `needs-engineer` label): inferrable signals (the project's default caste, workspace preferences) do not gate the create, so ordinary non-engineer creates are never rejected because of a project default.
+- the `422` body carries the violation list at the top level (`violations`), next to the structured `details`; the request-only `taskCardGate` opt-in flag never appears in the response body or in the field-change receipt (`changes`).
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`

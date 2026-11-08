@@ -145,10 +145,10 @@ describeEmbeddedPostgres("task card readiness gate integration (TASK-CARD-READIN
     const res = await request(app)
       .post(`/api/companies/${companyId}/issues`)
       .send({
-        title: "Lead task",
+        title: "PM task",
         description: INCOMPLETE_CARD_DESCRIPTION,
         status: "todo",
-        casteKey: "lead",
+        casteKey: "pm",
       })
       .expect(201);
 
