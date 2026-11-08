@@ -335,4 +335,34 @@ describe("SERVER-ONBOARD logic", () => {
     expect(job.kind).toBe("recheck");
     expect(store.servers[0].onboardState).toBe("onboarding");
   });
+
+  it("throws 409 when claiming secrets twice", async () => {
+    const { mockStore, mockSecrets, mockGetServer } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-1", slug: "claim-twice", name: "Claim Twice", hostname: "192.0.2.6", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "pwd-1" }, createdBy: null });
+    const firstClaim = await service.claim("company-1", "valid-executor-token");
+    expect(firstClaim).not.toBeNull();
+    await expect(service.claim("company-1", "valid-executor-token")).rejects.toThrow(OnboardServiceError);
+  });
+
+  it("cleans up secrets if server/job creation fails", async () => {
+    const { mockStore, mockSecrets, mockGetServer, secretsStore } = createMocks();
+    mockStore.createServerAndJob = async () => { throw new Error("DB error"); };
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await expect(
+      service.addServer({
+        companyId: "company-1",
+        slug: "orphan-test",
+        name: "Orphan Test",
+        hostname: "192.0.2.10",
+        port: 22,
+        username: "root",
+        role: "generic",
+        keepPassword: false,
+        auth: { type: "password", password: "orphan-pwd" },
+        createdBy: null,
+      }),
+    ).rejects.toThrow("DB error");
+    expect(secretsStore["fleet/orphan-test/bootstrap-password"]).toBeUndefined();
+  });
 });
