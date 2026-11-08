@@ -663,6 +663,7 @@ run("production corpus adapters", () => {
     const fetchedAt = new Date().toISOString();
     const updated = await ports.store.updateDocument(companyId, daily.id, {
       lastFetchedAt: fetchedAt,
+      lastAttemptedAt: fetchedAt,
       sourceError: "boom",
       contentHash: "h3",
       byteSize: 77,

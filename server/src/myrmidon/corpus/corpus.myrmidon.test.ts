@@ -2157,6 +2157,9 @@ describe("corpus API: documents by address, refreshed on a schedule", () => {
       }
       await addByUrl(app, { url: "https://docs.example.com/healthy", refreshIntervalHours: 24 });
 
+      // Finish initial ingestion before turning the failing URLs into 404s.
+      await h.worker.sweep();
+
       // After initial ingestion, 51 pages now start returning 404.
       for (let i = 0; i < 51; i++) {
         web.pages[`https://docs.example.com/fail/${i}`] = { status: 404 };
