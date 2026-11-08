@@ -402,6 +402,11 @@ export function createBotProfileCompile(
     // settings; until they do, this filter keeps its bots from the 401 flood.
     const staticMcpServersWithoutMedia = staticMcpServers.filter((server) => server.name !== MEDIA_MCP_SERVER_NAME);
 
+    // myrmidon(1.6.6 REMOTE-SITES-T4): ensure the card key BEFORE the parallel block.
+    // listMcpServers ensures it too (the corpus MCP token is the bot's own key), and on a
+    // new bot's first apply the two concurrent get-or-create calls both created the secret:
+    // "Secret already exists: …-paperclip-api-key", apply failed, a retry passed.
+    const ensuredPaperclipApiKey = await ports.ensureAgentApiKey(agent);
     const [cardEnv, skills, instructions, apiServerKey, paperclipApiKey, gatewayResult, instanceDefaults, parallelHelpersSettings, botLspSettings] =
       await Promise.all([
         ports.resolveCardEnv(agent),
@@ -410,7 +415,7 @@ export function createBotProfileCompile(
         ports.loadSkills(agent, cache),
         ports.loadInstructions(agent),
         ports.ensureApiServerKey(agent),
-        ports.ensureAgentApiKey(agent),
+        Promise.resolve(ensuredPaperclipApiKey),
         ports.listMcpServers
           ? // siteBoardUrl is non-null here: assertBotProfileSettings threw otherwise.
             ports.listMcpServers(agent, { boardUrl: siteBoardUrl, enabled: boardGatewayEnabled })
