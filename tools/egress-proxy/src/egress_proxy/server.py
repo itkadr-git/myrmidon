@@ -65,6 +65,13 @@ REFUSAL_FEED_LIMIT = 200
 #: project page key on it.
 BLOCKED_RESULT = "blocked"
 
+#: The `result` a CONNECT that hit the per-client tunnel cap is recorded with.
+TUNNEL_CAP_RESULT = "error:tunnel_cap"
+
+#: The HTTP status a capped CONNECT is answered with: the client should back off
+#: and retry, not treat the destination as unreachable.
+TUNNEL_CAP_STATUS = 429
+
 
 class _Tunnel:
     """Copies bytes both ways between the client socket and the upstream one.
@@ -158,6 +165,56 @@ class _Tunnel:
                 pass
 
 
+class _TunnelCap:
+    """Per-proxy-user count of open CONNECT tunnels.
+
+    `acquire` returns True when the client is under the cap (or the cap is 0,
+    meaning unlimited) and the count was incremented; False when the cap is
+    reached. `release` decrements. Reserved destinations bypass the check but
+    still count toward it, so a reserved slot is always available even when
+    the client is at the cap.
+    """
+
+    def __init__(self, max_per_client: int, reserve_destinations: tuple[str, ...] = ()) -> None:
+        self._max = max_per_client
+        self._reserve = frozenset(reserve_destinations)
+        self._counts: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def _is_reserved(self, host: str, port: int) -> bool:
+        return f"{host.lower()}:{port}" in self._reserve
+
+    def acquire(self, client: str, host: str, port: int) -> bool:
+        """Try to open one tunnel for `client` to `host:port`.
+
+        Reserved destinations always acquire (but still count). Non-reserved
+        destinations acquire only when the client is under the cap. A client
+        with no entry starts at 0.
+        """
+        if self._max <= 0 and not self._reserve:
+            return True
+        reserved = self._is_reserved(host, port)
+        with self._lock:
+            count = self._counts.get(client, 0)
+            if not reserved and self._max > 0 and count >= self._max:
+                return False
+            self._counts[client] = count + 1
+            return True
+
+    def release(self, client: str) -> None:
+        with self._lock:
+            count = self._counts.get(client, 0)
+            if count <= 1:
+                self._counts.pop(client, None)
+            else:
+                self._counts[client] = count - 1
+
+    def snapshot(self) -> dict[str, int]:
+        """A copy of the current counts, for the health endpoint."""
+        with self._lock:
+            return dict(self._counts)
+
+
 class EgressProxyHandler(BaseHTTPRequestHandler):
     """Serves one connection. `server` is an `EgressProxyServer`."""
 
@@ -226,9 +283,17 @@ class EgressProxyHandler(BaseHTTPRequestHandler):
             self._journal(bot=bot, method="CONNECT", host=host, port=port, scheme="https", result=BLOCKED_RESULT)
             self.send_error(403, "destination is not on this project's egress list")
             return
+        if not self.proxy.tunnel_cap.acquire(bot, host, port):
+            # Per-client cap reached. 429 (not 502/503) tells the client the
+            # destination is fine but it must back off; the journal records
+            # the cap hit so the operator sees who is exhausting the proxy.
+            self._journal(bot=bot, method="CONNECT", host=host, port=port, scheme="https", result=TUNNEL_CAP_RESULT)
+            self.send_error(TUNNEL_CAP_STATUS, "per-client tunnel limit reached; retry later")
+            return
         try:
             upstream = socket.create_connection((host, port), self.proxy.config.connect_timeout_sec)
         except OSError as exc:
+            self.proxy.tunnel_cap.release(bot)
             self._journal(bot=bot, method="CONNECT", host=host, port=port, scheme="https", result=f"error:{exc.errno or 0}")
             self.send_error(502, "cannot reach the destination")
             return
@@ -236,7 +301,10 @@ class EgressProxyHandler(BaseHTTPRequestHandler):
         self.send_response(200, "Connection Established")
         self.end_headers()
         self.close_connection = True
-        _Tunnel(self.connection, upstream, idle_sec=self.proxy.config.tunnel_idle_sec).run()
+        try:
+            _Tunnel(self.connection, upstream, idle_sec=self.proxy.config.tunnel_idle_sec).run()
+        finally:
+            self.proxy.tunnel_cap.release(bot)
 
     # -- plain HTTP -------------------------------------------------------
 
@@ -322,6 +390,8 @@ class EgressProxyHandler(BaseHTTPRequestHandler):
                     "projects": len(self.proxy.policy.projects),
                     "policy_revision": self.proxy.policy_revision,
                     "policy_error": self.proxy.policy_error,
+                    "max_tunnels_per_client": self.proxy.config.max_tunnels_per_client,
+                    "open_tunnels": self.proxy.tunnel_cap.snapshot(),
                 },
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -411,6 +481,7 @@ class EgressProxyServer(ThreadingHTTPServer):
         self.journal = journal if journal is not None else DestinationJournal(bots=config.bots)
         self.refresher = refresher
         self._policy = policy if policy is not None else EgressPolicy()
+        self.tunnel_cap = _TunnelCap(config.max_tunnels_per_client, config.tunnel_reserve_destinations)
         self._refusals: deque[dict[str, Any]] = deque(maxlen=REFUSAL_FEED_LIMIT)
         self._refusals_lock = threading.Lock()
 
@@ -484,7 +555,9 @@ def serve(config: Config) -> None:
         f"egress-proxy: mode={config.mode} listening on {config.bind}:{server.port} "
         f"bots_in_map={len(config.bots)} projects={len(policy.projects)} "
         f"policy_url={config.policy_url or '-'} policy_file={config.policy_file or '-'} "
-        f"tunnel_idle_sec={'-' if config.tunnel_idle_sec is None else format(config.tunnel_idle_sec, 'g')}"
+        f"tunnel_idle_sec={'-' if config.tunnel_idle_sec is None else format(config.tunnel_idle_sec, 'g')} "
+        f"max_tunnels_per_client={config.max_tunnels_per_client or 'unlimited'} "
+        f"tunnel_reserve_destinations={len(config.tunnel_reserve_destinations)}"
         + (
             " (log-only: every destination is recorded, none is refused)"
             if config.mode == "log"
