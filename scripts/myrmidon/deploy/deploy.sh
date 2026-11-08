@@ -177,6 +177,7 @@ if ((urgent)); then
   log "URGENT deploy (OPE-10414): $urgent_reason"
 fi
 load_config "$config"
+acquire_deploy_lock "$MYRMIDON_DEPLOY_LOCK_FILE" "$MYRMIDON_DEPLOY_LOCK_WAIT_SEC" "${DRY_RUN:-0}" "$STATE_DIR"
 if ((urgent)); then
   # Urgent mode has a fixed, short drain. A deploy.env value must not silently
   # turn a critical deploy back into a long wait.

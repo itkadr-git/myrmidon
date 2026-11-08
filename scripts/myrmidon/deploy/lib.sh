@@ -27,6 +27,12 @@ log_script_version() {
   printf 'deploy scripts at %s\n' "${describe:-unknown}" >&2
 }
 
+script_version_string() {
+  local clone
+  clone="$(git -C "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || clone=""
+  GIT_CONFIG_NOSYSTEM=1 git -C "${clone:-$MYR_SCRIPT_DIR}" describe --tags --always 2>/dev/null || echo "unknown"
+}
+
 # Runs a command, or prints it in dry-run mode.
 run() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -451,6 +457,8 @@ load_config() {
   : "${RUNS_WAIT_TIMEOUT_SEC:=1800}"
   : "${ALLOW_UNKNOWN_RUNS:=0}"
   : "${POLL_INTERVAL_SEC:=5}"
+  : "${MYRMIDON_DEPLOY_LOCK_FILE:=}"
+  : "${MYRMIDON_DEPLOY_LOCK_WAIT_SEC:=0}"
   # PREDEPLOY-DB-CHECK (the 05.10 incident): before the maintenance window the
   # new board image must come up on a COPY of the production database (the
   # predeploy dump) with the new dockergate, on its own network, and answer the
@@ -2214,4 +2222,62 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
     done <<<"$entries"
   done
   log "image retention: $removed image(s) removed, $skipped in use and kept, $fresh newer than the running release kept (keep $keep previous release(s) per repository)"
+}
+
+# Acquire exclusive deploy lock. Usage: acquire_deploy_lock
+acquire_deploy_lock() {
+  local lock_file="$1"
+  local wait_sec="$2"
+  local dry_run="$3"
+  local state_dir="$4"
+
+  if [[ -z "$lock_file" ]]; then
+    if [[ -n "$state_dir" ]]; then
+      lock_file="$state_dir/executor.lock"
+    else
+      lock_file="/var/lib/myrmidon/deploy/executor.lock"
+    fi
+  fi
+
+  mkdir -p "$(dirname "$lock_file")"
+  touch "$lock_file" || true
+
+  if [[ "$dry_run" == "1" ]]; then
+    if ! ( exec 200>"$lock_file"; flock -n 200 ); then
+      printf '[myrmidon-deploy] WARNING: another deploy is currently running (lock file %s is locked)\n' "$lock_file" >&2
+    fi
+    return 0
+  fi
+
+  exec 200>"$lock_file"
+
+  if (( wait_sec > 0 )); then
+    log "waiting up to ${wait_sec}s for deploy lock (${lock_file})..."
+    if ! flock -w "$wait_sec" 200; then
+      local holder_pid=""
+      local holder_started=""
+      local holder_version=""
+      if [[ -s "$lock_file" ]]; then
+        read -r holder_pid holder_started holder_version < "$lock_file" 2>/dev/null || true
+      fi
+      printf '[myrmidon-deploy] ERROR: deploy lock %s is held by another process (PID: %s, started: %s, version: %s) after waiting %ss\n' \
+        "$lock_file" "${holder_pid:-unknown}" "${holder_started:-unknown}" "${holder_version:-unknown}" "$wait_sec" >&2
+      exit 42
+    fi
+  else
+    if ! flock -n 200; then
+      local holder_pid=""
+      local holder_started=""
+      local holder_version=""
+      if [[ -s "$lock_file" ]]; then
+        read -r holder_pid holder_started holder_version < "$lock_file" 2>/dev/null || true
+      fi
+      printf '[myrmidon-deploy] ERROR: another deploy is already running (lock file %s is locked by PID: %s, started: %s, version: %s)\n' \
+        "$lock_file" "${holder_pid:-unknown}" "${holder_started:-unknown}" "${holder_version:-unknown}" >&2
+      exit 42
+    fi
+  fi
+
+  printf '%s %s %s\n' "$$" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$(script_version_string)" > "$lock_file"
+  trap 'rm -f "$lock_file"' EXIT INT TERM
 }
