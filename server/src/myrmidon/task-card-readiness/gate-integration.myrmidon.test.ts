@@ -69,6 +69,7 @@ describeEmbeddedPostgres("task card readiness gate integration (TASK-CARD-READIN
   });
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(issueLabels);
     await db.delete(labels);
     await db.delete(issues);
