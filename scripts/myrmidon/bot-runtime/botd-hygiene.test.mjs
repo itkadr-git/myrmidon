@@ -410,4 +410,69 @@ describe("botd hygiene: cache cleanup by mtime", () => {
       cleanup();
     }
   });
+
+  it("cleanEntryCache enforces quotaBytes on fresh entries by LRU access time and tracks quotaEvicted", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const root = path.join(tmp, "_npx");
+      const entry1 = path.join(root, "entry-old");
+      const entry2 = path.join(root, "entry-new");
+      const f1 = path.join(entry1, "file.js");
+      const f2 = path.join(entry2, "file.js");
+
+      fs.mkdirSync(path.dirname(f1), { recursive: true });
+      fs.mkdirSync(path.dirname(f2), { recursive: true });
+      fs.writeFileSync(f1, "a".repeat(300));
+      fs.writeFileSync(f2, "b".repeat(300));
+
+      const old1 = new Date(now - 10 * HOUR);
+      const old2 = new Date(now - 2 * HOUR);
+      fs.utimesSync(f1, old1, old1);
+      fs.utimesSync(entry1, old1, old1);
+      fs.utimesSync(f2, old2, old2);
+      fs.utimesSync(entry2, old2, old2);
+
+      const result = cleanEntryCache(root, 48 * HOUR, now, new Set(), 400);
+
+      assert.equal(result.quotaEvicted, 1);
+      assert.equal(fs.existsSync(entry1), false, "older accessed entry evicted by quota");
+      assert.equal(fs.existsSync(entry2), true, "newer accessed entry kept");
+      assert.ok(result.keptBytes <= 400);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("cleanEntryCache skips open entries during quota eviction", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const root = path.join(tmp, "_npx");
+      const entry1 = path.join(root, "entry-open-old");
+      const entry2 = path.join(root, "entry-closed-newer");
+      const f1 = path.join(entry1, "file.js");
+      const f2 = path.join(entry2, "file.js");
+
+      fs.mkdirSync(path.dirname(f1), { recursive: true });
+      fs.mkdirSync(path.dirname(f2), { recursive: true });
+      fs.writeFileSync(f1, "a".repeat(300));
+      fs.writeFileSync(f2, "b".repeat(300));
+
+      const fresh = new Date(now - 1 * HOUR);
+      fs.utimesSync(f1, fresh, fresh);
+      fs.utimesSync(f2, fresh, fresh);
+      fs.utimesSync(entry1, fresh, new Date(now - 20 * HOUR));
+      fs.utimesSync(entry2, fresh, new Date(now - 5 * HOUR));
+
+      const openPaths = new Set([f1]);
+      const result = cleanEntryCache(root, 48 * HOUR, now, openPaths, 400);
+
+      assert.equal(fs.existsSync(entry1), true, "open entry survives quota eviction");
+      assert.equal(fs.existsSync(entry2), false, "closed entry evicted instead");
+      assert.equal(result.skippedOpen, 1);
+    } finally {
+      cleanup();
+    }
+  });
 });
