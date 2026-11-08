@@ -306,13 +306,63 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   }
 }
 
+/**
+ * Validates the OpenAI-compatible gateway address that goes into the isolated
+ * Codex `config.toml`. Returns null when no address is configured (unset or
+ * blank), so the config keeps its previous shape. Any other value must be an
+ * absolute http(s) URL without whitespace, quotes, backslashes or control
+ * characters; the error never repeats the value because gateway addresses can
+ * carry credentials.
+ */
+export function normalizeCodexOpenAiBaseUrl(
+  value: string | null | undefined,
+): string | null {
+  const url = value?.trim();
+  if (!url) return null;
+  const invalid = () =>
+    new Error(
+      "OPENAI_BASE_URL must be an http:// or https:// URL without whitespace or quotes",
+    );
+  // Lone surrogates cannot be written to TOML, and C0/C1 controls would need
+  // escapes. Reject them instead of escaping so the value is stored verbatim.
+  if (
+    /[\s"'`\\]/u.test(url)
+    || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(url)
+  ) {
+    throw invalid();
+  }
+  // `new URL` alone accepts "https:///host" and "http:/host" for special schemes.
+  if (!/^https?:\/\/[^/?#]/iu.test(url)) throw invalid();
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw invalid();
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+    || !parsed.hostname
+  ) {
+    throw invalid();
+  }
+  return url;
+}
+
 export async function prepareIsolatedCodexHome(input: {
   context: NativeRuntimeContextSnapshot | null;
   codexHome: string;
   sourceCodexHome?: string | null;
   nativeMcp?: NativeMcpLaunchBinding | null;
   apiKey?: string | null;
+  /**
+   * `OPENAI_BASE_URL` from the agent environment. Codex 0.157 ignores that
+   * variable, so a gateway address only takes effect as the `openai_base_url`
+   * config key; without it a gateway API key is sent to api.openai.com.
+   */
+  openaiBaseUrl?: string | null;
 }): Promise<void> {
+  // Validate before any filesystem work so a bad address leaves the home as it was.
+  const openaiBaseUrl = normalizeCodexOpenAiBaseUrl(input.openaiBaseUrl);
   await materializeNativeRuntimeSkills(
     input.context,
     join(input.codexHome, "skills"),
@@ -321,6 +371,11 @@ export async function prepareIsolatedCodexHome(input: {
   const configPath = join(input.codexHome, "config.toml");
   await rm(configPath, { force: true });
   await writeFile(configPath, [
+    // A root-level key must precede the first table header, otherwise TOML
+    // would assign it to the table above it.
+    ...(openaiBaseUrl
+      ? [`openai_base_url = ${JSON.stringify(openaiBaseUrl)}`, ""]
+      : []),
     // Codex shell snapshots serialize the provider process environment. The
     // native runner injects short-lived provider and MCP bindings, so a
     // snapshot would turn ephemeral credentials into durable session state.
