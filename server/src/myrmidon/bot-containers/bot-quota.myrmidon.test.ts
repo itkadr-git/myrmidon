@@ -376,6 +376,31 @@ describe("myrmidon(BOT-DISK-H9c) sweep with dockergate", () => {
     ]);
   });
 
+  // myrmidon(1.6.7 FLEET-SITE-ENROLL): a bot placed on a remote site is not under the local dockergate
+  // (bot_not_enrolled) and its volume is not under the board's volume root.
+  it("a bot placed on a remote site gets no quota put, no measurement and no signal; a local one still does", async () => {
+    const remoteId = randomUUID();
+    const remoteCard = (host: unknown) => ({
+      container: { enabled: true, image: "bot:1", memoryMb: 512, cpus: 1, pidsLimit: 100, diskQuotaMb: 2000, host },
+    });
+    const local = row(card(2000));
+    const remote = { ...row(remoteCard("site-a")), id: remoteId, name: "Remote Bot" };
+    const unreadable = { ...row(remoteCard("Not A Host")), id: randomUUID(), name: "Odd Bot" };
+    const { gate, puts } = fakeGate({ disk: disk({ hardBytes: 1000 * MBYTES }) });
+    const sweep = createBotDiskQuotaSweep({
+      db: fakeDb([remote, unreadable, local]),
+      resolveSettings: settings(1),
+      env: {},
+      gate,
+      remeasureIntervalMs: 0,
+    });
+    const result = await sweep.sweep();
+    expect(result.scanned).toBe(3);
+    expect(result.quotaPut).toBe(1);
+    expect(puts).toEqual([{ botKey: agentId, bytes: 2000 * MBYTES }]);
+    expect(readBotDiskQuotaSignals(companyId).map((signal) => signal.agentId)).not.toContain(remoteId);
+  });
+
   it("a quota already in force on the partition is not put at all", async () => {
     const { gate, puts } = fakeGate({ disk: disk({ hardBytes: 1000 * MBYTES }) });
     const sweep = createBotDiskQuotaSweep({
