@@ -25,7 +25,6 @@ import {
 import {
   finalizeRoom,
   openRoom,
-  runNextRound,
   type AgentExchangeEngineDeps,
   type AgentExchangeModelCallInput,
   type AgentExchangeModelCallResult,
@@ -153,7 +152,8 @@ function inMemoryStore(): AgentExchangeStore & { rooms: AgentExchangeRoom[]; mes
     messages,
     async insertRoom(record) {
       const room: AgentExchangeRoom = {
-        id: nextId(),\n        companyId: record.companyId,
+        id: nextId(),
+        companyId: record.companyId,
         issueId: record.issueId,
         status: record.status,
         openerType: record.openerType,
@@ -267,7 +267,7 @@ describe("agent-exchange room-runner acceptance criteria (OPE-12079)", () => {
       { agentId: null, label: "Participant-C", providerId: "prov-2", model: "model-c" },
     ];
 
-    const room = await openRoom(deps, {
+    const _room = await openRoom(deps, {
       companyId: "company-1",
       issueId: "issue-1",
       openerType: "agent",
