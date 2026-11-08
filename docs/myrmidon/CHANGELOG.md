@@ -12,6 +12,16 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### MODEL-PROVIDERS-POOLS-WEB: model channels, the ChatGPT and Antigravity pools, the fallback order and the agent key lists work from the board web UI
+
+- The "Model providers" screen called `/model-providers/providers/...`, a path the server never had, so every call answered 404 (the list, the model list, the channels, the key rotation and the removal). The client now calls the paths the server mounts: `/model-providers` and `/model-providers/:id/...`. The change log of the screen no longer adds a second `/api` prefix, and the LiteLLM channel rows of both server spellings fill the same table columns.
+- The `antigravity-pool` and `google-ai-pool` provider types are registered when the plugins `myrmidon.antigravity` and `myrmidon.google-ai` are ready, as `chatgpt-pool` is. Both support channels. `antigravity-pool` brings the four model groups `antigravity/gemini-3.8-flash-high`, `antigravity/gemini-3.8-flash-medium`, `antigravity/gemini-3.8-flash-low` and `antigravity/gemini-3.5-flash-lite`; the model id is the LiteLLM group name. `google-ai-pool` has no default models. A connector that declares no models no longer gets the ChatGPT models. The pool service address has no default for these two types: enter it in the base URL field.
+- A pool lives on its own LiteLLM deployments. For `chatgpt-pool`, `antigravity-pool` and `google-ai-pool` the board sends no `/model/new`, `/model/update` or `/model/delete` when a model is enabled or disabled, when the key is rotated, when the provider is removed, or at the startup reconciliation. The board still shows or hides the pool models, and the fallback order (`GET` and `PUT .../litellm/fallbacks`) and the agent key lists stay board settings. The LiteLLM provider prefix of the pool types is now `openai`.
+- Removing a provider that is not a pool deletes only its own gateway deployments, found by deployment id and by the provider's own `api_base`. Before this change a removal deleted every database deployment of each removed model group, which also removed the deployments of other providers and of the pool routers.
+- The agent key allowlist pass read no enabled model (the joined rows were keyed by the SQL table names), so it never changed a key. It reads the registry now. To keep it from rewriting the model lists of every restricted key on its own, the startup check and the provider-change hooks run it as a dry run: they count the keys that would change, log the model names that would be added or removed, and send nothing. Applying is an explicit owner or admin action: `POST /api/myrmidon/companies/:companyId/litellm/keys/allowlist-sync` answers the dry-run report, and `?apply=true` applies it.
+
+## 1.6.7
+
 ### Native runner: the gateway address now reaches Codex through its config file
 
 Codex 0.157 ignores the `OPENAI_BASE_URL` environment variable and reads the gateway address only
