@@ -92,7 +92,10 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
 
   const actorFor = (req: Request) => {
     const info = getActorInfo(req);
-    return { type: info.actorType, id: info.actorId };
+    // myrmidon(OPE-12361): the change log shows the author; carry the real
+    // user name/email so the UI renders a name instead of `user:<id>`.
+    const name = req.actor.userName ?? req.actor.userEmail ?? null;
+    return { type: info.actorType, id: info.actorId, name };
   };
 
   const parse = <T>(schema: ZodType<T>, body: unknown): T => {

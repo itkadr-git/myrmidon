@@ -364,6 +364,13 @@ export function getModelCost(modelName: string, catalog?: Map<string, KnownModel
   return Infinity;
 }
 
+/** Machine-readable reason codes for fallback order warnings (OPE-12361). */
+export type FallbackOrderIssue =
+  | "free_after_paid"
+  | "paid_same_provider"
+  | "paid_same_provider_repeat"
+  | "cheaper_after_expensive";
+
 /**
  * Validates that a fallback chain does not rely on a single provider ("не допускать единственного provider").
  * Across the primary model and all fallback targets, at least two distinct providers must be present
@@ -372,7 +379,7 @@ export function getModelCost(modelName: string, catalog?: Map<string, KnownModel
 export function validateFallbackDiversity(
   chain: FallbackChain,
   catalog?: Map<string, KnownModelInfo>,
-): { valid: boolean; error?: string; providers: string[] } {
+): { valid: boolean; error?: string; reason?: "single_provider"; providers: string[] } {
   if (chain.targets.length === 0) {
     return { valid: true, providers: [] };
   }
@@ -391,6 +398,7 @@ export function validateFallbackDiversity(
     return {
       valid: false,
       error: `Fallback chain for '${chain.model}' relies on a single provider (${single}). At least one fallback target must use a different provider for redundancy.`,
+      reason: "single_provider",
       providers: [...allProviders],
     };
   }
@@ -404,7 +412,7 @@ export function validateFallbackDiversity(
 export function validateFallbackOrder(
   chain: FallbackChain,
   catalog?: Map<string, KnownModelInfo>,
-): { valid: boolean; error?: string; warning?: string } {
+): { valid: boolean; error?: string; warning?: string; reason?: FallbackOrderIssue } {
   if (chain.targets.length === 0) {
     return { valid: true };
   }
@@ -423,6 +431,7 @@ export function validateFallbackOrder(
           valid: false,
           error: `Free channels must precede paid channels: free channel '${target}' appears after paid channels in chain for '${chain.model}'.`,
           warning: `Free channel '${target}' appears after paid channels in chain for '${chain.model}'. Free channels should come first.`,
+          reason: "free_after_paid",
         };
       }
     } else {
@@ -436,6 +445,7 @@ export function validateFallbackOrder(
           valid: false,
           error: `Paid fallback channel '${target}' uses the same provider (${targetProvider}) as primary model '${chain.model}'. Paid fallbacks must be on a different provider.`,
           warning: `Paid fallback channel '${target}' uses the same provider (${targetProvider}) as primary model '${chain.model}'.`,
+          reason: "paid_same_provider",
         };
       }
 
@@ -445,6 +455,7 @@ export function validateFallbackOrder(
           valid: false,
           error: `Subsequent paid fallback channel '${target}' uses the same provider (${targetProvider}) as an earlier paid fallback in chain for '${chain.model}'. Subsequent paid fallbacks must use a different provider.`,
           warning: `Subsequent paid fallback channel '${target}' uses the same provider (${targetProvider}) as an earlier paid fallback.`,
+          reason: "paid_same_provider_repeat",
         };
       }
       if (targetProvider !== "unknown") {
@@ -459,6 +470,7 @@ export function validateFallbackOrder(
             valid: false,
             error: `Cheaper channel '${target}' appears after more expensive channel in chain for '${chain.model}'. Cheaper channels must come first.`,
             warning: `Cheaper channel '${target}' appears after more expensive channel in chain for '${chain.model}'.`,
+            reason: "cheaper_after_expensive",
           };
         }
       }

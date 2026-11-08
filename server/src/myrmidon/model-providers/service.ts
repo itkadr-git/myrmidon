@@ -771,7 +771,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       case "not_logged_in":
         return "Не авторизован";
       case "ok":
-        return "Ok";
+        return "Работает";
       case "error":
         return "Ошибка";
       default:
@@ -1039,9 +1039,23 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
           .filter((value): value is number => typeof value === "number" && value > 0)
           .sort((a, b) => a - b)[0] ??
         null,
+      // OPE-12361: a reset date in the past is stale connector data (rotated
+      // cache); drop it instead of showing an outdated reset date.
       nextResetText:
         typeof poolResetRaw.resetText === "string" ? poolResetRaw.resetText : null,
     };
+
+    const nowEpoch = Math.floor(now().getTime() / 1000);
+    const staleToleranceSec = 3600; // an hour of clock skew is fine
+    if (summary.nextResetAt !== null && summary.nextResetAt + staleToleranceSec < nowEpoch) {
+      summary.nextResetAt = null;
+    }
+    if (summary.nextResetText) {
+      const parsed = Math.floor(new Date(summary.nextResetText).getTime() / 1000);
+      if (Number.isFinite(parsed) && parsed + staleToleranceSec < nowEpoch) {
+        summary.nextResetText = null;
+      }
+    }
 
     return {
       providerId: provider.id,

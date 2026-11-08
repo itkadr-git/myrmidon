@@ -32,6 +32,23 @@ import {
   type GatewayFallbackModelInfo,
 } from "./litellmKeysApi";
 
+/**
+ * myrmidon(OPE-12361): the shared validators return English copy for the
+ * board; render locale-keyed text by machine reason instead and keep the
+ * server message only as a fallback for unknown codes.
+ */
+function fallbackValidationText(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  kind: "diversity" | "order",
+  reason: string | undefined,
+  fallback: string,
+  params: Record<string, string>,
+): string {
+  const key = reason ? `modelProviders.fallbacks.warn.${kind}.${reason}` : "";
+  const localized = key ? t(key, params) : "";
+  return localized && !localized.includes("modelProviders.fallbacks.warn.") ? localized : fallback;
+}
+
 interface GatewayFallbacksEditorProps {
   companyId: string;
   initialChains: FallbackChain[];
@@ -344,14 +361,24 @@ export function GatewayFallbacksEditor({
               {!diversity.valid && (
                 <div className="flex items-center gap-1.5 text-xs text-destructive">
                   <AlertTriangle className="size-3.5 shrink-0" />
-                  <span>{diversity.error}</span>
+                  <span>
+                    {fallbackValidationText(t, "diversity", diversity.reason, diversity.error ?? "", {
+                      model: chain.model,
+                      provider: primaryInfo?.provider ?? "",
+                    })}
+                  </span>
                 </div>
               )}
 
               {!orderValidation.valid && (
                 <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
                   <AlertTriangle className="size-3.5 shrink-0" />
-                  <span>{orderValidation.warning}</span>
+                  <span>
+                    {fallbackValidationText(t, "order", orderValidation.reason, orderValidation.warning ?? orderValidation.error ?? "", {
+                      model: chain.model,
+                      provider: primaryInfo?.provider ?? "",
+                    })}
+                  </span>
                 </div>
               )}
 

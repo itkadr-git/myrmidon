@@ -1779,7 +1779,6 @@
     "colRule": "Rule",
     "colMode": "Mode",
     "colLevel": "Level",
-    "colAgent": "Agent",
     "colDecision": "Decision",
     "colSurface": "Surface",
     "colRun": "Run",
@@ -1819,17 +1818,24 @@
       "oauthComplete": "Complete Authorization",
       "oauthCompleting": "Completing...",
       "oauthRefresh": "Refresh",
+      "accountFallback": "Account #{{n}}",
+      "subscription": "Subscription",
       "summaryLive": "{{live}} live / {{total}} total",
       "summaryExhausted": "{{count}} exhausted",
       "summaryDisabled": "{{count}} disabled",
       "summaryError": "{{count}} in error",
-      "summaryNextReset": "next reset {{at}}",
-      "showDiff": "Show diff",
-      "hideDiff": "Hide diff"
+      "summaryNextReset": "next reset {{at}}"
     },
     "changeLog": {
       "secretsRedacted": "Secrets are redacted in log entries",
-      "actor": "Author"
+      "actor": "Author",
+      "showDiff": "Show diff",
+      "hideDiff": "Hide diff",
+      "after": "After",
+      "before": "Before",
+      "rollback": "Roll back",
+      "rollbackConfirm": "Roll back this entry?",
+      "rollingBack": "Rolling back..."
     },
     "fallbacks": {
       "sourceOfTruth": "Source of truth:",
@@ -1858,7 +1864,24 @@
       "newGroupPlaceholder": "New model group name (e.g. gpt-4o, zephyr-beta)...",
       "addGroup": "Add Model Group",
       "chainExists": "Chain for model group '{{model}}' already exists.",
-      "poolProviderNote": "Pool provider: {{provider}}"
+      "poolProviderNote": "Pool provider: {{provider}}",
+      "warn": {
+        "diversity": {
+          "single_provider": "Fallback chain for '{{model}}' relies on a single provider ({{provider}}). At least one fallback target must use a different provider for redundancy."
+        },
+        "order": {
+          "free_after_paid": "Free channel '{{target}}' appears after paid channels in chain for '{{model}}'. Free channels should come first.",
+          "paid_same_provider": "Paid fallback channel '{{target}}' uses the same provider ({{provider}}) as primary model '{{model}}'.",
+          "paid_same_provider_repeat": "Subsequent paid fallback channel '{{target}}' uses the same provider ({{provider}}) as an earlier paid fallback.",
+          "cheaper_after_expensive": "Cheaper channel '{{target}}' appears after more expensive channel in chain for '{{model}}'."
+        }
+      }
+    },
+    "signals": {
+      "bannedTitle": "Codex/ChatGPT account #{{n}} ({{label}}) banned / token expired",
+      "bannedWhy": "Account #{{n}} ({{label}}) token has expired or access was revoked. The account was taken out of rotation — relogin or replace credentials.",
+      "exhaustedTitle": "Codex/ChatGPT account #{{n}} ({{label}}) quota exhausted",
+      "exhaustedWhy": "Account #{{n}} ({{label}}) reached 100% quota and was removed from rotation until the window reset."
     }
   }
 }

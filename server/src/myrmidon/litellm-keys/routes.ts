@@ -85,6 +85,12 @@ function withPoolProviders<T extends { modelName: string; provider: string }>(
   });
 }
 
+/** Audit actor carrying the display name when the request has one (OPE-12361). */
+function auditActor(actor: ReturnType<typeof getActorInfo>, req: Request) {
+  const name = req.actor.userName ?? req.actor.userEmail ?? null;
+  return { type: actor.actorType, id: actor.actorId, name };
+}
+
 export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   const router = Router();
   const env = input.env ?? process.env;
@@ -142,7 +148,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const actor = getActorInfo(req);
     await auditService.record({
       companyId, category: "keys", action: "litellm_key_created", entityId: agentId,
-      actor: { type: actor.actorType, id: actor.actorId }, before: null,
+      actor: auditActor(actor, req), before: null,
       after: { agentId, allowedModels: created.view.models },
       summary: `Created gateway key for agent ${agentId}`, canRollback: false,
     });
@@ -166,7 +172,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       category: "keys",
       action: "litellm_key_rotated",
       entityId: agentId,
-      actor: { type: actor.actorType, id: actor.actorId },
+      actor: auditActor(actor, req),
       before: { rotated: false },
       after: { rotated: true, allowedModels: rotated.models },
       summary: `Rotated gateway key for agent ${agentId}`,
