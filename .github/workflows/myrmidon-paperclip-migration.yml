@@ -117,7 +117,13 @@ jobs:
       - name: Install PostgreSQL client tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client
+          sudo apt-get install -y -qq postgresql-client-16
+          # The ubuntu-26.04 runner image preinstalls client 18, and pg_wrapper
+          # dispatches to the newest major: pg_dump 18 writes `SET
+          # transaction_timeout` into plain dumps, which the postgres:16 service
+          # rejects mid-restore (psql exits 3, Node sees EPIPE). Prepend the
+          # pinned 16 binary dir so pg_dump/psql/pg_restore resolve to 16.
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
 
       - name: Migrate ${{ matrix.release }} with the production CLI and verify from the databases
         shell: bash
@@ -270,7 +276,13 @@ jobs:
       - name: Install PostgreSQL client tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client
+          sudo apt-get install -y -qq postgresql-client-16
+          # The ubuntu-26.04 runner image preinstalls client 18, and pg_wrapper
+          # dispatches to the newest major: pg_dump 18 writes `SET
+          # transaction_timeout` into plain dumps, which the postgres:16 service
+          # rejects mid-restore (psql exits 3, Node sees EPIPE). Prepend the
+          # pinned 16 binary dir so pg_dump/psql/pg_restore resolve to 16.
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
 
       - name: Prepare database and start official Paperclip 2026.1012.0 container
         shell: bash
