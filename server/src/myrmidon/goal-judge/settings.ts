@@ -136,7 +136,7 @@ export function goalJudgeSettingsService(
           readJournal(general[GOAL_JUDGE_JOURNAL_KEY]),
           entry,
         ),
-      });
+      } as any);
 
       await ports.logActivity?.({
         companyId: "",

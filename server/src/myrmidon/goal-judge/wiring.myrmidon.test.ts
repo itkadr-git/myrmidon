@@ -366,7 +366,7 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
       let storedGeneral: Record<string, unknown> = {};
       const service = goalJudgeSettingsService(null, {
         settings: {
-          getGeneral: async () => storedGeneral,
+          getGeneral: async () => storedGeneral as any,
           updateGeneral: async (patch) => {
             storedGeneral = { ...storedGeneral, ...patch };
             return storedGeneral as any;
@@ -436,7 +436,7 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
       let storedGeneral: Record<string, unknown> = {};
       const service = goalJudgeSettingsService(null, {
         settings: {
-          getGeneral: async () => storedGeneral,
+          getGeneral: async () => storedGeneral as any,
           updateGeneral: async (patch) => {
             storedGeneral = { ...storedGeneral, ...patch };
             return storedGeneral as any;

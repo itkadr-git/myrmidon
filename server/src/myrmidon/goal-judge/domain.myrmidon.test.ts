@@ -274,7 +274,7 @@ describe("Goal Judge Domain & Prompts", () => {
 
     it("runs multi-round evaluation loop via runGoalJudgeRounds up to limit", async () => {
       const input: GoalJudgeInput = {
-        criteria: "MAX_ROUNDS",
+        criteria: "export const MAX_ROUNDS = 3;",
         diff: "export const MAX_ROUNDS = 3;",
         testOutput: "PASS 4 passed",
       };
