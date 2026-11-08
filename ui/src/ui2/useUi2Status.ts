@@ -41,13 +41,19 @@ const UI2_CHIP_REFETCH_INTERVAL_MS = 30_000;
 
 export interface Ui2StatusStrip {
   /** Colony: agents working vs total (dashboard.agents). */
-  colony: Ui2ColonyChip | null;
+  colony?: Ui2ColonyChip | null;
   /** Runs: live runs + today's failed (live-runs + runActivity). */
-  runs: Ui2RunsChip | null;
+  runs?: Ui2RunsChip | null;
   /** Spend (costs/summary; budget part suppressed when 0). */
-  spend: Ui2SpendChip | null;
+  spend?: Ui2SpendChip | null;
   /** "Waiting for me" badge union; null when the badges source failed. */
-  waiting: Ui2WaitingBadge | null;
+  waiting?: Ui2WaitingBadge | null;
+  colonyActive?: number;
+  colonyTotal?: number;
+  fleetAttention?: boolean;
+  monthSpendCents?: number;
+  monthBudgetCents?: number;
+  attentionCount?: number;
 }
 
 /**
