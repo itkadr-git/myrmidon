@@ -11992,3 +11992,61 @@ registerCurrentRoute({
     429: r.tooManyRequests,
   },
 });
+
+// myrmidon(1.7-ZABBIX-SINK / OPE-12126): the Zabbix alarm sink webhook. Mounted
+// from server/src/myrmidon/monitoring/zabbix-sink/ (app.ts), outside the
+// routes/ directory the coverage scanner reads, so the entry is contract-first
+// (see specOnlyContractFirstRoutes in __tests__/openapi-routes.test.ts). Auth
+// is the sink's own Bearer token (MYRMIDON_ZABBIX_SINK_TOKEN_REF), not the
+// board/agent schemes the fixups assign by default.
+registry.registerPath({
+  method: "post",
+  path: "/api/monitoring/zabbix-webhook",
+  tags: ["monitoring"],
+  summary:
+    "Zabbix alarm sink: turn one Zabbix media-type event into a role-task draft (deduped by eventid)",
+  description:
+    "Accepts a single Zabbix media-type webhook event and creates an unassigned " +
+    "role-task draft: the issue title comes from the trigger name, the priority " +
+    "from the Zabbix severity (5/4 -> critical, 3 -> high, 2 -> medium, else low), " +
+    "and the Zabbix event URL lands in the issue body as the source link. A " +
+    "redelivery of the same eventid returns the existing draft (action: dedup) " +
+    "instead of creating a second task. An invalid payload answers 400. " +
+    "Authorization is the dedicated webhook Bearer token (MYRMIDON_ZABBIX_SINK_TOKEN_REF, " +
+    "env:/file: reference), not board/agent auth: a wrong or missing token answers 401, " +
+    "an unset token reference or target company answers 503. Since 1.7 the token is a " +
+    "stub pending the signed intake.",
+  request: {
+    body: jsonBody(
+      z
+        .object({
+          eventid: z.string().min(1).describe("Zabbix event id; the dedup identity"),
+          triggerid: z.string().min(1).optional().describe("Zabbix trigger id, kept in the description"),
+          name: z.string().min(1).describe("Trigger name; becomes the issue title"),
+          severity: z
+            .union([z.string(), z.number()])
+            .optional()
+            .describe('Zabbix severity "0".."5" (or 0..5); maps to the issue priority'),
+          status: z.string().optional().describe('Zabbix event status, e.g. "PROBLEM"; resolved/closed events are rejected'),
+          hosts: z.string().optional().describe("Comma-separated host names, kept in the issue description"),
+          url: z.string().optional().describe("Zabbix event URL; the source link in the issue body"),
+        })
+        .strip(),
+    ),
+  },
+  responses: {
+    200: r.ok(
+      z
+        .object({
+          eventid: z.string(),
+          action: z.enum(["create", "dedup"]),
+          issue_id: z.string(),
+          issue_identifier: z.string().nullable(),
+        })
+        .strip(),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    503: { description: "Sink not configured: the token reference or the target company is unset" },
+  },
+});

@@ -137,6 +137,7 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "PUT /api/updates/settings",
   "PATCH /api/updates/settings",
   "POST /api/updates/validate",
+  "POST /api/monitoring/zabbix-webhook",
   "GET /api/myrmidon/companies/{companyId}/knowledge/search",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
