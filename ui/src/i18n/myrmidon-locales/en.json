@@ -1806,5 +1806,59 @@
       "off": "off"
     }
   },
-  "ui2.nav.group.plugins": "Plugins"
+  "ui2.nav.group.plugins": "Plugins",
+  "modelProviders": {
+    "channels": {
+      "plan": "Plan",
+      "actions": "Actions",
+      "oauthLogin": "Codex OAuth Login",
+      "oauthStarting": "Starting OAuth...",
+      "oauthCardTitle": "Codex OAuth Authorization (Account #{{accountNumber}})",
+      "oauthCode": "Code",
+      "oauthUrl": "URL",
+      "oauthComplete": "Complete Authorization",
+      "oauthCompleting": "Completing...",
+      "oauthRefresh": "Refresh",
+      "summaryLive": "{{live}} live / {{total}} total",
+      "summaryExhausted": "{{count}} exhausted",
+      "summaryDisabled": "{{count}} disabled",
+      "summaryError": "{{count}} in error",
+      "summaryNextReset": "next reset {{at}}",
+      "showDiff": "Show diff",
+      "hideDiff": "Hide diff"
+    },
+    "changeLog": {
+      "secretsRedacted": "Secrets are redacted in log entries",
+      "actor": "Author"
+    },
+    "fallbacks": {
+      "sourceOfTruth": "Source of truth:",
+      "sourceOfTruthValue": "LiteLLM DB & /config/update",
+      "configuredGroups": "{{count}} configured groups",
+      "reset": "Reset",
+      "save": "Save Changes",
+      "saving": "Saving...",
+      "saveSuccess": "Fallback topology successfully saved to LiteLLM /config/update and database.",
+      "saveFailed": "Failed to save fallback chains.",
+      "cycleDetected": "Cycle detected in topology! Saving is disabled until cycles are resolved:",
+      "unknownGroups": "Unknown model groups ({{count}}) not present in LiteLLM catalog:",
+      "freeBadge": "Free",
+      "unknownGroupBadge": "Unknown Group",
+      "unknownBadge": "Unknown",
+      "autoOrder": "Auto-order",
+      "autoOrderTitle": "Sort targets: free first, then cheap on different provider",
+      "deleteChain": "Delete chain",
+      "chainLabel": "Fallback Chain:",
+      "noFallbacks": "No fallbacks configured (single point of failure).",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "removeTarget": "Remove target",
+      "addTargetPlaceholder": "Add fallback target model/group...",
+      "add": "Add",
+      "newGroupPlaceholder": "New model group name (e.g. gpt-4o, zephyr-beta)...",
+      "addGroup": "Add Model Group",
+      "chainExists": "Chain for model group '{{model}}' already exists.",
+      "poolProviderNote": "Pool provider: {{provider}}"
+    }
+  }
 }

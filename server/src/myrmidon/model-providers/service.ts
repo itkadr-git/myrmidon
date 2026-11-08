@@ -770,6 +770,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         return "Сессия истекла";
       case "not_logged_in":
         return "Не авторизован";
+      case "ok":
+        return "Ok";
+      case "error":
+        return "Ошибка";
       default:
         return state;
     }
@@ -1000,16 +1004,32 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const channels = rawAccounts.map(mapRawAccountToChannel);
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
+    // Pool-level reset info from the connector document (e.g. weekly reset of
+    // the whole subscription), preferred over per-account windows: per-account
+    // windows can carry stale limits of accounts that already rotated.
+    const poolDocument = (rawAccounts as Array<Record<string, unknown>>).find(
+      (account) => account && typeof account === "object",
+    ) as { pool?: Record<string, unknown> } | undefined;
+    const poolResetRaw = poolDocument?.pool ?? {};
+    const poolResetAtRaw = poolResetRaw.resetAt ?? poolResetRaw.nextResetAt;
+    const poolResetEpoch =
+      typeof poolResetAtRaw === "number"
+        ? poolResetAtRaw
+        : typeof poolResetAtRaw === "string"
+          ? Math.floor(new Date(poolResetAtRaw).getTime() / 1000) || null
+          : null;
     const summary = {
       total: channels.length,
       live: channels.filter(
         (channel) =>
-          !channel.isBanned && !channel.isExhausted && !channel.isDisabled,
+          !channel.isBanned && !channel.isExhausted && !channel.isDisabled && channel.state !== "error",
       ).length,
       exhausted: channels.filter((channel) => channel.isExhausted).length,
       banned: channels.filter((channel) => channel.isBanned).length,
+      error: channels.filter((channel) => channel.state === "error").length,
       disabled: channels.filter((channel) => channel.isDisabled).length,
       nextResetAt:
+        poolResetEpoch ??
         channels
           .flatMap((channel) => [
             channel.limitedUntil,
@@ -1017,7 +1037,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
             channel.windows.secondary?.resetsAt,
           ])
           .filter((value): value is number => typeof value === "number" && value > 0)
-          .sort((a, b) => a - b)[0] ?? null,
+          .sort((a, b) => a - b)[0] ??
+        null,
+      nextResetText:
+        typeof poolResetRaw.resetText === "string" ? poolResetRaw.resetText : null,
     };
 
     return {

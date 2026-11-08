@@ -1806,5 +1806,59 @@
       "off": "выкл"
     }
   },
-  "ui2.nav.group.plugins": "Плагины"
+  "ui2.nav.group.plugins": "Плагины",
+  "modelProviders": {
+    "channels": {
+      "plan": "Тариф",
+      "actions": "Действия",
+      "oauthLogin": "Вход по OAuth (Codex)",
+      "oauthStarting": "Запускаю OAuth...",
+      "oauthCardTitle": "Авторизация Codex OAuth (учётка #{{accountNumber}})",
+      "oauthCode": "Код",
+      "oauthUrl": "Адрес",
+      "oauthComplete": "Завершить авторизацию",
+      "oauthCompleting": "Завершаю...",
+      "oauthRefresh": "Обновить",
+      "summaryLive": "{{live}} живых / {{total}} всего",
+      "summaryExhausted": "{{count}} исчерпано",
+      "summaryDisabled": "{{count}} отключено",
+      "summaryError": "{{count}} в ошибке",
+      "summaryNextReset": "Сброс {{at}}",
+      "showDiff": "Показать дифф",
+      "hideDiff": "Скрыть дифф"
+    },
+    "changeLog": {
+      "secretsRedacted": "Секреты скрыты в записях журнала",
+      "actor": "Автор"
+    },
+    "fallbacks": {
+      "sourceOfTruth": "Источник истины:",
+      "sourceOfTruthValue": "БД LiteLLM и /config/update",
+      "configuredGroups": "{{count}} настроенных групп",
+      "reset": "Сбросить",
+      "save": "Сохранить изменения",
+      "saving": "Сохраняю...",
+      "saveSuccess": "Топология резервов сохранена в LiteLLM /config/update и БД.",
+      "saveFailed": "Не удалось сохранить цепочки резервов.",
+      "cycleDetected": "В топологии обнаружен цикл! Сохранение отключено, пока циклы не устранены:",
+      "unknownGroups": "Неизвестные группы моделей ({{count}}), отсутствующие в каталоге LiteLLM:",
+      "freeBadge": "Бесплатно",
+      "unknownGroupBadge": "Неизвестная группа",
+      "unknownBadge": "Неизвестно",
+      "autoOrder": "Автопорядок",
+      "autoOrderTitle": "Сортировка целей: сначала бесплатные, затем дешёвые на другом провайдере",
+      "deleteChain": "Удалить цепочку",
+      "chainLabel": "Цепочка резервов:",
+      "noFallbacks": "Резервы не настроены (единая точка отказа).",
+      "moveUp": "Переместить вверх",
+      "moveDown": "Переместить вниз",
+      "removeTarget": "Убрать цель",
+      "addTargetPlaceholder": "Добавить целевую модель/группу резервов...",
+      "add": "Добавить",
+      "newGroupPlaceholder": "Название новой группы моделей (например, gpt-4o, zephyr-beta)...",
+      "addGroup": "Добавить группу моделей",
+      "chainExists": "Цепочка для группы моделей «{{model}}» уже существует.",
+      "poolProviderNote": "Провайдер пула: {{provider}}"
+    }
+  }
 }
