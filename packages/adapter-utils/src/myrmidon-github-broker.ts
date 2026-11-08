@@ -161,9 +161,9 @@ function paperclipBrokerCacheRoot(env) {
   }
   // No per-run directory named: the cache stays OFF and every call walks the
   // broker exactly as before (the gateway sets the directory alongside the
-  // capability, so real runs always have it). `require` is reached only when a
-  // cache directory is actually configured, so a sandboxed VM harness without
-  // `require` keeps the cache OFF and the walk intact.
+  // capability, so real runs always have it). The require call is reached only
+  // when a cache directory is actually configured, so a sandboxed VM harness
+  // without require keeps the cache OFF and the walk intact.
   return null;
 }
 function paperclipBrokerCachePath(env, repository) {
@@ -219,7 +219,8 @@ function paperclipStoreBrokerCredential(env, repository, result, now) {
 function paperclipCachedBrokerCredentialIsFresh(entry, now) {
   return Boolean(entry) && Number(entry.expiresAt) - PAPERCLIP_BROKER_CACHE_EXPIRY_MARGIN_MS > now;
 }
-// A cached entry answers the same shape the walk returns: `{ ok, status, json }`.
+// A cached entry answers the same shape the walk returns: an object with the
+// fields ok, status and json.
 // Callers only read status/ok and call json() once.
 function paperclipCachedResponse(entry) {
   return {
