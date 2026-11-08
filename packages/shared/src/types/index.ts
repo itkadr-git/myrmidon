@@ -1084,3 +1084,5 @@ export * from "./app-definition.js";
 export * from "./chat-channels.js";
 
 export * from "./email.js";
+
+export type { StatusStrip } from "./status-strip.js";
