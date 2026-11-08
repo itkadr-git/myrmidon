@@ -42,6 +42,11 @@ them rename the code side first:
 - Third-party product names: **Paperclip Cloud**, **Paperclip Labs**,
   **Paperclip EE**, **Paperclip Enterprise** — external vendor services, not
   our product.
+- A second legal-attribution spelling, `Base: Paperclip`, appears in
+  localized About/base provenance text. PR #2103 added it to the exact
+  allowlists in `docs-branding-guard.mjs` and `brand-release-audit.mjs`;
+  the build-side vendor-name policy separately exempts the versioned MIT
+  provenance text. This is attribution, not a product-name exception.
 - Historical records: `docs/myrmidon/CHANGELOG{,.ru}.md` and the
   `docs/myrmidon/tracks/*.md` logs describe past states and keep the names
   that were correct at the time (e.g. the pre-rename `paperclip:2026.916.1`

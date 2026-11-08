@@ -150,9 +150,8 @@ by default — the full reference is
 ## What it does today
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
-(Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). The current
-pre-release is [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18);
-the latest stable release remains [1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5).
+(Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). The current stable
+release is [1.6.6](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6).
 
 ### Work and agents
 
@@ -290,8 +289,7 @@ the latest stable release remains [1.6.5](https://github.com/itkadr-git/myrmidon
 
 Full notes per release: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md) and the
 [releases page](https://github.com/itkadr-git/myrmidon/releases). Latest stable:
-[1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5); current
-pre-release: [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18).
+[1.6.6](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6).
 
 - **1.6.3 — one deploy for every component.** `deploy.sh --release` updates
   the board, dockergate, fleetd and the bot images in one all-or-nothing

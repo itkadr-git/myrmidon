@@ -825,14 +825,21 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
     },
 
     search: async (companyId, datasetId, input) => {
+      const started = performance.now();
       const { settings, ports } = await requirePorts();
-      await requireDataset(ports, companyId, datasetId);
+      const settingsMs = Math.round(performance.now() - started);
+      const datasetStarted = performance.now();
+      if (!await ports.store.hasDataset(companyId, datasetId)) throw notFound("dataset");
+      const datasetMs = Math.round(performance.now() - datasetStarted);
       const query = input.query.trim();
       const limit = Math.min(Math.max(input.limit ?? settings.searchTopK, 1), 50);
       const mode = input.mode ?? "hybrid";
+      const embedderCheckStarted = performance.now();
       if (mode !== "fulltext" && ports.index.assertEmbedderConfigured) {
         await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
       }
+      const embedderCheckMs = Math.round(performance.now() - embedderCheckStarted);
+      const indexStarted = performance.now();
       const hits = await ports.index.search({
         companyId,
         datasetId,
@@ -843,15 +850,16 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
         embedderDimensions: settings.embedderDimensions,
         embedderBaseUrl: settings.embedderBaseUrl,
       });
+      const indexMs = Math.round(performance.now() - indexStarted);
+      const namesStarted = performance.now();
       // The index returns documentId per hit; resolve the real filename so the
       // REST caller can cite sources by name, not by internal UUID (OPE-12028).
+      // One company-scoped title query; do not load jobs/chunks for search hits.
       const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
-      const documentNames = new Map<string, string>();
-      await Promise.all(
-        documentIds.map(async (id) => {
-          const document = await ports.store.getDocument(companyId, id);
-          if (document) documentNames.set(id, document.filename);
-        }),
+      const documentNames = await ports.store.getDocumentNames(companyId, documentIds);
+      logger.debug(
+        { companyId, datasetId, mode, limit, hits: hits.length, settingsMs, datasetMs, embedderCheckMs, indexMs, documentNamesMs: Math.round(performance.now() - namesStarted) },
+        "corpus search: handler step timings",
       );
       return {
         datasetId,

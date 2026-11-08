@@ -62,6 +62,8 @@ run("production corpus adapters", () => {
       enabled: true,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
@@ -128,6 +130,8 @@ run("production corpus adapters", () => {
       enabled: false,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
@@ -160,7 +164,21 @@ run("production corpus adapters", () => {
       insert into companies (id, name, issue_prefix) values
         (${companyId}, 'mcp-refresh', 'MCP')
     `);
-    const settings: CorpusPortContext["settings"] = { enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000, embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null, maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1, maxParseAttempts: 2, searchTopK: 5 };
+    const settings: CorpusPortContext["settings"] = {
+      enabled: true,
+      parserBaseUrl: "http://parser.invalid",
+      parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
+      embedderModel: "corpus-embed-pplx-0.6b",
+      embedderDimensions: 3,
+      embedderBaseUrl: null,
+      maxDocumentBytes: 1024,
+      maxDocumentsPerDataset: 5,
+      parseConcurrency: 1,
+      maxParseAttempts: 2,
+      searchTopK: 5,
+    };
     const { createCorpusMcpProvider } = await import("./adapters.js");
     const provider = createCorpusMcpProvider(async () => settings, (context) => createCorpusPorts(db, context, { storageLocalDiskBaseDir: storageDir! } as Config));
     const tools = await provider(companyId);
@@ -181,6 +199,7 @@ run("production corpus adapters", () => {
     await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
     const settings: CorpusPortContext["settings"] = {
       enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000, parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null,
       maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
       maxParseAttempts: 2, searchTopK: 5,
@@ -232,6 +251,7 @@ run("production corpus adapters", () => {
     await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
     const settings: CorpusPortContext["settings"] = {
       enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000, parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: "http://embedder.invalid",
       maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
       maxParseAttempts: 1, searchTopK: 5,
@@ -426,6 +446,8 @@ run("production corpus adapters", () => {
         enabled: true,
         parserBaseUrl: "http://parser.invalid",
         parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
         embedderModel: "corpus-embed-pplx-0.6b",
         embedderDimensions: 1024,
         embedderBaseUrl: baseUrl,
@@ -531,6 +553,8 @@ run("production corpus adapters", () => {
         enabled: true,
         parserBaseUrl: "http://parser.invalid",
         parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
         embedderModel: "corpus-embed-pplx-0.6b",
         embedderDimensions: 1024,
         embedderBaseUrl: baseUrl,
@@ -590,6 +614,8 @@ run("production corpus adapters", () => {
       enabled: true,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,

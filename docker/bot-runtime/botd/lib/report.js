@@ -8,7 +8,8 @@
 //
 // The API key never reaches a log line or a reason string.
 
-import { boardEnv, boardKeyValues } from "./board-env.js";
+import { boardEnv, boardKeyValues, redact as redactWithEnv } from "./board-env.js";
+export { redact } from "./board-env.js";
 
 export const REPORT_PATH = "/api/myrmidon/bots/me/disk-report";
 export const MAX_BODY_BYTES = 1024 * 1024; // WS_DISK_REPORT_MAX_BODY_BYTES
@@ -191,11 +192,7 @@ export function createReporter(opts = {}) {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const delays = opts.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
 
-  const redact = (text) => {
-    let out = String(text);
-    for (const key of boardKeyValues(env)) out = out.split(key).join("[redacted]");
-    return out;
-  };
+  const redact = (text) => redactWithEnv(text, env);
 
   async function attempt(url, body) {
     const ctl = new AbortController();

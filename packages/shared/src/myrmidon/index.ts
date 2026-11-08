@@ -99,6 +99,8 @@ export * from "../myrmidon-vendor-name.js";
 export * from "../myrmidon-wip-limit.js";
 export * from "../myrmidon-workspace-hygiene.js";
 export * from "../recovery-factory.js";
+export * from "../task-card-readiness.js";
+export * from "./acceptance-scenarios.js";
 export * from "./ideas.js";
 export * from "./provider-package-expiry.js";
 export * from "./provider-usage-schema.js";

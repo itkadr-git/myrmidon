@@ -259,6 +259,8 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
         mimeType: document.mimeType,
         baseUrl: settings.parserBaseUrl,
         timeoutMs: settings.parserTimeoutMs,
+        maxRunMs: settings.parserMaxRunMs,
+        queueTimeoutMs: settings.parserQueueTimeoutMs,
         signal,
       });
       checkpoint();

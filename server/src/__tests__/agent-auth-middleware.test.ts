@@ -294,6 +294,21 @@ describe("agent auth middleware", () => {
     },
   );
 
+  it.each(["/api/intake/zabbix", "/intake/github"]) (
+    "leaves intake webhook bearers for the route handler (%s)",
+    async (path) => {
+      const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+      const app = createApp(db, "authenticated");
+      app.post(path, (req, res) => {
+        res.json({ authorization: req.header("authorization") });
+      });
+
+      const res = await request(app).post(path).set("Authorization", "Bearer webhook-token");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ authorization: "Bearer webhook-token" });
+    },
+  );
+
   it.each([
     "/api/myrmidon/monitoring/alerts/webhook/extra",
     "/api/myrmidon/monitoring/alerts/webhok",

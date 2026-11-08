@@ -395,13 +395,19 @@ async function main() {
     const pick = (...vals) => vals.find((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
     const limits = {
       npmCacheTtlHours: pick(g.npmCacheTtlHours, Number(process.env.MYRMIDON_BOTD_NPM_CACHE_TTL_HOURS)) ?? 48,
+      npxTtlHours: pick(g.npxTtlHours, Number(process.env.MYRMIDON_BOTD_NPX_TTL_HOURS)) ?? 24,
       uvCacheTtlHours: pick(g.uvCacheTtlHours, Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS)) ?? 168,
       terminalOutputTtlHours: pick(g.terminalOutputTtlHours, Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS)) ?? 24,
+      npmCacheCapBytes: pick(g.npmCacheCapBytes, Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES)) ?? 1024 * 1024 * 1024,
     };
+    // The npm size ceiling is skipped while a run is live: an npx install the run
+    // has not touched yet can still be in use.
+    const live = runProbe ? runProbe.probe().live === true : false;
     await hygieneMod.cleanCaches({
       now: startedAt ? startedAt.getTime() : Date.now(),
       limits,
       pressure,
+      live,
       execFile,
       log,
     });
@@ -426,13 +432,16 @@ async function main() {
     if (hygieneMod && typeof hygieneMod.cleanCaches === "function") {
       const limits = {
         npmCacheTtlHours: Number(process.env.MYRMIDON_BOTD_NPM_CACHE_TTL_HOURS) || 48,
+        npxTtlHours: Number(process.env.MYRMIDON_BOTD_NPX_TTL_HOURS) || 24,
         uvCacheTtlHours: Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS) || 168,
         terminalOutputTtlHours: Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS) || 24,
+        npmCacheCapBytes: Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES) || 1024 * 1024 * 1024,
       };
       const result = await hygieneMod.cleanCaches({
         now: startedAt.getTime(),
         limits,
         pressure: level,
+        live: runProbe ? runProbe.probe().live === true : false,
         execFile,
         log,
       });
