@@ -106,6 +106,7 @@ describe("myrmidon(UI2) route table integration", () => {
       "knowledge-page",
       "more",
       "settings-autonomy-regulations",
+      "settings-channels",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
