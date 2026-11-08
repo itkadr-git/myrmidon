@@ -249,10 +249,20 @@ export async function handleAlertmanagerWebhook(
     }
 
     try {
-      const openTask = await deps.finder.findOpenTask(deps.companyId, {
+      let openTask = await deps.finder.findOpenTask(deps.companyId, {
         fingerprint,
         alertname,
       });
+
+      if (!openTask && fingerprint) {
+        // The open task may have been created without the alert fingerprint (or the
+        // fingerprint may have changed). Retry by alertname only so the resolved
+        // hook still auto-closes the task.
+        openTask = await deps.finder.findOpenTask(deps.companyId, {
+          fingerprint: null,
+          alertname,
+        });
+      }
 
       if (!openTask) {
         results.push({
