@@ -10,6 +10,22 @@ export const DEFAULT_TOOL_RETRY_LIMIT = 3;
 // made in one stretch without a write. 0 disables the check.
 export const DEFAULT_NO_PROGRESS_LIMIT = 40;
 export const DEFAULT_REPEATED_TOOL_CALL_LIMIT = 3;
+// myrmidon(OPE-12004): code-role thresholds (engineer, reviewer, lead, architect)
+// give engineers room for codebase exploration (~100 reads) without false stops.
+export const DEFAULT_CODE_NO_PROGRESS_LIMIT = 100;
+export const DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT = 5;
+
+export const CODE_ROLES: ReadonlySet<string> = new Set([
+  "engineer",
+  "reviewer",
+  "lead",
+  "architect",
+]);
+
+export function isCodeRole(role?: string | null): boolean {
+  if (typeof role !== "string") return false;
+  return CODE_ROLES.has(role.trim().toLowerCase());
+}
 /** Upper bound of distinct read-only call signatures remembered per run. */
 const MAX_TRACKED_CALL_SIGNATURES = 2000;
 
@@ -31,6 +47,12 @@ export function isRunGuardStopReason(value: unknown): value is RunGuardStopReaso
 export interface RunGuardDecision {
   stop: boolean;
   reason?: RunGuardStopReason;
+  hint?: {
+    reason: "repeated_tool_call" | "model_call_limit";
+    tool?: string;
+    repeatCount?: number;
+    modelCalls?: number;
+  };
 }
 
 export interface RunGuardOptions {
@@ -41,6 +63,9 @@ export interface RunGuardOptions {
   noProgressLimit?: number;
   /** myrmidon(RUN-GUARD-LOOPS): 0 disables. */
   repeatedToolCallLimit?: number;
+  /** myrmidon(OPE-12004): agent role for role-based defaults. */
+  role?: string | null;
+  agentRole?: string | null;
   now?: () => number;
 }
 
@@ -56,6 +81,8 @@ export interface RunGuardConfig {
 export function resolveRunGuardOptions(sources?: {
   agentConfig?: unknown;
   teamLiveness?: unknown;
+  role?: string | null;
+  agentRole?: string | null;
   env?: Record<string, string | undefined>;
   now?: () => number;
 }): RunGuardOptions {
@@ -74,6 +101,15 @@ export function resolveRunGuardOptions(sources?: {
     : undefined;
 
   const env = sources?.env ?? process.env;
+
+  const role =
+    (typeof sources?.role === "string" ? sources.role : undefined) ??
+    (typeof sources?.agentRole === "string" ? sources.agentRole : undefined) ??
+    (typeof agentObj?.role === "string" ? agentObj.role : undefined);
+
+  const isCode = isCodeRole(role);
+  const defaultNoProgress = isCode ? DEFAULT_CODE_NO_PROGRESS_LIMIT : DEFAULT_NO_PROGRESS_LIMIT;
+  const defaultRepeated = isCode ? DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT : DEFAULT_REPEATED_TOOL_CALL_LIMIT;
 
   const parseNum = (val: unknown): number | undefined => {
     if (typeof val === "number" && Number.isFinite(val) && val > 0) return val;
@@ -129,7 +165,7 @@ export function resolveRunGuardOptions(sources?: {
     parseNumOrZero(teamGuardObj?.noProgressLimit) ??
     parseNumOrZero(teamObj?.noProgressLimit) ??
     parseNumOrZero(env.MYRMIDON_RUN_GUARD_NO_PROGRESS_LIMIT) ??
-    DEFAULT_NO_PROGRESS_LIMIT;
+    defaultNoProgress;
 
   const repeatedToolCallLimit =
     parseNumOrZero(agentGuardObj?.repeatedToolCallLimit) ??
@@ -137,7 +173,7 @@ export function resolveRunGuardOptions(sources?: {
     parseNumOrZero(teamGuardObj?.repeatedToolCallLimit) ??
     parseNumOrZero(teamObj?.repeatedToolCallLimit) ??
     parseNumOrZero(env.MYRMIDON_RUN_GUARD_REPEATED_TOOL_CALL_LIMIT) ??
-    DEFAULT_REPEATED_TOOL_CALL_LIMIT;
+    defaultRepeated;
 
   return {
     modelCallLimit,
@@ -145,6 +181,7 @@ export function resolveRunGuardOptions(sources?: {
     toolRetryLimit,
     noProgressLimit,
     repeatedToolCallLimit,
+    role: role ?? undefined,
     now: sources?.now,
   };
 }
@@ -179,20 +216,35 @@ export class RunGuard {
   private readOnlyStreak = 0;
   private readonly readCallCounts = new Map<string, number>();
   private stoppedReason: RunGuardStopReason | null = null;
+  private readonly hintedReasons = new Set<"repeated_tool_call" | "model_call_limit">();
 
   constructor(options: RunGuardOptions = {}) {
+    const isCode = isCodeRole(options.role ?? options.agentRole);
     this.modelCallLimit = options.modelCallLimit ?? DEFAULT_MODEL_CALL_LIMIT;
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.toolRetryLimit = options.toolRetryLimit ?? DEFAULT_TOOL_RETRY_LIMIT;
-    this.noProgressLimit = options.noProgressLimit ?? DEFAULT_NO_PROGRESS_LIMIT;
-    this.repeatedToolCallLimit = options.repeatedToolCallLimit ?? DEFAULT_REPEATED_TOOL_CALL_LIMIT;
+    this.noProgressLimit =
+      options.noProgressLimit ??
+      (isCode ? DEFAULT_CODE_NO_PROGRESS_LIMIT : DEFAULT_NO_PROGRESS_LIMIT);
+    this.repeatedToolCallLimit =
+      options.repeatedToolCallLimit ??
+      (isCode ? DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT : DEFAULT_REPEATED_TOOL_CALL_LIMIT);
     this.now = options.now ?? Date.now;
     this.lastEventAt = this.now();
   }
 
   modelCall(): RunGuardDecision {
     if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
-    if (this.modelCalls >= this.modelCallLimit) return this.stop("model_call_limit");
+    if (this.modelCalls >= this.modelCallLimit) {
+      const decision = this.writeCalls === 0
+        ? this.hintBeforeStop({ reason: "model_call_limit", modelCalls: this.modelCalls })
+        : this.stop("model_call_limit");
+      if (!decision.stop) {
+        this.lastEventAt = this.now();
+        this.scheduleIdleWatch();
+      }
+      return decision;
+    }
     this.modelCalls += 1;
     this.lastEventAt = this.now();
     this.scheduleIdleWatch();
@@ -253,6 +305,12 @@ export class RunGuard {
       : { stop: false };
   }
 
+  private hintBeforeStop(hint: NonNullable<RunGuardDecision["hint"]>): RunGuardDecision {
+    if (this.hintedReasons.has(hint.reason)) return this.stop(hint.reason);
+    this.hintedReasons.add(hint.reason);
+    return { stop: false, hint };
+  }
+
   stop(reason: RunGuardStopReason): RunGuardDecision {
     this.stoppedReason ??= reason;
     this.clearIdleWatch();
@@ -295,7 +353,9 @@ export class RunGuard {
    * read-only calls (reset by any write) and repeats of the same read-only call
    * (reset by any write); stops the run with `repeated_tool_call` at the
    * configured repeat limit or `no_progress_exploration` at the configured
-   * streak. Also refreshes the idle deadline, like `event()`.
+   * streak. myrmidon(OPE-12189): the first `repeated_tool_call` trip hands back
+   * a hint (`{stop:false, hint}`) instead of stopping; a second trip of the same
+   * reason stops the run. Also refreshes the idle deadline, like `event()`.
    *
    * `args` is only hashed (with the tool name) and inspected for the shell
    * command of the terminal tool; nothing is retained.
@@ -320,7 +380,12 @@ export class RunGuard {
       }
       const seen = (this.readCallCounts.get(signature) ?? 0) + 1;
       this.readCallCounts.set(signature, seen);
-      if (seen >= this.repeatedToolCallLimit) return this.stop("repeated_tool_call");
+      if (seen >= this.repeatedToolCallLimit) {
+        if (this.hintedReasons.has("repeated_tool_call")) return this.stop("repeated_tool_call");
+        const decision = this.hintBeforeStop({ reason: "repeated_tool_call", tool: name, repeatCount: seen });
+        this.event();
+        return decision;
+      }
     }
     if (this.noProgressLimit > 0 && this.readOnlyStreak >= this.noProgressLimit) {
       return this.stop("no_progress_exploration");

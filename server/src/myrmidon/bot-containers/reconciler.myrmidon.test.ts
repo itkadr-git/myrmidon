@@ -440,6 +440,29 @@ describe("reconcileBot", () => {
       }
     });
 
+    it("waits for an interrupted run that finalises a minute past the drain deadline (OPE-12150)", async () => {
+      let fakeNow = 0;
+      const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeNow);
+      try {
+        const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" });
+        // enter + polls every 2 s: still 1 running until 65 s (deadline 5 s + ~60 s
+        // for the R3 interrupt to finalise the run), then drained.
+        const maintenance = fakeMaintenance([...Array(34).fill(1), 0]);
+        const outcome = await run(driver, maintenance, {
+          compile: async () => profile({ restartHash: "restart-new" }),
+          maintenanceDrainTimeoutSec: 5,
+          sleep: async (ms) => {
+            fakeNow += ms;
+          },
+        });
+        expect(outcome).toEqual({ kind: "applied_restart" });
+        expect(driver.calls).toContain("restart");
+        expect(maintenance.exitCalls).toHaveLength(1);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
     it("still exits maintenance when the restart itself fails health", async () => {
       const driver = fakeDriver(
         { botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" },

@@ -1056,6 +1056,38 @@ function buildLspConfig(input: HermesProfileInput): YamlMapping | undefined {
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+/**
+ * myrmidon(OPE-11966): the `providers:` entry of the instance LLM gateway, and the header it names.
+ *
+ * The pool of ChatGPT accounts behind the gateway caches a prompt only when the requests of one
+ * conversation carry one stable key. The gateway (LiteLLM) reads that key from the
+ * `x-litellm-session-id` request header (it becomes the ChatGPT `session_id`); without the header
+ * the id is the call id, new on every request, and the pool's cache hit only 25-47% of the input.
+ * Hermes has a vendor option for exactly this: `providers.<id>.session_affinity_header` names a
+ * header that Hermes fills with the conversation key on every request to the matching endpoint
+ * (agent/opencode_affinity.py: the conversation root, stable across compaction rotation, else the
+ * session id the board sends with the run). An entry is matched to a request by its base URL, so
+ * this one carries the gateway URL that `model.base_url` and every `fallback_model` entry carry;
+ * any other endpoint gets no session id (Hermes never sends one to a URL that did not ask for it).
+ */
+export const LLM_GATEWAY_PROVIDER_ID = "myrmidon-gateway";
+export const LLM_GATEWAY_SESSION_AFFINITY_HEADER = "x-litellm-session-id";
+
+function buildGatewayProviders(
+  llmBaseUrl: string | undefined,
+  llmApiKeyEnv: string | undefined,
+): YamlMapping | undefined {
+  if (!llmBaseUrl) return undefined;
+  return {
+    [LLM_GATEWAY_PROVIDER_ID]: {
+      api: llmBaseUrl,
+      // A bare variable name, like the `key_env` of the fallback entries: Hermes resolves it itself.
+      key_env: llmApiKeyEnv,
+      session_affinity_header: LLM_GATEWAY_SESSION_AFFINITY_HEADER,
+    },
+  };
+}
+
 function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string {
   const { adapterConfig } = input;
   warnUnplacedVoiceModels(adapterConfig.models, warnings);
@@ -1155,6 +1187,8 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     },
     platform_toolsets: { api_server: buildToolsets(adapterConfig.toolsets) },
     platforms: { api_server: { enabled: true } },
+    // myrmidon(OPE-11966): the gateway endpoint asks Hermes for the conversation key, see buildGatewayProviders.
+    providers: buildGatewayProviders(llmBaseUrl, llmApiKeyEnv),
     // Company skills are delivered per run into Hermes' local skills root.
     // Keep the legacy profile mount empty so Hermes cannot index each skill twice.
     skills: { external_dirs: [] },
@@ -1166,7 +1200,13 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     // (07.11: 8 of 8 bots that tried, ~4% of /api answered 401), and agents work
     // around it by reading /data/hermes/.env into the session history. The board
     // key is the bot's own per-agent key already present in the terminal env.
-    terminal: { cwd: "/workspace", env_passthrough: ["PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"] },
+    // myrmidon(REBRAND-ENV, OPE-12052): the canonical MYRMIDON_* names come first
+    // (the skill tells agents to read those); PAPERCLIP_* stays as the legacy alias
+    // that buildEnvFile writes next to them.
+    terminal: {
+      cwd: "/workspace",
+      env_passthrough: ["MYRMIDON_API_KEY", "MYRMIDON_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"],
+    },
   };
   return writeYamlDocument(root);
 }

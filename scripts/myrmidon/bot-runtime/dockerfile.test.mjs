@@ -252,7 +252,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // build-time run; 09-run-scoped-github-broker has
     // github_broker_run_scope.py (contextvar binding + child-env bridge).
     const patchTestRuns = [...dockerfileInstructions.matchAll(/^RUN [^\n]*\/tmp\/patch-tests\/(\S+\.py)\s+\/opt\/hermes-src$/gm)].map((m) => m[1]);
-    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py", "run_skills_materialize.py", "undefined_names.py"]) {
+    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py", "run_skills_materialize.py", "undefined_names.py", "vacuum_by_freelist.py"]) {
       assert.ok(
         patchTestRuns.includes(regression),
         `expected a build-time run of docker/bot-runtime/tests/${regression}`,
@@ -305,6 +305,12 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // own /home/<user> unwritable at runtime.
     assert.doesNotMatch(dockerfile, /HOME=\/home\/bot/);
     assert.match(dockerfile, /HOME=\/data\/hermes/);
+  });
+
+  it("keeps Cargo build output in the durable per-agent cache, not a workspace", () => {
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+    assert.match(runtimeStage, /^\s*CARGO_TARGET_DIR=\/data\/hermes\/\.cache\/cargo-target(?:\s|$)/m);
+    assert.doesNotMatch(runtimeStage, /^\s*CARGO_TARGET_DIR=\/(?:workspace|scratch)(?:\/|\s|$)/m);
   });
 
   it("strips the clone's .git history before the runtime stage copies /opt/hermes-src", () => {

@@ -62,6 +62,8 @@ run("production corpus adapters", () => {
       enabled: true,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
@@ -128,6 +130,8 @@ run("production corpus adapters", () => {
       enabled: false,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
@@ -160,7 +164,21 @@ run("production corpus adapters", () => {
       insert into companies (id, name, issue_prefix) values
         (${companyId}, 'mcp-refresh', 'MCP')
     `);
-    const settings: CorpusPortContext["settings"] = { enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000, embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null, maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1, maxParseAttempts: 2, searchTopK: 5 };
+    const settings: CorpusPortContext["settings"] = {
+      enabled: true,
+      parserBaseUrl: "http://parser.invalid",
+      parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
+      embedderModel: "corpus-embed-pplx-0.6b",
+      embedderDimensions: 3,
+      embedderBaseUrl: null,
+      maxDocumentBytes: 1024,
+      maxDocumentsPerDataset: 5,
+      parseConcurrency: 1,
+      maxParseAttempts: 2,
+      searchTopK: 5,
+    };
     const { createCorpusMcpProvider } = await import("./adapters.js");
     const provider = createCorpusMcpProvider(async () => settings, (context) => createCorpusPorts(db, context, { storageLocalDiskBaseDir: storageDir! } as Config));
     const tools = await provider(companyId);
@@ -181,6 +199,7 @@ run("production corpus adapters", () => {
     await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
     const settings: CorpusPortContext["settings"] = {
       enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000, parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null,
       maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
       maxParseAttempts: 2, searchTopK: 5,
@@ -232,6 +251,7 @@ run("production corpus adapters", () => {
     await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
     const settings: CorpusPortContext["settings"] = {
       enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000, parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
       embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: "http://embedder.invalid",
       maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
       maxParseAttempts: 1, searchTopK: 5,
@@ -391,6 +411,112 @@ run("production corpus adapters", () => {
     await db.$client.end();
   });
 
+  it("MCP corpus_search cites document.name as the filename, not the UUID (OPE-12028)", async () => {
+    const captured: { calls: number } = { calls: 0 };
+    const server = http.createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/embeddings") {
+        captured.calls += 1;
+        let raw = "";
+        req.on("data", (c) => { raw += c; });
+        req.on("end", () => {
+          const body = JSON.parse(raw) as { input?: string[] };
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({
+            data: (body.input ?? []).map((_, index) => ({
+              index,
+              embedding: Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)),
+            })),
+          }));
+        });
+        return;
+      }
+      res.statusCode = 404;
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const dbInstance = createDb(database!.connectionString);
+      const companyId = randomUUID();
+      await dbInstance.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'mcp-name-test', 'MCN')`);
+
+      const settings: CorpusPortContext["settings"] = {
+        enabled: true,
+        parserBaseUrl: "http://parser.invalid",
+        parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
+        embedderModel: "corpus-embed-pplx-0.6b",
+        embedderDimensions: 1024,
+        embedderBaseUrl: baseUrl,
+        maxDocumentBytes: 1024,
+        maxDocumentsPerDataset: 5,
+        parseConcurrency: 1,
+        maxParseAttempts: 2,
+        searchTopK: 5,
+      };
+
+      const ports = createCorpusPorts(dbInstance, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+      const dataset = await ports.store.createDataset({ companyId, name: "bbq-craft", description: null });
+      const document = await ports.store.createDocument({
+        companyId,
+        datasetId: dataset.id,
+        filename: "Weber_book.pdf",
+        mimeType: "application/pdf",
+        byteSize: 100,
+        blobRef: "",
+        maxAttempts: 2,
+      });
+      await ports.index.indexDocument({
+        companyId,
+        datasetId: dataset.id,
+        documentId: document.id,
+        chunks: [{ text: "weber grill temperature guide", index: 0 }],
+        embedderModel: settings.embedderModel,
+        embedderDimensions: settings.embedderDimensions,
+        embedderBaseUrl: baseUrl,
+      });
+      // Search only returns chunks of `ready` documents; drive the status to
+      // `ready` through the port: updateDocument internally walks the store
+      // chain parsing -> embedding -> ready when it sees a parsing -> ready jump.
+      await ports.store.updateDocument(companyId, document.id, { status: "parsing" });
+      await ports.store.updateDocument(companyId, document.id, { status: "ready" });
+
+      const { createCorpusMcpProvider } = await import("./adapters.js");
+      const provider = createCorpusMcpProvider(
+        async () => settings,
+        (context) => createCorpusPorts(dbInstance, context, { storageLocalDiskBaseDir: storageDir! } as Config),
+      );
+      const tools = await provider(companyId);
+      expect(tools).not.toBeNull();
+
+      const result = await tools!.search({
+        query: "weber grill",
+        datasets: [],
+        topK: 5,
+        minScore: null,
+      });
+
+      expect(result.hits.length).toBeGreaterThan(0);
+      const hit = result.hits.find((h) => h.document.id === document.id);
+      expect(hit).toBeDefined();
+      // The bug: document.name was the UUID. The fix: it is the uploaded filename.
+      expect(hit!.document.name).toBe("Weber_book.pdf");
+      expect(hit!.document.name).not.toBe(document.id);
+
+      // corpus_get_document with include_text=true must not crash on empty blobRef.
+      const view = await tools!.getDocument({ documentId: document.id, includeText: true });
+      expect(view.document.name).toBe("Weber_book.pdf");
+      expect(view.text).toBeNull();
+
+      await dbInstance.$client.end();
+    } finally {
+      server.close();
+    }
+  });
+
   it("indexes document chunks by calling the embeddings endpoint with corpus-embed-pplx-0.6b", async () => {
     const captured: { body: { model?: string; input?: string[]; dimensions?: number } | null; calls: number } = { body: null, calls: 0 };
     const server = http.createServer((req, res) => {
@@ -427,6 +553,8 @@ run("production corpus adapters", () => {
         enabled: true,
         parserBaseUrl: "http://parser.invalid",
         parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
         embedderModel: "corpus-embed-pplx-0.6b",
         embedderDimensions: 1024,
         embedderBaseUrl: baseUrl,
@@ -475,5 +603,97 @@ run("production corpus adapters", () => {
     } finally {
       server.close();
     }
+  });
+
+  // myrmidon(1.6.6 OPE-12000): the SQL of the URL-source bookkeeping, against a real database.
+  it("keeps the address and fetch bookkeeping of a URL source and lists only the documents that are due", async () => {
+    const db = createDb(database!.connectionString);
+    const companyId = randomUUID();
+    await db.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'url-source', 'URS')`);
+    const settings: CorpusPortContext["settings"] = {
+      enabled: true,
+      parserBaseUrl: "http://parser.invalid",
+      parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
+      embedderModel: "corpus-embed-pplx-0.6b",
+      embedderDimensions: 3,
+      embedderBaseUrl: null,
+      maxDocumentBytes: 1024,
+      maxDocumentsPerDataset: 10,
+      parseConcurrency: 1,
+      maxParseAttempts: 2,
+      searchTopK: 5,
+    };
+    const ports = createCorpusPorts(db, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+    const dataset = await ports.store.createDataset({ companyId, name: "urls", description: null });
+    const twoDaysAgo = new Date(Date.now() - 48 * 3_600_000).toISOString();
+    const base = { companyId, datasetId: dataset.id, mimeType: "text/html", byteSize: 5, blobRef: "b", maxAttempts: 2 };
+    const daily = await ports.store.createDocument({
+      ...base,
+      filename: "daily.html",
+      source: { url: "https://docs.example.com/a", refreshIntervalHours: 24, contentHash: "h1", fetchedAt: twoDaysAgo },
+    });
+    const weekly = await ports.store.createDocument({
+      ...base,
+      filename: "weekly.html",
+      source: { url: "https://docs.example.com/b", refreshIntervalHours: 168, contentHash: "h2", fetchedAt: twoDaysAgo },
+    });
+    const upload = await ports.store.createDocument({ ...base, filename: "upload.txt" });
+    // The RAGFlow importer keeps its provenance in the same column; it must not look like a URL source.
+    await db.execute(sql`update corpus_documents set source_uri = 'http://ragflow:9380/api/v1/datasets/x/documents/y' where id = ${upload.id}`);
+
+    expect(daily).toMatchObject({
+      sourceUrl: "https://docs.example.com/a",
+      refreshIntervalHours: 24,
+      contentHash: "h1",
+      lastFetchedAt: twoDaysAgo,
+      sourceError: null,
+    });
+    expect((await ports.store.getDocument(companyId, upload.id))?.sourceUrl).toBeNull();
+
+    const due = await ports.store.listSourceDocuments({ companyId, dueAt: new Date(), limit: 10 });
+    expect(due.map((document) => document.id)).toEqual([daily.id]);
+    expect(due[0]).toMatchObject({ sourceUrl: "https://docs.example.com/a", blobRef: "b", status: "queued" });
+    const everything = await ports.store.listSourceDocuments({ companyId, datasetId: dataset.id, limit: 10 });
+    expect(everything.map((document) => document.id).sort()).toEqual([daily.id, weekly.id].sort());
+    expect(await ports.store.listSourceDocuments({ companyId: randomUUID(), limit: 10 })).toEqual([]);
+
+    // The bookkeeping is merged into `metadata`: the interval survives, the rest moves.
+    const fetchedAt = new Date().toISOString();
+    const updated = await ports.store.updateDocument(companyId, daily.id, {
+      lastFetchedAt: fetchedAt,
+      sourceError: "boom",
+      contentHash: "h3",
+      byteSize: 77,
+      mimeType: "text/plain",
+    });
+    expect(updated).toMatchObject({
+      refreshIntervalHours: 24,
+      lastFetchedAt: fetchedAt,
+      sourceError: "boom",
+      contentHash: "h3",
+      byteSize: 77,
+      mimeType: "text/plain",
+    });
+    expect(await ports.store.listSourceDocuments({ companyId, dueAt: new Date(), limit: 10 })).toEqual([]);
+    // ...and it is due again once the interval has passed.
+    const later = new Date(Date.now() + 25 * 3_600_000);
+    expect((await ports.store.listSourceDocuments({ companyId, dueAt: later, limit: 10 })).map((document) => document.id)).toEqual([daily.id]);
+
+    // The bytes a refresh replaced are remembered until the new version is ready, then forgotten; the
+    // bookkeeping around them is merged, not replaced.
+    expect((await ports.store.updateDocument(companyId, daily.id, { previousBlobRef: "old-blob" }))?.previousBlobRef).toBe("old-blob");
+    const touched = await ports.store.updateDocument(companyId, daily.id, { lastFetchedAt: new Date().toISOString() });
+    expect(touched).toMatchObject({ previousBlobRef: "old-blob", refreshIntervalHours: 24 });
+    expect((await ports.store.updateDocument(companyId, daily.id, { previousBlobRef: null }))?.previousBlobRef).toBeNull();
+
+    // A parsed document goes back to `queued` with its parse state cleared, the way a refresh does it.
+    await ports.store.updateDocument(companyId, daily.id, { status: "parsing" });
+    await ports.store.updateDocument(companyId, daily.id, { status: "ready", chunkCount: 0, error: null, parsedAt: new Date().toISOString() });
+    expect((await ports.store.getDocument(companyId, daily.id))?.parsedAt).not.toBeNull();
+    const requeued = await ports.store.updateDocument(companyId, daily.id, { status: "queued", error: null, attempts: 0, parsedAt: null });
+    expect(requeued).toMatchObject({ status: "queued", parsedAt: null, refreshIntervalHours: 24, sourceUrl: "https://docs.example.com/a" });
+    await db.$client.end();
   });
 });

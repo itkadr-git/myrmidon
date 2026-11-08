@@ -4,7 +4,9 @@ import {
   REVIEW_DECISION_MAX_REWAKES,
   REVIEW_DECISION_RECOVERY_INSTRUCTION,
   countStalledReviewDeferrals,
+  isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
+  pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
   selectOpenPullRequestWorkProduct,
 } from "./policy.js";
@@ -159,6 +161,49 @@ describe("pullRequestHeadCiStateFromChecks", () => {
   });
 });
 
+describe("pullRequestHeadCiStateFromAllChecks", () => {
+  const done = (name: string, conclusion: string) => ({ name, status: "completed", conclusion });
+
+  it("is complete when every check of the head has completed, whatever the conclusions", () => {
+    // OPE-12048: BastionPrime/wellboard PR #43 — six lanes, no aggregate `CI result` check.
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [
+          done("build (x86_64)", "success"),
+          done("lint-and-test", "success"),
+          done("build (mipsel_24kc)", "failure"),
+        ],
+      }),
+    ).toBe("complete");
+  });
+
+  it("is pending while any check is queued, in progress or waiting", () => {
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "in_progress", conclusion: null }],
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "queued", conclusion: null }],
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "waiting", conclusion: null }],
+      }),
+    ).toBe("pending");
+  });
+
+  it("is pending while CI has not started at all", () => {
+    expect(pullRequestHeadCiStateFromAllChecks({ checkRuns: [] })).toBe("pending");
+  });
+
+  it("is unknown when the read failed", () => {
+    expect(pullRequestHeadCiStateFromAllChecks({ checkRuns: null })).toBe("unknown");
+  });
+});
+
 describe("selectOpenPullRequestWorkProduct", () => {
   it("prefers the open primary pull request and ignores merged, closed and archived ones", () => {
     const products = [
@@ -197,5 +242,24 @@ describe("pre-merge approval", () => {
       pullRequestUrl: "https://github.com/acme/app/pull/7",
     });
     expect(notice.message).toContain("Одобрение записано, задача закроется после слияния");
+  });
+});
+
+describe("maintenance-interrupted reviewer run (OPE-12201)", () => {
+  it("recognises only a run cancelled by the maintenance drain", () => {
+    expect(isMaintenanceInterruptedRun({ status: "cancelled", errorCode: "myrmidon_maintenance_interrupted" })).toBe(true);
+    expect(isMaintenanceInterruptedRun({ status: "cancelled", errorCode: "cancelled" })).toBe(false);
+    expect(isMaintenanceInterruptedRun({ status: "failed", errorCode: "myrmidon_maintenance_interrupted" })).toBe(false);
+    expect(isMaintenanceInterruptedRun({ status: "succeeded", errorCode: null })).toBe(false);
+    expect(isMaintenanceInterruptedRun(null)).toBe(false);
+  });
+
+  it("does not spend the decision budget: maintenance_retry rows are not counted", () => {
+    const rows = [
+      { details: { stageId: "s1", kind: "maintenance_retry" } },
+      { details: { stageId: "s1", kind: "maintenance_retry" } },
+      { details: { stageId: "s1", kind: "decision_retry" } },
+    ];
+    expect(countStalledReviewDeferrals(rows, "s1")).toEqual({ ciWaits: 0, decisionRetries: 1 });
   });
 });

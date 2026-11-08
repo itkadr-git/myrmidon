@@ -125,6 +125,22 @@ export function decideStalledReviewRecovery(facts: StalledReviewRecoveryFacts): 
   };
 }
 
+/** Error code of a run the maintenance drain interrupted (myrmidon/maintenance/domain.ts). */
+const MAINTENANCE_INTERRUPTED_ERROR_CODE = "myrmidon_maintenance_interrupted";
+
+/**
+ * myrmidon(OPE-12201): the maintenance drain of a deploy interrupted this run
+ * (cancelled with the maintenance code). That is not a reviewer that failed to
+ * decide: the recovery re-wakes it without spending the decision budget, and
+ * the activity row carries kind "maintenance_retry", which the counter below
+ * does not count.
+ */
+export function isMaintenanceInterruptedRun(
+  run: { status: string; errorCode?: string | null } | null | undefined,
+): boolean {
+  return run?.status === "cancelled" && run.errorCode === MAINTENANCE_INTERRUPTED_ERROR_CODE;
+}
+
 /** Counts the earlier deferrals of one stage from the activity rows this module writes. */
 export function countStalledReviewDeferrals(
   rows: ReadonlyArray<{ details: unknown }>,
@@ -188,6 +204,28 @@ const FINISHED_CHECK_RUN_STATUS = "completed";
  * matters is still queued.
  */
 const NOT_A_VERDICT_CONCLUSIONS: ReadonlySet<string> = new Set(["cancelled", "skipped", "stale"]);
+
+/**
+ * CI state of one head commit from ALL of its check runs (the latest run of
+ * every check name). Repositories without the aggregate `CI result` check
+ * (anything that is not the Myrmidon workflow) still have a finished CI: it is
+ * the moment when no check of the head is queued, in progress or waiting
+ * anymore. Whatever the conclusions, a finished CI is a verdict the reviewer
+ * may act on; zero check runs means CI has not started yet.
+ * A missing check list means the read failed: "unknown".
+ */
+export function pullRequestHeadCiStateFromAllChecks(input: {
+  checkRuns: readonly unknown[] | null;
+}): "pending" | "complete" | "unknown" {
+  if (!input.checkRuns) return "unknown";
+  if (input.checkRuns.length === 0) return "pending";
+  const allFinished = input.checkRuns.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const run = entry as Record<string, unknown>;
+    return run.status === FINISHED_CHECK_RUN_STATUS;
+  });
+  return allFinished ? "complete" : "pending";
+}
 
 /**
  * CI state of one head commit from its check runs. CI of the head is finished

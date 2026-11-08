@@ -541,6 +541,36 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(new Date(scheduled2.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(120_000);
   });
 
+  it("does not flip the agent to error when a later run of the agent succeeded (OPE-12150)", async () => {
+    const { companyId, agentId, runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      scheduledRetryAttempt: CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS,
+      scheduledRetryReason: CONNECT_FAILED_TRANSIENT_RETRY_REASON,
+      createdAt: new Date(now.getTime() - 86_400_000),
+      finishedAt: new Date(now.getTime() - 86_400_000),
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      createdAt: new Date(now.getTime() - 3_600_000),
+      finishedAt: new Date(now.getTime() - 3_500_000),
+    });
+    await db.update(agents).set({ status: "idle", errorReason: null }).where(eq(agents.id, agentId));
+
+    const exhausted = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(exhausted.outcome).toBe("retry_exhausted");
+
+    const agentRow = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+    expect(agentRow?.status).toBe("idle");
+    expect(agentRow?.errorReason).toBeNull();
+  });
+
   it("caps exponential delay at 1 hour and sets agent errorReason when retries exhaust", async () => {
     const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
     await db.update(heartbeatRuns).set({

@@ -74,9 +74,9 @@ describe("hermes gateway feeds tool events to the run guard (read-only loops)", 
     expect(guard39.stopped).toBe(false);
     expect(first.onRunGuardStop).not.toHaveBeenCalled();
 
-    const guard40 = new RunGuard();
-    const commands40 = files(40).map((path) => terminal(`grep -n needle ${path}`));
-    const second = await runFrames(withCompletions(commands40), guard40);
+    const guard41 = new RunGuard();
+    const commands41 = files(41).map((path) => terminal(`grep -n needle ${path}`));
+    const second = await runFrames(withCompletions(commands41), guard41);
     expect(second.onRunGuardStop).toHaveBeenCalledWith("no_progress_exploration");
   });
 
@@ -98,7 +98,7 @@ describe("hermes gateway feeds tool events to the run guard (read-only loops)", 
 
   it("stops the run when the same read is made for the 3rd time", async () => {
     const guard = new RunGuard();
-    const starts = [read("src/a.ts"), read("src/b.ts"), read("src/a.ts"), search("needle"), read("src/a.ts"), read("src/c.ts")];
+    const starts = [read("src/a.ts"), read("src/b.ts"), read("src/a.ts"), search("needle"), read("src/a.ts"), read("src/a.ts")];
     const { onRunGuardStop } = await runFrames(withCompletions(starts), guard);
     expect(guard.stopReason).toBe("repeated_tool_call");
     expect(onRunGuardStop).toHaveBeenCalledTimes(1);
@@ -108,7 +108,7 @@ describe("hermes gateway feeds tool events to the run guard (read-only loops)", 
   it("stops on three identical read_file previews with a line range, but not on three empty previews", async () => {
     const stopping = new RunGuard();
     const first = await runFrames(
-      withCompletions([read("settings.ts L80-199"), read("settings.ts L80-199"), read("settings.ts L80-199")]),
+      withCompletions([read("settings.ts L80-199"), read("settings.ts L80-199"), read("settings.ts L80-199"), read("settings.ts L80-199")]),
       stopping,
     );
     expect(stopping.stopReason).toBe("repeated_tool_call");
@@ -128,5 +128,35 @@ describe("hermes gateway feeds tool events to the run guard (read-only loops)", 
     expect(onRunGuardStop).toHaveBeenCalledTimes(1);
     expect(onRunGuardStop).toHaveBeenCalledWith("no_progress_exploration");
     expect(guard.stats().toolCalls).toBe(5);
+  });
+
+  // myrmidon(OPE-12004): engineer defaults (100 / 5)
+  it("uses code role defaults (100 / 5) for engineer and does not stop at 80 reads", async () => {
+    const guard = new RunGuard({ role: "engineer" });
+    const { onRunGuardStop } = await runFrames(withCompletions(files(80).map(read)), guard);
+    expect(guard.stopped).toBe(false);
+    expect(onRunGuardStop).not.toHaveBeenCalled();
+    expect(guard.stats().readOnlyStreak).toBe(80);
+  });
+
+  it("stops code role (engineer) on the 5th identical read call", async () => {
+    const guard = new RunGuard({ role: "engineer" });
+    const sameReads = [
+      read("src/a.ts"),
+      read("src/b.ts"),
+      read("src/a.ts"),
+      read("src/c.ts"),
+      read("src/a.ts"),
+      read("src/d.ts"),
+      read("src/a.ts"),
+      read("src/e.ts"),
+      read("src/a.ts"),
+      read("src/a.ts"),
+    ];
+    const { onRunGuardStop } = await runFrames(withCompletions(sameReads), guard);
+    expect(guard.stopped).toBe(true);
+    expect(guard.stopReason).toBe("repeated_tool_call");
+    expect(onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(onRunGuardStop).toHaveBeenCalledWith("repeated_tool_call");
   });
 });

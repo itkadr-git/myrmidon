@@ -301,8 +301,13 @@ export function buildSummaryBody(input: {
 }
 
 /**
- * The finisher: one model call over the transcript; the answer lands as the
- * issue document `exchange:<roomId>` with the room's cost in the body.
+ * The finisher: one model call over the transcript. The synthesis lands as a
+ * message in the room transcript with a `[finisher]` mark in the content, so
+ * `GET /myrmidon/agent-exchange/rooms/:roomId` returns it after the
+ * participants' answers (the message grid cell `round = currentRound + 1`,
+ * `participantIndex = participants.length` — one past the roster; the unique
+ * cell index still holds). It also lands as the issue document
+ * `exchange:<roomId>` with the room's cost in the body.
  */
 async function runFinisher(
   deps: AgentExchangeEngineDeps,
@@ -347,6 +352,24 @@ async function runFinisher(
     totalCostCents: room.costCents + costCents,
     participantCount: room.participants.length,
     answerCount: messages.filter((m) => m.status === "done").length,
+  });
+  // The synthesis is also a room message: GET /rooms/:roomId returns the
+  // transcript, and the finisher mark is what distinguishes the result from a
+  // participant answer. Finisher messages use round = currentRound + 1 and a
+  // participant index one past the roster, so listMessages ordering places
+  // the result after the last participant answer.
+  const finisherMessage = await deps.store.insertMessage({
+    roomId: room.id,
+    round: room.currentRound + 1,
+    participantIndex: room.participants.length,
+  });
+  await deps.store.updateMessage(finisherMessage.id, {
+    status: "done",
+    content: `[finisher]\n${body}`,
+    promptTokens: result.promptTokens,
+    completionTokens: result.completionTokens,
+    costCents,
+    completedAt: now(deps),
   });
   const documentKey = await deps.summaries.putSummary({
     issueId: room.issueId,

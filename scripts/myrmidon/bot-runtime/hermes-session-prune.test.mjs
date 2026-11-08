@@ -33,6 +33,39 @@ describe("1.6.6 BOT-DISK hermes session maintenance", () => {
     assert.equal(source.indexOf("run_session_maintenance", 0), -1, "obsolete startup maintenance must not be present");
   });
 
+  it("points SQLite's temp files at the bot's volume before the gateway starts (the VACUUM copy must not be tmpfs)", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const start = source.indexOf('export SQLITE_TMPDIR="${HERMES_HOME}/.sqlite-tmp"');
+    const end = source.indexOf("\nfi\n", start) + 4;
+    const gatewayLaunch = source.indexOf('log "phase gateway_launch starting"');
+    assert.ok(start >= 0 && end > start, "the SQLITE_TMPDIR block must be extractable");
+    assert.ok(end < gatewayLaunch, "SQLITE_TMPDIR must be exported before the gateway starts");
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sqlite-tmpdir-"));
+    try {
+      const home = path.join(root, "data", "hermes");
+      fs.mkdirSync(home, { recursive: true });
+      const out = execFileSync(
+        "bash",
+        ["-c", `set -euo pipefail; umask 077; log() { :; }; HERMES_HOME="${home}"; ${source.slice(start, end)}\nprintf '%s' "\${SQLITE_TMPDIR:-unset}"`],
+        { encoding: "utf8" },
+      );
+      assert.equal(out, path.join(home, ".sqlite-tmp"));
+      assert.equal(fs.statSync(out).mode & 0o777, 0o700, "the directory is owner-only");
+
+      // A volume where the directory cannot be made: the variable is dropped, not left pointing nowhere.
+      fs.writeFileSync(path.join(root, "file"), "");
+      const dropped = execFileSync(
+        "bash",
+        ["-c", `set -euo pipefail; log() { :; }; HERMES_HOME="${path.join(root, "file")}"; ${source.slice(start, end)}\nprintf '%s' "\${SQLITE_TMPDIR:-unset}"`],
+        { encoding: "utf8" },
+      );
+      assert.equal(dropped, "unset");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("runs the live API contract against a mock gateway", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prune-"));
     const previousMockEvents = process.env.MOCK_EVENTS;

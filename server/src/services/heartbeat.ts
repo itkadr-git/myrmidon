@@ -69,9 +69,16 @@ import {
 // myrmidon(RUN-GUARD-LOOPS): a run the run guard stopped is not retried; its issue is blocked.
 // myrmidon(RUN-GUARD-CONTINUE): except a call-limit stop of a run that made changes.
 import {
+  NO_PROGRESS_AUTO_RETRY_HINT,
+  RUN_GUARD_CONTINUATION_CONTEXT_KEY,
+  buildRunGuardStopComment,
   buildRunGuardStopNotice,
+  maxTurnContinuationSchedulerCeiling,
+  parseRunGuardContinuationPolicy,
+  readRunGuardContinuationCount,
   readRunGuardStopReason,
   readRunGuardWriteCalls,
+  runGuardContinuationSchedulerCeiling,
   shouldContinueAfterRunGuardStop,
   type RunGuardStopStats,
 } from "../myrmidon/run-guard-stop.js";
@@ -116,6 +123,12 @@ import {
   type ContinuationCapStop,
 } from "../myrmidon/continuation-cap.js"; // myrmidon(OPE-11948)
 import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
+// myrmidon(OPE-11718): a run refused by the daily run limit waits for the reset.
+import {
+  DAILY_RUN_LIMIT_DEFERRAL_CONTEXT_KEY,
+  DAILY_RUN_LIMIT_RETRY_REASON,
+  computeDailyRunLimitDeferral,
+} from "../myrmidon/daily-run-limit-deferral.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
@@ -514,6 +527,7 @@ import {
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   ISSUE_REWAKE_FREEZE_THRESHOLD,
   evaluateIssueRewakeThrottle,
+  isIssueProgressActivity,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 
@@ -16478,8 +16492,14 @@ export function heartbeatService(
   // myrmidon(RUN-GUARD-CONTINUE): one stop is not final. `model_call_limit` also
   // trips on productive work, so a call-limit stop of a run that made changes
   // (`writeCalls` > 0) continues the work like a max-turn stop does and leaves
-  // the issue as it is; only when the continuation cannot be scheduled (attempt
+  // the issue as it is; only when the continuation cannot be scheduled (its own
   // ceiling spent, policy off, issue moved on) does the stop become final here.
+  //
+  // myrmidon(RUN-GUARD-ESCALATE): a final stop blocks the issue and nobody was
+  // told. The assignee's manager (reports_to, else the agent `adm`) is woken with
+  // `run_guard_stop_needs_input`, once per issue per 30 minutes, to give the task
+  // a new input and put it back to todo. The assignee and the status stay as the
+  // escalation left them.
   async function handleRunGuardStop(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -16519,21 +16539,39 @@ export function heartbeatService(
     ) {
       return null;
     }
-    return recovery.escalateStrandedAssignedIssue({
+    const escalated = await recovery.escalateStrandedAssignedIssue({
       issue,
       previousStatus: issue.status,
       latestRun: run,
       notice: buildRunGuardStopNotice(run, guardStats),
     });
+    if (escalated) {
+      await recovery
+        .wakeManagerForRunGuardStop({
+          issue,
+          latestRun: run,
+          stopText: buildRunGuardStopComment(run, guardStats),
+        })
+        .catch((err) => {
+          logger.warn(
+            { err, runId: run.id, issueId: issue.id },
+            "failed to wake the manager after a run guard stop",
+          );
+        });
+    }
+    return escalated;
   }
 
   // myrmidon(RUN-GUARD-CONTINUE): continue the work of a run the run guard
   // stopped at the model call limit after it made changes. The same machinery as
-  // the max-turn continuation: the same retry reason, the same attempt ceiling
-  // (`heartbeat.maxTurnContinuation.maxAttempts`, counted along the chain of
-  // continuations), the same issue gate. Returns true when a continuation run
-  // is scheduled (the caller then leaves the issue alone), false when it is not:
-  // the caller falls back to the final stop (block + comment).
+  // the max-turn continuation (the same retry reason, the same issue gate), but
+  // with its own ceiling: `heartbeat.runGuardContinuation.maxAttempts` (default
+  // 6, at most 20), counted along the chain of such continuations only. The
+  // max-turn ceiling (`heartbeat.maxTurnContinuation.maxAttempts`) is not spent
+  // by them: three productive runs of 150 calls each are work, not a loop.
+  // Returns true when a continuation run is scheduled (the caller then leaves
+  // the issue alone), false when it is not: the caller falls back to the final
+  // stop (block + comment).
   async function continueRunStoppedAtCallLimit(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -16541,14 +16579,39 @@ export function heartbeatService(
   ): Promise<boolean> {
     const reason = readRunGuardStopReason(run);
     const writeCalls = readRunGuardWriteCalls(run, guardStats);
-    const policy = parseMaxTurnContinuationPolicy(agent);
-    if (!policy.enabled || policy.maxAttempts <= 0) {
+    const isNoProgress = reason === "no_progress_exploration";
+    const maxTurnPolicy = parseMaxTurnContinuationPolicy(agent);
+    const guardPolicy = parseRunGuardContinuationPolicy(agent.runtimeConfig);
+    if (!maxTurnPolicy.enabled || (!isNoProgress && (!guardPolicy.enabled || guardPolicy.maxAttempts <= 0))) {
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run guard continuation suppressed because the max-turn continuation policy is disabled",
-        payload: { runGuardStopReason: reason, writeCalls, policy },
+        message: "Run guard continuation suppressed because the continuation policy is disabled",
+        payload: { runGuardStopReason: reason, writeCalls, maxTurnPolicy, runGuardContinuation: guardPolicy },
+      });
+      return false;
+    }
+    const continuationsMade = readRunGuardContinuationCount(run);
+    const schedulerCeiling = isNoProgress
+      ? 1
+      : runGuardContinuationSchedulerCeiling({
+          scheduledRetryAttempt: run.scheduledRetryAttempt,
+          continuationsMade,
+          maxAttempts: guardPolicy.maxAttempts,
+        });
+    if (schedulerCeiling === null) {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Run guard continuation ceiling spent after ${continuationsMade} continuations; the stop is final`,
+        payload: {
+          runGuardStopReason: reason,
+          writeCalls,
+          runGuardContinuationAttempts: continuationsMade,
+          runGuardContinuationMaxAttempts: guardPolicy.maxAttempts,
+        },
       });
       return false;
     }
@@ -16556,9 +16619,15 @@ export function heartbeatService(
       const scheduled = await scheduleBoundedRetryForRun(run, agent, {
         retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
         wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-        maxAttempts: policy.maxAttempts,
-        delayMs: policy.delayMs,
+        maxAttempts: schedulerCeiling,
+        delayMs: maxTurnPolicy.delayMs,
         runGuardContinuation: true,
+        ...(isNoProgress
+          ? {
+              livenessContinuationInstruction: NO_PROGRESS_AUTO_RETRY_HINT,
+              livenessContinuationState: "no_progress_exploration_auto_retry",
+            }
+          : {}),
       });
       if (scheduled.outcome !== "scheduled") return false;
       await appendRunEvent(run, {
@@ -16572,7 +16641,12 @@ export function heartbeatService(
           modelCalls: guardStats.modelCalls ?? null,
           retryRunId: scheduled.run.id,
           scheduledRetryAttempt: scheduled.attempt,
-          maxAttempts: scheduled.maxAttempts,
+          ...(isNoProgress
+            ? { maxAttempts: scheduled.maxAttempts }
+            : {
+                runGuardContinuationAttempt: continuationsMade + 1,
+                runGuardContinuationMaxAttempts: guardPolicy.maxAttempts,
+              }),
         },
       });
       return true;
@@ -16597,6 +16671,8 @@ export function heartbeatService(
       delayMs?: number;
       // myrmidon(RUN-GUARD-CONTINUE): set by continueRunStoppedAtCallLimit only.
       runGuardContinuation?: boolean;
+      livenessContinuationInstruction?: string;
+      livenessContinuationState?: string;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -16604,16 +16680,18 @@ export function heartbeatService(
     // asks (recovery sweep, process-loss retry, quota monitor, continuation).
     // Maintenance interruptions and transport failures are different error codes
     // and keep their own retry paths.
-    // myrmidon(RUN-GUARD-CONTINUE): the one exception is the continuation of a
-    // call-limit stop that handleRunGuardStop found productive (it passes the
-    // flag); the scheduler still checks the stop reason and the retry reason.
+    // myrmidon(RUN-GUARD-CONTINUE): the exceptions are continuations of:
+    // 1. A call-limit stop that handleRunGuardStop found productive (it passes the flag).
+    // 2. myrmidon(OPE-12004): a no_progress_exploration stop (one auto-retry with a hint).
+    const isAllowedGuardContinuation =
+      opts?.runGuardContinuation === true &&
+      opts.retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
+      (readRunGuardStopReason(run) === "model_call_limit" ||
+        readRunGuardStopReason(run) === "no_progress_exploration");
+
     if (
       readRunGuardStopReason(run) &&
-      !(
-        opts?.runGuardContinuation === true &&
-        opts.retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
-        readRunGuardStopReason(run) === "model_call_limit"
-      )
+      !isAllowedGuardContinuation
     ) {
       await appendRunEvent(run, {
         eventType: "lifecycle",
@@ -16756,10 +16834,30 @@ export function heartbeatService(
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
     if (isGatewayConnectFailed && !baseSchedule) {
-      await db
-        .update(agents)
-        .set({ status: "error", errorReason: "контейнер не поднят", updatedAt: now })
-        .where(eq(agents.id, agent.id));
+      // myrmidon(OPE-12150): the stranded-issue sweep re-schedules the last run of
+      // an in_progress issue every pass, so an old run whose connect retries ran
+      // out flipped a healthy agent back to error minutes after an operator
+      // cleared it. A run of this agent that succeeded after this one proves the
+      // container came up since; the exhausted budget then belongs to the old run
+      // only and must not mark the agent.
+      const laterSucceededRun = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agent.id),
+            eq(heartbeatRuns.status, "succeeded"),
+            gt(heartbeatRuns.createdAt, run.createdAt),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!laterSucceededRun) {
+        await db
+          .update(agents)
+          .set({ status: "error", errorReason: "контейнер не поднят", updatedAt: now })
+          .where(eq(agents.id, agent.id));
+      }
     }
     if (!baseSchedule) {
       const exhaustion = {
@@ -16973,6 +17071,17 @@ export function heartbeatService(
         retryOfRunId: run.id,
         wakeReason,
         retryReason,
+        ...(opts?.livenessContinuationInstruction
+          ? {
+              livenessContinuationInstruction:
+                opts.livenessContinuationInstruction,
+            }
+          : {}),
+        ...(opts?.livenessContinuationState
+          ? {
+              livenessContinuationState: opts.livenessContinuationState,
+            }
+          : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {
               failureRetriesBeforeWorkspaceWait:
@@ -17007,6 +17116,11 @@ export function heartbeatService(
         ...(isModelUnavailable ? { modelUnavailableRetry: true } : {}),
         scheduledRetryAttempt: schedule.attempt,
         scheduledRetryAt: schedule.dueAt.toISOString(),
+        // myrmidon(RUN-GUARD-CONTINUE): the chain's own count of call-limit
+        // continuations, so they spend their ceiling and not the max-turn one.
+        ...(opts?.runGuardContinuation === true
+          ? { [RUN_GUARD_CONTINUATION_CONTEXT_KEY]: readRunGuardContinuationCount(run) + 1 }
+          : {}),
         // myrmidon(1.6.6 RUN-RETRY-POLICY): what the schedule decided about the
         // failure, persisted so the board can show "attempt N of M" with the
         // class of the failure instead of a bare attempt number (read back by
@@ -18460,6 +18574,9 @@ export function heartbeatService(
           reason: "heartbeat.daily_run_limit",
           observed,
           limit: policy.maxDailyRuns,
+          // myrmidon(OPE-11718): the end of the day this verdict counted in,
+          // i.e. the moment the limit starts from zero again.
+          windowEnd: end,
         };
       }
     }
@@ -18484,6 +18601,7 @@ export function heartbeatService(
           reason: "heartbeat.daily_cost_limit",
           observed,
           limit: policy.maxDailyCostCents,
+          windowEnd: end,
         };
       }
     }
@@ -18498,6 +18616,136 @@ export function heartbeatService(
     const full = await getAgent(agent.id);
     if (!full || full.companyId !== agent.companyId) return null;
     return getHeartbeatDailyCapBlock(full, parseHeartbeatPolicy(full));
+  }
+
+  // myrmidon(OPE-11718): a queued run refused by the daily RUN limit is not
+  // cancelled (a cancelled run is final and its task hung until some outside
+  // event): it waits for the limit to reset. The same row moves from `queued`
+  // to `scheduled_retry`, due at the end of the day window the gate counted in
+  // (`windowEnd`, the UTC midnight) plus a small jitter, and the existing
+  // due-retry sweep (batched, oldest first) promotes it back to the queue, where
+  // the claim gate checks the limit again. A second refusal defers the same row
+  // once more, so a run is never duplicated by it.
+  //
+  // The run's own retry identity is left alone: `scheduled_retry_reason` and
+  // `scheduled_retry_attempt` are what `executionFailureRetryCount`, the
+  // workspace-busy ladder and the retry kind of the promote/claim gates read,
+  // so a max-turn continuation at attempt 3 must still be one afterwards. The
+  // only trace of the wait is `contextSnapshot.dailyRunLimitDeferral`.
+  //
+  // - "not_deferrable": a limit of zero never frees a slot (hard stop), a manual
+  //   wake of a user is an explicit override whose refusal must be seen at once
+  //   (cancelled with the reason, as before), and the daily COST limit is not
+  //   handled here: the caller cancels.
+  // - "lost": the run left `queued` under us (cancelled, claimed, already
+  //   deferred by a concurrent claim); nothing is left to do for it.
+  async function deferQueuedRunForHeartbeatDailyRunLimit(
+    run: typeof heartbeatRuns.$inferSelect,
+    dailyCapBlock: NonNullable<
+      Awaited<ReturnType<typeof getHeartbeatDailyCapBlock>>
+    >,
+  ): Promise<
+    | { outcome: "deferred"; run: typeof heartbeatRuns.$inferSelect }
+    | { outcome: "not_deferrable" }
+    | { outcome: "lost" }
+  > {
+    const now = new Date();
+    const deferral = computeDailyRunLimitDeferral({
+      resetAt: dailyCapBlock.windowEnd,
+      limit: dailyCapBlock.limit,
+    });
+    if (dailyCapBlock.reason !== DAILY_RUN_LIMIT_RETRY_REASON || !deferral) {
+      return { outcome: "not_deferrable" };
+    }
+    // `manualUserWake` is written into the wake payload only by the enqueue
+    // path for an authenticated user (a caller's own copy is stripped).
+    const wake = run.wakeupRequestId
+      ? await db
+          .select({ payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (parseObject(wake?.payload).manualUserWake === true) {
+      return { outcome: "not_deferrable" };
+    }
+    const context = parseObject(run.contextSnapshot);
+    const previousDeferrals = Number(
+      parseObject(context[DAILY_RUN_LIMIT_DEFERRAL_CONTEXT_KEY]).count ?? 0,
+    );
+    const message = `Daily run limit reached (${dailyCapBlock.observed}/${dailyCapBlock.limit}); the run waits for the reset at ${deferral.resetAt.toISOString()}`;
+    const deferred = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: deferral.dueAt,
+        // scheduledRetryReason and scheduledRetryAttempt are left as they are:
+        // this wait is not a failure retry (see the comment above).
+        ...runContextPersistenceFields({
+          ...context,
+          [DAILY_RUN_LIMIT_DEFERRAL_CONTEXT_KEY]: {
+            count: (Number.isFinite(previousDeferrals) ? previousDeferrals : 0) + 1,
+            deferredAt: now.toISOString(),
+            resetAt: deferral.resetAt.toISOString(),
+            dueAt: deferral.dueAt.toISOString(),
+            observed: dailyCapBlock.observed,
+            limit: dailyCapBlock.limit,
+          },
+        }),
+        executionStatusDeliveryId: randomUUID(),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!deferred) return { outcome: "lost" };
+
+    publishLiveEvent({
+      companyId: deferred.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(deferred),
+    });
+    await appendRunEvent(deferred, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message,
+      payload: {
+        reason: dailyCapBlock.reason,
+        observed: dailyCapBlock.observed,
+        limit: dailyCapBlock.limit,
+        resetAt: deferral.resetAt.toISOString(),
+        scheduledRetryAt: deferral.dueAt.toISOString(),
+      },
+    });
+
+    // The wait is not execution: the issue lock is released, and the run takes
+    // it again when it is claimed (lazy locking). A later wake of the task does
+    // not take it back for the waiting run (the legacy-run lookup of the enqueue
+    // path skips a run in this wait), so other agents' wakes are not held until
+    // the reset. Two retry kinds are the exception: a max-turn continuation and
+    // a subscription wait are valid only while they own the lock
+    // (decideExecutionLock), so they keep it, like any scheduled retry of those
+    // kinds does; the kind is read the way the gates read it (the run's own
+    // retry reason, then the context's).
+    const keepsIssueLock = [run.scheduledRetryReason, readNonEmptyString(context.retryReason)].some(
+      (reason) =>
+        reason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+        reason === AI_CONNECTION_BUSY_RETRY_REASON,
+    );
+    if (!keepsIssueLock) {
+      await releaseIssueExecutionAndPromote(deferred, {
+        suppressImmediateRecovery: true,
+      });
+    }
+    return { outcome: "deferred", run: deferred };
   }
 
   async function cancelQueuedRunForHeartbeatDailyCap(
@@ -19015,7 +19263,14 @@ export function heartbeatService(
       },
     );
     if (dailyCapBlock) {
-      await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
+      // myrmidon(OPE-11718): the daily run limit defers the run to the reset.
+      const deferral = await deferQueuedRunForHeartbeatDailyRunLimit(
+        run,
+        dailyCapBlock,
+      );
+      if (deferral.outcome === "not_deferrable") {
+        await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
+      }
       return null;
     }
 
@@ -20428,6 +20683,14 @@ export function heartbeatService(
       return invokability.invokable;
     },
     isAgentUnderMaintenance: (agentId) => isAgentUnderMaintenance(db, agentId),
+    // myrmidon(1.6.6 AUTO-RESUME container): an agent left in "контейнер не поднят" gets its bot
+    // container started first, by the call that starts an idle-stopped container before a run
+    // (claimQueuedRun) - it waits for healthy and throws when the container does not come up.
+    startContainer: async (agentId) => {
+      const idleStop = getIdleStopService();
+      if (!idleStop) throw new Error("IDLE-STOP service is not initialized: no bot container driver to start the container");
+      await idleStop.ensureStartedAndHealthy(agentId);
+    },
   });
 
   // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues.
@@ -23927,6 +24190,7 @@ export function heartbeatService(
       runGuard = new RunGuard(resolveRunGuardOptions({
         agentConfig: agent.adapterConfig,
         teamLiveness: teamLiveness?.settings,
+        role: agent.role,
       }));
 
       // The claimed adapter identity is immutable recovery evidence. Do not
@@ -29315,7 +29579,9 @@ export function heartbeatService(
               await scheduleBoundedRetryForRun(livenessRun, agent, {
                 retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
                 wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-                maxAttempts: policy.maxAttempts,
+                // myrmidon(RUN-GUARD-CONTINUE): the call-limit continuations of
+                // the chain share the counter but do not spend this ceiling.
+                maxAttempts: maxTurnContinuationSchedulerCeiling(policy.maxAttempts, livenessRun),
                 delayMs: policy.delayMs,
               });
             } else {
@@ -32388,6 +32654,14 @@ export function heartbeatService(
                     ...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
                   ]),
                   sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                  // myrmidon(OPE-11718): a run waiting for its agent's daily run
+                  // limit to reset (context key dailyRunLimitDeferral) does not
+                  // become the task's lock holder for ANOTHER agent's wake: the
+                  // first such wake would otherwise park every other executor's
+                  // wakes until midnight. The same agent's wakes still find it,
+                  // so they merge into the waiting run (admitWakeBehindIssueExecution)
+                  // instead of each adding a run that is deferred in turn.
+                  sql`not (${heartbeatRuns.status} = 'scheduled_retry' and ${heartbeatRuns.contextSnapshot} -> 'dailyRunLimitDeferral' is not null and ${heartbeatRuns.agentId} <> ${agentId})`,
                 ),
               )
               .orderBy(
@@ -33251,8 +33525,15 @@ export function heartbeatService(
               const sampleRunIds = recentTerminalRuns.map(
                 (sampleRun) => sampleRun.id,
               );
-              const progressRows = await tx
-                .select({ runId: activityLog.runId })
+              const progressActivityRows = await tx
+                .select({
+                  runId: activityLog.runId,
+                  action: activityLog.action,
+                  // Only the two JSON paths the progress read looks at, not
+                  // the whole (possibly large) `details` of every row.
+                  changes: sql<unknown>`${activityLog.details} -> 'changes'`,
+                  source: sql<string | null>`${activityLog.details} ->> 'source'`,
+                })
                 .from(activityLog)
                 .where(
                   and(
@@ -33266,6 +33547,11 @@ export function heartbeatService(
                     ),
                   ),
                 );
+              // myrmidon(1.6.6 OPE-12049): a run's own bookkeeping (release,
+              // assign to itself, the echo of its final text) is not progress.
+              const progressRows = progressActivityRows.filter((row) =>
+                isIssueProgressActivity(row, agentId),
+              );
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
               const latestRevision = readNonEmptyString(
@@ -33288,6 +33574,9 @@ export function heartbeatService(
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
                           : undefined,
+                        // myrmidon(1.6.6 OPE-12049): the woken agent's own
+                        // writes are not new input for itself.
+                        sql`(${activityLog.actorType} is distinct from 'agent' or ${activityLog.actorId} is distinct from ${agentId})`,
                       ),
                     )
                     .limit(1)

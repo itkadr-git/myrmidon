@@ -448,6 +448,26 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     manager.close();
   });
 
+  it("takes the fresh site row on refresh when the connection is unchanged, so a profile change reaches getSite", async () => {
+    let sites: FleetSite[] = [mkSite()];
+    const created: FleetdDriverConfig[] = [];
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
+      readCompanySecret: async (companyId, name) => name === "client-key" ? "fake-client-key" : `secret:${companyId}:${name}`,
+      createDriver: (c) => {
+        created.push(c);
+        return fakeDriver(c.baseUrl);
+      },
+    });
+    await manager.refresh();
+    expect(manager.getSite?.("myr-vm1", "company-1")?.profile).toEqual({});
+    sites = [mkSite({ profile: { privateNetwork: true } } as Partial<FleetSite>)];
+    await manager.refresh();
+    expect(created).toHaveLength(1); // same connection: no rebuild
+    expect(manager.getSite?.("myr-vm1", "company-1")?.profile).toEqual({ privateNetwork: true });
+    manager.close();
+  });
+
   it("rebuilds the client when a secret VALUE rotates under the same name, and destroys the old agent", async () => {
     let value = "tok-1";
     const created: FleetdDriverConfig[] = [];

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,5 +72,40 @@ func TestInternalReconcilerSpecRejectedByFleetdDisallowUnknownFields(t *testing.
 	}
 	if err := decodeBody(req, &body); err == nil {
 		t.Fatalf("expected decodeBody to reject raw internal spec with unknown fields, but it succeeded")
+	}
+}
+
+func TestDecodeBodyRejectsTrailingContent(t *testing.T) {
+	raw := []byte(`{"spec": {"botKey": "b", "image": "img", "memoryMb": 128, "cpus": 1, "pidsLimit": 10, "network": "net"}} {"extra": 1}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/bots", bytes.NewReader(raw))
+	var body struct {
+		Spec spec `json:"spec"`
+	}
+	if err := decodeBody(req, &body); err == nil {
+		t.Fatalf("expected decodeBody to reject trailing content, but it succeeded")
+	}
+}
+
+func TestDockerCreateRejectsGatewayPortWithoutGatewayBindIP(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/reconciler-spec.json")
+	if err != nil {
+		t.Fatalf("failed to read testdata/reconciler-spec.json: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/bots", bytes.NewReader(fixture))
+	var body struct {
+		Spec spec `json:"spec"`
+	}
+	if err := decodeBody(req, &body); err != nil {
+		t.Fatalf("decodeBody rejected reconciler wire spec: %v", err)
+	}
+	body.Spec.GatewayPort = 18801
+
+	client := &dockerClient{
+		images:        []string{body.Spec.Image},
+		gatewayBindIP: "",
+	}
+	err = client.create(context.Background(), body.Spec, nil)
+	if err == nil || err.Error() != "gateway_bind_ip_required" {
+		t.Fatalf("expected gateway_bind_ip_required when gatewayBindIP is empty and GatewayPort > 0, got: %v", err)
 	}
 }

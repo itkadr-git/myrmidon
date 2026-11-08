@@ -8,9 +8,9 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 
 ## Baseline Counts
 
-- Skill/reference headings: 163
+- Skill/reference headings: 164
 - Eval cases: 106 across 16 groups
-- Total normative rows: 269
+- Total normative rows: 270
 - Legacy MCP aliases folded into normative rows: 42
 
 | Eval group | Cases |
@@ -54,7 +54,7 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/chat-turns.md:conversation-tasks:3 | optional_agent_tool | skills/paperclip/references/chat-turns.md:3 |
 | skill:skills/paperclip/references/chat-turns.md:server-verified-external-chat-turns:20 | control_plane_owned | skills/paperclip/references/chat-turns.md:20 |
 | skill:skills/paperclip/references/heartbeat-procedure.md:the-heartbeat-procedure:3 | optional_agent_tool | skills/paperclip/references/heartbeat-procedure.md:3 |
-| skill:skills/paperclip/references/heartbeat-procedure.md:delegating-review-tasks:77 | always_agent_tool | skills/paperclip/references/heartbeat-procedure.md:77 |
+| skill:skills/paperclip/references/heartbeat-procedure.md:delegating-review-tasks:79 | always_agent_tool | skills/paperclip/references/heartbeat-procedure.md:79 |
 | skill:skills/paperclip/references/disposition-and-monitors.md:generated-artifacts-and-work-products:3 | always_agent_tool | skills/paperclip/references/disposition-and-monitors.md:3 |
 | skill:skills/paperclip/references/disposition-and-monitors.md:status-quick-guide:51 | control_plane_owned | skills/paperclip/references/disposition-and-monitors.md:51 |
 | skill:skills/paperclip/references/disposition-and-monitors.md:monitors-and-watchers-say-only-what-you-actually-scheduled:61 | optional_agent_tool | skills/paperclip/references/disposition-and-monitors.md:61 |
@@ -62,6 +62,7 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/tasks-blockers-approvals.md:managing-a-user-s-inbox:11 | control_plane_owned | skills/paperclip/references/tasks-blockers-approvals.md:11 |
 | skill:skills/paperclip/references/tasks-blockers-approvals.md:issue-dependencies-blockers:19 | control_plane_owned | skills/paperclip/references/tasks-blockers-approvals.md:19 |
 | skill:skills/paperclip/references/tasks-blockers-approvals.md:requesting-board-approval:44 | optional_agent_tool | skills/paperclip/references/tasks-blockers-approvals.md:44 |
+| skill:skills/paperclip/references/tasks-blockers-approvals.md:engineer-gate-422-naming-the-caste-and-re-casting-the-task:65 | optional_agent_tool | skills/paperclip/references/tasks-blockers-approvals.md:65 |
 | skill:skills/paperclip/references/interactions-and-decisions.md:issue-thread-interactions:3 | optional_agent_tool | skills/paperclip/references/interactions-and-decisions.md:3 |
 | skill:skills/paperclip/references/interactions-and-decisions.md:standalone-decisions:32 | optional_agent_tool | skills/paperclip/references/interactions-and-decisions.md:32 |
 | skill:skills/paperclip/references/interactions-and-decisions.md:mcp-tool-approval-gates:136 | optional_agent_tool | skills/paperclip/references/interactions-and-decisions.md:136 |
@@ -197,13 +198,13 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/api-reference.md:full-api-reference:1340 | optional_agent_tool | skills/paperclip/references/api-reference.md:1340 |
 | skill:skills/paperclip/references/api-reference.md:agents:1342 | optional_agent_tool | skills/paperclip/references/api-reference.md:1342 |
 | skill:skills/paperclip/references/api-reference.md:issues-tasks:1363 | optional_agent_tool | skills/paperclip/references/api-reference.md:1363 |
-| skill:skills/paperclip/references/api-reference.md:companies-projects-goals:1404 | optional_agent_tool | skills/paperclip/references/api-reference.md:1404 |
-| skill:skills/paperclip/references/api-reference.md:routines:1428 | optional_agent_tool | skills/paperclip/references/api-reference.md:1428 |
-| skill:skills/paperclip/references/api-reference.md:approvals-costs-activity-dashboard:1444 | optional_agent_tool | skills/paperclip/references/api-reference.md:1444 |
-| skill:skills/paperclip/references/api-reference.md:secrets:1466 | optional_agent_tool | skills/paperclip/references/api-reference.md:1466 |
-| skill:skills/paperclip/references/api-reference.md:agent-secret-proposals:1479 | optional_agent_tool | skills/paperclip/references/api-reference.md:1479 |
-| skill:skills/paperclip/references/api-reference.md:agent-secret-access:1593 | optional_agent_tool | skills/paperclip/references/api-reference.md:1593 |
-| skill:skills/paperclip/references/api-reference.md:common-mistakes:1633 | optional_agent_tool | skills/paperclip/references/api-reference.md:1633 |
+| skill:skills/paperclip/references/api-reference.md:companies-projects-goals:1406 | optional_agent_tool | skills/paperclip/references/api-reference.md:1406 |
+| skill:skills/paperclip/references/api-reference.md:routines:1430 | optional_agent_tool | skills/paperclip/references/api-reference.md:1430 |
+| skill:skills/paperclip/references/api-reference.md:approvals-costs-activity-dashboard:1446 | optional_agent_tool | skills/paperclip/references/api-reference.md:1446 |
+| skill:skills/paperclip/references/api-reference.md:secrets:1468 | optional_agent_tool | skills/paperclip/references/api-reference.md:1468 |
+| skill:skills/paperclip/references/api-reference.md:agent-secret-proposals:1481 | optional_agent_tool | skills/paperclip/references/api-reference.md:1481 |
+| skill:skills/paperclip/references/api-reference.md:agent-secret-access:1595 | optional_agent_tool | skills/paperclip/references/api-reference.md:1595 |
+| skill:skills/paperclip/references/api-reference.md:common-mistakes:1635 | optional_agent_tool | skills/paperclip/references/api-reference.md:1635 |
 
 ## Legacy MCP Alias Index
 

@@ -13,6 +13,7 @@ import {
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { recordAuth401 } from "../myrmidon/auth-401-burst/index.js";
 
 export interface ErrorContext {
   error: {
@@ -161,6 +162,12 @@ export function errorHandler(
         ? (responseDetailsValue as Record<string, unknown>)
         : null;
     recordResponsibleUserDenialFromHttpError(req, details);
+    // myrmidon(OPE-11890): count every auth 401 toward the in-process burst
+    // detector. Only the closed-set req.actorNoneReason is passed — the
+    // Authorization header / token never reaches the counter or any log line.
+    if (err.status === 401) {
+      recordAuth401(req.actorNoneReason);
+    }
     if (err.status >= 500) {
       const reportableError = sanitizeSecretSensitiveError(req, err);
       attachErrorContext(

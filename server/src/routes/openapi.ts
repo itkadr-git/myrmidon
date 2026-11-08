@@ -1304,6 +1304,9 @@ const PUBLIC_OPERATIONS = new Set([
   "POST /mcp/gateways/{gatewayPublicId}",
   "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
   "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
+  // myrmidon(1.7 WEBHOOK-INTAKE): public webhook intake; the route handler
+  // validates the optional per-source bearer/secret token itself.
+  "POST /api/intake/{source}",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -5670,6 +5673,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/status-strip",
+  tags: ["sidebar"],
+  summary: "Get the UI2 header status strip for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/sidebar-badges",
   tags: ["sidebar"],
   summary: "Get sidebar badge counts",
@@ -6482,6 +6494,14 @@ for (const path of ["/api/updates/settings", "/api/updates", "/api/myrmidon/upda
   });
   registry.registerPath({
     method: "put",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "post",
     path,
     tags: ["instance"],
     summary: "Replace auto-update settings",
@@ -11946,4 +11966,29 @@ registerCurrentRoute({
     params: z.record(z.string(), z.unknown()).optional(),
   }),
   responses: { 200: r.ok(), 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+// myrmidon(1.7 WEBHOOK-INTAKE): public webhook intake ingress. Accepts an
+// event, responds 202 with the intake id and enqueues the payload for parsing.
+// Per-source rate limits apply (429 with Retry-After); an optional per-source
+// token (configured via env refs) is verified by the route handler itself.
+registerCurrentRoute({
+  method: "post",
+  path: "/api/intake/{source}",
+  tags: ["webhooks"], summary: "Accept an inbound webhook and enqueue it for parsing",
+  body: z.record(z.string(), z.unknown()),
+  responses: {
+    202: r.ok(
+      z.object({
+        id: z.string(),
+        status: z.literal("accepted"),
+        source: z.string(),
+        enqueuedAt: z.string(),
+      }),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    429: r.tooManyRequests,
+  },
 });

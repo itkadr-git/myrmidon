@@ -47,6 +47,9 @@ enum CommandLifecycle {
 }
 
 const TERMINAL_RESULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound for a terminal result acknowledgement wait that keeps being
+/// extended by controller progress (see `wait_for_terminal_result_ack`).
+const TERMINAL_RESULT_ACK_MAX_WAIT: Duration = Duration::from_secs(10);
 const CUMULATIVE_ACK_PERSIST_INTERVAL: usize = 16;
 
 fn sleep_for_reconnect(base: Duration, max_delay: Duration, attempt: &mut u32) {
@@ -1161,6 +1164,25 @@ fn finish_terminal_reconciliation<E: CommandExecutor>(
     complete_terminal_delivery_after_cleanup(state, store)
 }
 
+/// Deadline of the terminal result acknowledgement wait after a cumulative
+/// ACK. The controller handles frames strictly in order, so the result can sit
+/// behind event frames it is still committing; an ACK that moves the cursor
+/// proves it is draining that backlog, so the window restarts from `now`. The
+/// wait never ends later than `started + TERMINAL_RESULT_ACK_MAX_WAIT`, never
+/// moves earlier, and an ACK that does not advance the cursor (a repeat) does
+/// not extend it, so a controller replaying one ACK cannot hold the runner.
+fn terminal_result_ack_deadline(
+    current: Instant,
+    started: Instant,
+    now: Instant,
+    cursor_advanced: bool,
+) -> Instant {
+    if !cursor_advanced {
+        return current;
+    }
+    current.max((now + TERMINAL_RESULT_ACK_TIMEOUT).min(started + TERMINAL_RESULT_ACK_MAX_WAIT))
+}
+
 fn wait_for_terminal_result_ack(
     transport: &mut AuthenticatedTransport,
     state: &mut DurableState,
@@ -1168,7 +1190,8 @@ fn wait_for_terminal_result_ack(
     connection: &ConnectionMetadata,
     result: &StoredCommandResult,
 ) -> Result<(), DurableRunnerError> {
-    let deadline = Instant::now() + TERMINAL_RESULT_ACK_TIMEOUT;
+    let started = Instant::now();
+    let mut deadline = started + TERMINAL_RESULT_ACK_TIMEOUT;
     let mut ack_persistence = CumulativeAckPersistence::default();
     while Instant::now() < deadline {
         let Some(message) = transport.receive_json()? else {
@@ -1204,7 +1227,14 @@ fn wait_for_terminal_result_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
+                let previous = state.acked_source_seq;
                 ack_persistence.apply(state, store, acked, connection.protocol_version)?;
+                deadline = terminal_result_ack_deadline(
+                    deadline,
+                    started,
+                    Instant::now(),
+                    acked > previous,
+                );
             }
             Some("ping") => transport.send_json(&control_envelope(
                 state,
@@ -1939,6 +1969,54 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn terminal_result_ack_window_follows_cursor_progress_up_to_the_cap() {
+        let started = Instant::now();
+        let initial = started + TERMINAL_RESULT_ACK_TIMEOUT;
+        let at = |millis: u64| started + Duration::from_millis(millis);
+
+        // Without any ACK the window stays the single fixed one.
+        assert_eq!(
+            terminal_result_ack_deadline(initial, started, at(500), false),
+            initial
+        );
+
+        // An ACK that advances the cursor restarts a full window from now.
+        let extended = terminal_result_ack_deadline(initial, started, at(1_500), true);
+        assert_eq!(extended, at(1_500) + TERMINAL_RESULT_ACK_TIMEOUT);
+        assert!(extended > initial);
+
+        // A repeated ACK without progress does not extend it, however often
+        // it arrives.
+        assert_eq!(
+            terminal_result_ack_deadline(extended, started, at(2_500), false),
+            extended
+        );
+        assert_eq!(
+            terminal_result_ack_deadline(extended, started, at(3_400), false),
+            extended
+        );
+
+        // Progress keeps extending, but never past the hard cap...
+        let capped = terminal_result_ack_deadline(extended, started, at(9_500), true);
+        assert_eq!(capped, started + TERMINAL_RESULT_ACK_MAX_WAIT);
+        assert_eq!(
+            terminal_result_ack_deadline(capped, started, at(9_900), true),
+            capped
+        );
+        // ...and a late ACK past the cap cannot move it either.
+        assert_eq!(
+            terminal_result_ack_deadline(capped, started, at(12_000), true),
+            capped
+        );
+
+        // The deadline never moves earlier than the one already granted.
+        assert_eq!(
+            terminal_result_ack_deadline(capped, started, at(100), true),
+            capped
+        );
+    }
 
     struct CountingExecutor {
         calls: usize,

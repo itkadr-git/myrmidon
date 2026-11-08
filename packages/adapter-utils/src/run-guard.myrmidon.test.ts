@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  CODE_ROLES,
+  DEFAULT_CODE_NO_PROGRESS_LIMIT,
+  DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT,
   DEFAULT_NO_PROGRESS_LIMIT,
   DEFAULT_REPEATED_TOOL_CALL_LIMIT,
   RUN_GUARD_STOP_REASONS,
   RunGuard,
+  isCodeRole,
   isRunGuardStopReason,
   resolveRunGuardOptions,
 } from "./run-guard.js";
@@ -65,6 +69,10 @@ describe("RunGuard repeated tool call stop", () => {
     expect(guard.toolStarted("read_file", "src/a.ts").stop).toBe(false);
     expect(guard.toolStarted("search_files", "needle").stop).toBe(false);
     expect(guard.toolStarted("read_file", "src/a.ts").stop).toBe(false);
+    expect(guard.toolStarted("read_file", "src/a.ts")).toEqual({
+      stop: false, hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 3 },
+    });
+    expect(guard.stopped).toBe(false);
     expect(guard.toolStarted("read_file", "src/a.ts")).toEqual({ stop: true, reason: "repeated_tool_call" });
     expect(DEFAULT_REPEATED_TOOL_CALL_LIMIT).toBe(3);
   });
@@ -73,6 +81,9 @@ describe("RunGuard repeated tool call stop", () => {
     const guard = new RunGuard();
     expect(guard.toolStarted("read_file", "settings.ts L80-199").stop).toBe(false);
     expect(guard.toolStarted("read_file", "settings.ts L80-199").stop).toBe(false);
+    expect(guard.toolStarted("read_file", "settings.ts L80-199")).toEqual({
+      stop: false, hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 3 },
+    });
     expect(guard.toolStarted("read_file", "settings.ts L80-199")).toEqual({ stop: true, reason: "repeated_tool_call" });
     // Another line range of the same file is a different call.
     const other = new RunGuard();
@@ -98,6 +109,9 @@ describe("RunGuard repeated tool call stop", () => {
     expect(mixed.toolStarted("read_file", "a.ts L1-9").stop).toBe(false);
     expect(mixed.toolStarted("read_file", "").stop).toBe(false);
     expect(mixed.toolStarted("read_file", "a.ts L1-9").stop).toBe(false);
+    expect(mixed.toolStarted("read_file", "a.ts L1-9")).toEqual({
+      stop: false, hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 3 },
+    });
     expect(mixed.toolStarted("read_file", "a.ts L1-9")).toEqual({ stop: true, reason: "repeated_tool_call" });
   });
 
@@ -123,6 +137,9 @@ describe("RunGuard repeated tool call stop", () => {
   it("compares structured arguments by content, not by key order", () => {
     const guard = new RunGuard({ repeatedToolCallLimit: 2 });
     expect(guard.toolStarted("read_file", { path: "a", offset: 1 }).stop).toBe(false);
+    expect(guard.toolStarted("read_file", { offset: 1, path: "a" })).toEqual({
+      stop: false, hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 2 },
+    });
     expect(guard.toolStarted("read_file", { offset: 1, path: "a" })).toEqual({ stop: true, reason: "repeated_tool_call" });
   });
 
@@ -133,6 +150,9 @@ describe("RunGuard repeated tool call stop", () => {
     expect(guard.toolStarted("patch", "a.ts").stop).toBe(false);
     expect(guard.toolStarted("read_file", "a.ts").stop).toBe(false);
     expect(guard.toolStarted("read_file", "a.ts").stop).toBe(false);
+    expect(guard.toolStarted("read_file", "a.ts")).toEqual({
+      stop: false, hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 3 },
+    });
     expect(guard.toolStarted("read_file", "a.ts")).toEqual({ stop: true, reason: "repeated_tool_call" });
   });
 
@@ -154,6 +174,24 @@ describe("RunGuard repeated tool call stop", () => {
     guard.toolStarted("terminal", "grep -rn do-not-log src");
     expect(JSON.stringify(guard.stats())).not.toContain("do-not-log");
     expect(guard.stats()).toMatchObject({ toolCalls: 1, readOnlyStreak: 1 });
+  });
+
+  it("hints once per reason even when a different read repeats after a write", () => {
+    const guard = new RunGuard({ repeatedToolCallLimit: 2, noProgressLimit: 0 });
+    guard.toolStarted("read_file", "first");
+    expect(guard.toolStarted("read_file", "first")).toEqual({
+      stop: false, hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 2 },
+    });
+    expect(guard.toolStarted("patch", "changed")).toEqual({ stop: false });
+    expect(guard.toolStarted("search_files", "second")).toEqual({ stop: false });
+    expect(guard.toolStarted("search_files", "second")).toEqual({ stop: true, reason: "repeated_tool_call" });
+  });
+
+  it("does not include raw arguments in the hint", () => {
+    const guard = new RunGuard({ repeatedToolCallLimit: 1 });
+    const decision = guard.toolStarted("read_file", "private-path");
+    expect(decision.hint).toEqual({ reason: "repeated_tool_call", tool: "read_file", repeatCount: 1 });
+    expect(JSON.stringify(decision)).not.toContain("private-path");
   });
 });
 
@@ -211,6 +249,44 @@ describe("RunGuard write calls", () => {
     expect(guard.stats().writeCalls).toBe(1);
     expect(JSON.stringify(guard.stats())).not.toContain("secret-name");
   });
+
+  it("hints on the first model call limit without writes, then stops on the next attempt", () => {
+    const guard = new RunGuard({ modelCallLimit: 2 });
+    expect(guard.modelCall()).toEqual({ stop: false });
+    expect(guard.modelCall()).toEqual({ stop: false });
+    expect(guard.modelCall()).toEqual({ stop: false, hint: { reason: "model_call_limit", modelCalls: 2 } });
+    expect(guard.stopped).toBe(false);
+    expect(guard.event()).toEqual({ stop: false });
+    expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+    expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+    expect(guard.stats().modelCalls).toBe(2);
+  });
+
+  it("does not hint at the model call limit after any write", () => {
+    const guard = new RunGuard({ modelCallLimit: 1 });
+    expect(guard.modelCall()).toEqual({ stop: false });
+    expect(guard.toolStarted("patch", "a.ts")).toEqual({ stop: false });
+    expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+  });
+
+  it("leaves retry loops and idle timeouts as immediate stops", () => {
+    const retry = new RunGuard({ toolRetryLimit: 1 });
+    expect(retry.toolFailure("read_file", "x")).toEqual({ stop: true, reason: "tool_retry_loop" });
+    let now = 0;
+    const idle = new RunGuard({ now: () => now, idleTimeoutMs: 5 });
+    now = 5;
+    expect(idle.idle()).toEqual({ stop: true, reason: "idle_timeout" });
+  });
+
+  it("does not hint again when model call limit is reached after a repeat hint", () => {
+    const guard = new RunGuard({ modelCallLimit: 1, repeatedToolCallLimit: 1 });
+    expect(guard.modelCall()).toEqual({ stop: false });
+    expect(guard.toolStarted("read_file", "x")).toEqual({
+      stop: false, hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 1 },
+    });
+    expect(guard.modelCall()).toEqual({ stop: false, hint: { reason: "model_call_limit", modelCalls: 1 } });
+    expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+  });
 });
 
 describe("RunGuard configuration", () => {
@@ -219,6 +295,49 @@ describe("RunGuard configuration", () => {
     expect(options.noProgressLimit).toBe(40);
     expect(options.repeatedToolCallLimit).toBe(3);
     expect(DEFAULT_NO_PROGRESS_LIMIT).toBe(40);
+  });
+
+  it("defaults to 100 consecutive read-only calls and 5 repeats for code roles", () => {
+    for (const role of ["engineer", "reviewer", "lead", "architect", " ENGINEER ", "Architect"]) {
+      expect(isCodeRole(role)).toBe(true);
+      const options = resolveRunGuardOptions({ role, env: {} });
+      expect(options.noProgressLimit).toBe(100);
+      expect(options.repeatedToolCallLimit).toBe(5);
+      const agentOptions = resolveRunGuardOptions({ agentConfig: { role }, env: {} });
+      expect(agentOptions.noProgressLimit).toBe(100);
+      expect(agentOptions.repeatedToolCallLimit).toBe(5);
+    }
+    for (const nonCode of ["cmo", "pm", "qa", "general", "ceo", "designer"]) {
+      expect(isCodeRole(nonCode)).toBe(false);
+      const options = resolveRunGuardOptions({ role: nonCode, env: {} });
+      expect(options.noProgressLimit).toBe(40);
+      expect(options.repeatedToolCallLimit).toBe(3);
+    }
+    expect(DEFAULT_CODE_NO_PROGRESS_LIMIT).toBe(100);
+    expect(DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT).toBe(5);
+  });
+
+  it("engineer run with 80 distinct reads without write does not stop; 5 identical reads without write stops", () => {
+    const guard = new RunGuard({ role: "engineer" });
+    for (let i = 1; i <= 80; i += 1) {
+      expect(guard.toolStarted("read_file", `src/file-${i}.ts`)).toEqual({ stop: false });
+    }
+    expect(guard.stopped).toBe(false);
+    expect(guard.stats().readOnlyStreak).toBe(80);
+
+    const repeatGuard = new RunGuard({ role: "engineer" });
+    for (let i = 1; i < 5; i += 1) {
+      expect(repeatGuard.toolStarted("read_file", "src/file.ts")).toEqual({ stop: false });
+    }
+    expect(repeatGuard.toolStarted("read_file", "src/file.ts")).toEqual({
+      stop: false,
+      hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 5 },
+    });
+    expect(repeatGuard.stopped).toBe(false);
+    expect(repeatGuard.toolStarted("read_file", "src/file.ts")).toEqual({
+      stop: true,
+      reason: "repeated_tool_call",
+    });
   });
 
   it("takes the limits from the agent card, the team settings and the environment, in that order", () => {

@@ -220,9 +220,9 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/heartbeat-procedure.md:delegating-review-tasks:77",
+      "id": "skill:skills/paperclip/references/heartbeat-procedure.md:delegating-review-tasks:79",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/heartbeat-procedure.md:77",
+      "sourceAnchor": "skills/paperclip/references/heartbeat-procedure.md:79",
       "title": "Delegating review tasks",
       "expectedSemantics": "Skill guidance headed “Delegating review tasks”.",
       "primaryDisposition": "always_agent_tool",
@@ -231,7 +231,7 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/heartbeat-procedure.md:77"
+        "skill:skills/paperclip/references/heartbeat-procedure.md:79"
       ]
     },
     {
@@ -337,6 +337,21 @@
       ],
       "evidenceIds": [
         "skill:skills/paperclip/references/tasks-blockers-approvals.md:44"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/tasks-blockers-approvals.md:engineer-gate-422-naming-the-caste-and-re-casting-the-task:65",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/tasks-blockers-approvals.md:65",
+      "title": "Engineer gate 422: naming the caste and re-casting the task",
+      "expectedSemantics": "Skill guidance headed “Engineer gate 422: naming the caste and re-casting the task”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/tasks-blockers-approvals.md:65"
       ]
     },
     {
@@ -2365,9 +2380,9 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:companies-projects-goals:1404",
+      "id": "skill:skills/paperclip/references/api-reference.md:companies-projects-goals:1406",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1404",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1406",
       "title": "Companies, Projects, Goals",
       "expectedSemantics": "Skill guidance headed “Companies, Projects, Goals”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2376,13 +2391,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1404"
+        "skill:skills/paperclip/references/api-reference.md:1406"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:routines:1428",
+      "id": "skill:skills/paperclip/references/api-reference.md:routines:1430",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1428",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1430",
       "title": "Routines",
       "expectedSemantics": "Skill guidance headed “Routines”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2391,13 +2406,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1428"
+        "skill:skills/paperclip/references/api-reference.md:1430"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:approvals-costs-activity-dashboard:1444",
+      "id": "skill:skills/paperclip/references/api-reference.md:approvals-costs-activity-dashboard:1446",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1444",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1446",
       "title": "Approvals, Costs, Activity, Dashboard",
       "expectedSemantics": "Skill guidance headed “Approvals, Costs, Activity, Dashboard”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2406,13 +2421,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1444"
+        "skill:skills/paperclip/references/api-reference.md:1446"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:secrets:1466",
+      "id": "skill:skills/paperclip/references/api-reference.md:secrets:1468",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1466",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1468",
       "title": "Secrets",
       "expectedSemantics": "Skill guidance headed “Secrets”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2421,13 +2436,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1466"
+        "skill:skills/paperclip/references/api-reference.md:1468"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:agent-secret-proposals:1479",
+      "id": "skill:skills/paperclip/references/api-reference.md:agent-secret-proposals:1481",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1479",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1481",
       "title": "Agent secret proposals",
       "expectedSemantics": "Skill guidance headed “Agent secret proposals”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2436,13 +2451,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1479"
+        "skill:skills/paperclip/references/api-reference.md:1481"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:agent-secret-access:1593",
+      "id": "skill:skills/paperclip/references/api-reference.md:agent-secret-access:1595",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1593",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1595",
       "title": "Agent secret access",
       "expectedSemantics": "Skill guidance headed “Agent secret access”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2451,13 +2466,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1593"
+        "skill:skills/paperclip/references/api-reference.md:1595"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:common-mistakes:1633",
+      "id": "skill:skills/paperclip/references/api-reference.md:common-mistakes:1635",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1633",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1635",
       "title": "Common Mistakes",
       "expectedSemantics": "Skill guidance headed “Common Mistakes”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2466,7 +2481,7 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1633"
+        "skill:skills/paperclip/references/api-reference.md:1635"
       ]
     }
   ]
