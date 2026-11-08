@@ -245,6 +245,7 @@ import {
   configureCorpusAdapters,
   createCorpusShadowSearch,
   buildTokensTraceRoutes,
+  myrmidonOnboardRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -275,7 +276,6 @@ import { myrmidonLitellmAuditRoutes } from "./myrmidon/litellm-audit/wiring.js";
 // myrmidon(1.7-BUDGET-CONFIG A): per-level spend limits, journal and usage
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
 // myrmidon(PLUGIN-ENTITLEMENT C): instance-level plugin entitlement keys
-import { myrmidonOnboardRoutes } from "./myrmidon/server-onboard/index.js"; // myrmidon(SC1)
 import { secretService } from "./services/secrets.js";
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
 // myrmidon(1.6.6 CH-CONNECTOR-D): the proactivity sweep is reached through the bridge seam.
