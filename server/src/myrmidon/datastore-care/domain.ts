@@ -121,6 +121,13 @@ export interface DatastoreBackupMetric {
   ageHours: number | null;
   bytes: number | null;
   note: string | null;
+  /**
+   * Label of an external backup coverage (e.g. `vm-pbs` from
+   * `MYRMIDON_DATASTORE_CARE_BACKUP_EXTERNAL`): the backups live outside this
+   * instance, so the directory scan is skipped and the criterion answers ok
+   * with this label as its evidence instead of `fail` on an empty dir.
+   */
+  externalLabel: string | null;
 }
 
 /** Aggregate counters of `pg_stat_database` for the collected database. */

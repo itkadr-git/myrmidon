@@ -326,6 +326,8 @@ describe("myrmidon(DBC-4) postgres collector", () => {
       [{ total_ms: "10000" }],
       SETTINGS,
       STATS,
+      // The HNSW index itself is a pg_class row with a vector-typed attribute;
+      // the relkind filter in the query must drop it server-side.
       PGVECTOR_COLUMNS,
       [{ configurations: "2" }],
       [{ tsvector_columns: "1" }],
@@ -350,6 +352,39 @@ describe("myrmidon(DBC-4) postgres collector", () => {
     // The full-text-search probe answered with its own shape, so the collector
     // read it: two extra reads happened after the pgvector one.
     expect(calls()).toBeGreaterThan(10);
+  });
+
+  it("does not count the HNSW index itself as a vector column (relkind = 'r')", async () => {
+    const { port } = scriptedPort([
+      IDENTITY,
+      TABLES,
+      INDEXES,
+      [{ invalid: "0" }],
+      [{ name: "vector", version: "0.8.0" }],
+      SETTINGS,
+      STATS,
+      // A server with the relkind filter returns only real tables; the index
+      // entry (corpus_chunks_embedding_hnsw_idx, relkind 'i') never appears.
+      [{ table_name: "corpus_chunks", column_name: "embedding", indexed: true }],
+      [],
+      [],
+    ]);
+
+    const payload = await collectPostgresSnapshot(
+      {
+        target: BOARD_TARGET,
+        now: NOW,
+        topQueries: 25,
+        backupDir: "/srv/backups/board",
+        optionalMetrics: true,
+      },
+      { connection: port, readBackupDir: async () => [] },
+    );
+
+    expect(payload.optional.pgvector).toEqual({
+      available: true,
+      columns: [{ table: "corpus_chunks", column: "embedding", indexed: true }],
+    });
   });
 
   it("collects whatever connection and dbid it is given, not a hardcoded one", async () => {
