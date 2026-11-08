@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- Stranded assigned-issue recovery now routes workflow-blocked disposition escalations to the nearest invokable lead or manager in the assignee's `reportsTo` chain, skipping reviewer agents and falling back to the board operator when no lead exists. The wake asks the owner for a fresh first-step directive, a task split, or closure.
+
 - Bound full-tree workspace Git scans with process-wide concurrency, queue, timeout, cancellation, coalescing, and short-lived changed-file caching. Saturated or timed-out changed-file requests now return a retryable degraded response, and hidden file-browser panels no longer initiate scans.
 
 ## 0.3.1
