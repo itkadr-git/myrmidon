@@ -9,6 +9,8 @@
 import { X509Certificate, createPrivateKey } from "node:crypto";
 import type { Router } from "express";
 import { myrmidonFleetSites, type Db } from "@myrmidon/db";
+import { fleetAuditDeps } from "./fleet-audit-wiring.js";
+import { withFleetAudit } from "./fleet-audit.js";
 import { secretService } from "../../services/index.js";
 import { siteCaSubject } from "./site-client-pki.js";
 import {
@@ -74,7 +76,8 @@ export function createFleetSiteRoutesDeps(db: Db): FleetSiteRoutesDeps {
 }
 
 export function myrmidonFleetSiteRoutes(db: Db): Router {
-  return fleetSiteRoutes(createFleetSiteRoutesDeps(db));
+  // myrmidon(fleet-site audit): enroll and delete leave a row in the company's activity log.
+  return withFleetAudit(fleetSiteRoutes(createFleetSiteRoutesDeps(db)), fleetAuditDeps(db));
 }
 
 export function startFleetSiteCertRotation(

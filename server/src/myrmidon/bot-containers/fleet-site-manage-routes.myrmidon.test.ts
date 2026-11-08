@@ -37,7 +37,7 @@ function site(overrides: Partial<FleetSite> = {}): FleetSite {
     id: "site-1",
     companyId: COMPANY_A,
     name: "myr-vm1",
-    url: "https://192.0.2.10:9100",
+    url: "https://10.0.0.10:9100",
     status: "active",
     capacity: { maxCpus: 8, maxMemoryMb: 32768, maxBots: 13 },
     profile: { gatewayPortStart: 18700, gatewayPortEnd: 18759 },
