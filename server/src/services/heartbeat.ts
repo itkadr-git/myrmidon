@@ -23414,7 +23414,7 @@ export function heartbeatService(
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(
         0,
-        effectiveAgentRunLimit({ boardLimit: policy.maxConcurrentRuns }) - runningCount,
+        policy.maxConcurrentRuns - runningCount,
       );
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling check moved below
       // the queue read, so the runs it holds get their waitReason.
