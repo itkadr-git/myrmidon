@@ -53,13 +53,11 @@ export function Ui2CommanderPalette({ onClose }: { onClose: () => void }) {
         onMouseDown={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
-          // myrmidon(1.6-CTO-CHAT-A → WAVE-A): continue in the Commander chat
-          // on its own /commander root (ia-v2 §2.2.2), keeping the typed
-          // draft so the operator does not retype it. П1: the path is
-          // company-relative; useNavigate applies the selected company prefix.
+          // myrmidon(1.6-CTO-CHAT-A): continue in the Commander chat, keeping
+          // the typed draft so the operator does not retype it.
           const draft = inputRef.current?.value ?? "";
           navigate(
-            draft ? `/commander?draft=${encodeURIComponent(draft)}` : "/commander",
+            draft ? `/commander-chat?draft=${encodeURIComponent(draft)}` : "/commander-chat",
           );
           onClose();
         }}

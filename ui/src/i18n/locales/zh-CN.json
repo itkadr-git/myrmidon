@@ -105,11 +105,7 @@
       "swarmQueues": "Swarm: queues",
       "foraging": "Foraging",
       "knowledge": "Knowledge",
-      "regulations": "Regulations",
-      "fleet": "Server fleet",
-      "swarm": "Swarm",
-      "issues": "Tasks",
-      "projects": "Projects"
+      "regulations": "Regulations"
     },
     "nests": {
       "all": "All nests"
@@ -147,17 +143,7 @@
       "placeholderLegacyLink": "Continue to the current screen",
       "knowledge": "Knowledge",
       "regulations": "Regulations",
-      "more": "More",
-      "fleet": {
-        "soonTitle": "Server fleet",
-        "soonBody": "The fleet screen arrives with its wave (1.7). Today the stack, versions, deploys and maintenance live in Settings → System.",
-        "systemLink": "Open Settings → System"
-      },
-      "notInWave": {
-        "title": "Not in this wave yet",
-        "body": "This section has no screen in the current wave; it arrives with its own release. The working settings stay on the sections listed in the panel.",
-        "link": "Back to settings"
-      }
+      "more": "More"
     },
     "settings": {
       "navLabel": "Settings navigation",
@@ -179,8 +165,7 @@
         "telegram": "Active · Telegram",
         "none": "Active · not seen recently"
       }
-    },
-    "ownerChannel": "Web · now"
+    }
   },
   "connectorPanel": {
     "title": "Connectors",

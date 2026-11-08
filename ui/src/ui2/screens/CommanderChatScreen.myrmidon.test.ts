@@ -50,20 +50,17 @@ describe("cto-chat client contract (Part A ⇄ Part B seam)", () => {
 describe("commander chat screen wiring", () => {
   it("has a ui2 route entry pointing at the screen", () => {
     expect(ROUTES).toMatch(/key:\s*"commander-chat"/);
-    // myrmidon(UI-2.0-WAVE-A): the screen moved to its own /commander root
-    // (ia-v2 §2.2.2); /commander-chat redirects there.
-    expect(ROUTES).toMatch(/path:\s*"commander"/);
+    expect(ROUTES).toMatch(/path:\s*"commander-chat"/);
     expect(ROUTES).toMatch(/CommanderChatScreen/);
   });
 
   it("nav rail and phone tab point to the commander chat, not the legacy conference room", () => {
-    // myrmidon(UI-2.0-WAVE-A): same, now on the /commander root.
-    expect(NAV).toMatch(/ui2\.nav\.commander",\s*to:\s*"\/commander"/);
+    expect(NAV).toMatch(/ui2\.nav\.commander",\s*to:\s*"\/commander-chat"/);
     expect(NAV).not.toMatch(/ui2\.nav\.commander",\s*to:\s*"\/board-chat"/);
   });
 
   it("the palette carries the typed draft over to the screen", () => {
-    expect(PALETTE).toMatch(/\/commander\?draft=/);
+    expect(PALETTE).toMatch(/\/commander-chat\?draft=/);
     expect(PALETTE).not.toMatch(/navigate\("\/board-chat"\)/);
   });
 
