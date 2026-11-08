@@ -34,6 +34,7 @@
         "concurrencyGatewayNotReported": "Gateway: not reported yet",
         "concurrencyGateway": "Gateway: {{value}}",
         "concurrencyGatewayUnmanaged": "Gateway: not managed by the board",
+        "concurrencyEffective": "Effective: {{value}} (limited by {{source}})",
         "title": "Container",
         "enabledLabel": "Enabled",
         "enabledHint": "Run this agent's gateway in its own container with the limits below. Off leaves the agent as it is.",
@@ -66,7 +67,12 @@
         "idleStopStoppedOnIdle": "stopped on idle",
         "idleStopUnknown": "unknown",
         "idleStopLastStopped": "; last stopped {{at}}",
-        "idleStopLastStarted": "; last started {{at}}"
+        "idleStopLastStarted": "; last started {{at}}",
+        "concurrencyLimitSource": {
+          "board": "the board limit",
+          "gateway": "the gateway limit",
+          "memory": "the container memory"
+        }
       },
       "agent-card-egress-fields": {
         "title": "Egress",

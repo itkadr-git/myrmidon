@@ -429,12 +429,33 @@ describe("myrmidon(CONCURRENCY-SYNC) limit block", () => {
     expect(concurrencyView(STATUS)).toEqual({
       board: "Board: 3",
       gateway: "Gateway: 3",
+      effective: null,
       diverged: false,
       note: null,
       warning: null,
     });
     expect(concurrencyView(diverged)?.diverged).toBe(true);
     expect(concurrencyView(unmanaged)?.gateway).toBe("Gateway: not managed by the board");
+  });
+
+  it("shows the effective ceiling the scheduler admits against (1.6.7 RUN-LIMITS)", () => {
+    const effective = concurrencyView({
+      ...STATUS,
+      effectiveMaxConcurrentRuns: 1,
+      effectiveMaxConcurrentRunsSource: "memory",
+    });
+    expect(effective?.effective).toBe("Effective: 1 (limited by the container memory)");
+    expect(document.body.textContent).toContain("Effective: 1 (limited by the container memory)");
+
+    const byGateway = concurrencyView({
+      ...STATUS,
+      effectiveMaxConcurrentRuns: 2,
+      effectiveMaxConcurrentRunsSource: "gateway",
+    });
+    expect(byGateway?.effective).toBe("Effective: 2 (limited by the gateway limit)");
+
+    const byBoard = concurrencyView({ ...STATUS, effectiveMaxConcurrentRuns: 3 });
+    expect(byBoard?.effective).toBe("Effective: 3 (limited by the board limit)");
   });
 });
 

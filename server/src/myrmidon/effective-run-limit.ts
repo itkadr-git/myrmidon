@@ -10,6 +10,29 @@ export interface EffectiveAgentRunLimitInput {
   runMemoryMb?: number;
 }
 
+/** Read the same saved ceilings for admission and for the agent card. */
+export function savedAgentRunLimits(input: {
+  boardLimit: number;
+  adapterConfig: Record<string, unknown> | null | undefined;
+}): EffectiveAgentRunLimitInput {
+  const config = input.adapterConfig ?? {};
+  const container = asRecord(config.container);
+  const gateway = asRecord(config.gateway);
+  const number = (value: unknown): number | null => {
+    const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  return {
+    boardLimit: input.boardLimit,
+    gatewayLimit: number(container.maxConcurrentRuns ?? container.max_concurrent_runs ?? gateway.maxConcurrentRuns ?? gateway.max_concurrent_runs),
+    memoryMb: number(container.memoryMb),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
 /**
  * Return the cap an agent may actually consume. A missing gateway or memory
  * limit means that ceiling is not known and is not applied.
