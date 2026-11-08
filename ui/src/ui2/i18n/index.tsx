@@ -14,13 +14,30 @@ import {
 } from "react";
 import * as vendorI18n from "@/i18n";
 import { UI2_LANGUAGES, type Ui2Language } from "@myrmidon/shared";
+// (the vendor instance is read through readVendorI18nInstance below, never by
+// destructuring the namespace — see the comment on that helper)
 import { ui2LanguageApi } from "./api";
 import { en } from "./catalogs/en";
 import { ru } from "./catalogs/ru";
+import { mergeCatalog, type CatalogObject } from "./catalog-upload";
 import { formatUi2Message, ui2Messages, type Ui2MessageKey } from "./locales";
 
 export { UI2_LANGUAGES };
 export type { Ui2Language };
+
+/** The slice of the vendor i18next instance the ui2 shell touches. */
+type Ui2VendorI18n = {
+  language?: string;
+  changeLanguage?: (language: string) => Promise<unknown> | void;
+  hasResourceBundle?: (locale: string, namespace: string) => boolean;
+  addResourceBundle?: (
+    locale: string,
+    namespace: string,
+    resources: unknown,
+    deep?: boolean,
+    overwrite?: boolean,
+  ) => unknown;
+};
 
 const UI2_LANGUAGE_STORAGE_KEY = "myrmidon:ui2:language";
 const UI2_NAMESPACE = "ui2";
@@ -49,20 +66,38 @@ export function ui2LanguageLabel(language: Ui2Language): string {
 
 export const ui2Catalogs = { en, ru } as const;
 
+/**
+ * The vendor i18next instance from `@/i18n`, read WITHOUT property access on
+ * the module namespace: a test's partial `vi.mock("@/i18n", ...)` exposes only
+ * the exports it defines, and merely touching `.i18n` on such a namespace
+ * throws "No "i18n" export is defined on the "@/i18n" mock" — the branch's
+ * namespace access is what blanked the settings screens in CI. `Object.hasOwn`
+ * answers "is the export present" without reading it, so a partial mock is a
+ * safe null and the provider degrades to localStorage-only (as on main).
+ */
+export function readVendorI18nInstance(): Ui2VendorI18n | null {
+  if (!vendorI18n || typeof vendorI18n !== "object") return null;
+  return Object.hasOwn(vendorI18n, "i18n") && vendorI18n.i18n ? (vendorI18n.i18n as Ui2VendorI18n) : null;
+}
+
 export function registerUi2Catalogs(custom: Partial<Record<Ui2Language, Record<string, unknown>>> = {}): void {
-  const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
-  if (!i18nInstance || typeof i18nInstance.hasResourceBundle !== "function") return;
+  const i18nInstance = readVendorI18nInstance();
+  if (!i18nInstance) return;
+  if (typeof i18nInstance.hasResourceBundle !== "function") return;
   for (const [locale, baseCatalog] of Object.entries(ui2Catalogs)) {
     const customBundle = custom[locale as Ui2Language];
     const catalog = customBundle
-      ? { ...baseCatalog, ...customBundle }
+      ? mergeCatalog(baseCatalog as unknown as CatalogObject, customBundle as CatalogObject)
       : baseCatalog;
-    const client = i18nInstance as any;
-    if (typeof client?.removeResourceBundle === "function" && client.hasResourceBundle(locale, UI2_NAMESPACE)) {
-      client.removeResourceBundle(locale, UI2_NAMESPACE);
+    const client = i18nInstance as unknown as Record<string, unknown>;
+    if (!customBundle && typeof client.hasResourceBundle === "function" && i18nInstance.hasResourceBundle(locale, UI2_NAMESPACE)) {
+      // The catalogs are static per locale: registering again would REPLACE the
+      // bundle and silently drop custom keys uploaded through the locale-upload
+      // screen (OPE-9646 regression). Register once, then leave it alone.
+      continue;
     }
-    if (typeof client?.addResourceBundle === "function") {
-      client.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
+    if (typeof client.addResourceBundle === "function") {
+      i18nInstance.addResourceBundle?.(locale, UI2_NAMESPACE, catalog, true, true);
     }
   }
 }
@@ -76,7 +111,7 @@ export function applyUi2Language(language: Ui2Language): void {
   storeLanguage(language);
   const root = ui2LangRoot();
   if (root) root.setAttribute("lang", language);
-  const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
+  const i18nInstance = readVendorI18nInstance();
   if (
     i18nInstance &&
     typeof i18nInstance.changeLanguage === "function" &&
@@ -101,6 +136,26 @@ export interface Ui2LanguageContextValue {
 }
 
 const Ui2LanguageContext = createContext<Ui2LanguageContextValue | undefined>(undefined);
+
+/** One honest "could not save" toast per failed write; keyed by run id (ADM 27.10: no toast loops). */
+let lastSaveFailureToastAt = 0;
+function announceSaveFailure(): void {
+  if (typeof document === "undefined") return;
+  const now = Date.now();
+  if (now - lastSaveFailureToastAt < 4000) return;
+  lastSaveFailureToastAt = now;
+  const template = ru.language.saveFailed ?? en.language.saveFailed ?? "";
+  if (!template) return;
+  const toast = document.createElement("div");
+  toast.setAttribute("role", "alert");
+  toast.setAttribute("data-testid", "ui2-language-save-error-toast");
+  toast.className = "ui2-toast ui2-toast--error";
+  toast.textContent = formatUi2Message(template);
+  document.body.appendChild(toast);
+  window.setTimeout(() => {
+    toast.remove();
+  }, 4000);
+}
 
 export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
   const [language, setLanguageState] = useState<Ui2Language>(() => readStoredLanguage() ?? "en");
@@ -159,6 +214,7 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
         if (mounted.current) {
           setSaving(false);
           setSaveError(true);
+          announceSaveFailure();
         }
       });
   }, []);

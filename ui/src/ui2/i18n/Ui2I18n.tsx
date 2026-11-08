@@ -12,9 +12,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import * as vendorI18n from "@/i18n";
+import { flattenCatalog } from "@myrmidon/shared";
 import { ui2LanguageApi } from "./api";
-import { registerUi2Catalogs } from "./index";
+import { readVendorI18nInstance, registerUi2Catalogs } from "./index";
 import {
   UI2_DEFAULT_LOCALE,
   UI2_LOCALES,
@@ -65,7 +65,10 @@ function applyLocaleToShell(locale: Ui2Locale): void {
       (document.querySelector<HTMLElement>(".myr-ui2") ?? document.documentElement)) ||
     null;
   if (root) root.setAttribute("lang", locale);
-  const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
+  // Read the vendor instance through the safe accessor: a bare `vendorI18n.i18n`
+  // throws on a test's partial `@/i18n` mock (missing export on the namespace),
+  // which is what blanked the settings screens in CI (see readVendorI18nInstance).
+  const i18nInstance = readVendorI18nInstance();
   if (
     i18nInstance &&
     typeof i18nInstance.changeLanguage === "function" &&
@@ -125,7 +128,9 @@ export function Ui2I18nProvider({
   }, []);
 
   useEffect(() => {
-    if (initialLocale !== undefined) return;
+    // The server preference wins over the local mirror even when the shell
+    // seeds an explicit initialLocale (the seeded value is only a pre-paint
+    // guess; the stored copy is the last known choice, not the truth).
     let active = true;
     void loadServerPreference().then((serverLocale) => {
       if (!active || userSwitched.current || !serverLocale) return;
@@ -138,7 +143,7 @@ export function Ui2I18nProvider({
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialLocale]);
+  }, []);
 
   useEffect(() => {
     function handleStorage(event: StorageEvent) {
@@ -164,9 +169,55 @@ export function Ui2I18nProvider({
     void ui2LanguageApi.put(next).catch(() => undefined);
   }, []);
 
-  const applyCustomCatalog = useCallback((_targetLocale: string, _catalog: Record<string, unknown>, _merge?: boolean) => {
-    // no-op stub
-  }, []);
+  const applyCustomCatalog = useCallback(
+    (targetLocale: string, catalog: Record<string, unknown>, andSwitch?: boolean) => {
+      const shouldSwitch = andSwitch !== false;
+      const normalized = targetLocale.trim().toLowerCase() as Ui2Locale;
+      if (!normalized || !catalog || typeof catalog !== "object") return;
+
+      // 1. Merge into the in-memory flat catalogs so `t` sees the custom keys
+      //    immediately (no reload). A brand-new locale is seeded from the en
+      //    base, mirroring the pre-Wave-A behavior of the upload screen.
+      const { entries } = flattenCatalog(catalog);
+      const flat: Record<string, string> = {};
+      for (const [key, entryValue] of entries) {
+        flat[key] = entryValue;
+      }
+      if (!ui2Messages[normalized]) {
+        (ui2Messages as unknown as Record<string, Record<string, string>>)[normalized] = {
+          ...ui2Messages[UI2_DEFAULT_LOCALE],
+          ...flat,
+        };
+      } else {
+        Object.assign(ui2Messages[normalized], flat);
+      }
+      setCustomCatalogs((current) => ({ ...current, [normalized]: { ...(current[normalized] ?? {}), ...flat } }));
+
+      // 2. Register the vendor bundle. registerUi2Catalogs skips locales whose
+      //    bundle already exists, so the custom registration passes the merged
+      //    catalog explicitly (which also forces registration for that locale).
+      registerUi2Catalogs({ [normalized]: catalog });
+
+      // 3. Switch the shell to the uploaded locale when asked (the upload
+      //    screen's "apply" is a language switch, matching OPE-9646).
+      if (shouldSwitch) {
+        userSwitched.current = true;
+        serverPreferencePromise = Promise.resolve(normalized);
+        persistLocale(normalized);
+        applyLocaleToShell(normalized);
+        setLocaleState(normalized);
+      }
+
+      // 4. Tell the rest of the shell (LanguageSwitch's available locales) a
+      //    custom locale exists, mirroring main's `myrmidon:locale-applied`.
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("myrmidon:locale-applied", { detail: { locale: normalized, andSwitch: shouldSwitch } }),
+        );
+      }
+    },
+    [],
+  );
 
   const value = useMemo<Ui2I18nContextValue>(
     () => ({
@@ -178,7 +229,7 @@ export function Ui2I18nProvider({
         const template = ui2Messages[locale][key] ?? ui2Messages[UI2_DEFAULT_LOCALE][key] ?? key;
         return formatUi2Message(template, values);
       },
-      availableLocales: UI2_LOCALES,
+      availableLocales: Array.from(new Set([...UI2_LOCALES, ...Object.keys(customCatalogs)])) as Ui2Locale[],
       applyCustomCatalog,
       customCatalogs,
       setCatalogs: setCustomCatalogs,

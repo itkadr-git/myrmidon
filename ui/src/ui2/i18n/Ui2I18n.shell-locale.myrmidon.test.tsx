@@ -33,9 +33,12 @@ const i18nMock = vi.hoisted(() => ({
 vi.mock("@/i18n", () => ({ i18n: i18nMock }));
 
 // The shared provider module (index.tsx) is NOT under test here; stub it so
-// this file owns the Ui2I18n provider behavior alone.
+// this file owns the Ui2I18n provider behavior alone. readVendorI18nInstance
+// hands back the i18n mock so applyLocaleToShell's changeLanguage calls are
+// observable on the same mock the assertions read.
 vi.mock("./index", () => ({
   registerUi2Catalogs: vi.fn(),
+  readVendorI18nInstance: () => i18nMock,
   Ui2LanguageProvider: ({ children }: { children: unknown }) => <>{children as never}</>,
 }));
 
