@@ -119,6 +119,7 @@ function toJob(row: JobRow): OnboardJob {
     step: row.step,
     stepLog: Array.isArray(row.stepLog) ? (row.stepLog as OnboardStepLogEntry[]) : [],
     error: row.error,
+    secretConsumedAt: row.secretConsumedAt ? row.secretConsumedAt.toISOString() : null,
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

@@ -46,6 +46,7 @@ export interface OnboardJob {
   step: string | null;
   stepLog: OnboardStepLogEntry[];
   error: string | null;
+  secretConsumedAt: string | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -74,6 +75,7 @@ export function newOnboardJob(input: {
     step: null,
     stepLog: [],
     error: null,
+    secretConsumedAt: null,
     createdBy: input.createdBy,
     createdAt: now,
     updatedAt: now,

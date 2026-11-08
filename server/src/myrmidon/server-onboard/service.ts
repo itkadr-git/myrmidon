@@ -244,6 +244,12 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       requireExecutorToken(presentedToken);
       const claim = await deps.store.claimNext(companyId);
       if (!claim) return null;
+      if (claim.job.companyId !== companyId) {
+        throw new OnboardServiceError(403, "Company scope mismatch");
+      }
+      if (claim.job.secretConsumedAt) {
+        throw new OnboardServiceError(409, "Onboarding job secrets have already been consumed");
+      }
       if (!(await deps.store.consumeClaimSecrets(companyId, claim.job.id))) {
         throw new OnboardServiceError(409, "Onboarding job secrets have already been consumed");
       }
