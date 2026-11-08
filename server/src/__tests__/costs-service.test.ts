@@ -110,6 +110,7 @@ const mockBudgetService = vi.hoisted(() => ({
   }),
   upsertPolicy: vi.fn(),
   resolveIncident: vi.fn(),
+  getTokenBudgetSignal: vi.fn().mockResolvedValue(null),
 }));
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
@@ -347,6 +348,35 @@ describe("cost routes", () => {
       runCount: 0,
       runtimeMs: 0,
     });
+  });
+
+  // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the read-only signal route.
+  it("returns the issue token-budget signal and never pauses", async () => {
+    const app = createApp();
+    mockBudgetService.getTokenBudgetSignal.mockResolvedValueOnce({
+      level: "warn",
+      scopeType: "issue",
+      scopeId: "issue-1",
+      policyId: "policy-1",
+      metric: "issue_tokens",
+      amountTokens: 1000,
+      observedTokens: 900,
+      utilizationPercent: 90,
+      warnPercent: 80,
+      enforcement: "signal",
+    });
+    const res = await request(app).get("/api/issues/pc1a2-1/token-budget-signal");
+
+    expect(res.status).toBe(200);
+    expect(mockBudgetService.getTokenBudgetSignal).toHaveBeenCalledWith("company-1", "issue-1");
+    expect(res.body).toMatchObject({ level: "warn", enforcement: "signal", metric: "issue_tokens" });
+  });
+
+  it("returns null body when the issue has no active token budget", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/issues/pc1a2-1/token-budget-signal");
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
   });
 
   it("returns 400 for invalid finance event list limits", async () => {

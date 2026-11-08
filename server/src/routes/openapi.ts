@@ -9941,6 +9941,13 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/token-budget-signal",
+  tags: ["costs"],
+  summary: "Get the issue token-budget signal (info/warn; never pauses or blocks)",
+});
+
+registerCurrentRoute({
   method: "put",
   path: "/api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   tags: ["resource-memberships"],
