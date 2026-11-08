@@ -322,6 +322,12 @@ describe("Alertmanager Webhook Handler (OPE-12085)", () => {
         upsert: vi.fn(),
         markResolved: vi.fn().mockResolvedValue(dummyEntry),
         sweepClosedOlderThan: vi.fn().mockResolvedValue(0),
+        async findOpen(_cId, _source, criteria) {
+          if (criteria.fingerprint === "fp-dedup-01") {
+            return dummyEntry;
+          }
+          return null;
+        },
       };
 
       const finder = adaptAlertDedupStore(store);
