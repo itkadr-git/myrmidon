@@ -130,6 +130,7 @@
   "api.use(projectTokenQuotaRoutes(db))",
   "api.use(modelFallbackSignalRoutes(db))",
   "api.use(myrmidonOwnerDeliveryRoutes(db))",
+  "api.use(toolComplaintRoutes(db))",
   "api.use(reviewRoutingRoutes(db))",
   "api.use(reviewReworkRoutes(db))",
   "api.use(pluginEntitlementRoutes(db))",
