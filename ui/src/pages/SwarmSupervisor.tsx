@@ -1,4 +1,5 @@
 // myrmidon(1.6-SWARM-CLAIM-B): the "Swarm supervisor" page — a per-caste view of
+// OPE-7935: Swarm supervisor UI-2.0 screen part 1
 // the swarm queues and live leases, with a manual "Release lease" action,
 // recent matches and cooldown (1.6.5 SWARM-T4, design §5.3). Server side: GET/POST under
 // /api/myrmidon/companies/:id/swarm-claim/supervisor; the JSON contract is
