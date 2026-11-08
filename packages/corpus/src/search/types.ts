@@ -50,6 +50,25 @@ export const DEFAULT_EXACT_SET_MAX_CHUNKS = 10_000;
  */
 export const DEFAULT_MAX_SCAN_TUPLES = 100_000;
 
+/**
+ * Longest time, in milliseconds, that the full-text ranking may run: the `statement_timeout` that is set
+ * for its own transaction. The ranking scores every chunk that matches the tsquery, and the OR of the
+ * significant words of a natural-language question matches a large part of a big corpus. On a corpus of
+ * 285 000 chunks the statement averaged 9.8 s and peaked at 104 s, while the vector ranking over the HNSW
+ * index takes about 0.4 s. A ranking that is cancelled at the bound leaves the vector ranking to answer
+ * alone, so the bound trades a slow, complete answer for a fast one. `0` sets no bound of its own.
+ */
+export const DEFAULT_FULL_TEXT_TIMEOUT_MS = 800;
+
+/**
+ * How many chunks, the best `ts_rank` first, the full-text ranking of a question keeps before it breaks
+ * the ties of `ts_rank` with `similarity(content, question)`. `similarity` reads and splits the whole
+ * chunk text, so it must not run for every chunk that matches. `ts_rank` has many exact ties (chunks that
+ * hold the same words the same number of times), and the pool is wider than the list the fusion takes
+ * (`kCandidates`) so that the tie-break still picks among many tied chunks. `0` ranks without a pool.
+ */
+export const DEFAULT_FULL_TEXT_RERANK_POOL = 1_000;
+
 /** The chunk row behind a hit. */
 export interface CorpusSearchChunkRef {
   readonly id: string;
