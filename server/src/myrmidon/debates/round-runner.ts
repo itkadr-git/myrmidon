@@ -256,7 +256,17 @@ export class DebateRoundRunner {
       this.interruptDetail = record.stopDetail;
     } else {
       this.roundsCollectedCount = round;
-      if (independent) this.firstAnswersCollected = true;
+    }
+    // The judge keeps its turn once both independent first answers are in the
+    // transcript — the engine's owner rule. A round-1 reply that crossed the
+    // ceiling is recorded (uncharged) but is not an answer, so the flag tracks
+    // the charged transcript: after a clean round 1 this is a no-op, after an
+    // interrupted round 1 it still turns on when both first answers are there.
+    if (
+      this.transcript.some((turn) => turn.independent && turn.role === DEBATE_PARTICIPANT_A) &&
+      this.transcript.some((turn) => turn.independent && turn.role === DEBATE_PARTICIPANT_B)
+    ) {
+      this.firstAnswersCollected = true;
     }
     return record;
   }

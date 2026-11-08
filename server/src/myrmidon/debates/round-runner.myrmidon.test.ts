@@ -107,8 +107,16 @@ describe("myrmidon(1.7 DEBATE-ASYM §3.3): the debate round service", () => {
     const prompts: string[] = [];
     const call: DebateModelCall = async (_config, _system, userPrompt, context) => {
       prompts.push(`${context.round}:${context.role}<<<${userPrompt}`);
+      const firstAnswer = context.round === 1;
       return {
-        text: context.role === DEBATE_PARTICIPANT_A ? "revised A2" : "attack B2",
+        text:
+          context.role === DEBATE_PARTICIPANT_A
+            ? firstAnswer
+              ? "answer A"
+              : "revised A2"
+            : firstAnswer
+              ? "answer B"
+              : "attack B2",
         usage: { inputTokens: 100, outputTokens: 50 },
       };
     };
@@ -159,11 +167,12 @@ describe("myrmidon(1.7 DEBATE-ASYM §3.3): the debate round service", () => {
 
     const record = await h.collectRound(2);
 
-    // 2000 used + 4000 projected > 5000: A's call never happens.
+    // 2000 used + 4000 projected > 5000: A's call never happens, and the stop
+    // detail reports what actually remains (5000 - 2000 = 3000 tokens).
     expect(calls).toEqual(["1:generator", "1:critic"]);
     expect(record.turns).toHaveLength(0);
     expect(record.interrupted).toBe(true);
-    expect(record.stopDetail).toContain("500 remain");
+    expect(record.stopDetail).toContain("only 3000 tokens of the 5000 ceiling remain");
     expect(h.turns).toHaveLength(before);
     expect(h.roundsCollected).toBe(1);
   });
