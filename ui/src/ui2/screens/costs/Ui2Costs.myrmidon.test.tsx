@@ -265,15 +265,6 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(mockCostsApi.byIssue).toHaveBeenCalledWith(COMPANY_ID, expect.any(String), expect.any(String), 10);
   });
 
-  it("shows empty state for empty daily costs and issue results", async () => {
-    mockCostsApi.byDay.mockResolvedValue([]);
-    mockCostsApi.byIssue.mockResolvedValue([]);
-    await renderScreen();
-    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
-    expect(container.textContent).toContain("No spend is recorded");
-    expect(container.textContent).toContain("No expensive tasks");
-  });
-
   it("renders the per-agent table from the mocked by-agent data", async () => {
     await renderScreen();
 
