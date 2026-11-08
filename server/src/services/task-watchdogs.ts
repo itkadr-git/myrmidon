@@ -81,6 +81,7 @@ export type TaskWatchdogClassifierIssue = Pick<
   | "assigneeUserId"
   | "originKind"
   | "updatedAt"
+  | "createdByUserId"
 > & {
   // Optional so existing callers/tests that do not care about the first-run
   // grace window keep working; the pending-first-run guard is skipped when
