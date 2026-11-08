@@ -82,7 +82,11 @@ export function formatAgentExchangeRoomStatus(room: {
   status: string;
   stopReason: string | null;
 }): string {
-  if (room.status === "stopped") return room.stopReason === "owner_stop" ? "stopped by the owner" : "stopped";
+  if (room.status === "stopped") {
+    if (room.stopReason === "owner_stop") return "stopped by the owner";
+    if (room.stopReason === "participant_stop") return "stopped by a participant";
+    return "stopped";
+  }
   if (room.status === "completed") return "completed";
   return "open";
 }
