@@ -54,6 +54,8 @@ export {
   readStackGithubToken,
   STACK_OSV_API_BASE_ENV,
   readStackOsvApiBase,
+  STACK_BACKLOG_LAG_RELEASES_ENV,
+  readStackBacklogLagReleases,
 } from "./settings.js";
 export {
   buildStackAttentionCards,
