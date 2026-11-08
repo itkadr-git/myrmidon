@@ -368,6 +368,24 @@ describe("task watchdog subtree classifier", () => {
     expect(result.state).toBe("stopped");
   });
 
+  it("suppresses stopped subtree verdict when leaf is in backlog via operator decision", () => {
+    const result = classify({
+      issues: [issue({ id: sourceId, status: "backlog" })],
+      operatorBacklogIssueIds: [sourceId],
+    });
+
+    expect(result.state).toBe("operator_backlog");
+  });
+
+  it("does not suppress stopped subtree verdict when leaf is in backlog without operator decision", () => {
+    const result = classify({
+      issues: [issue({ id: sourceId, status: "backlog" })],
+      operatorBacklogIssueIds: [],
+    });
+
+    expect(result.state).toBe("stopped");
+  });
+
   it("does not evaluate a task-watchdog issue as a watched source", () => {
     const result = classify({
       watchdog: {
