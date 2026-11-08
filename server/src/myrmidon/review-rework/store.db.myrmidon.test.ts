@@ -6,11 +6,16 @@
 // number match (a trailing path segment like /files is allowed, /pull/123 must
 // not answer to a search for 12) and the metadata branch left untouched.
 //
+// OPE-12260 extends the file with the reopen-veto probe: after the loop closes
+// a review on a merged PR, any later user/agent move off a terminal status must
+// veto the next automatic close.
+//
 // Neutral data only: agent-a, example/repo.
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, issueWorkProducts, issues } from "@myrmidon/db";
+import { activityLog, agents, companies, createDb, issueWorkProducts, issues } from "@myrmidon/db";
+import { REVIEW_REWORK_CLOSED_ACTION } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -193,5 +198,178 @@ describeEmbeddedPostgres("myrmidon(1.6.5 REVIEW-REWORK-F02) deliveringTaskAssign
       excludeIssueId,
     );
     expect(assignee).toBe(delivererAgentId);
+  });
+
+  // OPE-12260: the veto is a historical fact. The DB must answer "yes" when
+  // ANY user/agent issue.updated row moved the issue off a terminal status
+  // after the loop's own close — not only when such a row happens to be the
+  // newest audit entry (a later agent status move must not displace it).
+  describe("reopenedAfterLoopClose (OPE-12260)", () => {
+    /** The audit row the loop itself writes when it settles a review. */
+    async function seedLoopCloseRow(issueId: string, at: Date) {
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "system",
+        actorId: "review_rework_sweep",
+        action: REVIEW_REWORK_CLOSED_ACTION,
+        entityType: "issue",
+        entityId: issueId,
+        details: { reason: "pr_terminal", outcome: "merged" },
+        createdAt: at,
+      });
+    }
+
+    /**
+     * An audit row on the issue, shaped like the ones the issue routes write.
+     * The update route writes `status` + `_previous` on every status move; the
+     * reopen route writes `reopened` / `reopenedFrom`.
+     */
+    async function seedIssueUpdatedRow(
+      issueId: string,
+      at: Date,
+      actorType: "user" | "agent" | "system",
+      actorId: string,
+      details: Record<string, unknown>,
+    ) {
+      await db.insert(activityLog).values({
+        companyId,
+        actorType,
+        actorId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details,
+        createdAt: at,
+      });
+    }
+
+    /** Details shape of a plain status move: `status` + `_previous.status`. */
+    function statusMoveDetails(previous: string, next: string) {
+      return {
+        status: next,
+        _previous: { status: previous },
+      };
+    }
+
+    let vetoTaskId!: string;
+    let plainTaskId!: string;
+
+    beforeAll(async () => {
+      vetoTaskId = await seedTaskWithTitle("delivering-task-reopen-veto");
+      await seedLoopCloseRow(vetoTaskId, new Date("2026-11-07T10:00:00.000Z"));
+      // The person/ADM reopen: off the terminal status AFTER the loop's close.
+      await seedIssueUpdatedRow(
+        vetoTaskId,
+        new Date("2026-11-07T10:05:00.000Z"),
+        "user",
+        "user-alex",
+        statusMoveDetails("done", "in_progress"),
+      );
+      // The executor's wake: a LATER agent move that must not displace the
+      // historical veto (the newest-row probe lost the veto exactly this way —
+      // the OPE-7290 relapse the reviewer named).
+      await seedIssueUpdatedRow(
+        vetoTaskId,
+        new Date("2026-11-07T10:06:00.000Z"),
+        "agent",
+        delivererAgentId,
+        statusMoveDetails("in_progress", "in_review"),
+      );
+    });
+
+    beforeAll(async () => {
+      plainTaskId = await seedTaskWithTitle("delivering-task-no-reopen");
+      // The loop closed it; no off-terminal row ever follows — an ordinary
+      // close applies, the veto must not fire.
+      await seedLoopCloseRow(plainTaskId, new Date("2026-11-07T11:00:00.000Z"));
+      // A later agent move that does NOT leave a terminal status (an agent
+      // move between review shapes) must not veto either.
+      await seedIssueUpdatedRow(
+        plainTaskId,
+        new Date("2026-11-07T11:01:00.000Z"),
+        "agent",
+        delivererAgentId,
+        statusMoveDetails("in_review", "blocked"),
+      );
+    });
+
+    it("vetoes when any user/agent row moved the issue off done/cancelled after the close", async () => {
+      const veto = await store.reopenedAfterLoopClose(companyId, vetoTaskId);
+      expect(veto).toBe(true);
+    });
+
+    it("does not veto when no reopen row follows the close (ordinary close applies)", async () => {
+      const veto = await store.reopenedAfterLoopClose(companyId, plainTaskId);
+      expect(veto).toBe(false);
+    });
+
+    it("does not veto a task the loop never closed", async () => {
+      const taskId = await seedTaskWithTitle("delivering-task-never-closed");
+      await seedIssueUpdatedRow(
+        taskId,
+        new Date("2026-11-07T12:00:00.000Z"),
+        "user",
+        "user-alex",
+        statusMoveDetails("done", "in_progress"),
+      );
+      const veto = await store.reopenedAfterLoopClose(companyId, taskId);
+      expect(veto).toBe(false);
+    });
+
+    it("does not veto when the only post-close move is by a system actor", async () => {
+      const taskId = await seedTaskWithTitle("delivering-task-system-actor");
+      await seedLoopCloseRow(taskId, new Date("2026-11-07T12:10:00.000Z"));
+      await seedIssueUpdatedRow(
+        taskId,
+        new Date("2026-11-07T12:11:00.000Z"),
+        "system",
+        "some_service",
+        statusMoveDetails("done", "in_progress"),
+      );
+      const veto = await store.reopenedAfterLoopClose(companyId, taskId);
+      expect(veto).toBe(false);
+    });
+
+    it("does not veto when the post-close user move left a NON-terminal status", async () => {
+      const taskId = await seedTaskWithTitle("delivering-task-non-terminal-move");
+      await seedLoopCloseRow(taskId, new Date("2026-11-07T12:20:00.000Z"));
+      await seedIssueUpdatedRow(
+        taskId,
+        new Date("2026-11-07T12:21:00.000Z"),
+        "user",
+        "user-alex",
+        statusMoveDetails("in_review", "blocked"),
+      );
+      const veto = await store.reopenedAfterLoopClose(companyId, taskId);
+      expect(veto).toBe(false);
+    });
+
+    it("vetoes on the reopen-route shape (details.reopenedFrom, no _previous block)", async () => {
+      const taskId = await seedTaskWithTitle("delivering-task-reopened-from-shape");
+      await seedLoopCloseRow(taskId, new Date("2026-11-07T12:30:00.000Z"));
+      await seedIssueUpdatedRow(
+        taskId,
+        new Date("2026-11-07T12:31:00.000Z"),
+        "user",
+        "user-alex",
+        { status: "in_progress", reopened: true, reopenedFrom: "done" },
+      );
+      const veto = await store.reopenedAfterLoopClose(companyId, taskId);
+      expect(veto).toBe(true);
+    });
+
+    it("vetoes on the system-shaped row carrying previousStatus", async () => {
+      const taskId = await seedTaskWithTitle("delivering-task-previous-status-shape");
+      await seedLoopCloseRow(taskId, new Date("2026-11-07T12:40:00.000Z"));
+      await seedIssueUpdatedRow(
+        taskId,
+        new Date("2026-11-07T12:41:00.000Z"),
+        "agent",
+        delivererAgentId,
+        { status: "in_progress", previousStatus: "done" },
+      );
+      const veto = await store.reopenedAfterLoopClose(companyId, taskId);
+      expect(veto).toBe(true);
+    });
   });
 });

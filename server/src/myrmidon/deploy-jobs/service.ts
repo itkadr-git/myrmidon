@@ -60,7 +60,7 @@ import {
   type DeployJobDocument,
   type DeployJobStatus,
 } from "./domain.js";
-import { readDeployJobsSettings, type DeployJobsSettings } from "./settings.js";
+import { resolveDeployJobsSettings, readDeployJobsSettings, type DeployJobsSettings } from "./settings.js"; // myrmidon(1.7, OPE-4101): live behavior settings
 import type { UpdateEventPayload } from "../bot-containers/update-notify.js";
 // myrmidon(1.7-AUTO-UPDATE-B): the update policy the scheduler executes — the
 // maintenance window, the mode (manual / auto by an approved release) and the
@@ -204,6 +204,7 @@ export interface DeployJobServiceDeps {
   /** Health facts of the running server, as /api/health reports them. */
   readHealth: () => Promise<{ version: string | null; commit: string | null } | null>;
   now?: () => Date;
+  /** Static settings override for tests; production resolves them live per call. */
   settings?: DeployJobsSettings;
   probes?: ProbeDeps;
   logActivity?: typeof logActivity;
@@ -249,7 +250,9 @@ export function toView(job: DeployJob): DeployJobView {
 export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   const store = resolveStore(db);
   const now = deps.now ?? (() => new Date());
-  const settings = deps.settings ?? readDeployJobsSettings();
+  // myrmidon(1.7, OPE-4101): behavior keys resolve live on every use so a UI
+  // change applies without a restart; `deps.settings` stays the test override.
+  const settings = (): DeployJobsSettings => deps.settings ?? resolveDeployJobsSettings();
   const audit = deps.logActivity ?? ((dbArg, entry) => logActivity(dbArg, entry));
   // The policy is read per use (see DeployJobServiceDeps.readAutoUpdate): the
   // interface is the source of truth and env is only a forced override.
@@ -271,7 +274,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
    * approval back, because nothing was created at all.
    */
   async function startApprovedRelease(at: Date): Promise<DeployJobView | null> {
-    if (!settings.enabled) return null;
+    if (!settings().enabled) return null;
     const policy = await resolvePolicy();
     const decision = autoUpdateStart({ settings: policy.settings, now: at });
     const candidate = decision.candidate;
@@ -486,7 +489,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
 
   /** Create a job and start verification. */
   async function create(input: { reference: string; reason?: string }, actor: { actorType: string; actorId: string }, opts: { id?: string } = {}): Promise<DeployJobView> {
-    if (!settings.enabled) {
+    if (!settings().enabled) {
       throw new DeployJobError(503, "deploys from the interface are not enabled on this instance (MYRMIDON_DEPLOY_ENABLED)");
     }
     const problem = digestProblem(input.reference ?? "");
@@ -653,16 +656,16 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
     // `fleet_canary` (the batch is watched for its own settle time — B-2).
     const lastStep = job.steps[job.steps.length - 1];
     const waited = at.getTime() - Date.parse(job.updatedAt);
-    if (job.status === "waiting_window" && waited > settings.windowWaitTimeoutMs) {
-      await failJob(job.id, "aborted", `the maintenance window did not open within ${Math.round(settings.windowWaitTimeoutMs / 1000)}s (window opens ${job.windowOpensAt ?? "never"})`);
+    if (job.status === "waiting_window" && waited > settings().windowWaitTimeoutMs) {
+      await failJob(job.id, "aborted", `the maintenance window did not open within ${Math.round(settings().windowWaitTimeoutMs / 1000)}s (window opens ${job.windowOpensAt ?? "never"})`);
       return;
     }
-    if (job.status === "fleet_canary" && waited > settings.canaryTimeoutMs) {
-      await completeCanary(job.id, "canary_failed", `the fleet canary did not report a verdict within ${Math.round(settings.canaryTimeoutMs / 1000)}s`);
+    if (job.status === "fleet_canary" && waited > settings().canaryTimeoutMs) {
+      await completeCanary(job.id, "canary_failed", `the fleet canary did not report a verdict within ${Math.round(settings().canaryTimeoutMs / 1000)}s`);
       return;
     }
-    if (lastStep && job.status !== "waiting_window" && job.status !== "fleet_canary" && waited > settings.stepTimeoutMs) {
-      await failJob(job.id, "aborted", `step ${job.status} exceeded the timeout (${Math.round(settings.stepTimeoutMs / 1000)}s)`);
+    if (lastStep && job.status !== "waiting_window" && job.status !== "fleet_canary" && waited > settings().stepTimeoutMs) {
+      await failJob(job.id, "aborted", `step ${job.status} exceeded the timeout (${Math.round(settings().stepTimeoutMs / 1000)}s)`);
       return;
     }
 
@@ -817,7 +820,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
           const detail = healthy
             ? `new image healthy: version ${health?.version ?? "<none>"}, commit ${health?.commit?.slice(0, 12) ?? "<none>"}`
             : `host reported health-ok but /api/health disagrees: got version ${health?.version ?? "<none>"}, commit ${health?.commit?.slice(0, 12) ?? "<none>"}`;
-          if (!healthy && settings.autoRollback) {
+          if (!healthy && settings().autoRollback) {
             // R5-C: a failed health check with the automatic rollback on is
             // not terminal — the host executor rolls the image back next.
             await startAutoRollback(job, detail, report);
@@ -828,7 +831,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
         }
         if (report.phase === "health-failed" || report.phase === "error") {
           const detail = `host executor failed: ${report.phase}${report.detail ? ` — ${report.detail}` : ""}`;
-          if (settings.autoRollback) {
+          if (settings().autoRollback) {
             // R5-C: same trigger — the new image is running but not healthy,
             // roll back to the locally remembered previous one.
             await startAutoRollback(job, detail, report);
@@ -851,7 +854,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
         }
         if (report.phase === "rolled-back") {
           const detail = `rolled back to the previous image${report.detail ? ` (${report.detail})` : ""}`;
-          if (!settings.autoRollback) {
+          if (!settings().autoRollback) {
             // Desync: the host rolled back with the board switch off. The
             // deploy still failed its health check — record it as such.
             await finish(job.id, "failed_health", `${detail}: the host executor rolled back with the board switch off`, report);

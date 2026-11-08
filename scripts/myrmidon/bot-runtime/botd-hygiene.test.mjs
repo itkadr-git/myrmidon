@@ -9,6 +9,7 @@ import {
   cleanTargetDir,
   cleanUvCache,
   collectOpenPaths,
+  enforceNpmCap,
   HYGIENE_DEFAULTS,
   isPathOpen,
 } from "../../../docker/bot-runtime/botd/lib/hygiene.js";
@@ -208,6 +209,161 @@ describe("botd hygiene: cache cleanup by mtime", () => {
       assert.equal(fs.existsSync(entry), false);
       assert.equal(fs.readdirSync(root).length, 0);
       assert.equal(result.cleanedFiles, 2);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("enforceNpmCap: below the cap does nothing", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const npmDir = path.join(tmp, ".npm");
+      const npxEntry = path.join(npmDir, "_npx", "hash-a", "cli.js");
+      fs.mkdirSync(path.dirname(npxEntry), { recursive: true });
+      fs.writeFileSync(npxEntry, "x".repeat(100));
+      const result = enforceNpmCap(npmDir, { capBytes: 1024 * 1024, now, openPaths: new Set() });
+      assert.equal(result.applied, false);
+      assert.equal(result.cleanedFiles, 0);
+      assert.equal(fs.existsSync(npxEntry), true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("enforceNpmCap: over the cap evicts the oldest _npx entry before any cacache shard", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const npmDir = path.join(tmp, ".npm");
+      const oldNpx = path.join(npmDir, "_npx", "old-hash", "cli.js");
+      const newNpx = path.join(npmDir, "_npx", "new-hash", "cli.js");
+      const shard = path.join(npmDir, "_cacache", "content-v2", "sha512", "00", "aa", "data.bin");
+      fs.mkdirSync(path.dirname(oldNpx), { recursive: true });
+      fs.mkdirSync(path.dirname(newNpx), { recursive: true });
+      fs.mkdirSync(path.dirname(shard), { recursive: true });
+      // Oversize by a wide margin so eviction need only drop the one oldest _npx entry.
+      fs.writeFileSync(oldNpx, "a".repeat(2000));
+      fs.writeFileSync(newNpx, "b".repeat(100));
+      fs.writeFileSync(shard, "c".repeat(100));
+      const old = new Date(now - 48 * HOUR);
+      const recent = new Date(now - 1 * HOUR);
+      fs.utimesSync(oldNpx, old, old);
+      fs.utimesSync(path.join(npmDir, "_npx", "old-hash"), old, old);
+      fs.utimesSync(newNpx, recent, recent);
+      fs.utimesSync(path.join(npmDir, "_npx", "new-hash"), recent, recent);
+      fs.utimesSync(shard, recent, recent);
+      fs.utimesSync(path.dirname(shard), recent, recent);
+
+      const result = enforceNpmCap(npmDir, { capBytes: 1000, now, openPaths: new Set() });
+
+      assert.equal(result.applied, true);
+      assert.equal(fs.existsSync(oldNpx), false, "oldest _npx entry evicted first");
+      assert.equal(fs.existsSync(newNpx), true, "newer _npx entry kept");
+      assert.equal(fs.existsSync(shard), true, "cacache shard kept while cap is satisfied by _npx alone");
+      assert.equal(result.removed.length, 1);
+      assert.equal(result.removed[0].kind, "npx");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("enforceNpmCap: falls through to cacache shards, oldest first, once _npx entries are evicted or absent", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const npmDir = path.join(tmp, ".npm");
+      const npx = path.join(npmDir, "_npx", "hash-a", "cli.js");
+      const oldShard = path.join(npmDir, "_cacache", "content-v2", "sha512", "00", "aa", "data.bin");
+      const newShard = path.join(npmDir, "_cacache", "content-v2", "sha512", "11", "bb", "data.bin");
+      fs.mkdirSync(path.dirname(npx), { recursive: true });
+      fs.mkdirSync(path.dirname(oldShard), { recursive: true });
+      fs.mkdirSync(path.dirname(newShard), { recursive: true });
+      fs.writeFileSync(npx, "n".repeat(300));
+      fs.writeFileSync(oldShard, "o".repeat(300));
+      fs.writeFileSync(newShard, "x".repeat(300));
+      const old = new Date(now - 50 * HOUR);
+      const recentNpx = new Date(now - 1 * HOUR);
+      const recentNewShard = new Date(now - 30 * 60 * 1000);
+      fs.utimesSync(npx, recentNpx, recentNpx);
+      fs.utimesSync(path.join(npmDir, "_npx", "hash-a"), recentNpx, recentNpx);
+      fs.utimesSync(oldShard, old, old);
+      fs.utimesSync(path.dirname(oldShard), old, old);
+      fs.utimesSync(newShard, recentNewShard, recentNewShard);
+      fs.utimesSync(path.dirname(newShard), recentNewShard, recentNewShard);
+
+      // Total 900 bytes. Cap is 400: _npx (300) evicted first, still 600 > 400,
+      // so it falls through to cacache shards: oldest shard (300) evicted,
+      // leaving newShard (300 <= 400).
+      const result = enforceNpmCap(npmDir, { capBytes: 400, now, openPaths: new Set() });
+
+      assert.equal(fs.existsSync(npx), false, "_npx entry evicted first");
+      assert.equal(fs.existsSync(oldShard), false, "oldest cacache shard evicted next");
+      assert.equal(fs.existsSync(newShard), true, "newer cacache shard kept");
+      assert.equal(result.removed.length, 2);
+      assert.equal(result.removed[0].kind, "npx");
+      assert.equal(result.removed[1].kind, "cacache-shard");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("enforceNpmCap: skips an entry with an open fd, evicting the next oldest instead", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const npmDir = path.join(tmp, ".npm");
+      const openNpx = path.join(npmDir, "_npx", "open-hash", "cli.js");
+      const closedNpx = path.join(npmDir, "_npx", "closed-hash", "cli.js");
+      fs.mkdirSync(path.dirname(openNpx), { recursive: true });
+      fs.mkdirSync(path.dirname(closedNpx), { recursive: true });
+      fs.writeFileSync(openNpx, "o".repeat(2000));
+      fs.writeFileSync(closedNpx, "c".repeat(2000));
+      const olderTime = new Date(now - 50 * HOUR);
+      const newerTime = new Date(now - 40 * HOUR);
+      // The open entry is the OLDER one by mtime, so without the open-fd guard
+      // it would be evicted first.
+      fs.utimesSync(openNpx, olderTime, olderTime);
+      fs.utimesSync(path.join(npmDir, "_npx", "open-hash"), olderTime, olderTime);
+      fs.utimesSync(closedNpx, newerTime, newerTime);
+      fs.utimesSync(path.join(npmDir, "_npx", "closed-hash"), newerTime, newerTime);
+
+      const openPaths = new Set([openNpx]);
+      const result = enforceNpmCap(npmDir, { capBytes: 1000, now, openPaths });
+
+      assert.equal(fs.existsSync(openNpx), true, "open entry must survive even though it is oldest");
+      assert.equal(fs.existsSync(closedNpx), false, "next-oldest closed entry evicted instead");
+      assert.ok(result.skippedOpen >= 1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("cleanCaches: does not apply npm size cap during a live run", async () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const hermesHome = path.join(tmp, "hermes");
+      const npxDir = path.join(hermesHome, ".npm", "_npx", "hash-live");
+      fs.mkdirSync(npxDir, { recursive: true });
+      const file = path.join(npxDir, "cli.js");
+      fs.writeFileSync(file, "x".repeat(2000));
+      // File is fresh (not stale by TTL)
+      const fresh = new Date(now - 1 * HOUR);
+      fs.utimesSync(file, fresh, fresh);
+      fs.utimesSync(npxDir, fresh, fresh);
+
+      // cleanCaches with live: true, cap = 500 bytes (file is 2000 bytes)
+      const res = await cleanCaches({
+        hermesHome,
+        now,
+        openPaths: new Set(),
+        live: true,
+        limits: { npmCacheCapBytes: 500, npxTtlHours: 24 },
+      });
+
+      assert.equal(fs.existsSync(file), true, "npm cap must not be enforced during live run");
+      assert.equal(res.targets["npm-cap"], undefined);
     } finally {
       cleanup();
     }

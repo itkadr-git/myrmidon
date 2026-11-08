@@ -21,6 +21,10 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: myrmidon-main-green-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'global' }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   issues: read
