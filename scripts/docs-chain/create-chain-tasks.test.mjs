@@ -4,6 +4,8 @@ import {
   createChainTasks,
   filterTrackedFiles,
   buildIdempotencyKey,
+  buildChainTask,
+  extractSourcePrNumber,
   DedupStore,
   TRACKED_PATH_PREFIXES,
 } from "./create-chain-tasks.mjs";
@@ -56,7 +58,7 @@ const mergeEnDocsFixture = {
   merged: true,
   pull_request: {
     number: 1044,
-    title: "1.7 DOCS-CHAIN EN: #1042 feat(skills): update agent workflow skills and docs",
+    title: "[DOCS-EN] Актуализация EN-документации и навыков по PR #1042",
     html_url: "https://github.com/itkadr-git/myrmidon/pull/1044",
     merged: true,
     base: { ref: "main" },
@@ -104,13 +106,19 @@ test("merge with docs -> creates 1 EN task; repeat delivery -> 0 (dedup)", async
   assert.equal(task.idempotencyKey, "docs-chain:itkadr-git/myrmidon:1042:en");
   assert.equal(task.role, "engineer");
   assert.equal(task.assigneeAgentId, null);
-  assert.match(task.title, /^1\.7 DOCS-CHAIN EN: #1042/);
-  assert.match(task.description, /доки и навык, дубль-проверка/);
+  assert.equal(
+    task.title,
+    "[DOCS-EN] Актуализация EN-документации и навыков по PR #1042",
+  );
+  assert.match(task.description, /Ссылка на исходный PR \/ Source PR: #1042/);
+  assert.match(task.description, /Список изменённых разделов \/ Changed sections/);
+  assert.match(task.description, /Актуализирована EN-документация/);
+  assert.match(task.description, /дубль-проверка/);
+  assert.match(task.description, /Правки минимальны: факт, а не рерайт стиля/);
+  assert.match(task.description, /run limit/);
+  assert.match(task.description, /3–5 прогонов агента/);
   assert.match(task.description, /Ревью обязательно/);
-  assert.match(task.description, /Автослияния нет/);
-  assert.match(task.description, /no auto-merge/);
-  assert.match(task.description, /Лимит запусков на PR: 2/);
-  assert.match(task.description, /Роль исполнителя: engineer/);
+  assert.match(task.description, /автослияния нет \(no auto-merge\)/i);
   assert.match(task.description, /https:\/\/github\.com\/itkadr-git\/myrmidon\/pull\/1042/);
   assert.match(task.description, /docs\/architecture\.md/);
 
@@ -137,13 +145,58 @@ test("merge of EN-PR -> creates RU task for changed sections only", async () => 
 
   const task = result.tasks[0];
   assert.equal(task.idempotencyKey, "docs-chain:itkadr-git/myrmidon:1044:ru");
-  assert.match(task.title, /^1\.7 DOCS-CHAIN RU: #1044/);
-  assert.match(task.description, /RU changed sections/);
+  assert.equal(
+    task.title,
+    "[DOCS-RU] Локализация изменённых разделов по PR #1042",
+  );
+  assert.match(task.description, /Ссылка на исходный PR \/ Source PR: #1042/);
+  assert.match(task.description, /Ссылка на EN PR \/ EN docs PR: #1044/);
+  assert.match(task.description, /Список изменённых разделов \/ Changed sections/);
   assert.match(task.description, /переведены только изменённые разделы, ссылка на PR есть/);
   assert.match(task.description, /Ревью обязательно/);
-  assert.match(task.description, /Автослияния нет/);
-  assert.match(task.description, /Лимит запусков на PR: 2/);
+  assert.match(task.description, /автослияния нет \(no auto-merge\)/i);
+  assert.match(task.description, /run limit/);
+  assert.match(task.description, /3–5 прогонов агента/);
   assert.match(task.description, /docs\/wiki\/overview\.md/);
+});
+
+test("task titles and bodies follow the canonical doc/DOCS-CHAIN.md templates", () => {
+  const enTask = buildChainTask({
+    repo: "itkadr-git/myrmidon",
+    prNumber: 2001,
+    prTitle: "feat: change public API",
+    prUrl: "https://github.com/itkadr-git/myrmidon/pull/2001",
+    phase: "en",
+    changedFiles: ["docs/architecture.md"],
+  });
+  assert.equal(
+    enTask.title,
+    "[DOCS-EN] Актуализация EN-документации и навыков по PR #2001",
+  );
+  assert.match(enTask.description, /doc\/DOCS-CHAIN\.md/);
+  assert.doesNotMatch(enTask.title, /1\.7 DOCS-CHAIN/);
+  assert.doesNotMatch(enTask.description, /Лимит запусков на PR: 2/);
+
+  const ruTask = buildChainTask({
+    repo: "itkadr-git/myrmidon",
+    prNumber: 2002,
+    prTitle: "[DOCS-EN] Актуализация EN-документации и навыков по PR #2001",
+    prUrl: "https://github.com/itkadr-git/myrmidon/pull/2002",
+    phase: "ru",
+    changedFiles: ["docs/wiki/overview.md"],
+  });
+  assert.equal(
+    ruTask.title,
+    "[DOCS-RU] Локализация изменённых разделов по PR #2001",
+  );
+  assert.equal(ruTask.idempotencyKey, "docs-chain:itkadr-git/myrmidon:2002:ru");
+});
+
+test("extractSourcePrNumber picks the PR number from an EN title", () => {
+  assert.equal(extractSourcePrNumber("[DOCS-EN] Актуализация EN-документации и навыков по PR #1042"), 1042);
+  assert.equal(extractSourcePrNumber("1.7 DOCS-CHAIN EN: #77 fix(x)"), 77);
+  assert.equal(extractSourcePrNumber("no number here"), null);
+  assert.equal(extractSourcePrNumber(""), null);
 });
 
 test("non-merge actions or non-main base branch create 0 tasks", async () => {

@@ -10,7 +10,11 @@
  * Enforces:
  * - Path filter: docs/**, docs/wiki/**, .agents/skills/**, packages/skills-catalog/**
  * - Idempotency key: docs-chain:<repo>:<pr>:<en|ru>
- * - Deduplication: repeat webhook delivery creates 0 tasks
+ * - Deduplication: repeat webhook delivery creates 0 tasks (in-process DedupStore;
+ *   permanent idempotency is guaranteed by the issue-creation side — apiClient/board,
+ *   see doc/DOCS-CHAIN.md "Идемпотентность")
+ * - Task titles/bodies follow the canonical templates in doc/DOCS-CHAIN.md (OPE-12218)
+ * - Run limit per PR: at most 3-5 agent runs (doc/DOCS-CHAIN.md)
  * - No auto-merge: PR auto-merge is prohibited
  * - Assigned role: engineer via queue pickup (assigneeAgentId: null)
  * - Dry-run mode: prints task payload without creating it
@@ -93,6 +97,7 @@ export function determinePhase(payload = {}, options = {}) {
     : [];
 
   if (
+    /\[DOCS-EN\]/i.test(title) ||
     /DOCS-CHAIN\s+EN\b/i.test(title) ||
     /docs-chain-en/i.test(branch) ||
     labels.some((l) => /docs-chain-en/i.test(l))
@@ -113,61 +118,57 @@ export function buildIdempotencyKey({ repo, prNumber, phase }) {
 }
 
 /**
- * Build the task object from the DOCS-CHAIN templates.
+ * Extract the original functional PR number from an EN docs-chain PR title
+ * (convention: "… #<SOURCE_PR_NUMBER> …"), per doc/DOCS-CHAIN.md.
+ */
+export function extractSourcePrNumber(prTitle = "") {
+  const match = String(prTitle).match(/#(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Build the task object from the canonical DOCS-CHAIN templates (doc/DOCS-CHAIN.md).
  */
 export function buildChainTask({ repo, prNumber, prTitle, prUrl, phase, changedFiles }) {
   const idempotencyKey = buildIdempotencyKey({ repo, prNumber, phase });
   const isEn = phase === "en";
-  const title = `1.7 DOCS-CHAIN ${isEn ? "EN" : "RU"}: #${prNumber} ${prTitle}`;
-  const changedSectionsList = changedFiles.map((f) => `- \`${f}\``).join("\n");
+  const sourcePrNumber = isEn ? prNumber : extractSourcePrNumber(prTitle);
+  const runLimitText = "Соблюдён лимит запусков на PR (run limit, не более 3–5 прогонов агента).";
+  const changedSectionsList = changedFiles.map((f) => `  - \`${f}\``).join("\n");
+  const sourcePrLine = `- Ссылка на исходный PR / Source PR: #${sourcePrNumber ?? "?"} (URL: https://github.com/${repo}/pull/${sourcePrNumber ?? prNumber})`;
+  const enPrLine = `- Ссылка на EN PR / EN docs PR: #${prNumber} (URL: ${prUrl})`;
+
+  const title = isEn
+    ? `[DOCS-EN] Актуализация EN-документации и навыков по PR #${sourcePrNumber ?? prNumber}`
+    : `[DOCS-RU] Локализация изменённых разделов по PR #${sourcePrNumber ?? "?"}`;
 
   const description = isEn
-    ? `Часть цепочки документации DOCS-CHAIN (выпуск 1.7).
-EN docs task: обновление англоязычной документации и навыков по влитому PR.
+    ? `Шаблон EN-задачи из канонического рунбука doc/DOCS-CHAIN.md (цепочка DOCS-CHAIN).
 
-- Исходный PR: ${prUrl} (#${prNumber})
-- Репозиторий: ${repo}
-- Изменённые пути:
+**Обязательные поля**:
+${sourcePrLine}
+- Список изменённых разделов / Changed sections:
 ${changedSectionsList}
 
-Цель:
-1. Синхронизировать документацию (docs/**, docs/wiki/**) и каталоги навыков (.agents/skills/**, packages/skills-catalog/**) с изменениями кода.
-2. Провести аудит дрейфа: доки и навык, дубль-проверка.
+**Критерии приёмки**:
+1. Актуализирована EN-документация под изменения из исходного PR.
+2. Проведена дубль-проверка и синхронизация связанных навыков в \`.agents/skills/\`.
+3. Правки минимальны: факт, а не рерайт стиля.
+4. Открыт PR с описанием изменений и ссылкой на исходный PR.
+5. ${runLimitText}
+6. Ревью обязательно, автослияния нет (no auto-merge).`
+    : `Шаблон RU-задачи из канонического рунбука doc/DOCS-CHAIN.md (цепочка DOCS-CHAIN).
 
-Правила:
-- EN docs task
-- Ревью обязательно
-- Автослияния нет (no auto-merge)
-- Лимит запусков на PR: 2
-- Роль исполнителя: engineer (захват из очереди, без прямого назначения)
-
-Критерии приёмки:
-- Документация и навыки приведены в соответствие с исходным PR ${prUrl}.
-- Ссылка на исходный PR включена в описание PR.
-- Автослияния нет.`
-    : `Часть цепочки документации DOCS-CHAIN (выпуск 1.7).
-RU changed sections: перевод на русский язык изменённых разделов по влитому PR.
-
-- Исходный PR: ${prUrl} (#${prNumber})
-- Репозиторий: ${repo}
-- Список изменённых разделов:
+**Обязательные поля**:
+${sourcePrLine}
+${enPrLine}
+- Список изменённых разделов / Changed sections:
 ${changedSectionsList}
 
-Цель:
-1. Перевести на русский язык ТОЛЬКО изменённые разделы (docs/wiki, русскоязычные разделы документации).
-2. Не вносить правок в неизменённые разделы во избежание шума и конфликтов.
-
-Правила:
-- RU changed sections
-- Ревью обязательно
-- Автослияния нет (no auto-merge)
-- Лимит запусков на PR: 2
-- Роль исполнителя: engineer (захват из очереди, без прямого назначения)
-
-Критерии приёмки:
+**Критерий приёмки**:
 - переведены только изменённые разделы, ссылка на PR есть
-- Ссылка на исходный PR ${prUrl} сохранена в описании задачи и PR
-- Автослияния нет.`;
+- Ревью обязательно, автослияния нет (no auto-merge).
+- ${runLimitText}`;
 
   return {
     title,
