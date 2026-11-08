@@ -187,6 +187,7 @@ export function classifyRunFailure(
   if (errorCode && PRE_ADAPTER_SETUP_FAILURE_CODES.has(errorCode)) {
     // If it's a spawn-like failure or sandbox worker unavailable in setup, it is retryable infra
     if (
+      errorCode !== WORKSPACE_VALIDATION_FAILURE_CODE &&
       isRetryableInteractionContinuationInfrastructureFailure({
         error: input.error,
         errorCode,
@@ -207,7 +208,16 @@ export function classifyRunFailure(
     };
   }
 
-  // 3. Infrastructure interaction continuation failures
+  // 3. Generic process_lost
+  if (errorCode === "process_lost") {
+    return {
+      retryable: true,
+      reason: "process_lost",
+      backoffHint: 30_000,
+    };
+  }
+
+  // 4. Infrastructure interaction continuation failures
   if (
     isRetryableInteractionContinuationInfrastructureFailure({
       error: input.error,
@@ -218,51 +228,6 @@ export function classifyRunFailure(
     return {
       retryable: true,
       reason: "interaction_continuation_infra_failure",
-      backoffHint: 30_000,
-    };
-  }
-
-  // 4. Native run finalization retryable failures (phase === 'retryable_failure')
-  if (input.phase === "retryable_failure" || input.runtimeMode === "native") {
-    if (input.phase === "retryable_failure") {
-      return {
-        retryable: true,
-        reason: "native_retryable_failure_phase",
-        backoffHint: 30_000,
-      };
-    }
-  }
-
-  // 5. Check spawn-like or sandbox worker unavailable patterns in error message
-  if (errorMessage) {
-    if (isSpawnLikeFailureMessage(errorMessage)) {
-      return {
-        retryable: true,
-        reason: "spawn_like_transient_failure",
-        backoffHint: 30_000,
-      };
-    }
-    if (isSandboxProviderWorkerUnavailableFailureMessage(errorMessage)) {
-      return {
-        retryable: true,
-        reason: "sandbox_provider_worker_unavailable",
-        backoffHint: 30_000,
-      };
-    }
-    if (parseSandboxProviderPluginNotReadyFailureMessage(errorMessage)) {
-      return {
-        retryable: false,
-        reason: "sandbox_provider_plugin_not_ready",
-        backoffHint: null,
-      };
-    }
-  }
-
-  // 6. Generic process_lost
-  if (errorCode === "process_lost") {
-    return {
-      retryable: true,
-      reason: "process_lost",
       backoffHint: 30_000,
     };
   }

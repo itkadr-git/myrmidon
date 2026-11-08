@@ -75,6 +75,7 @@ const apiPrefixes: Record<string, string> = {
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
+  "status-strip.ts": "/api",
   // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): system update checks mount under /api.
   "system-updates.ts": "/api",
   "intake.ts": "/api",
