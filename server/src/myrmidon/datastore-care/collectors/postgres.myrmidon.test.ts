@@ -220,6 +220,7 @@ describe("myrmidon(DBC-4) postgres collector", () => {
       ageHours: 3,
       bytes: 4096,
       note: null,
+      externalLabel: null,
     });
 
     expect(payload.warnings).toEqual([]);
@@ -268,6 +269,7 @@ describe("myrmidon(DBC-4) postgres collector", () => {
     expect(payload.backup.available).toBe(false);
     expect(payload.backup.fileCount).toBe(0);
     expect(payload.backup.note).toContain("no backup found");
+    expect(payload.backup.externalLabel).toBeNull();
   });
 
   it("records a failing read as a warning instead of throwing the collection away", async () => {
