@@ -6500,6 +6500,14 @@ for (const path of ["/api/updates/settings", "/api/updates", "/api/myrmidon/upda
     request: { body: jsonBody(putUpdateSettingsSchema) },
     responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
   });
+  registry.registerPath({
+    method: "post",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
   if (path !== "/api/myrmidon/updates/settings") {
     registry.registerPath({
       method: "patch",

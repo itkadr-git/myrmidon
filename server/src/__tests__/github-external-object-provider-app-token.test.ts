@@ -17,7 +17,7 @@ vi.mock("../myrmidon/github-shared-identity/store.js", () => ({
   readGitHubSharedIdentitySettings: settingsMock.read,
 }));
 
-import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
+import { createGitHubExternalObjectProvider, resetGitHubObjectCacheForTests } from "../services/github-external-object-provider.js";
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resetGitHubAppTokenCacheForTests } from "../myrmidon/github-shared-identity/app-token.js";
 
@@ -103,6 +103,7 @@ function calls(fetch: ReturnType<typeof githubFetch>, path: string) {
 }
 
 beforeEach(() => {
+  resetGitHubObjectCacheForTests();
   resetGitHubAppTokenCacheForTests();
   secretMocks.getByName.mockReset().mockResolvedValue(null);
   secretMocks.resolveSecretValue.mockReset().mockResolvedValue(PEM);
@@ -111,6 +112,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -147,6 +149,8 @@ describe("GitHub external object resolver: shared-identity App token", () => {
   });
 
   it("caches the installation token between resolutions", async () => {
+    // myrmidon(OPE-12397): with the provider's read cache on, the second resolution would not reach GitHub at all.
+    vi.stubEnv("MYRMIDON_GITHUB_OBJECT_CACHE_TTL_SEC", "0");
     const fetch = githubFetch();
     const resolver = prResolver(fetch);
     await resolver.resolve({ companyId: COMPANY, object: prObject() });
