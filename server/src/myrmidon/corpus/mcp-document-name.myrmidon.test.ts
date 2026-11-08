@@ -22,6 +22,8 @@ const settings: CorpusSettings = {
   enabled: true,
   parserBaseUrl: "http://parser.invalid",
   parserTimeoutMs: 1000,
+  parserMaxRunMs: 6 * 60 * 60 * 1000,
+  parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
   embedderModel: "corpus-embed-pplx-0.6b",
   embedderDimensions: 3,
   embedderBaseUrl: null,

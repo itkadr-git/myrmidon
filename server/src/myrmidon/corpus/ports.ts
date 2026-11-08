@@ -251,6 +251,8 @@ export interface DocumentParsePort {
     mimeType: string | null;
     baseUrl: string;
     timeoutMs: number;
+    maxRunMs?: number;
+    queueTimeoutMs?: number;
     /** Aborts the parse and cancels its job in the parse service (the board is shutting down). */
     signal?: AbortSignal;
   }): Promise<ParsedDocument>;

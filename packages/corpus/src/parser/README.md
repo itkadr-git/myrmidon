@@ -92,13 +92,16 @@ The limit on a job (`pollTimeoutMs`, from the module setting `parserTimeoutMs`, 
 is the time it RUNS WITHOUT PROGRESS. The clock starts when a poll first reports the job `running`
 and starts over every time `progress.done` (pages done) grows, so a scanned book that keeps turning
 pages is never given up on after N minutes — only one that stops is. A format that has no pages
-sends no progress and gets `pollTimeoutMs` from the start of its run. `maxRunMs` (six hours) is a
-hard ceiling on a run that never ends. A document that waits in the service's queue behind others
+sends no progress and gets `pollTimeoutMs` from the start of its run. `parserTimeoutMs` should be
+greater than the time of one window of pages (8 pages, plus loading the models on the first window);
+with 60 000 ms on a heavy scan one can give up mid-window and enter a retry loop.
+`maxRunMs` (six hours, configurable via `parserMaxRunMs`) is a hard ceiling on a run that never ends.
+A document that waits in the service's queue behind others
 does not use any of it — the service parses one document at a time, so the Nth document of a batch
 would never fit otherwise. A job that goes back to `pending` (the service restarted) stops the run
-clock and starts the queue clock (`queueTimeoutMs`, four hours, counted from the last time the job
-was queued, so a service that never starts the job cannot hold a worker slot forever); the progress
-count starts over when it runs again.
+clock and starts the queue clock (`queueTimeoutMs`, four hours, configurable via `parserQueueTimeoutMs`,
+counted from the last time the job was queued, so a service that never starts the job cannot hold a worker slot forever);
+the progress count starts over when it runs again.
 
 When `parseDocument` ends an attempt without a final state of the job (a timeout, an abort
 by the caller, a poll that keeps failing) it sends `DELETE /v1/parse/{jobId}` before it returns.
