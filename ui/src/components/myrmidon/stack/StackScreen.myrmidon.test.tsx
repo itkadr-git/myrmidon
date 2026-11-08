@@ -147,6 +147,7 @@ const DOCUMENT: StackDocument = {
           hasSecurity: true,
         },
         error: null,
+        staleSince: "2026-10-01T00:00:00.000Z",
       },
       patchClosed: { state: "open", reason: "our patch is not upstream yet" },
     }),
@@ -268,6 +269,15 @@ describe("StackScreenView", () => {
     renderView();
     expect(byTestId("myrmidon-stack-schedule-hermes-agent")).not.toBeNull();
     expect(byTestId("myrmidon-stack-schedule-myrmidon")).toBeNull();
+  });
+
+  it("shows a stale badge on the latest cell when the upstream data is stale", () => {
+    renderView();
+    const badge = byTestId("myrmidon-stack-stale-hermes-agent");
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toContain("stale");
+    // myrmidon is fresh: no stale badge there.
+    expect(byTestId("myrmidon-stack-stale-myrmidon")).toBeNull();
   });
 
   it("keeps a 503 on the page instead of crashing", () => {

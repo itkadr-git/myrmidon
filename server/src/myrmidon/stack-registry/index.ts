@@ -56,9 +56,19 @@ export {
 export {
   buildStackAttentionCards,
   stackComponentNeedsAttention,
+  stackUpstreamIsStale,
   STACK_ATTENTION_EXCERPT_MAX,
   type StackAttentionCard,
 } from "./attention.js";
+export {
+  buildStackLagTask,
+  buildStackDigestLine,
+  cardsForDigest,
+  cardsForLagTasks,
+  fileStackLagTasks,
+  stackLagTaskIdempotencyKey,
+  type StackLagTask,
+} from "./escalation.js";
 export {
   STACK_GITHUB_API_BASE,
   STACK_HTTP_TIMEOUT_MS,

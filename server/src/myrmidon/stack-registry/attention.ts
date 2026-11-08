@@ -6,7 +6,9 @@
 // the previous check.
 
 import type { AttentionSeverity } from "@myrmidon/shared";
-import type { StackDocument, StackPatchClosedState } from "./domain.js";
+import type { StackDocument, StackPatchClosedState, StackUpstreamState } from "./domain.js";
+
+export type { StackUpstreamState } from "./domain.js";
 
 /** Cap for the release-note excerpt carried on the card. */
 export const STACK_ATTENTION_EXCERPT_MAX = 300;
@@ -23,6 +25,8 @@ export interface StackAttentionCard {
   dedupKey: string;
   activityAt: string;
   patchState: StackPatchClosedState | null;
+  /** When the upstream data was last successfully fetched (null while fresh). */
+  staleSince: string | null;
   metadata: Record<string, unknown>;
 }
 
@@ -40,7 +44,21 @@ export function stackComponentNeedsAttention(component: StackDocument["component
   if (!upstream || !upstream.latest) return false;
   const behind = upstream.behindBy != null && upstream.behindBy >= 1;
   const newLatest = upstream.previousLatest != null && upstream.previousLatest !== upstream.latest;
-  return behind || newLatest;
+  // STACK-WATCH-LIVE: keep the card alive while the local version is unknown
+  // but upstream has a latest — the component cannot prove it is up to date,
+  // so the honest state is "needs attention" until a version pins it down.
+  const unknownLocal = upstream.behindBy == null;
+  return behind || newLatest || unknownLocal;
+}
+
+/**
+ * True when the upstream check has been failing long enough that the cached
+ * data is considered stale (24 hours without a successful refresh).
+ */
+export function stackUpstreamIsStale(upstream: StackUpstreamState, now: Date): boolean {
+  if (!upstream.staleSince) return false;
+  const staleMs = now.getTime() - Date.parse(upstream.staleSince);
+  return staleMs >= 24 * 60 * 60_000;
 }
 
 /**
@@ -62,9 +80,15 @@ export function buildStackAttentionCards(doc: StackDocument): StackAttentionCard
     // the source has one, otherwise the moment this latest was first seen. A
     // dismissal keyed to a fixed activity time does not expire on every check.
     const activityAt = upstream.latestPublishedAt ?? upstream.firstSeenAt ?? doc.checkedAt ?? new Date(0).toISOString();
+    const staleHours = upstream.staleSince
+      ? Math.max(0, Math.round((Date.parse(doc.checkedAt ?? activityAt) - Date.parse(upstream.staleSince)) / 3_600_000))
+      : null;
+    const staleSuffix = staleHours != null
+      ? ` Data is stale: the last successful check was ${staleHours}h ago (${upstream.staleSince}).`
+      : "";
     const whyNow = behind
-      ? `Upstream release ${latest} is ${behindBy} release(s) ahead of the running version (${ourVersion ?? "unknown"}).`
-      : `A new upstream release ${latest} appeared since the last check.`;
+      ? `Upstream release ${latest} is ${behindBy} release(s) ahead of the running version (${ourVersion ?? "unknown"}).${staleSuffix}`
+      : `A new upstream release ${latest} appeared since the last check.${staleSuffix}`;
     cards.push({
       component: component.name,
       title: `${component.name} ${latest}`,
@@ -77,6 +101,7 @@ export function buildStackAttentionCards(doc: StackDocument): StackAttentionCard
       dedupKey: `stack:${component.name}:${latest}`,
       activityAt,
       patchState: component.patchClosed?.state ?? null,
+      staleSince: upstream.staleSince ?? null,
       metadata: {
         component: component.name,
         ourVersion,
@@ -86,6 +111,7 @@ export function buildStackAttentionCards(doc: StackDocument): StackAttentionCard
         patchReason: component.patchClosed?.reason ?? null,
         hasSecurity,
         notes,
+        staleSince: upstream.staleSince ?? null,
       },
     });
   }

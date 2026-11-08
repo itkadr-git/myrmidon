@@ -172,19 +172,26 @@ export function normaliseVersion(value: string | null): string | null {
   return candidate.replace(/^v(?=\d)/i, "").toLowerCase();
 }
 
+/** True for pre-release / nightly / rc tags that must not count as "latest". */
+export function isPrereleaseTag(tag: string): boolean {
+  return /(?:^|[-.])(nightly|alpha|beta|rc|pre|dev|snapshot|canary)(?:[-.]|\d|$)/i.test(tag);
+}
+
 /**
  * Releases/tags between our version and the newest entry, or null when our
  * version is unknown or absent from the ordered list (an honest unknown: we
- * cannot prove the local version is part of this feed).
+ * cannot prove the local version is part of this feed). Pre-release and
+ * nightly tags never count as the latest release.
  */
 export function countBehind(
   releases: readonly StackReleaseRecord[],
   localVersion: string | null,
 ): { latest: string | null; behindBy: number | null } {
-  const latest = releases[0]?.tag ?? null;
+  const stable = releases.filter((release) => !isPrereleaseTag(release.tag));
+  const latest = stable[0]?.tag ?? null;
   const ours = normaliseVersion(localVersion);
   if (!ours) return { latest, behindBy: null };
-  const normalised = releases.map((release) => normaliseVersion(release.tag));
+  const normalised = stable.map((release) => normaliseVersion(release.tag));
   const index = normalised.indexOf(ours);
   if (index < 0) return { latest, behindBy: null };
   return { latest, behindBy: index };

@@ -85,7 +85,6 @@ describeEmbeddedPostgres("stack registry", () => {
       "myrmidon",
       "hermes-agent",
       "litellm",
-      "ragflow",
       "hindsight",
       "langfuse",
       "clickhouse",
@@ -179,6 +178,25 @@ describeEmbeddedPostgres("stack registry", () => {
     const board = doc.components.find((c) => c.name === "myrmidon")!;
     expect(board.local.commit).toBeNull();
     expect(board.local.unknownReason).toBe("board build commit unavailable (git_unavailable)");
+  });
+
+  it("treats an unreachable docker socket as an honest unknown, not a probe failure (STACK-WATCH-LIVE)", async () => {
+    // The board container has no docker.sock by design: the default docker
+    // port must convert the socket error into "image absent" so the refresh
+    // succeeds and the component reports an unknown, never a 503.
+    const doc = await collectStackLocal({
+      now: NOW,
+      serverInfo: {
+        processStartedAt: "2026-09-30T11:00:00.000Z",
+        git: { available: true, fullSha: BOARD_COMMIT },
+      },
+    });
+    const hermes = doc.components.find((c) => c.name === "hermes-agent")!;
+    expect(hermes.local.version).toBeNull();
+    expect(hermes.local.unknownReason).toBeTruthy();
+    const baseImages = doc.components.find((c) => c.name === "base-images")!;
+    expect(baseImages.local.version).toBeNull();
+    expect(baseImages.local.unknownReason).toBeTruthy();
   });
 
   it("refresh rewrites the cache and GET reflects it", async () => {

@@ -17,6 +17,7 @@ import { logger } from "../../middleware/logger.js";
 import {
   STACK_CHECKABLE_RELEASE_SOURCES,
   STACK_DOCUMENT_VERSION,
+  STACK_SEED,
   patchEntryFromDelta,
   seedDeltasFor,
   seedStackDocument,
@@ -33,6 +34,7 @@ import {
   githubCompareUrl,
   githubJsonPort,
   githubListUrl,
+  isPrereleaseTag,
   normaliseVersion,
   readReleaseList,
   type StackFetchJson,
@@ -40,9 +42,13 @@ import {
 import { readStackCheckIntervalSec } from "./settings.js";
 import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import { readStackDocument, writeStackDocument } from "./store.js";
+import { collectStackLocal, type CollectStackLocalOptions } from "./collector.js";
+import { fileStackLagTasks } from "./escalation.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export const STACK_CHECK_PER_PAGE = 30;
+/** One retry on 403/429/5xx, after a short delay. */
+export const STACK_CHECK_RETRY_DELAY_MS = 30_000;
 
 export interface StackCheckOptions {
   now?: () => Date;
@@ -50,6 +56,13 @@ export interface StackCheckOptions {
   fetchJson?: StackFetchJson;
   perPage?: number;
   noteLimit?: number;
+  /** Delay before one retry on 403/429/5xx; 0 disables the retry. */
+  retryDelayMs?: number;
+  /**
+   * Local-state collection options for the pre-check refresh. Pass `false` to
+   * keep the stored local state untouched (tests that only exercise part B).
+   */
+  collect?: CollectStackLocalOptions | false;
 }
 
 function readOnlyUpstream(previous: StackUpstreamState | null, checkedAt: string, error: string): StackUpstreamState {
@@ -62,6 +75,7 @@ function readOnlyUpstream(previous: StackUpstreamState | null, checkedAt: string
     behindBy: previous?.behindBy ?? null,
     notes: previous?.notes ?? null,
     error,
+    staleSince: previous?.staleSince ?? checkedAt,
   };
 }
 
@@ -139,14 +153,25 @@ async function checkComponent(
   const previous = component.upstreamState ?? null;
   // A transport failure here propagates: the whole check fails and the cache
   // stays untouched (the route answers 503).
-  const res = await port(githubListUrl(repo, source, opts.perPage));
+  const listUrl = githubListUrl(repo, source, opts.perPage);
+  let res = await port(listUrl);
+  // STACK-WATCH-LIVE: on a rate-limit (403/429) or a server error, retry once
+  // after a short delay before declaring the component stale.
+  if ((res.status === 403 || res.status === 429 || res.status >= 500) && opts.retryDelayMs != null && opts.retryDelayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, opts.retryDelayMs));
+    res = await port(listUrl);
+  }
   if (res.status < 200 || res.status >= 300) {
     return { ...component, upstreamState: readOnlyUpstream(previous, checkedAt, `github ${res.status}`) };
   }
   const releases = readReleaseList(source, res.json);
-  const { latest, behindBy } = countBehind(releases, component.local.version ?? component.local.commit);
+  const seedEntry = STACK_SEED.find((seed) => seed.name === component.name);
+  const tagPrefix = seedEntry?.tagPrefix ?? null;
+  const filtered = tagPrefix ? releases.filter((release) => release.tag.startsWith(tagPrefix)) : releases;
+  const stableReleases = filtered.filter((release) => !isPrereleaseTag(release.tag));
+  const { latest, behindBy } = countBehind(filtered, component.local.version ?? component.local.commit);
   const notes = source === "github-releases"
-    ? extractReleaseNotes(releases, { limit: opts.noteLimit })
+    ? extractReleaseNotes(stableReleases, { limit: opts.noteLimit })
     : null;
   const firstSeenAt = latest && latest === previous?.latest
     ? previous?.firstSeenAt ?? checkedAt
@@ -154,12 +179,13 @@ async function checkComponent(
   const upstream: StackUpstreamState = {
     checkedAt,
     latest,
-    latestPublishedAt: releases[0]?.publishedAt ?? null,
+    latestPublishedAt: stableReleases[0]?.publishedAt ?? null,
     firstSeenAt,
     previousLatest: previous?.latest ?? null,
     behindBy,
     notes: notes ?? (latest != null && latest === previous?.latest ? previous?.notes ?? null : null),
     error: null,
+    staleSince: null,
   };
   const patches = await evaluatePatches(component, latest, port, checkedAt);
   return {
@@ -182,9 +208,22 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
     githubJsonPort({
       token: (await resolveOptionalInstanceSecret("stack.github_token", "stack-registry")) ?? undefined,
     });
+  // STACK-WATCH-LIVE: the check itself refreshes the local side first, so the
+  // sweep needs no manual "refresh" and lag is measured against live versions.
   const stored = await readStackDocument(db);
-  const base = stored.components.length > 0 ? stored : seedStackDocument();
-  const opts = { perPage: options.perPage ?? STACK_CHECK_PER_PAGE, noteLimit: options.noteLimit };
+  const localBase = options.collect === false
+    ? (stored.components.length > 0 ? stored : seedStackDocument())
+    : await collectStackLocal({
+      ...(options.collect ?? {}),
+      now: options.now,
+      previous: stored.components.length > 0 ? stored : undefined,
+    });
+  const base = localBase.components.length > 0 ? localBase : seedStackDocument();
+  const opts = {
+    perPage: options.perPage ?? STACK_CHECK_PER_PAGE,
+    noteLimit: options.noteLimit,
+    retryDelayMs: options.retryDelayMs ?? STACK_CHECK_RETRY_DELAY_MS,
+  };
   const components: StackSnapshot[] = [];
   for (const component of base.components) {
     components.push(await checkComponent(component, port, opts, checkedAt));
@@ -196,6 +235,18 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
     components,
   };
   await writeStackDocument(db, next);
+  // STACK-WATCH-LIVE: file one backlog task per lagging component (dedup by
+  // component) in every company. Best-effort — a failure here must never fail
+  // the check.
+  try {
+    const { companies } = await import("@myrmidon/db");
+    const rows = await db.select({ id: companies.id }).from(companies);
+    for (const row of rows) {
+      await fileStackLagTasks(db, row.id, next, new Date(checkedAt), logger);
+    }
+  } catch (err) {
+    logger.warn({ err }, "stack lag task filing failed");
+  }
   return next;
 }
 
