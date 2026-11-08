@@ -816,6 +816,17 @@ export interface IssueExecutionState {
    * does not wake the executor again.
    */
   lastChangesRequestedHeadSha?: string | null;
+  /**
+   * myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the formal review decision as
+   * structure — `approved` | `changes_requested` plus the head sha and the PR
+   * number the verdict names. Written together with `lastDecisionId`;
+   * consumers read it instead of re-parsing the decision comment text.
+   */
+  reviewDecision?: {
+    reviewDecision: "approved" | "changes_requested";
+    headSha: string | null;
+    pullRequestNumber: number | null;
+  } | null;
 }
 
 export interface IssueExecutionDecision {
