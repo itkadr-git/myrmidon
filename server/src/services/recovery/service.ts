@@ -195,6 +195,7 @@ import {
   countStrandedAutoPolicyAttemptsInWindow,
   decideStrandedAutoPolicy,
   findActiveManagerAgentId,
+  findStrandedDispositionOwnerAgentId,
   isStrandedAutoPolicyCause,
   isStrandedAutoPolicyManagerHandoffAlreadyApplied,
   issueHasExistingExecutionWorkflow,
@@ -4859,6 +4860,16 @@ export function recoveryService(
       const escalationTarget =
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
+      // myrmidon(OPE-12265): the `disposition_blocked` owner is the nearest
+      // lead/manager above the assignee, not the direct reviewer. `adm` (the
+      // chain fallback) stays the owner when no lead exists in the chain.
+      const dispositionOwnerAgentId =
+        !assigneePaused && !retriesLeft
+          ? await findStrandedDispositionOwnerAgentId(db, {
+              companyId: input.issue.companyId,
+              assigneeAgentId,
+            })
+          : null;
 
       let hasPendingCi = input.hasPendingCi ?? false;
       if (!hasPendingCi && openPrProduct) {
@@ -4889,6 +4900,7 @@ export function recoveryService(
         maxAttemptsPerDay,
         managerAgentId,
         escalationAgentId,
+        dispositionOwnerAgentId,
         targetIsAdm,
         requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
