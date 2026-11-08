@@ -188,18 +188,15 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     async search(input: { companyId: string; datasetId?: string; datasetIds?: string[]; query: string; limit: number; mode: "hybrid" | "vector" | "fulltext"; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
       // OPE-12272: step durations of one search, so a slow search on a stand can be attributed to the
       // embedding call vs the SQL. They go to the info log for one search in N (see `step-timings.ts`).
-      const searchStarted = performance.now();
-      // The full-text ranking does not need the vector. The question is embedded in the background and
-      // the index gets the promise: it starts the full-text ranking at once and the vector ranking when
-      // the embedding is ready. A mode without a vector ranking never embeds.
-      const vector = input.mode === "fulltext" ? undefined : queryVector(input);
-      let embedMs: number | null = null;
-      void vector?.then(
-        () => { embedMs = Math.round(performance.now() - searchStarted); },
-        () => undefined,
-      );
+      // The question is embedded first and both rankings of the index start after it: a full-text ranking
+      // that started earlier would race the 800 ms bound of its own statement against the embedding and
+      // make the ranking of the same question depend on timing.
+      const embedStarted = performance.now();
+      const vector = input.mode === "fulltext" ? undefined : await queryVector(input);
+      const embedMs = Math.round(performance.now() - embedStarted);
+      const indexStarted = performance.now();
       const hits = await searchIndex.search({ companyId: input.companyId, datasetId: input.datasetId, datasetIds: input.datasetIds, text: input.mode === "vector" ? "" : input.query, embedding: vector, limit: input.limit });
-      const timings = { companyId: input.companyId, datasetId: input.datasetId ?? null, datasetIds: input.datasetIds ?? null, mode: input.mode, embedMs, indexMs: Math.round(performance.now() - searchStarted), hits: hits.length };
+      const timings = { companyId: input.companyId, datasetId: input.datasetId ?? null, datasetIds: input.datasetIds ?? null, mode: input.mode, embedMs, indexMs: Math.round(performance.now() - indexStarted), hits: hits.length };
       if (indexTimingsSampler.next(readStepTimingsSample(context.env[CORPUS_STEP_TIMINGS_SAMPLE_ENV]))) {
         logger.info(timings, "corpus search: embed and index timings");
       } else {

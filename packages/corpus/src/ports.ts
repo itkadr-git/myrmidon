@@ -106,12 +106,8 @@ export type CorpusSearchQuery = {
   datasetIds?: string[];
   /** Raw user query text; the index handles tsquery construction. */
   text: string;
-  /**
-   * Query embedding; must have CORPUS_EMBEDDING_DIMENSIONS components. It may be a promise of the
-   * embedding: the full-text ranking, which does not need the vector, starts at once, and the vector
-   * ranking starts when the promise resolves. A promise that rejects fails the search.
-   */
-  embedding?: number[] | PromiseLike<number[]>;
+  /** Query embedding; must have CORPUS_EMBEDDING_DIMENSIONS components. */
+  embedding?: number[];
   limit?: number;
 };
 
