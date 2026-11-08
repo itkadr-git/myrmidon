@@ -9,6 +9,8 @@ import {
   parseReplicationStatus,
   generateStandbyConfig,
   generateBasebackupCommand,
+  parseBasebackupTimeout,
+  DEFAULT_BASEBACKUP_TIMEOUT_MS,
   planFailover,
   planSwitchback,
   planRehearsal,
@@ -584,8 +586,8 @@ test("generateStandbyConfig includes required streaming parameters and credentia
   assert.match(cfg, /passfile=\/var\/lib\/postgresql\/data\/\.pgpass/);
   assert.doesNotMatch(cfg, /password=/);
   assert.match(cfg, /hot_standby = 'on'/);
-  assert.match(cfg, /restore_command = /);
-  assert.match(cfg, /archive_cleanup_command = /);
+  assert.match(cfg, /restore_command = 'test -f \/srv\/backups\/wal\/%f && cp \/srv\/backups\/wal\/%f %p'/);
+  assert.match(cfg, /archive_cleanup_command = 'pg_archivecleanup \/srv\/backups\/wal %r'/);
 });
 
 test("generateBasebackupCommand generates slot and stream flags", () => {
@@ -595,6 +597,63 @@ test("generateBasebackupCommand generates slot and stream flags", () => {
   assert.ok(cmd.args.includes("-Xs"));
   assert.ok(cmd.args.includes("--slot=standby_board_slot"));
   assert.ok(cmd.args.includes("-Fp"));
+});
+
+test("parseBasebackupTimeout maps --basebackup-timeout sec/ms to a numeric timeout", () => {
+  // The ADM 08.11 defect: the raw CLI string reached spawnSync and killed `setup` after 90 min
+  assert.equal(parseBasebackupTimeout("43200"), 43_200_000);
+  assert.equal(parseBasebackupTimeout("5400000ms"), 5_400_000);
+  assert.equal(parseBasebackupTimeout("0.5s"), 500);
+  assert.equal(DEFAULT_BASEBACKUP_TIMEOUT_MS, 43_200_000);
+  assert.throws(() => parseBasebackupTimeout("abc"), /positive number of seconds/);
+  assert.throws(() => parseBasebackupTimeout(""), /positive number of seconds/);
+  assert.throws(() => parseBasebackupTimeout("0"), /positive safe integer/);
+  assert.throws(() => parseBasebackupTimeout("-5s"), /positive number of seconds/);
+});
+
+test("runCli maps --basebackup-timeout to a NUMERIC basebackupTimeoutMs and passes it down", () => {
+  const w = makeWorld();
+  const { fsOps } = makeFs();
+
+  const code = runCli(
+    [
+      "setup",
+      "board",
+      "--basebackup-timeout=14400s",
+      "--pg-runner=host",
+      "--primary-host=192.0.2.1",
+      "--primary-port=15432",
+      "--force",
+    ],
+    {},
+    { runner: w.runner, fsOps }
+  );
+  assert.equal(code, 0);
+
+  const bbCall = w.calls.find((c) => c.cmd === "pg_basebackup" || (c.args && c.args.includes("pg_basebackup")));
+  assert.ok(bbCall, "pg_basebackup must be executed during setup");
+  assert.equal(typeof bbCall.ro.timeoutMs, "number");
+  assert.equal(bbCall.ro.timeoutMs, 14_400_000);
+  assert.equal(bbCall.ro.streamStderr, true);
+});
+
+test("setupStandby uses DEFAULT_BASEBACKUP_TIMEOUT_MS (>=12h) when timeout is omitted", () => {
+  const w = makeWorld();
+  const { fsOps } = makeFs();
+
+  const res = setupStandby(
+    "board",
+    { pgRunner: "host", readinessDelayMs: 0, force: true, ...PRIMARY },
+    { runner: w.runner, fsOps }
+  );
+  assert.equal(res.success, true);
+
+  const bbCall = w.calls.find((c) => c.cmd === "pg_basebackup" || (c.args && c.args.includes("pg_basebackup")));
+  assert.ok(bbCall);
+  assert.equal(typeof bbCall.ro.timeoutMs, "number");
+  assert.equal(bbCall.ro.timeoutMs, DEFAULT_BASEBACKUP_TIMEOUT_MS);
+  assert.ok(bbCall.ro.timeoutMs >= 12 * 60 * 60 * 1000);
+  assert.equal(bbCall.ro.streamStderr, true);
 });
 
 test("checkLag measures primary-to-standby lag and handles fail-closed errors", () => {
@@ -1267,9 +1326,9 @@ test("checkLag standby query goes to container port 5432 via docker exec", () =>
   const res = checkLag("board", { pgRunner: "docker" }, { runner: mockRunner });
   assert.equal(res.success, true);
 
-  // Find the standby query call (has pg_is_in_recovery or pg_last_wal)
+  // Find the standby query call (has psql or pg_is_in_recovery)
   const standbyCalls = calls.filter(
-    (c) => c.cmd === "docker" && !c.args.includes("IDENTIFY_SYSTEM;")
+    (c) => c.cmd === "docker" && c.args.some((arg) => arg.includes("pg_is_in_recovery"))
   );
   assert.ok(standbyCalls.length >= 1, "Standby query was made");
   for (const call of standbyCalls) {
@@ -1382,6 +1441,80 @@ test("resolvePrimaryEndpoint auto-detects from standby primary_conninfo when env
     if (oldHost !== undefined) process.env.PRIMARY_PG_HOST = oldHost;
     if (oldPort !== undefined) process.env.PRIMARY_PG_PORT = oldPort;
   }
+});
+
+test("resolvePrimaryEndpoint reads primary_conninfo from postgresql.auto.conf via docker exec when SHOW primary_conninfo fails", () => {
+  const oldHost = process.env.PRIMARY_PG_HOST;
+  const oldPort = process.env.PRIMARY_PG_PORT;
+  delete process.env.PRIMARY_PG_HOST;
+  delete process.env.PRIMARY_PG_PORT;
+  try {
+    const mockRunner = (cmd, args) => {
+      if (cmd === "docker" && args.includes("cat")) {
+        return {
+          exitCode: 0,
+          stdout: "primary_conninfo = 'host=192.0.2.77 port=15433 user=myr_replicator'\n",
+          stderr: "",
+        };
+      }
+      if (cmd === "psql") {
+        return { exitCode: 1, stdout: "", stderr: "ERROR: permission denied for parameter primary_conninfo" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    };
+    const ep = resolvePrimaryEndpoint({ pgRunner: "docker" }, "board", { runner: mockRunner });
+    assert.equal(ep.host, "192.0.2.77");
+    assert.equal(ep.port, 15433);
+    assert.equal(ep.source, "conninfo");
+  } finally {
+    if (oldHost !== undefined) process.env.PRIMARY_PG_HOST = oldHost;
+    if (oldPort !== undefined) process.env.PRIMARY_PG_PORT = oldPort;
+  }
+});
+
+test("resolvePrimaryEndpoint reads primary_conninfo from postgresql.auto.conf via fsOps in host mode", () => {
+  const oldHost = process.env.PRIMARY_PG_HOST;
+  const oldPort = process.env.PRIMARY_PG_PORT;
+  delete process.env.PRIMARY_PG_HOST;
+  delete process.env.PRIMARY_PG_PORT;
+  try {
+    const mockFs = {
+      existsSync: (p) => p.endsWith("postgresql.auto.conf"),
+      readFileSync: () => "primary_conninfo = 'host=192.0.2.88 port=15434 user=myr_replicator'\n",
+    };
+    const ep = resolvePrimaryEndpoint({ pgRunner: "host", dataDir: "/srv/standby/myrmidon-pg/data" }, "board", { fsOps: mockFs });
+    assert.equal(ep.host, "192.0.2.88");
+    assert.equal(ep.port, 15434);
+    assert.equal(ep.source, "conninfo");
+  } finally {
+    if (oldHost !== undefined) process.env.PRIMARY_PG_HOST = oldHost;
+    if (oldPort !== undefined) process.env.PRIMARY_PG_PORT = oldPort;
+  }
+});
+
+test("setupStandby drops and recreates lost inactive replication slot and reports in result", () => {
+  const w = makeWorld();
+  const { fsOps } = makeFs();
+  w.slotRow = "lost|0";
+
+  const res = setupStandby(
+    "board",
+    { replicatorPassword: "pw", pgRunner: "host", readinessDelayMs: 0, ...PRIMARY },
+    { runner: w.runner, fsOps }
+  );
+  assert.equal(res.success, true);
+  assert.equal(res.slotRecreated, true);
+  assert.equal(res.slotAction, "recreated_lost_inactive");
+
+  const dropCall = w.events.find(
+    (e) => isPsqlEvent(e) && e.args.some((a) => a.includes("pg_drop_replication_slot('standby_board_slot')"))
+  );
+  assert.ok(dropCall, "pg_drop_replication_slot must be called for lost inactive slot");
+
+  const createCall = w.events.find(
+    (e) => isPsqlEvent(e) && e.args.some((a) => a.includes("pg_create_physical_replication_slot"))
+  );
+  assert.ok(createCall, "pg_create_physical_replication_slot must be called after drop");
 });
 
 test("planRehearsal default drillDir is in-container path", () => {

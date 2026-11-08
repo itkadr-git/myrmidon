@@ -379,3 +379,29 @@ the intended check is "the board boots on the restored data, `/healthz` is ready
 | **Split-brain safety** | No second writer | `standby-ctl.sh failover` | Refused for a reachable writable primary, for any non-network probe error, and for an unreachable primary without `--fenced` (section 5) |
 | **Destructive-step ordering** | No data loss on re-sync | `standby-ctl.sh setup --force` / `switchback` | All checks (credentials, WAL policy, slot, promoted-standby guard + timeline/LSN comparison) run before the container is stopped or the data directory is emptied |
 | **CI Automation** | Automatic regression check | `node --test scripts/myrmidon/standby/*.test.mjs` | 100% passing behavioral & unit tests in CI suite |
+
+---
+
+## 9. Automated Watchdog & RPO Monitoring (Сторож RPO и слота)
+
+### EN: Automated Standby Watchdog
+To prevent silent replication lag or invalid replication slot states (such as `wal_status = lost`), the platform monitoring or product cron must execute `check-lag` every 5 minutes:
+```bash
+scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900
+```
+**P1 Alerting Rules**:
+Raise an immediate P1 alert if:
+1. `rpoOk` is `false` (time lag or byte lag exceeds 15 minutes / 900 seconds).
+2. The primary is unreachable (`primary_unreachable` or connection failure).
+3. The replication slot `wal_status` on `vm-core` is NOT `reserved` or `extended` (e.g. `lost`, `dropped`, or missing).
+
+### RU: Автоматический сторож репликации и мониторинг RPO
+Для предотвращения скрытого отставания реплики или инвалидации слота репликации (`wal_status = lost`) штатный механизм мониторинга или встроенный cron продукта должен выполнять проверку каждые 5 минут:
+```bash
+scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900
+```
+**Правила тревоги P1**:
+Аварийная тревога P1 поднимается немедленно, если:
+1. `rpoOk` равен `false` (временное или байтовое отставание превышает 15 минут / 900 секунд).
+2. Основная база недоступна (`primary_unreachable` или ошибка соединения).
+3. Статус WAL слота (`wal_status`) на `vm-core` НЕ равен `reserved` или `extended` (например, `lost`, `dropped` или слот отсутствует).

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { Worker } from "node:worker_threads";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,9 +29,9 @@ export const DEFAULT_CONFIG = {
   dataDir: "/srv/standby/myrmidon-pg/data",
   boardDataDir: "/srv/standby/myrmidon-pg/data",
   hindsightDataDir: "/srv/standby/myrmidon-pg/data",
-  walArchiveDir: "/srv/backups/wal/myrmidon-pg",
-  boardWalArchiveDir: "/srv/backups/wal/myrmidon-pg",
-  hindsightWalArchiveDir: "/srv/backups/wal/myrmidon-pg",
+  walArchiveDir: "/srv/backups/wal",
+  boardWalArchiveDir: "/srv/backups/wal",
+  hindsightWalArchiveDir: "/srv/backups/wal",
   replUser: "myr_replicator",
   boardReplUser: "myr_replicator",
   hindsightReplUser: "myr_replicator",
@@ -111,6 +112,37 @@ export function resolvePrimaryEndpoint(options = {}, target = "board", deps = {}
   const portExplicit = Boolean(options.primaryPort || process.env.PRIMARY_PG_PORT);
   if (options.primaryHost) return { host: options.primaryHost, port: resolvePrimaryPort(options, target), source: "explicit", portExplicit };
   if (process.env.PRIMARY_PG_HOST) return { host: process.env.PRIMARY_PG_HOST, port: resolvePrimaryPort(options, target), source: "env", portExplicit };
+
+  // Defect 1 fix: Try reading primary_conninfo from postgresql.auto.conf first (avoids permission denied on SHOW primary_conninfo as paperclip)
+  const fsOps = deps.fsOps || defaultFsOps;
+  const dataDir = options.dataDir || DEFAULT_CONFIG.dataDir;
+  let autoConfContent = "";
+  try {
+    if (isDockerMode(options)) {
+      const container = options.pgContainer || DEFAULT_CONFIG.pgContainer;
+      const res = runner("docker", ["exec", container, "cat", path.join(options.containerDataDir || DEFAULT_CONFIG.containerDataDir, "postgresql.auto.conf")], { timeoutMs: 10000 });
+      if (res.exitCode === 0) autoConfContent = res.stdout;
+    } else if (fsOps.existsSync && fsOps.existsSync(path.join(dataDir, "postgresql.auto.conf"))) {
+      autoConfContent = fsOps.readFileSync(path.join(dataDir, "postgresql.auto.conf"), "utf8");
+    }
+  } catch {}
+
+  if (autoConfContent) {
+    const conninfoMatch = autoConfContent.match(/primary_conninfo\s*=\s*'([^']+)'/) || autoConfContent.match(/primary_conninfo\s*=\s*"([^"]+)"/);
+    if (conninfoMatch) {
+      const conninfo = conninfoMatch[1];
+      const hostMatch = conninfo.match(/host=([^\s']+)/);
+      const portMatch = conninfo.match(/port=(\d+)/);
+      if (hostMatch) {
+        return {
+          host: hostMatch[1],
+          port: portMatch ? Number(portMatch[1]) : 5432,
+          source: "conninfo",
+          portExplicit: true,
+        };
+      }
+    }
+  }
 
   const res = queryPostgres(
     "SHOW primary_conninfo;",
@@ -371,13 +403,56 @@ export function spawnResultToRunnerResult(res) {
   };
 }
 
+export const DEFAULT_BASEBACKUP_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+
+/** CLI values are seconds by default; explicit ms suffix accepts millisecond values. */
+export function parseBasebackupTimeout(value) {
+  const match = /^(\d+(?:\.\d+)?)(ms|s)?$/.exec(String(value).trim());
+  if (!match) throw new Error("--basebackup-timeout must be a positive number of seconds (s) or milliseconds (ms)");
+  const multiplier = match[2] === "ms" ? 1 : 1000;
+  const ms = Math.round(Number(match[1]) * multiplier);
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error("--basebackup-timeout must be a positive safe integer duration");
+  }
+  return ms;
+}
+
+function basebackupTimeoutMs(options) {
+  const value = options.basebackupTimeoutMs ?? DEFAULT_BASEBACKUP_TIMEOUT_MS;
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms <= 0) throw new Error("Invalid basebackup timeout (milliseconds)");
+  return ms;
+}
+
 export function defaultRunner(cmd, args = [], options = {}) {
-  const res = spawnSync(cmd, args, {
-    encoding: "utf8",
-    timeout: options.timeoutMs ?? 30000,
-    env: { ...process.env, ...options.env },
-  });
-  return spawnResultToRunnerResult(res);
+  // spawnSync blocks the main thread for hours during a large basebackup. A worker
+  // writes a heartbeat directly to fd 2 every five minutes even if pg_basebackup
+  // itself stalls without emitting -P progress. Atomics stops it on completion.
+  const heartbeat = options.streamStderr ? new Int32Array(new SharedArrayBuffer(4)) : null;
+  const progressWorker = heartbeat ? new Worker(`
+    const { workerData } = require('node:worker_threads');
+    const fs = require('node:fs');
+    const signal = new Int32Array(workerData.signal);
+    while (Atomics.wait(signal, 0, 0, workerData.intervalMs) === 'timed-out') {
+      fs.writeSync(2, '[standby-ctl] pg_basebackup still running (5-minute progress heartbeat)\\n');
+    }
+  `, { eval: true, workerData: { signal: heartbeat.buffer, intervalMs: options.progressIntervalMs ?? 300000 } }) : null;
+  try {
+    const res = spawnSync(cmd, args, {
+      encoding: "utf8",
+      timeout: options.timeoutMs ?? 30000,
+      // pg_basebackup -P prints copy progress to stderr; do not buffer it for hours.
+      ...(options.streamStderr ? { stdio: ["ignore", "pipe", "inherit"] } : {}),
+      env: { ...process.env, ...options.env },
+    });
+    return spawnResultToRunnerResult(res);
+  } finally {
+    if (heartbeat) {
+      Atomics.store(heartbeat, 0, 1);
+      Atomics.notify(heartbeat, 0);
+      void progressWorker.terminate();
+    }
+  }
 }
 
 /**
@@ -595,6 +670,24 @@ export function generateBasebackupCommand(target = "board", overrides = {}) {
     `--checkpoint=${overrides.checkpoint || "fast"}`,
   ];
 
+  // OPE-12264 (ADM 08.11): the vm-core -> myr-vm1 link is the bottleneck during a
+  // rebuild (~2.2 MB/s plain streaming; a 59 GB cluster took 4h14m on 02.11). Server-side
+  // compression shrinks the transferred bytes dramatically (zstd typically 3-5x on PG
+  // data). `-Fp --compress=server-<method>` keeps the on-disk layout PLAIN (a normal
+  // data directory, no client-side tar extraction) while the SERVER compresses each
+  // file/tablestream before sending it; pg_basebackup on the client decompresses
+  // transparently (requires client pg_basebackup >= 15 for server-side compression and
+  // >= 17 for zstd; the standby image pgvector/pgvector:pg18 provides 18).
+  // "none" (or an empty override) keeps the previous behaviour byte-for-byte.
+  const compressMethod = String(
+    overrides.compress ?? process.env.STANDBY_BASEBACKUP_COMPRESS ?? "server-zstd"
+  ).trim();
+  if (compressMethod && compressMethod !== "none") {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_,:;=.\-]*$/.test(compressMethod)) {
+      throw new Error(`Invalid --compress value '${compressMethod}': expected a pg_basebackup compression specification (e.g. server-zstd, server-gzip:5, zstd:3, none)`);
+    }
+    args.push(`--compress=${compressMethod}`);
+  }
   if (overrides.maxRate) {
     args.push(`--max-rate=${overrides.maxRate}`);
   }
@@ -1361,6 +1454,22 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
   }
 
   // 1d. Physical replication slot must exist before pg_basebackup --slot.
+  // Defect 2: if slot is lost and inactive, drop and recreate it.
+  const slotStatusQuery = `SELECT COALESCE(wal_status, 'missing'), COALESCE(active::int, 0) FROM pg_replication_slots WHERE slot_name = '${replSlot}';`;
+  const slotStatusRes = primaryPsql(slotStatusQuery);
+  let slotRecreated = false;
+  if (slotStatusRes.exitCode === 0 && slotStatusRes.stdout.trim()) {
+    const parts = slotStatusRes.stdout.trim().split("\n")[0].split("|");
+    const walStatus = (parts[0] || "").trim();
+    const activeInt = (parts[1] || "").trim();
+    if (walStatus === "lost" && activeInt === "0") {
+      const dropRes = primaryPsql(`SELECT pg_drop_replication_slot('${replSlot}');`);
+      if (dropRes.exitCode === 0) {
+        slotRecreated = true;
+      }
+    }
+  }
+
   const slotRes = primaryPsql(slotEnsureSql(replSlot));
   if (slotRes.exitCode !== 0 || parsePgBool(firstField(slotRes.stdout)) !== true) {
     return {
@@ -1442,8 +1551,8 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     } catch {}
   }
 
-  // 3. Run pg_basebackup. D1: configurable timeout — 45 GB cluster at ~10 MB/s needs ~90 min.
-  const setupBasebackupTimeoutMs = options.basebackupTimeoutMs || 5400000;
+  // 3. Run pg_basebackup with -P (live progress) and a default >=12h timeout
+  const setupBasebackupTimeoutMs = basebackupTimeoutMs(options);
   let baseRes;
   if (docker) {
     // Inside a one-shot container built from the standby service: in-container -D path,
@@ -1453,13 +1562,14 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
       dockerOneShotArgs(
         { composeFile, service: composeService, hostPassfile: cred.stagedPassfilePath, containerPassfile },
         basebackup.executable,
-        basebackup.args
+        [...basebackup.args, "-P"]
       ),
-      { timeoutMs: setupBasebackupTimeoutMs }
+      { timeoutMs: setupBasebackupTimeoutMs, streamStderr: true }
     );
   } else {
-    baseRes = runner(basebackup.executable, basebackup.args, {
+    baseRes = runner(basebackup.executable, [...basebackup.args, "-P"], {
       timeoutMs: setupBasebackupTimeoutMs,
+      streamStderr: true,
       env: {
         ...process.env,
         PGPASSFILE: cred.hostPassfilePath,
@@ -1582,6 +1692,7 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     inRecovery: true,
     streamingActive: true,
     walReceivers,
+    ...(slotRecreated ? { slotRecreated: true, slotAction: "recreated_lost_inactive" } : {}),
     ...(wipeAssessment
       ? {
           wiped: true,
@@ -2227,7 +2338,7 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
 
   const runDrill = () => {
     // 1. Snapshot from standby (D1: configurable timeout for large clusters; D5: PGPASSFILE)
-    const basebackupTimeoutMs = options.basebackupTimeoutMs || 5400000; // 90 min default for 45GB at ~10MB/s
+    const drillTimeoutMs = basebackupTimeoutMs(options);
     const snapshotArgs = [
       "-h", "127.0.0.1",
       "-p", String(standbyPort),
@@ -2236,6 +2347,7 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
       "-Fp",
       "-Xs",
       "-R",
+      "-P",
     ];
     // ADM rehearsal feedback (03.11): default --max-rate to 100M for drill snapshots
     // (49 GB on shared disk with CI runners). Explicit --max-rate overrides.
@@ -2244,7 +2356,8 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
       snapshotArgs.push(`--max-rate=${effectiveMaxRate}`);
     }
     const snapRes = runner("pg_basebackup", snapshotArgs, {
-      timeoutMs: basebackupTimeoutMs,
+      timeoutMs: drillTimeoutMs,
+      streamStderr: true,
       ...(docker ? {} : { env: { ...process.env, PGPASSFILE: drillPassfilePath } }),
     });
     if (snapRes.exitCode !== 0) {
@@ -2436,6 +2549,18 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
     return 1;
   }
 
+  if (flags["basebackup-timeout"] !== undefined) {
+    // New flag: seconds by default, explicit `ms` suffix for milliseconds (ADM 08.11 defect 5:
+    // the value reached spawnSync as a raw string and killed `setup` after the 90-min default).
+    flags.basebackupTimeoutMs = parseBasebackupTimeout(flags["basebackup-timeout"]);
+  } else if (flags.basebackupTimeoutMs !== undefined && typeof flags.basebackupTimeoutMs !== "number") {
+    // Legacy camelCase flag: value is already milliseconds (per its name) — just coerce to number.
+    const legacyMs = Number(flags.basebackupTimeoutMs);
+    if (!Number.isSafeInteger(legacyMs) || legacyMs <= 0) {
+      throw new Error("--basebackupTimeoutMs must be a positive number of milliseconds");
+    }
+    flags.basebackupTimeoutMs = legacyMs;
+  }
   if (flags["rpo-max-seconds"] !== undefined) {
     flags.rpoMaxSeconds = Number(flags["rpo-max-seconds"]);
   }
@@ -2625,6 +2750,8 @@ Options:
   --rpo-max-seconds=<sec>          Maximum acceptable lag in seconds (default: 900)
   --offline                        Measure standby without querying primary
   --target=<target>                board, hindsight, or all (default: all)
+  --basebackup-timeout=<sec|ms>    Timeout in seconds (e.g. 43200 or 43200s) or milliseconds (43200000ms); default: 12h
+  --compress=<method>              Compression method for basebackup (default: server-zstd)
   --max-rate=<rate>                Pass --max-rate to pg_basebackup (e.g. 30M) to throttle I/O
   --pg-runner=docker|host          Execution mode for PG binaries (default: docker). docker runs
                                    them inside the standby container via docker exec (or a one-shot
