@@ -12,7 +12,8 @@
 // entry point. A transport failure is thrown and surfaces as 503 with the
 // previous cache intact; an HTTP status is recorded per component.
 
-import type { Db } from "@myrmidon/db";
+import { companies, issues, type Db } from "@myrmidon/db";
+import { and, eq, isNotNull, notInArray } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import {
   STACK_CHECKABLE_RELEASE_SOURCES,
@@ -37,8 +38,9 @@ import {
   readReleaseList,
   type StackFetchJson,
 } from "./releases.js";
-import { readStackCheckIntervalSec, readStackOsvApiBase } from "./settings.js";
+import { readStackBacklogLagReleases, readStackCheckIntervalSec, readStackOsvApiBase } from "./settings.js";
 import { osvJsonPort, queryOsvAdvisories, type StackAdvisoryQuery } from "./advisory.js";
+import { decideStackBacklogDrafts, type StackBacklogDraft } from "./backlog-draft.js";
 import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import { readStackDocument, writeStackDocument } from "./store.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
@@ -53,6 +55,9 @@ export interface StackCheckOptions {
   noteLimit?: number;
   /** Injected base URL for OSV.dev advisory API; defaults to STACK_OSV_API_BASE_ENV or DEFAULT_OSV_API_BASE. */
   osvApiBase?: string | null;
+  lagThreshold?: number;
+  createDraft?: (companyId: string, draft: StackBacklogDraft) => Promise<void>;
+  findOpenComponents?: (companyId: string) => Promise<string[]>;
 }
 
 function readOnlyUpstream(previous: StackUpstreamState | null, checkedAt: string, error: string): StackUpstreamState {
@@ -240,6 +245,48 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
     components,
   };
   await writeStackDocument(db, next);
+
+  const lagThreshold = options.lagThreshold ?? readStackBacklogLagReleases();
+  const companiesList = await db.select({ id: companies.id }).from(companies);
+  for (const company of companiesList) {
+    try {
+      const openComponents = options.findOpenComponents
+        ? await options.findOpenComponents(company.id)
+        : await db
+            .select({ originId: issues.originId })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, company.id),
+                eq(issues.originKind, "stack_update"),
+                notInArray(issues.status, ["done", "cancelled"]),
+                isNotNull(issues.originId),
+              ),
+            )
+            .then((rows) => rows.map((r) => r.originId!).filter(Boolean));
+
+      const drafts = decideStackBacklogDrafts(next, { lagThreshold, openComponents });
+      for (const draft of drafts) {
+        if (options.createDraft) {
+          await options.createDraft(company.id, draft);
+        } else {
+          const { issueService } = await import("../../services/issues.js");
+          await issueService(db).create(company.id, {
+            title: draft.title,
+            description: draft.summary,
+            status: "todo",
+            priority: "medium",
+            originKind: "stack_update",
+            originId: draft.component,
+            allowDuplicate: true,
+          } as never);
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, companyId: company.id }, "stack backlog draft creation failed");
+    }
+  }
+
   return next;
 }
 

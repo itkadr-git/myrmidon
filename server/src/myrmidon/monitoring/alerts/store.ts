@@ -22,6 +22,7 @@ export interface DedupEntry {
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;
+  alertname?: string | null;
 }
 
 type Runner = Pick<Db, "select" | "insert" | "update">;
@@ -42,6 +43,7 @@ function parseRegistry(raw: unknown): Record<string, DedupEntry> {
       createdAt: String(entry.createdAt ?? new Date(0).toISOString()),
       updatedAt: String(entry.updatedAt ?? new Date(0).toISOString()),
       resolvedAt: typeof entry.resolvedAt === "string" ? entry.resolvedAt : null,
+      alertname: typeof entry.alertname === "string" ? entry.alertname : null,
     };
   }
   return entries;
@@ -88,8 +90,18 @@ async function mutateRegistry<T>(
 
 export interface AlertDedupStore {
   get(companyId: string, source: AlertSource, key: string): Promise<DedupEntry | null>;
-  upsert(companyId: string, source: AlertSource, key: string, issue: { issueId: string; issueIdentifier: string | null }): Promise<DedupEntry>;
+  upsert(
+    companyId: string,
+    source: AlertSource,
+    key: string,
+    issue: { issueId: string; issueIdentifier: string | null; alertname?: string | null },
+  ): Promise<DedupEntry>;
   markResolved(companyId: string, source: AlertSource, key: string, resolvedAt: string): Promise<DedupEntry | null>;
+  findOpen(
+    companyId: string,
+    source: AlertSource,
+    criteria: { fingerprint?: string | null; alertname?: string | null },
+  ): Promise<DedupEntry | null>;
   /** Drops entries whose issue is closed and whose updatedAt is older than maxAgeMs. Returns the count. */
   sweepClosedOlderThan(now: Date, maxAgeMs: number): Promise<number>;
 }
@@ -119,6 +131,7 @@ export function createDbAlertDedupStore(db: Db): AlertDedupStore {
           createdAt: current[id]?.createdAt ?? now,
           updatedAt: now,
           resolvedAt: null,
+          alertname: issue.alertname ?? current[id]?.alertname ?? null,
         };
         return { next: { ...current, [id]: entry }, result: entry };
       });
@@ -131,6 +144,20 @@ export function createDbAlertDedupStore(db: Db): AlertDedupStore {
         const updated: DedupEntry = { ...entry, issueStatus: "resolved", updatedAt: new Date().toISOString(), resolvedAt };
         return { next: { ...current, [id]: updated }, result: updated };
       });
+    },
+    async findOpen(companyId, source, criteria) {
+      const registry = await readRegistry(db);
+      for (const entry of Object.values(registry)) {
+        if (entry.companyId === companyId && entry.issueStatus === "open") {
+          if (criteria.fingerprint && entry.id === alertIdentity({ source, key: criteria.fingerprint })) {
+            return entry;
+          }
+          if (criteria.alertname && entry.alertname === criteria.alertname) {
+            return entry;
+          }
+        }
+      }
+      return null;
     },
     async sweepClosedOlderThan(now, maxAgeMs) {
       return mutateRegistry(db, (current) => {

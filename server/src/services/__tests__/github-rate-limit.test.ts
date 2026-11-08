@@ -165,4 +165,30 @@ describe("github-rate-limit service", () => {
     expect(metrics.isRateLimited).toBe(false);
     expect(metrics.remaining).toBe(500);
   });
+
+  it("a small bucket (anonymous 60/h) at remaining=0 does not mark the installation rate limited", () => {
+    const futureResetEpoch = Math.floor(Date.now() / 1000) + 1800;
+    recordGitHubRequest("ci-resolver", {
+      status: 200,
+      headers: {
+        "x-ratelimit-remaining": "3740",
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-reset": String(futureResetEpoch),
+      },
+    });
+    recordGitHubRequest("task-pr-sync", {
+      status: 403,
+      headers: {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-reset": String(futureResetEpoch + 600),
+      },
+    });
+
+    expect(isGitHubRateLimited()).toBe(false);
+    const metrics = getGitHubRateLimitMetrics();
+    expect(metrics.remaining).toBe(3740);
+    expect(metrics.limit).toBe(5000);
+    expect(metrics.sources["task-pr-sync"]).toBe(1);
+  });
 });
