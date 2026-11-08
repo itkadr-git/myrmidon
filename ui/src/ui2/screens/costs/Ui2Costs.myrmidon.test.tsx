@@ -85,9 +85,56 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
       forecastCents: 275_000,
     });
     mockCostsApi.byAgent.mockResolvedValue([
-      { agentId: "agent-1", agentName: "agent-a", agentStatus: "active", costCents: 62_310, inputTokens: 4_812_000, cachedInputTokens: 1_200_000, outputTokens: 918_000, apiRunCount: 41, subscriptionRunCount: 3, subscriptionCachedInputTokens: 0, subscriptionInputTokens: 0, subscriptionOutputTokens: 0, avgPromptTokens: 2_000, runsAboveThresholdPct: 0 },
-      { agentId: "agent-2", agentName: "agent-b", agentStatus: "active", costCents: 12_000, inputTokens: 900_000, cachedInputTokens: 0, outputTokens: 120_000, apiRunCount: 9, subscriptionRunCount: 0, subscriptionCachedInputTokens: 0, subscriptionInputTokens: 0, subscriptionOutputTokens: 0, avgPromptTokens: 91_000, runsAboveThresholdPct: 100 },
-      { agentId: "agent-3", agentName: "agent-c", agentStatus: "active", costCents: 1_000, inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 1_000, apiRunCount: 1, subscriptionRunCount: 0, subscriptionCachedInputTokens: 0, subscriptionInputTokens: 0, subscriptionOutputTokens: 0, avgPromptTokens: null, runsAboveThresholdPct: null },
+      {
+        agentId: "agent-1",
+        agentName: "agent-a",
+        agentStatus: "active",
+        costCents: 62_310,
+        inputTokens: 4_812_000,
+        cachedInputTokens: 1_200_000,
+        outputTokens: 918_000,
+        apiRunCount: 41,
+        subscriptionRunCount: 3,
+        subscriptionCachedInputTokens: 0,
+        subscriptionInputTokens: 0,
+        subscriptionOutputTokens: 0,
+        // myrmidon(1.6.3 PROMPT-BUDGET D): the fleet prompt columns.
+        avgPromptTokens: 2_000,
+        runsAboveThresholdPct: 0,
+      },
+      {
+        agentId: "agent-2",
+        agentName: "agent-b",
+        agentStatus: "active",
+        costCents: 12_000,
+        inputTokens: 900_000,
+        cachedInputTokens: 0,
+        outputTokens: 120_000,
+        apiRunCount: 9,
+        subscriptionRunCount: 0,
+        subscriptionCachedInputTokens: 0,
+        subscriptionInputTokens: 0,
+        subscriptionOutputTokens: 0,
+        avgPromptTokens: 91_000,
+        runsAboveThresholdPct: 100,
+      },
+      {
+        agentId: "agent-3",
+        agentName: "agent-c",
+        agentStatus: "active",
+        costCents: 1_000,
+        inputTokens: 10_000,
+        cachedInputTokens: 0,
+        outputTokens: 1_000,
+        apiRunCount: 1,
+        subscriptionRunCount: 0,
+        subscriptionCachedInputTokens: 0,
+        subscriptionInputTokens: 0,
+        subscriptionOutputTokens: 0,
+        // A run history without prompt data, and no threshold settings stored.
+        avgPromptTokens: null,
+        runsAboveThresholdPct: null,
+      },
     ]);
     mockCostsApi.byDay.mockResolvedValue([
       { day: "2026-04-02", costCents: 100_000, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, unpricedEvents: 0 },
@@ -182,7 +229,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
   it("renders accessible spend breakdown rows for agents", async () => {
     await renderScreen();
 
-    const chart = container.querySelector(".ui2-costs-agents");
+    const chart = container.querySelector(".ui2-costs-chart");
     expect(chart).not.toBeNull();
     expect(chart?.hasAttribute("role")).toBe(false);
     expect(chart?.textContent).toContain("agent-a");
@@ -195,8 +242,8 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     mockCostsApi.byAgent.mockResolvedValue([]);
     await renderScreen();
 
-    expect(container.querySelector(".ui2-costs-agents")).toBeNull();
-    expect(container.textContent).toContain("No spend is recorded for this window.");
+    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.textContent).toContain("No spend in this period");
   });
 
   it("keeps the zero budget amount without a redundant budget hint", async () => {
@@ -226,20 +273,13 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(container.textContent).toContain("Daily spend");
     expect(container.textContent).toContain("Expensive tasks for the period");
   });
-  it("renders the by-day chart and costly issue rows from API data", async () => {
-    await renderScreen();
-    expect(container.textContent).toContain("$1,574.00");
-    expect(container.textContent).toContain("OPE-123 · Expensive task");
-    expect(container.querySelector(".ui2-costs-issues a")?.getAttribute("href")).toBe("/OPE-123");
-    expect(container.querySelector(".ui2-costs-chart")?.getAttribute("data-total-cents")).toBe("157400");
-  });
 
   it("shows an API error state for failed daily costs", async () => {
     mockCostsApi.byDay.mockRejectedValue(new Error("daily endpoint unavailable"));
     await renderScreen();
     expect(container.textContent).toContain("Could not load this data. Try again.");
     expect(container.textContent).toContain("daily endpoint unavailable");
-    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.querySelector(".ui2-costs-daily-chart")).toBeNull();
     expect(container.querySelector(".ui2-costs-issues")).not.toBeNull();
   });
 
@@ -247,7 +287,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     mockCostsApi.byDay.mockResolvedValue([]);
     mockCostsApi.byIssue.mockResolvedValue([]);
     await renderScreen();
-    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.querySelector(".ui2-costs-daily-chart")).toBeNull();
     expect(container.textContent).toContain("No spend is recorded");
     expect(container.textContent).toContain("No expensive tasks");
   });
@@ -257,7 +297,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(container.textContent).toContain("$1,574.00");
     expect(container.textContent).toContain("OPE-123 · Expensive task");
     expect(container.querySelector('.ui2-costs-issues a')?.getAttribute("href")).toBe("/OPE-123");
-    const chart = container.querySelector(".ui2-costs-chart");
+    const chart = container.querySelector(".ui2-costs-daily-chart");
     expect(chart?.textContent).toContain("$574.00");
     expect(chart?.textContent).toContain("$1,574.00");
     expect(chart?.getAttribute("data-total-cents")).toBe("157400");
