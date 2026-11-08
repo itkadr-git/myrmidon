@@ -211,10 +211,10 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
 // real screens) and a direct URL must not fall through to the vendor page —
 // each gets an honest "not in this wave" route instead (see
 // Ui2NotInWaveScreen). Paths with a live screen in this wave (budgets,
-// castes, guardrails/guards, autonomy) stay out of this list.
+// castes, guardrails/guards, autonomy, and channels — a real ui2 screen
+// since main's OPE-10136) stay out of this list.
 export const UI2_HIDDEN_SETTINGS_PATHS = [
   "company/settings/forage",
-  "company/settings/channels",
   "company/settings/personal-bot",
 ] as const;
 

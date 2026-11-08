@@ -232,7 +232,8 @@ describe("myrmidon(UI-2.0-WAVE-A) fleet route", () => {
 
 describe("myrmidon(UI-2.0-WAVE-A) hidden settings sections", () => {
   it("sections without a function are not in the visible panel", () => {
-    const visible = new Set(UI2_SETTINGS_SECTIONS.map((s) => s.path));
+    // String-set: hidden paths are arbitrary URL suffixes, not section keys.
+    const visible = new Set<string>(UI2_SETTINGS_SECTIONS.map((s) => s.path));
     for (const hidden of UI2_HIDDEN_SETTINGS_PATHS) {
       expect(visible.has(`/${hidden}`), hidden).toBe(false);
     }
