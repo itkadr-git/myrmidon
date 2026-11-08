@@ -60,8 +60,10 @@ import {
   withReviewVerdictRecord,
 } from "../myrmidon/review-verdict/record.js";
 import {
+  REVIEW_CI_FINAL_CHECK_NAME,
   REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  decideReviewAdmission,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import {
   buildReviewApprovalPendingMergeNotice,
@@ -15919,7 +15921,36 @@ export function issueRoutes(
                     companyId: updated.companyId,
                     issueId: updated.id,
                   });
-                  if (ci.state === "pending" || ci.state === "unknown") {
+                  // myrmidon(OPE-12176): the failed checks of the exact head decide
+                  // green (admit) vs red (wait for the fix). Read them only when the
+                  // head CI finished and the issue is not critical, so a critical
+                  // issue is not charged an extra GitHub read.
+                  let headFailedChecks: readonly string[] = [];
+                  let headFailedReadOk = false;
+                  if (ci.state === "complete" && updated.priority !== "critical") {
+                    const headFailed = await (opts.resolveReviewHeadFailedChecks ??
+                      createReviewHeadFailedChecksResolver({ db }))({
+                      companyId: updated.companyId,
+                      issueId: updated.id,
+                      headSha: ci.headSha ?? "",
+                    });
+                    if (headFailed.state === "ok" && headFailed.headSha === ci.headSha) {
+                      headFailedReadOk = true;
+                      headFailedChecks = headFailed.failed;
+                    }
+                  }
+                  const admissionDecision = decideReviewAdmission({
+                    ci: ci.state,
+                    headFinalCheck:
+                      ci.state !== "complete" ? "unknown" :
+                      ci.finalCheckConclusion === "failure" ? "red" :
+                      ci.finalCheckConclusion === "success" ? "green" :
+                      headFailedReadOk && headFailedChecks.length > 0 ? "red" :
+                      headFailedReadOk && headFailedChecks.length === 0 ? "green" :
+                      "green",
+                    critical: updated.priority === "critical",
+                  });
+                  if (admissionDecision !== "admit") {
                     admitReviewer = false;
                     reviewerAdmissionDeferred = true;
                     if (ci.state === "unknown") {
@@ -15958,7 +15989,10 @@ export function issueRoutes(
                     );
                     const monitor = {
                       nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
-                      notes: `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
+                      notes:
+                        admissionDecision === "wait_red"
+                          ? `Review waits for a CI fix on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; failed checks: ${headFailedChecks.join(", ") || REVIEW_CI_FINAL_CHECK_NAME}.`
+                          : `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
                       scheduledBy: "assignee" as const,
                       kind: "external_service" as const,
                       serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
@@ -16995,7 +17029,35 @@ export function issueRoutes(
           companyId: issue.companyId,
           issueId: issue.id,
         });
-        deferExecutionReviewWakeForCi = reviewCi.state === "pending" || reviewCi.state === "unknown";
+        // myrmidon(OPE-12176): the same green-head rule as the transition path —
+        // a red or unfinished head of a non-critical issue does not wake a reviewer.
+        const critical = issue.priority === "critical";
+        let headFailedChecks: readonly string[] = [];
+        let headFailedReadOk = false;
+        if (reviewCi.state === "complete" && !critical) {
+          const headFailed = await (opts.resolveReviewHeadFailedChecks ??
+            createReviewHeadFailedChecksResolver({ db }))({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            headSha: reviewCi.headSha ?? "",
+          });
+          if (headFailed.state === "ok" && headFailed.headSha === reviewCi.headSha) {
+            headFailedReadOk = true;
+            headFailedChecks = headFailed.failed;
+          }
+        }
+        deferExecutionReviewWakeForCi =
+          decideReviewAdmission({
+            ci: reviewCi.state,
+            headFinalCheck:
+              reviewCi.state !== "complete" ? "unknown" :
+              reviewCi.finalCheckConclusion === "failure" ? "red" :
+              reviewCi.finalCheckConclusion === "success" ? "green" :
+              headFailedReadOk && headFailedChecks.length > 0 ? "red" :
+              headFailedReadOk && headFailedChecks.length === 0 ? "green" :
+              "green",
+            critical,
+          }) !== "admit";
       }
 
       if (closesRecoveryIssue) {

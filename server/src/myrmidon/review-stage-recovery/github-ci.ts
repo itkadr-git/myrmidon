@@ -38,6 +38,7 @@ import {
   REVIEW_CI_FINAL_CHECK_NAME,
   pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
+  pullRequestHeadFinalCheckConclusion,
   selectOpenPullRequestWorkProduct,
   type ReviewPullRequestCiFacts,
 } from "./policy.js";
@@ -257,6 +258,12 @@ type HeadCiOutcome = {
   state: "pending" | "complete" | "unknown" | "not_configured";
   /** Only for "unknown": a short code of what was read, never a token. */
   reason?: string;
+  /**
+   * myrmidon(OPE-12176): the conclusion of the finished final `CI result` check
+   * ("green"/"red" verdict of the head), when the state is "complete". Cached
+   * with the state: it belongs to the same head read.
+   */
+  finalCheckConclusion?: string | null;
 };
 
 /** A verdict that is read without an error: remembered long once the CI of the head is complete. */
@@ -294,7 +301,9 @@ async function readHeadCi(input: {
   const runs = asRecord(checkRuns.json)?.check_runs;
   if (!Array.isArray(runs)) return { ok: false, reason: "check_runs:unreadable_payload" };
   const stateFromFinalCheck = pullRequestHeadCiStateFromChecks({ checkRuns: runs });
-  if (stateFromFinalCheck === "complete") return settledHeadCi({ state: "complete" });
+  if (stateFromFinalCheck === "complete") {
+    return settledHeadCi({ state: "complete", finalCheckConclusion: pullRequestHeadFinalCheckConclusion({ checkRuns: runs }) });
+  }
   // myrmidon(OPE-12048): a repository without the aggregate `CI result` check
   // (any third-party workflow, e.g. plain build/test lanes) never completes the
   // filtered read above, so its verdict gate waited forever. When the head has
@@ -336,6 +345,12 @@ export async function resolvePullRequestHeadCi(input: {
   headSha: string | null;
   /** Only for "unknown": a short code of what failed, never a token. */
   reason?: string;
+  /**
+   * myrmidon(OPE-12176): the conclusion of the finished final `CI result` check
+   * when the state is "complete" (null when the finished run carries no
+   * conclusion), so the caller can tell green from red without another read.
+   */
+  finalCheckConclusion?: string | null;
   /** GitHub budget headers for a failed read, for operator diagnostics and reset scheduling. */
   rateLimit?: RateLimitFacts | null;
 }> {
@@ -378,7 +393,18 @@ export async function resolvePullRequestHeadCi(input: {
       ...(ci.rateLimit ? { rateLimit: ci.rateLimit } : {}),
     };
   }
-  return { state: ci.value.state, headSha, ...(ci.value.reason ? { reason: ci.value.reason } : {}) };
+  return {
+    state: ci.value.state,
+    headSha,
+    // myrmidon(OPE-12176): the verdict travels with the state so review
+    // admission can tell green from red without a second GitHub read. A
+    // completed check without a conclusion carries no verdict: the key stays
+    // away instead of shadowing the state with a null.
+    ...(typeof ci.value.finalCheckConclusion === "string"
+      ? { finalCheckConclusion: ci.value.finalCheckConclusion }
+      : {}),
+    ...(ci.value.reason ? { reason: ci.value.reason } : {}),
+  };
 }
 
 /** The pull request work product of an issue and its GitHub reference, as far as the board can read them. */
@@ -452,7 +478,16 @@ export function createReviewPullRequestCiResolver(input: {
     }
     try {
       const head = await resolvePullRequestHeadCi({ reference, token, fetch: input.fetch });
-      if (head.state !== "unknown") return { state: head.state, pullRequestUrl, headSha: head.headSha };
+      if (head.state !== "unknown") {
+        // myrmidon(OPE-12176): the verdict of the final check travels with the
+        // state; review admission tells green from red without a second read.
+        return {
+          state: head.state,
+          pullRequestUrl,
+          headSha: head.headSha,
+          ...(typeof head.finalCheckConclusion === "string" ? { finalCheckConclusion: head.finalCheckConclusion } : {}),
+        };
+      }
       return {
         state: "unknown",
         pullRequestUrl,
