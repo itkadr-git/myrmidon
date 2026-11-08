@@ -259,6 +259,8 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
         mimeType: document.mimeType,
         baseUrl: settings.parserBaseUrl,
         timeoutMs: settings.parserTimeoutMs,
+        maxRunMs: settings.parserMaxRunMs,
+        queueTimeoutMs: settings.parserQueueTimeoutMs,
         signal,
       });
       checkpoint();
@@ -289,6 +291,14 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
         parsedAt: new Date().toISOString(),
       });
       await ports.queue.complete(job.companyId, job.id);
+      // OPE-12000: a refreshed URL document keeps the bytes it replaced until the new version is
+      // `ready`; this is that moment. Best effort — a leftover blob is a warning, not a failed parse.
+      if (document.previousBlobRef) {
+        await ports.blobs.delete(document.previousBlobRef).catch((err) => {
+          logger.warn({ err, documentId: document.id }, "corpus: replaced bytes left behind");
+        });
+        await ports.store.updateDocument(job.companyId, document.id, { previousBlobRef: null }).catch(() => null);
+      }
       logger.info(
         { companyId: document.companyId, datasetId: document.datasetId, documentId: document.id, chunks: written },
         "corpus: document parsed to ready",

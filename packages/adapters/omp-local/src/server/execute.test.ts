@@ -258,6 +258,66 @@ describe("omp local execution", () => {
     expect(args).toContain(sessionFilePath);
   });
 
+  it("resumes with --session when omp 18.9.2 writes title line before the session header", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-resume-title-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const sessionDir = path.join(rootDir, "sessions");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(sessionDir, { recursive: true });
+
+    const sessionFilePath = path.join(sessionDir, "session-title-first.jsonl");
+    // omp 18.9.2 writes {"type":"title",…} as the first line and the
+    // {"type":"session",…,"cwd":…} header on the second line.
+    await writeFile(
+      sessionFilePath,
+      [
+        JSON.stringify({ type: "title", title: "omp session" }),
+        JSON.stringify({ type: "session", cwd: workspaceDir }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await execute({
+      runId: "run-title-first",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: sessionFilePath,
+        sessionParams: {
+          sessionId: sessionFilePath,
+          cwd: workspaceDir,
+        },
+        sessionDisplayId: "session-title-first",
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
+    expect(call).toBeDefined();
+    const args = call![3];
+    expect(args).toContain("--session");
+    expect(args).toContain(sessionFilePath);
+  });
+
   it("starts a fresh session without --session when session header cwd differs", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-stale-"));
     cleanupDirs.push(rootDir);

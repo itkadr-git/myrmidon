@@ -1595,6 +1595,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "provider_quota_recovery",
   "resurrection_execution_reconciliation_required",
   "retry_failed_run",
+  "run_guard_stop_needs_input",
   "run_liveness_continuation",
   "run_stalled",
   "skill_test_run_created",

@@ -127,8 +127,13 @@ const DRAIN_POLL_INTERVAL_MS = 2_000;
  *  giving up: R3's own tick (already running server-wide, started by
  *  startMaintenanceMode at boot) is what actually interrupts runs past the
  *  deadline, and it only checks on its own interval — this is slack for that, not
- *  a second timeout the reconciler enforces itself. */
-const DRAIN_POLL_GRACE_MS = 30_000;
+ *  a second timeout the reconciler enforces itself.
+ *  myrmidon(OPE-12150): the slack must also cover the interrupted run's own
+ *  finalisation. A hermes gateway run took ~50 s from the interrupt to its
+ *  finished row on prod 07.11. With 30 s, every busy bot's image switch failed
+ *  2 s before the interrupt landed, the window closed, and the retry started on
+ *  the old image again. */
+export const DRAIN_POLL_GRACE_MS = 120_000;
 
 function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

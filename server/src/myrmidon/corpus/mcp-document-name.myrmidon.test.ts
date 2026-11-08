@@ -22,6 +22,8 @@ const settings: CorpusSettings = {
   enabled: true,
   parserBaseUrl: "http://parser.invalid",
   parserTimeoutMs: 1000,
+  parserMaxRunMs: 6 * 60 * 60 * 1000,
+  parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
   embedderModel: "corpus-embed-pplx-0.6b",
   embedderDimensions: 3,
   embedderBaseUrl: null,
@@ -55,10 +57,12 @@ function makePorts(overrides: {
         }];
       },
       async getDataset() { return null; },
+      async hasDataset(_companyId: string, datasetId: string) { return datasetId === DATASET_ID; },
       async createDataset() { throw new Error("not used"); },
       async updateDataset() { return null; },
       async deleteDataset() { return false; },
       async listDocuments() { return []; },
+      async listSourceDocuments() { return []; },
       async getDocument(_companyId: string, id: string) {
         if (id !== DOCUMENT_ID) return null;
         return {
@@ -77,6 +81,9 @@ function makePorts(overrides: {
           updatedAt: "2026-11-07T00:00:00.000Z",
           parsedAt: null,
         };
+      },
+      async getDocumentNames(_companyId: string, ids: string[]) {
+        return new Map(ids.includes(DOCUMENT_ID) ? [[DOCUMENT_ID, DOCUMENT_NAME]] : []);
       },
       async createDocument() { throw new Error("not used"); },
       async updateDocument() { return null; },
@@ -108,6 +115,8 @@ function makePorts(overrides: {
       async claim() { return []; },
       async complete() {},
       async fail() { return null; },
+      async release() { return null; },
+      async releaseRunning() { return []; },
     },
     parser: {
       async parse() { throw new Error("not used"); },

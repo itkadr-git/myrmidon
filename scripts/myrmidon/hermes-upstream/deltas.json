@@ -528,6 +528,24 @@
         "path": "agent/turn_recovery.py",
         "upstreamMarker": "gateway_outage|gateway_unreachable|probe_primary"
       }
+    },
+    {
+      "id": "30-vacuum-by-freelist",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/30-vacuum-by-freelist.patch",
+      "files": [
+        "hermes_state_maintenance.py",
+        "gateway/run.py"
+      ],
+      "reason": "Upstream runs the automatic VACUUM of state.db only in a pass whose own prune deleted a session. The bot runtime deletes old sessions through the API when a container starts, before hermes' first maintenance tick, so the tick's prune found nothing and none of the 65 databases was ever vacuumed (15.6 GB of 39.9 GB were free pages). The VACUUM now runs on the freelist share alone (above 25%, at most once per min_vacuum_interval_days), after checking that no turn is running (session turn leases in the store, the gateway's running turns), that the database's volume has twice the live data free and that SQLite's temp directory is not RAM; otherwise it waits and the pass is retried by the next housekeeping tick. The bot entrypoint sets SQLITE_TMPDIR to the data volume so the temporary copy of the live data is not charged to the container's memory.",
+      "dropCondition": "Upstream vacuums on the freelist share alone and checks the free space and the temp directory before the rewrite.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "hermes_state_maintenance.py",
+        "upstreamMarker": "disk_usage|SQLITE_TMPDIR|vacuum_defer"
+      }
     }
   ]
 }
