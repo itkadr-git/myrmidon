@@ -170,6 +170,9 @@ function corpusHarness(
       async getDataset(companyId, datasetId) {
         return datasetOf(companyId, datasetId);
       },
+      async hasDataset(companyId, datasetId) {
+        return datasetOf(companyId, datasetId) !== null;
+      },
       async createDataset({ companyId, name, description }) {
         const row: CorpusDatasetRecord = {
           id: nextId("d5"),
@@ -214,6 +217,14 @@ function corpusHarness(
       },
       async getDocument(companyId, documentId) {
         return documentOf(companyId, documentId);
+      },
+      async getDocumentNames(companyId, documentIds) {
+        const names = new Map<string, string>();
+        for (const id of documentIds) {
+          const document = documentOf(companyId, id);
+          if (document) names.set(id, document.filename);
+        }
+        return names;
       },
       async createDocument(input) {
         const row: CorpusDocumentRecord = {
@@ -1012,6 +1023,13 @@ describe("corpus API: upload, parse and search", () => {
     // REST hits carry the real document name (the filename), not the UUID (OPE-12028).
     expect(found.body.hits[0].documentName).toBe("notes.txt");
     expect(found.body.hits[0].documentName).not.toBe(found.body.hits[0].documentId);
+
+    // OPE-12272: verify lightweight search store methods hasDataset and getDocumentNames
+    expect(await h.ports.store.hasDataset(COMPANY, DATASET_ID)).toBe(true);
+    expect(await h.ports.store.hasDataset(COMPANY, "non-existent")).toBe(false);
+    const names = await h.ports.store.getDocumentNames(COMPANY, [documentId, "unknown-doc"]);
+    expect(names.get(documentId)).toBe("notes.txt");
+    expect(names.has("unknown-doc")).toBe(false);
 
     // The counters the screen reads follow the same rows.
     const stats = (await request(app).get(`${companyPath()}/stats`)).body.stats;

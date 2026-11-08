@@ -55,6 +55,7 @@ function makePorts(overrides: {
         }];
       },
       async getDataset() { return null; },
+      async hasDataset(_companyId: string, datasetId: string) { return datasetId === DATASET_ID; },
       async createDataset() { throw new Error("not used"); },
       async updateDataset() { return null; },
       async deleteDataset() { return false; },
@@ -78,6 +79,9 @@ function makePorts(overrides: {
           updatedAt: "2026-11-07T00:00:00.000Z",
           parsedAt: null,
         };
+      },
+      async getDocumentNames(_companyId: string, ids: string[]) {
+        return new Map(ids.includes(DOCUMENT_ID) ? [[DOCUMENT_ID, DOCUMENT_NAME]] : []);
       },
       async createDocument() { throw new Error("not used"); },
       async updateDocument() { return null; },
