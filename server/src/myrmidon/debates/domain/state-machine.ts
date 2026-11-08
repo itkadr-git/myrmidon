@@ -119,14 +119,17 @@ export function collectRound(
   if (run.roundCount >= run.maxRounds) {
     throw new DebateRunError("rounds_exhausted", `the debate ran its ${run.maxRounds} rounds; the judge speaks next`);
   }
+  if (
+    statements.pro.participantId === run.judgeParticipantId ||
+    statements.contra.participantId === run.judgeParticipantId
+  ) {
+    throw new DebateRunError("judge_not_allowed_in_rounds", "the judge is outside the dispute and never speaks in a round");
+  }
   if (statements.pro.participantId !== run.proParticipantId) {
     throw new DebateRunError("unknown_participant", `round ${run.roundCount} is not spoken by the pro participant`);
   }
   if (statements.contra.participantId !== run.contraParticipantId) {
     throw new DebateRunError("unknown_participant", `round ${run.roundCount} is not answered by the contra participant`);
-  }
-  if (statements.pro.participantId === run.judgeParticipantId || statements.contra.participantId === run.judgeParticipantId) {
-    throw new DebateRunError("judge_not_allowed_in_rounds", "the judge is outside the dispute and never speaks in a round");
   }
   const projected = run.tokensUsed + spentTokens.pro + spentTokens.contra;
   if (run.tokenCeiling !== null && projected > run.tokenCeiling) {

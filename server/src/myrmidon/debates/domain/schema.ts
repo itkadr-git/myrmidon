@@ -12,6 +12,7 @@ import {
   type DebateParticipant,
   type DebateParticipantRole,
   type DebateRun,
+  type DebateRunState,
   type DebateStatement,
 } from "./types.js";
 
@@ -81,8 +82,8 @@ export const debateRunSchema: z.ZodType<DebateRun> = z
     tokensUsed: z.number().int().min(0),
   })
   .refine((run) => participantsAgree(run), "participants disagree with the run references")
-  .refine((run) => run.roundCount === run.rounds.length, "roundCount must equal the number of collected rounds")
   .refine((run) => run.roundCount <= run.maxRounds, "roundCount must not exceed maxRounds")
+  .refine((run) => run.roundCount === run.rounds.length, "roundCount must equal the number of collected rounds")
   .refine((run) => roundsAreOrdered(run), "rounds must be collected in order without gaps")
   .refine((run) => roundsUsePolarSidesOnly(run), "rounds must contain only pro and contra statements")
   .refine(
