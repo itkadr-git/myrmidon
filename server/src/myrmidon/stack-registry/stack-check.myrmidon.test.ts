@@ -2,6 +2,7 @@
 // sources, the patch-closed rule over the compare API, the attention cards and
 // the route permissions. No live network: the JSON port is injected.
 
+import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -625,7 +626,7 @@ describeEmbeddedPostgres("stack release check", () => {
     const baseDoc = documentWithLocal({ langfuse: { version: "langfuse/langfuse:3.0.0" } });
     await writeStackDocument(db, baseDoc);
 
-    const companyId = "test-company-1";
+    const companyId = randomUUID();
     const { companies } = await import("@myrmidon/db");
     await db.insert(companies).values({ id: companyId, name: "Test Co", issuePrefix: "TC" }).onConflictDoNothing();
 
