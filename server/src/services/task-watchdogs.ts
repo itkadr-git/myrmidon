@@ -198,6 +198,12 @@ export type TaskWatchdogClassifierResult =
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
     stopSnapshot: TaskWatchdogStopSnapshot;
     pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
+  }
+  | {
+    state: "operator_backlog";
+    reason: string;
+    includedIssueIds: string[];
+    operatorBacklogIssueIds: string[];
   };
 
 export type TaskWatchdogClassifierInput = {
