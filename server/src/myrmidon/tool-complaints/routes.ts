@@ -186,8 +186,8 @@ export function toolComplaintRoutes(db: Db) {
 
       await logActivity(db, {
         companyId,
-        actorType: req.actor.type,
-        actorId: req.actor.type === "agent" ? req.actor.agentId! : (req.actor.userId ?? "board"),
+        actorType: req.actor.type === "agent" ? "agent" : "user",
+        actorId: req.actor.type === "agent" ? (req.actor.agentId ?? "unknown") : (req.actor.userId ?? "board"),
         action: TOOL_COMPLAINT_UPDATED_ACTION,
         entityType: "tool_complaint",
         entityId: complaintId,
@@ -225,18 +225,18 @@ export function toolComplaintRoutes(db: Db) {
             companyId,
             profileKey,
             name: createdProfile.name,
-            description: createdProfile.description,
+            description: createdProfile.description ?? null,
             status: createdProfile.status,
             defaultAction: createdProfile.defaultAction,
             newToolsReviewedAt: null,
-            metadata: null,
+            metadata: createdProfile.metadata ?? {},
             createdAt: new Date(),
             updatedAt: new Date(),
           };
         }
 
         // Bind profile to the agent with high priority
-        await access.bindProfileToTarget(companyId, profile.id, {
+        await access.bindProfile(profile.id, {
           targetType: "agent",
           targetId: existing.agentId,
           priority: 100,
@@ -244,8 +244,8 @@ export function toolComplaintRoutes(db: Db) {
 
         await logActivity(db, {
           companyId,
-          actorType: req.actor.type,
-          actorId: req.actor.type === "agent" ? req.actor.agentId! : (req.actor.userId ?? "board"),
+          actorType: req.actor.type === "agent" ? "agent" : "user",
+          actorId: req.actor.type === "agent" ? (req.actor.agentId ?? "unknown") : (req.actor.userId ?? "board"),
           action: TOOL_COMPLAINT_TOOL_DISABLED_ACTION,
           entityType: "agent",
           entityId: existing.agentId,
