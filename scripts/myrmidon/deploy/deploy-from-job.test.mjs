@@ -322,6 +322,9 @@ esac
     const flip = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *myrmidon/deploy-jobs*) cat "$SANDBOX/board-jobs.json" ;;
   *myrmidon/maintenance*)
     if [ ! -e "$SANDBOX/seen-entering" ]; then
