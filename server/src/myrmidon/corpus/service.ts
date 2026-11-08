@@ -19,6 +19,7 @@
 
 import type { Db } from "@myrmidon/db";
 import {
+  CORPUS_DEFAULT_REFRESH_INTERVAL_HOURS,
   CORPUS_DISABLED_ERROR,
   changedCorpusSettingsKeys,
   mergeCorpusSettings,
@@ -26,6 +27,7 @@ import {
   type CorpusDataset,
   type CorpusDocument,
   type CorpusParseJob,
+  type CorpusRefreshUrlsStarted,
   type CorpusSearchHit,
   type CorpusSearchMode,
   type CorpusSearchResponse,
@@ -44,6 +46,14 @@ import type {
   CorpusPortsResolver,
   ParsedChunk,
 } from "./ports.js";
+import {
+  CorpusSourceError,
+  createCorpusUrlFetcher,
+  defaultSourceName,
+  parseCorpusSourceUrl,
+  type CorpusUrlFetcher,
+} from "./source-fetch.js";
+import { refreshSourceDocuments } from "./source.js";
 
 /** `instance.corpus.settings_updated` — the audit action of a settings change. */
 export const CORPUS_SETTINGS_ACTION = "instance.corpus.settings_updated";
@@ -51,6 +61,13 @@ export const CORPUS_SETTINGS_ACTION = "instance.corpus.settings_updated";
 export const CORPUS_DOCUMENT_UPLOADED_ACTION = "myrmidon.corpus.document_uploaded";
 export const CORPUS_DOCUMENT_REPARSED_ACTION = "myrmidon.corpus.document_reparsed";
 export const CORPUS_DOCUMENT_DELETED_ACTION = "myrmidon.corpus.document_deleted";
+/** OPE-12000: a URL-sourced document got new content (an unchanged refresh is not audited). */
+export const CORPUS_DOCUMENT_REFRESHED_ACTION = "myrmidon.corpus.document_refreshed";
+/** OPE-12000: a manual refresh of a dataset's URL documents began / ended (the end carries the counters). */
+export const CORPUS_REFRESH_STARTED_ACTION = "myrmidon.corpus.refresh_started";
+export const CORPUS_REFRESH_COMPLETED_ACTION = "myrmidon.corpus.refresh_completed";
+/** Least time between the end of one manual refresh of a dataset and the start of the next. */
+export const CORPUS_REFRESH_PAUSE_MS = 60_000;
 export const CORPUS_DATASET_DELETED_ACTION = "myrmidon.corpus.dataset_deleted";
 
 /** Code of the 503 a data route answers while the ports of parts A/B are missing. */
@@ -107,6 +124,10 @@ export interface CorpusServiceDeps {
   /** Builds the ports of one call, or `null` when this process cannot serve the corpus. */
   ports: CorpusPortsResolver;
   env?: Record<string, string | undefined>;
+  /** OPE-12000: downloads a document by address; the guarded fetcher unless a test supplies one. */
+  fetchUrl?: CorpusUrlFetcher;
+  /** Milliseconds clock; tests move it to step over the pause between manual refreshes. */
+  now?: () => number;
 }
 
 export interface CorpusUploadInput {
@@ -115,6 +136,16 @@ export interface CorpusUploadInput {
   filename: string;
   mimeType: string | null;
   bytes: Uint8Array;
+  actor: CorpusActor;
+}
+
+/** OPE-12000: a document added by address instead of uploaded. */
+export interface CorpusAddUrlInput {
+  companyId: string;
+  datasetId: string;
+  url: string;
+  refreshIntervalHours?: number;
+  name?: string;
   actor: CorpusActor;
 }
 
@@ -146,6 +177,19 @@ export interface CorpusService {
     options?: { limit?: number; offset?: number },
   ): Promise<CorpusDocument[]>;
   uploadDocument(input: CorpusUploadInput): Promise<CorpusUploadResult>;
+  /**
+   * OPE-12000: downloads `url` (http/https, public addresses only, `maxDocumentBytes` ceiling),
+   * stores it as a document of the dataset on the road an upload takes, queues its parse, and
+   * remembers the address and the refresh interval so the scheduled sweep keeps it current.
+   */
+  addDocumentFromUrl(input: CorpusAddUrlInput): Promise<CorpusUploadResult>;
+  /**
+   * OPE-12000: starts fetching every URL-sourced document of the dataset now, whatever its interval,
+   * and returns at once; the run goes on in the background and its counters are audited when it ends.
+   * Refused with 409 `refresh_in_progress` while a run of the dataset is going, and with 429
+   * `refresh_too_soon` within CORPUS_REFRESH_PAUSE_MS of the end of the last one.
+   */
+  refreshDatasetUrls(companyId: string, datasetId: string, actor: CorpusActor): Promise<CorpusRefreshUrlsStarted>;
   getDocument(companyId: string, documentId: string): Promise<CorpusDocument>;
   /**
    * Parses a failed document again from the bytes already stored: the document goes back to
@@ -184,6 +228,11 @@ function toDocument(record: CorpusDocumentRecord): CorpusDocument {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     parsedAt: record.parsedAt,
+    sourceUrl: record.sourceUrl ?? null,
+    refreshIntervalHours: record.refreshIntervalHours ?? null,
+    contentHash: record.contentHash ?? null,
+    lastFetchedAt: record.lastFetchedAt ?? null,
+    sourceError: record.sourceError ?? null,
   };
 }
 
@@ -212,6 +261,30 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
     ports: () => null,
     ...overrides,
   };
+  const fetchUrl: CorpusUrlFetcher = deps.fetchUrl ?? createCorpusUrlFetcher();
+  const now = deps.now ?? Date.now;
+  // Per process, like the rest of the module's in-memory state: which datasets are being refreshed,
+  // when each was last done, and the per-address lock of add-by-address.
+  const refreshRunning = new Set<string>();
+  const refreshFinishedAt = new Map<string, number>();
+  const keyedLocks = new Map<string, Promise<void>>();
+
+  async function withKeyedLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const before = keyedLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = before.then(() => mine);
+    keyedLocks.set(key, tail);
+    await before;
+    try {
+      return await run();
+    } finally {
+      release();
+      if (keyedLocks.get(key) === tail) keyedLocks.delete(key);
+    }
+  }
   const env = deps.env ?? process.env;
 
   function notFound(what: string): CorpusRequestError {
@@ -281,6 +354,140 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
       details,
     });
   }
+
+  /** Turns the fetcher's refusal into the HTTP answer; anything else is a bug and stays one. */
+  function sourceFailure(err: unknown): unknown {
+    if (err instanceof CorpusSourceError) {
+      return new CorpusRequestError(err.status, err.code, err.message, err.details);
+    }
+    return err;
+  }
+
+  function parseSourceUrl(value: string): URL {
+    try {
+      return parseCorpusSourceUrl(value);
+    } catch (err) {
+      throw sourceFailure(err);
+    }
+  }
+
+  const ingestDocument = async ({
+    companyId,
+    datasetId,
+    filename,
+    mimeType,
+    bytes,
+    actor,
+    source,
+  }: CorpusUploadInput & { source?: NonNullable<Parameters<CorpusPorts["store"]["createDocument"]>[0]["source"]> }): Promise<CorpusUploadResult> => {
+    const { settings, ports } = await requirePorts();
+    await requireDataset(ports, companyId, datasetId);
+
+    const name = filename.trim() || "document";
+    if (bytes.byteLength === 0) {
+      throw new CorpusRequestError(400, "empty_document", "the uploaded document is empty");
+    }
+    if (bytes.byteLength > settings.maxDocumentBytes) {
+      throw new CorpusRequestError(
+        413,
+        "document_too_large",
+        `the document exceeds maxDocumentBytes (${settings.maxDocumentBytes})`,
+        { maxDocumentBytes: settings.maxDocumentBytes, byteSize: bytes.byteLength },
+      );
+    }
+    const existing = await ports.store.countDocuments(companyId, datasetId);
+    if (existing >= settings.maxDocumentsPerDataset) {
+      throw new CorpusRequestError(
+        409,
+        "dataset_full",
+        `the dataset already holds maxDocumentsPerDataset documents (${settings.maxDocumentsPerDataset})`,
+        { maxDocumentsPerDataset: settings.maxDocumentsPerDataset },
+      );
+    }
+
+    // The row is created first: the blob key is built from the document id, and
+    // a document that never got its bytes stays visible (and deletable).
+    let document = await ports.store.createDocument({
+      companyId,
+      datasetId,
+      filename: name,
+      mimeType,
+      byteSize: bytes.byteLength,
+      blobRef: "",
+      maxAttempts: settings.maxParseAttempts,
+      ...(source ? { source } : {}),
+    });
+
+    if (ports.index.assertEmbedderConfigured) {
+      try {
+        await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
+      } catch (err) {
+        if (err instanceof CorpusRequestError && err.code === CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR) {
+          await ports.store.updateDocument(companyId, document.id, {
+            status: "failed",
+            error: err.code,
+          });
+          throw new CorpusRequestError(
+            err.status,
+            err.code,
+            err.message,
+            { ...err.details, documentId: document.id },
+          );
+        }
+        throw err;
+      }
+    }
+
+    try {
+      const blob = await ports.blobs.put({
+        companyId,
+        documentId: document.id,
+        filename: name,
+        mimeType,
+        bytes,
+      });
+      document =
+        (await ports.store.updateDocument(companyId, document.id, {
+          blobRef: blob.ref,
+        })) ?? document;
+    } catch (err) {
+      logger.error(
+        { err, companyId, datasetId, documentId: document.id },
+        "corpus upload: the blob write failed, dropping the document",
+      );
+      await ports.store.deleteDocument(companyId, document.id).catch(() => undefined);
+      throw new CorpusRequestError(502, "blob_write_failed", "the document bytes could not be stored");
+    }
+
+    let job: CorpusJobRecord;
+    try {
+      job = await ports.queue.enqueue({
+        companyId,
+        datasetId,
+        documentId: document.id,
+        maxAttempts: settings.maxParseAttempts,
+      });
+    } catch (err) {
+      logger.error({ err, companyId, documentId: document.id }, "corpus upload: the enqueue failed");
+      document =
+        (await ports.store.updateDocument(companyId, document.id, {
+          status: "failed",
+          error: "queue_unavailable",
+        })) ?? document;
+      throw new CorpusRequestError(502, "enqueue_failed", "the document could not be queued for parsing");
+    }
+
+    await audit(actor, CORPUS_DOCUMENT_UPLOADED_ACTION, companyId, "corpus_document", document.id, {
+      datasetId,
+      filename: name,
+      byteSize: document.byteSize,
+      jobId: job.id,
+      ...(source
+        ? { sourceUrl: source.url, refreshIntervalHours: source.refreshIntervalHours, contentHash: source.contentHash }
+        : {}),
+    });
+    return { document: toDocument(document), job: toJob(job) };
+  };
 
   const updateSettings = (
     patch: CorpusSettingsPatch,
@@ -392,110 +599,140 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
       return documents.map(toDocument);
     },
 
-    uploadDocument: async ({ companyId, datasetId, filename, mimeType, bytes, actor }) => {
+    uploadDocument: (input) => ingestDocument(input),
+
+    addDocumentFromUrl: async ({ companyId, datasetId, url, refreshIntervalHours, name, actor }) => {
       const { settings, ports } = await requirePorts();
       await requireDataset(ports, companyId, datasetId);
 
-      const name = filename.trim() || "document";
-      if (bytes.byteLength === 0) {
-        throw new CorpusRequestError(400, "empty_document", "the uploaded document is empty");
-      }
-      if (bytes.byteLength > settings.maxDocumentBytes) {
-        throw new CorpusRequestError(
-          413,
-          "document_too_large",
-          `the document exceeds maxDocumentBytes (${settings.maxDocumentBytes})`,
-          { maxDocumentBytes: settings.maxDocumentBytes, byteSize: bytes.byteLength },
-        );
-      }
-      const existing = await ports.store.countDocuments(companyId, datasetId);
-      if (existing >= settings.maxDocumentsPerDataset) {
-        throw new CorpusRequestError(
-          409,
-          "dataset_full",
-          `the dataset already holds maxDocumentsPerDataset documents (${settings.maxDocumentsPerDataset})`,
-          { maxDocumentsPerDataset: settings.maxDocumentsPerDataset },
-        );
-      }
-
-      // The row is created first: the blob key is built from the document id, and
-      // a document that never got its bytes stays visible (and deletable).
-      let document = await ports.store.createDocument({
-        companyId,
-        datasetId,
-        filename: name,
-        mimeType,
-        byteSize: bytes.byteLength,
-        blobRef: "",
-        maxAttempts: settings.maxParseAttempts,
-      });
-
-      if (ports.index.assertEmbedderConfigured) {
-        try {
-          await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
-        } catch (err) {
-          if (err instanceof CorpusRequestError && err.code === CORPUS_EMBEDDER_NOT_CONFIGURED_ERROR) {
-            await ports.store.updateDocument(companyId, document.id, {
-              status: "failed",
-              error: err.code,
-            });
-            throw new CorpusRequestError(
-              err.status,
-              err.code,
-              err.message,
-              { ...err.details, documentId: document.id },
-            );
-          }
-          throw err;
-        }
-      }
-
-      try {
-        const blob = await ports.blobs.put({
-          companyId,
-          documentId: document.id,
-          filename: name,
-          mimeType,
-          bytes,
-        });
-        document =
-          (await ports.store.updateDocument(companyId, document.id, {
-            blobRef: blob.ref,
-          })) ?? document;
-      } catch (err) {
-        logger.error(
-          { err, companyId, datasetId, documentId: document.id },
-          "corpus upload: the blob write failed, dropping the document",
-        );
-        await ports.store.deleteDocument(companyId, document.id).catch(() => undefined);
-        throw new CorpusRequestError(502, "blob_write_failed", "the document bytes could not be stored");
-      }
-
-      let job: CorpusJobRecord;
-      try {
-        job = await ports.queue.enqueue({
+      const parsed = parseSourceUrl(url);
+      const sourceUrl = parsed.toString();
+      const assertNotThere = async (): Promise<void> => {
+        const existing = await ports.store.listSourceDocuments({
           companyId,
           datasetId,
-          documentId: document.id,
-          maxAttempts: settings.maxParseAttempts,
+          limit: Math.max(settings.maxDocumentsPerDataset, 1),
+        });
+        const duplicate = existing.find((document) => document.sourceUrl === sourceUrl);
+        if (duplicate) {
+          throw new CorpusRequestError(
+            409,
+            "source_url_exists",
+            "the dataset already holds a document from this address: use refresh-urls to fetch it again",
+            { documentId: duplicate.id },
+          );
+        }
+      };
+
+      // One call per dataset and address at a time, from the first look at the dataset to the row
+      // being created: a double click (or two scripts) gets one document and one 409, not two documents.
+      return withKeyedLock(`${companyId}|${datasetId}|${sourceUrl}`, async () => {
+        await assertNotThere();
+
+        let fetched;
+        try {
+          fetched = await fetchUrl(sourceUrl, { maxBytes: settings.maxDocumentBytes });
+        } catch (err) {
+          throw sourceFailure(err);
+        }
+
+        // Looked at again right before the row is created: the download took time.
+        await assertNotThere();
+        return ingestDocument({
+          companyId,
+          datasetId,
+          filename: name?.trim() || defaultSourceName(parsed, fetched.contentType),
+          mimeType: fetched.contentType,
+          bytes: fetched.bytes,
+          actor,
+          source: {
+            url: sourceUrl,
+            refreshIntervalHours: refreshIntervalHours ?? CORPUS_DEFAULT_REFRESH_INTERVAL_HOURS,
+            contentHash: fetched.contentHash,
+            fetchedAt: new Date().toISOString(),
+          },
+        });
+      });
+    },
+
+    refreshDatasetUrls: async (companyId, datasetId, actor) => {
+      const { settings, ports } = await requirePorts();
+      await requireDataset(ports, companyId, datasetId);
+
+      // One run per dataset at a time, and a pause between runs. Checked and taken in one
+      // synchronous step, so two requests cannot both pass.
+      const key = `${companyId}|${datasetId}`;
+      if (refreshRunning.has(key)) {
+        throw new CorpusRequestError(
+          409,
+          "refresh_in_progress",
+          "a refresh of this dataset is already running: wait for it to finish",
+        );
+      }
+      const finishedAt = refreshFinishedAt.get(key);
+      const waitMs = finishedAt === undefined ? 0 : CORPUS_REFRESH_PAUSE_MS - (now() - finishedAt);
+      if (waitMs > 0) {
+        throw new CorpusRequestError(
+          429,
+          "refresh_too_soon",
+          "this dataset was refreshed a moment ago: wait before refreshing it again",
+          { retryAfterSeconds: Math.ceil(waitMs / 1000) },
+        );
+      }
+      refreshRunning.add(key);
+
+      let documents: CorpusDocumentRecord[];
+      try {
+        documents = await ports.store.listSourceDocuments({
+          companyId,
+          datasetId,
+          limit: Math.max(settings.maxDocumentsPerDataset, 1),
+        });
+        await audit(actor, CORPUS_REFRESH_STARTED_ACTION, companyId, "corpus_dataset", datasetId, {
+          datasetId,
+          documents: documents.length,
         });
       } catch (err) {
-        logger.error({ err, companyId, documentId: document.id }, "corpus upload: the enqueue failed");
-        document =
-          (await ports.store.updateDocument(companyId, document.id, {
-            status: "failed",
-            error: "queue_unavailable",
-          })) ?? document;
-        throw new CorpusRequestError(502, "enqueue_failed", "the document could not be queued for parsing");
+        refreshRunning.delete(key);
+        throw err;
       }
 
-      await audit(actor, CORPUS_DOCUMENT_UPLOADED_ACTION, companyId, "corpus_document", document.id, {
-        datasetId,
-        filename: name,
-        byteSize: document.byteSize,
-        jobId: job.id,
-      });
-      return { document: toDocument(document), job: toJob(job) };
+      // The downloads go on after the answer: a dataset of a thousand pages must not hold a request
+      // open for hours. The counters are written to the audit log when the run ends.
+      const startedAt = now();
+      void (async () => {
+        let details: Record<string, unknown>;
+        try {
+          const tally = await refreshSourceDocuments({
+            ports,
+            settings,
+            fetcher: fetchUrl,
+            documents,
+            onUpdated: (document, outcome) =>
+              audit(actor, CORPUS_DOCUMENT_REFRESHED_ACTION, companyId, "corpus_document", document.id, {
+                datasetId,
+                filename: document.filename,
+                sourceUrl: document.sourceUrl,
+                previousHash: outcome.previousHash,
+                contentHash: outcome.contentHash,
+                jobId: outcome.job.id,
+                reparsed: outcome.reparsed,
+              }),
+          });
+          details = { datasetId, ...tally, durationMs: now() - startedAt };
+        } catch (err) {
+          logger.error({ err, companyId, datasetId }, "corpus: a manual source refresh ended with an error");
+          details = { datasetId, error: "internal_error", durationMs: now() - startedAt };
+        }
+        // Released before the audit row is written: whoever sees the row can start the next run.
+        refreshFinishedAt.set(key, now());
+        refreshRunning.delete(key);
+        await audit(actor, CORPUS_REFRESH_COMPLETED_ACTION, companyId, "corpus_dataset", datasetId, details).catch(
+          (err) => logger.error({ err, companyId, datasetId }, "corpus: the audit of a source refresh failed"),
+        );
+      })();
+
+      return { datasetId, started: true as const, documents: documents.length };
     },
 
     getDocument: async (companyId, documentId) => {
@@ -588,14 +825,21 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
     },
 
     search: async (companyId, datasetId, input) => {
+      const started = performance.now();
       const { settings, ports } = await requirePorts();
-      await requireDataset(ports, companyId, datasetId);
+      const settingsMs = Math.round(performance.now() - started);
+      const datasetStarted = performance.now();
+      if (!await ports.store.hasDataset(companyId, datasetId)) throw notFound("dataset");
+      const datasetMs = Math.round(performance.now() - datasetStarted);
       const query = input.query.trim();
       const limit = Math.min(Math.max(input.limit ?? settings.searchTopK, 1), 50);
       const mode = input.mode ?? "hybrid";
+      const embedderCheckStarted = performance.now();
       if (mode !== "fulltext" && ports.index.assertEmbedderConfigured) {
         await ports.index.assertEmbedderConfigured(companyId, settings.embedderBaseUrl);
       }
+      const embedderCheckMs = Math.round(performance.now() - embedderCheckStarted);
+      const indexStarted = performance.now();
       const hits = await ports.index.search({
         companyId,
         datasetId,
@@ -606,15 +850,16 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
         embedderDimensions: settings.embedderDimensions,
         embedderBaseUrl: settings.embedderBaseUrl,
       });
+      const indexMs = Math.round(performance.now() - indexStarted);
+      const namesStarted = performance.now();
       // The index returns documentId per hit; resolve the real filename so the
       // REST caller can cite sources by name, not by internal UUID (OPE-12028).
+      // One company-scoped title query; do not load jobs/chunks for search hits.
       const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
-      const documentNames = new Map<string, string>();
-      await Promise.all(
-        documentIds.map(async (id) => {
-          const document = await ports.store.getDocument(companyId, id);
-          if (document) documentNames.set(id, document.filename);
-        }),
+      const documentNames = await ports.store.getDocumentNames(companyId, documentIds);
+      logger.debug(
+        { companyId, datasetId, mode, limit, hits: hits.length, settingsMs, datasetMs, embedderCheckMs, indexMs, documentNamesMs: Math.round(performance.now() - namesStarted) },
+        "corpus search: handler step timings",
       );
       return {
         datasetId,
@@ -648,6 +893,12 @@ async function dropDerived(ports: CorpusPorts, document: CorpusDocumentRecord): 
       { err, documentId: document.id },
       "corpus: search-index rows left behind (the document is gone from the board)",
     );
+  }
+  // OPE-12000: bytes of a replaced version that has not become `ready` yet.
+  if (document.previousBlobRef) {
+    await ports.blobs.delete(document.previousBlobRef).catch((err) => {
+      logger.warn({ err, documentId: document.id }, "corpus: replaced bytes left behind (the document is gone from the board)");
+    });
   }
   if (!document.blobRef) return;
   try {

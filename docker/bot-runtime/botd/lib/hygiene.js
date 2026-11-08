@@ -10,6 +10,8 @@ const HOUR = 60 * 60 * 1000;
 
 export const HYGIENE_DEFAULTS = Object.freeze({
   npmCacheTtlHours: 48, // 2 days
+  npxTtlHours: 24, // 24 hours
+  npmCacheCapBytes: 1024 * 1024 * 1024, // 1 GiB
   uvCacheTtlHours: 168, // 7 days
   terminalOutputTtlHours: 24, // 24 hours
 });
@@ -224,6 +226,146 @@ export function cleanEntryCache(rootDir, ttlMs, nowMs, openPaths) {
   return result;
 }
 
+/** Newest mtime across a directory entry and its whole subtree (0 when unreadable). */
+function entryNewestMtime(dir) {
+  let newest = 0;
+  const walk = (current) => {
+    let items = [];
+    try {
+      items = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const item of items) {
+      const p = path.join(current, item.name);
+      try {
+        const st = fs.lstatSync(p);
+        newest = Math.max(newest, st.mtimeMs);
+        if (st.isDirectory()) walk(p);
+      } catch {}
+    }
+  };
+  try {
+    newest = fs.statSync(dir).mtimeMs;
+  } catch {}
+  walk(dir);
+  return newest;
+}
+
+/**
+ * Imposes the per-bot npm cache ceiling (OPE-12104).
+ *
+ * The TTL pass alone cannot bound `.npm`: `_cacache/content-v2` is keyed by
+ * content hash, so one large install (an npx package fetched whole) leaves a
+ * tree whose shards are all as fresh as each other, and `cleanEntryCache`
+ * removes a `.npm` entry as a unit or not at all — a single fresh descendant
+ * pins 1.6 GiB forever. So when `.npm` is over the cap we evict by age,
+ * oldest first, regardless of TTL:
+ *   1. `_npx/<hash>` installs (whole entries: half an npx package is broken),
+ *   2. `_cacache/content-v2/sha512/<xx>` shard dirs.
+ * Open fds / process cwds are never evicted: a running npx MCP server keeps
+ * its install even while the cache is over the cap.
+ *
+ * Returns { applied, sizeBefore, sizeAfter, cleanedFiles, cleanedBytes, skippedOpen, removed }.
+ */
+export function enforceNpmCap(npmDir, options = {}) {
+  const capBytes = Number.isFinite(options.capBytes) ? options.capBytes : HYGIENE_DEFAULTS.npmCacheCapBytes;
+  const openPaths = options.openPaths || new Set();
+  const result = {
+    applied: false,
+    sizeBefore: 0,
+    sizeAfter: 0,
+    cleanedFiles: 0,
+    cleanedBytes: 0,
+    skippedOpen: 0,
+    removed: [],
+  };
+
+  if (!(capBytes > 0)) return result;
+  if (!fs.existsSync(npmDir)) return result;
+
+  let size = dirSize(npmDir);
+  result.sizeBefore = size;
+  result.sizeAfter = size;
+  if (size <= capBytes) return result;
+  result.applied = true;
+
+  const candidates = [];
+  const npxRoot = path.join(npmDir, "_npx");
+  const shardRoot = path.join(npmDir, "_cacache", "content-v2", "sha512");
+  const collect = (root, kind) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(root, entry.name);
+      candidates.push({ kind, dir, mtime: entryNewestMtime(dir) });
+    }
+  };
+  collect(npxRoot, "npx");
+  collect(shardRoot, "cacache-shard");
+  // _npx first, then cacache shards; within each kind the oldest entry goes first.
+  candidates.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "npx" ? -1 : 1;
+    return a.mtime - b.mtime;
+  });
+
+  for (const candidate of candidates) {
+    if (size <= capBytes) break;
+    if (isPathOpen(candidate.dir, openPaths)) {
+      result.skippedOpen += 1;
+      continue;
+    }
+    const freed = entrySize(candidate.dir);
+    try {
+      fs.rmSync(candidate.dir, { recursive: true, force: true });
+    } catch {
+      continue;
+    }
+    size -= freed.bytes;
+    result.cleanedBytes += freed.bytes;
+    result.cleanedFiles += freed.files;
+    result.removed.push({ kind: candidate.kind, name: path.basename(candidate.dir), bytes: freed.bytes });
+  }
+
+  result.sizeAfter = Math.max(0, size);
+  return result;
+}
+
+/** { bytes, files } for one entry tree (0 when unreadable). */
+function entrySize(dir) {
+  let bytes = 0;
+  let files = 0;
+  const walk = (current) => {
+    let items = [];
+    try {
+      items = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const item of items) {
+      const p = path.join(current, item.name);
+      let st;
+      try {
+        st = fs.lstatSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) walk(p);
+      else {
+        bytes += st.size;
+        files += 1;
+      }
+    }
+  };
+  walk(dir);
+  return { bytes, files };
+}
+
 /**
  * Performs routine or pressure cache hygiene.
  */
@@ -234,9 +376,15 @@ export async function cleanCaches(options = {}) {
 
   const limits = {
     npmCacheTtlMs: (options.limits?.npmCacheTtlHours ?? options.npmCacheTtlHours ?? HYGIENE_DEFAULTS.npmCacheTtlHours) * HOUR,
+    npxTtlMs: (options.limits?.npxTtlHours ?? options.npxTtlHours ?? HYGIENE_DEFAULTS.npxTtlHours) * HOUR,
     uvCacheTtlMs: (options.limits?.uvCacheTtlHours ?? options.uvCacheTtlHours ?? HYGIENE_DEFAULTS.uvCacheTtlHours) * HOUR,
     terminalOutputTtlMs: (options.limits?.terminalOutputTtlHours ?? options.terminalOutputTtlHours ?? HYGIENE_DEFAULTS.terminalOutputTtlHours) * HOUR,
+    npmCacheCapBytes: options.limits?.npmCacheCapBytes ?? options.npmCacheCapBytes ?? HYGIENE_DEFAULTS.npmCacheCapBytes,
   };
+
+  // A live run may be using an npx install right now; the ceiling is skipped then
+  // (same rule the repack pass follows for `idle`).
+  const live = options.live === true;
 
   const uvCacheDir = options.uvCacheDir || path.join(hermesHome, ".cache", "uv");
 
@@ -259,15 +407,37 @@ export async function cleanCaches(options = {}) {
   const targetResults = {};
 
   for (const t of targets) {
-    const ttlMs = t.name === "npm-cacache" || t.name === "npm-cacache-index" || t.name === "npm-npx"
-      ? limits.npmCacheTtlMs
-      : limits.terminalOutputTtlMs;
+    // `_npx/<hash>` installs are transient one-shot downloads: 24 h, not the
+    // 48 h the long-lived content-addressable cache gets.
+    const ttlMs = t.name === "npm-npx"
+      ? limits.npxTtlMs
+      : t.name === "npm-cacache" || t.name === "npm-cacache-index"
+        ? limits.npmCacheTtlMs
+        : limits.terminalOutputTtlMs;
     const res = t.mode === "walk" ? cleanTargetDir(t.dir, ttlMs, nowMs, openPaths) : cleanEntryCache(t.dir, ttlMs, nowMs, openPaths);
     targetResults[t.name] = res;
     totalFiles += res.cleanedFiles;
     totalBytes += res.cleanedBytes;
     totalSkippedOpen += res.skippedOpen;
     totalKept += res.keptFresh;
+  }
+
+  // Size ceiling last: the TTL pass above frees what it can, then the cap evicts
+  // the oldest remaining installs/shards until `.npm` fits. Skipped during a live
+  // run — an in-flight agent may own any entry (its fd is open, but a run that has
+  // not opened the file yet is still using the install).
+  if (!live) {
+    const cap = enforceNpmCap(path.join(hermesHome, ".npm"), {
+      capBytes: limits.npmCacheCapBytes,
+      openPaths,
+    });
+    targetResults["npm-cap"] = cap;
+    totalFiles += cap.cleanedFiles;
+    totalBytes += cap.cleanedBytes;
+    totalSkippedOpen += cap.skippedOpen;
+    if (cap.applied && typeof options.log === "function") {
+      options.log(`botd hygiene: npm cap ${limits.npmCacheCapBytes} bytes exceeded (${cap.sizeBefore} -> ${cap.sizeAfter}), evicted ${cap.removed.length} entries`);
+    }
   }
 
   const result = {
