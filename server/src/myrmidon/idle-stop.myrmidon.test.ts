@@ -797,6 +797,92 @@ describe('IdleStopService', () => {
       expect(mockDriver.stopIdle).not.toHaveBeenCalled();
       expect(mockDriver.stop).not.toHaveBeenCalled();
     });
+
+    it('never stops an "off" bot (OPE-12291)', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      mockDb.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            then: vi.fn().mockImplementation((resolve: any) =>
+              resolve([{ agentId: botKey, adapterConfig: { container: { enabled: true, idleStopMode: 'off' } } }]),
+            ),
+          }),
+        }),
+      });
+      vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+
+    it('never stops a bot whose role is in alwaysOnRoles, even on on_demand (OPE-12291)', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      mockDb.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            then: vi.fn().mockImplementation((resolve: any) =>
+              resolve([
+                {
+                  agentId: botKey,
+                  agentRole: 'lead',
+                  adapterConfig: { container: { enabled: true, idleStopMode: 'on_demand' } },
+                },
+              ]),
+            ),
+          }),
+        }),
+      });
+      vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+
+    it('stops a lead-role bot when alwaysOnRoles is explicitly empty (OPE-12291)', async () => {
+      settingsState.general = { idleStop: { enabled: true, afterSec: 300, healthTimeoutMs: 30000, alwaysOnRoles: [] } };
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      let runsQueryCount = 0;
+      mockDb.select.mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === botApplyJobs) {
+            return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([])) }) }) };
+          }
+          if (table === agents) {
+            return {
+              where: vi.fn().mockImplementation(() => ({
+                limit: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: botKey }])) }),
+                then: vi.fn().mockImplementation((resolve: any) =>
+                  resolve([{ agentId: botKey, agentRole: 'lead', adapterConfig: { container: { enabled: true, idleStopMode: 'on_demand' } } }]),
+                ),
+              })),
+            };
+          }
+          if (table === heartbeatRuns) {
+            runsQueryCount++;
+            if (runsQueryCount === 1) return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([])) }) }) };
+            const oldDate = new Date(Date.now() - 400000);
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([{ finishedAt: oldDate, startedAt: oldDate }])) }),
+                }),
+              }),
+            };
+          }
+          return { where: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([])) }) };
+        }),
+      }));
+      vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
+      vi.mocked(mockDriver.stopIdle).mockResolvedValue(undefined);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).toHaveBeenCalledWith(botKey);
+    });
   });
 
   describe('readRuntimeState', () => {
