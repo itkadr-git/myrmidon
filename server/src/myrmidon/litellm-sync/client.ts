@@ -6,6 +6,16 @@
 // admin key. Credential values are sent as values: LiteLLM encrypts them in its own DB
 // (its secret manager is not configured on our deployments, so `secrets/<name>`
 // references would never resolve).
+//
+// Payload rules (verified against LiteLLM v1.104.1):
+//  - routing order is `litellm_params.order` (`/model/update` writes only
+//    `litellm_params`; `model_info` is ignored); `priority`, `disabled` and
+//    `provider` are not LiteLLM parameters and are never sent;
+//  - `/model/delete` accepts only `{ id }` (`ModelInfoDelete`), so a model name
+//    is deleted by looking its deployments up in `/model/info` first;
+//  - `/model/update` merges `litellm_params`: an absent `api_key` keeps the
+//    stored key, an empty string would erase it, so it is only sent when the
+//    board holds a value.
 
 import { unprocessable } from "../../errors.js";
 import { LitellmSyncPort, type LitellmChannelView } from "./port.js";
@@ -149,48 +159,91 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
     return response.json();
   }
 
+  /** The `litellm_params` of one deployment; only keys LiteLLM understands. */
+  function deploymentParams(input: {
+    litellmModelName: string;
+    providerModel?: string;
+    providerType: string;
+    baseUrl: string | null;
+    credentialValue?: string;
+    order?: number;
+    weight?: number;
+    additionalConfig?: Record<string, unknown>;
+  }): Record<string, unknown> {
+    if (input.credentialValue !== undefined && input.credentialValue.startsWith(SECRET_REFERENCE_PREFIX)) {
+      throw unprocessable("LiteLLM has no secret manager: send the credential value, not a secrets/<name> reference", {
+        code: "litellm_credential_reference",
+      });
+    }
+    return {
+      model: `${litellmProviderPrefix(input.providerType)}/${input.providerModel ?? input.litellmModelName}`,
+      api_base: input.baseUrl || undefined,
+      ...(input.credentialValue ? { api_key: input.credentialValue } : {}),
+      ...(input.order !== undefined ? { order: input.order } : {}),
+      ...(input.weight !== undefined ? { weight: input.weight } : {}),
+      ...input.additionalConfig,
+    };
+  }
+
+  /** `/model/info` rows reduced to what registration, rotation and unregistration need. */
+  async function fetchDeployments(): Promise<
+    Array<{
+      modelId?: string;
+      litellmModelName: string;
+      providerType: string;
+      baseUrl: string | null;
+      credentialSecretName: string;
+      inGatewayConfig: boolean;
+    }>
+  > {
+    const response = await fetch(url("/model/info"), {
+      headers: {
+        Authorization: `Bearer ${deps.litellmAdminKey}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw unprocessable(`LiteLLM /model/info answered ${response.status}`, {
+        code: "litellm_request_failed",
+        status: response.status,
+      });
+    }
+
+    const data = await response.json();
+    // Parse the response based on LiteLLM's actual format
+    const models = Array.isArray(data?.data) ? data.data : [];
+
+    return models.map((model: any) => {
+      const params = model.litellm_params ?? {};
+      const upstream = typeof params.model === "string" ? params.model : "";
+      return {
+        ...(typeof model.model_info?.id === "string" ? { modelId: model.model_info.id } : {}),
+        litellmModelName: model.model_name || model.id,
+        providerType:
+          params.provider || params.custom_llm_provider || (upstream.includes("/") ? upstream.split("/")[0] : ""),
+        baseUrl: params.api_base || null,
+        credentialSecretName: extractSecretName(params.api_key) || "",
+        // `/model/delete` only knows models stored in the gateway database.
+        inGatewayConfig: model.model_info?.db_model === false,
+      };
+    });
+  }
+
   return {
     async registerModel(input) {
-      const payload = {
+      await callLiteLLM("/model/new", {
         model_name: input.litellmModelName,
-        litellm_params: {
-          model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
-          provider: litellmProviderPrefix(input.providerType),
-          api_base: input.baseUrl || undefined,
-          api_key: input.credentialValue ?? "",
-          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
-          ...(input.weight !== undefined ? { weight: input.weight } : {}),
-          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
-          ...input.additionalConfig,
-        },
-        model_info: {
-          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
-          ...(input.weight !== undefined ? { weight: input.weight } : {}),
-          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
-        },
-      };
-
-      await callLiteLLM("/model/new", payload);
+        litellm_params: deploymentParams(input),
+        model_info: {},
+      });
     },
 
     async updateDeployment(input) {
       await callLiteLLM("/model/update", {
         model_name: input.litellmModelName,
-        litellm_params: {
-          model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
-          provider: litellmProviderPrefix(input.providerType),
-          api_base: input.baseUrl || undefined,
-          api_key: input.credentialValue ?? "",
-          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
-          ...(input.weight !== undefined ? { weight: input.weight } : {}),
-          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
-          ...input.additionalConfig,
-        },
+        litellm_params: deploymentParams(input),
         model_info: {
           id: input.modelId,
-          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
-          ...(input.weight !== undefined ? { weight: input.weight } : {}),
-          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
         },
       });
     },
@@ -203,38 +256,27 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       await callLiteLLM("/cache/delete", {});
     },
 
-    async unregisterModel(litellmModelName) {
-      const payload = {
-        model_names: [litellmModelName],
-      };
-
-      await callLiteLLM("/model/delete", payload);
+    async unregisterModel(litellmModelName, match) {
+      const wanted = match && "baseUrl" in match ? normalizeBaseUrl(match.baseUrl) : undefined;
+      const targets = (await fetchDeployments()).filter(
+        (deployment) =>
+          deployment.litellmModelName === litellmModelName &&
+          deployment.modelId &&
+          !deployment.inGatewayConfig &&
+          (wanted === undefined || normalizeBaseUrl(deployment.baseUrl) === wanted),
+      );
+      for (const deployment of targets) {
+        await callLiteLLM("/model/delete", { id: deployment.modelId });
+      }
     },
 
     async listRegisteredModels() {
-      const response = await fetch(url("/model/info"), {
-        headers: {
-          Authorization: `Bearer ${deps.litellmAdminKey}`,
-        },
-      });
-
-      if (!response.ok) {
-        throw unprocessable(`LiteLLM /model/info answered ${response.status}`, {
-          code: "litellm_request_failed",
-          status: response.status,
-        });
-      }
-
-      const data = await response.json();
-      // Parse the response based on LiteLLM's actual format
-      const models = Array.isArray(data?.data) ? data.data : [];
-      
-      return models.map((model: any) => ({
-        ...(typeof model.model_info?.id === "string" ? { modelId: model.model_info.id } : {}),
-        litellmModelName: model.model_name || model.id,
-        providerType: model.litellm_params?.provider || "",
-        baseUrl: model.litellm_params?.api_base || null,
-        credentialSecretName: extractSecretName(model.litellm_params?.api_key) || "",
+      return (await fetchDeployments()).map((deployment) => ({
+        ...(deployment.modelId ? { modelId: deployment.modelId } : {}),
+        litellmModelName: deployment.litellmModelName,
+        providerType: deployment.providerType,
+        baseUrl: deployment.baseUrl,
+        credentialSecretName: deployment.credentialSecretName,
       }));
     },
 
@@ -280,8 +322,17 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
   };
 }
 
+const SECRET_REFERENCE_PREFIX = "secrets/";
+
+/** Trailing-slash and whitespace insensitive api_base; absent and empty are the same. */
+function normalizeBaseUrl(baseUrl: string | null | undefined): string {
+  return (baseUrl ?? "").trim().replace(/\/+$/, "");
+}
+
 /**
  * Extracts the secret name from an api_key formatted as "secrets/secret-name".
+ * LiteLLM never reveals a stored key, so this only recognizes deployments that
+ * were written with a reference by an older board version.
  */
 function extractSecretName(apiKey: string | undefined): string | null {
   if (!apiKey || !apiKey.startsWith("secrets/")) {

@@ -259,9 +259,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   }
 
   /**
-   * The litellm model name for one provider model. Keeps the provider's own
-   * spelling: part B registers it under `openai/<name>` style prefixes, which
-   * is derived there — the store records what the provider answered.
+   * The default litellm model name for one provider model. Keeps the provider's
+   * own spelling: part B registers it under `openai/<name>` style prefixes,
+   * which is derived there — the store records what the provider answered.
+   * The operator may set another name (a gateway group that already exists, such
+   * as `kimi/kimi-for-coding`) at creation or with `setModels`; the upstream
+   * model is always the provider's own `modelName`, whatever the group is called.
    */
   function litellmModelNameOf(provider: ProviderRow, modelName: string): string {
     return `${provider.type}/${modelName}`;
@@ -325,19 +328,42 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
   }
 
-  /** Replaces the provider's model cache with a fresh snapshot. */
-  async function writeModelCache(provider: ProviderRow, models: string[]): Promise<void> {
+  /**
+   * Replaces the provider's model cache with a fresh snapshot. `litellmNames`
+   * are names the operator chose (at creation, or kept from the previous
+   * snapshot on a key rotation); the rest get the default.
+   */
+  async function writeModelCache(
+    provider: ProviderRow,
+    models: string[],
+    litellmNames: ReadonlyMap<string, string> = new Map(),
+  ): Promise<void> {
     await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, provider.id));
     if (models.length === 0) return;
     await deps.db.insert(modelProviderModels).values(
       models.map((modelName) => ({
         providerId: provider.id,
         modelName,
-        litellmModelName: litellmModelNameOf(provider, modelName),
+        litellmModelName: litellmNames.get(modelName) ?? litellmModelNameOf(provider, modelName),
         enabled: true,
         free: provider.free,
       })),
     );
+  }
+
+  /** The LiteLLM names the operator chose in the current snapshot: only those that differ from the default. */
+  async function customLitellmNames(provider: ProviderRow): Promise<Map<string, string>> {
+    const rows = await deps.db
+      .select({ modelName: modelProviderModels.modelName, litellmModelName: modelProviderModels.litellmModelName })
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, provider.id));
+    const custom = new Map<string, string>();
+    for (const row of rows) {
+      if (row.litellmModelName !== litellmModelNameOf(provider, row.modelName)) {
+        custom.set(row.modelName, row.litellmModelName);
+      }
+    }
+    return custom;
   }
 
   /** Creates a provider: validate the key first, then write store + DB. */
@@ -372,6 +398,17 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       key: input.body.key,
     });
 
+    // A name for a model the provider does not list is a typo, not a setting:
+    // refuse before anything is written.
+    const requestedNames = Object.entries(input.body.litellmModelNames ?? {});
+    const unknownModels = requestedNames.map(([modelName]) => modelName).filter((modelName) => !models.includes(modelName));
+    if (unknownModels.length > 0) {
+      throw unprocessable(
+        `litellmModelNames names models the provider does not list: ${unknownModels.join(", ")}`,
+        { code: "model_provider_unknown_model" },
+      );
+    }
+
     const inserted = await deps.db
       .insert(modelProviders)
       .values({
@@ -396,7 +433,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       description: `Model provider key of "${name}" (${row.type}); write-only, never returned by the API`,
     });
 
-    await writeModelCache(row, models);
+    await writeModelCache(row, models, new Map(requestedNames));
     const stored = { ...row, credentialSecretName: finalSecretName };
     await deps.db
       .update(modelProviders)
@@ -449,8 +486,11 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
 
     const models = await validateKey({ type: row.type, baseUrl: row.baseUrl, key: input.key });
+    // The operator's LiteLLM names survive the new snapshot: the gateway
+    // registrations are keyed by them.
+    const keptNames = await customLitellmNames(row);
     await deps.secrets.rotateSecret(secretId, input.key);
-    await writeModelCache(row, models);
+    await writeModelCache(row, models, keptNames);
     await deps.db
       .update(modelProviders)
       .set({ credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() })
@@ -716,19 +756,41 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       .sort((a, b) => a.modelName.localeCompare(b.modelName));
   }
 
-  /** Applies the per-model enable/disable (and free/paid) switches. */
+  /**
+   * Applies the per-model enable/disable (and free/paid) switches and the
+   * LiteLLM model name. A rename is accepted only for a model that is disabled
+   * before the call: the gateway registration is keyed by the name, and the
+   * enable/disable sync unregisters the name the row holds AFTER the write, so a
+   * rename of an enabled model would strand the old registration. Rename and
+   * enable in one call is fine: the sync registers the new name.
+   */
   async function setModels(input: {
     companyId: string;
     providerId: string;
-    models: Array<{ modelName: string; enabled?: boolean; free?: boolean }>;
+    models: Array<{ modelName: string; enabled?: boolean; free?: boolean; litellmModelName?: string }>;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
   }): Promise<ModelProviderModelView[]> {
     const provider = await loadProvider(input.companyId, input.providerId);
     const beforeModels = await listModels(input.companyId, input.providerId);
     for (const model of input.models) {
+      const before = beforeModels.find((entry) => entry.modelName === model.modelName);
+      if (
+        model.litellmModelName !== undefined &&
+        before &&
+        before.litellmModelName !== model.litellmModelName &&
+        before.enabled
+      ) {
+        throw conflict(
+          `model "${model.modelName}" is enabled; disable it before changing its LiteLLM name`,
+          { code: "model_provider_model_enabled" },
+        );
+      }
+    }
+    for (const model of input.models) {
       const patch: Partial<typeof modelProviderModels.$inferInsert> = { updatedAt: now() };
       if (model.enabled !== undefined) patch.enabled = model.enabled;
       if (model.free !== undefined) patch.free = model.free;
+      if (model.litellmModelName !== undefined) patch.litellmModelName = model.litellmModelName;
       await deps.db
         .update(modelProviderModels)
         .set(patch)
