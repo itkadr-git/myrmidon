@@ -902,6 +902,7 @@ COMPOSE
   "network": "myrmidon-bots",
   "images": ["$BOT_REPOSITORY@$BOT_DIGEST"],
   "bots": [],
+  "limitsOverrideFile": "/run/myrmidon-dockergate-state/limits.json",
   "statsFile": "/run/myrmidon-dockergate-state/stats.json"
 }
 DG
