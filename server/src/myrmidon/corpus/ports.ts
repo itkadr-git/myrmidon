@@ -76,6 +76,10 @@ export interface CorpusDocumentRecord {
   /** SHA-256 (hex) of the stored bytes; null for an upload. */
   contentHash?: string | null;
   lastFetchedAt?: string | null;
+  /** When a fetch was last attempted (whether it succeeded or failed). */
+  lastAttemptedAt?: string | null;
+  /** Number of consecutive fetch failures; reset to 0 on success. */
+  sourceFailCount?: number | null;
   /** Why the last fetch failed, or null. */
   sourceError?: string | null;
   /**
@@ -152,6 +156,8 @@ export interface CorpusStorePort {
         | "mimeType"
         | "contentHash"
         | "lastFetchedAt"
+        | "lastAttemptedAt"
+        | "sourceFailCount"
         | "sourceError"
         | "previousBlobRef"
       >
