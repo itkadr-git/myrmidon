@@ -122,11 +122,17 @@ func TestLoadForRuntime_MergesOverride(t *testing.T) {
 	dir := t.TempDir()
 	main := filepath.Join(dir, "config.json")
 	override := filepath.Join(dir, "state", "limits.json")
-	// A missing override file at start (the override directory is created by
-	// the first write) must not refuse the load. The main file is a full valid
-	// config (goodJSON) with the override path and per-bot ceilings added:
-	// LoadForRuntime re-validates the merged result, so a bots-only JSON would
-	// refuse with an unrelated validation error.
+	// The state directory exists in production (the rw bind is mounted before
+	// the gate starts); a missing directory is a deployment fault the gate
+	// refuses with config_read_only, not something the write auto-creates.
+	if err := os.MkdirAll(filepath.Dir(override), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A missing override FILE at start (first update creates it) must not
+	// refuse the load. The main file is a full valid config (goodJSON) with
+	// the override path and per-bot ceilings added: LoadForRuntime re-validates
+	// the merged result, so a bots-only JSON would refuse with an unrelated
+	// validation error.
 	base := strings.Replace(goodJSON, `  "statsFile"`,
 		`  "limitsOverrideFile": "`+override+`",
   "statsFile"`, 1)
