@@ -109,7 +109,9 @@ describe("resolvePullRequestHeadCi: read cache", () => {
     at(59);
     const second = await readCi(fetch);
 
-    expect(first).toEqual({ state: "complete", headSha: "abc123" });
+    // myrmidon(OPE-12176): the verdict of the finished final check travels with
+    // the complete state, and the cache serves the same object back.
+    expect(first).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: "success" });
     expect(second).toEqual(first);
     expect(paths(fetch)).toEqual([pullPath(7), WORKFLOWS, finalCheckPath("abc123")]);
   });
@@ -148,7 +150,9 @@ describe("resolvePullRequestHeadCi: read cache", () => {
     const complete = await readCi(fetch, 8);
 
     expect(pending).toEqual({ state: "pending", headSha: "def456" });
-    expect(complete).toEqual({ state: "complete", headSha: "def456" });
+    // myrmidon(OPE-12176): the verdict travels with the complete state, cached
+    // under the long complete TTL with it.
+    expect(complete).toEqual({ state: "complete", headSha: "def456", finalCheckConclusion: "success" });
     expect(paths(fetch)).toHaveLength(6);
   });
 
@@ -214,7 +218,7 @@ describe("resolvePullRequestHeadCi: read cache", () => {
     const remembered = await readCi(fetch);
 
     expect(failed).toEqual({ state: "unknown", headSha: null, reason: "pull:http_500" });
-    expect(recovered).toEqual({ state: "complete", headSha: "abc123" });
+    expect(recovered).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: "success" });
     expect(remembered).toEqual(recovered);
     expect(paths(fetch)).toEqual([pullPath(7), pullPath(7), WORKFLOWS, finalCheckPath("abc123")]);
   });
@@ -231,7 +235,7 @@ describe("resolvePullRequestHeadCi: read cache", () => {
     const recovered = await readCi(fetch);
 
     expect(failed).toEqual({ state: "unknown", headSha: "abc123", reason: "check_runs:http_500" });
-    expect(recovered).toEqual({ state: "complete", headSha: "abc123" });
+    expect(recovered).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: "success" });
     expect(paths(fetch)).toEqual([pullPath(7), WORKFLOWS, finalCheckPath("abc123"), WORKFLOWS, finalCheckPath("abc123")]);
   });
 
@@ -247,7 +251,7 @@ describe("resolvePullRequestHeadCi: read cache", () => {
     const fixed = await readCi(fetch);
 
     expect(broken).toEqual({ state: "unknown", headSha: "abc123", reason: "check_runs:unreadable_payload" });
-    expect(fixed).toEqual({ state: "complete", headSha: "abc123" });
+    expect(fixed).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: "success" });
   });
 
   it("sends one request for reads of one head that run at the same time", async () => {
@@ -268,9 +272,9 @@ describe("resolvePullRequestHeadCi: read cache", () => {
     const results = await Promise.all(reads);
 
     expect(results).toEqual([
-      { state: "complete", headSha: "abc123" },
-      { state: "complete", headSha: "abc123" },
-      { state: "complete", headSha: "abc123" },
+      { state: "complete", headSha: "abc123", finalCheckConclusion: "success" },
+      { state: "complete", headSha: "abc123", finalCheckConclusion: "success" },
+      { state: "complete", headSha: "abc123", finalCheckConclusion: "success" },
     ]);
     expect(paths(fetch)).toEqual([pullPath(7), WORKFLOWS, finalCheckPath("abc123")]);
   });
@@ -285,7 +289,9 @@ describe("resolvePullRequestHeadCi: read cache", () => {
 
     const [one, two] = await Promise.all([readCi(fetch, 7), readCi(fetch, 8)]);
 
-    expect(one).toEqual({ state: "complete", headSha: "abc123" });
+    // myrmidon(OPE-12176): the verdict belongs to its own pull request's read;
+    // the other head stays pending with no verdict of its own.
+    expect(one).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: "success" });
     expect(two).toEqual({ state: "pending", headSha: "def456" });
     expect(paths(fetch).filter((path) => path.startsWith("/repos/acme/app/pulls/"))).toHaveLength(2);
   });
@@ -418,7 +424,7 @@ describe("resolvePullRequestHeadCi: rate limit", () => {
     at(1501);
     const result = await readCi(fetch);
 
-    expect(result).toEqual({ state: "complete", headSha: "abc123" });
+    expect(result).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: "success" });
     expect(paths(fetch).slice(3)).toEqual([pullPath(7), WORKFLOWS, finalCheckPath("abc123")]);
   });
 
@@ -482,7 +488,7 @@ describe("createReviewPullRequestCiResolver: read cache", () => {
     at(30);
     const second = await resolver({ companyId: "company-1", issueId: "issue-1" });
 
-    expect(first).toEqual({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "abc123" });
+    expect(first).toEqual({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "abc123", finalCheckConclusion: "success" });
     expect(second).toEqual(first);
     expect(fetch).toHaveBeenCalledTimes(3);
   });
