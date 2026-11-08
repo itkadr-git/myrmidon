@@ -251,7 +251,7 @@ export type RequiredCheckVerdict = "success" | "pending" | "failed";
 
 export type BoardMergeSkipReason = "closed" | "draft" | "no_head" | "base_not_allowed" | "head_not_approved";
 export type BoardMergeWaitReason = "mergeability_unknown" | "ci_pending" | "ci_failed" | "blocked";
-export type BoardMergeReturnReason = "conflict" | "behind";
+export type BoardMergeReturnReason = "conflict" | "behind" | "head_moved";
 
 export type BoardMergeDecision =
   | { kind: "skip"; reason: BoardMergeSkipReason }
@@ -294,7 +294,13 @@ export function decideBoardMerge(input: {
   if (!facts.headSha) return { kind: "skip", reason: "no_head" };
   const base = (facts.baseRef ?? "").trim();
   if (!base || !input.baseBranches.includes(base)) return { kind: "skip", reason: "base_not_allowed" };
-  if (!verdictCoversHead(input.verdict, facts.headSha)) return { kind: "skip", reason: "head_not_approved" };
+  if (!verdictCoversHead(input.verdict, facts.headSha)) {
+    // myrmidon(HEAD-MOVED-RETURN): the approval names another head — the branch moved after the
+    // verdict (a new push, or main merged in). A silent skip left such a PR waiting forever with
+    // nobody asked to re-review; it goes back to the implementer to resubmit, like a conflict.
+    if (declaredReviewedHead(input.verdict)) return { kind: "return", reason: "head_moved" };
+    return { kind: "skip", reason: "head_not_approved" };
+  }
 
   if (facts.mergeable === false || facts.mergeableState === "dirty") return { kind: "return", reason: "conflict" };
   if (facts.mergeableState === "behind") return { kind: "return", reason: "behind" };
