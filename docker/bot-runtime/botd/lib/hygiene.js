@@ -14,6 +14,11 @@ export const HYGIENE_DEFAULTS = Object.freeze({
   npmCacheCapBytes: 1024 * 1024 * 1024, // 1 GiB
   uvCacheTtlHours: 168, // 7 days
   terminalOutputTtlHours: 24, // 24 hours
+  // myrmidon(OPE-12110): total ceiling for `hermes/.npm/_npx`, in bytes. An
+  // `npx` run of a vendor CLI installs a whole package tree under `_npx/<hash>`;
+  // one bot reached 2.2 GB in 45 minutes. TTL alone never caught it, because
+  // the trees were written continuously and stayed "fresh".
+  npmNpxQuotaBytes: 512 * 1024 * 1024, // 512 MiB
 });
 
 /**
@@ -154,26 +159,44 @@ export function cleanTargetDir(rootDir, ttlMs, nowMs, openPaths) {
  * An entry is protected when any open fd or process cwd lies at or under it
  * (prefix check via `isPathOpen`): a running npx MCP server keeps its entry.
  */
-export function cleanEntryCache(rootDir, ttlMs, nowMs, openPaths) {
-  const result = { cleanedFiles: 0, cleanedBytes: 0, skippedOpen: 0, keptFresh: 0 };
+export function cleanEntryCache(rootDir, ttlMs, nowMs, openPaths, quotaBytes = 0) {
+  const result = {
+    cleanedFiles: 0,
+    cleanedBytes: 0,
+    skippedOpen: 0,
+    keptFresh: 0,
+    // myrmidon(OPE-12110): the quota pass is reported apart from the TTL pass,
+    // so a journal reader can tell "expired" from "over the ceiling".
+    quotaEvicted: 0,
+    keptBytes: 0,
+  };
   let entries = [];
   try {
     entries = fs.readdirSync(rootDir, { withFileTypes: true });
   } catch {
     return result;
   }
+
+  const survivors = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const candidate = path.join(rootDir, entry.name);
     try {
-      // Newest mtime/atime across the entry dir and its immediate children: an entry
-      // recently read (atime) or written (mtime) is fresh, one untouched past the
-      // TTL is stale and goes as a whole.
+      // Newest mtime/atime across the entry dir and its immediate children: an
+      // entry recently read (atime) or written (mtime) is fresh, one untouched
+      // past the TTL is stale and goes as a whole.
       let newest = 0;
+      // myrmidon(OPE-12110): the quota pass orders by ACCESS time — a single
+      // mtime says when the tree was written, atime says when it was last used,
+      // and only the latter ranks two fresh-but-idle entries against each other.
+      let accessible = 0;
       const note = (st) => {
         newest = Math.max(newest, st.mtimeMs);
+        accessible = Math.max(accessible, Number.isFinite(st.atimeMs) ? st.atimeMs : st.mtimeMs);
       };
-      const noteTree = (dir) => {
+      let size = 0;
+      let files = 0;
+      const measure = (dir) => {
         for (const child of fs.readdirSync(dir, { withFileTypes: true })) {
           const childPath = path.join(dir, child.name);
           try {
@@ -181,41 +204,32 @@ export function cleanEntryCache(rootDir, ttlMs, nowMs, openPaths) {
             note(st);
             // Walk the full subtree: cacache content/index leaves are nested
             // several levels deep, and a recently accessed blob keeps its shard.
-            if (st.isDirectory()) noteTree(childPath);
+            if (st.isDirectory()) {
+              measure(childPath);
+            } else {
+              size += st.size;
+              files += 1;
+            }
           } catch {}
         }
       };
       note(fs.statSync(candidate));
-      noteTree(candidate);
+      measure(candidate);
+      const open = isPathOpen(candidate, openPaths);
+      if (open) {
+        // An entry a live process holds is never evicted — neither by age nor
+        // by the quota — but its bytes still count against the ceiling.
+        result.skippedOpen += 1;
+        if (nowMs - newest < ttlMs) result.keptFresh += 1;
+        survivors.push({ path: candidate, size, files, accessible, open: true });
+        continue;
+      }
       if (nowMs - newest < ttlMs) {
         result.keptFresh += 1;
+        survivors.push({ path: candidate, size, files, accessible, open: false });
         continue;
       }
-      if (isPathOpen(candidate, openPaths)) {
-        result.skippedOpen += 1;
-        continue;
-      }
-      // measure before removing: the report shows how many files/bytes went away
-      let size = 0;
-      let files = 0;
-      const walk = (dir) => {
-        for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
-          const p = path.join(dir, item.name);
-          let st;
-          try {
-            st = fs.lstatSync(p);
-          } catch {
-            continue;
-          }
-          if (st.isDirectory()) {
-            walk(p);
-          } else {
-            size += st.size;
-            files += 1;
-          }
-        }
-      };
-      walk(candidate);
+      // Stale: the whole entry goes, and the report shows how much went away.
       fs.rmSync(candidate, { recursive: true, force: true });
       result.cleanedFiles += files;
       result.cleanedBytes += size;
@@ -223,6 +237,33 @@ export function cleanEntryCache(rootDir, ttlMs, nowMs, openPaths) {
       // unreadable entry: leave it exactly where it is
     }
   }
+
+  // myrmidon(OPE-12110): hard ceiling for the whole cache root. Stale entries
+  // above are already gone; if the fresh ones still exceed `quotaBytes`, the
+  // least recently used go first until the total fits. Open entries are
+  // skipped, not counted as evictable.
+  if (quotaBytes > 0 && survivors.length > 0) {
+    let total = survivors.reduce((sum, item) => sum + item.size, 0);
+    if (total > quotaBytes) {
+      const evictable = survivors
+        .filter((item) => !item.open)
+        .sort((a, b) => a.accessible - b.accessible);
+      for (const item of evictable) {
+        if (total <= quotaBytes) break;
+        try {
+          fs.rmSync(item.path, { recursive: true, force: true });
+          total -= item.size;
+          result.cleanedFiles += item.files;
+          result.cleanedBytes += item.size;
+          result.quotaEvicted += 1;
+        } catch {
+          // left in place: it still counts toward the total, as it still occupies it
+        }
+      }
+    }
+    result.keptBytes = total;
+  }
+
   return result;
 }
 
@@ -380,6 +421,7 @@ export async function cleanCaches(options = {}) {
     uvCacheTtlMs: (options.limits?.uvCacheTtlHours ?? options.uvCacheTtlHours ?? HYGIENE_DEFAULTS.uvCacheTtlHours) * HOUR,
     terminalOutputTtlMs: (options.limits?.terminalOutputTtlHours ?? options.terminalOutputTtlHours ?? HYGIENE_DEFAULTS.terminalOutputTtlHours) * HOUR,
     npmCacheCapBytes: options.limits?.npmCacheCapBytes ?? options.npmCacheCapBytes ?? HYGIENE_DEFAULTS.npmCacheCapBytes,
+    npmNpxQuotaBytes: options.limits?.npmNpxQuotaBytes ?? options.npmNpxQuotaBytes ?? HYGIENE_DEFAULTS.npmNpxQuotaBytes,
   };
 
   // A live run may be using an npx install right now; the ceiling is skipped then
@@ -414,7 +456,10 @@ export async function cleanCaches(options = {}) {
       : t.name === "npm-cacache" || t.name === "npm-cacache-index"
         ? limits.npmCacheTtlMs
         : limits.terminalOutputTtlMs;
-    const res = t.mode === "walk" ? cleanTargetDir(t.dir, ttlMs, nowMs, openPaths) : cleanEntryCache(t.dir, ttlMs, nowMs, openPaths);
+    // myrmidon(OPE-12110): only the `_npx` root carries the byte ceiling; the
+    // cacache shards and terminal output stay TTL-only.
+    const quotaBytes = t.name === "npm-npx" ? limits.npmNpxQuotaBytes : 0;
+    const res = t.mode === "walk" ? cleanTargetDir(t.dir, ttlMs, nowMs, openPaths) : cleanEntryCache(t.dir, ttlMs, nowMs, openPaths, quotaBytes);
     targetResults[t.name] = res;
     totalFiles += res.cleanedFiles;
     totalBytes += res.cleanedBytes;

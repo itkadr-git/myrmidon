@@ -399,6 +399,9 @@ async function main() {
       uvCacheTtlHours: pick(g.uvCacheTtlHours, Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS)) ?? 168,
       terminalOutputTtlHours: pick(g.terminalOutputTtlHours, Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS)) ?? 24,
       npmCacheCapBytes: pick(g.npmCacheCapBytes, Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES)) ?? 1024 * 1024 * 1024,
+      // myrmidon(OPE-12110): byte ceiling for `hermes/.npm/_npx`, from settings
+      // grace or env; absent/zero values fall back to the 512 MiB default.
+      npmNpxQuotaBytes: pick(g.npmNpxQuotaBytes, Number(process.env.MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES)) ?? 512 * 1024 * 1024,
     };
     // The npm size ceiling is skipped while a run is live: an npx install the run
     // has not touched yet can still be in use.
@@ -436,6 +439,8 @@ async function main() {
         uvCacheTtlHours: Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS) || 168,
         terminalOutputTtlHours: Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS) || 24,
         npmCacheCapBytes: Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES) || 1024 * 1024 * 1024,
+        // myrmidon(OPE-12110): same `_npx` ceiling under disk pressure; absent/zero env falls back to 512 MiB.
+        npmNpxQuotaBytes: Number(process.env.MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES) || 512 * 1024 * 1024,
       };
       const result = await hygieneMod.cleanCaches({
         now: startedAt.getTime(),
