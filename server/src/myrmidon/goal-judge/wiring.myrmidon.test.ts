@@ -21,7 +21,7 @@ import {
 } from "./wiring.js";
 import {
   goalJudgeSettingsService,
-  DEFAULT_GOAL_JUDGE_SETTINGS,
+  defaultGoalJudgeSettings,
   type GoalJudgeSettings,
 } from "./settings.js";
 import { createGoalJudgeRoutesWithService } from "./routes.js";
@@ -189,7 +189,7 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
       };
 
       const settings: GoalJudgeSettings = {
-        ...DEFAULT_GOAL_JUDGE_SETTINGS,
+        ...defaultGoalJudgeSettings(),
         enabled: false,
         providerId: "prov-strong",
         model: "strong-judge-model",
@@ -391,7 +391,7 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
 
       const service = goalJudgeSettingsService(null, {
         settings: {
-          getGeneral: async () => storedGeneral,
+          getGeneral: async () => storedGeneral as any,
           updateGeneral: async (patch) => {
             storedGeneral = { ...storedGeneral, ...patch };
             return storedGeneral as any;
