@@ -70,10 +70,10 @@ export function Ui2TopBar() {
   const strip = useUi2StatusStrip(selectedCompanyId);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  const colony = strip?.colony ?? null;
+  const colony = strip?.colony ?? (strip?.colonyActive != null ? { running: strip.colonyActive, total: strip.colonyTotal ?? 0, attention: !!strip.fleetAttention } : null);
   const runs = strip?.runs ?? null;
-  const spend = strip?.spend ?? null;
-  const waiting = strip?.waiting ?? null;
+  const spend = strip?.spend ?? (strip?.monthSpendCents != null ? { spend: `$${Math.round(strip.monthSpendCents / 100).toLocaleString("en-US")}`, spendCents: strip.monthSpendCents, budgetCents: strip.monthBudgetCents ?? 0, budget: strip.monthBudgetCents ? `$${Math.round(strip.monthBudgetCents / 100).toLocaleString("en-US")}` : null } : null);
+  const waiting = strip?.waiting ?? (strip?.attentionCount != null ? { count: strip.attentionCount, approvals: strip.attentionCount, decisions: 0, interactions: 0 } : null);
 
   return (
     <header
