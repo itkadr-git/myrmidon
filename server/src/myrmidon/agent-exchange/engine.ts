@@ -27,6 +27,23 @@ import {
   type AgentExchangeRoom,
   type AgentExchangeSettings,
 } from "@myrmidon/shared";
+import {
+  buildParticipantPrompt,
+  collectPreviousRoundAnswers,
+  type RoundTotals,
+} from "./room-runner.js";
+
+// Round-running rules live in room-runner.ts (OPE-12079): the first-round
+// independence rule, the previous-round transcript assembly, and the cost
+// summation over all participants. Re-exported here so the engine's public
+// surface (and the existing importers/tests) keep their names.
+export {
+  buildParticipantPrompt,
+  collectPreviousRoundAnswers,
+  sumRoundTotals,
+  EMPTY_ROUND_TOTALS,
+  type RoundTotals,
+} from "./room-runner.js";
 
 /** Stable failure codes. Callers and tests switch on these, never messages. */
 export type AgentExchangeErrorCode =
@@ -174,23 +191,6 @@ export const AGENT_EXCHANGE_FINISHER_SYSTEM_PROMPT = [
   "and on what, (3) the recommended next step. Be brief (at most 400 words).",
 ].join("\n");
 
-/** The prompt of one participant call. Round 1 sees the opening prompt ONLY. */
-export function buildParticipantPrompt(input: {
-  round: number;
-  openingPrompt: string;
-  previousRoundAnswers: string[];
-}): string {
-  if (input.round === 1) return input.openingPrompt;
-  return [
-    input.openingPrompt,
-    "",
-    `Round ${input.round - 1} answers:`,
-    ...input.previousRoundAnswers,
-    "",
-    `Round ${input.round}: reply to the answers above — where do you agree, where do you differ?`,
-  ].join("\n");
-}
-
 // ---------------------------------------------------------------------------
 // Engine.
 // ---------------------------------------------------------------------------
@@ -275,12 +275,17 @@ async function runRound(
   room: AgentExchangeRoom,
   round: number,
   openingPrompt: string,
-): Promise<{ tokens: number; costCents: number; interrupted: boolean }> {
+): Promise<RoundTotals> {
   const participants = room.participants;
   const messages = round > 1 ? await deps.store.listMessages(room.id) : [];
-  const previousRoundAnswers = messages
-    .filter((m) => m.round === round - 1 && m.status === "done" && m.content)
-    .map((m) => `${participants[m.participantIndex]?.label ?? `participant-${m.participantIndex}`}: ${m.content}`);
+  // Round 1: previousRoundAnswers is empty, so every prompt is the opening
+  // prompt alone (the independence rule in room-runner.ts). Round n>1: every
+  // prompt carries the previous round's landed answers.
+  const previousRoundAnswers = collectPreviousRoundAnswers({
+    messages,
+    round: round - 1,
+    participants,
+  });
 
   const active = new AbortController();
   activeRounds.set(room.id, active);
@@ -295,7 +300,10 @@ async function runRound(
       calls.push(runParticipantCall(deps, room, cell.id, participant, prompt, active));
     }
     const results = await Promise.all(calls);
-    return results.reduce<{ tokens: number; costCents: number; interrupted: boolean }>(
+    // The room-round total = the sum over ALL participants' calls (room-runner);
+    // `interrupted` rides along per call and OR-folds here so the stop valve
+    // can tell an aborted round from a landed one.
+    const folded = results.reduce<{ tokens: number; costCents: number; interrupted: boolean }>(
       (acc, r) => ({
         tokens: acc.tokens + r.tokens,
         costCents: acc.costCents + r.costCents,
@@ -303,6 +311,7 @@ async function runRound(
       }),
       { tokens: 0, costCents: 0, interrupted: false },
     );
+    return { tokens: folded.tokens, costCents: folded.costCents };
   } finally {
     if (activeRounds.get(room.id) === active) activeRounds.delete(room.id);
   }
@@ -336,7 +345,7 @@ export function buildSummaryBody(input: {
     input.finisherAnswer,
     "",
     "---",
-    `Room cost: ${input.totalTokens} tokens, ${(input.totalCostCents / 100).toFixed(2)} ¢ ` +
+    `Room cost: ${input.totalTokens} tokens, ${input.totalCostCents.toFixed(2)} ¢ ` +
       `(${input.participantCount} participants, ${input.answerCount} answers + finisher).`,
   ].join("\n");
 }

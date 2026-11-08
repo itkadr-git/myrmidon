@@ -137,3 +137,6 @@ export { createChatReconciliationWorkGates } from "./chat-reconciliation/work-ga
 export type { ChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export { myrmidonCasteRoutes } from "./castes/wiring.js";
 export { myrmidonGuardrailsRoutes } from "./guardrails/index.js"; // myrmidon(1.6-GRD)
+export { goalJudgeRoutes, myrmidonGoalJudgeRoutes } from "./goal-judge/routes.js"; // myrmidon(1.7-GOAL-JUDGE)
+export { goalJudgeSettingsService } from "./goal-judge/settings.js"; // myrmidon(1.7-GOAL-JUDGE)
+export { createGoalJudgeModelPort, evaluateGoalJudge } from "./goal-judge/wiring.js"; // myrmidon(1.7-GOAL-JUDGE)

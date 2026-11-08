@@ -60,6 +60,15 @@ export function recordGitHubRequest(
     return record[name] ?? record[name.toLowerCase()] ?? null;
   };
 
+  // myrmidon(OPE-12397): a response of a small bucket (the anonymous 60/h, the search 30/min) is not
+  // the installation's 5000/h budget. Recording it marked every authenticated read rate limited:
+  // since the readers skip GitHub while the shared state says so, an exhausted anonymous bucket
+  // blinded the CI reads of the review with 3740 of 5000 left (09.11). Such responses are only counted.
+  const bucketLimit = parseInt(getHeader("x-ratelimit-limit") ?? "", 10);
+  if (Number.isFinite(bucketLimit) && bucketLimit < 1000) {
+    return;
+  }
+
   const remHeader = getHeader("x-ratelimit-remaining");
   let parsedRemaining: number | null = null;
   if (remHeader !== null) {

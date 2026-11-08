@@ -177,6 +177,7 @@ import {
   myrmidonOwnerDeliveryRoutes,
   reviewRoutingRoutes,
   reviewReworkRoutes,
+  goalJudgeRoutes,
   pluginEntitlementRoutes,
   licensingInstallIdRoutes,
   myrmidonLitellmBudgetSyncRoutes,
@@ -1297,6 +1298,7 @@ export async function createApp(
   api.use(myrmidonOwnerDeliveryRoutes(db)); // myrmidon(1.6.5-OWNER-DM-FILTER): GET/PATCH /api/myrmidon/owner-delivery
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
+  api.use(goalJudgeRoutes(db)); // myrmidon(1.7 GOAL-JUDGE): GET/PATCH /api/myrmidon/goal-judge
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
   api.use(licensingInstallIdRoutes(installIdProviderFor(db))); // myrmidon(LIC-ID-1): instance install ID
   api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
