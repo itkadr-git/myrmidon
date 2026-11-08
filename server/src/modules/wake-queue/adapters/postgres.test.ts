@@ -261,6 +261,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     }).where(eq(heartbeatRuns.id, runId));
     await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
     const followupId = await seedDeferredWake({ companyId, agentId, issueId });
+    // cancelRunInternal settles the originating wake before calling releaseIssueExecutionAndPromote.
+    // Model that boundary here rather than making the release adapter cancel an already stopped wake.
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, wakeId));
     const release = createReleaseIssueExecution({
       issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
       recovery: {
