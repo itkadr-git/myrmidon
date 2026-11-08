@@ -50,7 +50,7 @@ import {
   isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
-import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
+import { AGENT_CHAT_DIRECTIVE, conversationReplay, deliverConversationComments, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
 import { INPUT_LIMIT_CONFIG_KEY } from "@myrmidon/adapter-utils/input-limit";
 import {
@@ -31677,6 +31677,15 @@ export function heartbeatService(
 
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
+      // A conversation comment is already committed and remains in the
+      // undelivered-comment outbox until resume. Do not manufacture a failed
+      // run (or turn the accepted POST into a 409); no receipt is written, so
+      // delivery can retry this exact comment after the pause is lifted.
+      if (invokability.reason === "paused" && wakeCommentId && issueId &&
+          opts.idempotencyKey === `conversation-comment:${wakeCommentId}` &&
+          await getIssueExecutionContext(agent.companyId, issueId).then(isConversation)) {
+        return null;
+      }
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
         await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
@@ -35855,6 +35864,21 @@ export function heartbeatService(
         { db, startNextQueuedRunForAgent: (id) => runStartDispatcher.dispatchRunStart(id), enqueueWakeup },
         agentId,
       );
+      // A paused conversation's accepted comments have no wake receipt until
+      // delivery succeeds. Resume drains that durable outbox as well as the
+      // ordinary assigned-issue queue (which excludes in_review chats).
+      const conversations = await db.select({
+        id: issues.id,
+        companyId: issues.companyId,
+        conversationAgentId: issues.conversationAgentId,
+      }).from(issues).where(and(
+        eq(issues.assigneeAgentId, agentId),
+        isNotNull(issues.conversationAgentId),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ));
+      for (const conversation of conversations) {
+        await deliverConversationComments(db, conversation, enqueueWakeup);
+      }
       // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
       // — the board matcher gives it its own ready task, else a ready task of
       // its caste (design §3.5). Respect the same instance/card switch as idle
