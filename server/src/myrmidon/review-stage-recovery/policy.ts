@@ -281,5 +281,12 @@ export function pullRequestHeadCiStateFromChecks(input: {
   checkRuns: readonly unknown[] | null;
 }): "pending" | "complete" | "unknown" {
   if (!input.checkRuns) return "unknown";
-  return pullRequestHeadFinalCheckConclusion(input) === null ? "pending" : "complete";
+  const finished = input.checkRuns.some((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const run = entry as Record<string, unknown>;
+    if (run.name !== REVIEW_CI_FINAL_CHECK_NAME) return false;
+    if (run.status !== FINISHED_CHECK_RUN_STATUS) return false;
+    return !(typeof run.conclusion === "string" && NOT_A_VERDICT_CONCLUSIONS.has(run.conclusion));
+  });
+  return finished ? "complete" : "pending";
 }

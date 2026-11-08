@@ -207,8 +207,37 @@ describe("resolvePullRequestHeadCi", () => {
           [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "completed", conclusion }] },
         }),
       });
-      expect(result).toEqual({ state: "complete", headSha: "abc123" });
+      // myrmidon(OPE-12176): the verdict travels with the state so review
+      // admission can tell green from red without a second GitHub read.
+      expect(result).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: conclusion });
     }
+  });
+
+  it("preserves completed-final-check state without a conclusion but excludes superseded runs", async () => {
+    const missingConclusion = await resolvePullRequestHeadCi({
+      reference,
+      token: "token",
+      fetch: fakeFetch({
+        [PULL]: openPull,
+        [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "completed" }] },
+      }),
+    });
+    expect(missingConclusion).toEqual({ state: "complete", headSha: "abc123" });
+
+    const superseded = await resolvePullRequestHeadCi({
+      reference,
+      token: "token",
+      fetch: fakeFetch({
+        [PULL]: openPull,
+        [CHECK_RUNS]: {
+          check_runs: [
+            { name: "CI result", status: "completed", conclusion: "cancelled" },
+            { name: "CI result", status: "completed", conclusion: "skipped" },
+          ],
+        },
+      }),
+    });
+    expect(superseded).toEqual({ state: "pending", headSha: "abc123" });
   });
 
   it("reads the pull request and the final check only while the aggregate check answers", async () => {
