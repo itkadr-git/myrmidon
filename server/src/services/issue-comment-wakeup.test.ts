@@ -61,4 +61,31 @@ describe("shouldWakeAssigneeForIssueComment", () => {
       true,
     );
   });
+
+  // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the signal for the owner and the
+  // operator used to be a system notice in the agent's own task, and every
+  // copy woke that agent — 17 of them in two hours on the live board, queued
+  // as the agent's new messages while its prompt was already over budget. The
+  // copies still in threads must not wake anyone, whatever the issue status.
+  it("never wakes on a prompt-budget signal notice", () => {
+    const base = {
+      selfComment: false,
+      resumeRequested: false,
+      commentCreatedByRunId: null,
+      issueAtCommentStart: {},
+      reopened: false,
+      suppressesWake: true,
+    };
+    expect(
+      shouldWakeAssigneeForIssueComment({ ...base, currentStatus: "in_progress" }),
+    ).toBe(false);
+    // Even a reopen of the issue by the notice wakes nobody.
+    expect(
+      shouldWakeAssigneeForIssueComment({
+        ...base,
+        reopened: true,
+        currentStatus: "done",
+      }),
+    ).toBe(false);
+  });
 });

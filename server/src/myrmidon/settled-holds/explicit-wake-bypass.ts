@@ -3,7 +3,7 @@
 // wake-classification.ts, explicit-wake-gate.ts and
 // docs/myrmidon/DIVERGENCE.md "L2".
 import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, nativeRunFinalizations, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { heartbeatRuns, nativeRunFinalizations, issueRecoveryActions, type Db } from "@myrmidon/db";
 import { z } from "zod";
 
 type RecoveryAction = typeof issueRecoveryActions.$inferSelect;

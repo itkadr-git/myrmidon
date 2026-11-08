@@ -28,7 +28,7 @@ import {
   toolProfileBindings,
   companyMemberships,
   instanceUserRoles,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AgentPermissions,
   EmailEndpointSetupInput,
@@ -37,7 +37,7 @@ import type {
   EmailThreadSummary,
   EmailPublicationSummary,
   EmailEnvelope,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { resolveExecutionWorkspaceEnvironmentId } from "./execution-workspace-policy.js";
@@ -48,6 +48,9 @@ import { issueService } from "./issues.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
+// myrmidon(DB-PERF-C-P4): this service writes profiles, bindings and entries outside the
+// tool-access CRUD, so it drops the company snapshot the same way those CRUD paths do.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import type { heartbeatService } from "./heartbeat.js";
 import type { StorageService } from "../storage/types.js";
 import {
@@ -66,6 +69,7 @@ import {
   AGENTMAIL_EVENTS,
   type AgentmailMessage,
 } from "./agentmail-api.js";
+import { backgroundInterval } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export type EmailActor = {
   userId?: string;
@@ -329,7 +333,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       : await lease(endpoint, leaseKey, token);
     if (!acquired) return undefined;
     let lost = false;
-    const renew = setInterval(() => {
+    const renew = backgroundInterval(() => {
       void lease(endpoint, leaseKey, token)
         .then((ok) => {
           if (!ok) lost = true;
@@ -764,6 +768,8 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           { companyId, profileId, targetType: "company", targetId: companyId },
         ]);
       });
+      // myrmidon(DB-PERF-C-P4): the new profile, entries and bindings are visible to the next decision.
+      invalidateToolPolicyCache(db, companyId);
       endpoint = await getEndpoint(input.idempotencyKey);
     }
     if (endpoint.status === "archived")
@@ -1944,7 +1950,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       if (!state.connected) socket.close();
     }, 30_000);
     acknowledgmentDeadline.unref();
-    const renewSocket = setInterval(() => {
+    const renewSocket = backgroundInterval(() => {
       void (async () => {
         await active(endpoint);
         if (!(await lease(endpoint, "email-socket", token))) socket.close();
@@ -2661,7 +2667,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     },
     start: () => {
       if (!timer) {
-        timer = setInterval(() => {
+        timer = backgroundInterval(() => {
           void tick().catch(() => {});
         }, 1000);
         timer.unref();

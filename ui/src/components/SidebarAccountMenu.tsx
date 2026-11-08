@@ -1,3 +1,4 @@
+import { DOCS_URL, FEEDBACK_URL } from "@/lib/myrmidon-links";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -9,7 +10,7 @@ import {
   UserRound,
   UserRoundPen,
 } from "lucide-react";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
@@ -24,10 +25,12 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
+// myrmidon(UI-RU): fork language switcher in the account menu.
+import { LanguageToggle } from "./myrmidon/LanguageToggle";
+// myrmidon(OPE-9382): interface version switcher in the account menu.
+import { UiInterfaceToggle } from "./myrmidon/UiInterfaceToggle";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
-const DOCS_URL = "https://docs.paperclip.ing/";
-const FEEDBACK_URL = "https://paperclip.ing/feedback";
 const ABOUT_SETTINGS_PATH = "/company/settings";
 
 interface SidebarAccountMenuProps {
@@ -141,9 +144,9 @@ export function SidebarAccountMenu({
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
-  const displayName = session?.user.name?.trim() || "Board";
+  const displayName = session?.user.name?.trim() || t("account.board"); // myrmidon(UI-RU)
   const secondaryLabel =
-    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
+    session?.user.email?.trim() || (deploymentMode === "authenticated" ? t("account.signedIn") : t("account.localWorkspaceBoard"));
   const initials = deriveInitials(displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
 
@@ -167,7 +170,7 @@ export function SidebarAccountMenu({
                 "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                 rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
               )}
-              aria-label="Open account menu"
+              aria-label={t("account.openMenu")}
             >
               <Avatar size="sm">
                 {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
@@ -199,31 +202,35 @@ export function SidebarAccountMenu({
 
             <div className="flex flex-1 flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
               <MenuAction
-                label="Settings"
+                label={t("account.settings")}
                 icon={Settings}
                 href="/company/settings"
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="View profile"
+                label={t("account.viewProfile")}
                 icon={UserRound}
                 href={profileHref}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Edit profile"
+                label={t("account.editProfile")}
                 icon={UserRoundPen}
                 href={PROFILE_SETTINGS_PATH}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Documentation"
+                label={t("account.documentation")}
                 icon={BookOpen}
                 href={DOCS_URL}
                 external
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="compact-menu-action" onAfterToggle={() => setOpen(false)} />
+              {/* myrmidon(UI-RU): language selection lives beside the theme toggle. */}
+              <LanguageToggle onAfterChange={() => setOpen(false)} />
+              {/* myrmidon(OPE-9382): interface version toggle */}
+              <UiInterfaceToggle onAfterChange={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"
@@ -238,7 +245,7 @@ export function SidebarAccountMenu({
                     <LogOut className="size-4" />
                   </span>
                   <span className="min-w-0 flex-1 truncate">
-                    {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                    {signOutMutation.isPending ? t("account.signingOut") : t("account.signOut")}
                   </span>
                 </button>
               ) : null}
@@ -253,13 +260,13 @@ export function SidebarAccountMenu({
                 href={FEEDBACK_URL}
                 target="_blank"
                 rel="noreferrer"
-                aria-label="Share feedback"
+                aria-label={t("account.shareFeedback")}
                 className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Flag className="h-4 w-4" aria-hidden="true" />
               </a>
             </TooltipTrigger>
-            <TooltipContent side="top">Share feedback</TooltipContent>
+            <TooltipContent side="top">{t("area.shell-sidebar-layout-1.sidebar-account-menu.shareFeedback")}</TooltipContent>
           </Tooltip>
         ) : null}
       </div>

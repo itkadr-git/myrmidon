@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   approvals,
@@ -8,7 +8,7 @@ import {
   companies,
   costEvents,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   BudgetIncident,
   BudgetIncidentResolutionInput,
@@ -21,9 +21,10 @@ import type {
   BudgetScopeType,
   BudgetThresholdType,
   BudgetWindowKind,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import type { BudgetLimitAdmissionBlock } from "../myrmidon/budget-limits/admission.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -60,6 +61,36 @@ export type BudgetServiceHooks = {
     incidentId: string;
     approvalId: string | null;
   }) => Promise<void>;
+  // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode in force — signal
+  // only, soft (pause + owner card) or hard (refuse new runs). An absent hook
+  // keeps the vendor behaviour (always enforce), so a caller that constructs
+  // the service without myrmidon wiring gets the pre-feature semantics; the
+  // server wires the real reader in heartbeat.ts and the routes.
+  resolveEnforcementMode?: () => Promise<"signal_only" | "soft" | "hard">;
+  // myrmidon(1.7-BUDGET-CONFIG-B): the notice delivered when a limit crosses
+  // in signal-only mode — the incident is created, nothing stops, the owner
+  // still learns about it. Best-effort by contract (never throws upward).
+  signalBudgetLimitCrossed?: (input: {
+    companyId: string;
+    incidentId: string;
+    scopeType: "company" | "agent" | "project";
+    scopeId: string;
+    scopeName: string;
+    amountLimit: number;
+    amountObserved: number;
+  }) => Promise<void>;
+  // myrmidon(1.7-BUDGET-CONFIG): the hierarchy spend limits of A
+  // (`budget_limits` rows) on run admission — the queue-side leg of the
+  // "a limit change acts in the queue within a minute" acceptance. Resolved
+  // fresh on every admission (no restart), gated by the global signal-only
+  // flag and the limit row's own hard/soft mode; only a hard, active, over
+  // limit refuses. An absent hook keeps the vendor behaviour (never blocks),
+  // so a caller without myrmidon wiring is unchanged.
+  resolveBudgetLimitAdmissionBlock?: (input: {
+    companyId: string;
+    agentId: string;
+    context?: { issueId?: string | null; projectId?: string | null };
+  }) => Promise<BudgetLimitAdmissionBlock | null>;
 };
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -227,7 +258,286 @@ async function markApprovalStatus(
     .where(eq(approvals.id, approvalId));
 }
 
+async function batchResolveScopeRecords(
+  db: Db,
+  scopes: Array<{ scopeType: string; scopeId: string }>,
+): Promise<Map<string, ScopeRecord>> {
+  const map = new Map<string, ScopeRecord>();
+  const companyIds = new Set<string>();
+  const agentIds = new Set<string>();
+  const projectIds = new Set<string>();
+
+  for (const s of scopes) {
+    if (s.scopeType === "company") companyIds.add(s.scopeId);
+    else if (s.scopeType === "agent") agentIds.add(s.scopeId);
+    else if (s.scopeType === "project") projectIds.add(s.scopeId);
+  }
+
+  const queries: Promise<void>[] = [];
+
+  if (companyIds.size > 0) {
+    queries.push(
+      db
+        .select({
+          id: companies.id,
+          name: companies.name,
+          status: companies.status,
+          pauseReason: companies.pauseReason,
+          pausedAt: companies.pausedAt,
+        })
+        .from(companies)
+        .where(inArray(companies.id, Array.from(companyIds)))
+        .then((rows) => {
+          for (const row of rows) {
+            map.set(`company:${row.id}`, {
+              companyId: row.id,
+              name: row.name,
+              paused: row.status === "paused" || Boolean(row.pausedAt),
+              pauseReason: (row.pauseReason as ScopeRecord["pauseReason"]) ?? null,
+            });
+          }
+        }),
+    );
+  }
+
+  if (agentIds.size > 0) {
+    queries.push(
+      db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          name: agents.name,
+          status: agents.status,
+          pauseReason: agents.pauseReason,
+        })
+        .from(agents)
+        .where(inArray(agents.id, Array.from(agentIds)))
+        .then((rows) => {
+          for (const row of rows) {
+            map.set(`agent:${row.id}`, {
+              companyId: row.companyId,
+              name: row.name,
+              paused: row.status === "paused",
+              pauseReason: (row.pauseReason as ScopeRecord["pauseReason"]) ?? null,
+            });
+          }
+        }),
+    );
+  }
+
+  if (projectIds.size > 0) {
+    queries.push(
+      db
+        .select({
+          id: projects.id,
+          companyId: projects.companyId,
+          name: projects.name,
+          pauseReason: projects.pauseReason,
+          pausedAt: projects.pausedAt,
+        })
+        .from(projects)
+        .where(inArray(projects.id, Array.from(projectIds)))
+        .then((rows) => {
+          for (const row of rows) {
+            map.set(`project:${row.id}`, {
+              companyId: row.companyId,
+              name: row.name,
+              paused: Boolean(row.pausedAt),
+              pauseReason: (row.pauseReason as ScopeRecord["pauseReason"]) ?? null,
+            });
+          }
+        }),
+    );
+  }
+
+  await Promise.all(queries);
+  return map;
+}
+
+async function batchComputeObservedAmounts(
+  db: Db,
+  companyId: string,
+  policies: Array<Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">>,
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+
+  const billedPolicies = policies.filter((p) => p.metric === "billed_cents");
+  if (billedPolicies.length === 0) return map;
+
+  const monthPolicies = billedPolicies.filter((p) => p.windowKind === "calendar_month_utc");
+  const lifetimePolicies = billedPolicies.filter((p) => p.windowKind === "lifetime");
+
+  const queries: Promise<void>[] = [];
+
+  if (monthPolicies.length > 0) {
+    const { start, end } = currentUtcMonthWindow();
+    const agentIds = Array.from(
+      new Set(monthPolicies.filter((p) => p.scopeType === "agent").map((p) => p.scopeId)),
+    );
+    const projectIds = Array.from(
+      new Set(monthPolicies.filter((p) => p.scopeType === "project").map((p) => p.scopeId)),
+    );
+    const hasCompany = monthPolicies.some((p) => p.scopeType === "company");
+
+    if (agentIds.length > 0) {
+      queries.push(
+        db
+          .select({
+            agentId: costEvents.agentId,
+            total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          })
+          .from(costEvents)
+          .where(
+            and(
+              eq(costEvents.companyId, companyId),
+              inArray(costEvents.agentId, agentIds),
+              gte(costEvents.occurredAt, start),
+              lt(costEvents.occurredAt, end),
+            ),
+          )
+          .groupBy(costEvents.agentId)
+          .then((rows) => {
+            for (const r of rows) {
+              if (r.agentId) {
+                map.set(`agent:${r.agentId}:calendar_month_utc:billed_cents`, Number(r.total ?? 0));
+              }
+            }
+          }),
+      );
+    }
+
+    if (projectIds.length > 0) {
+      queries.push(
+        db
+          .select({
+            projectId: costEvents.projectId,
+            total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          })
+          .from(costEvents)
+          .where(
+            and(
+              eq(costEvents.companyId, companyId),
+              inArray(costEvents.projectId, projectIds),
+              gte(costEvents.occurredAt, start),
+              lt(costEvents.occurredAt, end),
+            ),
+          )
+          .groupBy(costEvents.projectId)
+          .then((rows) => {
+            for (const r of rows) {
+              if (r.projectId) {
+                map.set(`project:${r.projectId}:calendar_month_utc:billed_cents`, Number(r.total ?? 0));
+              }
+            }
+          }),
+      );
+    }
+
+    if (hasCompany) {
+      queries.push(
+        db
+          .select({
+            total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          })
+          .from(costEvents)
+          .where(
+            and(
+              eq(costEvents.companyId, companyId),
+              gte(costEvents.occurredAt, start),
+              lt(costEvents.occurredAt, end),
+            ),
+          )
+          .then((rows) => {
+            const total = Number(rows[0]?.total ?? 0);
+            map.set(`company:${companyId}:calendar_month_utc:billed_cents`, total);
+          }),
+      );
+    }
+  }
+
+  if (lifetimePolicies.length > 0) {
+    const agentIds = Array.from(
+      new Set(lifetimePolicies.filter((p) => p.scopeType === "agent").map((p) => p.scopeId)),
+    );
+    const projectIds = Array.from(
+      new Set(lifetimePolicies.filter((p) => p.scopeType === "project").map((p) => p.scopeId)),
+    );
+    const hasCompany = lifetimePolicies.some((p) => p.scopeType === "company");
+
+    if (agentIds.length > 0) {
+      queries.push(
+        db
+          .select({
+            agentId: costEvents.agentId,
+            total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          })
+          .from(costEvents)
+          .where(and(eq(costEvents.companyId, companyId), inArray(costEvents.agentId, agentIds)))
+          .groupBy(costEvents.agentId)
+          .then((rows) => {
+            for (const r of rows) {
+              if (r.agentId) {
+                map.set(`agent:${r.agentId}:lifetime:billed_cents`, Number(r.total ?? 0));
+              }
+            }
+          }),
+      );
+    }
+
+    if (projectIds.length > 0) {
+      queries.push(
+        db
+          .select({
+            projectId: costEvents.projectId,
+            total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          })
+          .from(costEvents)
+          .where(and(eq(costEvents.companyId, companyId), inArray(costEvents.projectId, projectIds)))
+          .groupBy(costEvents.projectId)
+          .then((rows) => {
+            for (const r of rows) {
+              if (r.projectId) {
+                map.set(`project:${r.projectId}:lifetime:billed_cents`, Number(r.total ?? 0));
+              }
+            }
+          }),
+      );
+    }
+
+    if (hasCompany) {
+      queries.push(
+        db
+          .select({
+            total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          })
+          .from(costEvents)
+          .where(eq(costEvents.companyId, companyId))
+          .then((rows) => {
+            const total = Number(rows[0]?.total ?? 0);
+            map.set(`company:${companyId}:lifetime:billed_cents`, total);
+          }),
+      );
+    }
+  }
+
+  await Promise.all(queries);
+  return map;
+}
+
 export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
+  // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode of this evaluation.
+  // No hook = the vendor semantics (always enforce). A failed mode read also
+  // keeps enforcement on: stopping work on a settings hiccup would be the
+  // louder failure, and the default shipped mode is the open one anyway.
+  async function enforcementMode(): Promise<"signal_only" | "soft" | "hard"> {
+    if (!hooks.resolveEnforcementMode) return "hard";
+    try {
+      return await hooks.resolveEnforcementMode();
+    } catch {
+      return "hard";
+    }
+  }
+
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
@@ -331,9 +641,17 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       .orderBy(desc(budgetPolicies.updatedAt));
   }
 
-  async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
-    const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
-    const observedAmount = await computeObservedAmount(db, policy);
+  async function buildPolicySummary(
+    policy: PolicyRow,
+    precomputed?: { scope?: ScopeRecord; observedAmount?: number },
+  ): Promise<BudgetPolicySummary> {
+    const scope =
+      precomputed?.scope ??
+      (await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId));
+    const observedAmount =
+      precomputed?.observedAmount !== undefined
+        ? precomputed.observedAmount
+        : await computeObservedAmount(db, policy);
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const amount = policy.isActive ? policy.amount : 0;
     const utilizationPercent =
@@ -473,7 +791,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     }
   }
 
-  async function hydrateIncidentRows(rows: IncidentRow[]): Promise<BudgetIncident[]> {
+  async function hydrateIncidentRows(
+    rows: IncidentRow[],
+    scopeMap?: Map<string, ScopeRecord>,
+  ): Promise<BudgetIncident[]> {
     const approvalIds = rows.map((row) => row.approvalId).filter((value): value is string => Boolean(value));
     const approvalRows = approvalIds.length > 0
       ? await db
@@ -483,32 +804,39 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       : [];
     const approvalStatusById = new Map(approvalRows.map((row) => [row.id, row.status]));
 
-    return Promise.all(
-      rows.map(async (row) => {
-        const scope = await resolveScopeRecord(db, row.scopeType as BudgetScopeType, row.scopeId);
-        return {
-          id: row.id,
-          companyId: row.companyId,
-          policyId: row.policyId,
-          scopeType: row.scopeType as BudgetScopeType,
-          scopeId: row.scopeId,
-          scopeName: normalizeScopeName(row.scopeType as BudgetScopeType, scope.name),
-          metric: row.metric as BudgetMetric,
-          windowKind: row.windowKind as BudgetWindowKind,
-          windowStart: row.windowStart,
-          windowEnd: row.windowEnd,
-          thresholdType: row.thresholdType as BudgetThresholdType,
-          amountLimit: row.amountLimit,
-          amountObserved: row.amountObserved,
-          status: row.status as BudgetIncident["status"],
-          approvalId: row.approvalId ?? null,
-          approvalStatus: row.approvalId ? approvalStatusById.get(row.approvalId) ?? null : null,
-          resolvedAt: row.resolvedAt ?? null,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-        };
-      }),
-    );
+    let effectiveScopeMap = scopeMap;
+    if (!effectiveScopeMap) {
+      effectiveScopeMap = await batchResolveScopeRecords(
+        db,
+        rows.map((r) => ({ scopeType: r.scopeType, scopeId: r.scopeId })),
+      );
+    }
+
+    return rows.map((row) => {
+      const scope = effectiveScopeMap?.get(`${row.scopeType}:${row.scopeId}`);
+      const scopeName = scope ? normalizeScopeName(row.scopeType as BudgetScopeType, scope.name) : row.scopeType;
+      return {
+        id: row.id,
+        companyId: row.companyId,
+        policyId: row.policyId,
+        scopeType: row.scopeType as BudgetScopeType,
+        scopeId: row.scopeId,
+        scopeName,
+        metric: row.metric as BudgetMetric,
+        windowKind: row.windowKind as BudgetWindowKind,
+        windowStart: row.windowStart,
+        windowEnd: row.windowEnd,
+        thresholdType: row.thresholdType as BudgetThresholdType,
+        amountLimit: row.amountLimit,
+        amountObserved: row.amountObserved,
+        status: row.status as BudgetIncident["status"],
+        approvalId: row.approvalId ?? null,
+        approvalStatus: row.approvalId ? approvalStatusById.get(row.approvalId) ?? null : null,
+        resolvedAt: row.resolvedAt ?? null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      };
+    });
   }
 
   return {
@@ -618,24 +946,43 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           if (row.hardStopEnabled && observedAmount >= row.amount) {
             await resolveOpenSoftIncidents(row.id);
             const hardIncident = await createIncidentIfNeeded(row, "hard", observedAmount);
-            await pauseAndCancelScopeForBudget(row);
+            // myrmidon(1.7-BUDGET-CONFIG-B): same mode gate as the cost-event
+            // path — a crossed limit reached from the settings screen stops
+            // work only when the mode says so.
+            const mode = await enforcementMode();
+            if (mode !== "signal_only") {
+              await pauseAndCancelScopeForBudget(row);
+            }
             // myrmidon(M3): same one-shot owner signal as the cost-event path;
             // the scope name is best-effort (falls back to the scope id).
             if (hardIncident?.created) {
               const scope = await resolveScopeRecord(db, row.scopeType as BudgetScopeType, row.scopeId).catch(() => null);
-              await hooks.signalBudgetHardStop?.({
-                companyId: row.companyId,
-                policyId: row.id,
-                scopeType: row.scopeType as "company" | "agent" | "project",
-                scopeId: row.scopeId,
-                scopeName: normalizeScopeName(row.scopeType as BudgetScopeType, scope?.name ?? row.scopeId),
-                amountLimit: row.amount,
-                amountObserved: observedAmount,
-                windowStart: resolveWindow(row.windowKind as BudgetWindowKind).start,
-                windowEnd: resolveWindow(row.windowKind as BudgetWindowKind).end,
-                incidentId: hardIncident.incident.id,
-                approvalId: hardIncident.incident.approvalId ?? null,
-              });
+              if (mode === "signal_only") {
+                // myrmidon(1.7-BUDGET-CONFIG-B): the notice, not the stop.
+                await hooks.signalBudgetLimitCrossed?.({
+                  companyId: row.companyId,
+                  incidentId: hardIncident.incident.id,
+                  scopeType: row.scopeType as "company" | "agent" | "project",
+                  scopeId: row.scopeId,
+                  scopeName: normalizeScopeName(row.scopeType as BudgetScopeType, scope?.name ?? row.scopeId),
+                  amountLimit: row.amount,
+                  amountObserved: observedAmount,
+                });
+              } else {
+                await hooks.signalBudgetHardStop?.({
+                  companyId: row.companyId,
+                  policyId: row.id,
+                  scopeType: row.scopeType as "company" | "agent" | "project",
+                  scopeId: row.scopeId,
+                  scopeName: normalizeScopeName(row.scopeType as BudgetScopeType, scope?.name ?? row.scopeId),
+                  amountLimit: row.amount,
+                  amountObserved: observedAmount,
+                  windowStart: resolveWindow(row.windowKind as BudgetWindowKind).start,
+                  windowEnd: resolveWindow(row.windowKind as BudgetWindowKind).end,
+                  incidentId: hardIncident.incident.id,
+                  approvalId: hardIncident.incident.approvalId ?? null,
+                });
+              }
             }
           }
         }
@@ -663,14 +1010,42 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     },
 
     overview: async (companyId: string): Promise<BudgetOverview> => {
-      const rows = await listPolicyRows(companyId);
-      const policies = await Promise.all(rows.map((row) => buildPolicySummary(row)));
-      const activeIncidentRows = await db
-        .select()
-        .from(budgetIncidents)
-        .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
-        .orderBy(desc(budgetIncidents.createdAt));
-      const activeIncidents = await hydrateIncidentRows(activeIncidentRows);
+      const [rows, activeIncidentRows] = await Promise.all([
+        listPolicyRows(companyId),
+        db
+          .select()
+          .from(budgetIncidents)
+          .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
+          .orderBy(desc(budgetIncidents.createdAt)),
+      ]);
+
+      const allScopes = [
+        ...rows.map((p) => ({ scopeType: p.scopeType, scopeId: p.scopeId })),
+        ...activeIncidentRows.map((i) => ({ scopeType: i.scopeType, scopeId: i.scopeId })),
+      ];
+
+      const [scopeMap, observedMap] = await Promise.all([
+        batchResolveScopeRecords(db, allScopes),
+        batchComputeObservedAmounts(db, companyId, rows),
+      ]);
+
+      const policies: BudgetPolicySummary[] = [];
+      for (const row of rows) {
+        const scope = scopeMap.get(`${row.scopeType}:${row.scopeId}`) ?? {
+          companyId: row.companyId,
+          name: row.scopeType,
+          paused: false,
+          pauseReason: null,
+        };
+        const observedAmount =
+          observedMap.get(`${row.scopeType}:${row.scopeId}:${row.windowKind}:${row.metric}`) ?? 0;
+        policies.push(
+          await buildPolicySummary(row, { scope, observedAmount }),
+        );
+      }
+
+      const activeIncidents = await hydrateIncidentRows(activeIncidentRows, scopeMap);
+
       return {
         companyId,
         policies,
@@ -726,9 +1101,16 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         }
 
         if (policy.hardStopEnabled && observedAmount >= policy.amount) {
+          // myrmidon(1.7-BUDGET-CONFIG-B): the mode decides what a crossed
+          // limit does. signal_only — the incident is created and the owner
+          // is notified, but the scope is NOT paused and no run is cancelled;
+          // work continues (the acceptance test pins the run starting).
+          const mode = await enforcementMode();
           await resolveOpenSoftIncidents(policy.id);
           const hardIncident = await createIncidentIfNeeded(policy, "hard", observedAmount);
-          await pauseAndCancelScopeForBudget(policy);
+          if (mode !== "signal_only") {
+            await pauseAndCancelScopeForBudget(policy);
+          }
           if (hardIncident?.created) {
             // myrmidon(M3): one owner signal per hard-stop event — the hook
             // dedupes on its own (incident × issue); a failed delivery is
@@ -736,19 +1118,36 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             // scope name is best-effort: a scope row that vanished mid-stop
             // falls back to the scope id, never failing the enforcement.
             const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId).catch(() => null);
-            await hooks.signalBudgetHardStop?.({
-              companyId: policy.companyId,
-              policyId: policy.id,
-              scopeType: policy.scopeType as "company" | "agent" | "project",
-              scopeId: policy.scopeId,
-              scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope?.name ?? policy.scopeId),
-              amountLimit: policy.amount,
-              amountObserved: observedAmount,
-              windowStart: resolveWindow(policy.windowKind as BudgetWindowKind).start,
-              windowEnd: resolveWindow(policy.windowKind as BudgetWindowKind).end,
-              incidentId: hardIncident.incident.id,
-              approvalId: hardIncident.incident.approvalId ?? null,
-            });
+            if (mode === "signal_only") {
+              // myrmidon(1.7-BUDGET-CONFIG-B): the notice, not the stop. The
+              // incident and the decision-inbox card still appear (the
+              // overview reads open incidents); the thread gets the
+              // "crossed, nothing stopped" wording instead of the M3 stop
+              // report. Best-effort inside the hook by contract.
+              await hooks.signalBudgetLimitCrossed?.({
+                companyId: policy.companyId,
+                incidentId: hardIncident.incident.id,
+                scopeType: policy.scopeType as "company" | "agent" | "project",
+                scopeId: policy.scopeId,
+                scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope?.name ?? policy.scopeId),
+                amountLimit: policy.amount,
+                amountObserved: observedAmount,
+              });
+            } else {
+              await hooks.signalBudgetHardStop?.({
+                companyId: policy.companyId,
+                policyId: policy.id,
+                scopeType: policy.scopeType as "company" | "agent" | "project",
+                scopeId: policy.scopeId,
+                scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope?.name ?? policy.scopeId),
+                amountLimit: policy.amount,
+                amountObserved: observedAmount,
+                windowStart: resolveWindow(policy.windowKind as BudgetWindowKind).start,
+                windowEnd: resolveWindow(policy.windowKind as BudgetWindowKind).end,
+                incidentId: hardIncident.incident.id,
+                approvalId: hardIncident.incident.approvalId ?? null,
+              });
+            }
           }
           if (hardIncident?.created) {
             await logActivity(db, {
@@ -776,6 +1175,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       agentId: string,
       context?: { issueId?: string | null; projectId?: string | null },
     ) => {
+      // myrmidon(1.7-BUDGET-CONFIG-B): the policy-amount arms below ("the
+      // scope is over its limit but not paused") refuse a run only in hard
+      // mode. The paused-scope arms stay unconditional: in soft mode the
+      // pause itself is the stop, and in signal-only mode the scope is never
+      // budget-paused, so those arms cannot fire for a budget reason anyway.
+      // No mode hook (vendor semantics) keeps the pre-feature behaviour:
+      // every arm blocks.
+      const mode = await enforcementMode();
       const agent = await db
         .select({
           status: agents.status,
@@ -787,6 +1194,23 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .where(eq(agents.id, agentId))
         .then((rows) => rows[0] ?? null);
       if (!agent || agent.companyId !== companyId) throw notFound("Agent not found");
+
+      // myrmidon(1.7-BUDGET-CONFIG): the hierarchy limits of A refuse first —
+      // the deepest level wins (issue → foraging → caste → project nest →
+      // company nest), resolved fresh from `budget_limits` on every admission.
+      // The hook is optional wiring: absent means no hierarchy limits apply
+      // (vendor behaviour, e.g. in unwired unit tests of this service).
+      const limitBlock = hooks.resolveBudgetLimitAdmissionBlock
+        ? await hooks.resolveBudgetLimitAdmissionBlock({ companyId, agentId, context })
+        : null;
+      if (limitBlock) {
+        return {
+          scopeType: limitBlock.scopeType,
+          scopeId: limitBlock.scopeId,
+          scopeName: limitBlock.scopeRef ?? limitBlock.scopeId,
+          reason: limitBlock.reason,
+        };
+      }
 
       const company = await db
         .select({
@@ -825,7 +1249,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null);
       if (companyPolicy && companyPolicy.hardStopEnabled && companyPolicy.amount > 0) {
         const observed = await computeObservedAmount(db, companyPolicy);
-        if (observed >= companyPolicy.amount) {
+        if (mode === "hard" && observed >= companyPolicy.amount) {
           return {
             scopeType: "company" as const,
             scopeId: companyId,
@@ -859,7 +1283,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null);
       if (agentPolicy && agentPolicy.hardStopEnabled && agentPolicy.amount > 0) {
         const observed = await computeObservedAmount(db, agentPolicy);
-        if (observed >= agentPolicy.amount) {
+        if (mode === "hard" && observed >= agentPolicy.amount) {
           return {
             scopeType: "agent" as const,
             scopeId: agentId,
@@ -900,7 +1324,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null);
       if (projectPolicy && projectPolicy.hardStopEnabled && projectPolicy.amount > 0) {
         const observed = await computeObservedAmount(db, projectPolicy);
-        if (observed >= projectPolicy.amount) {
+        if (mode === "hard" && observed >= projectPolicy.amount) {
           return {
             scopeType: "project" as const,
             scopeId: project.id,

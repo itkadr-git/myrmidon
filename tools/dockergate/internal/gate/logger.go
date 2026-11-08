@@ -57,6 +57,12 @@ type Line struct {
 	Images  int         `json:"images,omitempty"`
 	Pinned  *bool       `json:"pinned,omitempty"`
 	API     string      `json:"apiVersion,omitempty"`
+
+	// ConfigHash is the hash of the configuration file the process loaded
+	// (the value check-config prints). The self-check line carries it at start
+	// and config_reloaded after every successful SIGHUP, so the deploy can
+	// prove which file a running dockergate holds.
+	ConfigHash string `json:"configHash,omitempty"`
 }
 
 // PeerInfo is the caller of a connection.

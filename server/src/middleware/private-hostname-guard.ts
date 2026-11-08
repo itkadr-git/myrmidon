@@ -1,4 +1,6 @@
 import type { Request, RequestHandler } from "express";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase();
@@ -49,9 +51,12 @@ export function resolvePrivateHostnameAllowSet(opts: { allowedHostnames: string[
 // CLI receives argv. A direct-exec form such as `npx` does not stop the
 // outer shell. Emit a static `<host>` placeholder and do not echo the raw request
 // value. The operator supplies the real hostname.
+// myrmidon(DB2): OPE-5805-b owns this hint text. The CLI binary is renamed to
+// `myrmidon` (with a `paperclipai` bin synonym) in OPE-5807 part d, so the
+// hint already ships the new name.
 const BLOCKED_HOSTNAME_MESSAGE =
-  "This hostname is not allowed for this Paperclip instance. " +
-  "If you want to allow a hostname, run npx paperclipai allowed-hostname <host>.";
+  `This hostname is not allowed for this ${PN} instance. ` +
+  "If you want to allow a hostname, run npx myrmidon allowed-hostname <host>.";
 
 export function privateHostnameGuard(opts: {
   enabled: boolean;
@@ -72,7 +77,7 @@ export function privateHostnameGuard(opts: {
     const wantsJson = req.path.startsWith("/api") || req.accepts(["json", "html", "text"]) === "json";
 
     if (!hostname) {
-      const error = "Missing Host header. If you want to allow a hostname, run npx paperclipai allowed-hostname <host>.";
+      const error = "Missing Host header. If you want to allow a hostname, run npx myrmidon allowed-hostname <host>.";
       if (wantsJson) {
         res.status(403).json({ error });
       } else {

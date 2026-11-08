@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 /**
  * Client-side bookkeeping for async company import jobs.
  *
@@ -12,7 +13,7 @@
 
 export const IMPORT_JOB_POLL_INTERVAL_MS = 3000;
 
-const STORAGE_PREFIX = "paperclip:company-import-job";
+const STORAGE_PREFIX = "myrmidon:company-import-job";
 
 export interface StoredImportJob {
   jobId: string;

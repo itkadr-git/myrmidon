@@ -2,12 +2,14 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import postgres from "postgres";
 import { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } from "./client.js";
 import {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
 // test that starts an embedded Postgres cluster and runs migrations. Measured
@@ -51,8 +53,8 @@ const DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT = 54329;
 function getReservedTestPorts(): Set<number> {
   const configuredPorts = [
     DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT,
-    Number.parseInt(process.env.PAPERCLIP_EMBEDDED_POSTGRES_PORT ?? "", 10),
-    ...String(process.env.PAPERCLIP_TEST_POSTGRES_RESERVED_PORTS ?? "")
+    Number.parseInt(readProductEnv("EMBEDDED_POSTGRES_PORT") ?? "", 10),
+    ...String(readProductEnv("TEST_POSTGRES_RESERVED_PORTS") ?? "")
       .split(",")
       .map((value) => Number.parseInt(value.trim(), 10)),
   ];
@@ -129,6 +131,16 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+    // Embedded Postgres refuses to initdb/start as OS uid 0 ("Postgres does not
+    // support running as root"), which silently turned the support probe — and
+    // every embedded suite behind it — into a skip inside root-only build
+    // containers (devbuild runs its image as root; CI runners are non-root, so
+    // this branch is inert there). `createPostgresUser` makes embedded-postgres
+    // create a dedicated OS user and drop privileges, which is exactly what
+    // uid-0 bootstrapping needs. Non-root: no flag, behavior unchanged.
+    ...(typeof process.getuid === "function" && process.getuid() === 0
+      ? { createPostgresUser: true }
+      : {}),
     onLog: (message) => logBuffer.append(message),
     onError: (message) => logBuffer.append(message),
   });
@@ -306,4 +318,91 @@ export async function startEmbeddedPostgresTestDatabase(
       }`,
     );
   }
+}
+
+// A cluster that holds one fully migrated template database. A suite that needs
+// a fresh migrated database in many tests starts the cluster and runs the
+// migrations once, then clones the template per test. A clone is a file-level
+// copy that takes tens of milliseconds, while a new cluster costs an initdb, a
+// start and a replay of every migration (seconds on a CI runner, and the part
+// of such suites that times out on a slow one).
+export type EmbeddedPostgresTestCluster = {
+  // A new database cloned from the migrated template. Its state is the state
+  // `startEmbeddedPostgresTestDatabase` returns: every migration applied, no
+  // rows added. `cleanup` drops the clone and closes the clients registered
+  // against the cluster; it does not stop the cluster.
+  createDatabase(): Promise<EmbeddedPostgresTestDatabase>;
+  // Stops the cluster and removes its data directory.
+  cleanup(): Promise<void>;
+};
+
+const EMBEDDED_POSTGRES_TEMPLATE_DATABASE = "paperclip_template";
+
+export async function startEmbeddedPostgresTestCluster(
+  tempDirPrefix: string,
+): Promise<EmbeddedPostgresTestCluster> {
+  const { port, dataDir, instance } = await startEmbeddedPostgresWithRetry(tempDirPrefix);
+  const baseUrl = `postgres://paperclip:paperclip@127.0.0.1:${port}`;
+  const adminConnectionString = `${baseUrl}/postgres`;
+  const templateConnectionString = `${baseUrl}/${EMBEDDED_POSTGRES_TEMPLATE_DATABASE}`;
+
+  const withAdminSql = async <T>(run: (sql: ReturnType<typeof postgres>) => Promise<T>): Promise<T> => {
+    const sql = postgres(adminConnectionString, { max: 1, onnotice: () => {} });
+    try {
+      return await run(sql);
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  };
+
+  try {
+    await ensurePostgresDatabase(adminConnectionString, EMBEDDED_POSTGRES_TEMPLATE_DATABASE);
+    await applyPendingMigrations(templateConnectionString);
+    // CREATE DATABASE ... TEMPLATE needs the template to have no other session.
+    await closeRegisteredClients(templateConnectionString);
+  } catch (error) {
+    await stopEmbeddedPostgresBounded(instance, () => cleanupEmbeddedPostgresTestDirs(dataDir));
+    throw new Error(
+      `Failed to start embedded PostgreSQL test cluster: ${
+        formatEmbeddedPostgresError(error, {
+          fallbackMessage: "embedded Postgres startup failed",
+        }).message
+      }`,
+    );
+  }
+
+  let cloneCount = 0;
+  return {
+    async createDatabase() {
+      cloneCount += 1;
+      const databaseName = `paperclip_test_${cloneCount}`;
+      await withAdminSql(async (sql) => {
+        await sql`
+          select pg_terminate_backend(pid)
+          from pg_stat_activity
+          where datname = ${EMBEDDED_POSTGRES_TEMPLATE_DATABASE}
+            and pid <> pg_backend_pid()
+        `;
+        await sql.unsafe(
+          `create database "${databaseName}" template "${EMBEDDED_POSTGRES_TEMPLATE_DATABASE}"`,
+        );
+      });
+      const connectionString = `${baseUrl}/${databaseName}`;
+      return {
+        connectionString,
+        cleanup: async () => {
+          // End every client a caller created first, for the reason given in
+          // `startEmbeddedPostgresTestDatabase`.
+          await closeRegisteredClients(connectionString);
+          await withAdminSql((sql) =>
+            sql.unsafe(`drop database if exists "${databaseName}" with (force)`),
+          ).catch(() => undefined);
+        },
+      };
+    },
+    cleanup: async () => {
+      await closeRegisteredClients(templateConnectionString);
+      await stopEmbeddedPostgresBounded(instance, () => cleanupEmbeddedPostgresTestDirs(dataDir));
+    },
+  };
 }

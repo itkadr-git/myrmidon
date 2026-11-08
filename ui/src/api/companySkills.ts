@@ -9,6 +9,7 @@ import type {
   CompanySkillCommentUpdateRequest,
   CompanySkillCreateRequest,
   CompanySkillDetail,
+  CompanySkillDiscoverResult,
   CompanySkillFileDetail,
   CompanySkillFileDeleteRequest,
   CompanySkillFileDeleteResult,
@@ -39,7 +40,11 @@ import type {
   CompanySkillUpdateStatus,
   CompanySkillVersion,
   CompanySkillVersionCreateRequest,
-} from "@paperclipai/shared";
+  EffectiveSkillPolicy,
+  EvaluateSkillPolicy,
+  ReplaceSkillPolicy,
+  SkillPolicyDecision,
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 export interface CatalogListQuery {
@@ -212,10 +217,15 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
       payload,
     ),
-  importFromSource: (companyId: string, source: string) =>
+  discover: (companyId: string, source: string) =>
+    api.post<CompanySkillDiscoverResult>(
+      `/companies/${encodeURIComponent(companyId)}/skills/discover`,
+      { source },
+    ),
+  importFromSource: (companyId: string, source: string, skillName?: string | null) =>
     api.post<CompanySkillImportResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/import`,
-      { source },
+      { source, ...(skillName ? { skillName } : {}) },
     ),
   browseProject: (companyId: string, payload: CompanySkillProjectBrowseRequest) =>
     api.post<CompanySkillProjectBrowseResult>(
@@ -253,6 +263,30 @@ export const companySkillsApi = {
   installCatalog: (companyId: string, payload: CompanySkillInstallCatalogRequest) =>
     api.post<CompanySkillInstallCatalogResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/install-catalog`,
+      payload,
+    ),
+  getPolicy: (companyId: string) =>
+    api.get<EffectiveSkillPolicy>(`/companies/${encodeURIComponent(companyId)}/skill-policy`),
+  replacePolicy: (companyId: string, payload: ReplaceSkillPolicy) =>
+    api.put<EffectiveSkillPolicy>(`/companies/${encodeURIComponent(companyId)}/skill-policy`, payload),
+  previewPolicy: (companyId: string, payload: EvaluateSkillPolicy) =>
+    api.post<SkillPolicyDecision>(`/companies/${encodeURIComponent(companyId)}/skill-policy/evaluate`, payload),
+  resetPolicy: (companyId: string, expectedRevision?: number) =>
+    api.delete<Record<string, unknown>>(
+      `/companies/${encodeURIComponent(companyId)}/skill-policy${
+        expectedRevision !== undefined ? `?expectedRevision=${expectedRevision}` : ""
+      }`,
+    ),
+  evaluatePolicy: (
+    companyId: string,
+    payload: {
+      action: "read" | "use" | "modify" | "install";
+      subject: { type: "agent"; agentId: string };
+      resource: { type: "catalog"; catalogRef?: string } | { type: "skill"; skillId?: string };
+    },
+  ) =>
+    api.post<Record<string, unknown>>(
+      `/companies/${encodeURIComponent(companyId)}/skill-policy/evaluate`,
       payload,
     ),
 };

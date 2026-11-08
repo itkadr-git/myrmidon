@@ -46,5 +46,13 @@ export const heartbeatRunEvents = pgTable(
       .where(sql`${table.sourceInstanceId} is not null and ${table.sourceSeq} is not null`),
     companyRunIdx: index("heartbeat_run_events_company_run_idx").on(table.companyId, table.runId),
     companyCreatedIdx: index("heartbeat_run_events_company_created_idx").on(table.companyId, table.createdAt),
+    // myrmidon(1.6.5-F-15): the attention screen's exhausted-runs query
+    // (server/src/services/attention-exhausted-runs.ts) filters
+    // company_id + event_type = 'lifecycle' + a message LIKE predicate before
+    // the join; the two indexes above do not carry event_type, so the scan went
+    // sequential. This partial index shrinks it to the lifecycle slice.
+    companyLifecycleRunIdx: index("heartbeat_run_events_company_lifecycle_run_idx")
+      .on(table.companyId, table.eventType, table.runId)
+      .where(sql`${table.eventType} = 'lifecycle'`),
   }),
 );

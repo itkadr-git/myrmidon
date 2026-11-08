@@ -124,7 +124,11 @@ Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 
 ### Full stack (with PostgreSQL)
 
-Paperclip server + PostgreSQL 17. The database is health-checked before the server starts.
+Paperclip server + PostgreSQL 18 with pgvector (the SHARED-PG image). The
+database is health-checked before the server starts. The per-service databases
+and roles (board, litellm, langfuse, hindsight) are provisioned by the
+installer's `db-init` script; a bare `docker compose up` here brings the board
+database only.
 
 ```sh
 BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
@@ -237,7 +241,7 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
 |------|---------|
 | `docker/quadlet/paperclip.pod` | Pod definition — groups containers into a shared network namespace |
 | `docker/quadlet/paperclip.container` | Paperclip server — joins the pod, connects to Postgres at `127.0.0.1` |
-| `docker/quadlet/paperclip-db.container` | PostgreSQL 17 — joins the pod, health-checked |
+| `docker/quadlet/paperclip-db.container` | PostgreSQL 18 + pgvector (SHARED-PG image) — joins the pod, health-checked |
 
 ### Setup
 
@@ -338,6 +342,13 @@ Notes:
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
+
+## Diagnostic Environment Hygiene (OPE-1177 / OPE-3100)
+
+When inspecting container or runtime environment variables during diagnostics, never output raw credentials, tokens, passwords, or connection strings to transcripts or logs:
+- **Container wrapper:** `/usr/local/bin/env` is installed by `Dockerfile` and has precedence in `PATH`. When called without command arguments (e.g., `docker exec <container> env`), sensitive variables (`*_PASSWORD`, `*_SECRET`, `*_TOKEN`, `*_KEY`) and passwords within `DATABASE_URL` are masked as `***`.
+- **Command delegation:** When arguments are supplied (`env <command> ...`), the wrapper passes through to `/usr/bin/env` transparently without alteration.
+- **Diagnostic pipeline:** The recommended diagnostic pipeline is `docker exec <container> env | grep -iE 'DATABASE|PG|POSTGRES' | sed -E 's/(_URL=).*/\1***/'`. The raw secret count in new diagnostic transcripts must be 0.
 
 ## Native Runner build cache
 

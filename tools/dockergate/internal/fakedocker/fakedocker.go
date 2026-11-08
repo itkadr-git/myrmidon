@@ -99,6 +99,9 @@ type Container struct {
 	// Marker is the tar that the archive GET of the applied marker returns;
 	// nil is "no such file".
 	Marker []byte
+	// CloneReport is the tar that the archive GET of the clone-hygiene report
+	// returns; nil is "no such file".
+	CloneReport []byte
 	// Logs is the text of the log stream.
 	Logs []byte
 }
@@ -233,11 +236,11 @@ func (d *Daemon) Calls() []Call {
 }
 
 // APICalls returns the calls that are not the housekeeping of dockergate
-// itself (the ping of the heartbeat and the version of the self-check).
+// itself (the ping of the heartbeat, the version of the self-check, and events).
 func (d *Daemon) APICalls() []Call {
 	var out []Call
 	for _, c := range d.Calls() {
-		if p := c.Path(); p == "/_ping" || p == "/version" {
+		if p := c.Path(); p == "/_ping" || p == "/version" || p == "/events" {
 			continue
 		}
 		out = append(out, c)
@@ -542,6 +545,9 @@ func (d *Daemon) container(w http.ResponseWriter, r *http.Request, call Call, re
 		c.Status = "running"
 		d.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	case tail == "update" && call.Method == "POST":
+		d.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"Warnings": []string{}})
 	case tail == "rename" && call.Method == "POST":
 		nn := q.Get("name")
 		if _, taken := d.byName[nn]; taken {
@@ -571,8 +577,19 @@ func (d *Daemon) container(w http.ResponseWriter, r *http.Request, call Call, re
 		}
 	case tail == "archive" && call.Method == "GET":
 		marker := c.Marker
+		if p := q.Get("path"); p == "/bot/hermes/.myrmidon/clone-hygiene.json" || p == "/data/hermes/.myrmidon/clone-hygiene.json" || (strings.HasPrefix(p, "/bot-scope/") && strings.HasSuffix(p, "/hermes/.myrmidon/clone-hygiene.json")) {
+			marker = c.CloneReport
+		}
 		d.mu.Unlock()
-		if marker == nil || q.Get("path") != "/data/hermes/.myrmidon/applied.json" {
+		// The marker of an isolated bot lives under /bot, of a LEGACY-layout bot
+		// under /data/hermes (contract "1"), that of a shared scope member
+		// under /bot-scope/<botKey>; the clone-hygiene report is read beside them.
+		path := q.Get("path")
+		known := path == "/bot/hermes/.myrmidon/applied.json" || path == "/bot/hermes/.myrmidon/clone-hygiene.json" ||
+			path == "/data/hermes/.myrmidon/applied.json" || path == "/data/hermes/.myrmidon/clone-hygiene.json" ||
+			(strings.HasPrefix(path, "/bot-scope/") && strings.HasSuffix(path, "/hermes/.myrmidon/clone-hygiene.json")) ||
+			(strings.HasPrefix(path, "/bot-scope/") && strings.HasSuffix(path, "/hermes/.myrmidon/applied.json"))
+		if marker == nil || !known {
 			msg(w, http.StatusNotFound, "Could not find the file in container")
 			return
 		}

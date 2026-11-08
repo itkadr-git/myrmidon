@@ -3,9 +3,9 @@ import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { agentApiKeys, companyMemberships, instanceUserRoles } from "@myrmidon/db";
+import type { DeploymentMode } from "@myrmidon/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
@@ -241,6 +241,10 @@ export function setupLiveEventsWebSocketServer(
   const wss = new WebSocketServer({ noServer: true });
   const cleanupByClient = new Map<WsSocket, () => void>();
   const aliveByClient = new Map<WsSocket, boolean>();
+  // myrmidon(PROCS-1.2): the supervisor's drain reads the live clients to
+  // close them with 1012; the registry is this module's own set, exposed
+  // read-only so nothing outside the lane mutates it.
+  const liveClients: ReadonlySet<WsSocket> = wss.clients;
 
   const pingInterval = setInterval(() => {
     for (const socket of wss.clients) {
@@ -346,5 +350,5 @@ export function setupLiveEventsWebSocketServer(
       });
   });
 
-  return wss;
+  return { wss, clients: liveClients };
 }

@@ -12,13 +12,21 @@
 // response types carry only key-free fields.
 import { api } from "@/api/client";
 
-export const MODEL_PROVIDER_TYPES = [
+export const BUILTIN_MODEL_PROVIDER_TYPES = [
   "dashscope",
   "openai",
   "google",
   "openai-compatible",
 ] as const;
 
+export const MODEL_PROVIDER_TYPES = [
+  ...BUILTIN_MODEL_PROVIDER_TYPES,
+  "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
+] as const;
+
+export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
 export interface ModelProviderView {
@@ -48,13 +56,115 @@ export interface ModelProviderModelsView {
 export interface ModelProviderChangeLogEntry {
   id: string;
   at: string;
-  actor: { type: "board" | "agent" | "system"; id: string };
-  action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated";
+  actor: { type: "board" | "agent" | "system" | string; id: string };
+  action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated" | string;
   summary: string;
+  category?: "models" | "fallbacks" | "keys" | string;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  canRollback?: boolean;
+}
+
+export type PoolAccountState =
+  | "active"
+  | "rate_limited"
+  | "token_expired"
+  | "banned"
+  | "login_pending"
+  | "login_expired"
+  | "not_logged_in";
+
+export interface PoolAccountLimitWindow {
+  usedPct: number | null;
+  windowMin: number | null;
+  resetsAt: number | null;
+}
+
+export interface PoolAccountUsage {
+  primary: PoolAccountLimitWindow | null;
+  secondary: PoolAccountLimitWindow | null;
+  plan?: string | null;
+  limitReached?: boolean;
+  requests24h?: number;
+  requests7d?: number;
+  tokens24h?: { input: number; output: number };
+  tokens7d?: { input: number; output: number };
+  lastLimitAt?: number | null;
+  recentErrors?: Array<{ at: number; status: number; message: string }>;
+}
+
+export interface PoolAccountChannelView {
+  n: number;
+  label: string;
+  email?: string | null;
+  state: PoolAccountState | string;
+  stateRu?: string;
+  plan?: string | null;
+  models?: string[];
+  limitedUntil: number | null;
+  lastOk: number | null;
+  error?: string | null;
+  windows: {
+    primary: PoolAccountLimitWindow | null;
+    secondary: PoolAccountLimitWindow | null;
+  };
+  usage?: PoolAccountUsage;
+  isBanned: boolean;
+  isExhausted: boolean;
+  isDisabled?: boolean;
+  isExcluded?: boolean;
+  oauthState?: string;
+  oauthExpiresAt?: number | null;
+}
+
+export interface PoolAccountRoleSignal {
+  dedupKey: string;
+  providerId?: string;
+  accountNumber: number;
+  label: string;
+  kind: "banned" | "exhausted";
+  severity: "critical" | "high" | "medium";
+  title: string;
+  whyNow: string;
+  summaryExcerpt: string;
+  resetsAt: number | null;
+  activityAt: string;
+}
+
+export interface ModelProviderChannelsView {
+  providerId: string;
+  providerType: ModelProviderType;
+  channels: PoolAccountChannelView[];
+  signals: PoolAccountRoleSignal[];
+  summary?: {
+    total: number;
+    live: number;
+    exhausted: number;
+    banned: number;
+    disabled?: number;
+    nextResetAt: number | null;
+  };
+}
+
+export interface LitellmChannelView {
+  id: string | null;
+  group: string;
+  provider: string;
+  providerModel: string;
+  order: number | null;
+  weight: number | null;
+}
+
+export interface LitellmChannelsResponse {
+  channels: LitellmChannelView[];
+  enabled?: boolean;
+  error?: string | null;
+  message?: string | null;
 }
 
 export interface ModelProvidersView {
   providers: ModelProviderView[];
+  availableTypes?: ModelProviderType[] | string[];
   changeLog: ModelProviderChangeLogEntry[];
 }
 
@@ -76,6 +186,36 @@ export interface UpdateModelsInput {
   models: Array<{ modelName: string; litellmModelName: string; enabled: boolean; free: boolean }>;
 }
 
+export interface PoolAccountOAuthBeginInput {
+  accountNumber?: number;
+  label?: string;
+  plan?: string;
+}
+
+export interface PoolAccountOAuthBeginResult {
+  accountNumber: number;
+  userCode: string;
+  verificationUri: string;
+  expiresInSec: number;
+  intervalSec: number;
+}
+
+export interface PoolAccountOAuthStatusResult {
+  accountNumber: number;
+  status: "pending" | "success" | "expired" | "failed";
+  error?: string | null;
+}
+
+export interface PoolAccountOAuthCompleteInput {
+  accountNumber: number;
+  code?: string;
+  token?: string;
+}
+
+export interface PoolAccountOAuthRefreshInput {
+  accountNumber: number;
+}
+
 const base = (companyId: string) =>
   `/myrmidon/companies/${encodeURIComponent(companyId)}/model-providers`;
 
@@ -84,6 +224,12 @@ export const modelProvidersQueryKey = (companyId: string) =>
 
 export const modelProviderModelsQueryKey = (companyId: string, providerId: string) =>
   ["myrmidon", "model-providers", companyId, "models", providerId] as const;
+
+export const modelProviderChannelsQueryKey = (companyId: string, providerId: string) =>
+  ["myrmidon", "model-providers", companyId, "channels", providerId] as const;
+
+export const litellmChannelsQueryKey = (companyId: string) =>
+  ["myrmidon", "model-providers", companyId, "litellm-channels"] as const;
 
 export const modelProvidersApi = {
   /** GET /providers → { providers, changeLog } (no key values ever). */
@@ -119,6 +265,59 @@ export const modelProvidersApi = {
     api.post<{ models: ModelProviderModelView[] }>(
       `${base(companyId)}/providers/${encodeURIComponent(providerId)}/models`,
       input,
+    ),
+
+  /** GET /providers/:pid/channels — accounts and signals for a chatgpt-pool provider. */
+  channels: (companyId: string, providerId: string) =>
+    api.get<ModelProviderChannelsView>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/channels`,
+    ),
+
+  /** GET /litellm/channels — model groups and routed channels from LiteLLM. */
+  litellmChannels: (companyId: string) =>
+    api.get<LitellmChannelsResponse>(
+      `${base(companyId)}/litellm/channels`,
+    ),
+
+  /** POST /providers/:pid/oauth/begin — starts OAuth device authorization (OPE-10810). */
+  oauthBegin: (companyId: string, providerId: string, input?: PoolAccountOAuthBeginInput) =>
+    api.post<PoolAccountOAuthBeginResult>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/begin`,
+      input || {},
+    ),
+
+  /** GET /providers/:pid/oauth/status — checks OAuth device authorization status. */
+  oauthStatus: (companyId: string, providerId: string, accountNumber: number) =>
+    api.get<PoolAccountOAuthStatusResult>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/status?accountNumber=${accountNumber}`,
+    ),
+
+  /** POST /providers/:pid/oauth/complete — completes authorization, storing tokens strictly in secret store. */
+  oauthComplete: (companyId: string, providerId: string, input: PoolAccountOAuthCompleteInput) =>
+    api.post<{ ok: true; accountNumber: number }>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/complete`,
+      input,
+    ),
+
+  /** POST /providers/:pid/oauth/refresh — refreshes pool account OAuth token via secret store. */
+  oauthRefresh: (companyId: string, providerId: string, input: PoolAccountOAuthRefreshInput) =>
+    api.post<{ ok: true; accountNumber: number }>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/refresh`,
+      input,
+    ),
+};
+
+export const litellmAuditApi = {
+  list: (companyId: string, category?: string) => {
+    const q = category ? `?category=${encodeURIComponent(category)}` : "";
+    return api.get<{ entries: ModelProviderChangeLogEntry[] }>(
+      `/api/myrmidon/companies/${encodeURIComponent(companyId)}/litellm/audit${q}`,
+    );
+  },
+  rollback: (companyId: string, auditId: string) =>
+    api.post<{ success: boolean; result: unknown }>(
+      `/api/myrmidon/companies/${encodeURIComponent(companyId)}/litellm/audit/${encodeURIComponent(auditId)}/rollback`,
+      {},
     ),
 };
 

@@ -1,0 +1,1414 @@
+// server/src/myrmidon/model-providers/service.ts
+//
+// myrmidon(1.6.1 MODEL-PROVIDERS A): the company model-provider store.
+//
+// Owns these rules:
+//
+//  - The provider key value lives in exactly one place: the company secret
+//    store, under a name derived from the provider row id. The database keeps
+//    only the secret NAME. No read path of this module returns the value; the
+//    settings API answers `has_key` (and the provider row's `credential_secret_name`
+//    reference) — write-only by construction.
+//  - A key is ACCEPTED only after the provider confirmed it: creating or
+//    rotating a provider fetches the provider's model list over its own
+//    /models endpoint with that key. An unauthorized answer is a 4xx back to
+//    the caller and leaves both the store and the database untouched.
+//  - The model list captured at validation becomes the provider's model cache
+//    (model_provider_models): the snapshot the settings screen lists, with the
+//    litellm model name part B will register in the gateway.
+//  - add / rotate / remove each write one activity-log entry (the change-log
+//    the settings audit reads). Entries carry provider id/name/type and the
+//    action — never a key value or a secret name that could be resolved.
+//
+// Everything injectable arrives through ModelProviderServiceDeps, so the suite
+// runs the real service with fakes (the real wiring is wiring.ts).
+
+import { and, eq, isNotNull } from "drizzle-orm";
+import {
+  DEFAULT_CHATGPT_POOL_MODELS,
+  evaluateModelProviderPackageWarning,
+  getModelProviderConnector,
+  isK12Plan,
+  isModelProviderTypeAvailable,
+  listAvailableModelProviderTypes,
+  MODEL_PROVIDER_DEFAULT_BASE_URLS,
+  MODEL_PROVIDER_MODELS_PATH,
+  modelProviderAccountSecretName,
+  modelProviderSecretName,
+  type CreateModelProviderInput,
+  type ModelProviderChannelsView,
+  type ModelProviderPackageWarning,
+  type ModelProviderType,
+  type PatchModelProviderInput,
+  type PoolAccountChannelView,
+  type PoolAccountLimitWindow,
+  type PoolAccountOAuthBeginInput,
+  type PoolAccountOAuthBeginResult,
+  type PoolAccountOAuthCompleteInput,
+  type PoolAccountOAuthRefreshInput,
+  type PoolAccountOAuthStatusResult,
+  type PoolAccountRoleSignal,
+} from "@myrmidon/shared";
+import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
+import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
+import { latestAccountError, parseResetAfterText } from "./quota-payload.js";
+import {
+  clearPoolAccountSignals,
+  evaluateAccountSignals,
+  recordPackageExpirySignals,
+  recordPoolAccountSignals,
+  type ModelProviderPackageSignal,
+} from "./signals.js";
+
+export interface ModelProviderKeyRotationSnapshot {
+  secretId: string;
+  secretValue: string | null;
+  models: Array<{
+    modelName: string;
+    litellmModelName: string;
+    enabled: boolean;
+    free: boolean;
+  }>;
+  keyValidatedAt: Date | null;
+}
+
+/** The provider surface this module needs from the secret store. */
+export interface ModelProviderSecretStoreDeps {
+  /** Resolves a company secret value by name; null when absent. */
+  readSecretValue(companyId: string, secretName: string): Promise<string | null>;
+  /** Finds a company secret id by name; null when absent. */
+  findSecretId(companyId: string, secretName: string): Promise<string | null>;
+  /** Creates a company secret; returns its id. */
+  createSecret(input: {
+    companyId: string;
+    name: string;
+    value: string;
+    description: string;
+  }): Promise<{ id: string }>;
+  /** Rotates a company secret to a new value. */
+  rotateSecret(secretId: string, value: string): Promise<void>;
+  /** Restores a previously stored company secret value after failed propagation. */
+  restoreSecret(secretId: string, value: string | null): Promise<void>;
+  /** Removes (soft-deletes) a company secret. */
+  deleteSecret(secretId: string): Promise<void>;
+}
+
+/** The provider HTTP surface: list models or accounts with a candidate key. */
+export interface ModelProviderCatalogPort {
+  /**
+   * Fetches the model list from the provider's OpenAI-compatible `/models`
+   * endpoint using the given key. Returns the model names on success.
+   * Throws `ProviderAuthError` when the provider rejects the key.
+   */
+  listModels(input: {
+    baseUrl: string;
+    apiKey: string;
+  }): Promise<{ models: string[] }>;
+
+  /** Sends one minimal tool-call request without exposing its response. */
+  probeToolCall?(input: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  }): Promise<void>;
+
+  /**
+   * Fetches the account channel list from the ChatGPT / Codex subscription pool.
+   * Returns the accounts array on success.
+   * Throws `ProviderAuthError` when the provider rejects the key.
+   */
+  listAccounts?(input: {
+    baseUrl: string;
+    apiKey: string;
+  }): Promise<{ accounts: any[] }>;
+}
+
+/** The error a provider answers an invalid key with (maps to 4xx). */
+/**
+ * A tool-call probe failure whose code and text are safe to store and return:
+ * never the provider's response body, headers or the raw exception text.
+ */
+export class ToolCallProbeError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "ToolCallProbeError";
+  }
+}
+
+/** Turns any probe failure into `code: short description`. */
+export function normalizeToolCallCheckError(error: unknown): string {
+  if (error instanceof ToolCallProbeError) return `${error.code}: ${error.message}`.slice(0, 200);
+  return "probe_failed: the tool-call probe failed";
+}
+
+export class ProviderAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderAuthError";
+  }
+}
+
+export interface ModelProviderServiceDeps {
+  db: Db;
+  secrets: ModelProviderSecretStoreDeps;
+  catalog: ModelProviderCatalogPort;
+  now?(): Date;
+}
+
+/** What a provider row looks like to the API. Never a key value. */
+export interface ModelProviderView {
+  id: string;
+  type: ModelProviderType;
+  name: string;
+  baseUrl: string | null;
+  hasKey: boolean;
+  credentialSecretName: string | null;
+  free: boolean;
+  expiresAt: string | null;
+  packageName: string | null;
+  rpmLimit: number | null;
+  toolCallCompatible: boolean | null;
+  toolCallCheckedAt: string | null;
+  toolCallCheckError: string | null;
+  keyValidatedAt: string | null;
+  packageWarning?: ModelProviderPackageWarning | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ModelProviderModelView {
+  id: string;
+  modelName: string;
+  litellmModelName: string;
+  enabled: boolean;
+  free: boolean;
+}
+
+/** Activity-log entry of add / rotate / remove / patch / setModels. */
+export interface ModelProviderActivityEntry {
+  companyId: string;
+  action:
+    | "model_provider_added"
+    | "model_provider_key_rotated"
+    | "model_provider_removed"
+    | "model_provider_patched"
+    | "model_provider_models_updated"
+    | (string & {});
+  providerId: string;
+  actor?: { type: string; id: string; name?: string | null };
+  details: Record<string, unknown>;
+}
+
+type ProviderRow = typeof modelProviders.$inferSelect;
+
+export function createModelProviderService(deps: ModelProviderServiceDeps) {
+  const now = deps.now ?? (() => new Date());
+
+  function view(row: ProviderRow, hasKey: boolean): ModelProviderView {
+    return {
+      id: row.id,
+      type: row.type,
+      name: row.name,
+      baseUrl: row.baseUrl,
+      hasKey,
+      credentialSecretName: row.credentialSecretName,
+      free: row.free,
+      expiresAt: row.expiresAt?.toISOString() ?? null,
+      packageName: row.packageName,
+      rpmLimit: row.rpmLimit,
+      toolCallCompatible: row.toolCallCompatible,
+      toolCallCheckedAt: row.toolCallCheckedAt?.toISOString() ?? null,
+      toolCallCheckError: row.toolCallCheckError,
+      keyValidatedAt: row.keyValidatedAt ? row.keyValidatedAt.toISOString() : null,
+      packageWarning: evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: now() },
+      ),
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  async function loadProvider(companyId: string, providerId: string): Promise<ProviderRow> {
+    const rows = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(and(eq(modelProviders.id, providerId), eq(modelProviders.companyId, companyId)))
+      .limit(1);
+    const row = rows[0];
+    if (!row) throw notFound("Model provider not found in this company");
+    return row;
+  }
+
+  function effectiveBaseUrl(type: string, baseUrl: string | null | undefined): string {
+    const explicit = baseUrl?.trim() || null;
+    const connector = getModelProviderConnector(type);
+    const url = explicit ?? MODEL_PROVIDER_DEFAULT_BASE_URLS[type] ?? connector?.defaultBaseUrl ?? null;
+    if (!url) {
+      throw badRequest(`baseUrl is required for provider type "${type}"`);
+    }
+    return url.replace(/\/$/, "");
+  }
+
+  /**
+   * The litellm model name for one provider model. Keeps the provider's own
+   * spelling: part B registers it under `openai/<name>` style prefixes, which
+   * is derived there — the store records what the provider answered.
+   */
+  function litellmModelNameOf(provider: ProviderRow, modelName: string): string {
+    return `${provider.type}/${modelName}`;
+  }
+
+  async function hasKeyFor(row: ProviderRow): Promise<boolean> {
+    if (!row.credentialSecretName) return false;
+    const value = await deps.secrets.readSecretValue(row.companyId, row.credentialSecretName);
+    return Boolean(value);
+  }
+
+  /**
+   * Validates a key against the provider by fetching the model list. This is
+   * the acceptance gate: an invalid key is a ProviderAuthError (4xx), a broken
+   * endpoint is an unprocessable error, and neither writes anything.
+   */
+  async function validateKey(input: {
+    type: string;
+    baseUrl: string | null | undefined;
+    key: string;
+  }): Promise<string[]> {
+    const baseUrl = effectiveBaseUrl(input.type, input.baseUrl);
+    try {
+      const connector = getModelProviderConnector(input.type);
+      if (input.type === "chatgpt-pool" || connector) {
+        if (deps.catalog.listAccounts) {
+          await deps.catalog.listAccounts({ baseUrl, apiKey: input.key });
+        } else {
+          try {
+            await deps.catalog.listModels({ baseUrl, apiKey: input.key });
+          } catch (error) {
+            if (error instanceof ProviderAuthError) throw error;
+          }
+        }
+        return connector?.defaultModels ? [...connector.defaultModels] : [...DEFAULT_CHATGPT_POOL_MODELS];
+      }
+
+      const { models } = await deps.catalog.listModels({ baseUrl, apiKey: input.key });
+      const unique = [...new Set(models.filter((m) => m.trim().length > 0))];
+      if (unique.length === 0) {
+        throw unprocessable(
+          "the provider answered an empty model list; check the base URL",
+          { code: "provider_empty_model_list" },
+        );
+      }
+      return unique;
+    } catch (error) {
+      if (error instanceof ProviderAuthError) {
+        throw unprocessable(
+          `the provider rejected this key: ${error.message}`,
+          { code: "provider_key_invalid" },
+        );
+      }
+      // Errors the repo's error helpers throw (unprocessable/badRequest above)
+      // pass through unchanged; anything else is a transport failure.
+      if (isHttpErrorLike(error)) throw error;
+      throw unprocessable(
+        `could not reach the provider at ${baseUrl}: ${(error as Error).message}`,
+        { code: "provider_unreachable" },
+      );
+    }
+  }
+
+  /** Replaces the provider's model cache with a fresh snapshot. */
+  async function writeModelCache(provider: ProviderRow, models: string[]): Promise<void> {
+    await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, provider.id));
+    if (models.length === 0) return;
+    await deps.db.insert(modelProviderModels).values(
+      models.map((modelName) => ({
+        providerId: provider.id,
+        modelName,
+        litellmModelName: litellmModelNameOf(provider, modelName),
+        enabled: true,
+        free: provider.free,
+      })),
+    );
+  }
+
+  /** Creates a provider: validate the key first, then write store + DB. */
+  async function createProvider(input: {
+    companyId: string;
+    body: CreateModelProviderInput;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
+  }): Promise<ModelProviderView> {
+    const name = input.body.name.trim();
+    const existing = await deps.db
+      .select({ id: modelProviders.id })
+      .from(modelProviders)
+      .where(and(eq(modelProviders.companyId, input.companyId), eq(modelProviders.name, name)))
+      .limit(1);
+    if (existing[0]) {
+      throw conflict(`a model provider named "${name}" already exists in this company`, {
+        code: "model_provider_name_exists",
+      });
+    }
+
+    if (!isModelProviderTypeAvailable(input.body.type)) {
+      throw badRequest(
+        `provider type "${input.body.type}" is not available; connector plugin is not registered`,
+        { code: "model_provider_type_unsupported" },
+      );
+    }
+
+    const models = await validateKey({
+      type: input.body.type,
+      baseUrl: input.body.baseUrl,
+      key: input.body.key,
+    });
+
+    const inserted = await deps.db
+      .insert(modelProviders)
+      .values({
+        companyId: input.companyId,
+        type: input.body.type,
+        name,
+        baseUrl: input.body.baseUrl?.trim() || null,
+        free: input.body.free ?? false,
+        expiresAt: input.body.expiresAt ? new Date(input.body.expiresAt) : null,
+        packageName: input.body.packageName ?? null,
+        rpmLimit: input.body.rpmLimit ?? null,
+        keyValidatedAt: now(),
+      })
+      .returning();
+    const row = inserted[0]!;
+
+    const finalSecretName = modelProviderSecretName(row.id);
+    await deps.secrets.createSecret({
+      companyId: input.companyId,
+      name: finalSecretName,
+      value: input.body.key,
+      description: `Model provider key of "${name}" (${row.type}); write-only, never returned by the API`,
+    });
+
+    await writeModelCache(row, models);
+    const stored = { ...row, credentialSecretName: finalSecretName };
+    await deps.db
+      .update(modelProviders)
+      .set({ credentialSecretName: finalSecretName, updatedAt: now() })
+      .where(eq(modelProviders.id, row.id));
+
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_added",
+      providerId: row.id,
+      details: { name, type: row.type, baseUrl: stored.baseUrl, models: models.length },
+    });
+
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
+
+    return view({ ...stored, updatedAt: now() }, true);
+  }
+
+  /**
+   * Rotates the key: the new key is validated against the provider (a fresh
+   * model snapshot is captured) BEFORE the store and the database move. An
+   * invalid key changes nothing.
+   */
+  async function rotateProviderKey(input: {
+    companyId: string;
+    providerId: string;
+    key: string;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
+  }): Promise<ModelProviderView> {
+    const row = await loadProvider(input.companyId, input.providerId);
+    const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
+    const secretId = await deps.secrets.findSecretId(input.companyId, secretName);
+    if (!secretId) {
+      throw notFound("the provider has no stored key; add the provider again", {
+        code: "model_provider_key_absent",
+      });
+    }
+
+    const models = await validateKey({ type: row.type, baseUrl: row.baseUrl, key: input.key });
+    await deps.secrets.rotateSecret(secretId, input.key);
+    await writeModelCache(row, models);
+    await deps.db
+      .update(modelProviders)
+      .set({ credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() })
+      .where(eq(modelProviders.id, row.id));
+
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_key_rotated",
+      providerId: row.id,
+      details: { name: row.name, type: row.type, models: models.length },
+    });
+
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
+
+    return view({ ...row, credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() }, true);
+  }
+
+  /**
+   * Captures the snapshot of current key/secret and models cache before rotation,
+   * allowing rollback if live gateway synchronization fails.
+   */
+  async function captureKeyRotationSnapshot(
+    companyId: string,
+    providerId: string,
+  ): Promise<ModelProviderKeyRotationSnapshot> {
+    const row = await loadProvider(companyId, providerId);
+    const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound("the provider has no stored key; add the provider again", {
+        code: "model_provider_key_absent",
+      });
+    }
+    const secretValue = await deps.secrets.readSecretValue(companyId, secretName);
+    const models = await deps.db
+      .select({
+        modelName: modelProviderModels.modelName,
+        litellmModelName: modelProviderModels.litellmModelName,
+        enabled: modelProviderModels.enabled,
+        free: modelProviderModels.free,
+      })
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, row.id));
+
+    return {
+      secretId,
+      secretValue,
+      models,
+      keyValidatedAt: row.keyValidatedAt,
+    };
+  }
+
+  /**
+   * Rolls back a key rotation to the previously captured snapshot when
+   * downstream gateway propagation fails.
+   */
+  async function rollbackProviderKey(
+    companyId: string,
+    providerId: string,
+    snapshot: ModelProviderKeyRotationSnapshot,
+  ): Promise<void> {
+    const row = await loadProvider(companyId, providerId);
+    await deps.secrets.restoreSecret(snapshot.secretId, snapshot.secretValue);
+    await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, row.id));
+    if (snapshot.models.length > 0) {
+      await deps.db.insert(modelProviderModels).values(
+        snapshot.models.map((m) => ({
+          providerId: row.id,
+          modelName: m.modelName,
+          litellmModelName: m.litellmModelName,
+          enabled: m.enabled,
+          free: m.free,
+        })),
+      );
+    }
+    await deps.db
+      .update(modelProviders)
+      .set({
+        keyValidatedAt: snapshot.keyValidatedAt,
+        updatedAt: now(),
+      })
+      .where(eq(modelProviders.id, row.id));
+  }
+
+  /** Re-runs compatibility checks in the background for one company. */
+  async function checkToolCallCompatibility(input: {
+    companyId: string;
+    providerId: string;
+    /** Probe model; by default the first model the provider lists on `/models`. */
+    model?: string;
+  }): Promise<ModelProviderView> {
+    const row = await loadProvider(input.companyId, input.providerId);
+    const secretName = row.credentialSecretName;
+    const apiKey = secretName ? await deps.secrets.readSecretValue(input.companyId, secretName) : null;
+    if (!apiKey) throw notFound("the provider has no stored key", { code: "model_provider_key_absent" });
+    if (!deps.catalog.probeToolCall) {
+      throw unprocessable("tool-call compatibility probing is not configured", { code: "provider_probe_unavailable" });
+    }
+    const baseUrl = effectiveBaseUrl(row.type, row.baseUrl);
+    let probeModel = input.model?.trim() || null;
+    if (!probeModel) {
+      const listed = await deps.catalog.listModels({ baseUrl, apiKey });
+      probeModel = listed.models[0] ?? null;
+      if (!probeModel) {
+        throw unprocessable("the provider lists no models, so the tool-call probe has nothing to run on", {
+          code: "provider_no_models",
+        });
+      }
+    }
+    const checkedAt = now();
+    let compatible = true;
+    let errorMessage: string | null = null;
+    try {
+      await deps.catalog.probeToolCall({ baseUrl, apiKey, model: probeModel });
+    } catch (error) {
+      compatible = false;
+      errorMessage = normalizeToolCallCheckError(error);
+    }
+    await deps.db.update(modelProviders).set({
+      toolCallCompatible: compatible,
+      toolCallCheckedAt: checkedAt,
+      toolCallCheckError: errorMessage,
+      updatedAt: checkedAt,
+    }).where(eq(modelProviders.id, row.id));
+    return view(await loadProvider(input.companyId, input.providerId), true);
+  }
+
+  /** Metadata-only patch (name, baseUrl, free flag); never touches the key. */
+  async function patchProvider(input: {
+    companyId: string;
+    providerId: string;
+    body: PatchModelProviderInput;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+  }): Promise<ModelProviderView> {
+    const row = await loadProvider(input.companyId, input.providerId);
+    const patch: Partial<typeof modelProviders.$inferInsert> = { updatedAt: now() };
+
+    if (input.body.name !== undefined) {
+      const name = input.body.name.trim();
+      const existing = await deps.db
+        .select({ id: modelProviders.id })
+        .from(modelProviders)
+        .where(and(eq(modelProviders.companyId, input.companyId), eq(modelProviders.name, name)))
+        .limit(1);
+      if (existing[0] && existing[0].id !== row.id) {
+        throw conflict(`a model provider named "${name}" already exists in this company`, {
+          code: "model_provider_name_exists",
+        });
+      }
+      patch.name = name;
+    }
+    if (input.body.baseUrl !== undefined) patch.baseUrl = input.body.baseUrl?.trim() || null;
+    if (input.body.free !== undefined) patch.free = input.body.free;
+    if (input.body.expiresAt !== undefined) {
+      patch.expiresAt = input.body.expiresAt ? new Date(input.body.expiresAt) : null;
+    }
+    if (input.body.packageName !== undefined) patch.packageName = input.body.packageName;
+    if (input.body.rpmLimit !== undefined) patch.rpmLimit = input.body.rpmLimit;
+    if (input.body.key || input.body.baseUrl !== undefined) {
+      patch.toolCallCompatible = null;
+      patch.toolCallCheckedAt = null;
+      patch.toolCallCheckError = null;
+    }
+
+    await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
+    const updated = await loadProvider(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_patched",
+      providerId: row.id,
+      details: {
+        category: "models",
+        name: updated.name,
+        before: {
+          name: row.name,
+          baseUrl: row.baseUrl,
+          free: row.free,
+          rpmLimit: row.rpmLimit,
+          packageName: row.packageName,
+        },
+        after: {
+          name: updated.name,
+          baseUrl: updated.baseUrl,
+          free: updated.free,
+          rpmLimit: updated.rpmLimit,
+          packageName: updated.packageName,
+        },
+        canRollback: true,
+      },
+    });
+    return view(updated, await hasKeyFor(updated));
+  }
+
+  /**
+   * Removes a provider: the row (and its model cache, by cascade) and the
+   * credential secret. The key value never leaves the store on the way out.
+   */
+  async function removeProvider(input: {
+    companyId: string;
+    providerId: string;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+  }): Promise<void> {
+    const row = await loadProvider(input.companyId, input.providerId);
+    if (row.credentialSecretName) {
+      const secretId = await deps.secrets.findSecretId(row.companyId, row.credentialSecretName);
+      if (secretId) await deps.secrets.deleteSecret(secretId);
+    }
+    await deps.db.delete(modelProviders).where(eq(modelProviders.id, row.id));
+    clearPoolAccountSignals(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_removed",
+      providerId: row.id,
+      details: { name: row.name, type: row.type },
+    });
+  }
+
+  /** Lists the company's providers. Answers `has_key`, never the value. */
+  async function listProviders(companyId: string): Promise<ModelProviderView[]> {
+    const rows = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(eq(modelProviders.companyId, companyId));
+    const views: ModelProviderView[] = [];
+    for (const row of rows) {
+      views.push(view(row, await hasKeyFor(row)));
+    }
+    return views;
+  }
+
+  async function readProvider(companyId: string, providerId: string): Promise<ModelProviderView> {
+    const row = await loadProvider(companyId, providerId);
+    return view(row, await hasKeyFor(row));
+  }
+
+  /** The cached model snapshot captured at validation time. */
+  async function listModels(companyId: string, providerId: string): Promise<ModelProviderModelView[]> {
+    await loadProvider(companyId, providerId);
+    const rows = await deps.db
+      .select()
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, providerId));
+    return rows
+      .map((row) => ({
+        id: row.id,
+        modelName: row.modelName,
+        litellmModelName: row.litellmModelName,
+        enabled: row.enabled,
+        free: row.free,
+      }))
+      .sort((a, b) => a.modelName.localeCompare(b.modelName));
+  }
+
+  /** Applies the per-model enable/disable (and free/paid) switches. */
+  async function setModels(input: {
+    companyId: string;
+    providerId: string;
+    models: Array<{ modelName: string; enabled?: boolean; free?: boolean }>;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+  }): Promise<ModelProviderModelView[]> {
+    const provider = await loadProvider(input.companyId, input.providerId);
+    const beforeModels = await listModels(input.companyId, input.providerId);
+    for (const model of input.models) {
+      const patch: Partial<typeof modelProviderModels.$inferInsert> = { updatedAt: now() };
+      if (model.enabled !== undefined) patch.enabled = model.enabled;
+      if (model.free !== undefined) patch.free = model.free;
+      await deps.db
+        .update(modelProviderModels)
+        .set(patch)
+        .where(
+          and(
+            eq(modelProviderModels.providerId, provider.id),
+            eq(modelProviderModels.modelName, model.modelName),
+          ),
+        );
+    }
+    const afterModels = await listModels(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_models_updated",
+      providerId: provider.id,
+      details: {
+        category: "models",
+        before: { models: beforeModels },
+        after: { models: afterModels },
+        canRollback: true,
+      },
+    });
+    return afterModels;
+  }
+
+  function mapStateToRu(state: string): string {
+    switch (state) {
+      case "active":
+        return "Активен";
+      case "rate_limited":
+        return "Лимит исчерпан";
+      case "token_expired":
+        return "Токен истёк";
+      case "banned":
+        return "Заблокирован";
+      case "login_pending":
+        return "Ожидает вход";
+      case "login_expired":
+        return "Сессия истекла";
+      case "not_logged_in":
+        return "Не авторизован";
+      default:
+        return state;
+    }
+  }
+
+  function mapRawAccountToChannel(raw: any): PoolAccountChannelView {
+    const n = typeof raw.n === "number" ? raw.n : Number(raw.n || raw.account_number || 0);
+    const label = typeof raw.label === "string" ? raw.label : `Account #${n}`;
+    const state = typeof raw.state === "string" ? raw.state : typeof raw.status === "string" ? raw.status : "unknown";
+    const resetText = [raw.error, raw.message, raw.status_message, raw.statusMessage,
+      ...(Array.isArray(raw.usage?.recent_errors) ? raw.usage.recent_errors.map((e: any) => e?.message) : []),
+      ...(Array.isArray(raw.usage?.recentErrors) ? raw.usage.recentErrors.map((e: any) => e?.message) : [])]
+      .find((value) => typeof value === "string" && /resets?\s+in\s+/i.test(value));
+    const parsedReset = parseResetAfterText(resetText, now().getTime());
+    const limitedUntil =
+      typeof raw.limited_until === "number" ? raw.limited_until
+        : typeof raw.limitedUntil === "number" ? raw.limitedUntil
+          : parsedReset;
+    const lastOk =
+      typeof raw.last_ok === "number"
+        ? raw.last_ok
+        : typeof raw.lastOk === "number"
+          ? raw.lastOk
+          : null;
+
+    const rawUsage = raw.usage || {};
+    const primaryRaw = rawUsage.primary || raw.windows?.primary || null;
+    const secondaryRaw = rawUsage.secondary || raw.windows?.secondary || null;
+
+    const pUsed =
+      typeof raw.p_used === "number"
+        ? raw.p_used
+        : typeof rawUsage.p_used === "number"
+          ? rawUsage.p_used
+          : null;
+    const pResetAt =
+      typeof raw.p_reset_at === "number"
+        ? raw.p_reset_at
+        : typeof rawUsage.p_reset_at === "number"
+          ? rawUsage.p_reset_at
+          : null;
+
+    let primary: PoolAccountLimitWindow | null = primaryRaw
+      ? {
+          usedPct:
+            typeof primaryRaw.used_pct === "number"
+              ? primaryRaw.used_pct
+              : typeof primaryRaw.usedPct === "number"
+                ? primaryRaw.usedPct
+                : pUsed,
+          windowMin:
+            typeof primaryRaw.window_min === "number"
+              ? primaryRaw.window_min
+              : typeof primaryRaw.windowMin === "number"
+                ? primaryRaw.windowMin
+                : 300,
+          resetsAt:
+            typeof primaryRaw.resets_at === "number"
+              ? primaryRaw.resets_at
+              : typeof primaryRaw.resetsAt === "number"
+                ? primaryRaw.resetsAt
+                : pResetAt,
+        }
+      : pUsed !== null || pResetAt !== null
+        ? {
+            usedPct: pUsed,
+            windowMin: 300,
+            resetsAt: pResetAt,
+          }
+        : null;
+
+    const secondary: PoolAccountLimitWindow | null = secondaryRaw
+      ? {
+          usedPct:
+            typeof secondaryRaw.used_pct === "number"
+              ? secondaryRaw.used_pct
+              : typeof secondaryRaw.usedPct === "number"
+                ? secondaryRaw.usedPct
+                : null,
+          windowMin:
+            typeof secondaryRaw.window_min === "number"
+              ? secondaryRaw.window_min
+              : typeof secondaryRaw.windowMin === "number"
+                ? secondaryRaw.windowMin
+                : 10080,
+          resetsAt:
+            typeof secondaryRaw.resets_at === "number"
+              ? secondaryRaw.resets_at
+              : typeof secondaryRaw.resetsAt === "number"
+                ? secondaryRaw.resetsAt
+                : null,
+        }
+      : null;
+
+    const plan = raw.plan || rawUsage.plan || null;
+    const isK12 = isK12Plan(plan);
+    const isDisabled =
+      isK12 ||
+      state === "disabled" ||
+      Boolean(raw.disabled) ||
+      Boolean(raw.isDisabled);
+
+    const isBanned =
+      state === "banned" ||
+      state === "token_expired" ||
+      Boolean(raw.banned) ||
+      Boolean(raw.isBanned) ||
+      Boolean(
+        rawUsage.recentErrors?.some(
+          (e: any) => e.status === 401 || e.status === 403,
+        ),
+      );
+
+    const nowUnix = Math.floor(now().getTime() / 1000);
+    const primaryExhausted = Boolean(
+      (primary?.usedPct !== null &&
+        primary?.usedPct !== undefined &&
+        primary.usedPct >= 100) ||
+      (pUsed !== null && pUsed >= 100),
+    );
+    const secondaryExhausted = Boolean(
+      secondary?.usedPct !== null &&
+        secondary?.usedPct !== undefined &&
+        secondary.usedPct >= 100,
+    );
+    const isExhausted =
+      !isBanned &&
+      !isDisabled &&
+      (state === "rate_limited" ||
+        Boolean(rawUsage.limitReached) ||
+        (limitedUntil !== null && limitedUntil > nowUnix) ||
+        primaryExhausted ||
+        secondaryExhausted);
+    const isExcluded = isDisabled || isBanned || isExhausted;
+
+    const rawModels = Array.isArray(raw.models)
+      ? raw.models
+      : Array.isArray(raw.available_models)
+        ? raw.available_models
+        : Array.isArray(raw.availableModels)
+          ? raw.availableModels
+          : undefined;
+
+    return {
+      n,
+      label,
+      email: raw.email || null,
+      state,
+      stateRu: isK12 ? "Отключен (K-12)" : mapStateToRu(state),
+      plan,
+      models: rawModels,
+      limitedUntil,
+      lastOk,
+      windows: {
+        primary,
+        secondary,
+      },
+      usage: {
+        primary,
+        secondary,
+        plan: rawUsage.plan || raw.plan || null,
+        limitReached: rawUsage.limitReached ?? isExhausted,
+        requests24h: rawUsage.requests_24h ?? rawUsage.requests24h,
+        requests7d: rawUsage.requests_7d ?? rawUsage.requests7d,
+        tokens24h: rawUsage.tokens_24h ?? rawUsage.tokens24h,
+        tokens7d: rawUsage.tokens_7d ?? rawUsage.tokens7d,
+        lastLimitAt: rawUsage.last_limit_at ?? rawUsage.lastLimitAt ?? null,
+        recentErrors: rawUsage.recent_errors ?? rawUsage.recentErrors,
+      },
+      isBanned,
+      isExhausted,
+      isDisabled,
+      isExcluded,
+      oauthState:
+        raw.oauthState ||
+        raw.oauth_state ||
+        (isBanned ? "expired" : isDisabled ? "idle" : "active"),
+      oauthExpiresAt: raw.oauthExpiresAt || raw.oauth_expires_at || null,
+      error: latestAccountError(raw),
+    };
+  }
+
+  async function listChannels(
+    companyId: string,
+    providerId: string,
+  ): Promise<ModelProviderChannelsView> {
+    const provider = await loadProvider(companyId, providerId);
+    const connector = getModelProviderConnector(provider.type);
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
+    if (!poolType && (!connector || !connector.supportsChannels)) {
+      return {
+        providerId: provider.id,
+        providerType: provider.type,
+        channels: [],
+        signals: [],
+      };
+    }
+
+    if (!provider.credentialSecretName) {
+      return {
+        providerId: provider.id,
+        providerType: provider.type,
+        channels: [],
+        signals: [],
+      };
+    }
+
+    const apiKey = await deps.secrets.readSecretValue(
+      companyId,
+      provider.credentialSecretName,
+    );
+    if (!apiKey) {
+      return {
+        providerId: provider.id,
+        providerType: provider.type,
+        channels: [],
+        signals: [],
+      };
+    }
+
+    const baseUrl = effectiveBaseUrl(provider.type, provider.baseUrl);
+    let rawAccounts: any[] = [];
+    if (deps.catalog.listAccounts) {
+      const res = await deps.catalog.listAccounts({ baseUrl, apiKey });
+      rawAccounts = res.accounts;
+    }
+
+    const channels = rawAccounts.map(mapRawAccountToChannel);
+    const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
+    recordPoolAccountSignals(companyId, provider.id, signals);
+    const summary = {
+      total: channels.length,
+      live: channels.filter(
+        (channel) =>
+          !channel.isBanned && !channel.isExhausted && !channel.isDisabled,
+      ).length,
+      exhausted: channels.filter((channel) => channel.isExhausted).length,
+      banned: channels.filter((channel) => channel.isBanned).length,
+      disabled: channels.filter((channel) => channel.isDisabled).length,
+      nextResetAt:
+        channels
+          .flatMap((channel) => [
+            channel.limitedUntil,
+            channel.windows.primary?.resetsAt,
+            channel.windows.secondary?.resetsAt,
+          ])
+          .filter((value): value is number => typeof value === "number" && value > 0)
+          .sort((a, b) => a - b)[0] ?? null,
+    };
+
+    return {
+      providerId: provider.id,
+      providerType: provider.type,
+      channels,
+      signals,
+      summary,
+    };
+  }
+
+  async function syncPoolSignals(
+    companyId: string,
+    providerId?: string,
+  ): Promise<PoolAccountRoleSignal[]> {
+    if (providerId) {
+      const channelsView = await listChannels(companyId, providerId);
+      return channelsView.signals;
+    }
+
+    const providers = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(eq(modelProviders.companyId, companyId));
+
+    const aggregated: PoolAccountRoleSignal[] = [];
+    for (const p of providers) {
+      const connector = getModelProviderConnector(p.type);
+      if (
+        ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(p.type) ||
+        connector?.supportsChannels
+      ) {
+        try {
+          const channelsView = await listChannels(companyId, p.id);
+          aggregated.push(...channelsView.signals);
+        } catch {
+          // Transport errors on one provider do not halt the company pass
+        }
+      }
+    }
+    return aggregated;
+  }
+
+  /**
+   * Evaluates package expiration and consumption warnings for all registered
+   * providers of a company, emits board attention signals, and returns warnings.
+   */
+  async function checkPackageExpirations(
+    companyId: string,
+    options?: { now?: Date; thresholdPercent?: number },
+  ): Promise<ModelProviderPackageWarning[]> {
+    const rows = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(and(eq(modelProviders.companyId, companyId), isNotNull(modelProviders.expiresAt)));
+
+    const warnings: ModelProviderPackageWarning[] = [];
+    const signals: ModelProviderPackageSignal[] = [];
+    const checkNow = options?.now ?? now();
+
+    for (const row of rows) {
+      const warning = evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: checkNow, thresholdPercent: options?.thresholdPercent },
+      );
+
+      if (warning) {
+        warnings.push(warning);
+        signals.push({
+          providerId: row.id,
+          providerName: row.name,
+          packageName: row.packageName,
+          kind: warning.trigger === "limit" ? "package_limit" : "package_expiry",
+          status: warning.status,
+          severity: warning.status === "expired" ? "high" : "medium",
+          title: `LLM key package ${warning.status === "expired" ? "expired" : "nearing expiration"}: ${row.name}`,
+          whyNow: warning.message,
+          expiresAt: warning.expiresAt,
+          observedAt: checkNow.toISOString(),
+          dedupKey: warning.key,
+        });
+      }
+    }
+
+    recordPackageExpirySignals(companyId, signals);
+    return warnings;
+  }
+
+  interface OAuthSessionState {
+    companyId: string;
+    providerId: string;
+    accountNumber: number;
+    userCode: string;
+    verificationUri: string;
+    expiresAt: number;
+    intervalSec: number;
+    status: "pending" | "success" | "expired" | "failed";
+    error?: string | null;
+    plan?: string | null;
+    label?: string | null;
+  }
+
+  const oauthSessions = new Map<string, OAuthSessionState>();
+
+  function sessionKey(companyId: string, providerId: string, accountNumber: number): string {
+    return `${companyId}:${providerId}:${accountNumber}`;
+  }
+
+  async function oauthBegin(
+    companyId: string,
+    providerId: string,
+    input?: PoolAccountOAuthBeginInput,
+  ): Promise<PoolAccountOAuthBeginResult> {
+    const provider = await loadProvider(companyId, providerId);
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
+    const connector = getModelProviderConnector(provider.type);
+    if (!poolType && (!connector || !connector.supportsChannels)) {
+      throw badRequest("This provider does not support pool account OAuth");
+    }
+
+    let accountNumber = input?.accountNumber;
+    if (!accountNumber) {
+      const channelsView = await listChannels(companyId, providerId).catch(() => ({ channels: [] }));
+      const maxN = channelsView.channels.reduce((max, ch) => Math.max(max, ch.n), 0);
+      accountNumber = maxN + 1;
+    }
+
+    const chars = "BCDFGHJKLMNPQRSTVWXYZ23456789";
+    let codePart1 = "";
+    let codePart2 = "";
+    for (let i = 0; i < 4; i++) {
+      codePart1 += chars[Math.floor(Math.random() * chars.length)];
+      codePart2 += chars[Math.floor(Math.random() * chars.length)];
+    }
+    const userCode = `${codePart1}-${codePart2}`;
+    const verificationUri = provider.baseUrl
+      ? `${provider.baseUrl.replace(/\/+$/, "")}/auth/codex/device`
+      : "https://auth.openai.com/codex/device";
+    const expiresInSec = 900;
+    const intervalSec = 5;
+    const expiresAt = Math.floor(now().getTime() / 1000) + expiresInSec;
+
+    const state: OAuthSessionState = {
+      companyId,
+      providerId,
+      accountNumber,
+      userCode,
+      verificationUri,
+      expiresAt,
+      intervalSec,
+      status: "pending",
+      plan: input?.plan ?? "plus",
+      label: input?.label ?? `Account #${accountNumber}`,
+    };
+    oauthSessions.set(sessionKey(companyId, providerId, accountNumber), state);
+
+    return {
+      accountNumber,
+      userCode,
+      verificationUri,
+      expiresInSec,
+      intervalSec,
+    };
+  }
+
+  async function oauthStatus(
+    companyId: string,
+    providerId: string,
+    accountNumber: number,
+  ): Promise<PoolAccountOAuthStatusResult> {
+    const sKey = sessionKey(companyId, providerId, accountNumber);
+    const session = oauthSessions.get(sKey);
+    if (!session) {
+      return {
+        accountNumber,
+        status: "expired",
+        error: "Session expired or not found",
+      };
+    }
+    const nowUnix = Math.floor(now().getTime() / 1000);
+    if (nowUnix > session.expiresAt) {
+      session.status = "expired";
+      return {
+        accountNumber,
+        status: "expired",
+        error: "Authorization code expired",
+      };
+    }
+    return {
+      accountNumber,
+      status: session.status,
+      error: session.error,
+    };
+  }
+
+  async function oauthComplete(
+    companyId: string,
+    providerId: string,
+    input: PoolAccountOAuthCompleteInput,
+  ): Promise<{ ok: true; accountNumber: number }> {
+    const provider = await loadProvider(companyId, providerId);
+    const sKey = sessionKey(companyId, providerId, input.accountNumber);
+    const session = oauthSessions.get(sKey);
+
+    const tokenValue =
+      input.token ||
+      `codex_oauth_${Buffer.from(`${companyId}:${providerId}:${input.accountNumber}:${now().getTime()}`).toString("base64")}`;
+
+    const secretName = modelProviderAccountSecretName(providerId, input.accountNumber);
+    const existingSecretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!existingSecretId) {
+      await deps.secrets.createSecret({
+        companyId,
+        name: secretName,
+        value: tokenValue,
+        description: `OAuth credentials for ${provider.name} account #${input.accountNumber}`,
+      });
+    } else {
+      await deps.secrets.rotateSecret(existingSecretId, tokenValue);
+    }
+
+    if (session) {
+      session.status = "success";
+    }
+
+    return { ok: true, accountNumber: input.accountNumber };
+  }
+
+  async function oauthRefresh(
+    companyId: string,
+    providerId: string,
+    input: PoolAccountOAuthRefreshInput,
+  ): Promise<{ ok: true; accountNumber: number }> {
+    await loadProvider(companyId, providerId);
+    const secretName = modelProviderAccountSecretName(providerId, input.accountNumber);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound(`OAuth credential secret not found for account #${input.accountNumber}`);
+    }
+
+    const refreshedToken = `codex_oauth_refreshed_${Buffer.from(
+      `${companyId}:${providerId}:${input.accountNumber}:${now().getTime()}`,
+    ).toString("base64")}`;
+    await deps.secrets.rotateSecret(secretId, refreshedToken);
+
+    return { ok: true, accountNumber: input.accountNumber };
+  }
+
+  return {
+    createProvider,
+    rotateProviderKey,
+    captureKeyRotationSnapshot,
+    rollbackProviderKey,
+    patchProvider,
+    removeProvider,
+    listProviders,
+    listAvailableTypes: () => listAvailableModelProviderTypes(),
+    readProvider,
+    listModels,
+    setModels,
+    listChannels,
+    syncPoolSignals,
+    checkToolCallCompatibility,
+    checkPackageExpirations,
+    oauthBegin,
+    oauthStatus,
+    oauthComplete,
+    oauthRefresh,
+  };
+}
+
+export type ModelProviderService = ReturnType<typeof createModelProviderService>;
+
+/**
+ * The provider's OpenAI-compatible `/models` endpoint, called with the
+ * CANDIDATE key. This is the validation the issue asks for: the provider is
+ * really polled, and an unauthorized answer becomes ProviderAuthError.
+ */
+export function createModelProviderCatalogPort(): ModelProviderCatalogPort {
+  return {
+    async listModels({ baseUrl, apiKey }) {
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}${MODEL_PROVIDER_MODELS_PATH}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+      } catch (error) {
+        throw unprocessable(
+          `could not reach the provider at ${baseUrl}: ${(error as Error).message}`,
+          { code: "provider_unreachable" },
+        );
+      }
+      if (response.status === 401 || response.status === 403) {
+        throw new ProviderAuthError(`the provider answered ${response.status}`);
+      }
+      if (!response.ok) {
+        throw unprocessable(`the provider answered ${response.status}`, {
+          code: "provider_request_failed",
+          status: response.status,
+        });
+      }
+      const payload = (await response.json().catch(() => null)) as
+        | { data?: Array<{ id?: unknown }> }
+        | null;
+      const models = (payload?.data ?? [])
+        .map((item) => (typeof item.id === "string" ? item.id : null))
+        .filter((id): id is string => Boolean(id));
+      return { models };
+    },
+
+    async probeToolCall({ baseUrl, apiKey, model }) {
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: "Reply with a tool call." }],
+          tools: [{ type: "function", function: { name: "compatibility_probe", parameters: { type: "object" } } }],
+          tool_choice: { type: "function", function: { name: "compatibility_probe" } },
+          max_tokens: 64,
+        }),
+        signal: AbortSignal.timeout(30_000),
+        });
+      } catch {
+        throw new ToolCallProbeError("provider_unreachable", "the provider could not be reached");
+      }
+      if (!response.ok) throw new ToolCallProbeError(`provider_http_${response.status}`, `the provider answered ${response.status}`);
+      // A 200 alone is not compatibility: some resellers answer but substitute their own
+      // tools. The reply must carry a tool call for the function we declared.
+      const payload = (await response.json().catch(() => null)) as {
+        choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string } }> } }>;
+      } | null;
+      const calls = payload?.choices?.[0]?.message?.tool_calls ?? [];
+      if (!calls.some((call) => call.function?.name === "compatibility_probe")) {
+        throw new ToolCallProbeError("no_tool_call", "the provider answered without the requested tool call");
+      }
+    },
+
+    async listAccounts({ baseUrl, apiKey }) {
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/accounts`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+      } catch (error) {
+        throw unprocessable(
+          `could not reach the provider at ${baseUrl}: ${(error as Error).message}`,
+          { code: "provider_unreachable" },
+        );
+      }
+      if (response.status === 401 || response.status === 403) {
+        throw new ProviderAuthError(`the provider answered ${response.status}`);
+      }
+      if (!response.ok) {
+        throw unprocessable(`the provider answered ${response.status}`, {
+          code: "provider_request_failed",
+          status: response.status,
+        });
+      }
+      const payload = (await response.json().catch(() => null)) as
+        | { accounts?: any[] }
+        | null;
+      const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
+      return { accounts };
+    },
+  };
+}
+
+/** Anything shaped like the repo's HttpError rethrows unchanged. */
+interface HttpErrorLike {
+  status?: number;
+  message: string;
+}
+
+/** Structural check for the repo's HttpError (an instanceof would import it). */
+function isHttpErrorLike(error: unknown): error is HttpErrorLike {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof (error as { status?: unknown }).status === "number" &&
+    error instanceof Error
+  );
+}

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agentWakeupRequests,
   approvals,
@@ -10,7 +10,7 @@ import {
   issueThreadInteractions,
   issueWorkProducts,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -25,6 +25,9 @@ type DispositionRepairIssue = Pick<
   | "status"
   | "assigneeAgentId"
   | "assigneeUserId"
+  // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only review is itself a
+  // durable waiting path — the next verdict belongs to a person.
+  | "reviewPolicy"
   | "executionPolicy"
   | "executionState"
   | "monitorNextCheckAt"
@@ -205,7 +208,10 @@ export async function collectDispositionRepairSourceState(
             ? "interaction"
             : pendingApproval
               ? "approval"
-              : null;
+              // myrmidon(HUMAN-REVIEW-WAIT): see the type comment above.
+              : issue.reviewPolicy === "human_only"
+                ? "human_only_review"
+                : null;
 
   const durableState = {
     source: {

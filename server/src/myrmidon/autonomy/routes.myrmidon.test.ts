@@ -13,9 +13,10 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { AUTONOMY_SAFE_DEFAULTS, type AutonomyChangeLogEntry } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS, type AutonomyActionClass, type AutonomyChangeLogEntry, type AutonomyRegulation } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { autonomyRoutes } from "./routes.js";
+import type { AutonomyRegulationsBackend } from "./knowledge-regulations.js";
 import { autonomyGate, AUTONOMY_FORBIDDEN_CODE } from "./gate.js";
 import { memoryAutonomyStore } from "./store.js";
 import { autonomyService, AUTONOMY_ACTIVITY_SOURCE } from "./service.js";
@@ -59,7 +60,12 @@ function makeChangeLog() {
   };
 }
 
-function app(actor: unknown, store = memoryAutonomyStore()) {
+function app(
+  actor: unknown,
+  store = memoryAutonomyStore(),
+  listRegulations?: (companyId: string) => Promise<AutonomyRegulation[]>,
+  regulationsBackend?: AutonomyRegulationsBackend,
+) {
   const changelog = makeChangeLog();
   let seq = 0;
   const server = express();
@@ -74,6 +80,8 @@ function app(actor: unknown, store = memoryAutonomyStore()) {
       store,
       listChangeLog: changelog.listChangeLog,
       logActivity: changelog.logActivity,
+      ...(listRegulations ? { listRegulations } : {}),
+      ...(regulationsBackend ? { regulationsBackend } : {}),
       now: () => new Date("2026-10-02T00:00:00.000Z"),
       newId: () => `id-${++seq}`,
     }),
@@ -82,13 +90,19 @@ function app(actor: unknown, store = memoryAutonomyStore()) {
   return { server, store, changelog };
 }
 
-/** A tiny express app that proves the gate stops a handler. */
-function gatedApp(actor: unknown, verdictRole = "engineer") {
+/** A tiny express app that proves the gate stops a handler.
+ *
+ * The class under test is a parameter: the same harness carries the pause/wake
+ * class and the two leaf classes (deploy, merge), so the refusal is proven once
+ * per class on the same seam. The path is a stand-in — the gate reads the class
+ * passed to `assertAllowed`, not the route.
+ */
+function gatedApp(actor: unknown, verdictRole = "engineer", actionClass: AutonomyActionClass = "pause_wake_agents") {
   const store = memoryAutonomyStore({
     version: 1,
     matrix: {
       version: 2,
-      rules: [{ role: verdictRole, actionClass: "pause_wake_agents", verdict: "forbidden" }],
+      rules: [{ role: verdictRole, actionClass, verdict: "forbidden" }],
       defaults: { ...AUTONOMY_SAFE_DEFAULTS },
     },
     regulations: [],
@@ -103,7 +117,7 @@ function gatedApp(actor: unknown, verdictRole = "engineer") {
   });
   server.post("/api/agents/:id/pause", async (req, res, next) => {
     try {
-      await gate.assertAllowed(req, "pause_wake_agents");
+      await gate.assertAllowed(req, actionClass);
       ran();
       res.json({ ok: true });
     } catch (err) {
@@ -120,6 +134,22 @@ describe("myrmidon(1.6-AUTONOMY) gate: instruction-independent enforcement", () 
     const res = await request(server).post(`/api/agents/${AGENT_ID}/pause`).expect(403);
     expect(res.body.code).toBe(AUTONOMY_FORBIDDEN_CODE);
     expect(res.body.details?.actionClass).toBe("pause_wake_agents");
+    expect(ran).not.toHaveBeenCalled();
+  });
+
+  it("refuses the deploy class for an agent caller with 403 and does not run the handler", async () => {
+    const { server, ran } = gatedApp(agentActor, "engineer", "deploy");
+    const res = await request(server).post(`/api/agents/${AGENT_ID}/pause`).expect(403);
+    expect(res.body.code).toBe(AUTONOMY_FORBIDDEN_CODE);
+    expect(res.body.details?.actionClass).toBe("deploy");
+    expect(ran).not.toHaveBeenCalled();
+  });
+
+  it("refuses the merge class for an agent caller with 403 and does not run the handler", async () => {
+    const { server, ran } = gatedApp(agentActor, "engineer", "merge");
+    const res = await request(server).post(`/api/agents/${AGENT_ID}/pause`).expect(403);
+    expect(res.body.code).toBe(AUTONOMY_FORBIDDEN_CODE);
+    expect(res.body.details?.actionClass).toBe("merge");
     expect(ran).not.toHaveBeenCalled();
   });
 
@@ -187,6 +217,89 @@ describe("myrmidon(1.6-AUTONOMY) routes: read and edit with a change log", () =>
     expect(res.body.matrix.defaults).toEqual(AUTONOMY_SAFE_DEFAULTS);
     expect(res.body.regulations).toEqual([]);
     expect(res.body.changeLog).toEqual([]);
+  });
+
+  it("reads regulations from the knowledge facade and keeps the rule slug as wikiPageId", async () => {
+    const regulations: AutonomyRegulation[] = [{
+      id: "rule-1",
+      role: "smm",
+      title: "Publication approval",
+      bodyMarkdown: "Ask first.",
+      status: "approved",
+      revision: 1,
+      revisions: [],
+      createdAt: "2026-10-02T00:00:00.000Z",
+      createdBy: { type: "system", id: "system" },
+      updatedAt: "2026-10-02T00:00:00.000Z",
+      updatedBy: { type: "system", id: "system" },
+      supersededBy: null,
+      wikiPageId: "rules/smm/publication-approval",
+    }];
+    const listRegulations = vi.fn(async () => regulations);
+    const { server } = app(boardActor, memoryAutonomyStore(), listRegulations);
+
+    const response = await request(server).get(`/api/myrmidon/autonomy?companyId=${COMPANY_ID}`).expect(200);
+    const direct = await request(server).get(`/api/myrmidon/autonomy.regulations?companyId=${COMPANY_ID}`).expect(200);
+
+    expect(response.body.regulations).toEqual(regulations);
+    expect(direct.body).toEqual({ regulations });
+    expect(listRegulations).toHaveBeenCalledWith(COMPANY_ID);
+  });
+  it("approve and restore present the actor's grade to the rule gate and answer 403 on a mismatch", async () => {
+    const seen: Array<{ op: string; kind: string | null }> = [];
+    const refuse = (id: string, kind: string | null) => ({
+      ok: false as const,
+      failure: { kind: "approver_kind_mismatch" as const, regulationId: id, required: "owner", presented: kind },
+    });
+    const backend = {
+      approve: vi.fn(async (_c: string, _a: unknown, id: string, kind: string | null) => {
+        seen.push({ op: "approve", kind });
+        return kind === "owner" ? { ok: true as const, value: { id } as unknown as AutonomyRegulation } : refuse(id, kind);
+      }),
+      restore: vi.fn(async (_c: string, _a: unknown, input: { id: string }, kind: string | null) => {
+        seen.push({ op: "restore", kind });
+        return kind === "owner" ? { ok: true as const, value: { id: input.id } as unknown as AutonomyRegulation } : refuse(input.id, kind);
+      }),
+    } as unknown as AutonomyRegulationsBackend;
+    const operator = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "operator" }] };
+    const owner = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "owner" }] };
+    const instanceAdmin = { ...boardActor, isInstanceAdmin: true };
+
+    const asOperator = app(operator, memoryAutonomyStore(), undefined, backend).server;
+    const approveDenied = await request(asOperator).post(`/api/myrmidon/autonomy/regulations/rule-1/approve?companyId=${COMPANY_ID}`).expect(403);
+    expect(approveDenied.body.code).toBe("autonomy_approver_kind_mismatch");
+    expect(approveDenied.body.required).toBe("owner");
+    await request(asOperator).post(`/api/myrmidon/autonomy/regulations/rule-1/revisions/1/restore?companyId=${COMPANY_ID}`).expect(403);
+
+    for (const actor of [owner, instanceAdmin]) {
+      const server = app(actor, memoryAutonomyStore(), undefined, backend).server;
+      await request(server).post(`/api/myrmidon/autonomy/regulations/rule-1/approve?companyId=${COMPANY_ID}`).expect(200);
+      await request(server).post(`/api/myrmidon/autonomy/regulations/rule-1/revisions/1/restore?companyId=${COMPANY_ID}`).expect(200);
+    }
+    expect(seen.map((x) => `${x.op}:${x.kind}`)).toEqual([
+      "approve:operator", "restore:operator",
+      "approve:owner", "restore:owner",
+      "approve:owner", "restore:owner",
+    ]);
+  });
+
+  it("K-3: delete presents the actor's grade to the backend; a viewer has none and is refused before it", async () => {
+    const seen: Array<string | null> = [];
+    const backend = {
+      delete: vi.fn(async (_c: string, _a: unknown, id: string, kind: string | null) => {
+        seen.push(kind);
+        return kind === "owner"
+          ? { ok: true as const, value: { id } }
+          : { ok: false as const, failure: { kind: "approver_kind_mismatch" as const, regulationId: id, required: "owner", presented: kind } };
+      }),
+    } as unknown as AutonomyRegulationsBackend;
+    const asRole = (membershipRole: string) =>
+      app({ ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole }] }, memoryAutonomyStore(), undefined, backend).server;
+    const url = `/api/myrmidon/autonomy/regulations/rule-1?companyId=${COMPANY_ID}`;
+    await request(asRole("operator")).delete(url).expect(403);
+    await request(asRole("viewer")).delete(url).expect(403);
+    await request(asRole("owner")).delete(url).expect(200);
+    expect(seen).toEqual(["operator", "owner"]);
   });
 
   it("edits the matrix, answers 409 on a stale version and shows the edit in the change log", async () => {

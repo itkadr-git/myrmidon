@@ -46,6 +46,7 @@ export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  "omp_local",
 ]);
 
 export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement> = {
@@ -85,6 +86,11 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
   },
   pi_local: {
+    supportsSessionResume: true,
+    nativeContextManagement: "unknown",
+    defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
+  },
+  omp_local: {
     supportsSessionResume: true,
     nativeContextManagement: "unknown",
     defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,

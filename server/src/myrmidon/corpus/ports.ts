@@ -1,0 +1,307 @@
+// server/src/myrmidon/corpus/ports.ts
+//
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the ports the corpus module consumes.
+//
+// This file is a LOCAL COPY of the port surface of `packages/corpus` (parts A
+// and B). The issue OPE-6165 fixes the order explicitly: "типы брать из ч.A
+// после его мержа; до мержа — локальная копия типов, заменить на импорт перед
+// PR". Part A owns `packages/corpus/**` — this module never imports the package
+// until that merge lands (the file boundary is hard: only parts A and B touch
+// `packages/corpus/**`).
+//
+// Switch-over recipe (the one edit that follows part A's merge): delete
+// everything up to the "wire-in" marker below and re-export the package types
+// instead — `export * from "@myrmidon/corpus/ports";` — then let `tsc` point
+// at every place where the package names a field differently; the mapping lives
+// in `service.ts` and `worker.ts` only, so the API contract in
+// `packages/shared/src/myrmidon-corpus.ts` does not move.
+//
+// The module talks to the corpus ONLY through these five ports. It has no SQL,
+// no embedding call and no HTTP client of its own — that is parts A/B, and the
+// whole point of the port boundary: the parse service is a separate HTTP
+// service, the store is the board's database, the index is pgvector.
+
+import type {
+  CorpusDocumentStatus,
+  CorpusParseJobState,
+  CorpusSearchMode,
+  CorpusSettings,
+  CorpusStats,
+} from "@myrmidon/shared";
+
+// Re-exported so that a consumer of these ports needs one import, not two; part
+// A's package does the same from its own module.
+export type {
+  CorpusDocumentStatus,
+  CorpusParseJobState,
+  CorpusSearchMode,
+  CorpusSettings,
+  CorpusStats,
+};
+
+export interface CorpusDatasetRecord {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+  documentCount: number;
+  readyCount: number;
+  failedCount: number;
+  chunkCount: number;
+}
+
+export interface CorpusDocumentRecord {
+  id: string;
+  companyId: string;
+  datasetId: string;
+  filename: string;
+  mimeType: string | null;
+  byteSize: number;
+  /** Handle of the BlobStore object holding the uploaded bytes. */
+  blobRef: string;
+  status: CorpusDocumentStatus;
+  chunkCount: number;
+  error: string | null;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+  parsedAt: string | null;
+  // OPE-12000: the fields below belong to documents added by address. They are optional on purpose:
+  // an adapter or a test double that knows nothing of URL sources reads as "an upload" (absent = null).
+  /** Where a URL-sourced document comes from; null for an upload. */
+  sourceUrl?: string | null;
+  refreshIntervalHours?: number | null;
+  /** SHA-256 (hex) of the stored bytes; null for an upload. */
+  contentHash?: string | null;
+  lastFetchedAt?: string | null;
+  /** Why the last fetch failed, or null. */
+  sourceError?: string | null;
+  /**
+   * The bytes the current version replaced. They stay until the new version is `ready`
+   * (the parse worker removes them then); null when there is nothing to clean up.
+   */
+  previousBlobRef?: string | null;
+}
+
+export interface CorpusJobRecord {
+  id: string;
+  companyId: string;
+  datasetId: string;
+  documentId: string;
+  state: CorpusParseJobState;
+  attempts: number;
+  maxAttempts: number;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Whole-company counters; the store computes them, the route only formats them. */
+export type CorpusStoreCounters = CorpusStats;
+
+export interface CorpusStorePort {
+  listDatasets(companyId: string): Promise<CorpusDatasetRecord[]>;
+  getDataset(companyId: string, datasetId: string): Promise<CorpusDatasetRecord | null>;
+  /** Existence check for search: avoids loading dataset stats and every document. */
+  hasDataset(companyId: string, datasetId: string): Promise<boolean>;
+  createDataset(input: {
+    companyId: string;
+    name: string;
+    description: string | null;
+  }): Promise<CorpusDatasetRecord>;
+  updateDataset(
+    companyId: string,
+    datasetId: string,
+    patch: { name?: string; description?: string | null },
+  ): Promise<CorpusDatasetRecord | null>;
+  deleteDataset(companyId: string, datasetId: string): Promise<boolean>;
+  listDocuments(
+    companyId: string,
+    datasetId: string,
+    options?: { limit?: number; offset?: number },
+  ): Promise<CorpusDocumentRecord[]>;
+  getDocument(companyId: string, documentId: string): Promise<CorpusDocumentRecord | null>;
+  /** Fetch only names needed for search citations; no per-document jobs/chunks. */
+  getDocumentNames(companyId: string, documentIds: string[]): Promise<Map<string, string>>;
+  createDocument(input: {
+    companyId: string;
+    datasetId: string;
+    filename: string;
+    mimeType: string | null;
+    byteSize: number;
+    blobRef: string;
+    maxAttempts: number;
+    /** OPE-12000: set for a document added by address. */
+    source?: { url: string; refreshIntervalHours: number; contentHash: string; fetchedAt: string };
+  }): Promise<CorpusDocumentRecord>;
+  updateDocument(
+    companyId: string,
+    documentId: string,
+    patch: Partial<
+      Pick<
+        CorpusDocumentRecord,
+        | "status"
+        | "chunkCount"
+        | "error"
+        | "attempts"
+        | "parsedAt"
+        | "blobRef"
+        | "byteSize"
+        | "mimeType"
+        | "contentHash"
+        | "lastFetchedAt"
+        | "sourceError"
+        | "previousBlobRef"
+      >
+    >,
+  ): Promise<CorpusDocumentRecord | null>;
+  /**
+   * OPE-12000: the URL-sourced documents (those with a `sourceUrl`), oldest fetch first. With
+   * `dueAt` only the ones whose `lastFetchedAt + refreshIntervalHours` has passed; without it all
+   * of them. `companyId` / `datasetId` narrow the scope; the scheduled sweep passes neither.
+   */
+  listSourceDocuments(input: {
+    companyId?: string;
+    datasetId?: string;
+    dueAt?: Date;
+    limit: number;
+  }): Promise<CorpusDocumentRecord[]>;
+  deleteDocument(companyId: string, documentId: string): Promise<boolean>;
+  countDocuments(companyId: string, datasetId: string): Promise<number>;
+  getJob(companyId: string, jobId: string): Promise<CorpusJobRecord | null>;
+  counters(companyId: string): Promise<CorpusStoreCounters>;
+}
+
+export interface BlobStorePort {
+  put(input: {
+    companyId: string;
+    documentId: string;
+    filename: string;
+    mimeType: string | null;
+    bytes: Uint8Array;
+  }): Promise<{ ref: string; byteSize: number }>;
+  get(ref: string): Promise<Uint8Array>;
+  delete(ref: string): Promise<void>;
+}
+
+export interface WorkQueuePort {
+  enqueue(input: {
+    companyId: string;
+    datasetId: string;
+    documentId: string;
+    maxAttempts: number;
+    /**
+     * A re-parse on request: the document's existing job starts over (queued, attempts and
+     * error cleared) whatever its state is. Without it only a failed job is re-armed.
+     */
+    reset?: boolean;
+  }): Promise<CorpusJobRecord>;
+  /** Oldest queued jobs, at most `limit`; `[]` when the queue is empty. */
+  claim(input: { limit: number }): Promise<CorpusJobRecord[]>;
+  complete(companyId: string, jobId: string): Promise<void>;
+  /** Release the job for another attempt; the store settles it `failed` at `maxAttempts`. */
+  fail(companyId: string, jobId: string, reason: string): Promise<CorpusJobRecord | null>;
+  /**
+   * Give a claimed job back unfinished because this process is stopping: `queued` again at once,
+   * the attempt it used refunded. `null` when the job is not `running` any more.
+   */
+  release(companyId: string, jobId: string, reason: string): Promise<CorpusJobRecord | null>;
+  /**
+   * Settle every job a dead process left `running` (the board was killed or restarted mid-parse):
+   * `queued` again at once, or `failed` when its attempts are used up. For the one worker of the
+   * process, at its start, before its first claim.
+   */
+  releaseRunning(): Promise<CorpusJobRecord[]>;
+}
+
+export interface ParsedChunk {
+  text: string;
+  /** Position of the chunk inside the document, 0-based. */
+  index: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ParsedDocument {
+  text: string;
+  chunks: ParsedChunk[];
+}
+
+/**
+ * The document-parse service (PDF/scan → text), reached over HTTP. Part B owns
+ * the real client; the base URL comes from the module settings.
+ */
+export interface DocumentParsePort {
+  parse(input: {
+    bytes: Uint8Array;
+    filename: string;
+    mimeType: string | null;
+    baseUrl: string;
+    timeoutMs: number;
+    maxRunMs?: number;
+    queueTimeoutMs?: number;
+    /** Aborts the parse and cancels its job in the parse service (the board is shutting down). */
+    signal?: AbortSignal;
+  }): Promise<ParsedDocument>;
+}
+
+export interface SearchHitRecord {
+  chunkId: string;
+  documentId: string;
+  datasetId: string;
+  score: number;
+  text: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface SearchIndexPort {
+  /** Index the chunks of one document; returns how many it wrote. */
+  indexDocument(input: {
+    companyId: string;
+    datasetId: string;
+    documentId: string;
+    chunks: ParsedChunk[];
+    embedderModel: string;
+    embedderDimensions: number;
+    embedderBaseUrl: string | null;
+    /** Aborts the embedding requests (the board is shutting down). */
+    signal?: AbortSignal;
+  }): Promise<number>;
+  deleteDocument(companyId: string, documentId: string): Promise<void>;
+  search(input: {
+    companyId: string;
+    datasetId?: string;
+    datasetIds?: string[];
+    query: string;
+    limit: number;
+    mode: CorpusSearchMode;
+    embedderModel: string;
+    embedderDimensions: number;
+    embedderBaseUrl: string | null;
+  }): Promise<SearchHitRecord[]>;
+  countChunks(companyId: string, datasetId?: string): Promise<number>;
+  /** Check that the embedder is configured for this company. Throws CorpusRequestError if not. */
+  assertEmbedderConfigured?: (companyId: string, embedderBaseUrl: string | null) => Promise<void>;
+}
+
+export interface CorpusPorts {
+  store: CorpusStorePort;
+  blobs: BlobStorePort;
+  queue: WorkQueuePort;
+  parser: DocumentParsePort;
+  index: SearchIndexPort;
+}
+
+export interface CorpusPortContext {
+  env: Record<string, string | undefined>;
+  settings: CorpusSettings;
+}
+
+/**
+ * Builds the ports of one call. `null` means "this process cannot serve the
+ * corpus" (the database half of parts A/B is not wired yet): the settings route
+ * then reports `available: false`, every data route answers 503 and the parse
+ * sweep is a no-op — the module stays silent on the fleet until the ports land.
+ */
+export type CorpusPortsResolver = (context: CorpusPortContext) => CorpusPorts | null;

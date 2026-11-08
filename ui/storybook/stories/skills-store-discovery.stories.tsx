@@ -188,7 +188,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     sourceBadge: "local",
   },
   {
-    key: "paperclipai/paperclip/paperclip",
+    key: "paperclipai/paperclip/myrmidon",
     skillId: "s-core",
     catalogRef: "c-core",
     name: "paperclip",

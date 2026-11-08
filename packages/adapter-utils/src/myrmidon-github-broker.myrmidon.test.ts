@@ -138,7 +138,35 @@ describe("GitHub broker candidate list (myrmidon P6)", () => {
 describe("GitHub broker candidate walk (myrmidon P6)", () => {
   const urls = ["https://board.example.com:8443", "http://127.0.0.1:3100", "http://198.51.100.20:3100"];
 
-  it("keeps walking after a transport failure and an HTTP error", async () => {
+  it("prefers the internal board URL before public broker and API URLs", () => {
+    const { walk } = loadWalk(async () => response(200));
+    expect(walk.paperclipBrokerCandidateUrls({
+      MYRMIDON_BOT_BOARD_URL: "http://paperclip-server-1:3100",
+      PAPERCLIP_GITHUB_BROKER_URL: "https://public.example.com",
+      MYRMIDON_API_URL: "https://myrmidon-entry.example.com/api",
+      PAPERCLIP_API_URL: "https://agent-entry.example.com/api",
+    })).toEqual([
+      "http://paperclip-server-1:3100",
+      "https://public.example.com",
+      "https://myrmidon-entry.example.com",
+      "https://agent-entry.example.com",
+    ]);
+  });
+
+  it("continues to the next candidate after reverse-proxy 400/495/496 responses", async () => {
+    const proxyStatuses = [400, 495, 496];
+    const { walk, calls } = loadWalk(async (call) => {
+      const index = calls.length - 1;
+      return index < proxyStatuses.length ? response(proxyStatuses[index]) : response(200);
+    });
+    const candidates = ["http://proxy-400", "http://proxy-495", "http://proxy-496", "http://internal-board"];
+    const result = await walk.paperclipRequestBrokerCredentials(BASE_ENV, candidates);
+    expect(result.response?.status).toBe(200);
+    expect(result.tried.map((attempt) => attempt.split(" -> ")[1])).toEqual(["400", "495", "496"]);
+    expect(calls).toHaveLength(4);
+  });
+
+  it("continues after a transport failure and an HTTP error", async () => {
     const { walk, calls } = loadWalk(async (call) => {
       if (call.url.startsWith("https://board.example.com")) throw new TypeError("fetch failed");
       if (call.url.startsWith("http://127.0.0.1")) return response(400);
@@ -211,6 +239,29 @@ describe("GitHub broker candidate walk (myrmidon P6)", () => {
     expect(calls[0]?.headers["x-paperclip-github-capability"]).toBe("broker-capability-value");
     expect(result.response?.status).toBe(403);
     expect(result.tried.join("\n")).not.toMatch(/bridge-token-value|broker-capability-value/);
+  });
+
+  it("prefers MYRMIDON_API_KEY over PAPERCLIP_API_KEY for authorization when bridge token is absent", async () => {
+    const { walk, calls } = loadWalk(async () => response(200));
+    await walk.paperclipRequestBrokerCredentials(
+      {
+        MYRMIDON_API_KEY: "myrmidon-key-value",
+        PAPERCLIP_API_KEY: "paperclip-key-value",
+      },
+      urls,
+    );
+    expect(calls[0]?.headers.authorization).toBe("Bearer myrmidon-key-value");
+  });
+
+  it("falls back to PAPERCLIP_API_KEY when MYRMIDON_API_KEY is absent", async () => {
+    const { walk, calls } = loadWalk(async () => response(200));
+    await walk.paperclipRequestBrokerCredentials(
+      {
+        PAPERCLIP_API_KEY: "paperclip-key-value",
+      },
+      urls,
+    );
+    expect(calls[0]?.headers.authorization).toBe("Bearer paperclip-key-value");
   });
 });
 

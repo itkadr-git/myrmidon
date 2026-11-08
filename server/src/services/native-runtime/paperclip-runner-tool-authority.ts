@@ -1,15 +1,18 @@
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { blockerOpenCondition } from "../../myrmidon/blocker-resolved.js";
+import { PRODUCT_NAME as PN } from "../../myrmidon/product.js";
 import { callProjectTool } from "../project-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
-import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
+import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@myrmidon/shared";
 import { createHash } from "node:crypto";
-import { paperclipChatFilePreparationDelivery } from "@paperclipai/adapter-utils/chat-file-delivery";
+import { paperclipChatFilePreparationDelivery } from "@myrmidon/adapter-utils/chat-file-delivery";
 import {
   isPaperclipExternalChatContractTurn,
   normalizePaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import { runnerApiToolsEnabled } from "./runner-api-rollout.js";
 import { openRunnerApiWorkspaceFile } from "./runner-api-files.js";
 import { basename } from "node:path";
@@ -21,8 +24,8 @@ import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
-import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { and, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   agentWakeupRequests,
@@ -34,7 +37,7 @@ import {
   issueDocuments,
   issues,
   issueThreadInteractions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
@@ -67,6 +70,7 @@ import {
   READ_CHAT_ATTACHMENT_TOOL_NAME,
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api",
@@ -152,9 +156,9 @@ export class PaperclipRunnerToolAuthority {
         name: descriptor.operationId,
         description:
           descriptor.operationId === "register_deliverable"
-            ? "Prepare one verified workspace file for Paperclip's final task or external-chat response. This records the attachment, work product, and explicit same-run selection; it does not confirm provider delivery."
+            ? `Prepare one verified workspace file for ${PN}'s final task or external-chat response. This records the attachment, work product, and explicit same-run selection; it does not confirm provider delivery.`
             : descriptor.operationId === "request_human_input"
-              ? "Create a typed, durable human-input interaction on the current Paperclip task bound to this run. For structured questions and choices, use interactionKind 'questions' with payload.questions as described by the payload schema. Paperclip renders the interaction in its UI and, for connected chats, uses supported provider question controls or a safe fallback. Normal task permissions and review gates still apply."
+              ? `Create a typed, durable human-input interaction on the current ${PN} task bound to this run. For structured questions and choices, use interactionKind 'questions' with payload.questions as described by the payload schema. ${PN} renders the interaction in its UI and, for connected chats, uses supported provider question controls or a safe fallback. Normal task permissions and review gates still apply.`
               : descriptor.description,
         inputSchema:
           descriptor.operationId === "register_deliverable"
@@ -312,7 +316,7 @@ export class PaperclipRunnerToolAuthority {
       case "create_project":
       case "list_project_repositories":
       case "list_projects": {
-        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const apiUrl = this.binding.apiUrl ?? readProductEnv("API_URL");
         const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);
         if (!apiUrl || !token) throw new Error("Project tool authentication is unavailable");
         return callProjectTool({ name: call.tool, arguments: input, apiUrl, token,
@@ -415,10 +419,10 @@ export class PaperclipRunnerToolAuthority {
     const bound = await this.#boundContext();
     const context = { ...this.binding, issueIdentifier: bound.issue.identifier, workMode: bound.issue.workMode };
     const { input, operation } = validateRunnerApiCall(value, context);
-    const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
-    if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
+    const apiUrl = this.binding.apiUrl ?? readProductEnv("API_URL");
+    if (!apiUrl) throw new Error(`${PN} API origin is unavailable`);
     const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, bound.actor.adapterType, this.binding.runId, bound.run.responsibleUserId);
-    if (!token) throw new Error("Paperclip run authentication is unavailable");
+    if (!token) throw new Error(`${PN} run authentication is unavailable`);
     const execute = async () => {
       const current = await this.#boundContext();
       if (!runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled)) throw new Error("paperclip_runner_tool_not_advertised");
@@ -690,6 +694,16 @@ export class PaperclipRunnerToolAuthority {
         };
       }
       let deduplicated = false;
+      // myrmidon(BLOCKED-REASON): blocked only while a blocker is open; the
+      // service refuses a reasonless blocked, so a child whose blockers are all
+      // done is created as todo (a pending workspace sync-back re-blocks below).
+      const openBlockerRows = blockedByIssueIds.length > 0
+        ? await tx.select({ id: issues.id }).from(issues).where(and(
+            eq(issues.companyId, this.binding.companyId),
+            inArray(issues.id, blockedByIssueIds),
+            blockerOpenCondition(issues.status),
+          ))
+        : [];
       const createInput = {
         projectId: nullableProviderId(input.projectId),
         initialPlan: nullableProviderId(input.initialPlan),
@@ -697,7 +711,7 @@ export class PaperclipRunnerToolAuthority {
         description: input.description === null || input.description === undefined
           ? null
           : requiredString(input.description),
-        status: blockedByIssueIds.length > 0 ? "blocked" as const : "todo" as const,
+        status: openBlockerRows.length > 0 ? "blocked" as const : "todo" as const,
         workMode: "standard" as const,
         priority,
         assigneeAgentId,
@@ -733,6 +747,19 @@ export class PaperclipRunnerToolAuthority {
           if (readyChild) {
             childStatus = readyChild.status;
             childStatusVersion = readyChild.statusVersion;
+          }
+        }
+      }
+      if (child.status === "todo" && !deduplicated && blockedByIssueIds.length > 0) {
+        const readiness = await issueService(tx).getDependencyReadiness(child.id, tx);
+        if (!readiness.isDependencyReady) {
+          const heldChild = await issueService(tx).update(child.id, {
+            status: "blocked",
+            actorAgentId: this.binding.agentId,
+          }, tx);
+          if (heldChild) {
+            childStatus = heldChild.status;
+            childStatusVersion = heldChild.statusVersion;
           }
         }
       }

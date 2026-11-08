@@ -644,6 +644,23 @@ export interface PluginObjectReferenceProviderDeclaration {
   webhookEndpointKeys?: string[];
 }
 
+/** Model provider connector declaration in a plugin manifest. */
+export interface PluginModelProviderDeclaration {
+  type: string;
+  name?: string;
+  defaultBaseUrl?: string | null;
+  defaultModels?: readonly string[];
+  supportsChannels?: boolean;
+}
+
+/** Plugin-declared models provisioned into the company gateway on activation. */
+export interface PluginProviderModelDeclaration {
+  provider: string;
+  baseUrl: string;
+  credentialSecretName: string;
+  models: Array<{ id: string; name?: string }>;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -712,6 +729,10 @@ export interface PaperclipPluginManifestV1 {
   localFolders?: PluginLocalFolderDeclaration[];
   /** External object reference providers this plugin contributes. */
   objectReferences?: PluginObjectReferenceProviderDeclaration[];
+  /** Model provider connectors this plugin contributes. */
+  modelProviders?: PluginModelProviderDeclaration[];
+  /** Explicit provider models and company-owned credential binding for gateway sync. */
+  providerModels?: PluginProviderModelDeclaration;
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.
@@ -719,6 +740,13 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): when true, the plugin is not activated and
+   * stays hidden from menus and settings until a valid entitlement key is
+   * accepted for it in the instance settings. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/plugin.ts).
+   */
+  requiresEntitlement?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -926,7 +954,7 @@ export interface PluginJobRecord {
   /** Cron expression for the schedule. */
   schedule: string;
   /** Current job status. */
-  status: "active" | "paused" | "failed";
+  status: "active" | "paused" | "failed" | "running";
   /** Last time the job was executed. */
   lastRunAt: Date | null;
   /** Next scheduled execution time. */

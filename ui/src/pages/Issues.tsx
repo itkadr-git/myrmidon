@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -14,8 +15,10 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@myrmidon/shared";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
+// myrmidon(UI-RU): page copy runs through the fork i18n catalog.
+import { useTranslation } from "@/i18n";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -67,6 +70,7 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
 
 export function Issues() {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { t } = useTranslation();
   const issuesPresentation = resolveIssuesPresentation(streamlinedUiEnabled);
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -129,16 +133,16 @@ export function Issues() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Tasks",
+        t("tasks.title"),
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
-    [location.pathname, location.search, location.hash],
+    [location.pathname, location.search, location.hash, t],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Tasks" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("tasks.title") }]);
+  }, [setBreadcrumbs, t]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
@@ -202,8 +206,8 @@ export function Issues() {
       <EmptyState
         icon={CircleDot}
         message={streamlinedUiEnabled
-          ? "Select an organization to view tasks."
-          : "Select a company to view tasks."}
+          ? t("tasks.selectOrganization")
+          : t("tasks.selectCompany")}
       />
     );
   }
@@ -217,7 +221,7 @@ export function Issues() {
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
+      viewStateKey="myrmidon:issues-view"
       rowPresentation={issuesPresentation.rowPresentation}
       toolbarPresentation={issuesPresentation.toolbarPresentation}
       issueLinkState={issueLinkState}

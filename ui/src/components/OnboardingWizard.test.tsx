@@ -59,7 +59,7 @@ const mockGoalsApi = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
   testEnvironment: vi.fn(
-    async (): Promise<import("@paperclipai/shared").AdapterEnvironmentTestResult> => ({
+    async (): Promise<import("@myrmidon/shared").AdapterEnvironmentTestResult> => ({
       adapterType: "claude_local",
       status: "pass",
       checks: [],
@@ -78,7 +78,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   // under test checks with `instanceof`.
   getClaudeOAuthTokenStatus: vi.fn(),
   getAdapterAuthSignal: vi.fn(
-    async (): Promise<import("@paperclipai/shared").AdapterAuthSignalResponse> => ({
+    async (): Promise<import("@myrmidon/shared").AdapterAuthSignalResponse> => ({
       status: "present",
     }),
   ),
@@ -130,8 +130,8 @@ const mockAdapterBuild = vi.hoisted(() => ({
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(async () => [] as Array<Record<string, unknown>>),
   capabilities: vi.fn(
-    async (): Promise<import("@paperclipai/shared").EnvironmentCapabilities> =>
-      (await import("@paperclipai/shared")).getEnvironmentCapabilities([]),
+    async (): Promise<import("@myrmidon/shared").EnvironmentCapabilities> =>
+      (await import("@myrmidon/shared")).getEnvironmentCapabilities([]),
   ),
 }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -246,7 +246,7 @@ vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@myrmidon/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
@@ -1222,7 +1222,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
                 testedAt: new Date().toISOString(),
               };
         }) as unknown as () => Promise<
-          import("@paperclipai/shared").AdapterEnvironmentTestResult
+          import("@myrmidon/shared").AdapterEnvironmentTestResult
         >,
       );
       const { root } = await openConnectStep();
@@ -2310,6 +2310,56 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(rowCentred()).toBe(false);
       expect(cta()).toBe("Next");
       expect(document.body.textContent).toContain("Connect a model");
+
+      await act(async () => root.unmount());
+    });
+
+    it("offers the skip link and finishes without hiring, landing on a working board", async () => {
+      // OPE-10206: a model credential is the one thing the product cannot run
+      // without, but it must not gate reaching the board. The connect step is
+      // a choice, and "not yet" is one of the answers: the first task lands
+      // unassigned and the agent is hired later, in settings.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockProjectsApi.create.mockResolvedValue({ id: "project-onboarding" });
+      mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "INI-1" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      // The way out is present and phrased as a way on, not an apology.
+      const skip = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Skip for now"),
+      );
+      expect(skip).toBeTruthy();
+
+      // It is disabled exactly when the wizard could not finish from it —
+      // no company to put the first task in. Here there is one, so it is live.
+      expect(skip!.disabled).toBe(false);
+
+      await act(async () => {
+        skip!.click();
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+
+      // No hire, no login — nothing that needs a vendor account happened.
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
+      // But the server work ran: the board the customer lands on has its
+      // onboarding project and its first task, unassigned — the key is not
+      // merely null, it is absent, so the server defaults it to unassigned.
+      expect(mockProjectsApi.create).toHaveBeenCalledWith(
+        "company-new",
+        expect.objectContaining({}),
+      );
+      const issueCall = mockIssuesApi.create.mock.calls.at(-1);
+      expect(issueCall?.[0]).toBe("company-new");
+      expect(issueCall?.[1]).not.toHaveProperty("assigneeAgentId");
+
+      // And onboarding is over: company selected, wizard closed, dashboard.
+      expect(mockCompany.setSelectedCompanyId).toHaveBeenCalledWith(
+        "company-new",
+        expect.objectContaining({ source: "route_sync" }),
+      );
+      expect(mockDialog.closeOnboarding).toHaveBeenCalled();
 
       await act(async () => root.unmount());
     });

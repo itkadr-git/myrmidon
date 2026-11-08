@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
+import { createIsolatedTestEnv } from "./vitest-isolated-env.mjs";
 
 const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -18,22 +19,23 @@ const serializedShardDurations = loadShardDurations(
 );
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
-const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
+const serverScriptsDir = path.join(repoRoot, "server", "scripts");
 const nonServerProjects = [
-  "@paperclipai/shared",
-  "@paperclipai/skills-catalog",
-  "@paperclipai/db",
-  "@paperclipai/adapter-utils",
-  "@paperclipai/adapter-claude-local",
-  "@paperclipai/adapter-codex-local",
-  "@paperclipai/adapter-grok-local",
-  "@paperclipai/adapter-openclaw-gateway",
-  "@paperclipai/adapter-opencode-local",
-  "@paperclipai/plugin-daytona",
-  "@paperclipai/plugin-sdk",
-  "@paperclipai/create-paperclip-plugin",
-  "@paperclipai/ui",
-  "paperclipai",
+  "@myrmidon/shared",
+  "@myrmidon/skills-catalog",
+  "@myrmidon/db",
+  "@myrmidon/corpus",
+  "@myrmidon/adapter-utils",
+  "@myrmidon/adapter-claude-local",
+  "@myrmidon/adapter-codex-local",
+  "@myrmidon/adapter-grok-local",
+  "@myrmidon/adapter-openclaw-gateway",
+  "@myrmidon/adapter-opencode-local",
+  "@myrmidon/plugin-daytona",
+  "@myrmidon/plugin-sdk",
+  "@myrmidon/create-paperclip-plugin",
+  "@myrmidon/ui",
+  "myrmidon",
 ];
 const routeTestPattern = /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/;
 const additionalSerializedServerTests = new Set([
@@ -73,7 +75,7 @@ const generalChatGroupName = "general-chat";
 const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
 const generalWorkspacesAGroupName = "general-workspaces-a";
 const generalWorkspacesBGroupName = "general-workspaces-b";
-const generalWorkspacesAProjects = ["@paperclipai/ui", "paperclipai"];
+const generalWorkspacesAProjects = ["@myrmidon/ui", "myrmidon"];
 const generalWorkspacesBProjects = nonServerProjects.filter((project) => !generalWorkspacesAProjects.includes(project));
 const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName];
 const allowedGeneralGroupNames = [...generalGroupNames, generalServerWithoutChatGroupName, generalChatGroupName];
@@ -81,9 +83,49 @@ const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
 ];
+// Arguments for the serialized route/authz lane: ONE Vitest process runs the
+// whole shard, one test file at a time (--no-file-parallelism, maxWorkers=1),
+// and --pool=forks --isolate starts a fresh child process per test file, so the
+// module registry, mocks, timers, listening sockets and process-wide state of a
+// suite still die with its process. Each child also gets its own PAPERCLIP_HOME,
+// PAPERCLIP_CONFIG, PAPERCLIP_INSTANCE_ID and TMPDIR (vitest-isolated-worker-env.mjs,
+// preloaded through --execArgv), exactly like the former one-Vitest-process-per-
+// file layout. What is shared is only Vite's in-memory transform cache in the
+// parent process: the large route modules (src/routes/*.ts and their imports)
+// are transformed once per shard instead of once per file, which was 40-50% of
+// the lane's wall time. --bail=1 keeps the former fail-fast behaviour (the first
+// failing suite stopped the shard); --no-bail runs the whole shard regardless.
+//
+// The server config is loaded directly (--root server --config ...) instead of
+// through the workspace `--project @myrmidon/server`: Vitest does not hand the
+// CLI --execArgv down to workspace projects, and the per-file environment
+// needs it. The working directory stays the repository root, as before.
+const serializedWorkerEnvPreload = pathToFileURL(
+  path.join(scriptsDir, "vitest-isolated-worker-env.mjs"),
+).href;
+function serializedLaneVitestArgs({ bail }) {
+  return [
+    "--root",
+    serverRoot,
+    "--config",
+    path.join(serverRoot, "vitest.config.ts"),
+    ...serializedServerVitestArgs,
+    "--pool=forks",
+    "--isolate",
+    `--execArgv=--import=${serializedWorkerEnvPreload}`,
+    ...(bail ? ["--bail=1"] : []),
+  ];
+}
 const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 
 function walk(dir) {
+  // Truncated checkouts and synthetic fixture trees may lack one of the
+  // collected roots (for example server/scripts); treat a missing directory
+  // as an empty set instead of failing the whole selection (vitest-chat-shards
+  // builds a minimal server/src/__tests__ tree).
+  if (!existsSync(dir)) {
+    return [];
+  }
   const entries = readdirSync(dir);
   const files = [];
   for (const entry of entries) {
@@ -100,10 +142,6 @@ function walk(dir) {
 
 function toRepoPath(file) {
   return path.relative(repoRoot, file).split(path.sep).join("/");
-}
-
-function toServerPath(file) {
-  return path.relative(serverRoot, file).split(path.sep).join("/");
 }
 
 function isRouteOrAuthzTest(file) {
@@ -152,6 +190,8 @@ function parseCliOptions(argv) {
   let shardCount = null;
   let group = null;
   let dryRun = false;
+  let check = false;
+  let bail = true;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -194,6 +234,18 @@ function parseCliOptions(argv) {
 
     if (arg === "--dry-run") {
       dryRun = true;
+      continue;
+    }
+
+    if (arg === "--check") {
+      check = true;
+      continue;
+    }
+
+    // Serialized lane: keep running the remaining suites after a failure
+    // (default is fail-fast, the first failing suite stops the shard).
+    if (arg === "--no-bail") {
+      bail = false;
       continue;
     }
 
@@ -250,6 +302,8 @@ function parseCliOptions(argv) {
       shardCount: shardCount ?? 1,
       group: null,
       dryRun,
+      check,
+      bail,
     };
   }
 
@@ -259,6 +313,8 @@ function parseCliOptions(argv) {
     shardCount,
     group,
     dryRun,
+    check,
+    bail,
   };
 }
 
@@ -281,22 +337,15 @@ function runVitest(args, label, testShard = null) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
-  // Production workspace/security checks reject symlink aliases. In particular
-  // /tmp is /private/tmp on macOS, so fixture roots must use the canonical path.
-  const testRoot = realpathSync(mkdtempSync(path.join(tempRootParent, "pv-")));
-  // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
+  const { testRoot, env: isolatedEnv } = createIsolatedTestEnv({
+    tempRootParent,
+    instanceId: `vt-${process.pid}-${invocationIndex}`,
+  });
   const env = {
     ...process.env,
     NODE_ENV: "test",
-    PAPERCLIP_HOME: path.join(testRoot, "h"),
-    // Config discovery otherwise prefers the checkout's .paperclip/config.json
-    // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.
-    PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
-    PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
-    TMPDIR: path.join(testRoot, "t"),
+    ...isolatedEnv,
   };
-  mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
-  mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
     const collect = (filters, name) => {
       const output = path.join(testRoot, `${name}.json`);
@@ -351,7 +400,7 @@ function runProjectGroup(projects, groupName, shardIndex = null, shardCount = nu
 
 function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
   if (groupName === generalChatGroupName) {
-    runVitest(["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite],
+    runVitest(["--project", "@myrmidon/server", ...serializedServerVitestArgs, chatSuite],
       "chat integration test shard", { index: shardIndex ?? 0, count: shardCount ?? 1 });
     return;
   }
@@ -375,7 +424,7 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
       runVitest(
         [
           "--project",
-          "@paperclipai/server",
+          "@myrmidon/server",
           ...serializedServerVitestArgs,
           ...shardFiles,
         ],
@@ -389,7 +438,7 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
     runVitest(
       [
         "--project",
-        "@paperclipai/server",
+        "@myrmidon/server",
         ...serializedServerVitestArgs,
         ...excludeRouteArgs,
       ],
@@ -415,33 +464,45 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
   fail(`Unknown group "${groupName}".`);
 }
 
-function runSerializedSuites(routeTests, shardIndex, shardCount) {
+function runSerializedSuites(routeTests, shardIndex, shardCount, bail = true) {
   const shardTests = selectSerializedSuites(routeTests, shardIndex, shardCount);
   console.log(
     `\n[test:run] serialized shard ${shardIndex + 1}/${shardCount} running ${shardTests.length} of ${routeTests.length} suites`,
   );
-
-  for (const routeTest of shardTests) {
-    runVitest(
-      [
-        "--project",
-        "@paperclipai/server",
-        routeTest.repoPath,
-        "--pool=forks",
-        "--isolate",
-      ],
-      routeTest.repoPath,
-    );
+  if (shardTests.length === 0) {
+    // Without file filters Vitest would run the whole server project.
+    return;
   }
+
+  // One Vitest process for the whole shard instead of one per suite: every
+  // suite used to re-transform the same large route/authz module graph from
+  // scratch (transform was 40-50% of the lane's wall time, plus a pnpm/Vitest
+  // start-up per suite). Isolation is unchanged, see serializedLaneVitestArgs.
+  runVitest(
+    [...serializedLaneVitestArgs({ bail }), ...shardTests.map((routeTest) => routeTest.repoPath)],
+    `serialized shard ${shardIndex + 1}/${shardCount}: ${shardTests.length} suites in one Vitest process`,
+  );
 }
 
-const routeTests = walk(serverTestsDir)
-  .filter((file) => isRouteOrAuthzTest(toRepoPath(file)))
-  .map((file) => ({
-    repoPath: toRepoPath(file),
-    serverPath: toServerPath(file),
-  }))
-  .sort((a, b) => a.repoPath.localeCompare(b.repoPath));
+// Every server test file vitest can collect: `src/**/*.test.ts` and
+// `scripts/**/*.test.mjs` (see server/vitest.config.ts). The route/authz
+// serialized lane and the general-server lane partition THIS set, so no file
+// can silently fall between the two. The route/authz exclusion pattern applies
+// to the whole `server/src` tree, not just `src/__tests__`: suites like
+// `server/src/myrmidon/*/routes.myrmidon.test.ts` live outside `__tests__` and
+// must still land in the serialized lane (OPE-4472 — they used to run in no
+// lane at all).
+const serverTestFiles = [
+  ...walk(serverSrcDir).map((file) => toRepoPath(file)).filter((repoPath) => repoPath.endsWith(".test.ts")),
+  ...walk(serverScriptsDir).map((file) => toRepoPath(file)).filter((repoPath) => repoPath.endsWith(".test.mjs")),
+].sort((a, b) => a.localeCompare(b));
+
+const routeTests = serverTestFiles
+  .filter((repoPath) => isRouteOrAuthzTest(repoPath))
+  .map((repoPath) => ({
+    repoPath,
+    serverPath: path.relative(serverRoot, path.join(repoRoot, repoPath)).split(path.sep).join("/"),
+  }));
 
 // Every server test file that the general-server group is responsible for,
 // i.e. the whole server project minus the route/authz suites that run in the
@@ -450,13 +511,50 @@ const routeTests = walk(serverTestsDir)
 // config pins maxWorkers to 1, so the only way to parallelize is across jobs.
 // Suites are partitioned by recorded duration (scripts/general-server-shard.mjs)
 // rather than round-robin, so one slow suite cluster can't stretch a single shard.
-const generalServerTestFiles = walk(serverSrcDir)
-  .map((file) => toRepoPath(file))
-  .filter((repoPath) => repoPath.endsWith(".test.ts"))
-  .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
-  .sort((a, b) => a.localeCompare(b));
+const generalServerTestFiles = serverTestFiles
+  .filter((repoPath) => !isRouteOrAuthzTest(repoPath));
+
+// Hard invariant: the two selectors must partition the collected server suite
+// set exactly — every file in one lane, none in both, none orphaned. A future
+// edit that makes the exclusion pattern and the lane selectors disagree would
+// otherwise silently drop suites from CI again (the OPE-4472 incident: route/
+// authz suites outside src/__tests__ matched the general-server exclusion but
+// were never picked up by the serialized lane).
+{
+  const serialized = new Set(routeTests.map((routeTest) => routeTest.repoPath));
+  const general = new Set(generalServerTestFiles);
+  const orphans = serverTestFiles.filter(
+    (repoPath) => !serialized.has(repoPath) && !general.has(repoPath),
+  );
+  const doubleCounts = serverTestFiles.filter(
+    (repoPath) => serialized.has(repoPath) && general.has(repoPath),
+  );
+  if (orphans.length > 0 || doubleCounts.length > 0) {
+    const lines = [];
+    if (orphans.length > 0) {
+      lines.push(`in no lane (${orphans.length}):`, ...orphans.map((file) => `  ${file}`));
+    }
+    if (doubleCounts.length > 0) {
+      lines.push(`in more than one lane (${doubleCounts.length}):`, ...doubleCounts.map((file) => `  ${file}`));
+    }
+    fail(`Server test lane partition is not exact:\n${lines.join("\n")}`);
+  }
+}
 
 const options = parseCliOptions(process.argv.slice(2));
+
+// CI lane-coverage gate (OPE-4472): `--check` exits 0 after the invariant
+// block above proves every collected server suite lands in exactly one lane.
+// Failing here means a test file exists that no lane would run.
+if (options.check) {
+  console.log(
+    `[test:check] ${serverTestFiles.length} collected server suites: ` +
+      `${routeTests.length} serialized (route/authz), ${generalServerTestFiles.length} general-server; ` +
+      `partition is exact`,
+  );
+  process.exit(0);
+}
+
 if (options.dryRun) {
   const serializedSuites =
     options.mode === serializedModeName
@@ -472,6 +570,8 @@ if (options.dryRun) {
         availableGeneralGroups: allowedGeneralGroupNames,
         serializedSuiteCount: routeTests.length,
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
+        serializedVitestProcesses: options.mode === serializedModeName && serializedSuites.length > 0 ? 1 : 0,
+        serializedVitestArgs: serializedLaneVitestArgs({ bail: options.bail }),
         generalServerSuiteCount: generalServerTestFiles.length,
         selectedGeneralServerSuites:
           options.mode === generalModeName &&
@@ -513,5 +613,5 @@ if (options.mode === generalModeName || options.mode === allModeName) {
 }
 
 if (options.mode === serializedModeName || options.mode === allModeName) {
-  runSerializedSuites(routeTests, options.shardIndex ?? 0, options.shardCount ?? 1);
+  runSerializedSuites(routeTests, options.shardIndex ?? 0, options.shardCount ?? 1, options.bail);
 }

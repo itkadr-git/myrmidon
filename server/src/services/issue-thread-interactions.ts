@@ -1,5 +1,5 @@
 import { currentContinuationOrigins } from "./execution-continuation.js";
-import { connectionIntentDeliveries } from "@paperclipai/db";
+import { connectionIntentDeliveries } from "@myrmidon/db";
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
@@ -13,10 +13,11 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
-  agentWakeupRequests,
+  chatConversations,
+  companyMemberships,
   companySecretProposals,
   companies,
   documents,
@@ -27,19 +28,18 @@ import {
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
+  projects,
   toolActionRequests,
   toolOauthStates,
-} from "@paperclipai/db";
-// myrmidon(N2): a pending card's addressee wake receipt is a row keyed
-// `interaction-pending:<interactionId>` in the same table.
-import {
-  PENDING_INTERACTION_WAKE_IDEMPOTENCY_PREFIX,
-  selectUndeliveredAddresseeInteractionIds,
-} from "../myrmidon/pending-interaction-wake-sweep.js";
+} from "@myrmidon/db";
+// myrmidon(N2): pending-card expiry is unconditional for terminal issues;
+// delivery receipts do not keep a closed issue actionable.
+import { resolveAgentHeadId, resolveAgentManagerChainIds } from "./responsible-head.js";
+import { resolveOwnerDecisionRecipient } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 import {
   trackInteractionCreated,
   trackInteractionResolved,
-} from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared/telemetry";
 import type {
   AcceptIssueThreadInteraction,
   AskUserQuestionsAnswer,
@@ -68,9 +68,10 @@ import type {
   SuggestTasksResultCreatedTask,
   SubmitIssueThreadInteractionVerdicts,
   WithdrawIssueThreadInteraction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   acceptIssueThreadInteractionSchema,
+  isAgentStatusInvokable,
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
   cancelIssueThreadInteractionSchema,
@@ -91,7 +92,7 @@ import {
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -129,6 +130,16 @@ import {
   type GitHubPullRequestReference,
   type PullRequestMergeState,
 } from "./github-pull-request-merge.js";
+import {
+  resolveInteractionRecipient,
+  InteractionRecipientUnresolvedError,
+  type InteractionProjectRoles,
+} from "./interaction-router/resolve-recipient.js";
+import type {
+  InteractionRouteType,
+  InteractionRecipient,
+  InteractionEscalationStep,
+} from "@myrmidon/shared";
 
 export { extractGitHubPullRequestReferences } from "./github-pull-request-merge.js";
 export type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
@@ -144,6 +155,15 @@ type InteractionActor = {
     | IssueThreadInteractionResolverRestriction
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
+  /**
+   * myrmidon(1.6.3-CTO-CHAT-B): explicit opt-in, set only by trusted server
+   * code (the owner-checked Telegram /accept). When the card hangs on a
+   * conversation issue, `createChild` refuses to parent work on it; with this
+   * flag the ROOT task of the card is created as a parentless task instead
+   * (the vendor message: "create a task in a project instead"). Without it
+   * (portal accept, agents) the vendor refusal stays exactly as on main.
+   */
+  conversationRootTasksAllowed?: boolean;
   resolutionDetails?: Record<string, unknown>;
 };
 
@@ -578,11 +598,26 @@ function isEquivalentCreateRequest(
   input: CreateIssueThreadInteraction,
   actor: InteractionActor,
 ) {
+  const inferredAddresseeMatches =
+    input.addresseeAgentId == null &&
+    input.addresseeUserId == null &&
+    (input as any).addresseeQueue == null;
+  const addresseeAgentMatches =
+    (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) ||
+    inferredAddresseeMatches;
+  const addresseeUserMatches =
+    (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) ||
+    inferredAddresseeMatches;
+  const addresseeQueueMatches =
+    (row.addresseeQueue ?? null) === ((input as any).addresseeQueue ?? null) ||
+    inferredAddresseeMatches;
+
   return (
     row.kind === input.kind &&
     row.requestedResolverPolicy === input.resolverPolicy &&
-    (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) &&
-    (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) &&
+    addresseeAgentMatches &&
+    addresseeUserMatches &&
+    addresseeQueueMatches &&
     row.continuationPolicy === input.continuationPolicy &&
     (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null) &&
     (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null) &&
@@ -615,7 +650,7 @@ function parseStoredInteractionResult<S extends z.ZodTypeAny>(
   const parsed = schema.safeParse(raw);
   if (parsed.success) return parsed.data;
   console.warn(
-    `[paperclip] Dropping unparseable ${row.kind} interaction result for interaction ${row.id}`,
+    `[myrmidon] Dropping unparseable ${row.kind} interaction result for interaction ${row.id}`,
     parsed.error.issues,
   );
   return null;
@@ -649,6 +684,12 @@ function hydrateInteraction(
     idempotencyKey: row.idempotencyKey ?? null,
     addresseeAgentId: row.addresseeAgentId ?? null,
     addresseeUserId: row.addresseeUserId ?? null,
+    addresseeQueue: row.addresseeQueue ?? null,
+    routeType: (row.routeType as InteractionRouteType) ?? null,
+    timeoutAt: row.timeoutAt ? new Date(row.timeoutAt).toISOString() : null,
+    escalationChain:
+      (row.escalationChain as InteractionEscalationStep[]) ?? null,
+    escalationLevel: row.escalationLevel ?? 0,
     status: row.status as IssueThreadInteraction["status"],
     continuationPolicy:
       row.continuationPolicy as IssueThreadInteraction["continuationPolicy"],
@@ -749,34 +790,6 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
 
 function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
-}
-
-/**
- * myrmidon(N2): interaction ids among `interactionIds` whose addressee wake
- * receipt exists and never became a run. The terminal-transition expiry skips
- * exactly these cards: their addressee was never woken, so the card is
- * delivered instead of dying with the task status.
- */
-async function findUndeliveredAddresseeWakeInteractionIds(
-  db: Db,
-  input: { companyId: string; interactionIds: string[] },
-): Promise<Set<string>> {
-  const rows = await db
-    .select({
-      idempotencyKey: agentWakeupRequests.idempotencyKey,
-      runId: agentWakeupRequests.runId,
-    })
-    .from(agentWakeupRequests)
-    .where(
-      and(
-        eq(agentWakeupRequests.companyId, input.companyId),
-        inArray(
-          agentWakeupRequests.idempotencyKey,
-          input.interactionIds.map((id) => `${PENDING_INTERACTION_WAKE_IDEMPOTENCY_PREFIX}${id}`),
-        ),
-      ),
-    );
-  return selectUndeliveredAddresseeInteractionIds(rows, input.interactionIds);
 }
 
 function interactionNotFoundError() {
@@ -989,8 +1002,9 @@ function buildAdministrativeOutcomeResult(
   outcome: "withdrawn" | "issue_closed" | "addressee_deleted",
   reason: string | null = null,
 ) {
+  const expirationReason = outcome === "issue_closed" ? "issue_closed" : undefined;
   if (row.kind === "connection_intent") {
-    return { version: 1, outcome: "expired", reason } as const;
+    return { version: 1, outcome: "expired", reason, expirationReason } as const;
   }
   if (row.kind === "ask_user_questions") {
     return {
@@ -999,6 +1013,7 @@ function buildAdministrativeOutcomeResult(
       reason,
       answers: [],
       summaryMarkdown: null,
+      expirationReason,
     } as const;
   }
   if (row.kind === "request_item_verdicts") {
@@ -1011,12 +1026,14 @@ function buildAdministrativeOutcomeResult(
       reason,
       complete: false,
       items: interaction.result?.items ?? [],
+      expirationReason,
     } satisfies RequestItemVerdictsResult;
   }
   return {
     version: 1,
     outcome,
     reason,
+    expirationReason,
     ...(linkedSecretProposalId(row)
       ? {
           secretProposal: {
@@ -1382,7 +1399,7 @@ async function emitInteractionResolvedTelemetry(
         roleByAgentId = await fetchCreatorAgentRoleById(db, [interaction]);
       } catch (error) {
         console.error(
-          "[paperclip] Failed to load interaction.resolved creator role",
+          "[myrmidon] Failed to load interaction.resolved creator role",
           error,
         );
       }
@@ -1409,7 +1426,7 @@ async function emitInteractionResolvedTelemetry(
     });
   } catch (error) {
     console.error(
-      "[paperclip] Failed to emit interaction.resolved telemetry",
+      "[myrmidon] Failed to emit interaction.resolved telemetry",
       error,
     );
   }
@@ -1432,7 +1449,7 @@ function emitInteractionCreatedTelemetry(args: {
     });
   } catch (error) {
     console.error(
-      "[paperclip] Failed to emit interaction.created telemetry",
+      "[myrmidon] Failed to emit interaction.created telemetry",
       error,
     );
   }
@@ -1448,7 +1465,7 @@ async function emitResolvedInteractionsTelemetry(
     roleByAgentId = await fetchCreatorAgentRoleById(db, interactions);
   } catch (error) {
     console.error(
-      "[paperclip] Failed to load interaction.resolved creator roles",
+      "[myrmidon] Failed to load interaction.resolved creator roles",
       error,
     );
   }
@@ -2615,7 +2632,7 @@ export function issueThreadInteractionService(
         const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
         if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
-        const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
+        const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context, input.sourceRunId);
         const [row] = await tx
           .insert(issueThreadInteractions)
           .values({
@@ -3187,6 +3204,12 @@ export function issueThreadInteractionService(
             .update(issueThreadInteractions)
             .set({
               status: "cancelled",
+              addresseeAgentId: null,
+              routeType: null,
+              addresseeQueue: null,
+              timeoutAt: null,
+              escalationChain: null,
+              escalationLevel: 0,
               result: buildAdministrativeOutcomeResult(
                 row,
                 "addressee_deleted",
@@ -3350,10 +3373,166 @@ export function issueThreadInteractionService(
         resolverPolicy: policy.requestedResolverPolicy,
       };
 
+      if (normalizedData.idempotencyKey) {
+        const existing = await getIdempotentInteraction({
+          issueId: issue.id,
+          companyId: issue.companyId,
+          idempotencyKey: normalizedData.idempotencyKey,
+        });
+        if (existing) {
+          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
+            throw conflict(
+              "Interaction idempotency key already exists for a different request",
+              {
+                idempotencyKey: normalizedData.idempotencyKey,
+              },
+            );
+          }
+          const interaction = hydrateInteraction(existing);
+          await enqueueIssueInteractionChatPublications(db, interaction);
+          return interaction;
+        }
+      }
+
       if (normalizedData.addresseeAgentId && normalizedData.addresseeUserId) {
         throw unprocessable(
           "An issue-thread interaction cannot address both an agent and a user",
         );
+      }
+      if (
+        (normalizedData as any).addresseeQueue &&
+        (normalizedData.addresseeAgentId || normalizedData.addresseeUserId)
+      ) {
+        throw unprocessable(
+          "An issue-thread interaction cannot address multiple recipients",
+        );
+      }
+
+      const [issueContextRow] = await db
+        .select({
+          id: issues.id,
+          originKind: issues.originKind,
+          projectId: issues.projectId,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          responsibleAgentId: issues.responsibleAgentId,
+          responsibleUserId: issues.responsibleUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          conversationUserId: issues.conversationUserId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+          ),
+        );
+
+      const isChatChannelIssue =
+        issueContextRow?.originKind === "chat_channel" ||
+        Boolean(
+          await db
+            .select({ id: chatConversations.id })
+            .from(chatConversations)
+            .where(
+              and(
+                eq(chatConversations.companyId, issue.companyId),
+                eq(chatConversations.issueId, issue.id),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0]),
+        );
+
+      // OPE-11751: an operational question from an agent goes to its own manager
+      // (reportsTo) and climbs the same chain on timeout; it is never routed to
+      // the owner and never to the company head instead of the manager. An agent
+      // with no invokable manager keeps the pre-existing routing (issue head,
+      // then the operator queue) so that a question is never rejected for lack
+      // of a manager. Questions reserved for humans (human_only) keep the
+      // owner-delivery path.
+      const managerChain: string[] =
+        actor.agentId
+        && normalizedData.kind === "ask_user_questions"
+        && policy.effectiveResolverPolicy !== "human_only"
+        // A question asked inside a chat conversation is answered by the person
+        // in that chat, not by a manager.
+        && !isChatChannelIssue
+        && !normalizedData.addresseeAgentId
+        && !normalizedData.addresseeUserId
+        && !(normalizedData as any).addresseeQueue
+          ? await resolveAgentManagerChainIds(db, issue.companyId, actor.agentId)
+          : [];
+      const routeViaManagerChain = managerChain.length > 0;
+
+      if (!routeViaManagerChain && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
+        const cannotTargetAgent =
+          normalizedData.kind === "request_confirmation" &&
+          (normalizedData.payload.toolAction !== undefined ||
+            normalizedData.payload.secretProposal !== undefined);
+
+        if (!cannotTargetAgent) {
+          const [issueRow] = await db
+            .select({
+              id: issues.id,
+              companyId: issues.companyId,
+              responsibleAgentId: issues.responsibleAgentId,
+            })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, issue.id),
+                eq(issues.companyId, issue.companyId),
+              ),
+            );
+
+          let candidateHeadId: string | null = null;
+          if (issueRow?.responsibleAgentId) {
+            if (issueRow.responsibleAgentId !== actor.agentId) {
+              candidateHeadId = issueRow.responsibleAgentId;
+            }
+          } else {
+            const headId = await resolveAgentHeadId(db, issue.companyId, actor.agentId);
+            if (headId && headId !== actor.agentId) {
+              candidateHeadId = headId;
+            }
+          }
+          if (candidateHeadId) {
+            const candidateAgent = await db
+              .select({
+                id: agents.id,
+                companyId: agents.companyId,
+                name: agents.name,
+                reportsTo: agents.reportsTo,
+                status: agents.status,
+              })
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.id, candidateHeadId),
+                  eq(agents.companyId, issue.companyId),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+
+            if (
+              candidateAgent &&
+              isAgentStatusInvokable(candidateAgent.status)
+            ) {
+              const invokability = await evaluateAgentInvokabilityFromDb(
+                db,
+                candidateAgent,
+              );
+              if (invokability.invokable) {
+                normalizedData.addresseeAgentId = candidateHeadId;
+                normalizedData.addresseeUserId = null;
+                data.addresseeAgentId = candidateHeadId;
+                data.addresseeUserId = null;
+              }
+            }
+          }
+        }
       }
 
       if (normalizedData.addresseeAgentId) {
@@ -3409,25 +3588,281 @@ export function issueThreadInteractionService(
         }
       }
 
-      if (normalizedData.idempotencyKey) {
-        const existing = await getIdempotentInteraction({
-          issueId: issue.id,
-          companyId: issue.companyId,
-          idempotencyKey: normalizedData.idempotencyKey,
-        });
-        if (existing) {
-          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
-            throw conflict(
-              "Interaction idempotency key already exists for a different request",
-              {
-                idempotencyKey: normalizedData.idempotencyKey,
-              },
-            );
-          }
-          const interaction = hydrateInteraction(existing);
-          await enqueueIssueInteractionChatPublications(db, interaction);
-          return interaction;
+      let projectRoles: InteractionProjectRoles | null = null;
+      if (issueContextRow?.projectId) {
+        const [projectRow] = await db
+          .select({
+            id: projects.id,
+            leadAgentId: projects.leadAgentId,
+          })
+          .from(projects)
+          .where(
+            and(
+              eq(projects.id, issueContextRow.projectId),
+              eq(projects.companyId, issue.companyId),
+            ),
+          );
+        if (projectRow?.leadAgentId) {
+          projectRoles = {
+            lead: {
+              type: "agent",
+              agentId: projectRow.leadAgentId,
+              projectId: projectRow.id,
+            },
+          };
         }
+      }
+
+      const creator: InteractionRecipient = actor.agentId
+        ? { agentId: actor.agentId }
+        : actor.userId
+          ? { userId: actor.userId }
+          : { serviceQueue: "system" };
+
+      let recipientCandidate: InteractionRecipient | null = null;
+      if (normalizedData.addresseeAgentId) {
+        recipientCandidate = { agentId: normalizedData.addresseeAgentId };
+      } else if (normalizedData.addresseeUserId) {
+        recipientCandidate = { userId: normalizedData.addresseeUserId };
+      } else if ((normalizedData as any).addresseeQueue) {
+        recipientCandidate = {
+          serviceQueue: (normalizedData as any).addresseeQueue,
+        };
+      } else if (!routeViaManagerChain && isChatChannelIssue) {
+        recipientCandidate = { serviceQueue: "default" };
+      } else if (!routeViaManagerChain) {
+        if (policy.effectiveResolverPolicy === "human_only") {
+          if (actor.agentId) {
+            const ownerRec = await resolveOwnerDecisionRecipient(db, {
+              companyId: issue.companyId,
+              agentId: actor.agentId,
+              addresseeUserId: normalizedData.addresseeUserId,
+              responsibleUserId: issueContextRow?.responsibleUserId,
+              createdByUserId: issueContextRow?.createdByUserId,
+            });
+            if (ownerRec?.ownerUserId) {
+              recipientCandidate = { userId: ownerRec.ownerUserId };
+            }
+          }
+          if (!recipientCandidate) {
+            if (
+              issueContextRow?.assigneeUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.assigneeUserId };
+            } else if (
+              issueContextRow?.responsibleUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.responsibleUserId };
+            } else if (
+              issueContextRow?.createdByUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.createdByUserId };
+            } else {
+              // 1.6.5-OWNER-FALLBACK: check company owners
+              let [ownerMembership] = await db
+                .select({ userId: companyMemberships.principalId })
+                .from(companyMemberships)
+                .where(
+                  and(
+                    eq(companyMemberships.companyId, issue.companyId),
+                    eq(companyMemberships.principalType, "user"),
+                    eq(companyMemberships.status, "active"),
+                    eq(companyMemberships.membershipRole, "owner"),
+                  ),
+                )
+                .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+                .limit(1);
+              if (!ownerMembership) {
+                [ownerMembership] = await db
+                  .select({ userId: companyMemberships.principalId })
+                  .from(companyMemberships)
+                  .where(
+                    and(
+                      eq(companyMemberships.companyId, issue.companyId),
+                      eq(companyMemberships.principalType, "user"),
+                      eq(companyMemberships.status, "active"),
+                    ),
+                  )
+                  .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+                  .limit(1);
+              }
+              if (ownerMembership && (!actor.userId || actor.userId !== ownerMembership.userId)) {
+                recipientCandidate = { userId: ownerMembership.userId };
+              } else if (
+                (actor as any).systemId ||
+                (!actor.agentId && !actor.userId) ||
+                (actor.agentId && "toolAction" in normalizedData.payload)
+              ) {
+                recipientCandidate = { serviceQueue: "default" };
+              }
+            }
+          }
+        } else {
+          if (
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload) &&
+            (normalizedData.kind === "ask_user_questions" ||
+              normalizedData.kind === "suggest_tasks")
+          ) {
+            recipientCandidate = { serviceQueue: "default" };
+          } else if (
+            issueContextRow?.assigneeAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.assigneeAgentId)
+          ) {
+            recipientCandidate = { agentId: issueContextRow.assigneeAgentId };
+          } else if (
+            issueContextRow?.assigneeUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.assigneeUserId };
+          } else if (
+            issueContextRow?.responsibleAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.responsibleAgentId)
+          ) {
+            const [respAgent] = await db
+              .select({ status: agents.status })
+              .from(agents)
+              .where(and(eq(agents.id, issueContextRow.responsibleAgentId), eq(agents.companyId, issue.companyId)))
+              .limit(1);
+            if (respAgent && isAgentStatusInvokable(respAgent.status)) {
+              recipientCandidate = { agentId: issueContextRow.responsibleAgentId };
+            }
+          } else if (
+            issueContextRow?.responsibleUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.responsibleUserId };
+          } else if (
+            issueContextRow?.createdByAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.createdByAgentId)
+          ) {
+            recipientCandidate = { agentId: issueContextRow.createdByAgentId };
+          } else if (
+            issueContextRow?.createdByUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.createdByUserId };
+          } else if ((actor as any).systemId) {
+            recipientCandidate = { serviceQueue: "default" };
+          }
+        }
+      }
+
+      let routeType: InteractionRouteType;
+      if (
+        !recipientCandidate &&
+        !routeViaManagerChain &&
+        (normalizedData.kind === "ask_user_questions" ||
+          normalizedData.kind === "suggest_tasks")
+      ) {
+        // Operational interactions may be claimed from the default service
+        // queue when no concrete human or agent recipient is available.
+        recipientCandidate = { serviceQueue: "default" };
+      }
+      if ((normalizedData as any).routeType) {
+        routeType = (normalizedData as any).routeType;
+      } else if (
+        (recipientCandidate && "serviceQueue" in recipientCandidate) ||
+        (normalizedData as any).addresseeQueue
+      ) {
+        routeType = "operator_action";
+      } else if (
+        (recipientCandidate && "userId" in recipientCandidate) ||
+        policy.effectiveResolverPolicy === "human_only"
+      ) {
+        routeType = "human_input";
+      } else if (
+        normalizedData.kind === "request_checkbox_confirmation" ||
+        normalizedData.kind === "request_item_verdicts"
+      ) {
+        routeType = "approval";
+      } else {
+        routeType = "decision";
+      }
+
+      let resolvedRecipient: InteractionRecipient;
+      try {
+        resolvedRecipient = resolveInteractionRecipient({
+          routeType,
+          kind: normalizedData.kind,
+          projectId: issueContextRow?.projectId ?? null,
+          creator,
+          projectRoles,
+          recipient: recipientCandidate,
+          manager: managerChain[0] ? { agentId: managerChain[0] } : null,
+          casteScope: (normalizedData as any).casteScope ?? null,
+          serviceQueue:
+            (recipientCandidate && "serviceQueue" in recipientCandidate
+              ? recipientCandidate.serviceQueue
+              : (normalizedData as any).addresseeQueue) ?? null,
+          allowLegacyAgentQueueFallback:
+            Boolean(actor.agentId) &&
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload) &&
+            (normalizedData.kind === "suggest_tasks" ||
+              normalizedData.kind === "ask_user_questions" ||
+              Boolean(issueContextRow?.assigneeAgentId) ||
+              Boolean(issueContextRow?.createdByAgentId)),
+        });
+      } catch (err) {
+        if (err instanceof InteractionRecipientUnresolvedError) {
+          throw unprocessable(
+            `Cannot determine recipient for interaction: ${err.message}`,
+          );
+        }
+        throw err;
+      }
+
+      let finalAddresseeAgentId: string | null = null;
+      let finalAddresseeUserId: string | null = null;
+      let finalAddresseeQueue: string | null = null;
+
+      if ("agentId" in resolvedRecipient) {
+        finalAddresseeAgentId = resolvedRecipient.agentId;
+      } else if ("userId" in resolvedRecipient) {
+        finalAddresseeUserId = resolvedRecipient.userId;
+      } else if ("serviceQueue" in resolvedRecipient) {
+        finalAddresseeQueue = resolvedRecipient.serviceQueue;
+      }
+
+      if (finalAddresseeAgentId && !normalizedData.addresseeAgentId) {
+        if (finalAddresseeAgentId === actor.agentId) {
+          throw unprocessable(
+            "Agents cannot address issue-thread interactions to themselves",
+          );
+        }
+        const addressee = await db
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            name: agents.name,
+            reportsTo: agents.reportsTo,
+            status: agents.status,
+          })
+          .from(agents)
+          .where(eq(agents.id, finalAddresseeAgentId))
+          .then((rows) => rows[0] ?? null);
+        if (!addressee || addressee.companyId !== issue.companyId) {
+          throw unprocessable(
+            "addresseeAgentId must belong to the same company",
+          );
+        }
+      }
+
+      const DEFAULT_INTERACTION_TIMEOUT_MINUTES = 30;
+      let timeoutAt: Date;
+      if ((normalizedData as any).timeoutAt) {
+        timeoutAt = new Date((normalizedData as any).timeoutAt);
+        if (isNaN(timeoutAt.getTime())) {
+          throw unprocessable("Invalid timeoutAt date");
+        }
+      } else {
+        timeoutAt = new Date(
+          Date.now() + DEFAULT_INTERACTION_TIMEOUT_MINUTES * 60_000,
+        );
       }
 
       if (data.sourceCommentId) {
@@ -3465,7 +3900,7 @@ export function issueThreadInteractionService(
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
-        originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot)])];
+        originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot, data.sourceRunId)])];
         sourceIdentityContextId = actor.identityContextId ?? sourceRun.activeIdentityContextId;
         if (sourceIdentityContextId) {
           const [origin] = await db.select({id: runIdentityContexts.id}).from(runIdentityContexts).where(and(
@@ -3491,7 +3926,10 @@ export function issueThreadInteractionService(
         // create keep returning the (by now expired) original.
         const result = await db.transaction(async (tx) => {
           const [issueRow] = await tx
-            .select({ status: issues.status })
+            .select({
+              status: issues.status,
+              responsibleAgentId: issues.responsibleAgentId,
+            })
             .from(issues)
             .where(
               and(
@@ -3516,6 +3954,8 @@ export function issueThreadInteractionService(
               lockForUpdate: true,
             });
           }
+          const addresseeAgentId = normalizedData.addresseeAgentId ?? null;
+          const addresseeUserId = normalizedData.addresseeUserId ?? null;
           const [row] = await tx
             .insert(issueThreadInteractions)
             .values({
@@ -3537,8 +3977,17 @@ export function issueThreadInteractionService(
               title: data.title ?? null,
               summary: data.summary ?? null,
               createdByAgentId: actor.agentId ?? null,
-              addresseeAgentId: data.addresseeAgentId ?? null,
-              addresseeUserId: data.addresseeUserId ?? null,
+              addresseeAgentId: finalAddresseeAgentId,
+              addresseeUserId: finalAddresseeUserId,
+              addresseeQueue: finalAddresseeQueue,
+              routeType,
+              timeoutAt,
+              escalationChain: routeViaManagerChain
+                ? managerChain.map((agentId, level) => ({
+                    recipient: { agentId },
+                    afterMinutes: level * DEFAULT_INTERACTION_TIMEOUT_MINUTES,
+                  }))
+                : null,
               createdByUserId: actor.userId ?? null,
               payload: data.payload,
             })
@@ -3749,6 +4198,17 @@ export function issueThreadInteractionService(
       actor: InteractionActor,
     ) => {
       assertIssueOpenForInteractionResolution(issue);
+      // myrmidon(1.6.3-CTO-CHAT-B): is the card's host a conversation issue?
+      // Only consulted for the opt-in below; one row, before the transaction.
+      const hostConversationAgentId =
+        actor.conversationRootTasksAllowed === true
+          ? ((
+              await db
+                .select({ conversationAgentId: issues.conversationAgentId })
+                .from(issues)
+                .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+            )[0]?.conversationAgentId ?? null)
+          : null;
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -3865,16 +4325,19 @@ export function issueThreadInteractionService(
             );
           }
 
-          const { issue: createdIssue } = await issueService(
-            tx as unknown as Db,
-          ).createChild(parentIssueId, {
+          const taskInput = {
             title: task.title,
             description: task.description ?? null,
             status: "todo",
             workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
-            assigneeAgentId: task.assigneeAgentId ?? null,
-            assigneeUserId: task.assigneeUserId ?? null,
+            assigneeAgentId: null,
+            ...(task.assigneeAgentId !== undefined
+              ? { assigneeAgentId: task.assigneeAgentId }
+              : {}),
+            ...(task.assigneeUserId !== undefined
+              ? { assigneeUserId: task.assigneeUserId }
+              : {}),
             projectId: task.projectId ?? issue.projectId,
             goalId: task.goalId ?? issue.goalId,
             billingCode: task.billingCode ?? null,
@@ -3884,7 +4347,16 @@ export function issueThreadInteractionService(
             originRunId: interaction.sourceRunId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
-          } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+          } as Parameters<ReturnType<typeof issueService>["createChild"]>[1];
+          const taskIssueService = issueService(tx as unknown as Db);
+          // myrmidon(1.6.3-CTO-CHAT-B): see InteractionActor.conversationRootTasksAllowed.
+          // Only the card's root under a conversation host takes this path and
+          // only for an opted-in caller; project/goal come from the host the
+          // caller passed in, as for any child.
+          const { issue: createdIssue } =
+            hostConversationAgentId != null && parentIssueId === issue.id
+              ? { issue: await taskIssueService.create(issue.companyId, taskInput) }
+              : await taskIssueService.createChild(parentIssueId, taskInput);
 
           const parentIdentifier =
             createdByClientKey.get(task.parentClientKey ?? "")?.identifier ??
@@ -4584,35 +5056,12 @@ export function issueThreadInteractionService(
         );
       if (rows.length === 0) return [];
 
-      // myrmidon(N2): a card addressed to an agent whose addressee wake never
-      // became a run is not expired by the task's status flip. The parked
-      // receipt keeps its one delivery (the sweep re-admits it), so the
-      // addressee answers the card instead of the card dying unanswered
-      // because the task touched `done` for a minute on its way to a reopen.
-      // Cards with no receipt at all (or a delivered one) keep the vendor
-      // behaviour: a card on a closed task is expired.
-      const agentAddressedIds = rows
-        .filter((row) => row.addresseeAgentId !== null)
-        .map((row) => row.id);
-      const undeliveredAddresseeWakes = agentAddressedIds.length > 0
-        ? await findUndeliveredAddresseeWakeInteractionIds(db, {
-            companyId: issue.companyId,
-            interactionIds: agentAddressedIds,
-          })
-        : new Set<string>();
-
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const row of rows) {
-        if (undeliveredAddresseeWakes.has(row.id)) continue;
-        // Same ordering as withdrawal: revoke the linked tool action before
-        // resolving the card, inside one transaction. A concurrent gateway
-        // claim (approved -> executing) blocks on the revocation's row lock
-        // and then aborts; if the card was concurrently resolved instead, the
-        // no-row update below rolls the revocation back. A claim that already
-        // committed is in flight and cannot be recalled — the card still
-        // expires and the execution result lands on it via the gateway's
-        // lifecycle reflection.
+        // Revoke linked actions before resolving the card, inside one transaction.
+        // The pending-row guard below makes repeated terminal transitions and
+        // concurrent resolution idempotent.
         const updated = await db
           .transaction(async (tx) => {
             if (row.kind === "connection_intent") {

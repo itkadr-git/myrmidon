@@ -1,7 +1,7 @@
 import type {
   RunPresentationDecision,
   RunPresentationSource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 // myrmidon(S5): mask secret values in run results
 import { maskSecretsInText, maskSecretsInValue } from "../myrmidon/secret-masking.js";
 
@@ -130,7 +130,7 @@ export const CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON =
   "allow_chat_run_presentation";
 
 export type RunPresentationCommentAction = "reuse" | "create" | "none";
-export type { RunPresentationDecision } from "@paperclipai/shared";
+export type { RunPresentationDecision } from "@myrmidon/shared";
 
 export interface ResolvedHeartbeatRunResponse {
   text: string | null;
@@ -379,6 +379,23 @@ export function resolveHeartbeatRunResponse(input: {
   } | null;
 }): ResolvedHeartbeatRunResponse {
   const resultJson = record(input.resultJson);
+  // Retryable adapter failures are control-plane outcomes, never user-facing prose.
+  // Guard every candidate source, including independently captured final events.
+  const errorFamily = typeof resultJson?.errorFamily === "string" ? resultJson.errorFamily : null;
+  const providerErrorAsContent = Boolean(resultJson?.provider_error_as_content);
+  const retryableProviderFailure =
+    errorFamily === "transient_upstream" ||
+    errorFamily === "provider_quota" ||
+    providerErrorAsContent;
+  if (retryableProviderFailure) {
+    return {
+      text: null,
+      decision: decision("none", {
+        commentAction: "none",
+        reasonCodes: ["retryable_provider_failure"],
+      }),
+    };
+  }
   const finalAgentText = readCommentText(input.finalAgentMessage?.text);
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =
@@ -442,9 +459,13 @@ export function resolveHeartbeatRunResponse(input: {
       } satisfies ResolvedHeartbeatRunResponse;
     }
 
+    // myrmidon(1.6.4-HERMES-LONG-RESPONSE): prefer the full adapter answer
+    // (`result`) over the bounded `summary` copy so a long agent response
+    // reaches the issue comment — and the Telegram splitter — without being
+    // cut at the summary's truncation length.
     const legacyText =
-      readCommentText(resultJson.summary) ??
       readCommentText(resultJson.result) ??
+      readCommentText(resultJson.summary) ??
       readCommentText(resultJson.message);
     if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
       return {
@@ -539,9 +560,10 @@ export function resolveHeartbeatRunResponse(input: {
   const upstream = resolveCompletedUpstreamResponse();
   if (upstream) return upstream;
 
+  // myrmidon(1.6.4-HERMES-LONG-RESPONSE): same full-answer preference as above.
   const legacyText =
-    readCommentText(resultJson.summary) ??
     readCommentText(resultJson.result) ??
+    readCommentText(resultJson.summary) ??
     readCommentText(resultJson.message);
 
   return {
@@ -588,4 +610,60 @@ export function findHeartbeatRunCompletionComment<T extends { id: string }>(
   return (
     comments.find((comment) => !progressCommentIds.has(comment.id)) ?? null
   );
+}
+
+export async function deliverHeartbeatRunResponseComment<TComment = unknown>(params: {
+  resolved: ResolvedHeartbeatRunResponse;
+  issueId: string | null | undefined;
+  skipRunIssueComment?: boolean;
+  addComment: (text: string) => Promise<TComment>;
+}): Promise<{
+  decision: RunPresentationDecision;
+  comment: TComment | null;
+}> {
+  const { resolved, issueId, skipRunIssueComment, addComment } = params;
+  let presentationDecision = resolved.decision;
+
+  if (
+    issueId &&
+    !skipRunIssueComment &&
+    presentationDecision.commentAction === "create" &&
+    resolved.text
+  ) {
+    const comment = await addComment(resolved.text);
+    return {
+      comment,
+      decision: {
+        ...presentationDecision,
+        commentId:
+          (comment as { id?: string } | null | undefined)?.id ??
+          presentationDecision.commentId,
+        reasonCodes: [
+          ...presentationDecision.reasonCodes,
+          "resolved_response_materialized",
+        ],
+      },
+    };
+  }
+
+  if (presentationDecision.commentAction === "create") {
+    return {
+      comment: null,
+      decision: {
+        ...presentationDecision,
+        commentAction: "none",
+        reasonCodes: [
+          ...presentationDecision.reasonCodes,
+          skipRunIssueComment
+            ? "issue_comment_suppressed"
+            : "run_has_no_issue",
+        ],
+      },
+    };
+  }
+
+  return {
+    comment: null,
+    decision: presentationDecision,
+  };
 }

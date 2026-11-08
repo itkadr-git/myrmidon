@@ -5,7 +5,7 @@ import type {
   CompanySkillDetail,
   CompanySkillUsageAgent,
   CompanySkillVersion,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   AgentsUsingSkillBadge,
   AgentsUsingSkillDialog,
@@ -104,6 +104,7 @@ function makeSkill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDet
     sourcePath: null,
     currentVersion: makeVersion({ id: "ver-3", revisionNumber: 3, label: "polish pass" }),
     starredByCurrentActor: false,
+    requiredEnv: [],
     existingForks: [],
     ...overrides,
   };

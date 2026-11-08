@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { resolvePaperclipInstanceRootForAdapter } from "@myrmidon/adapter-utils/server-utils";
 import { readSubscriptionAccountId, writeCodexAuthCacheEntry } from "./codex-auth-cache.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {

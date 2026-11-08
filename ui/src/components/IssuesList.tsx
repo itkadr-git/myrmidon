@@ -26,6 +26,7 @@ import {
   type SubIssueProgressSummary,
 } from "../lib/issue-detail-subissues";
 import { groupBy } from "../lib/groupBy";
+import { groupIssuesByTopic } from "../lib/issue-grouping";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -88,6 +89,9 @@ import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
+// myrmidon(UI-RU): task list copy runs through the fork i18n catalog.
+import { useTranslation } from "@/i18n";
+import { buildIssueStatusLabels } from "../lib/issue-status-labels";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import {
   loadTaskCollectionPreferences,
@@ -95,7 +99,7 @@ import {
   type TaskCollectionPreferenceLocation,
 } from "../lib/task-collection-preferences";
 import { taskDateGroup, taskDateGroupSeparator, type TaskDateGroup } from "../lib/task-date-groups";
-import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@myrmidon/shared";
 import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
@@ -132,15 +136,6 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   return null;
 }
 const boardIssueStatuses = ISSUE_STATUSES;
-const issueStatusLabels: Record<IssueStatus, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In progress",
-  in_review: "In review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-};
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",
   todo: "bg-blue-500",
@@ -161,7 +156,7 @@ export type BoardColumnPageSize = KanbanColumnPageSize;
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "none";
+  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "topic" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
   showDateGroupSeparators: boolean;
@@ -211,7 +206,7 @@ function normalizeIssueViewState(value: unknown): IssueViewState {
       ? parsed.sortField as IssueSortField
       : defaultViewState.sortField,
     sortDir: parsed.sortDir === "asc" ? "asc" : "desc",
-    groupBy: ["status", "priority", "assignee", "project", "workspace", "parent", "none"].includes(parsed.groupBy ?? "")
+    groupBy: ["status", "priority", "assignee", "project", "workspace", "parent", "topic", "none"].includes(parsed.groupBy ?? "")
       ? parsed.groupBy as IssueViewState["groupBy"]
       : defaultViewState.groupBy,
     viewMode: parsed.viewMode === "board" ? "board" : "list",
@@ -266,10 +261,11 @@ function getIssueColumnsStorageKey(key: string): string {
 
 function loadIssueCollectionPreferences(
   location: TaskCollectionPreferenceLocation,
+  defaultGroupBy?: IssueViewState["groupBy"],
 ) {
   return loadTaskCollectionPreferences<IssueViewState, InboxIssueColumn>({
     ...location,
-    defaultViewState: defaultViewState,
+    defaultViewState: defaultGroupBy ? { ...defaultViewState, groupBy: defaultGroupBy } : defaultViewState,
     defaultColumns: DEFAULT_INBOX_ISSUE_COLUMNS,
     normalizeViewState: normalizeIssueViewState,
     normalizeColumns: (value) => normalizeInboxIssueColumns(Array.isArray(value) ? value : []),
@@ -477,6 +473,7 @@ interface IssuesListProps {
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
+  defaultGroupBy?: IssueViewState["groupBy"];
   showProgressSummary?: boolean;
   /**
    * When set together with `showProgressSummary`, the progress strip fetches
@@ -519,6 +516,7 @@ function IssueSearchInput({
   value: string;
   onDebouncedChange?: (search: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draftValue, setDraftValue] = useState(value);
   const lastCommittedValueRef = useRef(value);
 
@@ -565,9 +563,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search tasks..."
+        placeholder={t("tasks.searchPlaceholder")}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search tasks"
+        aria-label={t("tasks.searchAria")}
         data-page-search-target="true"
       />
     </div>
@@ -583,6 +581,8 @@ function SubIssueProgressSummaryStrip({
   issueLinkState?: unknown;
   parentIssueIdForCostSummary?: string;
 }) {
+  const { t } = useTranslation();
+  const issueStatusLabels = buildIssueStatusLabels(t);
   const target = summary.target;
   const targetIssue = target?.issue ?? null;
   const targetPathId = targetIssue?.identifier ?? targetIssue?.id ?? "";
@@ -641,7 +641,7 @@ function SubIssueProgressSummaryStrip({
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-tasks completion progress"
+            aria-label={t("tasks.subtasksProgress")}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -663,7 +663,7 @@ function SubIssueProgressSummaryStrip({
           {target && targetIssue ? (
             <>
               <div className="text-xs font-medium text-muted-foreground">
-                {target.kind === "next" ? "Next up" : "Waiting on blockers"}
+                {target.kind === "next" ? t("tasks.nextUp") : t("tasks.waitingOnBlockers")}
               </div>
               <Link
                 to={createIssueDetailPath(targetPathId)}
@@ -678,11 +678,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-tasks</div>
+            <div className="text-sm font-medium text-foreground">{t("tasks.noActiveSubtasks")}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-tasks done</div>
+            <div className="text-sm font-medium text-foreground">{t("tasks.allSubtasksDone")}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-tasks</div>
+            <div className="text-sm font-medium text-foreground">{t("tasks.noActionableSubtasks")}</div>
           )}
         </div>
       </div>
@@ -716,7 +716,8 @@ function StreamlinedIssuesList({
   baseCreateIssueDefaults,
   createIssueLabel,
   defaultSortField,
-  showProgressSummary = false,
+  defaultGroupBy,
+  showProgressSummary,
   parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
   hasMoreIssues = false,
@@ -733,6 +734,7 @@ function StreamlinedIssuesList({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { keyboardShortcutsEnabled } = useGeneralSettings();
+  const { t } = useTranslation();
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
   // selection only after real pointer movement, so keyboard-driven scrolling
   // doesn't hand the selection to whatever row lands under the cursor.
@@ -791,7 +793,7 @@ function StreamlinedIssuesList({
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
   const initialPreferencesRef = useRef<ReturnType<typeof loadIssueCollectionPreferences> | null>(null);
   if (initialPreferencesRef.current === null) {
-    initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation);
+    initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation, defaultGroupBy);
   }
   const initialPreferences = initialPreferencesRef.current;
 
@@ -818,7 +820,7 @@ function StreamlinedIssuesList({
     const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      const preferences = loadIssueCollectionPreferences(preferenceLocation);
+      const preferences = loadIssueCollectionPreferences(preferenceLocation, defaultGroupBy);
       setViewState(getInitialWorkspaceViewState(preferences, initialAssignees, initialWorkspaces, defaultSortField));
       setVisibleIssueColumns(preferences.columns);
     }
@@ -1029,7 +1031,7 @@ function StreamlinedIssuesList({
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
-        label: currentUserId === "local-board" ? "Board" : "Me",
+        label: currentUserId === "local-board" ? t("common.board") : t("common.me"),
         kind: "user",
         searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
       });
@@ -1293,7 +1295,7 @@ function StreamlinedIssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_workspace" ? t("tasks.noWorkspaceGroup") : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1309,7 +1311,7 @@ function StreamlinedIssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_project" ? "No Project" : (projectById.get(key)?.name ?? key.slice(0, 8)),
+          label: key === "__no_project" ? t("tasks.noProjectGroup") : (projectById.get(key)?.name ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1324,9 +1326,12 @@ function StreamlinedIssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_parent" ? "No Parent" : (issueTitleMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_parent" ? t("tasks.noParentGroup") : (issueTitleMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
+    }
+    if (viewState.groupBy === "topic") {
+      return groupIssuesByTopic(filtered, labels, t("tasks.noTopicGroup"));
     }
     // assignee
     const groups = groupBy(
@@ -1337,16 +1342,18 @@ function StreamlinedIssuesList({
       key,
       label:
         key === "__unassigned"
-          ? "Unassigned"
+          ? t("tasks.unassigned")
           : key.startsWith("__user:")
-            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? "User")
+            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? t("common.user"))
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
   }, [
+    t,
     filtered,
     issueFilterWorkspaceContext,
     viewState.groupBy,
+    labels,
     agents,
     agentName,
     currentUserId,
@@ -1620,7 +1627,7 @@ function StreamlinedIssuesList({
     };
   }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
-  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
+  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     const groupKey = group?.key;
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
@@ -1632,6 +1639,13 @@ function StreamlinedIssuesList({
         else defaults.assigneeAgentId = groupKey;
       }
       else if (viewState.groupBy === "project" && groupKey !== "__no_project") defaults.projectId = groupKey;
+      else if (viewState.groupBy === "topic" && groupKey !== "__no_topic") {
+        if (groupKey.startsWith("title_topic:")) {
+          defaults.title = `[${group?.label ?? groupKey.slice("title_topic:".length)}] `;
+        } else {
+          defaults.labelIds = [groupKey];
+        }
+      }
       else if (viewState.groupBy === "workspace" && groupKey !== "__no_workspace") {
         const representativeIssue = group?.items.find((issue) =>
           issue.executionWorkspaceId === groupKey || issue.projectWorkspaceId === groupKey,
@@ -1672,9 +1686,9 @@ function StreamlinedIssuesList({
     viewState.groupBy,
   ]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Task";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Task";
-  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
+  const createActionLabel = createIssueLabel ? t("area.issue-threads-runs-2.issues-list.createWithLabel", { label: createIssueLabel }) : t("tasks.createAction");
+  const createButtonLabel = createIssueLabel ? t("area.issue-threads-runs-2.issues-list.newWithLabel", { label: createIssueLabel }) : t("nav.newTask"); // myrmidon(UI-RU)
+  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
 
@@ -1727,7 +1741,7 @@ function StreamlinedIssuesList({
       {/* Toolbar */}
       <IssuesToolbar
         className="paperclip-task-list-toolbar"
-        ariaLabel={toolbarPresentation === "collection" ? "Task controls" : undefined}
+        ariaLabel={toolbarPresentation === "collection" ? t("area.issue-threads-runs-2.issues-list.taskControlsAria") : undefined}
         context={(
           <Button size="sm" variant="outline" aria-label={createButtonLabel} onClick={() => openCreateIssueDialog()}>
             <Plus className="h-4 w-4 sm:mr-1" />
@@ -1746,12 +1760,12 @@ function StreamlinedIssuesList({
         controls={(
           <>
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
+          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label={t("tasks.viewMode")}>
             <button
               className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
-              aria-label="List view"
+              title={t("tasks.listView")}
+              aria-label={t("tasks.listView")}
               aria-pressed={viewState.viewMode === "list"}
             >
               <List className="h-3.5 w-3.5" />
@@ -1759,8 +1773,8 @@ function StreamlinedIssuesList({
             <button
               className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
-              aria-label="Board view"
+              title={t("tasks.boardView")}
+              aria-label={t("tasks.boardView")}
               aria-pressed={viewState.viewMode === "board"}
             >
               <SquareKanban className="h-3.5 w-3.5" />
@@ -1774,7 +1788,7 @@ function StreamlinedIssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled ? t("tasks.disableNesting") : t("tasks.enableNesting")}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -1788,7 +1802,7 @@ function StreamlinedIssuesList({
                 size="icon"
                 className={cn("h-8 w-8 shrink-0", boardCompactCards && "bg-accent")}
                 onClick={() => updateView({ boardCardDensity: boardCompactCards ? "comfortable" : "compact" })}
-                title={boardCompactCards ? "Use comfortable cards" : "Use compact cards"}
+                title={boardCompactCards ? t("tasks.comfortableCards") : t("tasks.compactCards")}
               >
                 <ChevronsDownUp className="h-3.5 w-3.5" />
               </Button>
@@ -1798,7 +1812,7 @@ function StreamlinedIssuesList({
                 size="icon"
                 className={cn("h-8 w-8 shrink-0", boardCollapsedStatuses.length > 0 && "bg-accent")}
                 onClick={() => updateView({ boardColdLaneMode: boardCollapsedStatuses.length > 0 ? "expanded" : "collapsed" })}
-                title={boardCollapsedStatuses.length > 0 ? "Expand cold lanes" : "Collapse cold lanes"}
+                title={boardCollapsedStatuses.length > 0 ? t("tasks.expandColdLanes") : t("tasks.collapseColdLanes")}
               >
                 <PanelTopClose className="h-3.5 w-3.5" />
               </Button>
@@ -1812,7 +1826,7 @@ function StreamlinedIssuesList({
                       "h-8 shrink-0 gap-1.5 px-2",
                       viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE && "bg-accent",
                     )}
-                    title="Cards per column"
+                    title={t("tasks.cardsPerColumn")}
                   >
                     <ListCollapse className="h-3.5 w-3.5" />
                     <span className="min-w-4 text-xs tabular-nums">{viewState.boardColumnPageSize}</span>
@@ -1832,7 +1846,7 @@ function StreamlinedIssuesList({
                         )}
                         onClick={() => updateView({ boardColumnPageSize: pageSize })}
                       >
-                        <span>{pageSize} per column</span>
+                        <span>{t("tasks.perPage", { count: pageSize })}</span>
                         {viewState.boardColumnPageSize === pageSize && <Check className="h-3.5 w-3.5" />}
                       </button>
                     ))}
@@ -1850,7 +1864,7 @@ function StreamlinedIssuesList({
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
                 })}
                 disabled={!boardDensityCustomized}
-                title="Reset board density"
+                title={t("tasks.resetBoardDensity")}
               >
                 <RotateCcw className="h-3.5 w-3.5" />
               </Button>
@@ -1864,7 +1878,7 @@ function StreamlinedIssuesList({
             showDateGroupSeparators={viewState.showDateGroupSeparators}
             onToggleDateGroupSeparators={(enabled) => updateView({ showDateGroupSeparators: enabled })}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which task columns stay visible"
+            title={t("tasks.chooseColumns")}
             iconOnly
             rowPresentation={rowPresentation}
           />
@@ -1890,7 +1904,7 @@ function StreamlinedIssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("common.sort")}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1898,12 +1912,12 @@ function StreamlinedIssuesList({
                 <div className="p-2 space-y-0.5">
                   {/* PAP-411: "priority" sort option hidden behind SHOW_TASK_PRIORITY_UI (comparator stays dormant). */}
                   {([
-                    ["workflow", "Workflow"],
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
+                    ["workflow", t("tasks.workflow")],
+                    ["status", t("columns.status")],
+                    ["priority", t("tasks.priority")],
+                    ["title", t("columns.title")],
+                    ["created", t("tasks.created")],
+                    ["updated", t("tasks.updated")],
                   ] as const)
                     .filter(([field]) => SHOW_TASK_PRIORITY_UI || field !== "priority")
                     .map(([field, label]) => (
@@ -1937,7 +1951,7 @@ function StreamlinedIssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("common.group")}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1945,13 +1959,14 @@ function StreamlinedIssuesList({
                 <div className="p-2 space-y-0.5">
                   {/* PAP-411: "priority" group-by option hidden behind SHOW_TASK_PRIORITY_UI (group logic stays dormant). */}
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["assignee", "Responsible"],
-                    ["project", "Project"],
-                    ["workspace", "Workspace"],
-                    ["parent", "Parent Task"],
-                    ["none", "None"],
+                    ["status", t("columns.status")],
+                    ["priority", t("tasks.priority")],
+                    ["assignee", t("tasks.groupBy.assignee")],
+                    ["project", t("tasks.groupBy.project")],
+                    ["workspace", t("tasks.groupBy.workspace")],
+                    ["parent", t("tasks.groupBy.parent")],
+                    ["topic", t("tasks.groupBy.topic")],
+                    ["none", t("tasks.groupBy.none")],
                   ] as const)
                     .filter(([value]) => SHOW_TASK_PRIORITY_UI || value !== "priority")
                     .map(([value, label]) => (
@@ -1978,18 +1993,18 @@ function StreamlinedIssuesList({
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+          {t("tasks.showingUpTo", { count: ISSUE_SEARCH_RESULT_LIMIT })}
         </p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
+          {t("tasks.boardColumnLimit", { count: ISSUE_BOARD_COLUMN_RESULT_LIMIT })}
         </p>
       )}
       {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No tasks match the current filters or search."
+          message={t("tasks.noTasksMatch")}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -2048,8 +2063,8 @@ function StreamlinedIssuesList({
                     variant="ghost"
                     size="icon-xs"
                     className="-mr-2 text-muted-foreground"
-                    title={`New task in ${group.label}`}
-                    aria-label={`New task in ${group.label}`}
+                    title={t("area.issue-threads-runs-2.issues-list.newTaskIn", { group: group.label })}
+                    aria-label={t("area.issue-threads-runs-2.issues-list.newTaskIn", { group: group.label })}
                     onClick={() => openCreateIssueDialog(group)}
                   >
                     <Plus className="h-3 w-3" />
@@ -2111,14 +2126,13 @@ function StreamlinedIssuesList({
                       if (!blockerIssue) return null;
                       const label = blockerIssue.identifier ?? blockerIssue.id.slice(0, 8);
                       const blockerStep = checklistMeta?.stepNumberByIssueId.get(blockerId);
-                      const blockerStepSuffix = blockerStep ? ` \u00b7 step ${blockerStep}` : "";
-                      return { blockerId, chipLabel: `blocked by ${label}${blockerStepSuffix}` };
+                      return { blockerId, chipLabel: blockerStep ? t("area.issue-threads-runs-2.issues-list.blockedByStep", { label, step: blockerStep }) : t("area.issue-threads-runs-2.issues-list.blockedBy", { label }) };
                     })
                     .filter((chip): chip is { blockerId: string; chipLabel: string } => chip !== null);
                   const firstVisibleBlockerChip = visibleBlockerChips[0] ?? null;
                   const additionalVisibleBlockerCount = Math.max(visibleBlockerChips.length - 1, 0);
                   const additionalVisibleBlockerLabel = additionalVisibleBlockerCount > 0
-                    ? ` ... and ${additionalVisibleBlockerCount} more`
+                    ? t("area.issue-threads-runs-2.issues-list.andMore", { count: additionalVisibleBlockerCount })
                     : "";
                   const firstVisibleBlockerDisplayLabel = firstVisibleBlockerChip
                     ? `${firstVisibleBlockerChip.chipLabel}${additionalVisibleBlockerLabel}`
@@ -2182,18 +2196,18 @@ function StreamlinedIssuesList({
                           <>
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
-                                ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                                {t("area.issue-threads-runs-2.issues-list.subTaskCount", { count: totalDescendants })}
                               </span>
                             ) : null}
                             {issueBadge ? (
                               issueBadge === "Paused" ? (
                                 <Badge variant="ghost"
                                   className={cn("ml-1.5 px-1.5 text-(length:--text-nano)", statusBadge.paused)}
-                                  aria-label="Paused"
-                                  title="Paused"
+                                  aria-label={t("status.paused")}
+                                  title={t("status.paused")}
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
-                                  Paused
+                                  {t("status.paused")}
                                 </Badge>
                               ) : (
                                 <Badge variant="outline" className="ml-1.5 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) text-amber-700 dark:text-amber-300">
@@ -2204,11 +2218,11 @@ function StreamlinedIssuesList({
                             {isSuccessfulRunHandoffRequired(issue) ? (
                               <Badge variant="outline"
                                 className="ml-1.5 border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-                                aria-label="Needs next step"
-                                title="This task needs a next step"
+                                aria-label={t("tasks.needsNextStep")}
+                                title={t("tasks.needsNextStepTitle")}
                               >
                                 <CircleDot className="h-3 w-3" />
-                                Needs next step
+                                {t("tasks.needsNextStep")}
                               </Badge>
                             ) : null}
                           </>
@@ -2220,7 +2234,7 @@ function StreamlinedIssuesList({
                               type="button"
                               data-slot="icon-button"
                               className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
-                              aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
+                              aria-label={isExpanded ? t("area.issue-threads-runs-2.issues-list.collapseSubtasks") : t("area.issue-threads-runs-2.issues-list.expandSubtasks")}
                               onClick={toggleCollapse}
                             >
                               <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
@@ -2309,6 +2323,7 @@ function StreamlinedIssuesList({
                                 defaultProjectWorkspaceIdByProjectId,
                               })}
                               onFilterWorkspace={filterToWorkspace}
+                              onUpdateIssue={onUpdateIssue}
                               assigneeName={agentName(issue.assigneeAgentId)}
                               assigneeUserName={assigneeUserLabel}
                               assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
@@ -2336,7 +2351,7 @@ function StreamlinedIssuesList({
                                         <Identity name={agentName(issue.assigneeAgentId)!} size="sm" shape="square" className="min-w-0" />
                                       ) : issue.assigneeUserId ? (
                                         <Identity
-                                          name={assigneeUserLabel ?? "User"}
+                                          name={assigneeUserLabel ?? t("common.user")}
                                           avatarUrl={assigneeUserProfile?.image ?? null}
                                           size="sm"
                                           className="min-w-0"
@@ -2346,7 +2361,7 @@ function StreamlinedIssuesList({
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                             <User className="h-3.5 w-3.5" />
                                           </span>
-                                          Assignee
+                                          {t("common.assignee")}
                                         </span>
                                       )}
                                     </button>
@@ -2359,7 +2374,7 @@ function StreamlinedIssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search responsible..."
+                                      placeholder={t("tasks.searchResponsible")}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -2376,7 +2391,7 @@ function StreamlinedIssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No responsible
+                                        {t("tasks.noResponsible")}
                                       </button>
                                       {currentUserId && (
                                         <button
@@ -2391,7 +2406,7 @@ function StreamlinedIssuesList({
                                           }}
                                         >
                                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
+                                          <span>{t("common.me")}</span>
                                         </button>
                                       )}
                                       {(agents ?? [])
@@ -2459,7 +2474,11 @@ function StreamlinedIssuesList({
                       nodes.push(
                         <IssueDateSeparator
                           key={`date-sep-${issue.id}-${crossedBucket}`}
-                          label={issueAgeSeparatorLabel(crossedBucket)}
+                          label={
+                            crossedBucket === 1
+                              ? t("tasks.olderThanDay") // myrmidon(UI-RU)
+                              : t("tasks.olderThanWeek")
+                          }
                         />,
                       );
                     }
@@ -2485,10 +2504,10 @@ function StreamlinedIssuesList({
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
                 {isLoadingMoreIssues
-                  ? "Loading more tasks..."
+                  ? t("tasks.loadingMore")
                   : remainingIssueRowCount > 0
-                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} tasks`
-                    : "Scroll to load more tasks"}
+                    ? t("area.issue-threads-runs-2.issues-list.renderingProgress", { shown: Math.min(renderedIssueRowLimit, filtered.length), total: filtered.length })
+                    : t("area.issue-threads-runs-2.issues-list.scrollToLoadMore")}
               </p>
             </div>
           )}

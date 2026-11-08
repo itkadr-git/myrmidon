@@ -29,17 +29,22 @@ export type DeployJobStatus =
   | "pending"
   | "verifying"
   | "verified"
+  | "waiting_window"
   | "failed_verification"
   | "maintenance_entering"
   | "maintenance_on"
   | "maintenance_failed"
   | "running"
+  | "fleet_canary"
+  | "canary_failed"
   | "rolling_back"
   | "succeeded"
   | "failed_health"
   | "failed_rollback"
   | "auto_rolled_back"
   | "aborted";
+
+export type DeployUpdateMode = "manual" | "auto" | "canary";
 
 /**
  * Whether the job's failed health check triggered the automatic rollback to
@@ -55,9 +60,15 @@ export const DEPLOY_JOB_ACTIVE_STATUSES: readonly DeployJobStatus[] = [
   "pending",
   "verifying",
   "verified",
+  // 1.7-AUTO-UPDATE-B: a verified job outside the maintenance window waits for
+  // it — it is still ours (nothing else may start), but the host must not touch it.
+  "waiting_window",
   "maintenance_entering",
   "maintenance_on",
   "running",
+  // 1.7-AUTO-UPDATE-B: the board switched and the fleet canary batch is being
+  // watched before the rest of the bots may follow.
+  "fleet_canary",
   "rolling_back",
 ];
 
@@ -92,11 +103,21 @@ export interface DeployJob {
   commit: string | null;
   status: DeployJobStatus;
   reason: string;
+  mode: DeployUpdateMode;
+  window: string | null;
   startedBy: { actorType: string; actorId: string };
   createdAt: string;
   updatedAt: string;
   verifiedAt: string | null;
   maintenanceWindowId: string | null;
+  /** 1.7-AUTO-UPDATE-B: when the maintenance window next opens, while the job waits in `waiting_window`. */
+  windowOpensAt: string | null;
+  /** 1.7-AUTO-UPDATE-B: the bots of the canary batch, switched before the rest (B-2). */
+  canaryBatch: string[];
+  /** 1.7-AUTO-UPDATE-B: the bots that may only follow a healthy canary batch. */
+  fleetRest: string[];
+  /** 1.7-AUTO-UPDATE-B: when the canary batch was handed to the fleet, for the settle time. */
+  canaryStartedAt: string | null;
   healthVersion: string | null;
   healthCommit: string | null;
   failureReason: string | null;
@@ -124,11 +145,14 @@ const STATUSES: readonly DeployJobStatus[] = [
   "pending",
   "verifying",
   "verified",
+  "waiting_window",
   "failed_verification",
   "maintenance_entering",
   "maintenance_on",
   "maintenance_failed",
   "running",
+  "fleet_canary",
+  "canary_failed",
   "rolling_back",
   "succeeded",
   "failed_health",
@@ -170,6 +194,8 @@ function parseJob(raw: unknown): DeployJob | null {
     commit: typeof raw.commit === "string" ? raw.commit : null,
     status: raw.status as DeployJobStatus,
     reason: typeof raw.reason === "string" ? raw.reason : "",
+    mode: raw.mode === "auto" || raw.mode === "canary" ? raw.mode : "manual",
+    window: typeof raw.window === "string" ? raw.window : null,
     startedBy: isRecord(raw.startedBy)
       ? { actorType: String(raw.startedBy.actorType ?? ""), actorId: String(raw.startedBy.actorId ?? "") }
       : { actorType: "", actorId: "" },
@@ -177,6 +203,10 @@ function parseJob(raw: unknown): DeployJob | null {
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
     verifiedAt: typeof raw.verifiedAt === "string" ? raw.verifiedAt : null,
     maintenanceWindowId: typeof raw.maintenanceWindowId === "string" ? raw.maintenanceWindowId : null,
+    windowOpensAt: typeof raw.windowOpensAt === "string" ? raw.windowOpensAt : null,
+    canaryBatch: Array.isArray(raw.canaryBatch) ? raw.canaryBatch.filter((key): key is string => typeof key === "string") : [],
+    fleetRest: Array.isArray(raw.fleetRest) ? raw.fleetRest.filter((key): key is string => typeof key === "string") : [],
+    canaryStartedAt: typeof raw.canaryStartedAt === "string" ? raw.canaryStartedAt : null,
     healthVersion: typeof raw.healthVersion === "string" ? raw.healthVersion : null,
     healthCommit: typeof raw.healthCommit === "string" ? raw.healthCommit : null,
     failureReason: typeof raw.failureReason === "string" ? raw.failureReason : null,
@@ -280,7 +310,9 @@ export function verifyCiImage(input: {
   }
   const onMain = input.commitOnMain(commit);
   const tags = input.releaseTagsAtCommit ?? [];
-  const tagged = tags.some((tag) => /^myr-v\d+\.\d+\.\d+$/.test(tag));
+  // RC-VERSIONS: a release candidate tag (myr-vX.Y.Z-rc.N) counts too — the
+  // deploy of an rc IS the trial run of the release flow.
+  const tagged = tags.some((tag) => /^myr-v\d+\.\d+\.\d+(-rc\.\d+)?$/.test(tag));
   if (!onMain && !tagged) {
     return {
       ok: false,
@@ -315,6 +347,8 @@ export function newDeployJob(input: {
   companyId: string;
   digest: string;
   reason: string;
+  mode?: DeployUpdateMode;
+  window?: string | null;
   startedBy: { actorType: string; actorId: string };
   now: Date;
 }): DeployJob {
@@ -327,11 +361,17 @@ export function newDeployJob(input: {
     commit: null,
     status: "pending",
     reason: input.reason,
+    mode: input.mode ?? "manual",
+    window: input.window ?? null,
     startedBy: input.startedBy,
     createdAt,
     updatedAt: createdAt,
     verifiedAt: null,
     maintenanceWindowId: null,
+    windowOpensAt: null,
+    canaryBatch: [],
+    fleetRest: [],
+    canaryStartedAt: null,
     healthVersion: null,
     healthCommit: null,
     failureReason: null,
@@ -366,5 +406,7 @@ export class DeployJobConflict extends Error {
  * it by hand would leave the host mid-recreate.)
  */
 export function isAbortable(job: DeployJob): boolean {
-  return ["pending", "verifying", "verified", "maintenance_entering"].includes(job.status);
+  // `waiting_window` is abortable too (1.7-AUTO-UPDATE-B): a deploy that waits
+  // for tomorrow's window must be cancellable today without touching the host.
+  return ["pending", "verifying", "verified", "waiting_window", "maintenance_entering"].includes(job.status);
 }

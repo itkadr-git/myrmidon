@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { agentWakeupRequests, chatActions } from "@paperclipai/db";
+import type { agentWakeupRequests, chatActions } from "@myrmidon/db";
 import { describe, expect, it } from "vitest";
 import { createDurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import {
@@ -61,6 +61,7 @@ function fixture() {
     requestedByActorId: "owner",
     idempotencyKey: trusted.idempotencyKey,
     coalescedCount: 0,
+    resurrectionCount: 0,
     requestedAt: new Date(),
     claimedAt: null,
     finishedAt: null,

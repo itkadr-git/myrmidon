@@ -16,9 +16,9 @@ import {
   updateIssueSchema,
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { PaperclipApiClient } from "./client.js";
-import { formatErrorResponse, formatTextResponse } from "./format.js";
+import { formatErrorResponse, formatTextResponse } from "./format.js"; import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C): kept on this line so the capability anchors in tools.ts do not shift
 
 export interface ToolDefinition {
   name: string;
@@ -60,7 +60,7 @@ async function callRuntimeConnectionTool(
   body: unknown,
 ) {
   const endpoint = process.env[endpointEnv]?.trim();
-  const token = process.env.PAPERCLIP_RUNTIME_TOOLS_TOKEN?.trim();
+  const token = readProductEnv("RUNTIME_TOOLS_TOKEN")?.trim();
   if (!endpoint || !token) {
     throw new Error("Connection intent tools are available only inside an active Paperclip heartbeat run");
   }

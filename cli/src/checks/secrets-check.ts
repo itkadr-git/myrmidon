@@ -4,6 +4,7 @@ import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const AWS_CREDENTIAL_SOURCE_HINT =
   "Provide AWS runtime credentials through the AWS SDK default credential chain: IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, web identity, container/instance metadata, or short-lived shell credentials";
@@ -59,11 +60,11 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
       status: "fail",
       message: `${provider} is configured, but this build only supports local_encrypted and aws_secrets_manager`,
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section secrets` and choose local_encrypted or aws_secrets_manager",
+      repairHint: "Run `myrmidon configure --section secrets` and choose local_encrypted or aws_secrets_manager",
     };
   }
 
-  const envMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+  const envMasterKey = readProductEnv("SECRETS_MASTER_KEY");
   if (envMasterKey && envMasterKey.trim().length > 0) {
     if (!decodeMasterKey(envMasterKey)) {
       return {
@@ -86,7 +87,7 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
     );
   }
 
-  const keyFileOverride = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+  const keyFileOverride = readProductEnv("SECRETS_MASTER_KEY_FILE");
   const configuredPath =
     keyFileOverride && keyFileOverride.trim().length > 0
       ? keyFileOverride.trim()
@@ -169,7 +170,7 @@ function awsSecretsManagerCheck(): CheckResult {
       message: `AWS Secrets Manager provider is missing non-secret config: ${missingConfig.join(", ")}`,
       canRepair: false,
       repairHint:
-        `Set ${missingConfig.join(", ")} in the Paperclip server runtime. ${AWS_CREDENTIAL_SOURCE_HINT}. Do not store AWS root credentials or long-lived IAM user keys in Paperclip secrets.`,
+        `Set ${missingConfig.join(", ")} in the Myrmidon server runtime. ${AWS_CREDENTIAL_SOURCE_HINT}. Do not store AWS root credentials or long-lived IAM user keys in Myrmidon secrets.`,
     };
   }
 
@@ -177,7 +178,7 @@ function awsSecretsManagerCheck(): CheckResult {
     process.env.AWS_ACCESS_KEY_ID?.trim() && process.env.AWS_SECRET_ACCESS_KEY?.trim();
   const credentialSource = detectedAwsCredentialSources().join(", ");
   const message =
-    `AWS Secrets Manager provider configured for deployment ${process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID}; ` +
+    `AWS Secrets Manager provider configured for deployment ${readProductEnv("SECRETS_AWS_DEPLOYMENT_ID")}; ` +
     `runtime credentials source: ${credentialSource || "AWS SDK default credential chain"}`;
 
   if (staticEnvCredentials) {
@@ -187,7 +188,7 @@ function awsSecretsManagerCheck(): CheckResult {
       message,
       canRepair: false,
       repairHint:
-        "AWS static environment credentials are visible. Use only short-lived shell credentials locally; prefer IAM role/workload identity for hosted deployments and never store AWS access keys in Paperclip company secrets.",
+        "AWS static environment credentials are visible. Use only short-lived shell credentials locally; prefer IAM role/workload identity for hosted deployments and never store AWS access keys in Myrmidon company secrets.",
     };
   }
 
@@ -202,17 +203,17 @@ function missingAwsSecretsManagerConfig(): string[] {
   const missing: string[] = [];
   if (
     !(
-      process.env.PAPERCLIP_SECRETS_AWS_REGION?.trim() ||
+      readProductEnv("SECRETS_AWS_REGION")?.trim() ||
       process.env.AWS_REGION?.trim() ||
       process.env.AWS_DEFAULT_REGION?.trim()
     )
   ) {
     missing.push("PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION");
   }
-  if (!process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID?.trim()) {
+  if (!readProductEnv("SECRETS_AWS_DEPLOYMENT_ID")?.trim()) {
     missing.push("PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID");
   }
-  if (!process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID?.trim()) {
+  if (!readProductEnv("SECRETS_AWS_KMS_KEY_ID")?.trim()) {
     missing.push("PAPERCLIP_SECRETS_AWS_KMS_KEY_ID");
   }
   return missing;

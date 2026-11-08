@@ -3,7 +3,7 @@ title: Issues
 summary: Issue CRUD, checkout/release, comments, documents, interactions, and attachments
 ---
 
-Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, issue-thread interactions, keyed text documents, and file attachments.
+Issues are the unit of work in Myrmidon. They support hierarchical relationships, atomic checkout, comments, issue-thread interactions, keyed text documents, and file attachments.
 
 ## List Issues
 
@@ -20,6 +20,32 @@ Query parameters:
 | `projectId` | Filter by project |
 
 Results sorted by priority.
+
+### Agent defaults for the list (Myrmidon 1.6.5 F-16, part A)
+
+When the request is authenticated as an **agent** (agent API token), the
+instance setting `issuesListAgentDefaults` (in `instance_settings.general`)
+applies. It is **on by default** — the key is absent until first toggled,
+and absent means enabled; `{ "enabled": false }` restores the pre-feature
+behaviour byte-for-byte.
+
+With the setting on, for agent actors:
+
+- A request without `view` is answered as `view=compact`; the default
+  `limit` is **200**.
+- Explicit `limit` above **500** is rejected with `400` and a pagination
+  hint (instead of being silently clamped).
+- Compact rows omit `description`. Fetch the full body of the chosen task
+  with `GET /api/issues/{issueId}`.
+- The full view requires an explicit `view=full` **and** an explicit
+  `limit` ≤ **100**; otherwise the request is rejected with `400`.
+
+Board (human/UI) requests are unaffected: a bare board request returns the
+full response and `limit=1000` is clamped as before.
+
+Details, error texts, and the operator story:
+[`docs/myrmidon/guides/issue-list-agent-defaults.md`](../myrmidon/guides/issue-list-agent-defaults.md)
+([RU](../myrmidon/guides/issue-list-agent-defaults.ru.md)).
 
 ## Get Issue
 
@@ -250,6 +276,8 @@ Board users can resolve all interactions. Under `anyone`, an eligible in-company
 Resolving a card records the response only. Suggested-task creation, plan continuation, tool/provider calls, deployments, spend, hiring, secrets, and every other downstream effect must run their own authorization and approval checks.
 
 The creator agent or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
+
+Closing the issue also expires its pending interactions. When an issue transitions to a terminal status (`done` or `cancelled`) — through the HTTP routes or any direct service-level status update — every still-pending interaction on that issue moves `pending` → `expired` with result outcome `issue_closed` and `expirationReason: "issue_closed"` (`connection_intent` cards keep outcome `expired` and record the same `expirationReason`). Linked tool actions and secret proposals are revoked/expired in the same transaction, `resolvedAt` is stamped, and the transition is idempotent: repeated terminal transitions or a concurrent resolution do not double-write. Any later resolve attempt on such a card returns `409` with code `interaction_issue_closed`. Migration `0459_expire_pending_interactions_on_closed_issues` performed the one-time catch-up of pre-existing pending rows on already-closed issues.
 
 ## Documents
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageName": "@paperclipai/skills-catalog",
+  "packageName": "@myrmidon/skills-catalog",
   "packageVersion": "0.3.1",
   "generatedAt": "2026-10-02T16:17:16.570Z",
   "skills": [
@@ -72,6 +72,40 @@
         }
       ],
       "contentHash": "sha256:88dc13560371fb364963782cb4f6eeb4090fcde92ee3774479428ed6b90e11c1"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:knowledge-distill",
+      "key": "paperclipai/bundled/paperclip-operations/knowledge-distill",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "knowledge-distill",
+      "name": "knowledge-distill",
+      "description": "Distill knowledge proposals from tasks closed in the period: read the distiller pass report, write suggestion texts for the curator queue, keep every claim sourced. Replaces paperclip-distill.",
+      "path": "catalog/bundled/paperclip-operations/knowledge-distill",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "knowledge-curator",
+        "general"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "knowledge",
+        "distill",
+        "curator"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3321,
+          "sha256": "803bb9a3a6437188b81adc4ac87ceed5cae3c8555b000ad394175d908126b3db"
+        }
+      ],
+      "contentHash": "sha256:7e2ad98dc1cd6fec06b2a218c54afafe3fd4b49f95a92eb75a880aceeeea8062"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:reflection-coach",

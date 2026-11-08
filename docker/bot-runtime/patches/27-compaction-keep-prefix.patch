@@ -1,0 +1,23 @@
+diff --git a/agent/conversation_compression.py b/agent/conversation_compression.py
+index 209907d..fdf207c 100644
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -3138,6 +3138,18 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
+ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
+     """Refresh tool schemas and rebuild the system prompt at the commit boundary."""
+     cached_system_prompt = agent._cached_system_prompt
++    # myrmidon(G1): a compaction rewrites the messages, but the system prompt and the tool schemas in front
++    # of them can stay byte-identical, so the provider's cached prefix (tools + system prompt) survives it.
++    # Rebuilding re-reads memory and plugin sections and re-lists skills, which changes those bytes (and
++    # with them the cache from the first changed byte on) whenever any of it moved during the session.
++    # Settings: context_economy.compaction_keep_prefix (default on) in config.yaml.
++    from agent.context_economy import compaction_keeps_prefix
++
++    if compaction_keeps_prefix() and isinstance(cached_system_prompt, str) and cached_system_prompt:
++        from agent.system_prompt import reconstruct_static_prefix
++
++        reconstruct_static_prefix(agent, system_message=system_message, log_label="compression keep-prefix")
++        return cached_system_prompt
+     agent._invalidate_system_prompt()
+ 
+     # Refresh dynamic tool schemas at the same admitted-commit boundary that rebuilds the system prompt

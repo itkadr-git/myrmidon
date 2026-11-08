@@ -1,18 +1,24 @@
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
 import { describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 
 import { compileHermesProfile } from "./profile-compiler.js";
 import {
   BOT_AUX_COMPRESSION_MODEL_ENV,
+  BOT_AUX_FALLBACK_MODELS_ENV,
   BOT_AUX_TITLE_MODEL_ENV,
   BOT_BOARD_URL_ENV,
   BOT_COMPRESSION_THRESHOLD_TOKENS_ENV,
+  BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
+  BOT_DEFAULT_DISABLED_TOOLS,
+  BOT_DISABLED_TOOLS_ENV,
   BOT_HINDSIGHT_ALLOWED_BANKS_ENV,
   BOT_HINDSIGHT_API_URL_ENV,
   BOT_HINDSIGHT_BANK_ENV,
   BOT_LLM_API_KEY_ENV_ENV,
   BOT_LLM_API_KEY_SECRET_ENV,
   BOT_LLM_BASE_URL_ENV,
+  BOT_LOCAL_MEMORY_OFF_ENV,
   BOT_MCP_SERVERS_ENV,
   BOT_MODEL_CONTEXT_LENGTH_ENV,
   BOT_RUNTIME_MCP_URL_BASE_ENV,
@@ -22,7 +28,9 @@ import {
   buildHermesProfileInput,
   cardUsesLlmGateway,
   parseBotCompressionThresholdTokens,
+  parseBotDisabledTools,
   parseBotMcpServers,
+  parseBotAuxFallbackModels,
   parseBotModelContextLengths,
   parseBotHindsightAllowedBanks,
   parseObservationScopes,
@@ -32,6 +40,7 @@ import {
   type BotProfileSettings,
   type BotProfileSource,
 } from "./profile-input.js";
+import { BOT_DEVELOPER_ROLES_ENV, BOT_ROLE_TOOL_DIET_ENV, DEFAULT_BOT_DEVELOPER_ROLES } from "./tool-diet.js";
 
 // Everything here is placeholder data: fake bot keys, example.com URLs and
 // obviously-fake secrets.
@@ -81,6 +90,32 @@ function fileContent(profile: ReturnType<typeof compileHermesProfile>, path: str
 }
 
 describe("myrmidon(W2a) readBotProfileSettings", () => {
+  it("prefers allowlists saved from the UI to the process environment", () => {
+    const previous = liveBehaviorSettingsView();
+    const priorBanks = process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV];
+    const priorServers = process.env[BOT_MCP_SERVERS_ENV];
+    try {
+      process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV] = "env-bank";
+      process.env[BOT_MCP_SERVERS_ENV] = JSON.stringify([{ name: "env", url: "https://env.example.com/mcp", noAuth: true }]);
+      applyLiveBehaviorSettings({
+        settings: { bot_hindsight_allowed_banks: ["managed"], bot_mcp_servers: [{ name: "managed", url: "https://managed.example.com/mcp", noAuth: true }] },
+        sources: { bot_hindsight_allowed_banks: "ui", bot_mcp_servers: "ui" },
+      } as ReturnType<typeof liveBehaviorSettingsView>);
+      const saved = readBotProfileSettings();
+      expect(saved.hindsightAllowedBanks).toEqual(["managed"]);
+      expect(saved.mcpServers.map((server) => server.name)).toEqual(["managed"]);
+      applyLiveBehaviorSettings({ settings: {}, sources: {} } as ReturnType<typeof liveBehaviorSettingsView>);
+      const fromEnv = readBotProfileSettings();
+      expect(fromEnv.hindsightAllowedBanks).toEqual(["env-bank"]);
+      expect(fromEnv.mcpServers.map((server) => server.name)).toEqual(["env"]);
+    } finally {
+      if (priorBanks === undefined) delete process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV];
+      else process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV] = priorBanks;
+      if (priorServers === undefined) delete process.env[BOT_MCP_SERVERS_ENV];
+      else process.env[BOT_MCP_SERVERS_ENV] = priorServers;
+      applyLiveBehaviorSettings(previous);
+    }
+  });
   it("reads the MYRMIDON_BOT_* variables, trimming them and treating blanks as unset", () => {
     expect(
       readBotProfileSettings({
@@ -103,12 +138,22 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
       runtimeMcpUrlBase: "http://board.example.com:3100",
       mcpServers: [],
       mcpServersError: null,
-      compressionThresholdTokens: null,
+      // myrmidon(BOT-RUNTIME-TUNING-A): an unset variable means the company
+      // default, not "no threshold".
+      compressionThresholdTokens: BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
       compressionThresholdTokensError: null,
       modelContextLengths: null,
       modelContextLengthsError: null,
       auxiliaryTitleModel: null,
       auxiliaryCompressionModel: null,
+      auxiliaryFallbackModels: null,
+      // myrmidon(MEMORY-CENTRAL-A): unset in the env above -> the switch is off.
+      localMemoryOff: false,
+      // myrmidon(TOOL-DIET): unset in the env above -> the fleet default list.
+      disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS],
+      // myrmidon(TOOL-DIET-ROLES): unset in the env above -> the role defaults are on, default developer roles.
+      roleToolDiet: true,
+      developerRoles: [...DEFAULT_BOT_DEVELOPER_ROLES],
     });
     expect(readBotProfileSettings({ [BOT_BOARD_URL_ENV]: "   " }).boardUrl).toBeNull();
     expect(readBotProfileSettings({}).hindsightApiUrl).toBeNull();
@@ -133,14 +178,24 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(read.compressionThresholdTokensError).toBeNull();
   });
 
-  it("treats an unset or blank threshold as unset (Hermes's own default applies)", () => {
-    expect(readBotProfileSettings({}).compressionThresholdTokens).toBeNull();
-    expect(readBotProfileSettings({ [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "   " }).compressionThresholdTokens).toBeNull();
+  it("falls back to the company default 100k when the threshold is unset or blank", () => {
+    // myrmidon(BOT-RUNTIME-TUNING-A): the variable is an override of the
+    // company default, not an all-or-nothing switch: an instance that says
+    // nothing still gets the fleet's 100k cap.
+    expect(readBotProfileSettings({}).compressionThresholdTokens).toBe(BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS);
+    expect(readBotProfileSettings({ [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "   " }).compressionThresholdTokens).toBe(
+      BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
+    );
+    expect(BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS).toBe(100_000);
   });
 
-  it("reports a non-integer threshold instead of throwing", () => {
+  it("an explicit 0 in the variable turns the cap off (no threshold written)", () => {
+    expect(readBotProfileSettings({ [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "0" }).compressionThresholdTokens).toBeNull();
+  });
+
+  it("reports a non-integer threshold instead of throwing, and keeps the company default", () => {
     const read = readBotProfileSettings({ [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "100k" });
-    expect(read.compressionThresholdTokens).toBeNull();
+    expect(read.compressionThresholdTokens).toBe(BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS);
     expect(read.compressionThresholdTokensError).toContain(BOT_COMPRESSION_THRESHOLD_TOKENS_ENV);
     expect(parseBotCompressionThresholdTokens(null)).toEqual({ value: null, error: null });
     expect(parseBotCompressionThresholdTokens("0")).toEqual({ value: 0, error: null });
@@ -178,6 +233,34 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(read.auxiliaryCompressionModel).toBeNull();
   });
 
+  // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling of the
+  // auxiliary fallback chains.
+  it("parses MYRMIDON_BOT_AUX_FALLBACK_MODELS as an ordered alias list", () => {
+    const read = readBotProfileSettings({
+      [BOT_AUX_FALLBACK_MODELS_ENV]: " model-cheap , model-cheaper ,, model-cheap ",
+    });
+    expect(read.auxiliaryFallbackModels).toEqual(["model-cheap", "model-cheaper"]);
+    expect(readBotProfileSettings({}).auxiliaryFallbackModels).toBeNull();
+    expect(readBotProfileSettings({ [BOT_AUX_FALLBACK_MODELS_ENV]: " , ," }).auxiliaryFallbackModels).toBeNull();
+    expect(parseBotAuxFallbackModels(null)).toBeNull();
+  });
+
+  it("the ceiling reaches the compiled auxiliary chain, on the instance gateway route", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      // No provider on the card: the profile talks to the instance gateway, so
+      // the ceiling entries carry that endpoint and its key name themselves.
+      source({ adapterConfig: { model: "model-a" } }),
+      settings({ auxiliaryTitleModel: "model-title", auxiliaryFallbackModels: ["model-cheap"] }),
+    );
+    expect(warnings).toEqual([]);
+    const yaml = fileContent(compileHermesProfile(input), "hermes/config.yaml");
+    expect(yaml).toContain(
+      'auxiliary:\n  title_generation:\n    fallback_chain:\n    - base_url: "https://example.com/llm/v1"\n' +
+        '      key_env: "FLEET_LLM_API_KEY"\n      model: "model-cheap"\n      provider: "custom"\n' +
+        '    model: "model-title"',
+    );
+  });
+
   it("carries the settings into instanceDefaults and then into the compiled config.yaml", () => {
     const { input, warnings } = buildHermesProfileInput(source(), settings({
       compressionThresholdTokens: 100_000,
@@ -190,6 +273,40 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(yaml).toContain("threshold_tokens: 100000");
     expect(yaml).not.toContain("context_length"); // the card names no model
     expect(yaml).toContain('auxiliary:\n  compression:\n    model: "model-summary"\n  title_generation:\n    model: "model-title"');
+  });
+
+  // myrmidon(BOT-RUNTIME-TUNING-A): the same compression cap, but set on the
+  // agent card — the card wins over the company default.
+  it("carries the card's models.compressionThresholdTokens into config.yaml over the instance default", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({ adapterConfig: { models: { compressionThresholdTokens: 120_000 } } }),
+      settings({ compressionThresholdTokens: 100_000 }),
+    );
+    expect(warnings).toEqual([]);
+    const yaml = fileContent(compileHermesProfile(input), "hermes/config.yaml");
+    expect(yaml).toContain("threshold_tokens: 120000");
+  });
+
+  it("the card's threshold compiles even when the instance sets none", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { models: { compressionThresholdTokens: 120_000 } } }),
+      settings({ compressionThresholdTokens: null }),
+    );
+    expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("threshold_tokens: 120000");
+  });
+
+  it("ignores an unusable card threshold, so the company default applies", () => {
+    // A card is user-edited JSON: a string, a blank or a non-positive value
+    // never reaches the compiler (asTrimmedPositiveInt), and the instance
+    // default stays in force.
+    for (const bad of ["120k", " ", 0, -5, 12.5, null, undefined]) {
+      const { input, warnings } = buildHermesProfileInput(
+        source({ adapterConfig: { models: { compressionThresholdTokens: bad as unknown as number } } }),
+        settings({ compressionThresholdTokens: 100_000 }),
+      );
+      expect(warnings).toEqual([]);
+      expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("threshold_tokens: 100000");
+    }
   });
 
   it("the alias map reaches model.context_length for the card's model", () => {
@@ -206,6 +323,14 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
       settings({ modelContextLengths: { "model-a": 131_072 } }),
     );
     expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("context_length: 262144");
+  });
+
+  it("the card's models.maxOutputTokens reaches model.max_tokens in compiled config", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { model: "model-a", models: { maxOutputTokens: 16_384 } } }),
+      settings(),
+    );
+    expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("max_tokens: 16384");
   });
 
   it("the card's models.titleGeneration and models.compressionSummary reach the compiled auxiliary block", () => {
@@ -233,6 +358,297 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(warnings).toEqual([`${BOT_COMPRESSION_THRESHOLD_TOKENS_ENV}: "100k" is not an integer`]);
   });
 });
+
+// myrmidon(MEMORY-CENTRAL-A): the instance switch that turns every bot's Hermes
+// LOCAL memory (the built-in MEMORY.md/USER.md file stores) off, so durable
+// memory lives only in the shared hindsight service.
+describe("myrmidon(MEMORY-CENTRAL-A) MYRMIDON_BOT_LOCAL_MEMORY_OFF", () => {
+  it("reads the env switch: 1/true/yes/on (case-insensitive, trimmed) turn it on, anything else keeps it off", () => {
+    for (const value of ["1", "true", "TRUE", "yes", "on", " 1 "]) {
+      expect(readBotProfileSettings({ [BOT_LOCAL_MEMORY_OFF_ENV]: value }).localMemoryOff).toBe(true);
+    }
+    // Off by default and on anything unrecognized — a typo must not silently
+    // disable a bot's memory.
+    for (const value of [undefined, "", "   ", "0", "false", "nope", "treu"]) {
+      expect(readBotProfileSettings(value ? { [BOT_LOCAL_MEMORY_OFF_ENV]: value } : {}).localMemoryOff).toBe(false);
+    }
+  });
+
+  it("switch on: the compiled config.yaml disables the local memory stores and keeps the hindsight provider", () => {
+    const { input } = buildHermesProfileInput(source(), settings({ localMemoryOff: true }));
+    const yaml = fileContent(compileHermesProfile(input), "hermes/config.yaml");
+    // Sorted keys: memory_enabled, provider, user_profile_enabled.
+    expect(yaml).toContain(
+      'memory:\n  memory_enabled: false\n  provider: "hindsight"\n  user_profile_enabled: false',
+    );
+  });
+
+  it("switch off (the default): the memory block is exactly the pre-feature one and carries no enabled flags", () => {
+    const off = buildHermesProfileInput(source(), settings({ localMemoryOff: false }));
+    const unset = buildHermesProfileInput(source(), settings());
+    const yaml = fileContent(compileHermesProfile(off.input), "hermes/config.yaml");
+    expect(yaml).toContain('memory:\n  provider: "hindsight"');
+    expect(yaml).not.toContain("memory_enabled");
+    expect(yaml).not.toContain("user_profile_enabled");
+    // A hand-built settings object without the new field compiles the same as
+    // the explicit off.
+    expect(fileContent(compileHermesProfile(unset.input), "hermes/config.yaml")).toBe(yaml);
+  });
+
+  it("flipping the switch off restores the byte-identical profile a pre-feature build compiled (restartHash stable)", () => {
+    const before = compileHermesProfile(buildHermesProfileInput(source(), settings()).input);
+    const on = compileHermesProfile(buildHermesProfileInput(source(), settings({ localMemoryOff: true })).input);
+    expect(on.restartHash).not.toBe(before.restartHash);
+    const offAgain = compileHermesProfile(buildHermesProfileInput(source(), settings({ localMemoryOff: false })).input);
+    expect(offAgain.restartHash).toBe(before.restartHash);
+  });
+
+  it("the caller's own instanceDefaults.disableLocalMemory applies only when the settings object predates the field", () => {
+    const fromCaller = buildHermesProfileInput(
+      source({ instanceDefaults: { disableLocalMemory: true } }),
+      // settings() carries no localMemoryOff key: a hand-built pre-feature
+      // settings object, where the caller's instance default is honored.
+      settings(),
+    );
+    expect(fileContent(compileHermesProfile(fromCaller.input), "hermes/config.yaml")).toContain(
+      "memory_enabled: false",
+    );
+    // readBotProfileSettings always fills the field, so in production the
+    // instance switch wins both ways: off restores the pre-feature block even
+    // if a caller passes an on-flagged instanceDefaults.
+    const settingsOff: BotProfileSettings = { ...settings(), localMemoryOff: false };
+    const fromEnv = buildHermesProfileInput(source({ instanceDefaults: { disableLocalMemory: true } }), settingsOff);
+    expect(fileContent(compileHermesProfile(fromEnv.input), "hermes/config.yaml")).not.toContain("memory_enabled");
+  });
+});
+
+// myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS — single tools no bot sends to the model.
+describe("myrmidon(TOOL-DIET) MYRMIDON_BOT_DISABLED_TOOLS", () => {
+  const configYaml = (input: ReturnType<typeof buildHermesProfileInput>["input"]) =>
+    fileContent(compileHermesProfile(input), "hermes/config.yaml");
+
+  it("parses: unset -> the fleet default, none/off/- -> nothing, otherwise the trimmed unique names in order", () => {
+    expect(parseBotDisabledTools(null)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(BOT_DEFAULT_DISABLED_TOOLS).toContain("vision_analyze");
+    expect(BOT_DEFAULT_DISABLED_TOOLS.filter((name) => name.startsWith("browser_vault_"))).toHaveLength(5);
+    for (const raw of ["none", " NONE ", "off", "-"]) expect(parseBotDisabledTools(raw)).toEqual([]);
+    expect(parseBotDisabledTools(" web_extract , skill_manage,, web_extract ")).toEqual(["web_extract", "skill_manage"]);
+    expect(readBotProfileSettings({ [BOT_DISABLED_TOOLS_ENV]: "memory" }).disabledTools).toEqual(["memory"]);
+    expect(readBotProfileSettings({ [BOT_DISABLED_TOOLS_ENV]: "   " }).disabledTools).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+  });
+
+  it("the default list is written to agent.disabled_tools", () => {
+    const { input } = buildHermesProfileInput(source(), readBotProfileSettings({ ...baseEnv() }));
+    const yaml = configYaml(input);
+    expect(yaml).toContain("disabled_tools:");
+    for (const name of BOT_DEFAULT_DISABLED_TOOLS) expect(yaml).toContain(`- "${name}"`);
+  });
+
+  it("the card's own list replaces the instance list; an empty card list keeps every tool", () => {
+    const own = buildHermesProfileInput(
+      source({ adapterConfig: { disabledTools: ["web_extract"] } }),
+      readBotProfileSettings({ ...baseEnv() }),
+    );
+    const ownYaml = configYaml(own.input);
+    expect(ownYaml).toContain('disabled_tools:\n  - "web_extract"');
+    expect(ownYaml).not.toContain("browser_vault_fill");
+    const none = buildHermesProfileInput(
+      source({ adapterConfig: { disabledTools: [] } }),
+      readBotProfileSettings({ ...baseEnv() }),
+    );
+    expect(configYaml(none.input)).not.toMatch(/disabled_tools:/);
+  });
+
+  it("a card with a vision model of its own keeps vision_analyze (the instance list gives way)", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { models: { vision: "fleet-vision" } } }),
+      readBotProfileSettings({ ...baseEnv() }),
+    );
+    const yaml = configYaml(input);
+    expect(yaml).not.toContain("vision_analyze");
+    expect(yaml).toContain("browser_vault_fill");
+  });
+
+  it("MYRMIDON_BOT_DISABLED_TOOLS=none restores the byte-identical profile a pre-feature build compiled", () => {
+    const before = compileHermesProfile(buildHermesProfileInput(source(), settings()).input);
+    const on = compileHermesProfile(buildHermesProfileInput(source(), settings({ disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS] })).input);
+    const off = compileHermesProfile(
+      buildHermesProfileInput(
+        source(),
+        settings({ disabledTools: parseBotDisabledTools("none") }),
+      ).input,
+    );
+    expect(on.restartHash).not.toBe(before.restartHash);
+    expect(off.restartHash).toBe(before.restartHash);
+    expect(fileContent(off, "hermes/config.yaml")).toBe(fileContent(before, "hermes/config.yaml"));
+  });
+
+  it("names that are not tool names are dropped, never written", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { disabledTools: ["web_extract", "bad name; rm -rf /", "x".repeat(80)] } }),
+      readBotProfileSettings({ ...baseEnv() }),
+    );
+    const yaml = configYaml(input);
+    expect(yaml).toContain('- "web_extract"');
+    expect(yaml).not.toContain("rm -rf");
+  });
+});
+
+// myrmidon(TOOL-DIET-ROLES, OPE-11947): per-role default tool lists, resolved from the agent's role and card.
+describe("myrmidon(TOOL-DIET-ROLES) role tool diet in the profile input", () => {
+  /** The entries of one `agent.<key>` block of a compiled config.yaml, in file order. */
+  function yamlList(yaml: string, key: string): string[] {
+    const body = new RegExp(`\\n  ${key}:\\n((?:  - "[^"\\n]*"\\n)+)`).exec(yaml)?.[1];
+    if (!body) return [];
+    return [...body.matchAll(/"([^"\n]*)"/g)].map((item) => item[1] ?? "");
+  }
+  const toolsOf = (yaml: string) => yamlList(yaml, "disabled_tools");
+  const toolsetsOf = (yaml: string) => yamlList(yaml, "disabled_toolsets");
+  const compileWith = (
+    overrides: Partial<BotProfileSource>,
+    env: Record<string, string> = {},
+  ): string => {
+    const built = buildHermesProfileInput(source(overrides), readBotProfileSettings({ ...baseEnv(), ...env }));
+    return fileContent(compileHermesProfile(built.input), "hermes/config.yaml");
+  };
+  // A card of a team that curated its tools: memory, web, the browser and the rest, as listed.
+  const CURATED = "terminal,file,web,vision,skills,todo,memory,session_search,clarify,browser";
+  // The board always switches `delegation` off for a card that did not enable parallel helpers.
+  const NO_HELPERS = ["delegation"];
+
+  it("the fleet default also drops clarify and skill_manage, for every role and for none", () => {
+    expect(BOT_DEFAULT_DISABLED_TOOLS).toEqual(expect.arrayContaining(["clarify", "skill_manage"]));
+    for (const role of [undefined, "lead", "operator"]) {
+      expect(toolsOf(compileWith({ role }))).toEqual(expect.arrayContaining([...BOT_DEFAULT_DISABLED_TOOLS]));
+    }
+  });
+
+  it("reads the settings: on by default, off with its switch or with MYRMIDON_BOT_DISABLED_TOOLS=none", () => {
+    const base = readBotProfileSettings({ ...baseEnv() });
+    expect(base.roleToolDiet).toBe(true);
+    expect(base.developerRoles).toEqual([...DEFAULT_BOT_DEVELOPER_ROLES]);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_ROLE_TOOL_DIET_ENV]: "off" }).roleToolDiet).toBe(false);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DISABLED_TOOLS_ENV]: "none" }).roleToolDiet).toBe(false);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DISABLED_TOOLS_ENV]: "web_extract" }).roleToolDiet).toBe(true);
+    expect(readBotProfileSettings({ ...baseEnv(), [BOT_DEVELOPER_ROLES_ENV]: "engineer, lead" }).developerRoles).toEqual([
+      "engineer",
+      "lead",
+    ]);
+  });
+
+  it("a developer role whose card names no toolsets loses memory, Hindsight, web, browser and media tools", () => {
+    for (const role of ["engineer", "reviewer", "release"]) {
+      const yaml = compileWith({ role });
+      // The memory toolset gate takes the built-in memory tool and the Hindsight provider tools with it.
+      expect(toolsetsOf(yaml)).toEqual([...NO_HELPERS, "memory"]);
+      expect(toolsOf(yaml)).toEqual(
+        expect.arrayContaining([
+          "web_search",
+          "web_extract",
+          "browser_exec",
+          "browser_navigate",
+          "image_generate",
+          "skill_manage",
+          "clarify",
+        ]),
+      );
+      // What a developer does use is never listed.
+      for (const name of ["terminal", "read_file", "write_file", "patch", "search_files", "skill_view", "execute_code", "tool_search"]) {
+        expect(toolsOf(yaml)).not.toContain(name);
+      }
+    }
+  });
+
+  it("a developer role whose card lists its own toolsets keeps what the card asked for", () => {
+    const yaml = compileWith({ role: "engineer", adapterConfig: { toolsets: CURATED } });
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+    expect(toolsOf(yaml)).not.toContain("web_search");
+    expect(toolsOf(yaml)).not.toContain("browser_exec");
+    // Not asked for: media tools; and the role-independent fleet default still applies.
+    expect(toolsOf(yaml)).toContain("image_generate");
+    expect(toolsOf(yaml)).toContain("skill_manage");
+    // The toolsets may come as a list too.
+    expect(compileWith({ role: "engineer", adapterConfig: { toolsets: CURATED.split(",") } })).toBe(yaml);
+  });
+
+  it("any other role gets the standard list only: browser and media tools, never memory or web", () => {
+    for (const role of ["lead", "operator", "analyst", "infra", "qa"]) {
+      const yaml = compileWith({ role });
+      expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+      expect(toolsOf(yaml)).not.toContain("web_search");
+      expect(toolsOf(yaml)).toEqual(expect.arrayContaining(["browser_exec", "image_generate"]));
+    }
+    const curated = compileWith({ role: "lead", adapterConfig: { toolsets: CURATED } });
+    expect(toolsOf(curated)).not.toContain("browser_exec");
+    expect(toolsOf(curated)).toContain("image_generate");
+  });
+
+  it("a bot with no role gets the fleet default and nothing else", () => {
+    const yaml = compileWith({});
+    expect(toolsOf(yaml)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+  });
+
+  it("matches on the role only, never on the name of the bot", () => {
+    for (const botKey of ["adm-dev-eng-2", "bbq-web-developer", "work-gip", "life"]) {
+      expect(toolsetsOf(compileWith({ botKey, role: "engineer" }))).toEqual([...NO_HELPERS, "memory"]);
+      expect(toolsetsOf(compileWith({ botKey, role: "lead" }))).toEqual(NO_HELPERS);
+    }
+  });
+
+  it("keepTools of the card brings back a role group, a role tool or a fleet-default tool", () => {
+    const yaml = compileWith({ role: "engineer", adapterConfig: { keepTools: ["memory", "web_search", "skill_manage"] } });
+    expect(toolsetsOf(yaml)).toEqual(NO_HELPERS);
+    expect(toolsOf(yaml)).not.toContain("web_search");
+    expect(toolsOf(yaml)).not.toContain("skill_manage");
+    expect(toolsOf(yaml)).toContain("web_extract");
+    expect(toolsOf(yaml)).toContain("browser_exec");
+    expect(toolsOf(compileWith({ role: "operator", adapterConfig: { keepTools: ["clarify"] } }))).not.toContain("clarify");
+  });
+
+  it("the card's own disabledTools list replaces the instance list and the role defaults", () => {
+    const own = compileWith({ role: "engineer", adapterConfig: { disabledTools: ["web_extract"] } });
+    expect(toolsOf(own)).toEqual(["web_extract"]);
+    expect(toolsetsOf(own)).toEqual(NO_HELPERS);
+    const none = compileWith({ role: "engineer", adapterConfig: { disabledTools: [] } });
+    expect(toolsOf(none)).toEqual([]);
+    expect(toolsetsOf(none)).toEqual(NO_HELPERS);
+  });
+
+  it("the developer roles are the instance's to name", () => {
+    const lead = compileWith({ role: "lead" }, { [BOT_DEVELOPER_ROLES_ENV]: "lead" });
+    expect(toolsetsOf(lead)).toEqual([...NO_HELPERS, "memory"]);
+    expect(toolsOf(lead)).toContain("web_search");
+    const noDevelopers = compileWith({ role: "engineer" }, { [BOT_DEVELOPER_ROLES_ENV]: "none" });
+    expect(toolsetsOf(noDevelopers)).toEqual(NO_HELPERS);
+    expect(toolsOf(noDevelopers)).not.toContain("web_search");
+  });
+
+  it("the switch off, MYRMIDON_BOT_DISABLED_TOOLS=none and hand-built settings leave the role defaults out", () => {
+    const off = compileWith({ role: "engineer" }, { [BOT_ROLE_TOOL_DIET_ENV]: "off" });
+    expect(toolsOf(off)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(off)).toEqual(NO_HELPERS);
+    // `none` switches every default list off.
+    const none = compileWith({ role: "engineer" }, { [BOT_DISABLED_TOOLS_ENV]: "none" });
+    expect(toolsOf(none)).toEqual([]);
+    expect(toolsetsOf(none)).toEqual(NO_HELPERS);
+    // Settings built by hand that never mention the role defaults: off, like the other optional fields.
+    const hand = buildHermesProfileInput(source({ role: "engineer" }), settings({ disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS] }));
+    const handYaml = fileContent(compileHermesProfile(hand.input), "hermes/config.yaml");
+    expect(toolsOf(handYaml)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(toolsetsOf(handYaml)).toEqual(NO_HELPERS);
+  });
+});
+
+function baseEnv(): Record<string, string> {
+  return {
+    [BOT_BOARD_URL_ENV]: "http://board.example.com:3100",
+    [BOT_HINDSIGHT_API_URL_ENV]: "https://example.com/hindsight",
+    [BOT_HINDSIGHT_BANK_ENV]: "fleet-default",
+    [BOT_LLM_BASE_URL_ENV]: "https://example.com/llm/v1",
+    [BOT_LLM_API_KEY_ENV_ENV]: "FLEET_LLM_API_KEY",
+  };
+}
 
 describe("myrmidon(MEMORY-ISOLATION) MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS parsing", () => {
   it("splits on commas, trims, drops empties and duplicates, keeps order", () => {
@@ -338,6 +754,16 @@ describe("myrmidon(W2a) assertBotProfileSettings", () => {
       expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: name })), name).toThrow(BOT_LLM_API_KEY_ENV_ENV);
     }
   });
+
+  // myrmidon(REBRAND-ENV-2, OPE-12070): the board key/address are owned under
+  // the canonical MYRMIDON_* names too — an admin naming the LLM key variable
+  // MYRMIDON_API_KEY would otherwise hand the board key to the LLM gateway.
+  it("rejects MYRMIDON_API_KEY / MYRMIDON_API_URL as the LLM key variable", () => {
+    expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: "MYRMIDON_API_KEY" }))).toThrow(BOT_LLM_API_KEY_ENV_ENV);
+    expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: "MYRMIDON_API_URL" }))).toThrow(BOT_LLM_API_KEY_ENV_ENV);
+    expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: "PAPERCLIP_API_URL" }))).toThrow(BOT_LLM_API_KEY_ENV_ENV);
+    expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: "FLEET_MYRMIDON_API_KEY" }))).not.toThrow();
+  });
 });
 
 describe("myrmidon(W2a) readMaxConcurrentRuns", () => {
@@ -418,6 +844,17 @@ describe("myrmidon(W2a) buildHermesProfileInput — card mapping", () => {
       model: "dashscope/qwen3-flash",
       childTurnBudget: undefined,
     });
+  });
+
+  it("myrmidon(PARALLEL-HELPERS): a ceiling above the old hard cap of 50 is taken as written (HELPERS-NO-CAP)", () => {
+    const { input } = buildHermesProfileInput(
+      source({
+        adapterConfig: { parallelHelpers: { enabled: true, maxConcurrent: 120 } },
+        parallelHelpersSettings: { maxPerAgent: 500 },
+      }),
+      settings(),
+    );
+    expect(input.parallelHelpers).toMatchObject({ enabled: true, maxConcurrent: 120 });
   });
 
   it("myrmidon(PARALLEL-HELPERS): a card that never mentioned helpers stays off with the default limit", () => {
@@ -832,5 +1269,201 @@ describe("myrmidon(W2a) buildHermesProfileInput — through the G2 compiler", ()
     expect(editedInstructions.filesHash).not.toBe(base.filesHash);
     const rotatedKey = compileHermesProfile(buildHermesProfileInput(source({ llmApiKey: "fake-llm-key-0002" }), settings()).input);
     expect(rotatedKey.restartHash).not.toBe(base.restartHash);
+  });
+});
+
+// myrmidon(BOT-LSP-DEFAULTS): the role policy and the card's pin reach the
+// compiled config.yaml as Hermes' own `lsp` block.
+describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language servers", () => {
+  function configYaml(overrides: Partial<BotProfileSource>): string {
+    const { input } = buildHermesProfileInput(source(overrides), settings());
+    return fileContent(compileHermesProfile(input), "hermes/config.yaml");
+  }
+
+  it("gives a coding role the limited mode with adaptive heap for container memory", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+      settings(),
+    );
+    expect(warnings).toHaveLength(0);
+    expect(input.lsp).toEqual({
+      enabled: true,
+      idleTimeout: 120,
+      servers: {
+        typescript: {
+          initialization_options: {
+            disableAutomaticTypingAcquisition: true,
+            maxTsServerMemory: 409,
+            tsserver: { useSyntaxServer: "never" },
+          },
+        },
+      },
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
+    });
+    const yaml = configYaml({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } });
+    expect(yaml).toContain("lsp:");
+    expect(yaml).toContain("idle_timeout: 120");
+    expect(yaml).toContain("maxTsServerMemory: 409");
+    expect(yaml).toContain('"**/node_modules/**"');
+    expect(yaml).toContain('"**/dist/**"');
+    expect(yaml).toContain('useSyntaxServer: "never"');
+    expect(yaml).toContain("disableAutomaticTypingAcquisition: true");
+  });
+
+  it("adapts default heap to container memory limit when no explicit heap is configured", () => {
+    for (const [memoryMb, expectedHeap] of [
+      [768, 307],
+      [1024, 409],
+      [1536, 614],
+      [2048, 819],
+    ] as const) {
+      const { input, warnings } = buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb } } }),
+        settings(),
+      );
+      expect(warnings).toHaveLength(0);
+      const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+      const opts = servers?.initialization_options as Record<string, unknown> | undefined;
+      expect(opts?.maxTsServerMemory).toBe(expectedHeap);
+    }
+  });
+
+  it("safely disables limited LSP when container memory is unknown", () => {
+    const { input: noContainer, warnings: warningsNoContainer } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: {} }),
+      settings(),
+    );
+    expect(noContainer.lsp).toEqual({ enabled: false });
+    expect(warningsNoContainer.some((w) => w.includes("unknown"))).toBe(true);
+
+    const { input: disabledContainer, warnings: warningsDisabled } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: false, memoryMb: 1024 } } }),
+      settings(),
+    );
+    expect(disabledContainer.lsp).toEqual({ enabled: false });
+    expect(warningsDisabled.some((w) => w.includes("unknown"))).toBe(true);
+  });
+
+  it("safely disables limited LSP when container memory is insufficient", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 512 } } }),
+      settings(),
+    );
+    expect(input.lsp).toEqual({ enabled: false });
+    expect(warnings.some((w) => w.includes("insufficient"))).toBe(true);
+  });
+
+  it("clamps limited LSP startup heap to the card container's 40% budget", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({
+        role: "engineer",
+        adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+        botLspSettings: {
+          codingRoles: ["engineer"],
+          idleTimeoutSeconds: 120,
+          tsserverMemoryMb: 308,
+          excludeRoots: ["**/node_modules/**", "**/dist/**"],
+        },
+      }),
+      settings(),
+    );
+    const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+    const initializationOptions = servers?.initialization_options as Record<string, unknown> | undefined;
+    expect(initializationOptions?.maxTsServerMemory).toBe(307);
+    expect(warnings.some((w) => w.includes("safely clamped to 307 MB"))).toBe(true);
+  });
+
+  it("allows heap at the 40% container-memory boundary", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({
+        role: "engineer",
+        adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+        botLspSettings: {
+          codingRoles: ["engineer"],
+          idleTimeoutSeconds: 120,
+          tsserverMemoryMb: 307,
+          excludeRoots: ["**/node_modules/**", "**/dist/**"],
+        },
+      }),
+      settings(),
+    );
+    expect(warnings).toHaveLength(0);
+    expect(input.lsp?.servers).toMatchObject({
+      typescript: { initialization_options: { maxTsServerMemory: 307 } },
+    });
+  });
+
+  it("handles transition: clamps saved heap with warning when container memory is reduced", () => {
+    const { input, warnings } = buildHermesProfileInput(source({
+      role: "engineer",
+      adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+      botLspSettings: { tsserverMemoryMb: 409 },
+    }), settings());
+    const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+    const initializationOptions = servers?.initialization_options as Record<string, unknown> | undefined;
+    expect(initializationOptions?.maxTsServerMemory).toBe(307);
+    expect(warnings.some((w) => w.includes("safely clamped to 307 MB"))).toBe(true);
+  });
+
+  it("turns language servers off for a role that does not write code, and for no role", () => {
+    expect(buildHermesProfileInput(source({ role: "general" }), settings()).input.lsp).toEqual({ enabled: false });
+    expect(buildHermesProfileInput(source(), settings()).input.lsp).toEqual({ enabled: false });
+    const yaml = configYaml({ role: "cmo" });
+    expect(yaml).toContain("lsp:\n  enabled: false");
+    expect(yaml).not.toContain("maxTsServerMemory");
+  });
+
+  it("lets the card pin a mode over the role", () => {
+    expect(
+      buildHermesProfileInput(source({ role: "engineer", adapterConfig: { lsp: { mode: "off" } } }), settings()).input.lsp,
+    ).toEqual({ enabled: false });
+    expect(
+      buildHermesProfileInput(
+        source({ role: "general", adapterConfig: { container: { enabled: true, memoryMb: 1024 }, lsp: { mode: "limited" } } }),
+        settings(),
+      ).input.lsp?.enabled,
+    ).toBe(true);
+    // Pinning limited mode without container memory safely disables it with a warning.
+    const unconfigured = buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings());
+    expect(unconfigured.input.lsp).toEqual({ enabled: false });
+    expect(unconfigured.warnings).toContain("lsp: limited language server disabled because container memory limit is unknown");
+    // Full keeps Hermes server defaults and writes the exclusion-only block.
+    const { input } = buildHermesProfileInput(source({ role: "full", adapterConfig: { lsp: { mode: "full" } } }), settings());
+    expect(input.lsp).toMatchObject({ enabled: true, excludeRoots: ["**/node_modules/**", "**/dist/**"] });
+    expect(input.lsp?.servers).toBeUndefined();
+    const yaml = configYaml({ role: "engineer", adapterConfig: { lsp: { mode: "full" } } });
+    expect(yaml).toContain("lsp:\n  enabled: true");
+    expect(yaml).toContain('"**/node_modules/**"');
+    expect(yaml).toContain('"**/dist/**"');
+  });
+
+  it("follows the instance policy", () => {
+    const { input } = buildHermesProfileInput(
+      source({
+        role: "dev-lead",
+        adapterConfig: { container: { enabled: true, memoryMb: 5120 } },
+        botLspSettings: { codingRoles: ["dev-lead"], idleTimeoutSeconds: 300, tsserverMemoryMb: 2048, excludeRoots: ["/srv/big"] },
+      }),
+      settings(),
+    );
+    expect(input.lsp).toMatchObject({ enabled: true, idleTimeout: 300, excludeRoots: ["/srv/big"] });
+    expect(input.lsp?.servers).toMatchObject({ typescript: { initialization_options: { maxTsServerMemory: 2048 } } });
+  });
+
+  it("is deterministic: the same role and settings give the same hashes", () => {
+    const one = compileHermesProfile(
+      buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+        settings(),
+      ).input,
+    );
+    const two = compileHermesProfile(
+      buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+        settings(),
+      ).input,
+    );
+    expect(one.restartHash).toBe(two.restartHash);
+    expect(one.filesHash).toBe(two.filesHash);
   });
 });

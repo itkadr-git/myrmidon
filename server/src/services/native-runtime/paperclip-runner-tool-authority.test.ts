@@ -13,7 +13,7 @@ import {
   issueComments,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
 import { documentService } from "../documents.js";
@@ -246,7 +246,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         JSON.stringify(authority.definitions()),
       ).find((tool: { name: string }) => tool.name === "request_human_input");
       expect(advertised.description).toContain(
-        "current Paperclip task bound to this run",
+        "current Myrmidon task bound to this run",
       );
       expect(advertised.description).toContain(
         "interactionKind 'questions' with payload.questions",

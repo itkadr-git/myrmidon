@@ -14,10 +14,13 @@ Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на �
 |---|---|---|
 | **docs** | PR меняет только `docs/myrmidon/**`, `scripts/myrmidon/**` (кроме `scripts/myrmidon/ci/**`), `CLAUDE.md`, `NOTICE`, `.github/README.md`, `.gitleaks.toml` | `checks` |
 | **fast** | Остальные PR | `typecheck` (без Rust раннера), `build` (без релизной сборки Rust), `tests (affected)`, `checks` |
-| **full** | `push` в `main`; ручной запуск; PR с меткой `full-ci`; PR, который трогает основу (список ниже); PR, где отбор дал больше 60 файлов тестов на один большой пакет | Всё: `typecheck` и `build` полностью, 13 частей `tests (…)` (= `pnpm test:run`), `tests (other packages)`, `tests (runner)`, `checks` |
+| **full** | `push` в `main`; ручной запуск; merge queue (кандидат группы всегда идёт полным уровнем); PR с меткой `full-ci` или `review-approved` (сама постановка метки запускает полный прогон на том же коммите); PR, который трогает основу (список ниже); PR, где отбор дал больше 60 файлов тестов на один большой пакет | Всё: `typecheck` и `build` полностью, 13 частей `tests (…)` (= `pnpm test:run`), `tests (other packages)`, `tests (runner)`, `checks` |
+
+**Экономия заданий:** обычный PR выполняет только `plan`, `checks`, `typecheck`+`build`, `tests (affected)` и сводную `CI result` вместо всех частей полного прогона (около 13 заданий по замеру из OPE-8531): было около 13 заданий на каждый push в PR, стало 5, то есть `plan`, `checks`, `typecheck`+`build`, `tests (affected)` и `CI result`; ещё `dockergate` при изменениях в его области. Новый push в тот же PR отменяет предыдущий прогон. На событие `labeled` реагируют только метки `full-ci` и `review-approved`: любая другая метка (`review-in-progress`, `needs-rebase`, `adm-hold`...) запускает пустой прогон в отдельной группе concurrency, где все задания пропущены, и идущий прогон не отменяет. Метка `review-approved` (как и `full-ci`) запускает полный прогон сразу при постановке, поэтому полный уровень проходит перед вливанием; новый push метку сбрасывает, и её ставят заново. Merge queue на репозитории владельца-пользователя недоступна, `merge_group` работает только если очередь включат.
 
 **Обязателен для слияния быстрый уровень** (сводная проверка `CI result` на PR). Полный
-уровень гарантируется на `main` после слияния; его сбой сразу виден (ниже).
+уровень проходит PR с меткой `review-approved` (или кандидат merge queue, если она включена) до вливания и затем `main` после слияния; сбой на
+`main` сразу виден (ниже).
 
 **Основа — PR получает полный уровень:** `pnpm-lock.yaml`, `pnpm-workspace.yaml`, корневой
 `package.json`, `.npmrc`, `patches/**`, корневые `tsconfig*.json` и `vitest.config.*`,
@@ -43,6 +46,18 @@ PR получает полный уровень.
 явный список), и здесь идут по одному в отдельном процессе; остальные — одним запуском в один
 поток, как в полном уровне.
 
+**Лёгкий CI для PR (`--pr-light`).** Когда переменная репозитория `CI_PR_FAST=true`, обычный PR (не `rel/*`) не уходит в полный уровень из-за размера: пакет, где отбор дал больше 60 файлов, получает *прямую* выборку, а уровень остаётся `fast`. В неё входят, по убыванию важности:
+1. тесты, изменённые в самом PR (`changed`);
+2. тесты рядом с изменённым исходником (`co-located`: `имя.test.ts`, `имя.<вид>.test.ts`, например `.myrmidon.test.ts`, и `имя.test.ts` в каталоге `__tests__` на этом уровне или выше);
+3. тесты, которые мокают изменённый модуль (`vi.mock("<path>")`, `vi.doMock("<path>")`);
+4. тесты, которые импортируют типы из изменённого модуля (`import type ...`);
+5. охранные наборы `SHARED_GUARD_TESTS` (сервер, включая `server-startup-feedback-export.test.ts`);
+6. тесты, которые импортируют изменённый файл напрямую (относительный путь, `@/` в `ui`, подпуть пакета по его `exports`).
+
+Импорт корня пакета, который лишь реэкспортирует изменённый файл, косвенный и не считается. Внутри ступени сначала идут тесты с именем по изменённому файлу (`heartbeat-*.test.ts` для `heartbeat.ts`), затем ближайшие в дереве, затем по пути. Больше 60 — берутся первые 60 в этом порядке, а `plan` пишет в журнал, сколько отброшено (имена — в `plan.json`).
+
+**Защита контрактов и экспортов (OPE-10709):** если PR меняет публичный экспорт (`export ...`), интерфейс (`interface ...`) или тип (`type ...`) модуля, который используется или мокается тестами или кодом сервера, PR автоматически переводится в полный уровень (`tier: full`) со всеми шаshard'ами серверных тестов. Режимы `--pr-light` и `--release-fast` не понижают такой запуск до `fast`, что исключает ситуации, когда чужие тесты падают только после вливания в `main` (как #2296 и #1949). Метка `full-ci`, `main`, merge queue, тег и `rel/*` ведут себя как раньше. Отброшенное и косвенные эффекты реализации без изменения экспортов ловит полный прогон на `main`.
+
 **Чего быстрый уровень не ловит:** косвенные эффекты — тест, который зависит от изменённого
 кода через цепочку импортов. Это ловит полный прогон на `main`.
 
@@ -55,6 +70,32 @@ Job `report main status` после полного прогона на `main`:
 - зелёный — закрывает открытый `main-red` комментарием.
 
 Кто сломал — видно по коммиту; чинит трек, чей PR это внёс (правила — CONVENTIONS).
+
+### CI на теге релиза (TAG-CI, инцидент 1.6.4)
+
+Workflow [`myrmidon-ci-tag.yml`](../../.github/workflows/myrmidon-ci-tag.yml) — **Myrmidon
+CI (tag)**: полный уровень `myrmidon-ci.yml` (без разбиения на уровни) на каждый пуш
+релизного тега `myr-vX.Y.Z` (включая `-rc.N`) и вручную (`workflow_dispatch` с обязательным
+параметром `tag`). 05.10 тег `myr-v1.6.4` был поставлен, и через минуту боты смержили 4 PR в
+`main`: пуш в `main` отменил прогон CI коммита тега (`myrmidon-ci.yml` группирует по
+`github.ref` — тот же sha, та же группа, `cancel-in-progress: true`), автопубликация
+отказалась работать, CI тега пришлось перезапускать вручную (workflow_dispatch
+run 37277281522), а релиз публиковать руками.
+
+Отличия от `myrmidon-ci.yml`:
+
+- **своя concurrency-группа** `myrmidon-ci-tag-<тег>` с `cancel-in-progress: false` — пуш в
+  `main` его больше не отменяет;
+- **публикация берёт зелень только отсюда**: `publish-github-release.sh` ждёт завершённый
+  успешный прогон именно на теге (`head_branch == тег`); зелёный прогон того же коммита на
+  `main` публикацию больше не удовлетворяет;
+- **отменённый прогон тега — отказ публикации** с явным сообщением и указанием запасного
+  пути (Actions → Myrmidon CI (tag) → Run workflow → ввести тег), а не ожидание до таймаута;
+- без job `plan`/`tests (affected)`/`report main status` (на теге всегда полный уровень,
+  issue о красном main на теге не нужен).
+
+Пара job-состава держится в синхроне с `myrmidon-ci.yml`; за этим следит тест
+`release-publish.test.mjs` (блок «the tag CI is a separate un-cancellable run»).
 
 ### Полный прогон на PR вручную
 
@@ -70,14 +111,33 @@ Job `report main status` после полного прогона на `main`:
 | Проверка (имя в GitHub) | Уровень | Что делает |
 |---|---|---|
 | `plan` | все | Выбирает уровень и тесты, план — артефакт `test-plan` |
-| `typecheck` | fast, full | `pnpm -r typecheck`; на fast без `typecheck:rust` раннера |
-| `build` | fast, full | `pnpm build` (`NODE_OPTIONS=--max-old-space-size=4096`); на fast раннер собирается только как TypeScript, без релизной сборки Rust |
+| `typecheck + build` | fast, full | Один job (общие checkout и install). Сначала `pnpm -r typecheck`; на fast без `typecheck:rust` раннера. Затем (даже если typecheck упал) `pnpm build` (`NODE_OPTIONS=--max-old-space-size=4096`); на fast раннер собирается только как TypeScript, без релизной сборки Rust |
 | `tests (affected)` | fast | Отобранные тесты |
-| `tests (server 1/5)` … `(server 5/5)`, `tests (serialized 1/5)` … `(5/5)`, `tests (workspaces-a 1/2)`, `(2/2)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`, разбиение как у вендора |
-| `tests (other packages)` | full | Пакеты, которые `pnpm test:run` не запускает (ниже) |
-| `tests (runner)` | full | `pnpm --filter @paperclipai/paperclip-runner check:all`, как отдельная проверка раннера у вендора |
-| `checks` | все | Шаги: `shellcheck` скриптов выката; `node --test` по `scripts/myrmidon/**/*.test.mjs`; секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
+| `tests (server 1/6)` … `(6/6)`, `tests (serialized 1/2)`, `(2/2)`, `tests (workspaces-a)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`. Шарды server делятся по замеренной стоимости наборов (`scripts/general-server-shard-durations.json`, алгоритм LPT в `scripts/general-server-shard.mjs`); манифест обновляется `scripts/myrmidon/ci/shard-durations-from-logs.mjs` по логам последних зелёных прогонов main, а `general-server-shards.test.mjs` в `checks` проверяет, что шарды вместе покрывают каждый набор ровно один раз. Число шардов ограничено лимитом GitHub — 40 одновременных jobs на аккаунт, а каждый job заново делает checkout и install |
+| `tests (other + runner)` | full | Один job: пакеты, которые `pnpm test:run` не запускает (ниже), затем `pnpm --filter @paperclipai/paperclip-runner check:all` (проверка раннера у вендора) |
+| `go tools (dockergate + fleetd)` | все | gofmt, go vet, go test для `tools/dockergate` (+ контракт с драйвером) и `tools/fleetd` |
+| `checks` | все | Шаги: `shellcheck` скриптов выката; в `myrmidon-ci-tag.yml` (тег `myr-vX.Y.Z`) — гейт журнала релиза (RELEASE-CUT-CHANGELOG: `collect-fragments.mjs --version X.Y.Z --check`, непустой раздел версии и пустой «без выпуска» в обоих CHANGELOG, без него тег красный — инцидент 1.6.3); `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
+
+### Сторож фрагментов изменений (CHANGE-FRAGMENTS)
+
+Общие документы-реестры (`docs/myrmidon/CHANGELOG(.ru).md`, `DIVERGENCE.md`,
+`SETTINGS(.ru).md`) в PR руками не правятся: запись идёт файлом-фрагментом в
+`docs/myrmidon/changes/` (формат — `docs/myrmidon/changes/README.md`), а в общие
+документы фрагменты складывает `scripts/myrmidon/release/collect-fragments.mjs` при
+нарезке релиза. Сторож `scripts/myrmidon/ci/change-fragments-gate.mjs` отклоняет PR,
+чей дифф правит общий документ, и печатает подсказку (вернуть файл, добавить
+фрагмент). PR нарезки релиза сторож узнаёт по удалениям фрагментов и пропускает.
+Ветку, уже правившую общие документы, переводит
+`scripts/myrmidon/release/fragments-from-diff.mjs --slug <слаг> --revert` (см. README каталога).
+Сторож — тест `change-fragments-gate-selftest.test.mjs` внутри шага
+`node --test` job `checks`: на событии `pull_request` он гоняет сторож по
+`$GITHUB_EVENT_PATH` (checkout с `fetch-depth: 0` уже на месте), вне PR —
+пропускается. Тот же тест гоняет `collect-fragments.mjs --version 0.0.0
+--dry-run` по дереву PR: фрагмент, который сборщик не может
+сложить (ссылка на заголовок раздела, которого нет в целевом документе),
+красит PR до слияния — такие фрагменты молча ломают нарезку релиза.
+Отдельного шага workflow нет: изменения `.github/workflows/**` — зона трека 1, и токен сессии их всё равно не пушит (нет scope `workflow`).
 | `report main status` | только `main` | issue `main-red` (выше) |
 
 **Для ruleset `main-protection` достаточно одной проверки — `CI result`.** Она есть в каждом
@@ -116,6 +176,21 @@ Job `report main status` после полного прогона на `main`:
 Устаревшие прогоны отменяются и на PR, и на `main` (вердикт нужен последнему коммиту);
 у отменённого прогона `CI result` не запускается, красного креста на промежуточном коммите
 нет. Метки прогон не запускают.
+
+### Ёмкость очереди (OPE-8922)
+
+Замер на 23.10.2026 по 60 последним прогонам `Myrmidon CI` (650 заданий, выборка за ночную волну 22–23.10):
+пик одновременно идущих заданий этого workflow — 40 (05:41 UTC); медианная задержка старта задания — меньше секунды;
+максимум — 13,8 минуты (05:48 UTC, когда в очередь одновременно встали полные прогоны нескольких PR с меткой `review-approved`).
+За этот же период 300 последних прогонов всех workflow дали 71 прогон `Myrmidon CI` на PR, по 69-72 прогона у `Release freeze gate`,
+`Myrmidon PR text` и `Myrmidon hot files review`: каждый push в PR запускает четыре workflow, а `hot files review` реагирует ещё
+и на `labeled`/`unlabeled`.
+
+Вывод: потолок GitHub-hosted раннеров около 40 одновременных заданий; полный прогон занимает до 17 заданий, быстрый — 5-6.
+Если за короткое окно ставят `review-approved` или `full-ci` больше чем на 2-3 PR сразу, очередь растёт до десятков минут.
+Правило для волн: метки `review-approved` и `full-ci` ставят не более чем на 2 PR одновременно и следующую пару — после
+завершения предыдущих полных прогонов; обычные push быстрого уровня на это не влияют. Задержка старта больше 5 минут
+без такой пачки меток — повод проверить, не перезапуск ли это (`attempt` > 1 даёт время от первого создания прогона).
 
 ### Кеши
 
@@ -250,16 +325,20 @@ Workflow [`myrmidon-image.yml`](../../.github/workflows/myrmidon-image.yml), job
 архитектур по тегам `v*` вендора, с его схемой тегов и каналами npm. Свой файл проще и не
 конфликтует при переносе.
 
-- **Когда:** `push` в `main`, git-тег выпуска `myr-v<major>.<minor>.<patch>` (первый —
+- **Когда:** `push` в `main`, git-тег выпуска `myr-v<major>.<minor>.<patch>` или тег-кандидат
+  `myr-v<major>.<minor>.<patch>-rc.<n>` (RC-VERSIONS, требование владельца 05.10; первый —
   `myr-v1.0.0`), вручную. На `pull_request` не запускается вовсе, плюс проверка
   `github.repository == 'itkadr-git/myrmidon'`: PR из чужих форков образ не собирают.
 - **Что:** `Dockerfile` вендора, стадия `production`, только `linux/amd64`. Кеш BuildKit — в
   реестре (`ghcr.io/itkadr-git/myrmidon:buildcache`).
 - **Версия и коммит** для `/api/health`: `PAPERCLIP_BUILD_VERSION` и
   `PAPERCLIP_BUILD_COMMIT`. Myrmidon — свой продукт со своей версией (semver, решение
-  владельца 28.09.2026). На теге `myr-v1.2.3` версия `1.2.3`, тег образа `1.2.3`. Между
-  выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`). Версия
-  Paperclip, взятого за основу, в номер не входит: она в метке образа
+  владельца 28.09.2026). На теге `myr-v1.2.3` версия `1.2.3`, тег образа `1.2.3`; на
+  теге-кандидате `myr-v1.2.3-rc.1` — версия и тег образа `1.2.3-rc.1` (RC-VERSIONS). Между
+  выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`; последним
+  выпуском может быть и кандидат — база берётся целиком, например `1.2.3-rc.1+2.git.…`).
+  Версия
+  базового продукта, взятого за основу, в номер не входит: она в метке образа
   `io.github.itkadr-git.myrmidon.base.paperclip-version`.
 - **Порядок:** образ сначала публикуется только по digest, затем smoke: `docker run` с
   `local_trusted` (он отдаёт версию без входа), `/api/health` должен ответить `status: ok` и
@@ -289,9 +368,9 @@ Workflow [`myrmidon-bot-image.yml`](../../.github/workflows/myrmidon-bot-image.y
 из одного `docker/bot-runtime/Dockerfile` три образа, каждый своим job и с одинаковым
 условием публикации (только `push` в `main` и тег `myr-v*`; на PR образ собирается и
 проверяется, но не публикуется). hermes-agent ставится в образ из закреплённого тега
-нашего зеркала-форка (`HERMES_REPO` в том же Dockerfile,
-`https://github.com/BastionPrime/hermes-agent`; теги форка побайтово совпадают с
-вышестоящими, точное дерево пиннится `HERMES_GIT_SHA`; реестр отличий —
+репозитория автора (`HERMES_REPO` в том же Dockerfile,
+`https://github.com/NousResearch/hermes-agent`; точное дерево пиннится `HERMES_GIT_SHA`; наши правки —
+патчи в `docker/bot-runtime/patches/`; реестр отличий —
 [hermes-deltas.md](hermes-deltas.md)):
 
 - `ghcr.io/itkadr-git/myrmidon-hermes` — основной образ бота (стадия `runtime`), без Node.js;
@@ -338,8 +417,12 @@ Chromium, `docx`, OCR, ffmpeg и офисные утилиты в образ н�
 `packages/paperclip-runner`; канал берётся из его `rust-toolchain.toml`), `git`, `gh`, `jq`,
 `zstd`, `make`, `gcc`/`g++` и `pkg-config` для нативных зависимостей, и **клиент Docker**
 (`docker`, только клиент — без `dockerd`, `containerd` и `runc`): движок остаётся на
-машине-песочнице, бот ходит к нему по сети. Каждый инструмент закреплён точной версией и
-sha256; склад pnpm по умолчанию — `/data/hermes/.pnpm-store` (долговечный том бота), все
+машине-песочнице, бот ходит к нему по сети. С версии 1.6.1 тяжёлые операции
+(`pnpm install`, `tsc --noEmit`, `vitest`, `gradle`, `go build`/`go test`) заблокированы на
+уровне образа: обёртки в `/opt/paperclip/bin` отказывают им с подсказкой `devbuild …` — сборки
+уходят на сборочный VPS (BUILD-OFFLOAD, часть A; см. раздел «Тяжёлые сборки заблокированы на
+уровне образа» в `docker/bot-runtime/README.ru.md`). Каждый инструмент закреплён точной версией и
+sha256; склад pnpm по умолчанию — `/workspace/.pnpm-store` (на одном монтировании с клонами: жёсткая ссылка не пересекает монтирование, иначе pnpm копирует), все
 средства лежат под `/opt` и `/usr` — так требует проверка образа в dockergate (ни один
 элемент `PATH` не может быть под записываемым томом). Подробности, пути записи и ограничения —
 в `docker/bot-runtime/README.md`, раздел «Variant for the development team».
@@ -423,7 +506,7 @@ pnpm install --frozen-lockfile
 node scripts/myrmidon/ci/affected-tests.mjs plan --base origin/main --head HEAD --out /tmp/plan.json
 node scripts/myrmidon/ci/affected-tests.mjs run --plan /tmp/plan.json   # быстрый уровень
 pnpm typecheck
-pnpm test:run          # полный уровень, или по частям: pnpm test:run:general -- --group general-server --shard-index 0 --shard-count 5
+pnpm test:run          # полный уровень, или по частям: pnpm test:run:general -- --group general-server --shard-index 0 --shard-count 6
 node scripts/myrmidon/ci/affected-tests.mjs extra                       # прочие пакеты
 pnpm build
 node --test $(find scripts/myrmidon -name '*.test.mjs')

@@ -10,7 +10,7 @@
 // desktop 1440 included.
 
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { Agent, HeartbeatRun } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun } from "@myrmidon/shared";
 import { storybookAgents } from "../fixtures/paperclipData";
 import { Ui2Decisions } from "@/ui2/screens/decisions/Ui2Decisions";
 import { Ui2Costs } from "@/ui2/screens/costs/Ui2Costs";
@@ -302,12 +302,30 @@ const fixtures = {
       maxStartsPerMinute: 12,
       minFreeMemoryMb: null,
       runMemoryEstimateMb: 1536,
+      minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
     },
     sources: {
       maxConcurrentRuns: "settings",
       maxStartsPerMinute: "settings",
       minFreeMemoryMb: "env",
       runMemoryEstimateMb: "default",
+      minFreeHostMemoryMb: "default",
+      maxHostLoadPercentPerCore: "default",
+    },
+    // myrmidon(1.6.5 rc.2): the live host CPU reading the Runs & queue screen
+    // shows next to the ceiling field.
+    hostLoad: {
+      state: "open",
+      thresholdPercent: 90,
+      load1: 19.2,
+      cores: 16,
+      loadPercentPerCore: 120,
+      backgroundPercentPerCore: 115,
+      load15PercentPerCore: 115,
+      loadAboveBackgroundPercent: 5,
+      reason: null,
+      heldSince: null,
     },
   },
 };

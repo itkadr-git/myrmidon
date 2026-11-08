@@ -1,5 +1,5 @@
-import { and, desc, eq, inArray, isNotNull, or, type SQL } from "drizzle-orm";
-import { issues, type Db } from "@paperclipai/db";
+import { and, desc, eq, inArray, or, type SQL } from "drizzle-orm";
+import { issues, type Db } from "@myrmidon/db";
 import { visibleIssueCondition } from "../services/issue-visibility.js";
 
 /**
@@ -22,15 +22,15 @@ import { visibleIssueCondition } from "../services/issue-visibility.js";
  * violates the index, the run fails on a duplicate key, and the duplicate
  * issue stays open.
  *
- * This lookup matches the index key itself: an open routine execution that
- * already holds a run counts as active, live or finished. Callers coalesce
- * against it instead of inserting the row the index would reject.
+ * This lookup matches any open routine execution for the same dispatch,
+ * including queued issues that have not acquired an execution run yet. Callers
+ * coalesce against it instead of creating another issue while it remains open.
  */
 
 /**
- * Open statuses of the index predicate. Keep in step with
- * `issues_open_routine_execution_uq` (`packages/db/src/schema/issues.ts`) and
- * with `OPEN_ISSUE_STATUSES` in `services/routines.ts`.
+ * Open statuses of a routine execution that prevent another issue from being
+ * created. Keep terminal states excluded; unlike the partial index predicate,
+ * this lookup intentionally includes issues without an execution run yet.
  */
 const OPEN_EXECUTION_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 
@@ -77,7 +77,6 @@ export async function findOpenRoutineExecutionIssue(
         eq(issues.originKind, ROUTINE_EXECUTION_ORIGIN_KIND),
         eq(issues.originId, input.originId),
         inArray(issues.status, [...OPEN_EXECUTION_STATUSES]),
-        isNotNull(issues.executionRunId),
         visibleIssueCondition(),
         ...(fingerprintCondition ? [fingerprintCondition] : []),
       ),

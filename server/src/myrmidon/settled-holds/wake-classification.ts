@@ -66,6 +66,24 @@ export interface WakeClassificationInput {
    * docs/myrmidon/DIVERGENCE.md "L2".
    */
   requestedByActorType?: "user" | "agent" | "system" | null;
+  /**
+   * myrmidon(OPE-6011): true when the wake carries a comment a person
+   * wrote (verified by the caller: `commentId` resolves to a live comment
+   * whose author user matches `requestedByActorId`) that @-mentions the
+   * woken agent — i.e. that agent is the issue's assignee the message
+   * addresses. The admission verifies the mention against the actual
+   * comment row (settled-holds/mention-wake.ts); the classifier only
+   * trusts the caller's flag. Such a comment is the person's explicit
+   * "answer this" to the assignee — the same authorization as an
+   * assignment or a manual wake — so a settled hold must not park it.
+   * The flag never widens what an agent- or system-requested wake may
+   * pass (the `requestedByActorType !== "user"` gate still runs first),
+   * and it does not replace the comment's own verified delivery path:
+   * admission still admits the wake through the ordinary successor-run
+   * flow, and the hold is superseded the same way as for any other
+   * explicit wake. See docs/myrmidon/DIVERGENCE.md "OPE-6011".
+   */
+  userCommentMentionsWokenAgent?: boolean | null;
 }
 
 /**
@@ -78,12 +96,22 @@ export interface WakeClassificationInput {
  * before this module existed.
  */
 export function isExplicitWake(input: WakeClassificationInput): boolean {
-  if (input.commentId) return false;
   const reason = input.reason ?? "";
   if (NEVER_EXPLICIT_REASONS.has(reason)) return false;
   // Round-1 fix: gate on who asked, not just the reason/source shape. See
   // `requestedByActorType`'s own doc comment above.
   if (input.requestedByActorType !== "user") return false;
+  // myrmidon(OPE-6011): a wake that carries a comment normally stays
+  // not-explicit (the comment has its own verified delivery path — see
+  // `commentId` above). The one exception is a person's comment that
+  // @-mentions the woken agent: the author explicitly addressed the
+  // assignee, which is the same authorization as an assignment, and the
+  // admission verifies the mention against the actual comment row
+  // (settled-holds/mention-wake.ts). Anything else carrying a comment
+  // keeps the safe not-explicit default.
+  if (input.commentId) {
+    return input.userCommentMentionsWokenAgent === true;
+  }
   if (EXPLICIT_WAKE_REASONS.has(reason) || reason.startsWith(APPROVAL_REASON_PREFIX)) return true;
   if (input.source === "assignment") return true;
   // "on_demand" alone is too broad: it is also this schema's default

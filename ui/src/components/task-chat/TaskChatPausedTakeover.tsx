@@ -1,6 +1,7 @@
 import { useId } from "react";
 import { Loader2, Pause, Play } from "lucide-react";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 
 export interface TaskComposerPause {
@@ -22,6 +23,7 @@ export function TaskChatPausedTakeover({
 }: {
   hasDraft?: boolean;
 } & TaskComposerPause) {
+  const { t } = useTranslation();
   const headingId = useId();
   const subtree = scope === "subtree";
   return (
@@ -35,12 +37,12 @@ export function TaskChatPausedTakeover({
         <Pause aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-(--status-task-icon-todo)" />
         <div className="flex min-w-0 flex-col gap-1">
           <h2 id={headingId} className="text-sm font-medium text-foreground">
-            {subtree ? "Subtree is paused." : "Task is paused."}
+            {subtree ? t("area.task-chat-2.paused-takeover.subtreePaused") : t("area.task-chat-2.paused-takeover.taskPaused")}
           </h2>
           <p className="text-sm text-muted-foreground">
             {subtree
-              ? "Resume this subtree to send a message."
-              : "Resume this task to send a message."}
+              ? t("area.task-chat-2.paused-takeover.resumeSubtreeHint")
+              : t("area.task-chat-2.paused-takeover.resumeTaskHint")}
           </p>
         </div>
       </div>
@@ -51,11 +53,11 @@ export function TaskChatPausedTakeover({
       ) : null}
       <div className="flex flex-wrap items-center justify-end gap-3">
         {hasDraft ? (
-          <p className="mr-auto text-xs text-muted-foreground">Your draft is saved.</p>
+          <p className="mr-auto text-xs text-muted-foreground">{t("area.task-chat-2.paused-takeover.draftSaved")}</p>
         ) : null}
         {resumeHref ? (
           <Button asChild size="sm" className="bg-(--status-agent-paused) text-foreground hover:bg-(--status-agent-paused)/80 dark:text-background">
-            <Link to={resumeHref}><Play aria-hidden="true" />Resume subtree</Link>
+            <Link to={resumeHref}><Play aria-hidden="true" />{t("area.task-chat-2.paused-takeover.resumeSubtree")}</Link>
           </Button>
         ) : (
           <Button
@@ -65,7 +67,7 @@ export function TaskChatPausedTakeover({
             className="bg-(--status-agent-paused) text-foreground hover:bg-(--status-agent-paused)/80 dark:text-background"
           >
             {pending ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Play aria-hidden="true" />}
-            {pending ? "Resuming…" : subtree ? "Resume subtree" : "Resume task"}
+            {pending ? t("area.task-chat-2.paused-takeover.resuming") : subtree ? t("area.task-chat-2.paused-takeover.resumeSubtree") : t("area.task-chat-2.paused-takeover.resumeTask")}
           </Button>
         )}
       </div>

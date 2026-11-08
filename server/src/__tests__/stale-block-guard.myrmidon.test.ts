@@ -1,0 +1,350 @@
+import request from "supertest";
+import { eq } from "drizzle-orm";
+import { describe, expect, it } from "vitest";
+import { activityLog, issues } from "@myrmidon/db";
+import {
+  resetCompanyIssueFixtures,
+  routeApp,
+  seedCompanyWithBoardAccess,
+  useEmbeddedPostgres,
+} from "./helpers/route-test-harness.js";
+import { issueRoutes } from "../routes/issues.js";
+import {
+  isStaleBlockGuardedTransition,
+  STALE_BLOCK_ROLLOUT_AT,
+} from "../services/routable-blocked.js";
+
+// myrmidon(STALE-BLOCK): blocked transitions must carry a reason reference —
+// a non-empty blockedByIssueIds list or an unblockDescriptor.reasonRef —
+// once the rollout moment has passed.
+
+const ctx = useEmbeddedPostgres("myrmidon-stale-block-guard-", {
+  resetEach: async (db) => {
+    await db.delete(activityLog);
+    await resetCompanyIssueFixtures(db);
+  },
+});
+
+describe("stale-block reason reference guard (route level)", () => {
+  async function seedTodoIssue(companyId: string, title: string) {
+    const issueId = crypto.randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title,
+      status: "todo",
+      priority: "medium",
+    });
+    return issueId;
+  }
+
+  async function seedBlockerIssue(companyId: string, title: string) {
+    const blockerId = crypto.randomUUID();
+    await ctx.db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title,
+      status: "todo",
+      priority: "medium",
+    });
+    return blockerId;
+  }
+
+  it("rejects a blocked transition without typed metadata with 422 and missingFields", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard");
+    const issueId = await seedTodoIssue(companyId, "Guarded issue");
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("Entering blocked requires complete blockerMetadata");
+    expect(res.body.missingFields).toEqual([
+      "blockReason",
+      "owner",
+      "nextCheckAt",
+      "timeoutAt",
+      "escalationPolicy",
+      "blockedByIssueIds or externalRef",
+    ]);
+    const after = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(after.status).toBe("todo");
+  });
+
+  it("accepts a blocked transition without metadata for a board actor", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Board blocked metadata");
+    const issueId = await seedTodoIssue(companyId, "Board blocked issue");
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Waiting for the external check",
+          reasonRef: { kind: "issue", issueId: "00000000-0000-4000-8000-000000000001" },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "stale-block-guard-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const after = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(after.status).toBe("blocked");
+  });
+
+  it("accepts a blocked transition with a non-empty blockedByIssueIds list", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard");
+    const issueId = await seedTodoIssue(companyId, "Guarded issue with blockers");
+    const blockerId = await seedBlockerIssue(companyId, "Blocking issue");
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [blockerId],
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          blockedByIssueIds: [blockerId],
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const after = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(after.status).toBe("blocked");
+  });
+
+  it("accepts a blocked transition with reasonRef kind=date and stores it", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard");
+    const issueId = await seedTodoIssue(companyId, "Guarded issue with date reason");
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+         action: "Wait for the scheduled maintenance window",
+          reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+        },
+        blockerMetadata: {
+          blockReason: "human_decision",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "stale-block-guard-date",
+          nextCheckAt: "2026-10-10T00:00:00.000Z",
+          timeoutAt: "2026-10-11T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const after = await ctx.db
+      .select({ status: issues.status, unblockDescriptor: issues.unblockDescriptor })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(after.status).toBe("blocked");
+    expect((after.unblockDescriptor as { reasonRef?: unknown } | null)?.reasonRef).toEqual({
+      kind: "date",
+      dueAt: "2026-10-10T00:00:00.000Z",
+    });
+  });
+
+  it("rejects a blocked transition with unregistered eventKey and no dueAt with 422", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard event");
+    const issueId = await seedTodoIssue(companyId, "Guarded issue with unregistered event");
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for external hook",
+          reasonRef: { kind: "event", eventKey: "custom:hook" },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "ext-service-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(JSON.stringify(res.body)).toContain("blockedByIssueIds для другой задачи; для внешнего сервиса — dueAt ≤ 2 ч");
+  });
+
+  it("rejects a blocked transition with dueAt > 24 hours with 422", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard 24h");
+    const issueId = await seedTodoIssue(companyId, "Guarded issue with excessive dueAt");
+
+    const farFuture = new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString();
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for external hook",
+          reasonRef: { kind: "event", eventKey: "custom-gate", dueAt: farFuture },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "ext-service-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(JSON.stringify(res.body)).toContain("reasonRef.dueAt cannot exceed 24 hours");
+  });
+
+  it("accepts a blocked transition with unregistered eventKey when dueAt <= 24 hours", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard ok dueAt");
+    const issueId = await seedTodoIssue(companyId, "Guarded issue with short dueAt");
+
+    const shortFuture = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for external hook",
+          reasonRef: { kind: "event", eventKey: "custom-gate", dueAt: shortFuture },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "ext-service-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("accepts a blocked transition with registered eventKey without dueAt", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard registered");
+    const issueId = await seedTodoIssue(companyId, "Guarded issue with github key");
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for GitHub broker",
+          reasonRef: { kind: "event", eventKey: "github:inst:1" },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "ext-service-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("rejects PATCH unblockDescriptor with unregistered eventKey and no dueAt on already blocked issue", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block patch descriptor");
+    const issueId = await seedTodoIssue(companyId, "Blocked issue patch");
+
+    // First transition to blocked with valid date
+    await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for date",
+          reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "ext-service-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+
+    // Now PATCH unblockDescriptor with unregistered event without dueAt
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for custom hook",
+          reasonRef: { kind: "event", eventKey: "custom:gate" },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(JSON.stringify(res.body)).toContain("blockedByIssueIds для другой задачи; для внешнего сервиса — dueAt ≤ 2 ч");
+  });
+
+  it("guards only transitions after the rollout moment (unit check)", () => {
+    expect(
+      isStaleBlockGuardedTransition({
+        status: "blocked",
+        blockedTransitionAt: new Date(STALE_BLOCK_ROLLOUT_AT.getTime() - 1),
+      }),
+    ).toBe(false);
+    expect(
+      isStaleBlockGuardedTransition({
+        status: "blocked",
+        blockedTransitionAt: new Date(STALE_BLOCK_ROLLOUT_AT.getTime() + 1),
+      }),
+    ).toBe(true);
+    expect(
+      isStaleBlockGuardedTransition({
+        status: "blocked",
+        blockedTransitionAt: STALE_BLOCK_ROLLOUT_AT.toISOString(),
+      }),
+    ).toBe(true);
+    expect(
+      isStaleBlockGuardedTransition({
+        status: "todo",
+        blockedTransitionAt: new Date(),
+      }),
+    ).toBe(false);
+    expect(
+      isStaleBlockGuardedTransition({ status: "blocked", blockedTransitionAt: null }),
+    ).toBe(false);
+  });
+});

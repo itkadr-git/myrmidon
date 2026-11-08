@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   builtInManagedResources,
@@ -13,7 +13,7 @@ import {
   instanceSettings,
   issues,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_LEASE_CLEANUP_STATUSES,
@@ -29,7 +29,7 @@ import {
   type EnvironmentLeasePolicy,
   type EnvironmentLeaseStatus,
   type UpdateEnvironment,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { conflict, forbidden } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
@@ -38,12 +38,14 @@ import {
   stockHash,
   type ManagedResourceStockStatus,
 } from "./managed-resource-drift.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
 const DEFAULT_LOCAL_ENVIRONMENT_NAME = "Local";
 const DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION =
-  "Default execution environment for Paperclip runs on this machine.";
+  `Default execution environment for ${PN} runs on this machine.`;
 
 const DEFAULT_KUBERNETES_ENVIRONMENT_NAME = "Kubernetes Sandbox";
 const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
@@ -79,7 +81,7 @@ export interface KubernetesEnvironmentConfigInput {
    * environment config and validated by the sandbox config schema.
    */
   timeoutMs?: number;
-  adapters?: import("@paperclipai/shared").AdapterRegistryEntry[];
+  adapters?: import("@myrmidon/shared").AdapterRegistryEntry[];
   [key: string]: unknown;
 }
 

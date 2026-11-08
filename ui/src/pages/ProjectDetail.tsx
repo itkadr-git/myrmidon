@@ -1,7 +1,8 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@myrmidon/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -38,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { Tabs } from "@/components/ui/tabs";
+import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
@@ -86,6 +88,7 @@ function ProjectTilePicker({
   onSelectIcon: (icon: string) => void;
   onSelectColor: (color: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -110,16 +113,16 @@ function ProjectTilePicker({
         <button
           type="button"
           className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-(--tp-box-shadow)"
-          aria-label="Change project icon and color"
+          aria-label={t("area.projects-goals-workspaces-2.project-detail.tilePickerAria")}
         >
           <ProjectTile color={color} icon={icon} size="md" />
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-72 p-3" align="start">
         {/* Icon search + grid */}
-        <p className="text-xs font-medium text-muted-foreground mb-2">Icon</p>
+        <p className="text-xs font-medium text-muted-foreground mb-2">{t("area.projects-goals-workspaces-2.project-detail.iconHeading")}</p>
         <Input
-          placeholder="Search icons..."
+          placeholder={t("area.projects-goals-workspaces-2.project-detail.searchIcons")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="mb-2 h-8 text-sm"
@@ -141,13 +144,13 @@ function ProjectTilePicker({
             </button>
           ))}
           {filteredIcons.length === 0 && (
-            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">No icons match</p>
+            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">{t("area.projects-goals-workspaces-2.project-detail.noIconsMatch")}</p>
           )}
         </div>
 
         {/* Color swatches */}
         <div className="mt-3 border-t border-border pt-3">
-          <p className="text-xs font-medium text-muted-foreground mb-2">Color</p>
+          <p className="text-xs font-medium text-muted-foreground mb-2">{t("area.projects-goals-workspaces-2.project-detail.colorHeading")}</p>
           <div className="grid grid-cols-5 gap-1.5">
             {/* Neutral / reset-to-gray option */}
             <button
@@ -158,8 +161,8 @@ function ProjectTilePicker({
                   ? "ring-2 ring-foreground ring-offset-1 ring-offset-background rounded-md"
                   : ""
               }`}
-              aria-label="Reset to neutral gray"
-              title="Neutral (default)"
+              aria-label={t("area.projects-goals-workspaces-2.project-detail.resetToGray")}
+              title={t("area.projects-goals-workspaces-2.project-detail.neutralDefault")}
             >
               <ProjectTile color={null} size="sm" />
             </button>
@@ -174,7 +177,7 @@ function ProjectTilePicker({
                     : "hover:ring-2 hover:ring-foreground/30"
                 }`}
                 style={{ backgroundColor: swatch }}
-                aria-label={`Select color ${swatch}`}
+                aria-label={t("area.projects-goals-workspaces-2.project-detail.selectColor", { color: swatch })}
               />
             ))}
           </div>
@@ -186,7 +189,15 @@ function ProjectTilePicker({
 
 /* ── List (issues) tab content ── */
 
-function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
+function ProjectIssuesList({
+  projectId,
+  companyId,
+  isIdeasProject = false,
+}: {
+  projectId: string;
+  companyId: string;
+  isIdeasProject?: boolean;
+}) {
   const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
@@ -243,7 +254,8 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey="paperclip:project-issues-view"
+      viewStateKey={isIdeasProject ? `myrmidon:project-ideas-view:${projectId}` : "myrmidon:project-issues-view"}
+      defaultGroupBy={isIdeasProject ? "topic" : undefined}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -314,7 +326,7 @@ function ProjectPluginOperationsList({
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey={`paperclip:project-plugin-operations-view:${pluginKey}`}
+      viewStateKey={`myrmidon:project-plugin-operations-view:${pluginKey}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -323,6 +335,7 @@ function ProjectPluginOperationsList({
 /* ── Main project page ── */
 
 export function ProjectDetail() {
+  const { t } = useTranslation(); // myrmidon(UI-RU)
   const { companyPrefix, projectId, filter } = useParams<{
     companyPrefix?: string;
     projectId: string;
@@ -455,17 +468,17 @@ export function ProjectDetail() {
       ),
     onSuccess: (updatedProject, archived) => {
       invalidateProject();
-      const name = updatedProject?.name ?? project?.name ?? "Project";
+      const name = updatedProject?.name ?? project?.name ?? t("projectDetail.project");
       if (archived) {
-        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        pushToast({ title: t("area.projects-goals-workspaces-2.project-detail.archived", { name }), tone: "success" });
         navigate("/dashboard");
       } else {
-        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+        pushToast({ title: t("area.projects-goals-workspaces-2.project-detail.unarchived", { name }), tone: "success" });
       }
     },
     onError: (_, archived) => {
       pushToast({
-        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        title: archived ? t("projectDetail.failedToArchive") : t("projectDetail.failedToUnarchive"),
         tone: "error",
       });
     },
@@ -473,7 +486,7 @@ export function ProjectDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No organization selected");
+      if (!resolvedCompanyId) throw new Error(t("projectDetail.noOrganization"));
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
   });
@@ -488,10 +501,10 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: t("projectDetail.projects"), href: "/projects" },
+      { label: project?.name ?? routeProjectRef ?? t("projectDetail.project") },
     ]);
-  }, [setBreadcrumbs, project, routeProjectRef]);
+  }, [setBreadcrumbs, project, routeProjectRef, t]);
 
   useEffect(() => {
     if (!project) return;
@@ -595,7 +608,7 @@ export function ProjectDetail() {
       companyId: resolvedCompanyId ?? "",
       scopeType: "project",
       scopeId: project?.id ?? routeProjectRef,
-      scopeName: project?.name ?? "Project",
+      scopeName: project?.name ?? t("projectDetail.project"),
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
@@ -647,7 +660,7 @@ export function ProjectDetail() {
   if (routeProjectRef && activeTab === null) {
     let cachedTab: string | null = null;
     if (project?.id) {
-      try { cachedTab = localStorage.getItem(`paperclip:project-tab:${project.id}`); } catch {}
+      try { cachedTab = localStorage.getItem(`myrmidon:project-tab:${project.id}`); } catch {}
     }
     if (cachedTab === "overview") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
@@ -689,7 +702,7 @@ export function ProjectDetail() {
   const handleTabChange = (tab: ProjectTab) => {
     // Cache the active tab per project
     if (project?.id) {
-      try { localStorage.setItem(`paperclip:project-tab:${project.id}`, tab); } catch {}
+      try { localStorage.setItem(`myrmidon:project-tab:${project.id}`, tab); } catch {}
     }
     if (isProjectPluginTab(tab)) {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(tab)}`);
@@ -713,7 +726,7 @@ export function ProjectDetail() {
       {showLeftProjectNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
-            You left this project. It no longer appears in your sidebar.
+            {t("area.projects-goals-workspaces-2.project-detail.leftNotice")}
           </p>
           <MembershipAction
             compact
@@ -737,7 +750,7 @@ export function ProjectDetail() {
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-900/70 hover:text-yellow-900 dark:text-yellow-100/70 dark:hover:text-yellow-100"
-            aria-label="Dismiss project membership notice"
+            aria-label={t("area.projects-goals-workspaces-2.project-detail.dismissMembershipNotice")}
             onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
           >
             ×
@@ -763,7 +776,7 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-caps) text-red-800 dark:text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              {t("area.projects-goals-workspaces-2.project-detail.pausedByBudget")}
             </div>
           ) : null}
           {project.managedByPlugin ? (
@@ -793,8 +806,8 @@ export function ProjectDetail() {
         companyId={resolvedCompanyId}
         scopeKind="project"
         scopeId={project.id}
-        title="Project summary"
-        description="Summarizer keeps the latest project status, next step, and operator-needed items here."
+        title={t("projectDetail.summary")}
+        description={t("area.projects-goals-workspaces-2.project-detail.summaryDescription")}
       />
 
       <PluginSlotOutlet
@@ -831,12 +844,12 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Tasks" },
+            { value: "list", label: t("projectDetail.tabTasks") },
 
-            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: t("projectDetail.tabPluginOperations") }] : []),
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: t("projectDetail.tabWorkspaces") }] : []),
+            { value: "configuration", label: t("projectDetail.tabConfiguration") },
+            { value: "budget", label: t("projectDetail.tabBudget") },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -851,7 +864,11 @@ export function ProjectDetail() {
 
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
-        <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+        <ProjectIssuesList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          isIdeasProject={project.name.trim().toLowerCase() === "идеи" || project.name.trim().toLowerCase() === "ideas"}
+        />
       )}
 
       {activeTab === "plugin-operations" && project?.id && resolvedCompanyId && project.managedByPlugin && (
@@ -875,7 +892,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{t("area.projects-goals-workspaces-2.project-detail.loadingWorkspaces")}</p>
         )
       ) : null}
 

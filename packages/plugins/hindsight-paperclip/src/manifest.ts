@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
 
 /**
  * Local fork of the upstream hindsight memory plugin.
@@ -9,7 +9,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
  */
 
 const PLUGIN_ID = "paperclip-plugin-hindsight";
-const PLUGIN_VERSION = "0.3.0-myrmidon.1";
+const PLUGIN_VERSION = "0.3.0-myrmidon.2";
 
 const BANK_RESOLUTION_DESCRIPTION = [
   "Memory bank routing. Per agent, in order:",
@@ -54,6 +54,7 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       hindsightApiKeyRef: {
         type: "string",
+        format: "secret-ref",
         title: "Hindsight API Key (secret ref)",
         description: "Name of the Paperclip secret holding your Hindsight Cloud API key. Leave empty for self-hosted.",
       },
@@ -67,8 +68,17 @@ const manifest: PaperclipPluginManifestV1 = {
       autoRetain: {
         type: "boolean",
         title: "Auto-retain Comments",
-        description: "Automatically retain ticket comments to Hindsight as they are created.",
+        description:
+          "Retain a run's comments to Hindsight as one consolidated digest when the run finishes. A comment outside a run (a human's) is retained immediately. Off means no automatic retention at all.",
         default: true,
+      },
+      recallOnRunStart: {
+        type: "string",
+        title: "Recall on Run Start",
+        description:
+          "'new-issue' (default) recalls once per ticket an agent picks up; 'always' recalls on every run start; 'never' turns run-start recall off. The hindsight_recall tool is unaffected.",
+        enum: ["always", "new-issue", "never"],
+        default: "new-issue",
       },
       bankByAgentId: {
         type: "object",
@@ -77,10 +87,25 @@ const manifest: PaperclipPluginManifestV1 = {
           "Bank ID per agent card UUID; the fallback when an agent card has no adapterConfig.hindsight.bankId. Agents resolved by neither source are closed (no retain, empty recall). Keep this map synchronized from the agent cards.",
         additionalProperties: { type: "string" },
       },
+      accessMode: {
+        type: "string",
+        title: "Access Mode",
+        description:
+          "How agents are granted memory access: 'all' (every agent), 'roles' (automatic by agent role), or 'selected' (explicit agent allowlist).",
+        enum: ["all", "roles", "selected"],
+        default: "all",
+      },
+      enabledRoles: {
+        type: "array",
+        title: "Enabled Roles",
+        description:
+          "Roles granted automatic memory access (e.g. engineer, lead, architect). New agents created with these roles get memory access automatically.",
+        items: { type: "string" },
+      },
       enabledAgentIds: {
         type: "array",
         title: "Enabled Agent IDs",
-        description: "Restrict Hindsight recall/retain to these agent IDs only. Leave empty to enable for all agents (default).",
+        description: "Restrict Hindsight recall/retain to these agent IDs only (when in selected mode or as explicit overrides). Leave empty to enable for all agents (default).",
         items: { type: "string" },
       },
     },

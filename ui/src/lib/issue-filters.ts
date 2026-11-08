@@ -1,4 +1,4 @@
-import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue } from "@myrmidon/shared";
 
 export type IssueFilterWorkspaceLookup = {
   mode?: string | null;
@@ -37,6 +37,7 @@ export type IssueFilterState = {
    */
   externalObjectStatuses: string[];
   hideRoutineExecutions: boolean;
+  olderThan30Days?: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
@@ -50,6 +51,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   liveOnly: false,
   externalObjectStatuses: [],
   hideRoutineExecutions: false,
+  olderThan30Days: false,
 };
 
 export const externalObjectFilterOrder = [
@@ -264,6 +266,13 @@ export function applyIssueFilters(
       );
     });
   }
+  if (state.olderThan30Days) {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    result = result.filter((issue) => {
+      const createdAt = new Date(issue.createdAt).getTime();
+      return !Number.isNaN(createdAt) && createdAt <= cutoff;
+    });
+  }
   return result;
 }
 
@@ -282,5 +291,6 @@ export function countActiveIssueFilters(
   if (state.liveOnly) count += 1;
   if (state.externalObjectStatuses.length > 0) count += 1;
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
+  if (state.olderThan30Days) count += 1;
   return count;
 }

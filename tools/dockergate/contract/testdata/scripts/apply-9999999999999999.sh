@@ -13,12 +13,21 @@ for root in data/hermes workspace scratch; do
   done
 done
 # 2. compiler-owned directories, replaced wholesale
+staged="data/hermes/.myrmidon-next-$n/skills/paperclip-managed"
+live="data/hermes/skills/paperclip-managed"
+if [ -d "$staged" ]; then
+  old="data/hermes/.myrmidon-old-$n"
+  mkdir -p -- "$old"
+  if [ -e "$live" ] || [ -L "$live" ]; then mv -f -T -- "$live" "$old/0"; fi
+  mkdir -p -- "$(dirname -- "$live")"
+  mv -f -T -- "$staged" "$live"
+fi
 staged="data/hermes/.myrmidon-next-$n/skills-board"
 live="data/hermes/skills-board"
 if [ -d "$staged" ]; then
   old="data/hermes/.myrmidon-old-$n"
   mkdir -p -- "$old"
-  if [ -e "$live" ] || [ -L "$live" ]; then mv -f -T -- "$live" "$old/0"; fi
+  if [ -e "$live" ] || [ -L "$live" ]; then mv -f -T -- "$live" "$old/1"; fi
   mkdir -p -- "$(dirname -- "$live")"
   mv -f -T -- "$staged" "$live"
 fi
@@ -46,6 +55,11 @@ if [ -f "$removals" ]; then
     esac
     if [ -f "$dest" ] || [ -L "$dest" ]; then rm -f -- "$dest"; fi
   done < "$removals"
+fi
+# 4.5 vendor config backups under hermes (possible secret leak), best effort
+backups="data/hermes/backups"
+if [ -d "$backups" ]; then
+  rm -rf -- "$backups" 2>/dev/null || true
 fi
 # 5. the applied-state marker, strictly last
 mkdir -p -- "data/hermes/.myrmidon"

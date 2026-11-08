@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   executionWorkspaces,
   heartbeatRuns,
@@ -15,7 +15,7 @@ import {
   projects,
   projectWorkspaces,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceDeliveryState,
@@ -33,8 +33,8 @@ import type {
   WorkspaceOverviewQuery,
   GitWorktreeBranchAncestryVerdict,
   IssueRecoveryAction,
-} from "@paperclipai/shared";
-import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@myrmidon/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -44,6 +44,7 @@ import {
 } from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { withDefaultEscalationChain } from "./review-escalation-chain.js";
 import { logActivity } from "./activity-log.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -73,6 +74,8 @@ import {
   listCurrentRuntimeServicesForProjectWorkspaces,
   selectConfiguredRuntimeServiceRows,
 } from "./workspace-runtime-read-model.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -529,7 +532,7 @@ function explainGitWorktreeBranchReconcileInspection(input: {
   ancestryVerdict: GitWorktreeBranchAncestryVerdict;
 }) {
   if (!input.fromSha || !input.toSha) {
-    return `Paperclip could not determine branch ancestry because "${input.fromBranch}" or "${input.toBranch}" is missing a resolvable HEAD commit.`;
+    return `${PN} could not determine branch ancestry because "${input.fromBranch}" or "${input.toBranch}" is missing a resolvable HEAD commit.`;
   }
   if (input.fromSha === input.toSha) {
     return `The recorded branch "${input.fromBranch}" and checked-out branch "${input.toBranch}" resolve to the same commit.`;
@@ -540,7 +543,7 @@ function explainGitWorktreeBranchReconcileInspection(input: {
   if (input.ancestryVerdict === "diverged") {
     return `The recorded branch "${input.fromBranch}" is not an ancestor of the checked-out branch "${input.toBranch}".`;
   }
-  return `Paperclip could not determine whether "${input.toBranch}" is forward of "${input.fromBranch}".`;
+  return `${PN} could not determine whether "${input.toBranch}" is forward of "${input.fromBranch}".`;
 }
 
 async function inspectExecutionWorkspaceBranchForReconcile(
@@ -553,7 +556,7 @@ async function inspectExecutionWorkspaceBranchForReconcile(
 
   const worktreePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
   if (!worktreePath) {
-    throw unprocessable("Execution workspace needs a local worktree path before Paperclip can reconcile its branch record");
+    throw unprocessable(`Execution workspace needs a local worktree path before ${PN} can reconcile its branch record`);
   }
 
   const repoRoot = await readGitStdout(["rev-parse", "--show-toplevel"], worktreePath).catch(() => null);
@@ -563,7 +566,7 @@ async function inspectExecutionWorkspaceBranchForReconcile(
 
   const toBranch = await readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], worktreePath).catch(() => null);
   if (!toBranch) {
-    throw unprocessable("Execution workspace is detached; Paperclip cannot reconcile it to a branch name");
+    throw unprocessable(`Execution workspace is detached; ${PN} cannot reconcile it to a branch name`);
   }
 
   const status = await runExpensiveGitStatus({
@@ -827,12 +830,12 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   }
 
   if (!workspacePath) {
-    warnings.push("Workspace has no local path, so Paperclip cannot inspect git status before close.");
+    warnings.push(`Workspace has no local path, so ${PN} cannot inspect git status before close.`);
     return { git: null, warnings, statusInspectionSucceeded: false };
   }
 
   if (!(await pathExists(workspacePath))) {
-    warnings.push(`Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`);
+    warnings.push(`Workspace path "${workspacePath}" does not exist, so ${PN} cannot inspect git status before close.`);
     return {
       git: {
         repoRoot: null,
@@ -2430,7 +2433,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
       if (!statusInspectionSucceeded) {
-        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+        blockingReasons.push(`${PN} could not verify the workspace git status. Retry before destructive cleanup.`);
       }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
@@ -2561,7 +2564,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         plannedActions.push({
           kind: "git_worktree_remove",
           label: "Remove git worktree",
-          description: `Paperclip will run git worktree cleanup for ${workspacePath}.`,
+          description: `${PN} will run git worktree cleanup for ${workspacePath}.`,
           command: `git worktree remove --force ${workspacePath}`,
         });
       }
@@ -2570,7 +2573,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         plannedActions.push({
           kind: "git_branch_delete",
           label: "Delete runtime-created branch",
-          description: "Paperclip will try to delete the runtime-created branch after removing the worktree.",
+          description: `${PN} will try to delete the runtime-created branch after removing the worktree.`,
           command: `git branch -d ${executionWorkspace.branchName}`,
         });
       }
@@ -2585,12 +2588,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             )
           : false;
         if (containsProjectWorkspace) {
-          warnings.push(`Paperclip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
+          warnings.push(`${PN} will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
         } else {
           plannedActions.push({
             kind: "remove_local_directory",
             label: "Remove runtime-created directory",
-            description: `Paperclip will remove the runtime-created directory at ${workspacePath}.`,
+            description: `${PN} will remove the runtime-created directory at ${workspacePath}.`,
             command: `rm -rf ${workspacePath}`,
           });
         }
@@ -2632,6 +2635,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedActiveRun: 0,
           skippedNonTerminalTree: 0,
           skippedUndelivered: 0,
+          skippedInspectFailed: 0,
+          skippedDirty: 0,
+          skippedUnmerged: 0,
+          skippedInspectFailedSamples: [],
+          skippedDirtySamples: [],
+          skippedUnmergedSamples: [],
           skippedRace: 0,
           skippedReopened: 0,
           skippedCooldown: 0,
@@ -2696,6 +2705,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedActiveRun: 0,
         skippedNonTerminalTree: 0,
         skippedUndelivered: 0,
+        skippedInspectFailed: 0,
+        skippedDirty: 0,
+        skippedUnmerged: 0,
+        skippedInspectFailedSamples: [] as Array<{ id: string; path: string | null }>,
+        skippedDirtySamples: [] as Array<{ id: string; path: string | null }>,
+        skippedUnmergedSamples: [] as Array<{ id: string; path: string | null }>,
         skippedRace: 0,
         skippedReopened: 0,
         skippedCooldown: 0,
@@ -2707,6 +2722,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
+          result.skippedInspectFailed += 1;
+          if (result.skippedInspectFailedSamples.length < 5) {
+            result.skippedInspectFailedSamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         const assessment = await assessDelivery(workspace, git);
@@ -2734,6 +2753,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // it stays that way past the threshold, signal it once.
           await signalStuckUndeliverableWorkspace(workspace, assessment, "dirty");
           result.skippedUndelivered += 1;
+          result.skippedDirty += 1;
+          if (result.skippedDirtySamples.length < 5) {
+            result.skippedDirtySamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         if (
@@ -2744,6 +2767,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // archived. If it stays that way past the threshold, signal it once.
           await signalStuckUndeliverableWorkspace(workspace, assessment, "undelivered");
           result.skippedUndelivered += 1;
+          result.skippedUnmerged += 1;
+          if (result.skippedUnmergedSamples.length < 5) {
+            result.skippedUnmergedSamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         // Hold the archive during the cooldown window. The anchor is the most
@@ -3507,7 +3534,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const existing = toExecutionWorkspace(existingRow);
       if (!existing.sourceIssueId) {
-        throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
+        throw unprocessable(`Execution workspace needs a source issue before ${PN} can audit branch reconciliation`);
       }
 
       const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
@@ -3620,7 +3647,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const lockedRuntimeServices = (lockedRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
         const lockedWorkspace = toExecutionWorkspace(lockedRow, lockedRuntimeServices);
         if (!lockedWorkspace.sourceIssueId) {
-          throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
+          throw unprocessable(`Execution workspace needs a source issue before ${PN} can audit branch reconciliation`);
         }
 
         let updatedRow: ExecutionWorkspaceRow = lockedRow;
@@ -3724,6 +3751,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             .select({
               id: issues.id,
               companyId: issues.companyId,
+              projectId: issues.projectId,
               status: issues.status,
               assigneeAgentId: issues.assigneeAgentId,
               assigneeUserId: issues.assigneeUserId,
@@ -3744,7 +3772,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
           const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
           const transition = applyIssueExecutionPolicyTransition({
-            issue: sourceBefore,
+            // myrmidon(OPE-9031): senior escalation chain for the round limit.
+            issue: await withDefaultEscalationChain(tx as unknown as Db, sourceBefore, policy),
             policy,
             previousPolicy: policy,
             requestedStatus,

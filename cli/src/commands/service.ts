@@ -6,6 +6,7 @@ import { readConfig, resolveConfigPath } from "../config/store.js";
 import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
+import { readProductEnv, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type CommonOptions = { instance?: string; json?: boolean };
 type HealthResult = { ok: boolean; serverVersion: string | null; error?: string };
@@ -24,7 +25,7 @@ async function resolveManager(opts: CommonOptions): Promise<ServiceManager | nul
 }
 
 function healthUrl(instanceId: string): string {
-  process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+  writeProductEnv(process.env, "INSTANCE_ID", instanceId); // myrmidon(REBRAND-C)
   const config = readConfig(resolveConfigPath());
   return buildLocalHealthUrl(config?.server.host, config?.server.port ?? 3100);
 }
@@ -47,7 +48,7 @@ async function waitForHealth(instanceId: string, expectedVersion: string | null,
     if (last.ok && (!expectedVersion || last.serverVersion === expectedVersion)) return last;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`Paperclip service did not become healthy${expectedVersion ? ` at version ${expectedVersion}` : ""}: ${last.error ?? `reported ${last.serverVersion ?? "no version"}`}`);
+  throw new Error(`Myrmidon service did not become healthy${expectedVersion ? ` at version ${expectedVersion}` : ""}: ${last.error ?? `reported ${last.serverVersion ?? "no version"}`}`);
 }
 
 export function resolveRestartExpectedVersion(expectedVersion: string | null | undefined): string | null {
@@ -129,7 +130,7 @@ async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, 
     previousServerPid: status.pid,
     previousServerVersion: health.serverVersion,
     drainRequired,
-    requestedByRunId: process.env.PAPERCLIP_RUN_ID?.trim() || null,
+    requestedByRunId: readProductEnv("RUN_ID")?.trim() || null,
   }, null, 2)}\n`, "utf8");
   return { requestedAt };
 }
@@ -163,7 +164,7 @@ export async function restartManagedService(input: { instanceId?: string; expect
 }
 
 export function registerServiceCommands(program: Command): void {
-  const service = program.command("service").description("Manage Paperclip as a background service");
+  const service = program.command("service").description("Manage Myrmidon as a background service");
   const common = (command: Command) => command.option("-i, --instance <id>", "Local instance id (default: default)").option("--json", "Print machine-readable JSON", false);
 
   common(service.command("install").description("Install and register the background service"))
@@ -177,7 +178,7 @@ export function registerServiceCommands(program: Command): void {
       if (manager.enableLinger) {
         let consent = opts.enableLinger === true;
         if (!consent && process.stdin.isTTY && process.stdout.isTTY) {
-          consent = await p.confirm({ message: "Allow Paperclip to run without an active login session? This runs 'loginctl enable-linger' for your user and may request system authorization.", initialValue: false }) === true;
+          consent = await p.confirm({ message: "Allow Myrmidon to run without an active login session? This runs 'loginctl enable-linger' for your user and may request system authorization.", initialValue: false }) === true;
         }
         if (consent) { await manager.enableLinger(); lingerEnabled = true; }
       }

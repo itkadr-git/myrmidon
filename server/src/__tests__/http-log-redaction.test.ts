@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
 import { HTTP_LOG_REDACT_PATHS } from "../middleware/http-log-redaction.js";
 import { errorHandler } from "../middleware/error-handler.js";
-import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
+import { testAdapterEnvironmentSchema } from "@myrmidon/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
 describe("HTTP logger redaction", () => {
@@ -316,6 +316,27 @@ describe("HTTP logger redaction", () => {
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-xsrf-token"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-api-key"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-api-key"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-agent-key"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-cloud-tenant-token"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-signature"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-hub-signature-256"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-tool-gateway-token"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-openclaw-token"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-openclaw-auth"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-github-capability"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
       'req.headers["x-telegram-bot-api-secret-token"]',
     );
     expect(HTTP_LOG_REDACT_PATHS).toContain("reqBody.credentials");
@@ -360,6 +381,15 @@ describe("HTTP logger redaction", () => {
               "set-cookie": "proxy-secret",
               "x-telegram-bot-api-secret-token":
                 "telegram-webhook-canary-534c28",
+              "x-paperclip-api-key": "paperclip-api-key-canary-71b3",
+              "x-agent-key": "agent-key-canary-4d0f",
+              "x-paperclip-cloud-tenant-token": "tenant-token-canary-9ae1",
+              "x-paperclip-signature": "signature-canary-2c87",
+              "x-hub-signature-256": "hub-signature-canary-5f42",
+              "x-paperclip-tool-gateway-token": "tool-gateway-canary-8b60",
+              "x-openclaw-token": "openclaw-token-canary-3e19",
+              "x-openclaw-auth": "openclaw-auth-canary-6a74",
+              "x-paperclip-github-capability": "github-capability-canary-7d25",
             },
           },
           (res) => {
@@ -380,7 +410,7 @@ describe("HTTP logger redaction", () => {
 
     const output = chunks.join("");
     expect(output).not.toMatch(
-      /auth-secret|request-secret|proxy-secret|response-secret|telegram-webhook-canary-534c28/,
+      /auth-secret|request-secret|proxy-secret|response-secret|telegram-webhook-canary-534c28|paperclip-api-key-canary-71b3|agent-key-canary-4d0f|tenant-token-canary-9ae1|signature-canary-2c87|hub-signature-canary-5f42|tool-gateway-canary-8b60|openclaw-token-canary-3e19|openclaw-auth-canary-6a74|github-capability-canary-7d25/,
     );
 
     const log = JSON.parse(output.trim()) as {
@@ -390,9 +420,22 @@ describe("HTTP logger redaction", () => {
     expect(log.req.headers.authorization).toBe("[Redacted]");
     expect(log.req.headers.cookie).toBe("[Redacted]");
     expect(log.req.headers["set-cookie"]).toBe("[Redacted]");
+    expect(log.req.headers["x-paperclip-github-capability"]).toBe("[Redacted]");
     expect(log.req.headers["x-telegram-bot-api-secret-token"]).toBe(
       "[Redacted]",
     );
+    expect(log.req.headers["x-paperclip-api-key"]).toBe("[Redacted]");
+    expect(log.req.headers["x-agent-key"]).toBe("[Redacted]");
+    expect(log.req.headers["x-paperclip-cloud-tenant-token"]).toBe(
+      "[Redacted]",
+    );
+    expect(log.req.headers["x-paperclip-signature"]).toBe("[Redacted]");
+    expect(log.req.headers["x-hub-signature-256"]).toBe("[Redacted]");
+    expect(log.req.headers["x-paperclip-tool-gateway-token"]).toBe(
+      "[Redacted]",
+    );
+    expect(log.req.headers["x-openclaw-token"]).toBe("[Redacted]");
+    expect(log.req.headers["x-openclaw-auth"]).toBe("[Redacted]");
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
   });
 
@@ -672,4 +715,47 @@ describe("HTTP logger redaction", () => {
       });
     },
   );
+
+  it("redacts invite tokens in URLs, params, headers, and request bodies (OPE-11891)", async () => {
+    const inviteToken = "pcp_invite_secret_token_1234567890";
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)),
+    );
+    app.all("/api/invites/:token", (req, res) => {
+      (res as any).__errorContext = {
+        error: { message: `bad invite ${inviteToken}` },
+        reqBody: req.body,
+        reqParams: req.params,
+      };
+      res.status(404).json({ error: "Not found" });
+    });
+    app.post("/api/companies/:companyId/invites", (req, res) => {
+      (res as any).__errorContext = {
+        error: { message: "validation failed" },
+        reqBody: req.body,
+      };
+      res.status(500).json({ error: "Failed" });
+    });
+
+    await request(app)
+      .get(`/api/invites/${inviteToken}`)
+      .set("x-invite-token", inviteToken);
+
+    await request(app)
+      .post("/api/companies/company-123/invites")
+      .send({ inviteToken, note: "test" });
+
+    const output = chunks.join("");
+    expect(output.length).toBeGreaterThan(0);
+    expect(output).not.toContain(inviteToken);
+  });
 });

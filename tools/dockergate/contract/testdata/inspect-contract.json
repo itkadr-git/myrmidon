@@ -31,9 +31,7 @@
    "PidsLimit": 512,
    "NetworkMode": "myrmidon-bots",
    "Binds": [
-    "/srv/myrmidon-bots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/hermes:/data/hermes",
-    "/srv/myrmidon-bots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace:/workspace",
-    "/srv/myrmidon-bots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scratch:/scratch",
+    "/srv/myrmidon-bots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:/bot",
     "/srv/shared/readonly:/srv/shared/readonly:ro"
    ]
   },
@@ -69,9 +67,7 @@
   {
    "path": "HostConfig.Binds",
    "want": [
-    "/srv/myrmidon-bots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/hermes:/data/hermes",
-    "/srv/myrmidon-bots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace:/workspace",
-    "/srv/myrmidon-bots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scratch:/scratch",
+    "/srv/myrmidon-bots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:/bot",
     "/srv/shared/readonly:/srv/shared/readonly:ro"
    ]
   }

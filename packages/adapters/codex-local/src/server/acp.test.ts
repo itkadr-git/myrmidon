@@ -3,15 +3,15 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterExecutionContext, AdapterInvocationMeta } from "@myrmidon/adapter-utils";
+import { runChildProcess } from "@myrmidon/adapter-utils/server-utils";
 
 // Every test in this file needs a real teardown, so the mock below delegates
 // to the actual factory by default. Only the wiring test further down reads
 // the call arguments; it does not change this behavior.
 const mockCreateWorkspaceRestoreTeardown = vi.hoisted(() => vi.fn());
 
-vi.mock("@paperclipai/adapter-utils/workspace-restore-teardown", async (importOriginal) => {
+vi.mock("@myrmidon/adapter-utils/workspace-restore-teardown", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   mockCreateWorkspaceRestoreTeardown.mockImplementation(
     actual.createWorkspaceRestoreTeardown as (...args: unknown[]) => unknown,
@@ -622,7 +622,7 @@ describe("codex_local ACP lane", () => {
     );
   });
 
-  it("explains the Paperclip server credential boundary when ACP auth is missing", async () => {
+  it("explains the Myrmidon server credential boundary when ACP auth is missing", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-missing-auth-");
     const commandPath = path.join(root, "bin", "codex-acp");
     const sharedCodexHome = path.join(root, "shared-codex-home");
@@ -660,7 +660,7 @@ describe("codex_local ACP lane", () => {
       expect.objectContaining({
         code: "codex_acp_credentials_missing",
         level: "warn",
-        message: expect.stringContaining("Paperclip server"),
+        message: expect.stringContaining("Myrmidon server"),
         hint: expect.stringContaining("separate Codex/chat session"),
       }),
     );

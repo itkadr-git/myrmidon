@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import * as React from "react";
 import { StrictMode } from "react";
 import * as ReactDOM from "react-dom";
@@ -21,9 +22,14 @@ import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
+import { migrateLegacyBrowserStorage } from "./lib/browser-storage";
+import { queryKeys } from "./lib/queryKeys";
+import { authSessionRecovery, isUnauthorizedError } from "./lib/auth-session-recovery";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
+// myrmidon(DEBRAND-c): migrate legacy browser storage before application state reads.
+migrateLegacyBrowserStorage();
 initPluginBridge(React, ReactDOM);
 
 // React 19.2 emits an unbounded stream of performance.measure() entries for its
@@ -48,8 +54,21 @@ const queryClient = new QueryClient({
       // tuning point if we need to trim the cache footprint further.
       gcTime: 5 * 60_000,
       refetchOnWindowFocus: true,
+      retry: (failureCount, error) => {
+        if (isUnauthorizedError(error)) return false;
+        return failureCount < 3;
+      },
+      refetchInterval: (query) => {
+        if (isUnauthorizedError(query?.state?.error)) return false;
+        return false;
+      },
     },
   },
+});
+
+authSessionRecovery.onUnauthorized(() => {
+  queryClient.setQueryData(queryKeys.auth.session, null);
+  queryClient.cancelQueries();
 });
 
 function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {

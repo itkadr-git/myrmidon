@@ -1,0 +1,9 @@
+# Harness quality metrics
+
+Run `python3 tools/quality-metrics/metrics.py --from 2026-10-19T00:00:00Z --to 2026-10-21T00:00:00Z`. Configure `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, `PAPERCLIP_COMPANY_ID`, and `LITELLM_API_BASE`/`LITELLM_API_KEY` in the environment; credentials are never printed. Dates are an inclusive `from`, exclusive `to` UTC interval. Output reports counts and rates against runs; spend is USD and shown as a period total (not a run rate).
+
+The script reads heartbeat runs and the paginated agent-actions audit feed, plus issue comments and LiteLLM `/spend/logs/v2`. It paginates audit and LiteLLM results; if run history reaches the API's 200-run cap and does not cover `--from`, it exits with a coverage error instead of reporting misleading rates. The run list remains limited by the board API, so choose an interval fully covered by the returned run window. Activity attributes used: action, runId, entityType/entityId, createdAt, details including changes and `_previous`. Issue comments use body/createdAt; `monitorNextCheckAt` is a current-state check, not historical. LiteLLM rows use spend and key_alias, with API-supported UTC date parameters.
+
+Idle runs require no mutation-class activity tied to that run (issue comment/document/update/blocker/create/work-product actions). Blocked-without-reason and review-policy bypass use the event's before/after details, not later issue state. A named blocker must be commented no later than the blocked transition. A metric may exceed the number of runs because an issue can have multiple flagged transitions or waiting comments.
+
+To add a metric, implement a counter over the normalized runs, audit events, issues, and comments in `metrics.py`, then add it to the metrics list in `main()`. Credentials are sent only in authorization headers and are never printed.

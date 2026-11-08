@@ -21,8 +21,8 @@ import {
   type ScopeKey,
   type ToolResult,
   type ToolRunContext,
-} from "@paperclipai/plugin-sdk";
-import type { Goal, Issue } from "@paperclipai/shared";
+} from "@myrmidon/plugin-sdk";
+import type { Goal, Issue } from "@myrmidon/shared";
 import {
   DEFAULT_CONFIG,
   JOB_KEYS,

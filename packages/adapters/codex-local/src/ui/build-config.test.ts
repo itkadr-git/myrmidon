@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCodexLocalConfig, buildPaperclipRunnerConfig } from "./build-config.js";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { CreateConfigValues } from "@myrmidon/adapter-utils";
 
 function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigValues {
   return {
@@ -36,6 +36,39 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("persists the sandbox and inactivity fields the settings form writes", () => {
+    const config = buildCodexLocalConfig(makeValues({
+      adapterSchemaValues: {
+        filesystemScope: "workspace",
+        filesystemExtraPaths: ["/tmp/extra"],
+        networkScope: "allowlist",
+        networkAllowlist: ["api.openai.com"],
+        outputInactivityTimeoutMs: 600_000,
+        probe: true,
+        approvalMode: "bypass",
+      },
+    }));
+    expect(config).toMatchObject({
+      filesystemScope: "workspace",
+      filesystemExtraPaths: ["/tmp/extra"],
+      networkScope: "allowlist",
+      networkAllowlist: ["api.openai.com"],
+      outputInactivityTimeoutMs: 600_000,
+    });
+    expect(config).not.toHaveProperty("probe");
+    expect(config).not.toHaveProperty("approvalMode");
+    expect(buildCodexLocalConfig(makeValues())).not.toHaveProperty("filesystemScope");
+  });
+
+  it("keeps local-CLI sandbox fields out of the native runner profile", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({
+      adapterSchemaValues: { filesystemScope: "workspace", networkScope: "deny", networkAllowlist: ["api.openai.com"] },
+    }));
+    for (const key of ["filesystemScope", "filesystemExtraPaths", "networkScope", "networkAllowlist"]) {
+      expect(config).not.toHaveProperty(key);
+    }
+  });
+
   it("omits engine for the auto default so runtime fallback remains available", () => {
     const config = buildCodexLocalConfig(makeValues({ codexEngine: "auto" }));
 

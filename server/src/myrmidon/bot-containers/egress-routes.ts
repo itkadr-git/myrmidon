@@ -68,6 +68,8 @@ export interface BotEgressRoutesDeps {
   /** The proxy's refusal feed, already parsed; throws when the proxy cannot be reached. */
   readRefusals(): Promise<unknown[]>;
   env?: NodeJS.ProcessEnv;
+  /** myrmidon(SETTINGS-UI E2.3): the instance token (env override, then secret ref); null = not published. */
+  readToken?: () => Promise<string | null>;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -223,7 +225,7 @@ export function botEgressRoutes(deps: BotEgressRoutesDeps) {
 
   /** The document the proxy fetches. Token, not board auth: the caller is a service. */
   router.get("/myrmidon/bot-egress/policy", async (req, res) => {
-    const token = envNow()[BOT_EGRESS_TOKEN_ENV]?.trim();
+    const token = deps.readToken ? await deps.readToken() : envNow()[BOT_EGRESS_TOKEN_ENV]?.trim();
     if (!token) {
       res.status(503).json({
         error: `Bot egress policies are not published on this instance (${BOT_EGRESS_TOKEN_ENV} is not set)`,

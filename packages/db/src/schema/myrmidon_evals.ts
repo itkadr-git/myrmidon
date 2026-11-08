@@ -61,6 +61,13 @@ export const evalRuns = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     role: text("role").notNull(),
     subject: text("subject").notNull(),
+    /**
+     * myrmidon(1.6.6 KNOWLEDGE-2.0 K-9): what kind of knowledge item this run
+     * gates — `rule` / `skill` / `page` — and its reference (the item slug).
+     * Null for the pre-K-9 runs that judged a free-form candidate.
+     */
+    subjectKind: text("subject_kind"),
+    subjectRef: text("subject_ref"),
     baselineId: uuid("baseline_id"),
     confirmRunId: uuid("confirm_run_id"),
     kind: text("kind").notNull().default("first"),

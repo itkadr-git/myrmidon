@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  BadgeCheck, // myrmidon(LICENSING)
   ChevronLeft,
   Clock3,
   Cpu,
   Download,
   FlaskConical,
   KeyRound,
+  ListChecks,
   MailPlus,
   MonitorCog,
   Puzzle,
@@ -16,7 +18,7 @@ import {
   UserRoundPen,
   Users,
 } from "lucide-react";
-import type { PluginRecord } from "@paperclipai/shared";
+import type { PluginRecord } from "@myrmidon/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
@@ -31,6 +33,9 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem.production";
 import { useAccessHubAvailability } from "@/components/myrmidon/access-hub/accessHubAvailability";
+import { LICENSES_PATH, useIsInstanceAdmin } from "@/components/myrmidon/licensingApi"; // myrmidon(LICENSING)
+import { useTranslation } from "@/i18n"; // myrmidon(LICENSING)
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -45,6 +50,8 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function CompanySettingsSidebar() {
+  const { t } = useTranslation(); // myrmidon(LICENSING)
+  const isInstanceAdmin = useIsInstanceAdmin(); // myrmidon(LICENSING)
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
   const { hidden: hiddenSettings } = useHiddenSettings();
@@ -99,17 +106,17 @@ export function CompanySettingsSidebar() {
           className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         >
           <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{selectedCompany?.name ?? "Company"}</span>
+          <span className="truncate">{selectedCompany?.name ?? t("area.shell-sidebar-layout-1.company-settings-sidebar.company")}</span>
         </Link>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/company/settings" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.general")} icon={SlidersHorizontal} end />
           {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
-              label="Profile"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.profile")}
               icon={UserRoundPen}
               end
             />
@@ -117,7 +124,7 @@ export function CompanySettingsSidebar() {
           {showPage("company.members") && (
             <SidebarNavItem
               to="/company/settings/members"
-              label="Members"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.members")}
               icon={Users}
               badge={badges?.joinRequests ?? 0}
               end
@@ -129,33 +136,33 @@ export function CompanySettingsSidebar() {
               <SidebarNavItem
                 key={`${slot.pluginKey}:${slot.id}`}
                 to={`/company/settings/${slot.routePath}`}
-                label={slot.displayName}
+                label={pluginLabel(t, slot.pluginKey, slot.id, slot.displayName)} // myrmidon(OPE-9352)
                 icon={Puzzle}
                 end
               />
             ))}
           {showPage("company.invites") && (
-            <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
+            <SidebarNavItem to="/company/settings/invites" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.invites")} icon={MailPlus} end />
           )}
           {showPage("company.secrets") && (
-            <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+            <SidebarNavItem to="/company/settings/secrets" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.secrets")} icon={KeyRound} end />
           )}
           {showPage("company.secrets") && (
             <SidebarNavItem
               to="/company/settings/access-hub"
-              label="Access hub"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.accessHub")}
               icon={ShieldCheck}
               // The screen exists before its server API: while the instance
               // answers 404/501 the entry says so instead of leading to a
               // screen that only shows the not-available notice.
-              textBadge={accessHubAvailability === "unavailable" ? "soon" : undefined}
+              textBadge={accessHubAvailability === "unavailable" ? t("area.shell-sidebar-layout-1.company-settings-sidebar.soon") : undefined}
               end
             />
           )}
           {showPage("instance.environments") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
-              label="Environments"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.environments")}
               icon={MonitorCog}
               end
             />
@@ -163,16 +170,20 @@ export function CompanySettingsSidebar() {
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
-              label="Access"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.access")}
               icon={Shield}
               end
             />
+          )}
+          {/* myrmidon(LICENSING): closed-module licenses, instance admin only */}
+          {isInstanceAdmin && (
+            <SidebarNavItem to={LICENSES_PATH} label={t("licensing.title")} icon={BadgeCheck} end />
           )}
           {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/board-api-keys`}
-              label="Board API keys"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.boardApiKeys")}
               icon={KeyRound}
               end
             />
@@ -180,28 +191,34 @@ export function CompanySettingsSidebar() {
           {showPage("instance.heartbeats") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`}
-              label="Heartbeats"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.heartbeats")}
               icon={Clock3}
               end
             />
           )}
           {showPage("company.export") && (
-            <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+            <SidebarNavItem to="/company/export" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.export")} icon={Download} />
           )}
           {!isCloud && showPage("company.import") && (
-            <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+            <SidebarNavItem to="/company/import" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.import")} icon={Upload} end />
           )}
           {showPage("instance.experimental") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
-              label="Experimental"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.experimental")}
               icon={FlaskConical}
             />
           )}
+          {/* myrmidon(FEATURES): fork features with live health */}
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/features`}
+            label={t("area.shell-sidebar-layout-1.company-settings-sidebar.features")}
+            icon={ListChecks}
+          />
           {showPlugins && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
-              label="Plugins"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.plugins")}
               icon={Puzzle}
             />
           )}
@@ -221,7 +238,7 @@ export function CompanySettingsSidebar() {
                     ].join(" ")
                   }
                 >
-                  {plugin.manifestJson.displayName ?? plugin.packageName}
+                  {pluginLabel(t, plugin.pluginKey, null, plugin.manifestJson.displayName ?? plugin.packageName) /* myrmidon(OPE-9352) */}
                 </NavLink>
               ))}
             </div>
@@ -229,7 +246,7 @@ export function CompanySettingsSidebar() {
           {showPage("instance.adapters") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
-              label="Adapters"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.adapters")}
               icon={Cpu}
             />
           )}

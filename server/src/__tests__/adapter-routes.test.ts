@@ -168,6 +168,27 @@ describe("adapter routes", () => {
       });
   });
 
+  it("marks hermes_local as disabled when MYRMIDON_DISABLE_HERMES_LOCAL=1", async () => {
+    const defaultResponse = await request(createApp()).get("/api/adapters");
+    expect(defaultResponse.status).toBe(200);
+    expect(defaultResponse.body.find((adapter: any) => adapter.type === "hermes_local"))
+      .toMatchObject({ disabled: false });
+
+    vi.stubEnv("MYRMIDON_DISABLE_HERMES_LOCAL", "1");
+    try {
+      const disabledResponse = await request(createApp()).get("/api/adapters");
+      expect(disabledResponse.status).toBe(200);
+      expect(disabledResponse.body.find((adapter: any) => adapter.type === "hermes_local"))
+        .toMatchObject({ disabled: true });
+
+      const singleResponse = await request(createApp()).get("/api/adapters/hermes_local");
+      expect(singleResponse.status).toBe(200);
+      expect(singleResponse.body).toMatchObject({ type: "hermes_local", disabled: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("GET /api/adapters returns correct capabilities for built-in adapters", async () => {
     const app = createApp();
 
@@ -274,7 +295,7 @@ describe("adapter routes", () => {
     expect(hermesGateway.source).toBe("builtin");
     expect(hermesGateway.capabilities).toMatchObject({
       supportsInstructionsBundle: true,
-      supportsSkills: false,
+      supportsSkills: true,
       supportsLocalAgentJwt: false,
       requiresMaterializedRuntimeSkills: false,
       supportsAcp: false,

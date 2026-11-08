@@ -37,15 +37,27 @@ class PeerResolver:
 
 
 class Authenticator:
-    def __init__(self, cfg: Settings, resolver: PeerResolver | None = None):
+    def __init__(self, cfg: Settings, resolver: PeerResolver | None = None, bots_watcher=None):
         self.cfg = cfg
         self.resolver = resolver or PeerResolver()
         self.hits: dict[str, deque[float]] = {}
+        # myrmidon(MEDIA-PROVISION): optional BotsWatcher over cfg.bots_file.
+        # When present, the bot registry is revalidated (cheap stamp check) before
+        # each authenticate, so a board-side rewrite of bots.json takes effect
+        # without restarting the facade. Without it the registry stays as loaded.
+        self._bots_watcher = bots_watcher
+
+    @property
+    def bots(self) -> dict:
+        if self._bots_watcher is not None:
+            self._bots_watcher.maybe_reload()
+            return self._bots_watcher.bots
+        return self.cfg.bots
 
     def identify(self, bearer: str | None, peer_ip: str | None) -> BotPolicy | None:
         digest = hashlib.sha256(bearer.encode()).hexdigest() if bearer else None
         found: BotPolicy | None = None
-        for bot in self.cfg.bots.values():
+        for bot in self.bots.values():
             token_ok = bool(digest and bot.token_sha256 and hmac.compare_digest(digest, bot.token_sha256))
             peer_ok = bool(peer_ip and bot.peer_host and peer_ip in self.resolver.addrs(bot.peer_host))
             if bot.token_sha256 and bot.peer_host:

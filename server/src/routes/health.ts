@@ -1,10 +1,10 @@
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { heartbeatRuns, instanceUserRoles, invites } from "@myrmidon/db";
+import type { DeploymentExposure, DeploymentMode } from "@myrmidon/shared";
 import {
   readPersistedDevServerStatus,
   removeDevServerRestartRequest,
@@ -42,6 +42,8 @@ import {
   removeHotRestartIntent,
   writeHotRestartIntent,
 } from "../services/hot-restart.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { getGitHubRateLimitMetrics } from "../services/github-rate-limit.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -63,7 +65,7 @@ function matchesSharedToken(expectedToken: string | undefined | null, providedTo
 }
 
 function hasDevServerStatusToken(providedToken: string | undefined) {
-  return matchesSharedToken(process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN, providedToken);
+  return matchesSharedToken(readProductEnv("DEV_SERVER_STATUS_TOKEN"), providedToken);
 }
 
 /**
@@ -259,7 +261,7 @@ export function healthRoutes(
     // can read which commit this server is running without authenticating.
     const commit = serverInfo.git.available ? serverInfo.git.fullSha : null;
     const exposeDevServerDetails =
-      exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
+      exposeFullDetails || hasDevServerStatusToken(req.get("x-myrmidon-dev-server-status-token") ?? req.get("x-paperclip-dev-server-status-token"));
     // Workspace readiness names the instance and execution workspace that
     // answered, so it rides the protected responses only. Public health stays
     // redacted: an anonymous caller still learns liveness and nothing else.
@@ -437,6 +439,7 @@ export function healthRoutes(
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
       ...(hiddenSettings.length ? { hiddenSettings } : {}),
+      githubRateLimit: getGitHubRateLimitMetrics(),
     });
   });
 

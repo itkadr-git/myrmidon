@@ -46,6 +46,18 @@ describe("local process sandbox", () => {
     expect(() => parseLocalProcessSandboxExtraPaths(["relative"])).toThrow("must be an absolute path");
   });
 
+  it("accepts comma-separated text lists from schema-driven forms", () => {
+    expect(parseLocalProcessSandboxExtraPaths("/opt/cache, /var/lib/tool")).toEqual([
+      { path: "/opt/cache", access: "ro" },
+      { path: "/var/lib/tool", access: "ro" },
+    ]);
+    expect(parseLocalProcessSandboxExtraPaths("")).toEqual([]);
+    expect(() => parseLocalProcessSandboxExtraPaths("/opt/cache, relative")).toThrow("must be an absolute path");
+    expect(parseLocalProcessNetworkAllowlist("api.openai.com, gateway.test:8443"))
+      .toEqual(["api.openai.com", "gateway.test:8443"]);
+    expect(parseLocalProcessNetworkAllowlist(undefined)).toEqual([]);
+  });
+
   it("parses network scopes and exact-host allowlists", () => {
     expect(parseLocalProcessFilesystemScope("workspace")).toBe("workspace");
     expect(parseLocalProcessFilesystemScope(undefined)).toBeNull();
@@ -212,7 +224,7 @@ describe("local process sandbox", () => {
       await expect(request("http://example.com/")).resolves.toEqual({
         status: 403,
         contentType: "application/json; charset=utf-8",
-        body: '{"error":{"code":"network_target_denied","message":"Network target denied by Paperclip sandbox policy."}}\n',
+        body: '{"error":{"code":"network_target_denied","message":"Network target denied by Myrmidon sandbox policy."}}\n',
       });
       const connectResponse = await new Promise<string>((resolve, reject) => {
         const socket = net.createConnection(socketPath, () => {
@@ -227,7 +239,7 @@ describe("local process sandbox", () => {
       expect(connectResponse).toContain("HTTP/1.1 403 Forbidden\r\n");
       expect(connectResponse).toContain("Content-Type: application/json; charset=utf-8\r\n");
       expect(connectResponse).toContain(
-        '{"error":{"code":"network_target_denied","message":"Network target denied by Paperclip sandbox policy."}}\n',
+        '{"error":{"code":"network_target_denied","message":"Network target denied by Myrmidon sandbox policy."}}\n',
       );
     } finally {
       await target.cleanup?.();

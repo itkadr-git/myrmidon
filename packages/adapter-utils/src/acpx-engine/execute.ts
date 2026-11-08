@@ -12,7 +12,7 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   UsageSummary,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
@@ -35,7 +35,7 @@ import {
   type PreparedAdapterExecutionTargetRuntime,
   type ReferencedSourceIgnoreResolution,
   type SandboxAdditionalSource,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidon/adapter-utils/execution-target";
 import { captureLocalProcess, capturedProcessExited, killCapturedLocalProcess } from "./local-process-control.js";
 import type { DuplexLossReason } from "../duplex-observability.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
@@ -73,8 +73,8 @@ import {
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   type PaperclipSkillEntry,
-} from "@paperclipai/adapter-utils/server-utils";
-import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+} from "@myrmidon/adapter-utils/server-utils";
+import { shellQuote } from "@myrmidon/adapter-utils/ssh";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -103,6 +103,8 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import type {
   AcpRunContext,
   AcquiredRunResources,
@@ -154,6 +156,7 @@ import {
   type StartupStepMeasureOptions,
   type StartupTraceContext,
 } from "./startup-timing.js";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -261,7 +264,7 @@ export interface AcpxEngineBillingIdentity {
  * credential/home helpers (`copyBackCodexAuth`, `stageCodexHomeForSync`,
  * `prepareClaudeConfigSeed`, the Gemini skills stager, …) live in the adapter
  * packages, and the shared engine — which lives *inside*
- * `@paperclipai/adapter-utils`, a dependency of those packages — cannot import
+ * `@myrmidon/adapter-utils`, a dependency of those packages — cannot import
  * them without a circular dependency. So the engine exposes this seam and each
  * adapter supplies it, reusing the exact same vetted helpers (no duplication of
  * the security-critical copy-back path).
@@ -777,8 +780,8 @@ export async function referencedSourceContentSignature(
 }
 
 function defaultPaperclipInstanceDir(): string {
-  const home = process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
-  const instanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
+  const home = readProductEnv("HOME")?.trim() || path.join(os.homedir(), ".paperclip");
+  const instanceId = readProductEnv("INSTANCE_ID")?.trim() || "default";
   return resolvePaperclipInstanceRootForAdapter({
     homeDir: home,
     instanceId,
@@ -1896,7 +1899,9 @@ async function buildRuntime(input: {
   await fs.mkdir(stateDir, { recursive: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
+  const runtimeRunIdEnv: Record<string, string> = {};
+  writeProductEnv(runtimeRunIdEnv, "RUN_ID", runId); // myrmidon(REBRAND-C)
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent), ...runtimeRunIdEnv };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim()) ||
@@ -1912,13 +1917,13 @@ async function buildRuntime(input: {
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
-  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
-  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
-  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
-  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  if (wakeTaskId) writeProductEnv(env, "TASK_ID", wakeTaskId); // myrmidon(REBRAND-C)
+  if (issueWorkMode) writeProductEnv(env, "ISSUE_WORK_MODE", issueWorkMode); // myrmidon(REBRAND-C)
+  if (wakeReason) writeProductEnv(env, "WAKE_REASON", wakeReason); // myrmidon(REBRAND-C)
+  if (wakeCommentId) writeProductEnv(env, "WAKE_COMMENT_ID", wakeCommentId); // myrmidon(REBRAND-C)
+  if (approvalId) writeProductEnv(env, "APPROVAL_ID", approvalId); // myrmidon(REBRAND-C)
+  if (approvalStatus) writeProductEnv(env, "APPROVAL_STATUS", approvalStatus); // myrmidon(REBRAND-C)
+  if (linkedIssueIds.length > 0) writeProductEnv(env, "LINKED_ISSUE_IDS", linkedIssueIds.join(",")); // myrmidon(REBRAND-C)
   applyPaperclipWorkspaceEnv(env, {
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
@@ -1947,7 +1952,8 @@ async function buildRuntime(input: {
   const resolvedAdapterEnv: Record<string, string> = {};
   const scratch = parseObject(context.paperclipScratch);
   const scratchKeys = scratch.type === "heartbeat_run" && typeof scratch.dir === "string"
-    ? new Set(["PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_TMPDIR",
+    ? new Set(["PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_RUN_DIR", "PAPERCLIP_TMPDIR",
+      "MYRMIDON_RUN_SCRATCH_DIR", "MYRMIDON_TASK_SCRATCH_DIR", "MYRMIDON_SCRATCH_DIR", "MYRMIDON_RUN_DIR", "MYRMIDON_TMPDIR",
       ...(Array.isArray(scratch.tempKeysApplied) ? scratch.tempKeysApplied.filter((key): key is string =>
         typeof key === "string" && ["TMPDIR", "TEMP", "TMP"].includes(key)) : [])])
     : new Set<string>();
@@ -1964,9 +1970,9 @@ async function buildRuntime(input: {
     // The server rotates run-owned scratch paths on every wake. Still forward
     // them, but only hash actual adapter settings. User-supplied temp overrides
     // are absent from tempKeysApplied and keep their compatibility protection.
-    if (!scratchKeys.has(key) || value !== scratch.dir) resolvedAdapterEnv[key] = value;
+    if (!scratchKeys.has(key) || (value !== scratch.dir && value !== scratch.runDir)) resolvedAdapterEnv[key] = value;
   }
-  if (authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (authToken) writeProductEnv(env, "API_KEY", authToken); // myrmidon(REBRAND-C)
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects
@@ -2066,7 +2072,7 @@ async function buildRuntime(input: {
     );
     skillsIdentity = { mode: "custom_unsupported", desiredSkillNames: desired };
     if (desired.length > 0) {
-      skillCommandNotes.push("Selected Paperclip skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.");
+      skillCommandNotes.push(`Selected ${PRODUCT_NAME} skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.`);
     }
   }
 
@@ -2308,7 +2314,7 @@ async function buildRuntime(input: {
           stagedProjectDirs,
         }).workspaceHints;
         if (shapedHints.length > 0) {
-          env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedHints);
+          writeProductEnv(env, "WORKSPACES_JSON", JSON.stringify(shapedHints)); // myrmidon(REBRAND-C)
         }
       },
       onReuseLog: () =>
@@ -2323,7 +2329,7 @@ async function buildRuntime(input: {
           runtimeRootDir,
           adapterKey: input.engine.adapterType,
           timeoutSec,
-          hostApiToken: env.PAPERCLIP_API_KEY,
+          hostApiToken: readProductEnvFrom(env, "API_KEY"),
           enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
           duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(remoteTarget),
           onLog: input.ctx.onLog,
@@ -2887,29 +2893,30 @@ function guardEnsureSession(params: {
   });
 }
 
+// myrmidon(B1c): visible agent-facing notes name our product.
 function renderPaperclipEnvNote(env: Record<string, string>): string {
   const paperclipKeys = Object.keys(env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .filter((key) => key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) // myrmidon(REBRAND-C)
     .sort();
   if (paperclipKeys.length === 0) return "";
   return [
-    "Paperclip runtime note:",
+    "Myrmidon runtime note:",
     `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
     "Do not assume these variables are missing without checking your shell environment.",
   ].join("\n");
 }
 
 function renderApiAccessNote(env: Record<string, string>): string {
-  if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
+  if (!readProductEnvFrom(env, "API_URL") || !readProductEnvFrom(env, "API_KEY")) return "";
   const lines = [
-    "Paperclip API access note:",
-    "Use terminal commands with curl to make Paperclip API requests.",
+    "Myrmidon API access note:",
+    "Use terminal commands with curl to make Myrmidon API requests.",
     "Normalize the base URL before adding API paths:",
     `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
     "GET example:",
     `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_BASE/api/agents/me"`,
   ];
-  if (env.PAPERCLIP_TASK_ID) {
+  if (readProductEnvFrom(env, "TASK_ID")) {
     lines.push(
       "Scoped issue comment example:",
       `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,
@@ -3056,6 +3063,67 @@ async function emitRuntimeEvent(
   toolTitles?: Map<string, string>,
   coalescePlaceholderToolUpdates?: boolean,
 ) {
+  if (ctx.runGuard) {
+    const ctxExt = ctx as unknown as Record<string, unknown>;
+    const activeCalls = ((ctxExt.__acpxActiveToolCallIds ??= new Set<string>()) as Set<string>);
+    const failedCalls = ((ctxExt.__acpxFailedToolCallIds ??= new Set<string>()) as Set<string>);
+
+    if (event.type === "text_delta") {
+      if (activeCalls.size === 0 && ctxExt.__acpxTurnModelStepPending) {
+        ctxExt.__acpxTurnModelStepPending = false;
+        const stepDecision = ctx.runGuard.modelCall();
+        ctx.onModelCall?.();
+        if (stepDecision.stop) void ctx.onRunGuardStop?.(stepDecision.reason!);
+      }
+    } else if (event.type === "tool_call") {
+      const callId = event.toolCallId ?? (event as Record<string, unknown>).callId as string | undefined;
+
+      if (activeCalls.size === 0 && ctxExt.__acpxTurnModelStepPending) {
+        ctxExt.__acpxTurnModelStepPending = false;
+        const stepDecision = ctx.runGuard.modelCall();
+        ctx.onModelCall?.();
+        if (stepDecision.stop) void ctx.onRunGuardStop?.(stepDecision.reason!);
+      }
+
+      if (event.status === "in_progress") {
+        if (callId && !activeCalls.has(callId)) {
+          activeCalls.add(callId);
+          if (activeCalls.size === 1) ctx.runGuard.pauseIdle();
+        }
+      }
+
+      let decision;
+      if (event.status === "failed") {
+        if (callId) {
+          activeCalls.delete(callId);
+          if (activeCalls.size === 0) {
+            ctx.runGuard.resumeIdle();
+            ctxExt.__acpxTurnModelStepPending = true;
+          }
+        }
+        if (callId && failedCalls.has(callId)) {
+          decision = ctx.runGuard.event();
+        } else {
+          if (callId) failedCalls.add(callId);
+          decision = ctx.runGuard.toolFailure(event.title ?? "acp_tool", (event as Record<string, unknown>).input);
+        }
+      } else if (event.status === "completed") {
+        if (callId) {
+          failedCalls.delete(callId);
+          activeCalls.delete(callId);
+          if (activeCalls.size === 0) {
+            ctx.runGuard.resumeIdle();
+            ctxExt.__acpxTurnModelStepPending = true;
+          }
+        }
+        decision = ctx.runGuard.toolSuccess();
+      } else {
+        decision = ctx.runGuard.event();
+      }
+
+      if (decision.stop) void ctx.onRunGuardStop?.(decision.reason!);
+    }
+  }
   if (event.type === "text_delta") {
     await emitAcpxLog(ctx, {
       type: "acpx.text_delta",
@@ -4729,6 +4797,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       const stepTurnStart = (signal: AbortSignal, startTimeoutMs: number | undefined): StartedTurn => {
         ctx.signal?.throwIfAborted();
+        (ctx as unknown as Record<string, unknown>).__acpxTurnModelStepPending = false;
+        const callDecision = ctx.runGuard?.modelCall();
+        if (callDecision?.stop) {
+          void ctx.onRunGuardStop?.(callDecision.reason!);
+          throw new Error(callDecision.reason);
+        }
+        ctx.onModelCall?.();
         const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,
@@ -5416,3 +5491,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
 
 export const execute = createAcpxEngineExecutor();
+export const emitRuntimeEventForTest = emitRuntimeEvent as (
+  ctx: AdapterExecutionContext,
+  event: any,
+  toolTitles?: Map<string, string>,
+  coalescePlaceholderToolUpdates?: boolean,
+) => Promise<void>;

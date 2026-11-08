@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { chatActions } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { chatActions } from "@myrmidon/db";
 import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
   PaperclipQuestionSetQuestion,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   Modal,
   Select,

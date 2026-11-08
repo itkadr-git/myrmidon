@@ -1,13 +1,14 @@
 import { AlertTriangle, Clock, Pause, User, Wrench } from "lucide-react";
 import type { ComponentType } from "react";
-import type { IssueBlockedInboxSeverity } from "@paperclipai/shared";
+import type { IssueBlockedInboxSeverity } from "@myrmidon/shared";
 import { cn } from "../lib/utils";
 import {
   blockedReasonVariant,
-  blockedVariantLabel,
   type BlockedReasonVariant,
 } from "../lib/blockedInbox";
-import type { IssueBlockedInboxReason } from "@paperclipai/shared";
+import type { IssueBlockedInboxReason } from "@myrmidon/shared";
+// myrmidon(UI-RU): blocked-reason copy runs through the fork i18n catalog.
+import { useTranslation } from "@/i18n";
 
 interface BlockedReasonChipProps {
   reason: IssueBlockedInboxReason;
@@ -53,8 +54,9 @@ export function BlockedReasonChip({
   compact = false,
   className,
 }: BlockedReasonChipProps) {
+  const { t } = useTranslation();
   const variant = blockedReasonVariant(reason);
-  const label = blockedVariantLabel(variant);
+  const label = t(`inbox.blockedVariants.${variant}`);
   const Icon = VARIANT_ICONS[variant];
   const dotClass = SEVERITY_DOT[severity];
   return (

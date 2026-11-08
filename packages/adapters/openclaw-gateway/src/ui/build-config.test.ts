@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { CreateConfigValues } from "@myrmidon/adapter-utils";
 import { buildOpenClawGatewayConfig } from "./build-config.js";
 
 function baseValues(): CreateConfigValues {
@@ -42,6 +42,30 @@ describe("buildOpenClawGatewayConfig", () => {
     });
     expect(config.timeoutSec).toBe(45);
     expect(config.waitTimeoutMs).toBe(9000);
+  });
+
+  it("serializes the device token only as a secret reference", () => {
+    const binding = { type: "secret_ref", secretId: "secret-id", version: "latest" };
+    expect(buildOpenClawGatewayConfig({ ...baseValues(), adapterSchemaValues: { deviceToken: binding } }).deviceToken)
+      .toEqual(binding);
+    expect(buildOpenClawGatewayConfig({ ...baseValues(), adapterSchemaValues: { deviceToken: "raw-token" } }))
+      .not.toHaveProperty("deviceToken");
+  });
+
+  it("keeps explicit client identity separate from the agent identity", () => {
+    const config = buildOpenClawGatewayConfig({
+      ...baseValues(),
+      agentId: "agent-123",
+      clientId: "gateway-client",
+      clientMode: "backend",
+      clientVersion: "1.6.6",
+    });
+    expect(config).toMatchObject({
+      agentId: "agent-123",
+      clientId: "gateway-client",
+      clientMode: "backend",
+      clientVersion: "1.6.6",
+    });
   });
 
   it("applies the documented identity defaults when unset", () => {

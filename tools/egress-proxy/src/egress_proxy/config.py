@@ -17,6 +17,8 @@ DEFAULT_PORT = 3128
 DEFAULT_BIND = "0.0.0.0"
 DEFAULT_CONNECT_TIMEOUT_SEC = 30
 DEFAULT_POLICY_REFRESH_SEC = 30
+MIN_TUNNEL_IDLE_SEC = 1
+MAX_TUNNEL_IDLE_SEC = 86400
 
 MODE_ENV = "EGRESS_PROXY_MODE"
 PORT_ENV = "EGRESS_PROXY_PORT"
@@ -27,6 +29,7 @@ POLICY_URL_ENV = "EGRESS_PROXY_POLICY_URL"
 POLICY_TOKEN_ENV = "EGRESS_PROXY_POLICY_TOKEN"
 POLICY_FILE_ENV = "EGRESS_PROXY_POLICY_FILE"
 POLICY_REFRESH_ENV = "EGRESS_PROXY_POLICY_REFRESH_SEC"
+TUNNEL_IDLE_ENV = "EGRESS_PROXY_TUNNEL_IDLE_SEC"
 
 #: `log` records every destination and refuses none (EGRESS-A). `enforce` adds
 #: the decision of every project whose policy says `block` (EGRESS-B); a project
@@ -61,6 +64,10 @@ class Config:
     policy_token: str = ""
     policy_file: str = ""
     policy_refresh_sec: int = DEFAULT_POLICY_REFRESH_SEC
+    #: A CONNECT tunnel that carried no byte in either direction for this many
+    #: seconds is closed. `None` (the variable unset or 0) leaves tunnels open
+    #: until one side closes them.
+    tunnel_idle_sec: float | None = None
 
 
 def _read_int(env: dict[str, str], name: str, default: int, minimum: int, maximum: int) -> int:
@@ -73,6 +80,25 @@ def _read_int(env: dict[str, str], name: str, default: int, minimum: int, maximu
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
     if not minimum <= value <= maximum:
         raise ConfigError(f"{name} must be between {minimum} and {maximum}, got {value}")
+    return value
+
+
+def _read_idle_sec(env: dict[str, str], name: str) -> float | None:
+    """Seconds, integer or decimal; unset or 0 means no limit (`None`)."""
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number of seconds, got {raw!r}") from exc
+    if value == 0:
+        return None
+    # Written so that nan and inf fall outside the range too.
+    if not MIN_TUNNEL_IDLE_SEC <= value <= MAX_TUNNEL_IDLE_SEC:
+        raise ConfigError(
+            f"{name} must be 0 (no limit) or between {MIN_TUNNEL_IDLE_SEC} and {MAX_TUNNEL_IDLE_SEC}, got {raw!r}"
+        )
     return value
 
 
@@ -135,4 +161,5 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         policy_token=(env.get(POLICY_TOKEN_ENV) or "").strip(),
         policy_file=policy_file,
         policy_refresh_sec=_read_int(env, POLICY_REFRESH_ENV, DEFAULT_POLICY_REFRESH_SEC, 1, 3600),
+        tunnel_idle_sec=_read_idle_sec(env, TUNNEL_IDLE_ENV),
     )

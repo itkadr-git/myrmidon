@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
-import type { Project, ProjectWorkspace, WorkspaceFileListDirectoryItem, WorkspaceFileListFileItem, WorkspaceFileListItem, WorkspaceFileListResponse } from "@paperclipai/shared";
+import type { Project, ProjectWorkspace, WorkspaceFileListDirectoryItem, WorkspaceFileListFileItem, WorkspaceFileListItem, WorkspaceFileListResponse } from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceFileBrowser, describeUnavailable } from "./WorkspaceFileBrowser";
 import { ApiError } from "@/api/client";
@@ -163,6 +163,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     pauseReason: null,
     pausedAt: null,
     executionWorkspacePolicy: null,
+    developmentProcess: null,
     codebase: {
       workspaceId: workspace.id,
       repoUrl: null,

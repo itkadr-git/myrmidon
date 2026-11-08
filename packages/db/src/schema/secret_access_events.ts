@@ -1,4 +1,4 @@
-import { index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { companySecrets } from "./company_secrets.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -30,6 +30,10 @@ export const secretAccessEvents = pgTable(
     pluginId: uuid("plugin_id").references(() => plugins.id, { onDelete: "set null" }),
     outcome: text("outcome").notNull(),
     errorCode: text("error_code"),
+    // myrmidon(1.6.5-F-23): structured audit attributes that do not fit the
+    // fixed columns — e.g. { offRun: true, keyId, remoteAddress } on reads
+    // through the off-run self-secret path.
+    details: jsonb("details").$type<Record<string, unknown> | null>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({

@@ -7,7 +7,7 @@
 // error mapping — all against a fake fetch, no network and no token.
 
 import { describe, expect, it } from "vitest";
-import type { CloudRoot } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudRoot } from "@myrmidon/shared/myrmidon-cloud-connector";
 import { CloudConnectorError } from "../types.js";
 import { GoogleDriveProvider } from "./google-drive.js";
 

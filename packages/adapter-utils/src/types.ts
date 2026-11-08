@@ -5,7 +5,8 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
-import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
+import type { PromptBreakdown } from "./prompt-meter.js";
+import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@myrmidon/shared";
 
 export interface AdapterAgent {
   id: string;
@@ -34,6 +35,14 @@ export interface UsageSummary {
   outputTokens: number;
   cachedInputTokens?: number;
 }
+
+/**
+ * myrmidon(1.6.5 PROMPT-BUDGET A): per-section prompt-token breakdown of a
+ * run's assembled prompt, estimated by the adapter when it builds the
+ * request. Canonical definition lives in ./prompt-meter.js; re-exported here
+ * so adapters can take it from the package root.
+ */
+export type { PromptBreakdown } from "./prompt-meter.js";
 
 export type AdapterBillingType =
   | "api"
@@ -68,6 +77,8 @@ export interface AdapterRuntimeServiceReport {
 
 export type AdapterExecutionErrorFamily =
   | "transient_upstream"
+  | "permanent_config_error"
+  | "input_overflow"
   | "provider_quota"
   | "model_refusal"
   | "refresh_token_reused"
@@ -90,7 +101,44 @@ export interface AdapterExecutionResult {
   errorFamily?: AdapterExecutionErrorFamily | null;
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
+  failedBeforeModel?: boolean;
   usage?: UsageSummary;
+  /**
+   * myrmidon(1.6.5 PROMPT-BUDGET A): prompt-token breakdown of the request
+   * the adapter assembled for this run, measured at build time. The server
+   * copies it into `heartbeat_runs.usageJson.promptBreakdown`. Estimated
+   * (chars/4 heuristic), not provider-reported.
+   */
+  promptBreakdown?: PromptBreakdown;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per prompt
+   * section, parallel to `promptBreakdown.parts` (which holds token estimates
+   * from the chars/4 heuristic). Keyed by the same section names. Lets the
+   * server store both tokens and chars per section in llm_call_traces.
+   */
+  sectionChars?: Record<string, number>;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): estimated tool schema sizes
+   * derived from the paperclip_skills field sent to the gateway. The gateway
+   * builds actual JSON schemas from these skills; we estimate the size from
+   * the skill metadata to give the server a rough sense of tool schema bloat.
+   */
+  toolSchemaChars?: number | null;
+  toolSchemaTokens?: number | null;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * observed from tool.started/tool.completed events during the run.
+   */
+  toolResultChars?: number | null;
+  toolResultTokens?: number | null;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): session compaction info from
+   * the server-side session rotation evaluation. Set by the server when
+   * persisting the trace; the adapter leaves this false.
+   */
+  compacted?: boolean;
+  preCompactChars?: number | null;
+  postCompactChars?: number | null;
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the
@@ -195,6 +243,10 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterExecutionContext {
+  runGuard?: import("./run-guard.js").RunGuard;
+  onModelCall?: () => void;
+  /** Called when a guard trips; implementations should stop their active process. */
+  onRunGuardStop?: (reason: import("./run-guard.js").RunGuardStopReason) => Promise<void>;
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
@@ -209,6 +261,13 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  paperclipCancellation?: {
+    current: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    } | null;
+  };
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
@@ -232,6 +291,15 @@ export interface AdapterExecutionContext {
    */
   onDispatch?: () => void;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH): remote adapters report the provider-side run
+   * id as soon as the provider admits the run (immediately after the create
+   * response), not only in the final result. The host persists it on the
+   * heartbeat run row, so a server restart can reattach to the provider run
+   * instead of losing it. Optional and additive: adapters that never call it
+   * behave exactly as before.
+   */
+  onExternalRunId?: (externalRunId: string) => Promise<void>;
   authToken?: string;
   /**
    * The injected OpenTelemetry startup trace context (tracer + root
@@ -246,6 +314,8 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+  pricing?: "free" | "paid";
+  accounts?: string[];
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -459,6 +529,38 @@ export interface ServerAdapterModule {
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH): board-side stop for a remote run the board
+   * is not actively supervising (no live adapter execution). The heartbeat
+   * cancellation path calls it with the run's persisted external run id so a
+   * remote slot (e.g. the hermes gateway's max_concurrent_runs) frees
+   * immediately instead of waiting out the remote side's own timeout sweep.
+   */
+  stopGatewayRunForBoard?: (input: {
+    baseUrl: string;
+    apiKey: string;
+    gatewayRunId: string;
+    cancellation?: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    };
+  }) => Promise<{ stopped: boolean }>;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe whether a remote gateway run
+   * is still alive on the bot gateway, completed, missing (404), or unreachable.
+   */
+  probeGatewayRunForBoard?: (input: {
+    baseUrl: string;
+    apiKey?: string | null;
+    headers?: Record<string, string> | string | null;
+    gatewayRunId: string;
+    timeoutMs?: number;
+  }) => Promise<{
+    state: "live" | "terminal" | "not_found" | "unreachable";
+    status: string | null;
+    error?: string;
+  }>;
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
@@ -728,6 +830,9 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  filesystemScope?: "workspace";
+  networkScope?: "deny" | "allowlist";
+  networkAllowlist?: string;
   defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
@@ -737,6 +842,9 @@ export interface CreateConfigValues {
   // openclaw_gateway adapter fields
   authToken?: string;
   agentId?: string;
+  clientId?: string;
+  clientMode?: string;
+  clientVersion?: string;
   sessionKeyStrategy?: string;
   sessionKey?: string;
   timeoutSec?: number;

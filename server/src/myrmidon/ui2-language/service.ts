@@ -13,14 +13,20 @@
 // implementation and the activity-log sink.
 
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companyMemberships, userUiLanguage } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { companyMemberships, userUiLanguage } from "@myrmidon/db";
 import {
   ui2LanguageSchema,
   type Ui2Language,
   type Ui2LanguagePreference,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logActivity } from "../../services/index.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the bridge language decision lives with the
+// bridge catalogs; this service only reports it to the screen.
+import {
+  instanceBridgeLocale,
+  resolveBridgeLocaleDecision,
+} from "../agent-chat-bridge/locales/index.js";
 
 export interface Ui2LanguageAuditEntry {
   companyId: string;
@@ -40,6 +46,19 @@ export interface Ui2LanguageServiceDeps {
   upsertLanguage(userId: string, language: Ui2Language): Promise<Ui2LanguagePreference>;
   listCompanyIdsForUser(userId: string): Promise<string[]>;
   logActivity(entry: Ui2LanguageAuditEntry): Promise<unknown>;
+  resolveBridgeLanguage(userId: string): Promise<BridgeLanguageDecisionView>;
+  getCatalogs(userId: string): Promise<Partial<Record<Ui2Language, Record<string, unknown>>>>;
+  upsertCatalog(userId: string, language: Ui2Language, catalog: Record<string, unknown>): Promise<void>;
+}
+
+/** The effective Telegram-bridge language and its source, for the screen. */
+export interface BridgeLanguageDecisionView {
+  language: Ui2Language;
+  source: "environment" | "user" | "instance" | "default";
+  /** The env force in play, present only while it applies. */
+  forcedLanguage: Ui2Language | null;
+  /** The stored instance setting, present only when the instance saved one. */
+  instanceLanguage: Ui2Language | null;
 }
 
 export const UI2_LANGUAGE_ACTION = "myrmidon.ui2.language_updated";
@@ -69,6 +88,21 @@ export function createUi2LanguageService(db: Db): Ui2LanguageServiceDeps {
       return { language: stored, updatedAt: row?.updatedAt ?? now };
     },
 
+    async getCatalogs(userId: string): Promise<Partial<Record<Ui2Language, Record<string, unknown>>>> {
+      const row = await db.query.userUiLanguage.findFirst({ where: eq(userUiLanguage.userId, userId) });
+      const catalogs = row?.customCatalogs;
+      return catalogs && typeof catalogs === "object" && !Array.isArray(catalogs)
+        ? catalogs as Partial<Record<Ui2Language, Record<string, unknown>>>
+        : {};
+    },
+
+    async upsertCatalog(userId: string, language: Ui2Language, catalog: Record<string, unknown>): Promise<void> {
+      const now = new Date();
+      const existing = await this.getCatalogs(userId);
+      const merged: Partial<Record<Ui2Language, Record<string, unknown>>> = { ...existing, [language]: catalog };
+      await db.insert(userUiLanguage).values({ userId, language, customCatalogs: merged, updatedAt: now })
+        .onConflictDoUpdate({ target: [userUiLanguage.userId], set: { customCatalogs: merged, updatedAt: now } });
+    },
     async listCompanyIdsForUser(userId: string): Promise<string[]> {
       const rows = await db
         .select({ companyId: companyMemberships.companyId })
@@ -85,6 +119,20 @@ export function createUi2LanguageService(db: Db): Ui2LanguageServiceDeps {
 
     async logActivity(entry: Ui2LanguageAuditEntry): Promise<unknown> {
       return logActivity(db, entry);
+    },
+
+    // myrmidon(1.6.5-TG-LOCALE-C): env force → the person's preference → the
+    // instance setting → English; the screen shows which one decided.
+    async resolveBridgeLanguage(userId: string): Promise<BridgeLanguageDecisionView> {
+      const decision = await resolveBridgeLocaleDecision(db, userId);
+      const instanceLanguage =
+        decision.source === "instance" ? decision.locale : await instanceBridgeLocale(db);
+      return {
+        language: decision.locale,
+        source: decision.source,
+        forcedLanguage: decision.forcedLanguage,
+        instanceLanguage,
+      };
     },
   };
 }

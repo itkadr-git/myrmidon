@@ -327,14 +327,14 @@ jobs:
         run: |
           set -euo pipefail
           for check in $RUNNER_CHECKS; do
-            pnpm --filter @paperclipai/paperclip-runner "$check"
+            pnpm --filter @myrmidon/paperclip-runner "$check"
           done
 
       - name: Warm debug dependencies for the shared Runner cache
         # Protocol tests need debug binaries. Populate their dependencies in
         # the sole cache writer, so a cold save also serves the protocol lane.
         if: ${{ matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
-        run: pnpm --filter @paperclipai/paperclip-runner build:rust
+        run: pnpm --filter @myrmidon/paperclip-runner build:rust
 
   build:
     name: Build

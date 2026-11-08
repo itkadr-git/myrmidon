@@ -1,4 +1,4 @@
-import type { ExecutionReconciliation } from "@paperclipai/shared";
+import type { ExecutionReconciliation } from "@myrmidon/shared";
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
@@ -34,7 +34,7 @@ import type {
   ReleaseIssueTreeHoldResponse,
   UpsertIssueWatchdog,
   UpsertIssueDocument,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api, ApiError, type RequestOptions } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 
@@ -76,6 +76,13 @@ export type IssueUpdateResponse = Issue & {
 export type ResolveRecoveryActionResponse = {
   issue: Issue;
   recoveryAction: IssueRecoveryAction;
+};
+
+export type ConfirmExecutionHoldResponse = {
+  issueId: string;
+  recoveryActionId: string;
+  supersededCount: number;
+  assigneeWoken: boolean;
 };
 
 export type IssueListFilters = {
@@ -284,6 +291,14 @@ export const issuesApi = {
     api.post<ResolveRecoveryActionResponse>(
       `/issues/${id}/recovery-actions/resolve`,
       data,
+    ),
+  // myrmidon(OPE-6011): attest that a held task's failed run performed no
+  // external action, lift the settled execution-reconciliation hold, and wake
+  // the assignee — the explicit exit from "execution_reconciliation_required".
+  confirmExecutionHold: (id: string) =>
+    api.post<ConfirmExecutionHoldResponse>(
+      `/issues/${id}/execution-hold/confirm-continue`,
+      {},
     ),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
     api.post<IssueTreeControlPreview>(

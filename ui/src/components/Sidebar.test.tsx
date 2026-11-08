@@ -404,8 +404,17 @@ describe("Sidebar", () => {
     const labels = (section: Element | undefined) => [...(section?.querySelectorAll("a") ?? [])]
       .map((anchor) => anchor.textContent?.trim());
 
-    expect(labels(workSection)).toEqual(["Tasks", "Projects", "Routines", "Artifacts"]);
-    expect(labels(orgSection)).toEqual(["Agents", "Skills", "Connectors", "Audit"]);
+    expect(labels(workSection)).toEqual(["Tasks", "Projects", "Routines", "Artifacts", "Knowledge"]);
+    // myrmidon(1.6.5 SWARM-T4, design §5.4): the streamlined org section also
+    // carries the swarm supervisor and the foraging page — visible, not hidden.
+    expect(labels(orgSection)).toEqual([
+      "Agents",
+      "Skills",
+      "Connectors",
+      "Audit",
+      "Swarm supervisor",
+      "Foraging",
+    ]);
     expect(sections.indexOf(workSection!)).toBeLessThan(sections.indexOf(orgSection!));
     expect(
       workSection?.querySelector('a[href="/issues"] svg')?.classList.contains("lucide-circle-check"),

@@ -771,7 +771,7 @@ describe("paperclipai CLI invocation safety", () => {
     // can paste the guidance into a shell, and that outer shell evaluates a
     // metacharacter span in the host before any CLI receives argv. A direct-exec
     // form does not stop the outer shell. Emit a static `<host>` placeholder only.
-    expect(source).toContain("run npx paperclipai allowed-hostname <host>");
+    expect(source).toContain("run npx myrmidon allowed-hostname <host>");
     expect(source).not.toContain("allowed-hostname ${hostname}");
     expect(source).not.toContain("pnpm paperclipai allowed-hostname");
     expect(source).not.toContain("pnpm exec paperclipai allowed-hostname");
@@ -781,7 +781,7 @@ describe("paperclipai CLI invocation safety", () => {
     const source = read("server/src/routes/access.ts");
     expect(source).not.toMatch(/pnpm paperclipai allowed-hostname/);
     expect(source).not.toContain("pnpm exec paperclipai allowed-hostname");
-    expect(source).toContain("npx paperclipai allowed-hostname <host>");
+    expect(source).toContain("npx myrmidon allowed-hostname <host>");
     // The onboarding host comes from the request base URL, so a requester
     // controls it. The emitted command must carry a static `<host>` placeholder
     // and never interpolate that value.
@@ -809,7 +809,12 @@ describe("paperclipai CLI invocation safety", () => {
     const source = read("ui/src/pages/CompanyExport.tsx");
     expect(source).not.toContain("pnpm paperclipai company import");
     expect(source).not.toContain("pnpm exec paperclipai company import");
-    expect(source).toContain("npx paperclipai company import");
+    // The preview builder names the CLI by its Myrmidon binary (`myrmidon`, the
+    // same package bin as `paperclipai`). `npx` still runs that binary directly
+    // and the argument stays a static, non-interpolated placeholder.
+    expect(source).toContain("npx myrmidon company import this-github-url-or-folder");
+    expect(source).not.toContain("pnpm myrmidon company import");
+    expect(source).not.toContain("npx paperclipai company import");
   });
 
   // ── Runtime surfaces and their fixed literal lifecycle hints ─────────────
@@ -825,14 +830,14 @@ describe("paperclipai CLI invocation safety", () => {
 
   it("emits the onboard hint from the server startup banner", () => {
     const source = read("server/src/startup-banner.ts");
-    expect(source).toContain("npx paperclipai onboard");
+    expect(source).toContain("npx myrmidon onboard");
     expect(source).not.toContain("pnpm paperclipai onboard");
     expect(source).not.toContain("pnpm exec paperclipai onboard");
   });
 
   it("emits the safe run form from the client connection-error hint", () => {
     const source = read("cli/src/client/http.ts");
-    expect(source).toContain("npx paperclipai run");
+    expect(source).toContain("npx myrmidon run");
     expect(source).not.toContain("pnpm paperclipai run");
   });
 
@@ -860,13 +865,14 @@ describe("paperclipai CLI invocation safety", () => {
 
   it("emits the bootstrap fallback command from the UI", () => {
     const source = read("ui/src/bootstrapSetup.ts");
-    expect(source).toContain("npx paperclipai auth bootstrap-ceo");
+    expect(source).toContain("myrmidon auth bootstrap-ceo");
+    expect(source).not.toContain("npx myrmidon");
     expect(source).not.toContain("pnpm paperclipai auth bootstrap-ceo");
     expect(source).not.toContain("pnpm exec paperclipai auth bootstrap-ceo");
   });
 
   it("emits the setup form from the board skill", () => {
-    const source = read("skills/paperclip-board/SKILL.md");
+    const source = read("skills/myrmidon-board/SKILL.md");
     expect(source).toContain("npx paperclipai board setup");
     expect(source).not.toContain("pnpm paperclipai board setup");
     expect(source).not.toContain("pnpm exec paperclipai board setup");
@@ -901,7 +907,7 @@ describe("paperclipai CLI invocation safety", () => {
   });
 
   it("documents the safe form in the agent-facing skill", () => {
-    const skill = read("skills/paperclip/SKILL.md");
+    const skill = read("skills/myrmidon/SKILL.md");
     expect(skill).toContain("CLI safety");
     expect(skill).toContain("npx paperclipai");
     expect(skill).toContain("Do not use `pnpm paperclipai`");

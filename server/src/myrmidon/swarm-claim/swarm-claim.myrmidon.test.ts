@@ -18,15 +18,17 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_CAPACITY_POLICY,
   DEFAULT_SWARM_LEASE_TTL_SEC,
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
+  mergeCapacityPolicyPatch,
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   claimCovers,
   nextQueueTaskForAgent,
@@ -42,6 +44,9 @@ const settings: SwarmClaimSettings = {
   leaseTtlSec: DEFAULT_SWARM_LEASE_TTL_SEC,
   maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
+  p0Preemption: true,
+  // 1.6.5 (F-27 + SWARM-T4): the single `pheromone` key; absent fields = the design defaults.
+  pheromone: {},
 };
 
 function candidate(overrides: Partial<SwarmQueueCandidate> = {}): SwarmQueueCandidate {
@@ -106,6 +111,106 @@ describe("myrmidon(1.6-SWARM) queue order", () => {
     expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
     expect(queue[0]?.priority).toBe("critical");
   });
+
+  // 1.6.5 (F-27 PHEROMONE) acceptance: of two ready tasks of one caste a free
+  // agent gets the task with the HIGHER pheromone strength — even when it is
+  // younger; a strength change reorders the queue without a restart.
+  it("the stronger pheromone outranks age; a strength change reorders the queue", () => {
+    const weak = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      pheromoneStrength: 5,
+      queuedAt: new Date("2026-10-02T09:00:00Z"), // older
+    });
+    const strong = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      pheromoneStrength: 50,
+      queuedAt: new Date("2026-10-02T11:00:00Z"), // younger
+    });
+    const queue = selectQueueForAgent({ candidates: [weak, strong], liveClaims: [], now: NOW });
+    expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
+
+    // The owner raises the weak task's strength (a UI edit) — the queue flips.
+    const reordered = selectQueueForAgent({
+      candidates: [{ ...weak, pheromoneStrength: 500 }, strong],
+      liveClaims: [],
+      now: NOW,
+    });
+    expect(reordered[0]?.issueId).toBe("a1111111-1111-4111-8111-111111111111");
+  });
+
+  // 1.6.5 (F-27 PHEROMONE): P0 preempts the queue regardless of strength.
+  it("a critical task preempts even a stronger pheromone", () => {
+    const p0 = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      priority: "critical",
+      pheromoneStrength: 0,
+      queuedAt: new Date("2026-10-02T11:00:00Z"),
+    });
+    const strong = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      priority: "medium",
+      pheromoneStrength: 900,
+      queuedAt: new Date("2026-10-02T09:00:00Z"),
+    });
+    const queue = selectQueueForAgent({ candidates: [p0, strong], liveClaims: [], now: NOW });
+    expect(queue[0]?.issueId).toBe("a1111111-1111-4111-8111-111111111111");
+  });
+
+  // 1.6.5 (F-27 rework 09.10, design §2.3): the acceptance criteria of the
+  // effective strength — aging overtakes a fresher task, the failure penalty
+  // drops a stale one, and the P0 band still wins.
+  it("three days of aging overtakes a fresh task with strength +2", () => {
+    const fresh = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      pheromoneStrength: 12,
+      queuedAt: NOW, // just queued
+    });
+    const old = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      pheromoneStrength: 10,
+      queuedAt: new Date(NOW.getTime() - 72 * 3_600_000), // 3 days waiting
+    });
+    const queue = selectQueueForAgent({
+      candidates: [fresh, old],
+      liveClaims: [],
+      now: NOW,
+    });
+    expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
+  });
+
+  it("two failed runs without a change drop the task below an equal one", () => {
+    const failed = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      pheromoneStrength: 10,
+      failedRunsSinceLastChange: 2,
+      queuedAt: NOW,
+    });
+    const clean = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      pheromoneStrength: 10,
+      failedRunsSinceLastChange: 0,
+      queuedAt: NOW,
+    });
+    const queue = selectQueueForAgent({
+      candidates: [failed, clean],
+      liveClaims: [],
+      now: NOW,
+    });
+    expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
+  });
+
+  // "Updating the task clears the failure penalty" is a property of the SQL
+  // twin (the counter comes from heartbeat_runs and the task's change trail),
+  // so it is asserted on a real Postgres in pheromone-sql.myrmidon.test.ts —
+  // a candidate fixture with the counter preset to 0 would only test itself.
 });
 
 describe("myrmidon(1.6-SWARM) leases", () => {
@@ -154,6 +259,7 @@ describe("myrmidon(1.6-SWARM) leases", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       role: "eng",
       runId: null,
+      origin: "auto_match",
       now: NOW,
       settings,
     });
@@ -196,9 +302,9 @@ describe("myrmidon(1.6-SWARM) claim service", () => {
     } as never;
   }
 
-  it("with the pilot flag off nothing is claimed", async () => {
+  it("with the swarm flag off nothing is claimed", async () => {
     const ports = fakePorts({
-      swarmClaim: { enabled: false, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30 },
+      swarmClaim: { enabled: false, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
     });
     const outcome = await claimNextTaskForAgent(ports, {
       companyId: "comp-1",
@@ -210,7 +316,7 @@ describe("myrmidon(1.6-SWARM) claim service", () => {
 
   it("with an empty agent table the answer is queue_empty, not a crash", async () => {
     const ports = fakePorts({
-      swarmClaim: { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30 },
+      swarmClaim: { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
     });
     const outcome = await claimNextTaskForAgent(ports, {
       companyId: "comp-1",
@@ -230,7 +336,7 @@ describe("myrmidon(1.6-SWARM) sweep acceptance window", () => {
     expect(DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC).toBeLessThanOrEqual(
       DEFAULT_SWARM_LEASE_TTL_SEC,
     );
-    // The sweep is a no-op pass when the pilot flag is off.
+    // The sweep is a no-op pass when the swarm flag is off.
     const sweeper = createSwarmClaimSweeper({
       db: {
         select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),
@@ -250,5 +356,55 @@ describe("myrmidon(1.6-SWARM) shared wake contract", () => {
   it("the wake reason and queue statuses come from the shared contract", () => {
     expect(SWARM_CLAIM_WAKE_REASON).toBe("swarm_claim_queue");
     expect(SWARM_CLAIM_QUEUE_ISSUE_STATUSES).toContain("todo");
+  });
+});
+
+describe("myrmidon(1.6.6) project and caste capacity admission", () => {
+  it("enforces project and caste capacity limits before admission, skipping saturated projects", () => {
+    const policy = mergeCapacityPolicyPatch(DEFAULT_CAPACITY_POLICY, {
+      limits: { perProjectActive: 1, perCasteActive: 2 },
+    });
+    const candidateA = candidate({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-A",
+      projectId: "projectA",
+      casteId: "eng",
+    } as never);
+    const candidateB = candidate({
+      issueId: "22222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-B",
+      projectId: "projectB",
+      casteId: "eng",
+    } as never);
+
+    // projectA is at limit (1/1 active tasks), projectB is under limit (0/1 active tasks)
+    const admitted = nextQueueTaskForAgent({
+      candidates: [candidateA, candidateB],
+      liveClaims: [],
+      activeTasks: 0,
+      settings,
+      capacityPolicy: policy,
+      activeCounts: {
+        activeByProject: { projectA: 1, projectB: 0 },
+        activeByCaste: { eng: 1 },
+      },
+      now: NOW,
+    });
+    expect(admitted?.issueId).toBe(candidateB.issueId);
+
+    // when both projects are at limit, returns null
+    const noneAdmitted = nextQueueTaskForAgent({
+      candidates: [candidateA, candidateB],
+      liveClaims: [],
+      activeTasks: 0,
+      settings,
+      capacityPolicy: policy,
+      activeCounts: {
+        activeByProject: { projectA: 1, projectB: 1 },
+        activeByCaste: { eng: 1 },
+      },
+      now: NOW,
+    });
+    expect(noneAdmitted).toBeNull();
   });
 });

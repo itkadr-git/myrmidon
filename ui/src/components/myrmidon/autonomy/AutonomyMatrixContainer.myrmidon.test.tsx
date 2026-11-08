@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { AutonomyMatrixScreen } from "./AutonomyMatrixContainer";
-import type { AutonomySnapshot as AutonomyView } from "@paperclipai/shared";
+import type { AutonomySnapshot as AutonomyView } from "@myrmidon/shared";
 
 // Radix Select needs real pointer-event plumbing jsdom lacks; the plain-pass
 // mock keeps the trigger a real button and the options as content.
@@ -69,6 +69,10 @@ const VIEW: AutonomyView = {
       delete: "approval_required",
       pause_wake_agents: "approval_required",
       change_instructions: "forbidden",
+      knowledge_publish: "approval_required",
+      rule_approve: "forbidden",
+      skill_promote: "approval_required",
+      knowledge_external_publish: "forbidden",
       other: "approval_required",
     },
   },

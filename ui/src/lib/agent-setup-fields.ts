@@ -1,4 +1,4 @@
-import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@myrmidon/adapter-codex-local";
 import { codexReasoningEffortOptions } from "./codex-reasoning-effort";
 import { PROVIDER_ENV_KEYS } from "./provider-credential";
 
@@ -33,6 +33,7 @@ export function setupEfforts(adapter: string, model = ""): string[] {
         .map((option) => option.value)
         .filter(Boolean);
     case "pi_local":
+    case "omp_local":
       return ["off", "minimal", "low", "medium", "high", "xhigh"];
     case "grok_local":
       return ["low", "medium", "high"];

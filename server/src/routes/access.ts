@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   assets,
   agentApiKeys,
@@ -27,7 +27,9 @@ import {
   invites,
   joinRequests,
   principalPermissionGrants,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
+// myrmidon(B1c): product name in user-facing onboarding texts; see product.ts.
+import { PRODUCT_NAME } from "../myrmidon/product.js";
 import {
   acceptInviteSchema,
   createCliAuthChallengeSchema,
@@ -46,8 +48,8 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS,
   isUuidLike,
-} from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@myrmidon/shared";
 import {
   forbidden,
   conflict,
@@ -329,6 +331,19 @@ function isLoopbackHost(hostname: string): boolean {
     value === "0:0:0:0:0:0:0:1" ||
     value === "127.0.0.1" ||
     /^127(?:\.\d{1,3}){3}$/.test(value)
+  );
+}
+
+// myrmidon(H3), release 1.1.2: the fleet's fixed bot-container template names
+// containers `myrmidon-bot-<botKey>` (botKey: [a-z0-9-], see
+// server/src/myrmidon/bot-containers/template.ts), and the hermes_gateway
+// adapter trusts exactly those host names for plain http
+// (transport-security.ts isBotContainerHostname) because the traffic stays on
+// the board's own docker network. The access diagnostics follow the adapter:
+// such a base URL is not an unsafe remote and needs no escape hatch.
+function isBotContainerHost(hostname: string): boolean {
+  return /^myrmidon-bot-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+    hostname.trim().toLowerCase().replace(/^\[|\]$/g, ""),
   );
 }
 
@@ -676,7 +691,8 @@ export function assertLegacyAgentInviteAdapterType(
 ) {
   if (adapterType === "paperclip_runner") {
     throw badRequest(
-      "Paperclip Runner is not available through agent invite onboarding.",
+      // myrmidon(B1c): visible onboarding error names our product part.
+      `${PRODUCT_NAME} Runner is not available through agent invite onboarding.`,
       { code: "paperclip_runner_invite_onboarding_disabled" },
     );
   }
@@ -779,6 +795,7 @@ export function normalizeAgentDefaultsForJoin(input: {
         } else if (
           apiBaseUrl.protocol === "http:" &&
           !isLoopbackHost(apiBaseUrl.hostname) &&
+          !isBotContainerHost(apiBaseUrl.hostname) &&
           parseBooleanLike(defaults.dangerouslyAllowInsecureRemoteHttp) !== true
         ) {
           diagnostics.push({
@@ -797,14 +814,29 @@ export function normalizeAgentDefaultsForJoin(input: {
               code: "hermes_gateway_dashboard_root_mapped",
               level: "info",
               message: `Default Hermes dashboard root mapped to API base ${apiBaseUrl.toString()}`,
-              hint: "Hermes dashboard and /chat routes are browser UI routes. Paperclip gateway calls use /api/health and /api/v1/runs.",
+              hint: "Hermes dashboard and /chat routes are browser UI routes. Myrmidon gateway calls use /api/health and /api/v1/runs.",
             });
           }
-          if (apiBaseUrl.protocol === "http:" && !isLoopbackHost(apiBaseUrl.hostname)) {
+          if (
+            apiBaseUrl.protocol === "http:" &&
+            !isLoopbackHost(apiBaseUrl.hostname) &&
+            !isBotContainerHost(apiBaseUrl.hostname)
+          ) {
             diagnostics.push({
               code: "hermes_gateway_plain_http_remote_unsafe_allowed",
               level: "warn",
               message: "Unsafe dev escape hatch enabled for non-loopback HTTP Hermes traffic.",
+            });
+          } else if (
+            apiBaseUrl.protocol === "http:" &&
+            isBotContainerHost(apiBaseUrl.hostname)
+          ) {
+            // myrmidon(H3): the fleet's own container name — trusted transport,
+            // not an unsafe escape; report it as configured, without the warning.
+            diagnostics.push({
+              code: "hermes_gateway_api_base_url_configured",
+              level: "info",
+              message: `Hermes gateway endpoint set to ${apiBaseUrl.toString()}`,
             });
           } else {
             diagnostics.push({
@@ -1057,21 +1089,21 @@ export function normalizeAgentDefaultsForJoin(input: {
         diagnostics.push({
           code: "openclaw_gateway_paperclip_api_url_protocol",
           level: "warn",
-          message: `paperclipApiUrl must use http:// or https:// (got ${parsedPaperclipApiUrl.protocol}).`
+          message: `${PRODUCT_NAME} API URL must use http:// or https:// (got ${parsedPaperclipApiUrl.protocol}).`
         });
       } else {
         normalized.paperclipApiUrl = parsedPaperclipApiUrl.toString();
         diagnostics.push({
           code: "openclaw_gateway_paperclip_api_url_configured",
           level: "info",
-          message: `paperclipApiUrl set to ${parsedPaperclipApiUrl.toString()}`
+          message: `${PRODUCT_NAME} API URL set to ${parsedPaperclipApiUrl.toString()}`
         });
       }
     } catch {
       diagnostics.push({
         code: "openclaw_gateway_paperclip_api_url_invalid",
         level: "warn",
-        message: `Invalid paperclipApiUrl: ${rawPaperclipApiUrl}`
+        message: `Invalid ${PRODUCT_NAME} API URL: ${rawPaperclipApiUrl}`
       });
     }
   }
@@ -1635,7 +1667,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_api_loopback",
       level: "warn",
       message:
-        "Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your Paperclip host.",
+        `Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your ${PRODUCT_NAME} host.`,
       hint: "Use a reachable hostname/IP (for example Tailscale hostname, Docker host alias, or public domain)."
     });
   }
@@ -1648,7 +1680,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
     diagnostics.push({
       code: "openclaw_onboarding_private_loopback_bind",
       level: "warn",
-      message: "Paperclip is bound to loopback in authenticated/private mode.",
+      message: `${PRODUCT_NAME} is bound to loopback in authenticated/private mode.`,
       hint: "Use a reachable private bind mode such as `pnpm dev --bind lan` or `pnpm dev --bind tailnet` for private-network onboarding."
     });
   }
@@ -1671,7 +1703,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       // metacharacter span in the host before any CLI receives argv. A
       // direct-exec form such as `npx` does not stop the outer shell. Emit
       // a static `<host>` placeholder and keep the raw host in the message only.
-      hint: `Run npx paperclipai allowed-hostname <host>`
+      hint: `Run npx myrmidon allowed-hostname <host>`
     });
   }
 
@@ -1770,7 +1802,7 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your Paperclip API key through the standard claim endpoint. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. Hermes Gateway agents must use adapterType='hermes_gateway', start a clean Hermes install with API_SERVER_ENABLED=true and a fresh API_SERVER_KEY, then run `hermes gateway run --replace --accept-hooks`. Put the Hermes gateway URL in agentDefaultsPayload.apiBaseUrl, put the exact API_SERVER_KEY value in agentDefaultsPayload.apiKey, and put the reachable Paperclip base URL in agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root or /chat URL on port 9119, Paperclip maps it to /api automatically. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
+        `Join as an external ${PRODUCT_NAME} agent, save your one-time claim secret, wait for board approval, then claim your ${PRODUCT_NAME} API key through the standard claim endpoint. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. Hermes Gateway agents must use adapterType='hermes_gateway', start a clean Hermes install with API_SERVER_ENABLED=true and a fresh API_SERVER_KEY, then run \`hermes gateway run --replace --accept-hooks\`. Put the Hermes gateway URL in agentDefaultsPayload.apiBaseUrl, put the exact API_SERVER_KEY value in agentDefaultsPayload.apiKey, and put the reachable ${PRODUCT_NAME} base URL in agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root or /chat URL on port 9119, ${PRODUCT_NAME} maps it to /api automatically. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.`,
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: null,
       requiredFields: {
@@ -1805,8 +1837,8 @@ function buildInviteOnboardingManifest(
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
-            ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `npx paperclipai allowed-hostname <host>`."
-            : "Ensure OpenClaw can reach this Paperclip API base URL for invite, claim, and skill bootstrap calls."
+            ? `If OpenClaw runs on another machine, ensure the ${PRODUCT_NAME} hostname is reachable and allowed via \`npx myrmidon allowed-hostname <host>\`.`
+            : `Ensure OpenClaw can reach this ${PRODUCT_NAME} API base URL for invite, claim, and skill bootstrap calls.`
       },
       textInstructions: {
         path: onboardingTextPath,
@@ -1817,7 +1849,7 @@ function buildInviteOnboardingManifest(
         name: "paperclip",
         path: skillPath,
         url: skillUrl,
-        installPath: "runtime-specific Paperclip skill location"
+        installPath: `runtime-specific ${PRODUCT_NAME} skill location`
       }
     }
   };
@@ -1869,7 +1901,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip Agent Onboarding
+    # ${PRODUCT_NAME} Agent Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1893,9 +1925,9 @@ export function buildInviteOnboardingTextDocument(
   appendBlock(`
     ## Step 0
 
-    Decide which Paperclip adapter type matches your runtime.
+    Decide which ${PRODUCT_NAME} adapter type matches your runtime.
 
-    Use adapterType only when there is a matching Paperclip adapter. Put runtime-specific settings in agentDefaultsPayload.
+    Use adapterType only when there is a matching ${PRODUCT_NAME} adapter. Put runtime-specific settings in agentDefaultsPayload.
 
     ## Step 1: Submit agent join request
     ${onboarding.registrationEndpoint.method} ${
@@ -1935,15 +1967,15 @@ export function buildInviteOnboardingTextDocument(
     - For a clean Hermes install, generate a fresh random gateway key and start Hermes with API_SERVER_ENABLED=true and API_SERVER_KEY=<random-gateway-key>.
     - Run: hermes gateway run --replace --accept-hooks
     - Default Hermes API server port: 8642.
-    - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL Paperclip can reach.
-    - Set agentDefaultsPayload.apiKey to the exact same value as API_SERVER_KEY. This is the Hermes gateway key, not the Paperclip key.
+    - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL ${PRODUCT_NAME} can reach.
+    - Set agentDefaultsPayload.apiKey to the exact same value as API_SERVER_KEY. This is the Hermes gateway key, not the ${PRODUCT_NAME} key.
     - If you only have the default Hermes dashboard or chat URL, http://127.0.0.1:9119 and http://127.0.0.1:9119/chat are accepted and map to /api automatically.
-    - Watch out: /chat and the dashboard root are browser UI routes. Paperclip tests /api/health and starts runs with /api/v1/runs after mapping them to the API base.
-    - Set agentDefaultsPayload.paperclipApiUrl to the Paperclip base URL Hermes can reach.
-    - Use hermes_local when Paperclip should start Hermes on the Paperclip host.
-    - Use hermes_gateway when Paperclip should call an already-running Hermes API server.
-    - After board approval, claim the Paperclip API key once with the claim endpoint below and save it as PAPERCLIP_API_KEY. Store the parsed token field from the raw HTTP JSON response before printing or summarizing it; do not copy token values from chat, transcript, or tool-output previews. A token value containing literal ... or [redacted] is a masked display preview, not a valid key. Do not rotate or invent a Paperclip key manually.
-    - Hermes-originated Paperclip API usage means Hermes calls Paperclip with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after approval/key claim. Do not confuse that with agentDefaultsPayload.apiBaseUrl, which points Paperclip to Hermes.
+    - Watch out: /chat and the dashboard root are browser UI routes. Myrmidon tests /api/health and starts runs with /api/v1/runs after mapping them to the API base.
+    - Set agentDefaultsPayload.paperclipApiUrl to the Myrmidon base URL Hermes can reach.
+    - Use hermes_local when Myrmidon should start Hermes on the Myrmidon host.
+    - Use hermes_gateway when Myrmidon should call an already-running Hermes API server.
+    - After board approval, claim the Myrmidon API key once with the claim endpoint below and save it as PAPERCLIP_API_KEY. Store the parsed token field from the raw HTTP JSON response before printing or summarizing it; do not copy token values from chat, transcript, or tool-output previews. A token value containing literal ... or [redacted] is a masked display preview, not a valid key. Do not rotate or invent a Myrmidon key manually.
+    - Hermes-originated Myrmidon API usage means Hermes calls Myrmidon with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after approval/key claim. Do not confuse that with agentDefaultsPayload.apiBaseUrl, which points Myrmidon to Hermes.
 
     Hermes Gateway payload example:
     {
@@ -1960,10 +1992,10 @@ export function buildInviteOnboardingTextDocument(
 
     Hermes Gateway network examples:
     - Local loopback API server: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:8642" and agentDefaultsPayload.paperclipApiUrl = "http://127.0.0.1:3100".
-    - Local loopback dashboard root or chat URL: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:9119" or "http://127.0.0.1:9119/chat"; Paperclip maps either one to "http://127.0.0.1:9119/api".
+    - Local loopback dashboard root or chat URL: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:9119" or "http://127.0.0.1:9119/chat"; ${PRODUCT_NAME} maps either one to "http://127.0.0.1:9119/api".
     - LAN/private network: use reachable private addresses, for example agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642" and agentDefaultsPayload.paperclipApiUrl = "http://192.168.1.10:3100".
     - Private overlay: use overlay DNS names, for example agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642" and agentDefaultsPayload.paperclipApiUrl = "http://paperclip-host.tailnet-name.ts.net:3100".
-    - Docker: if Paperclip runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
+    - Docker: if Myrmidon runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
     - Reverse proxy/TLS: use HTTPS origins, for example agentDefaultsPayload.apiBaseUrl = "https://hermes-gateway.example" and agentDefaultsPayload.paperclipApiUrl = "https://paperclip.example".
 
     Expected response includes:
@@ -1972,7 +2004,7 @@ export function buildInviteOnboardingTextDocument(
     - claimApiKeyPath
 
     ## Step 2: Wait for board approval
-    The board approves the join request in Paperclip before key claim is allowed.
+    The board approves the join request in Myrmidon before key claim is allowed.
 
     ## Step 3: Claim API key (one-time)
     ${
@@ -1984,14 +2016,14 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response somewhere private for your runtime and set PAPERCLIP_API_KEY and PAPERCLIP_API_URL for future Paperclip API calls. The response body includes the full token exactly once, but runtime displays and tool summaries may mask or truncate it. Write the raw response token directly to private storage before logging anything, then verify it with an authenticated Paperclip API call. Do not persist displayed previews containing literal ... or [redacted].
+    On successful claim, save the full JSON response somewhere private for your runtime and set PAPERCLIP_API_KEY and PAPERCLIP_API_URL for future Myrmidon API calls. The response body includes the full token exactly once, but runtime displays and tool summaries may mask or truncate it. Write the raw response token directly to private storage before logging anything, then verify it with an authenticated Myrmidon API call. Do not persist displayed previews containing literal ... or [redacted].
 
     Important:
     - claim secrets expire
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install Paperclip skill
+    ## Step 4: Install Myrmidon skill
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 
@@ -2003,7 +2035,7 @@ export function buildInviteOnboardingTextDocument(
     ## Connectivity guidance
     ${
       onboarding.connectivity?.guidance ??
-      "Ensure Paperclip is reachable from your OpenClaw runtime."
+      `Ensure ${PRODUCT_NAME} is reachable from your OpenClaw runtime.`
     }
   `);
 
@@ -2016,7 +2048,7 @@ export function buildInviteOnboardingTextDocument(
     : [];
 
   if (connectionCandidates.length > 0) {
-    lines.push("## Suggested Paperclip base URLs to try");
+    lines.push(`## Suggested ${PRODUCT_NAME} base URLs to try`);
     for (const candidate of connectionCandidates) {
       lines.push(`- ${candidate}`);
     }
@@ -2028,8 +2060,8 @@ export function buildInviteOnboardingTextDocument(
 
       If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
       For authenticated/private mode, they may need:
-      - npx paperclipai allowed-hostname <host>
-      - then restart Paperclip and retry onboarding.
+      - npx myrmidon allowed-hostname <host>
+      - then restart Myrmidon and retry onboarding.
     `);
   }
 
@@ -4694,33 +4726,47 @@ export function accessRoutes(
       ? await db
           .select({
             principalId: companyMemberships.principalId,
+            status: companyMemberships.status,
+            membershipRole: companyMemberships.membershipRole,
           })
           .from(companyMemberships)
           .where(
             and(
               eq(companyMemberships.principalType, "user"),
-              eq(companyMemberships.status, "active"),
               inArray(companyMemberships.principalId, userIds),
             ),
           )
       : [];
+    const matchingUserIds = new Set(
+      memberships
+        .filter((membership) =>
+          (query.role === undefined || membership.membershipRole === query.role) &&
+          (query.status === undefined || membership.status === query.status),
+        )
+        .map((membership) => membership.principalId),
+    );
+    const usersByMembership = query.role !== undefined || query.status !== undefined
+      ? filteredUsers.slice(0, 50).filter((user) => matchingUserIds.has(user.id))
+      : filteredUsers.slice(0, 50);
     const membershipCountByUserId = new Map<string, number>();
     for (const membership of memberships) {
+      if (membership.status !== "active") continue;
       membershipCountByUserId.set(
         membership.principalId,
         (membershipCountByUserId.get(membership.principalId) ?? 0) + 1,
       );
     }
+    const resultUserIds = usersByMembership.slice(0, 50).map((user) => user.id);
     const adminIds = new Set(
       await Promise.all(
-        userIds.map(async (userId) =>
+        resultUserIds.map(async (userId) =>
           (await access.isInstanceAdmin(userId)) ? userId : null,
         ),
       ).then((values) => values.filter((value): value is string => Boolean(value))),
     );
 
     res.json(
-      filteredUsers.slice(0, 50).map((user) => ({
+      usersByMembership.slice(0, 50).map((user) => ({
         ...toUserProfile(user),
         isInstanceAdmin: adminIds.has(user.id),
         activeCompanyMembershipCount:

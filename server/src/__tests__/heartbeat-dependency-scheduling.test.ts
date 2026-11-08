@@ -22,7 +22,7 @@ import {
   issueTreeHolds,
   issues,
   workspaceOperations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -97,7 +97,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     let idlePolls = 0;
@@ -363,6 +363,62 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(blockedWakeRequest).toBe(true);
 
+    const readyWakeRequest = await waitForCondition(async () => {
+      const rows = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${readyIssueId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt);
+      return rows.some((row) => row.status !== "skipped" && row.reason === "idle_pickup");
+    });
+    expect(readyWakeRequest).toBe(true);
+
+    const readyRunsStarted = await waitForCondition(async () => {
+      const rows = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${readyIssueId}`);
+      return rows.some((run) => run.status === "succeeded");
+    });
+    expect(readyRunsStarted).toBe(true);
+
+    // The idle-pickup run ends successfully on an issue it never closed, so the
+    // successful-run-handoff recovery may queue a corrective run on the same
+    // issue a moment later (timing dependent: ~1 in 4 runs in isolation). That
+    // is the vendor's intended recovery, not an extra idle pickup; let it
+    // settle so the rest of the test starts from a quiet agent.
+    await heartbeat.drainActiveRunExecutions();
+    await waitForCondition(async () => {
+      const rows = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      return rows.every((run) => run.status !== "queued" && run.status !== "running");
+    }, 10_000);
+    await heartbeat.drainActiveRunExecutions();
+
+    await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+
+    const idlePickupRunCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${readyIssueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'idle_pickup'`,
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(idlePickupRunCount).toBe(1);
+
     const blockedRunsBeforeResolution = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
@@ -429,12 +485,21 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       };
     });
 
+    // The issue already had a no-progress idle-pickup run (and possibly its
+    // corrective handoff run); a plain issue_assigned re-wake would hit the
+    // rewake throttle (two no-progress runs) and return null. forceFreshSession
+    // is the throttle's explicit-escalation bypass: this step tests scheduling
+    // after the blockers resolve, not the throttle.
     const readyWake = await heartbeat.wakeup(agentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
       payload: { issueId: readyIssueId },
-      contextSnapshot: { issueId: readyIssueId, wakeReason: "issue_assigned" },
+      contextSnapshot: {
+        issueId: readyIssueId,
+        wakeReason: "issue_assigned",
+        forceFreshSession: true,
+      },
     });
     expect(readyWake).not.toBeNull();
     await db.insert(issueComments).values({

@@ -5,16 +5,12 @@
 // "Myrmidon" instead, and checks that the shipped page/manifest advertise the
 // new name and that no paperclip artwork (loading glyph, login-screen ASCII
 // sprites, export-README links to the vendor site) is rendered any more.
-// The allowlist is deliberately narrow: only the vendor's real external
-// products/services (Paperclip Cloud, Paperclip Labs, Paperclip EE /
-// Enterprise), wire-protocol identifiers (X-Paperclip-* headers, PAPERCLIP_*
-// env vars, @paperclipai/* packages, the lucide-react "Paperclip" attachment
-// icon), the MIT attribution line and the legacy "Paperclip ..." recovery-notice
-// sentences that old stored comments still carry (matchers and variants only).
-// Product parts we own and show to a human ("Myrmidon Runner", "Myrmidon
-// Computer", "Myrmidon-managed") are NOT exempt. See docs/myrmidon/CONVENTIONS.md #8/#9.
+// The allowlist covers only wire-protocol identifiers, MIT attribution and
+// legacy recovery-notice wording that old stored comments still carry.
 import { describe, expect, it } from "vitest";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { PRODUCT_NAME, PRODUCT_DESCRIPTION } from "@myrmidon/shared";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,11 +18,9 @@ const UI_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = path.resolve(UI_SRC, "..", "..");
 const APP_DEFINITIONS_DIR = path.join(REPO_ROOT, "packages", "shared", "src", "app-definitions");
 
-// Match-level exemptions: the vendor's real external products. Everything else
-// that reads "Paperclip" as a word in a user-visible string is a violation,
-// including "Paperclip Runner", "Paperclip Computer" and "Paperclip-managed" —
-// those name parts of our own product and read "Myrmidon ..." instead.
-const WORD_PATTERN = /\bPaperclip\b(?!\s+Cloud|-Cloud|\s+Labs|\s+EE\b|\s+Enterprise)/;
+// No vendor product phrase is exempt: Cloud/Labs/EE/Enterprise references in
+// first-party UI are user-visible branding regressions just like any other.
+const WORD_PATTERN = /\bPaperclip\b/;
 
 // Line-level exemptions are limited to text that cannot be renamed at all.
 const LINE_ALLOW_SUBSTR = [
@@ -134,6 +128,24 @@ function reportOrThrow(violations: Violation[]): void {
 }
 
 describe("myrmidon(B1a): no stray Paperclip branding in ui/src", () => {
+  it.each([
+    "Paperclip Cloud",
+    "Paperclip-Cloud",
+    "Paperclip Labs",
+    "Paperclip EE",
+    "Paperclip Enterprise",
+  ])("rejects first-party UI copy containing %s", (copy) => {
+    const fixtureDir = mkdtempSync(path.join(tmpdir(), "myrmidon-branding-"));
+    const file = path.join(fixtureDir, "fixture.ts");
+    writeFileSync(file, `export const label = ${JSON.stringify(copy)};`);
+    try {
+      // Exercise the same scanner used against real source files.
+      expect(findViolationsIn([file], fixtureDir)).toHaveLength(1);
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
   it("has no user-visible 'Paperclip' text outside the documented allowlist", () => {
     const files = walk(UI_SRC, /\.(ts|tsx)$/).filter((fp) => !path.basename(fp).includes(".test."));
     reportOrThrow(findViolationsIn(files, UI_SRC));
@@ -161,17 +173,41 @@ describe("myrmidon(B1a): no stray Paperclip branding in shared UI-facing message
 });
 
 describe("myrmidon(B1a): shipped page and manifest advertise Myrmidon", () => {
-  it("index.html title and app name say Myrmidon", () => {
+  it("index.html title and app name say the shared product name", () => {
     const html = readFileSync(path.join(REPO_ROOT, "ui", "index.html"), "utf-8");
-    expect(html).toMatch(/<title>Myrmidon<\/title>/);
-    expect(html).toMatch(/apple-mobile-web-app-title" content="Myrmidon"/);
+    expect(html).toContain(`<title>${PRODUCT_NAME}</title>`);
+    expect(html).toContain(`apple-mobile-web-app-title" content="${PRODUCT_NAME}"`);
     expect(html).not.toMatch(/<title>Paperclip<\/title>/);
   });
 
-  it("site.webmanifest name and short_name say Myrmidon", () => {
+  it("site.webmanifest name and short_name use the shared product name", () => {
     const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, "ui", "public", "site.webmanifest"), "utf-8"));
-    expect(manifest.name).toBe("Myrmidon");
-    expect(manifest.short_name).toBe("Myrmidon");
+    expect(manifest.name).toBe(PRODUCT_NAME);
+    expect(manifest.short_name).toBe(PRODUCT_NAME);
+  });
+
+  it("index.html defines Open Graph and Twitter card metadata for Myrmidon", () => {
+    const html = readFileSync(path.join(REPO_ROOT, "ui", "index.html"), "utf-8");
+    expect(html).toContain('<meta property="og:type" content="website" />');
+    expect(html).toContain(`<meta property="og:title" content="${PRODUCT_NAME}" />`);
+    expect(html).toContain(`<meta property="og:description" content="${PRODUCT_DESCRIPTION}" />`);
+    expect(html).toContain('<meta property="og:image" content="/android-chrome-512x512.png" />');
+    expect(html).toContain('<meta name="twitter:card" content="summary" />');
+    expect(html).toContain(`<meta name="twitter:title" content="${PRODUCT_NAME}" />`);
+    expect(html).toContain(`<meta name="twitter:description" content="${PRODUCT_DESCRIPTION}" />`);
+    expect(html).toContain('<meta name="twitter:image" content="/android-chrome-512x512.png" />');
+    expect(existsSync(path.join(REPO_ROOT, "ui", "public", "android-chrome-512x512.png"))).toBe(true);
+  });
+
+  it("preview html pages use Myrmidon in titles and avoid Paperclip", () => {
+    for (const previewFile of ["connect-flow-preview.html", "connect-model-preview.html"]) {
+      const html = readFileSync(path.join(REPO_ROOT, "ui", previewFile), "utf-8");
+      expect(html).toContain(PRODUCT_NAME);
+      expect(html).not.toMatch(/<title>.*Paperclip.*<\/title>/);
+      expect(html).toContain('<meta property="og:type" content="website" />');
+      expect(html).toContain(`<meta property="og:title" content="`);
+      expect(html).toContain('<link rel="icon" href="/favicon.ico"');
+    }
   });
 });
 
@@ -253,11 +289,40 @@ describe("myrmidon(B1a): no paperclip artwork is rendered", () => {
   });
 });
 
+describe("Myrmidon first-party UI destinations", () => {
+  it.each([
+    "components/SidebarAccountMenu.tsx",
+    "components/SidebarAccountMenu.production.tsx",
+    "pages/IssueDetail.tsx",
+    "pages/InstanceGeneralSettings.tsx",
+    "lib/myrmidon-links.ts",
+    "bootstrapSetup.ts",
+  ])("%s has no upstream product destinations or bootstrap command", (rel) => {
+    const source = readFileSync(path.join(UI_SRC, rel), "utf8");
+    expect(source).not.toMatch(/https?:\/\/(?:docs\.)?paperclip\.ing\b/i);
+    expect(source).not.toMatch(/npx\s+paperclipai\s+auth\s+bootstrap/i);
+    expect(source).not.toMatch(/npx\s+myrmidon\b/i);
+    if (rel.startsWith("components/") || rel.startsWith("pages/")) {
+      expect(source).toContain('from "@/lib/myrmidon-links"');
+    }
+  });
+});
+
 describe("myrmidon(B1a): company export README names Myrmidon, not the upstream site", () => {
   it("CompanyExport.tsx has no link to the upstream project site and signs as the exporting product", () => {
     const source = readFileSync(path.join(UI_SRC, "pages", "CompanyExport.tsx"), "utf-8");
     expect(source).not.toContain("paperclip.ing");
     expect(source).toContain("Exported from ${PRODUCT_NAME}");
     expect(source).toContain("UPSTREAM_ATTRIBUTION.text");
+    expect(source).toContain("npx myrmidon company import");
+    expect(source).not.toContain("npx paperclipai company import");
+  });
+});
+
+describe("myrmidon(B1a): announcement previews and smoke specs use Myrmidon branding", () => {
+  it("announcement-preview.ts links to Myrmidon docs, not upstream", () => {
+    const source = readFileSync(path.join(UI_SRC, "lib", "announcement-preview.ts"), "utf-8");
+    expect(source).not.toContain("paperclip.ing");
+    expect(source).toContain("DOCS_URL");
   });
 });

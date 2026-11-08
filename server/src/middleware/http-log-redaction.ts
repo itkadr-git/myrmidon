@@ -10,9 +10,34 @@ export const HTTP_LOG_REDACT_PATHS = [
   'req.headers["x-csrf-token"]',
   'req.headers["x-xsrf-token"]',
   'req.headers["x-api-key"]',
+  // Agent-key and tool-token headers the fleet clients send on every request.
+  // A live-container overlay redacted them once, but the overlay never reached
+  // the repository and the next image build dropped it, so raw agent API keys
+  // reached the board HTTP log. Keep the paths in the source allowlist so every
+  // build redacts them.
+  'req.headers["x-paperclip-api-key"]',
+  'req.headers["x-myrmidon-api-key"]',
+  'req.headers["x-agent-key"]',
+  'req.headers["x-paperclip-cloud-tenant-token"]',
+  'req.headers["x-myrmidon-cloud-tenant-token"]',
+  'req.headers["x-paperclip-signature"]',
+  'req.headers["x-myrmidon-signature"]',
+  'req.headers["x-hub-signature-256"]',
+  'req.headers["x-paperclip-tool-gateway-token"]',
+  'req.headers["x-myrmidon-tool-gateway-token"]',
+  'req.headers["x-openclaw-token"]',
+  'req.headers["x-openclaw-auth"]',
+  // The run-scoped GitHub broker capability (30-day lifetime) sent by the gh
+  // wrapper and the git credential helper on every credential request.
+  'req.headers["x-paperclip-github-capability"]',
+  'req.headers["x-myrmidon-github-capability"]',
   // Telegram's optional webhook verification header is a reusable bearer
   // secret sent on every provider callback.
   'req.headers["x-telegram-bot-api-secret-token"]',
+  // Invite tokens or invite headers
+  'req.headers["x-invite-token"]',
+  'req.headers["x-paperclip-invite-token"]',
+  'req.headers["x-myrmidon-invite-token"]',
   // The structured failure logger adds a sanitized request-body copy under
   // `reqBody`. Keep the standard connector credential envelope covered again
   // at the final serialization boundary in case a future custom serializer

@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -33,5 +34,61 @@ export const activityLog = pgTable(
     ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
+    // myrmidon(DB-CARE / 1.6.6 DEFECT): the feature health pass reads the
+    // newest activity row of one action per company
+    // (server/src/myrmidon/features/ports.ts, activity.latest: chat-holds'
+    // issue.execution_recovery_settled and swarm-claim's claimed lines), and
+    // no index carried "action" — on 1.15M rows every pass was a table-wide
+    // filter (rc.15: /api/health at 10-20 s, pg at 267% CPU). The composite
+    // resolves the (company, action) slice and walks created_at DESC, so
+    // max(created_at) reads one entry and stops; the details->>'continuation'
+    // residual only runs on that slice. See migration
+    // 0415_activity_log_company_action_created_idx.
+    companyActionCreatedIdx: index("activity_log_company_action_created_idx").on(
+      table.companyId,
+      table.action,
+      table.createdAt.desc(),
+    ),
+    // myrmidon(DB-CARE / 1.6.6 DEFECT): the chat-holds feature health leg
+    // also filters details->>'continuation' (ports.ts activity.latest), and
+    // the composite above still evaluated that residual per heap row — the
+    // rc.16 acceptance (25.10) measured 16k rows removed by filter, 36-52 ms
+    // warm, missing the <50 ms gate. This expression index carries the
+    // details key as an index column, so the leg reads the (company, action,
+    // continuation) slice directly with no heap residual. Not partial on the
+    // value: the production statement binds key and value as parameters, and
+    // a bound parameter never implies a partial-index predicate. See
+    // migration 0428_activity_log_company_action_continuation_idx.
+    companyActionContinuationIdx: index("activity_log_company_action_continuation_idx").on(
+      table.companyId,
+      table.action,
+      sql`((${table.details} ->> 'continuation'))`,
+      table.createdAt.desc(),
+    ),
+    // myrmidon(DB-CARE): the attention feed resolves the issues whose assignee
+    // left one agent by reading the audit rows' previous-assignee payload
+    // (server/src/services/attention.ts, details->'_previous'). Persisted from
+    // the production database, see migration 0307_db_care_issue_prev_assignee_index.
+    issuePrevAssigneeIdx: index("activity_log_issue_prev_assignee_idx")
+      .on(
+        table.companyId,
+        sql`((${table.details} -> '_previous' ->> 'assigneeAgentId'))`,
+        table.createdAt,
+      )
+      .where(sql`${table.entityType} = 'issue' and ${table.action} = 'issue.updated'`),
+    // myrmidon(DB-CARE): the issue activity view reads the audit rows of one
+    // issue (company + entity_id) newest-first and skips the read/inbox marker
+    // actions, so the index is partial on "not a marker". Persisted from the
+    // production database, see migration 0308_db_care_audit_indexes.
+    issueLastActivityIdx: index("activity_log_issue_last_activity_idx")
+      .on(table.companyId, table.entityId, table.createdAt.desc())
+      .where(
+        sql`${table.entityType} = 'issue' and ${table.action} <> ALL (ARRAY['issue.read_marked', 'issue.read_unmarked', 'issue.inbox_archived', 'issue.inbox_unarchived'])`,
+      ),
+    // myrmidon(1.6.6 OPE-10438): the activity anti-join previously had to scan
+    // rows because existing indexes began with unrelated company columns.
+    issueCreatedAtIdx: index("activity_log_issue_created_at_idx")
+      .on(table.companyId, table.entityType, table.entityId, table.createdAt)
+      .where(sql`${table.entityType} = 'issue' and ${table.actorType} <> 'system'`),
   }),
 );

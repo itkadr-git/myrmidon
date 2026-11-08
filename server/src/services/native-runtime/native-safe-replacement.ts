@@ -12,7 +12,8 @@ import {
   nativeRunFinalizations,
   toolInvocations,
   type Db,
-} from "@paperclipai/db";
+  runContextPersistenceFields,
+} from "@myrmidon/db";
 import { decideNativeReplacement } from "./native-replacement-evidence.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -410,7 +411,7 @@ export async function reconcileSafeNativeReplacements(
           executionStatusDeliveryId: randomUUID(),
           wakeupRequestId: wake!.id,
           responsibleUserId: run.responsibleUserId,
-          contextSnapshot: context,
+          ...runContextPersistenceFields(context),
           retryOfRunId: run.id,
           scheduledRetryAt: dueAt,
           scheduledRetryAttempt: current.attempt,

@@ -8,13 +8,13 @@
 // marks the entry until the API appears.
 import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "@/api/client";
-import { accessHubApi, accessHubQueryKeys } from "./accessHubApi";
+import { AccessHubDisabledError, accessHubApi, accessHubQueryKeys } from "./accessHubApi";
 
 export type AccessHubAvailability = "unknown" | "available" | "unavailable";
 
 /** 404 (no route) and 501 (route without a handler) both mean "no API here yet". */
 export function accessHubUnavailable(error: unknown): boolean {
-  return error instanceof ApiError && (error.status === 404 || error.status === 501);
+  return error instanceof AccessHubDisabledError || (error instanceof ApiError && (error.status === 404 || error.status === 501));
 }
 
 /**

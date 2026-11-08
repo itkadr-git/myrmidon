@@ -396,6 +396,17 @@ export interface SecretProposalView {
   proposedDescription: string | null;
   valueFingerprintSha256: string | null;
   valueLength: number | null;
+  /**
+   * Set on a secret-kind proposal that targets an existing active company
+   * secret for rotation. Approving it writes the proposed value as the next
+   * version of that secret instead of creating a new row, so `@latest`
+   * bindings pick the new value up on their own (OPE-2998).
+   */
+  rotationTargetSecretId: string | null;
+  /** Resolved name of the rotation target, for display. */
+  rotationTargetName: string | null;
+  /** Current status of the rotation target; approval requires `active`. */
+  rotationTargetStatus: string | null;
 
   // --- binding-kind ---
   /** Set when the binding references an existing live secret. */

@@ -17,7 +17,7 @@
 // built or tested.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/secrets.js";
 import { assertCompanyAccess } from "../../routes/authz.js";

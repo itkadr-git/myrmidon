@@ -29,15 +29,33 @@
 //    their sums matching is the acceptance criterion.
 //  - Prices come from /v1/model/info into litellm_models (insert-per-refresh,
 //    so price history survives; the latest row per model is what reads show).
+//  - myrmidon(HERMES-USAGE-COST): after every sweep, the reconcile pass moves
+//    the gateway's prices INTO the vendor ledger's unpriced hermes_gateway
+//    rows: cost_events with cost_status='unpriced' whose heartbeat_run has
+//    matching litellm_cost_events rows get costCents filled and
+//    cost_status='reported'. Without this, every hermes_gateway run shows
+//    $0 on the dashboard/Costs screens even though the gateway billed it.
+//    The sweep is also the backfill: MYRMIDON_LITELLM_FIRST_LOOKBACK_DAYS
+//    widens the first sweep's window, and POST …/litellm/sweep accepts a
+//    { from } body to re-run from an explicit date (October backfill).
 
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
-import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@paperclipai/db";
+import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
+// myrmidon(HERMES-USAGE-COST): the post-sweep pass that fills the vendor ledger.
+import { reconcileUnpricedCostEvents } from "./reconcile.js";
+// myrmidon(1.6.5-F-18): the empty-catalog attention signal the sweep records
+// after every model refresh; the attention feed turns the registry into a card.
+import { recordEmptyCatalogSweep } from "./attention.js";
+
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 
 export const LITELLM_BASE_URL_ENV = "MYRMIDON_LITELLM_BASE_URL";
 export const LITELLM_KEY_SECRET_ENV = "MYRMIDON_LITELLM_KEY_SECRET";
 export const LITELLM_SWEEP_INTERVAL_ENV = "MYRMIDON_LITELLM_COST_INTERVAL_SEC";
+/** myrmidon(HERMES-USAGE-COST): first-sweep lookback, in days. */
+export const LITELLM_FIRST_LOOKBACK_DAYS_ENV = "MYRMIDON_LITELLM_FIRST_LOOKBACK_DAYS";
 export const LITELLM_BILLER = "litellm";
 
 const DEFAULT_SWEEP_INTERVAL_SEC = 300;
@@ -45,10 +63,16 @@ const MIN_SWEEP_INTERVAL_SEC = 30;
 const MAX_SWEEP_INTERVAL_SEC = 86400;
 /** First-sweep lookback when no collected row exists yet. */
 const FIRST_SWEEP_LOOKBACK_MS = 24 * 3_600_000;
+/** myrmidon(HERMES-USAGE-COST): bounds for the first-sweep lookback setting, days. */
+const FIRST_LOOKBACK_DAYS_MIN = 1;
+const FIRST_LOOKBACK_DAYS_MAX = 90;
 /** /spend/logs page size. */
 const SPEND_LOGS_PAGE_SIZE = 1000;
 /** Page cap; a window larger than this fails the sweep rather than truncating. */
 const SPEND_LOGS_MAX_PAGES = 50;
+/** myrmidon(OPE-11776): /key/list page size (the gateway caps it at 100) and the page cap. */
+const KEY_LIST_PAGE_SIZE = 100;
+const KEY_LIST_MAX_PAGES = 20;
 /** Runs are matched with a start before the window; give the match slack. */
 const RUN_MATCH_LOOKBACK_MS = 6 * 3_600_000;
 
@@ -63,21 +87,38 @@ export interface LitellmCostSettings {
   baseUrl: string | null;
   keySecret: string | null;
   intervalMs: number;
+  /** myrmidon(HERMES-USAGE-COST): first-sweep lookback in days (1..90). */
+  firstLookbackDays: number;
 }
 
 export function readLitellmCostSettings(env: NodeJS.ProcessEnv = process.env): LitellmCostSettings {
   const baseUrl = env[LITELLM_BASE_URL_ENV]?.trim() || null;
   const keySecret = env[LITELLM_KEY_SECRET_ENV]?.trim() || null;
   const enabled = Boolean(baseUrl && keySecret);
+  // myrmidon(HERMES-USAGE-COST): how far back a first sweep (no collected
+  // rows yet) reads. Out-of-range or non-integer values fall back to 1 day.
+  let firstLookbackDays = 1;
+  const rawDays = env[LITELLM_FIRST_LOOKBACK_DAYS_ENV]?.trim();
+  if (rawDays) {
+    const value = Number(rawDays);
+    if (
+      Number.isInteger(value) &&
+      value >= FIRST_LOOKBACK_DAYS_MIN &&
+      value <= FIRST_LOOKBACK_DAYS_MAX
+    ) {
+      firstLookbackDays = value;
+    }
+  }
   let intervalSec = DEFAULT_SWEEP_INTERVAL_SEC;
-  const raw = env[LITELLM_SWEEP_INTERVAL_ENV]?.trim();
-  if (raw) {
+  const configuredInterval = env[LITELLM_SWEEP_INTERVAL_ENV] ?? liveBehaviorSetting<number | null>("litellmCostIntervalSec");
+  const raw = configuredInterval == null ? undefined : String(configuredInterval);
+  if (raw?.trim()) {
     const value = Number(raw);
     if (Number.isInteger(value) && value >= MIN_SWEEP_INTERVAL_SEC && value <= MAX_SWEEP_INTERVAL_SEC) {
       intervalSec = value;
     }
   }
-  return { enabled, baseUrl, keySecret, intervalMs: intervalSec * 1000 };
+  return { enabled, baseUrl, keySecret, intervalMs: intervalSec * 1000, firstLookbackDays };
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +134,9 @@ export interface SpendLogEntry {
   startTime: string;
   model: string;
   provider: string | null;
+  /** LiteLLM's final request result; failed rows can have zero spend. */
+  status?: string | null;
+  attemptedFallbacks?: number;
 }
 
 export interface GatewayModelRow {
@@ -101,11 +145,90 @@ export interface GatewayModelRow {
   maxInputTokens: number | null;
   maxOutputTokens: number | null;
   rates: Record<string, number | null>;
+  /**
+   * myrmidon(F06-D): the gateway's own declaration of what the model does
+   * (`model_info.mode`: `chat`, `embedding`, `ocr`, `image_generation`, ...).
+   * `/model` lists chat models by this declaration, not by guessing from the id.
+   */
+  mode?: string | null;
+}
+
+/**
+ * myrmidon(OPE-11776): one gateway key's cap and spend as `/key/list` reports
+ * them. `tokenHash` is the key's sha256 (the gateway's hash_token) — the same
+ * hash the spend ledger stores in `api_key` — so a bot's key value is matched
+ * here without the gateway ever being asked about a raw key.
+ */
+export interface GatewayKeyBudgetRow {
+  tokenHash: string;
+  /** `max_budget` in USD; null when the key has no cap. */
+  maxBudgetUsd: number | null;
+  /** `spend` in USD, accumulated since the key's last budget reset. */
+  spendUsd: number | null;
 }
 
 export interface LitellmGatewayClient {
   listSpendLogs(window: { from: Date; to: Date }): Promise<SpendLogEntry[]>;
   listModels(): Promise<GatewayModelRow[]>;
+  /**
+   * myrmidon(OPE-11776): the cap and spend of every key of the gateway, read
+   * with the accounting (admin) key — one request per 100 keys, never one per
+   * key. Optional so a client that cannot list keys stays a valid client.
+   */
+  listKeyBudgets?(): Promise<GatewayKeyBudgetRow[]>;
+  /**
+   * myrmidon(F06-A): the model ids `/v1/models` answers — the OpenAI-shaped
+   * list, unlike the richer `/v1/model/info` read above. Called with an agent's
+   * own gateway key it is that key's allowlist (the models this agent may run);
+   * called with the instance key it is the whole catalog. The Telegram
+   * bridge's `/model` uses it to list what a gateway agent can choose.
+   */
+  listAvailableModels(): Promise<string[]>;
+}
+
+/**
+ * myrmidon(OPE-11776): one `/key/list?return_full_object=true` page —
+ * `{ keys: [{ token, max_budget, spend, ... }], total_pages }`. Returns null
+ * for any other shape, so a wrong endpoint surfaces as an error and never as
+ * "no keys"; entries without a hash are skipped. Only the hash, the cap and the
+ * spend are read: nothing else of a key object leaves this function.
+ */
+export function parseKeyListPage(payload: unknown): { rows: GatewayKeyBudgetRow[]; totalPages: number } | null {
+  const body = asRecord(payload);
+  if (!body || !Array.isArray(body.keys)) return null;
+  const rows: GatewayKeyBudgetRow[] = [];
+  for (const item of body.keys) {
+    const key = asRecord(item);
+    const tokenHash = key && typeof key.token === "string" ? key.token.trim() : "";
+    if (!key || !tokenHash) continue;
+    const cap = asNullableNumber(key.max_budget);
+    const spend = asNullableNumber(key.spend);
+    rows.push({
+      tokenHash,
+      maxBudgetUsd: cap != null && cap > 0 ? cap : null,
+      spendUsd: spend != null && spend >= 0 ? spend : null,
+    });
+  }
+  const pages = asNullableNumber(body.total_pages);
+  return { rows, totalPages: pages != null && pages >= 1 ? Math.floor(pages) : 1 };
+}
+
+/**
+ * myrmidon(F06-A): the `/v1/models` payload — `{ data: [{ id, ... }] }`.
+ * Returns null for any other shape, so a wrong endpoint surfaces as an error
+ * and never as "no models"; entries without a usable id are skipped and the
+ * order the gateway returned is kept.
+ */
+export function parseOpenAiModelList(payload: unknown): string[] | null {
+  const body = asRecord(payload);
+  if (!body || !Array.isArray(body.data)) return null;
+  const models: string[] = [];
+  for (const item of body.data) {
+    const row = asRecord(item);
+    const id = row && typeof row.id === "string" ? row.id.trim() : "";
+    if (id) models.push(id);
+  }
+  return models;
 }
 
 /** The gateway's v2 date parameters are UTC "YYYY-MM-DD HH:MM:SS". */
@@ -134,6 +257,7 @@ export function parseSpendLogsV2Page(
     if (!startTime) continue;
     const when = new Date(startTime);
     if (Number.isNaN(when.getTime()) || when < window.from || when >= window.to) continue;
+    const metadata = asRecord(row.metadata);
     entries.push({
       requestId: typeof row.request_id === "string" && row.request_id ? row.request_id : null,
       apiKey: typeof row.api_key === "string" && row.api_key.trim() ? row.api_key.trim() : null,
@@ -143,6 +267,8 @@ export function parseSpendLogsV2Page(
       startTime,
       model: typeof row.model === "string" ? row.model : "unknown",
       provider: typeof row.custom_llm_provider === "string" ? row.custom_llm_provider : null,
+      status: typeof row.status === "string" ? row.status : null,
+      attemptedFallbacks: typeof metadata?.attempted_fallbacks === "number" ? metadata.attempted_fallbacks : undefined,
     });
   }
   return { entries, totalPages };
@@ -186,6 +312,26 @@ export function createLitellmGatewayClient(baseUrl: string, keyValue: string): L
       return entries;
     },
 
+    async listKeyBudgets() {
+      const rows: GatewayKeyBudgetRow[] = [];
+      let totalPages = 1;
+      for (let page = 1; page <= totalPages; page += 1) {
+        const payload = await getJson<unknown>(
+          `/key/list?return_full_object=true&size=${KEY_LIST_PAGE_SIZE}&page=${page}`,
+        );
+        const parsed = parseKeyListPage(payload);
+        if (!parsed) throw new Error("LLM gateway /key/list answered in an unexpected shape");
+        rows.push(...parsed.rows);
+        totalPages = parsed.totalPages;
+        if (totalPages > KEY_LIST_MAX_PAGES) {
+          throw new Error(
+            `LLM gateway key list is too large (${totalPages} pages of ${KEY_LIST_PAGE_SIZE}; cap ${KEY_LIST_MAX_PAGES})`,
+          );
+        }
+      }
+      return rows;
+    },
+
     async listModels() {
       const payload = await getJson<{ data?: Array<Record<string, unknown>> }>("/v1/model/info");
       const rows: GatewayModelRow[] = [];
@@ -199,9 +345,23 @@ export function createLitellmGatewayClient(baseUrl: string, keyValue: string): L
           maxInputTokens: asNullableNumber(info?.max_input_tokens),
           maxOutputTokens: asNullableNumber(info?.max_tokens),
           rates: readRates(info),
+          mode: typeof info?.mode === "string" && info.mode.trim() ? info.mode.trim().toLowerCase() : null,
         });
       }
       return rows;
+    },
+
+    /**
+     * myrmidon(F06-A): `/v1/models` is the cheap per-key read — what a chat
+     * command may ask the gateway for one agent, where `/v1/model/info` above
+     * is the cost sweep's richer (admin-key) one. Kept separate on purpose:
+     * the sweep's shape may grow, this one stays the OpenAI contract.
+     */
+    async listAvailableModels() {
+      const payload = await getJson<unknown>("/v1/models");
+      const models = parseOpenAiModelList(payload);
+      if (!models) throw new Error("LLM gateway /v1/models answered in an unexpected shape");
+      return models;
     },
   };
 }
@@ -352,27 +512,49 @@ export interface SweepResult {
   written: number;
   skippedUnattributed: number;
   modelsRefreshed: number | null;
+  /** myrmidon(HERMES-USAGE-COST): unpriced vendor cost_events filled by the reconcile pass. */
+  reconciledCostEvents: number;
   window: { from: Date; to: Date };
+  /** myrmidon(FEATURES): the pass collected nothing because the gateway key secret is missing. */
+  keyMissing?: boolean;
 }
 
-/** One sweep for one company; see the module comment for the design. */
+/**
+ * One sweep for one company; see the module comment for the design.
+ * myrmidon(HERMES-USAGE-COST): `opts.from` pins the window start (the October
+ * backfill); without it the window starts at the last collected row, or the
+ * configured first-sweep lookback when nothing is collected yet. Either way
+ * the sweep ends by reconciling the vendor cost ledger (see reconcile module).
+ */
 export async function sweepLitellmCosts(
   deps: LitellmCostsDeps,
   companyId: string,
   settings: LitellmCostSettings,
+  opts: { from?: Date } = {},
 ): Promise<SweepResult> {
   if (!settings.enabled || !settings.baseUrl || !settings.keySecret) {
     throw new Error("litellm cost collection is not configured");
   }
   const log = deps.log ?? logger;
   const to = deps.now();
-  const from = await readCollectedSince(deps.db, companyId, to);
+  const from =
+    opts.from instanceof Date && !Number.isNaN(opts.from.getTime()) && opts.from < to
+      ? opts.from
+      : await readCollectedSince(deps.db, companyId, to, settings);
   const window = { from, to };
 
   const keyValue = await deps.readGatewayKey(companyId, settings.keySecret);
   if (!keyValue) {
     log.warn({ companyId }, "litellm cost sweep skipped: gateway key secret not found");
-    return { collected: 0, written: 0, skippedUnattributed: 0, modelsRefreshed: null, window };
+    return {
+      collected: 0,
+      written: 0,
+      skippedUnattributed: 0,
+      modelsRefreshed: null,
+      reconciledCostEvents: 0,
+      window,
+      keyMissing: true,
+    };
   }
 
   const entries = await deps.client(settings.baseUrl, keyValue).listSpendLogs(window);
@@ -389,17 +571,38 @@ export async function sweepLitellmCosts(
   } catch (err) {
     log.warn({ err }, "litellm cost sweep: model catalog refresh failed");
   }
+  // myrmidon(1.6.5-F-18): a successful refresh with 0 models means the
+  // accounting key is misconfigured (restricted model list) — record the
+  // operator signal; a failed read (null) proves nothing and changes nothing.
+  recordEmptyCatalogSweep(companyId, modelsRefreshed, to.toISOString());
+
+  // myrmidon(HERMES-USAGE-COST): move the gateway's prices into the vendor
+  // ledger so the dashboard/Costs screens stop showing unpriced $0 runs.
+  let reconciledCostEvents = 0;
+  try {
+    reconciledCostEvents = await reconcileUnpricedCostEvents(deps.db, companyId, window);
+  } catch (err) {
+    log.warn({ err, companyId }, "litellm cost sweep: vendor ledger reconcile failed");
+  }
 
   log.info(
-    { companyId, collected: entries.length, written, skippedUnattributed, modelsRefreshed },
+    { companyId, collected: entries.length, written, skippedUnattributed, modelsRefreshed, reconciledCostEvents },
     "litellm cost sweep done",
   );
-  return { collected: entries.length, written, skippedUnattributed, modelsRefreshed, window };
+  return { collected: entries.length, written, skippedUnattributed, modelsRefreshed, reconciledCostEvents, window };
 }
 
 /** Window start: the newest collected row's occurred_at (bounded by lookback). */
-async function readCollectedSince(db: Db, companyId: string, now: Date): Promise<Date> {
-  const fallback = new Date(now.getTime() - FIRST_SWEEP_LOOKBACK_MS);
+async function readCollectedSince(
+  db: Db,
+  companyId: string,
+  now: Date,
+  settings: LitellmCostSettings,
+): Promise<Date> {
+  // myrmidon(HERMES-USAGE-COST): the lookback is configurable so a first
+  // sweep on a live deployment can cover the whole unpriced month.
+  const lookbackMs = Math.max(1, settings.firstLookbackDays) * 24 * 3_600_000;
+  const fallback = new Date(now.getTime() - lookbackMs);
   const rows = await db
     .select({ last: litellmCostEvents.occurredAt })
     .from(litellmCostEvents)
@@ -484,7 +687,9 @@ async function refreshModels(db: Db, models: GatewayModelRow[], seenAt: Date): P
         provider: model.provider,
         maxInputTokens: model.maxInputTokens,
         maxOutputTokens: model.maxOutputTokens,
-        rates: model.rates,
+        // myrmidon(F06-D): the declared mode rides in the rates JSON (no
+        // migration); every other key there stays a number.
+        rates: (model.mode ? { ...model.rates, mode: model.mode } : model.rates) as typeof model.rates,
         seenAt,
       })
       .onConflictDoNothing();
@@ -544,6 +749,8 @@ export interface LitellmModelView {
   outputCostPerToken: number | null;
   cacheReadInputTokenCost: number | null;
   cacheCreationInputTokenCost: number | null;
+  /** myrmidon(F06-D): the gateway's declared model mode, when the sweep saw one. */
+  mode?: string | null;
   seenAt: string;
 }
 
@@ -565,6 +772,11 @@ export async function listLitellmModels(db: Db): Promise<LitellmModelView[]> {
   return rows.map((row) => toModelView(row.model));
 }
 
+function readStoredMode(rates: unknown): string | null {
+  const mode = asRecord(rates)?.mode;
+  return typeof mode === "string" && mode.trim() ? mode.trim().toLowerCase() : null;
+}
+
 function toModelView(row: typeof litellmModels.$inferSelect): LitellmModelView {
   const rates = row.rates ?? {};
   return {
@@ -576,6 +788,7 @@ function toModelView(row: typeof litellmModels.$inferSelect): LitellmModelView {
     outputCostPerToken: rates.output_cost_per_token ?? null,
     cacheReadInputTokenCost: rates.cache_read_input_token_cost ?? null,
     cacheCreationInputTokenCost: rates.cache_creation_input_token_cost ?? null,
+    mode: readStoredMode(row.rates),
     seenAt: row.seenAt instanceof Date ? row.seenAt.toISOString() : String(row.seenAt),
   };
 }

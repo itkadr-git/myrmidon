@@ -35,8 +35,11 @@
 // injected activity sink, and returned as `{kind: "error"}` — a bad reconcile pass
 // for one bot must not take the sweep in index.ts down with it.
 
-import { classifyProfileChange, type CompiledProfile } from "./types.js";
-import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
+import { classifyProfileChange, type CompiledProfile, type ProfileChangeClass } from "./types.js";
+import { compositeDriftFields } from "./drift.js";
+import type { BotContainerDriver, BotContainerSpec, BotContainerState } from "./driver.js";
+import type { BackimportSummary, BotSkillBackimportPorts } from "./skill-backimport.js";
+import { backimportBotSkills, isBotSkillBackimportEnabled } from "./skill-backimport.js";
 
 export type MaintenanceWindowState = "entering" | "on" | "leaving" | "off";
 
@@ -94,6 +97,20 @@ export interface ReconcileBotInput {
   maintenanceDrainTimeoutSec?: number;
   /** Test hook: replaces the real delay between drain polls. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company catalog side
+   * of the bot-skill back-import, with the company this agent belongs to.
+   * Read per pass; both absent (or the flag off) = the pass is exactly what
+   * it was before the feature existed. A present pair with the flag on reads
+   * the bot's own skills out of the container (driver.readBotSkills) after
+   * the container is up with its profile applied, and upserts the new and
+   * changed ones into the catalog; the next pass's profile then delivers
+   * them back to the bots the lifecycle selects. A driver without
+   * readBotSkills (fleetd) silently keeps no back-import.
+   */
+  backimport?: { companyId: string; agentId: string; ports: BotSkillBackimportPorts };
+  /** Read per pass; defaults to process.env. Carries MYRMIDON_BOT_SKILL_BACKIMPORT. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export type ReconcileOutcome =
@@ -110,8 +127,13 @@ const DRAIN_POLL_INTERVAL_MS = 2_000;
  *  giving up: R3's own tick (already running server-wide, started by
  *  startMaintenanceMode at boot) is what actually interrupts runs past the
  *  deadline, and it only checks on its own interval — this is slack for that, not
- *  a second timeout the reconciler enforces itself. */
-const DRAIN_POLL_GRACE_MS = 30_000;
+ *  a second timeout the reconciler enforces itself.
+ *  myrmidon(OPE-12150): the slack must also cover the interrupted run's own
+ *  finalisation. A hermes gateway run took ~50 s from the interrupt to its
+ *  finished row on prod 07.11. With 30 s, every busy bot's image switch failed
+ *  2 s before the interrupt landed, the window closed, and the retry started on
+ *  the old image again. */
+export const DRAIN_POLL_GRACE_MS = 120_000;
 
 function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -174,6 +196,41 @@ async function withAgentPaused(
   }
 }
 
+/**
+ * myrmidon(APPLY-LOG): the created branch reads no drift report and no change
+ * class — a container that does not exist has nothing to compare against — so
+ * its trigger names its own shape instead of inventing two comparable states.
+ */
+const CREATED_TRIGGER = "missing:new";
+
+/**
+ * myrmidon(APPLY-LOG): the one field that answers "why did this pass apply
+ * anything" for a single record — the container state the pass read, whether
+ * the template had drifted, and the profile change class
+ * ("running:nodrift:restart"). Without it the reason for a restart is spread
+ * over two or three separate records, and a restart-class change with no drift
+ * states it nowhere at all.
+ */
+function applyTrigger(state: BotContainerState, drifted: boolean, changeClass: ProfileChangeClass): string {
+  return `${state}:${drifted ? "drift" : "nodrift"}:${changeClass}`;
+}
+
+/**
+ * myrmidon(APPLY-LOG): the diagnostic tail every apply-branch info record
+ * carries — the hashes of the profile this pass wrote, the concurrency limit the
+ * compiled profile hands the gateway, and the trigger. `maxConcurrentRuns` is
+ * optional on a compiled profile: an absent key means "this profile does not set
+ * one", never a default the profile does not carry.
+ */
+function appliedDetails(profile: CompiledProfile, trigger: string): Record<string, unknown> {
+  return {
+    restartHash: profile.restartHash,
+    appliedFilesHash: profile.filesHash,
+    ...(profile.maxConcurrentRuns === undefined ? {} : { appliedMaxConcurrentRuns: profile.maxConcurrentRuns }),
+    trigger,
+  };
+}
+
 export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileOutcome> {
   const { agentId, botKey, spec, compile, driver, maintenance } = input;
   const activity = input.activity ?? noopActivitySink;
@@ -182,49 +239,174 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
   const info = (message: string, details?: Record<string, unknown>) =>
     activity.record({ level: "info", agentId, botKey, message, details });
 
+  /**
+   * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): reads the bot's own
+   * skills out of the container and upserts the new/changed ones into the
+   * company catalog. Runs only where the pass already left the container
+   * running with its profile applied (the calls above), so the read always
+   * answers the state the bot actually worked in. Gated on
+   * MYRMIDON_BOT_SKILL_BACKIMPORT (default off = the pass is exactly what it
+   * was), on a driver that can read the container filesystem, and on the
+   * catalog ports being wired — all three absent/off = previous behavior.
+   * Never throws: a failed import is a recorded activity entry, not a failed
+   * reconcile (the bot's own work must not pay for the bookkeeping).
+   */
+  const backimportBotSkillsIntoCatalog = async (): Promise<void> => {
+    const target = input.backimport;
+    if (!target || !driver.readBotSkills) return;
+    if (!isBotSkillBackimportEnabled(input.env ?? process.env)) return;
+    try {
+      const directories = await driver.readBotSkills(botKey);
+      if (directories === null || directories.length === 0) return;
+      const summary: BackimportSummary = await backimportBotSkills(
+        target.companyId,
+        target.agentId,
+        directories,
+        target.ports,
+      );
+      const created = summary.imported.filter((r) => r.outcome === "created").length;
+      const updated = summary.imported.filter((r) => r.outcome === "updated").length;
+      const unchanged = summary.imported.filter((r) => r.outcome === "unchanged").length;
+      const redelivered = summary.imported.filter((r) => r.outcome === "re-delivered").length;
+      const failed = summary.failed.length;
+      if (created > 0 || updated > 0 || redelivered > 0 || failed > 0) {
+        await info("bot skills back-imported into the company catalog", {
+          created,
+          updated,
+          unchanged,
+          redelivered,
+          failed,
+          failedDetails: summary.failed,
+        });
+      }
+    } catch (err) {
+      await activity.record({
+        level: "error",
+        agentId,
+        botKey,
+        message: "bot skill back-import failed (the reconcile itself succeeded)",
+        details: { error: err instanceof Error ? err.message : String(err) },
+      });
+    }
+  };
+
   try {
-    const status = await driver.status(botKey);
+    // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): when the driver can answer status
+    // and drift from one inspect (docker-driver's statusWithDrift), do that —
+    // the separate status + templateDrift pair cost two A2 inspects per bot per
+    // pass, which alone put the 74-bot sweep over the planned request budget.
+    // A driver without the probe (fleetd) keeps the old pair.
+    const probed = driver.statusWithDrift ? await driver.statusWithDrift(spec) : null;
+    const status = probed ? probed.status : await driver.status(botKey);
 
     if (status.state === "missing") {
       const profile = await compile();
       await driver.create(spec);
       await driver.writeProfile(botKey, profile);
       await driver.start(botKey);
-      await info("bot container created and profile applied", {
-        restartHash: profile.restartHash,
-        filesHash: profile.filesHash,
-      });
+      await backimportBotSkillsIntoCatalog();
+      await info("bot container created and profile applied", appliedDetails(profile, CREATED_TRIGGER));
       return { kind: "created" };
     }
 
     const profile = await compile();
     // Side-effect free; a drift is only ever applied below, through recreate.
-    const drift = await driver.templateDrift(spec);
-    const drifted = drift.drifted;
+    // myrmidon(OPE-4789): the status read above carries the container's own
+    // inspect; handing it in keeps one pass at one inspect instead of two.
+    const drift = probed ? probed.drift : await driver.templateDrift(spec, status);
+    const compositeDrift = compositeDriftFields(
+      {
+        profileHash: profile.restartHash,
+        imageDigest: spec.image,
+        limits: { memoryMb: spec.memoryMb, cpus: spec.cpus, pidsLimit: spec.pidsLimit },
+      },
+      {
+        profileHash: status.restartHash ?? profile.restartHash,
+        imageDigest: status.image || spec.image,
+        limits: {
+          memoryMb: status.memoryMb ?? spec.memoryMb,
+          cpus: status.cpus ?? spec.cpus,
+          pidsLimit: status.pidsLimit ?? spec.pidsLimit,
+        },
+      },
+    );
+    const hasCompositeDrift = compositeDrift.length > 0;
+    const drifted =
+      drift.drifted ||
+      (hasCompositeDrift && (compositeDrift.includes("imageDigest") || compositeDrift.some((f) => f.startsWith("limits."))));
+    const resourceDrift =
+      (drift.fields.length > 0 &&
+        drift.fields.every(({ field }) => field === "HostConfig.Memory" || field === "HostConfig.PidsLimit")) ||
+      (hasCompositeDrift &&
+        compositeDrift.every((f) => f.startsWith("limits.")) &&
+        !compositeDrift.includes("imageDigest") &&
+        !compositeDrift.includes("profileHash"));
     if (drifted) {
       // Names the field and both values, so a drift is diagnosable from the
       // log alone — the 01.10 incident recreated every bot every pass with a
       // message that named none of them.
-      await info("bot container template drift detected", { fields: drift.fields });
+      await info("bot container template drift detected", { fields: drift.fields, compositeDrift });
     }
     // Hashes come only from the applied-state marker; none there means nothing
     // verified applied, which classifies as "restart", never "none".
-    const changeClass = classifyProfileChange({ restartHash: status.restartHash, filesHash: status.filesHash }, profile);
-    const hashes = { restartHash: profile.restartHash, filesHash: profile.filesHash };
+    const changeClass = classifyProfileChange(
+      { restartHash: status.restartHash, filesHash: status.filesHash, maxConcurrentRuns: status.maxConcurrentRuns },
+      profile,
+    );
 
     if (status.state === "stopped") {
-      if (drifted) await driver.recreate(spec);
+      const applyDrift = async () => {
+        if (resourceDrift && driver.updateResources) await driver.updateResources(spec);
+        else await driver.recreate(spec);
+      };
+      if (status.idleStopped) {
+        if (!drifted && changeClass === "none") return { kind: "unchanged" };
+        if (drifted) await applyDrift();
+        if (changeClass !== "none") await driver.writeProfile(botKey, profile);
+        await info("idle-stopped bot container image updated without restart", {
+          drifted,
+          changeClass,
+          ...appliedDetails(profile, applyTrigger(status.state, drifted, changeClass)),
+        });
+        await backimportBotSkillsIntoCatalog();
+        return { kind: "applied_restart" };
+      }
+      if (drifted) await applyDrift();
       if (changeClass !== "none") await driver.writeProfile(botKey, profile);
       await driver.start(botKey);
-      await info("stopped bot container brought up", { drifted, changeClass, ...hashes });
+      await info("stopped bot container brought up", {
+        drifted,
+        changeClass,
+        ...appliedDetails(profile, applyTrigger(status.state, drifted, changeClass)),
+      });
+      await backimportBotSkillsIntoCatalog();
       return { kind: "applied_restart" };
     }
 
+    // Live update only when nothing else needs the gateway down: a restart-class
+    // profile change must still restart (the marker would otherwise be recorded
+    // as applied and the change lost), and so must an unhealthy container (that
+    // state is not "running" and falls through to the paused branch below).
+    if (status.state === "running" && resourceDrift && changeClass !== "restart") {
+      if (driver.updateResources) await driver.updateResources(spec);
+      else await driver.recreate(spec);
+      if (changeClass !== "none") await driver.writeProfile(botKey, profile);
+      await info("bot container resources applied without restart", { drifted, resourceDrift, changeClass });
+      await backimportBotSkillsIntoCatalog();
+      return { kind: "applied_files" };
+    }
     if (status.state === "running" && !drifted) {
-      if (changeClass === "none") return { kind: "unchanged" };
+      if (changeClass === "none") {
+        await backimportBotSkillsIntoCatalog();
+        return { kind: "unchanged" };
+      }
       if (changeClass === "files") {
         await driver.writeProfile(botKey, profile);
-        await info("bot container profile files applied without restart", { filesHash: profile.filesHash });
+        await info(
+          "bot container profile files applied without restart",
+          appliedDetails(profile, applyTrigger(status.state, drifted, changeClass)),
+        );
+        await backimportBotSkillsIntoCatalog();
         return { kind: "applied_files" };
       }
     }
@@ -238,6 +420,14 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
         : `bot container profile update (${botKey})`;
     const result = await withAgentPaused({ agentId, botKey, reason, maintenance, drainTimeoutSec, sleep, activity }, async () => {
       if (drifted) {
+        // Resource-only drift on a live container: update in place, then the
+        // restart below still runs (restart-class change or unhealthy state).
+        if (resourceDrift && driver.updateResources) {
+          await driver.updateResources(spec);
+          if (changeClass !== "none") await driver.writeProfile(botKey, profile);
+          await driver.restart(botKey);
+          return;
+        }
         await driver.recreate(spec);
         if (changeClass !== "none") await driver.writeProfile(botKey, profile);
         await driver.start(botKey);
@@ -246,8 +436,18 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       if (changeClass !== "none") await driver.writeProfile(botKey, profile);
       await driver.restart(botKey); // resolves once the gateway reports healthy, or throws
     });
+    // The window's own reason is what maintenance.enter received; the deferred
+    // record's `reason` is the outcome explanation, so they carry different keys.
+    const trigger = applyTrigger(status.state, drifted, changeClass);
     if (result.kind === "deferred") {
-      await info("bot container update deferred", { reason: result.reason, drifted, changeClass, state: status.state });
+      await info("bot container update deferred", {
+        reason: result.reason,
+        drifted,
+        changeClass,
+        state: status.state,
+        trigger,
+        maintenanceReason: reason,
+      });
       return result;
     }
     await info(
@@ -256,8 +456,9 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
         : status.state === "unhealthy"
           ? "unhealthy bot container restarted"
           : "bot container restarted with updated profile",
-      { drifted, changeClass, previousState: status.state, ...hashes },
+      { drifted, changeClass, previousState: status.state, maintenanceReason: reason, ...appliedDetails(profile, trigger) },
     );
+    await backimportBotSkillsIntoCatalog();
     return { kind: "applied_restart" };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

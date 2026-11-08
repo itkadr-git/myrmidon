@@ -1,5 +1,5 @@
 import http from "node:http";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   FleetdDriverError,
@@ -80,6 +80,29 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
     }
   });
 
+  it("status preserves gatewayPort when reported by fleetd", async () => {
+    const { server, config } = await fakeServer((_call, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          botKey: "bot-a",
+          state: "running",
+          image: "example.com/bot@sha256:aa",
+          gatewayPort: 18642,
+          restartHash: "r1",
+          filesHash: "f1",
+        }),
+      );
+    });
+    try {
+      const driver = fleetdBotContainerDriver(config);
+      const status = await driver.status("bot-a");
+      expect(status.gatewayPort).toBe(18642);
+    } finally {
+      server.close();
+    }
+  });
+
   it("list accepts both a bare array and { bots: [...] }", async () => {
     for (const body of [
       [{ botKey: "bot-a", state: "stopped" }],
@@ -91,7 +114,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
       });
       try {
         const driver = fleetdBotContainerDriver(config);
-        expect(await driver.list()).toEqual([{ botKey: "bot-a", state: "stopped" }]);
+        expect(await driver.list(["bot-a"])).toEqual([{ botKey: "bot-a", state: "stopped" }]);
       } finally {
         server.close();
       }
@@ -259,12 +282,120 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
     await expect(driver.status("bot-a")).rejects.toThrow(/no response left/);
   });
 
-  it("parseFleetdEndpoint accepts http host:port and rejects anything else", async () => {
+  it("parseFleetdEndpoint accepts http and https host:port and rejects anything else", async () => {
     const { parseFleetdEndpoint } = await import("./fleetd-driver.js");
-    expect(parseFleetdEndpoint("http://fleetd.example.com")).toEqual({ host: "fleetd.example.com", port: 80 });
-    expect(parseFleetdEndpoint("http://fleetd.example.com:9100")).toEqual({ host: "fleetd.example.com", port: 9100 });
-    expect(() => parseFleetdEndpoint("https://fleetd.example.com")).toThrow(/must be http/);
+    expect(parseFleetdEndpoint("http://fleetd.example.com")).toEqual({ host: "fleetd.example.com", port: 80, protocol: "http:" });
+    expect(parseFleetdEndpoint("http://fleetd.example.com:9100")).toEqual({ host: "fleetd.example.com", port: 9100, protocol: "http:" });
+    expect(parseFleetdEndpoint("https://fleetd.example.com")).toEqual({ host: "fleetd.example.com", port: 443, protocol: "https:" });
+    expect(parseFleetdEndpoint("https://fleetd.example.com:9443")).toEqual({ host: "fleetd.example.com", port: 9443, protocol: "https:" });
+    expect(() => parseFleetdEndpoint("ftp://fleetd.example.com")).toThrow(/must be http:\/\/ or https:\/\//);
     expect(() => parseFleetdEndpoint("http://fleetd.example.com:notaport")).toThrow();
+  });
+
+  it("passes mTLS options (ca, cert, key, agent) to https transport on https baseUrl", async () => {
+    const https = await import("node:https");
+    const fakeAgent: any = new https.Agent();
+    let capturedOptions: any = null;
+    fakeAgent.addRequest = (req: any, options: any) => {
+      capturedOptions = options;
+      setImmediate(() => req.emit("error", new Error("test abort")));
+    };
+
+    try {
+      const driver = fleetdBotContainerDriver({
+        baseUrl: "https://fleetd.example.com:9443",
+        token: "test-token",
+        caCert: "test-ca-cert",
+        clientCert: "test-client-cert",
+        clientKey: "test-client-key",
+        httpsAgent: fakeAgent,
+      });
+
+      await driver.status("bot-test").catch(() => {});
+
+      expect(capturedOptions).toBeDefined();
+      expect(capturedOptions.host).toBe("fleetd.example.com");
+      expect(capturedOptions.port).toBe(9443);
+      expect(capturedOptions.ca).toBe("test-ca-cert");
+      expect(capturedOptions.cert).toBe("test-client-cert");
+      expect(capturedOptions.key).toBe("test-client-key");
+      expect(capturedOptions.agent).toBe(fakeAgent);
+      expect(capturedOptions.rejectUnauthorized).toBe(true);
+      expect(capturedOptions.headers.authorization).toBe("Bearer test-token");
+    } finally {
+      fakeAgent.destroy();
+    }
+  });
+
+  it("filters internal spec fields and maps extraMounts to mounts for fleetd wire spec", async () => {
+    const { driver, calls } = driverWith([{ status: 200, body: Buffer.from("{}", "utf8") }]);
+    await driver.create({
+      botKey: "bot-wire",
+      image: "example.com/bot@sha256:bb",
+      memoryMb: 2048,
+      cpus: 2,
+      pidsLimit: 512,
+      network: "net-wire",
+      extraMounts: [
+        { source: "/srv/shared", containerPath: "/opt/shared", readOnly: true },
+      ],
+      sharedMount: {
+        hostPath: "/srv/myrmidon-shared",
+        writable: true,
+      },
+    } as any);
+
+    const call = calls[0] as { method: string; path: string; body: Buffer };
+    expect(call.method).toBe("POST");
+    expect(call.path).toBe("/bots");
+    const payload = JSON.parse(call.body.toString("utf8"));
+    expect(payload).toEqual({
+      spec: {
+        botKey: "bot-wire",
+        image: "example.com/bot@sha256:bb",
+        memoryMb: 2048,
+        cpus: 2,
+        pidsLimit: 512,
+        network: "net-wire",
+        mounts: [
+          { source: "/srv/shared", destination: "/opt/shared", readOnly: true },
+        ],
+      },
+    });
+    // Ensure internal board fields like sharedMount are NOT present
+    expect(payload.spec.sharedMount).toBeUndefined();
+    expect(payload.spec.extraMounts).toBeUndefined();
+  });
+
+  it("filters profile fields to match fleetd profile contract", async () => {
+    const { driver, calls } = driverWith([{ status: 200, body: Buffer.from("{}", "utf8") }]);
+    await driver.writeProfile("bot-wire", {
+      botKey: "bot-wire",
+      files: [
+        { path: "hermes/config.yaml", content: "test", mode: 0o644, secret: false },
+      ],
+      restartHash: "rh123",
+      filesHash: "fh123",
+      maxConcurrentRuns: 2,
+      apiServerKeyVersion: "v1",
+    } as any);
+
+    const call = calls[0] as { method: string; path: string; body: Buffer };
+    expect(call.method).toBe("PUT");
+    expect(call.path).toBe("/bots/bot-wire/profile");
+    const payload = JSON.parse(call.body.toString("utf8"));
+    expect(payload).toEqual({
+      profile: {
+        botKey: "bot-wire",
+        files: [
+          { path: "hermes/config.yaml", content: "test", mode: 0o644, secret: false },
+        ],
+        restartHash: "rh123",
+        filesHash: "fh123",
+      },
+    });
+    expect(payload.profile.maxConcurrentRuns).toBeUndefined();
+    expect(payload.profile.apiServerKeyVersion).toBeUndefined();
   });
 });
 

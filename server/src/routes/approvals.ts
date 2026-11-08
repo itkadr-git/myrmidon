@@ -1,13 +1,13 @@
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -23,6 +23,7 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -53,7 +54,7 @@ export function approvalRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
-  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const strictSecretsMode = readProductEnv("SECRETS_STRICT_MODE") === "true";
 
   async function lostReviewPathIssueIds(
     companyId: string,

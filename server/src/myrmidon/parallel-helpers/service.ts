@@ -17,13 +17,15 @@
 // the other; the audit would then disagree with the stored value. Every write
 // runs through one queue, exactly as the runtime limits transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   helperCapacityHint,
+  helpersCeiling,
+  helpersDefault,
   resolveParallelHelpers,
   type HelperCapacityHint,
   type ParallelHelpersSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 
@@ -108,12 +110,11 @@ export function parallelHelpersService(
     });
     return {
       settings,
+      // HELPERS-NO-CAP: the effective values come from the shared resolver,
+      // which takes the owner's ceiling as written — no hard cap above it.
       effective: {
-        ceiling: Math.min(
-          settings.maxPerAgent && settings.maxPerAgent > 0 ? settings.maxPerAgent : 10,
-          50,
-        ),
-        defaultPerAgent: settings.defaultMaxPerAgent && settings.defaultMaxPerAgent > 0 ? settings.defaultMaxPerAgent : 2,
+        ceiling: helpersCeiling(settings),
+        defaultPerAgent: helpersDefault(settings),
       },
       capacity: helperCapacityHint(agents, settings),
     };

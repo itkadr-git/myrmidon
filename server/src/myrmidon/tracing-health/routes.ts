@@ -19,8 +19,8 @@
 //    the same env row as litellm-costs and never leaves the process.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { companies } from "@myrmidon/db";
 import { isNotNull } from "drizzle-orm";
 import { secretService } from "../../services/index.js";
 import { logger } from "../../middleware/logger.js";
@@ -37,9 +37,11 @@ import {
   countEvents,
   countRejections,
   gatewayRequestCount,
+  resolveTracingHealthSettings,
   readTracingHealthSettings,
+  withClickhousePassword,
   type TracingHealthSettings,
-} from "./probes.js";
+} from "./probes.js"; // myrmidon(1.7, OPE-4101): resolveTracingHealthSettings added
 
 export interface TracingHealthRoutesDeps {
   env?: NodeJS.ProcessEnv;
@@ -57,7 +59,7 @@ export interface TracingHealthRoutesDeps {
 
 export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
   const router = Router();
-  const settings = () => readTracingHealthSettings(deps.env ?? process.env);
+  const settings = () => resolveTracingHealthSettings(deps.env ?? process.env);
   let cached: TracingHealthReport | null = null;
 
   const emptyEvidence = (): TracingHealthEvidence => ({
@@ -147,7 +149,7 @@ export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
 
   router.get("/myrmidon/tracing/health", async (_req, res) => {
     assertBoardOrgAccess(_req);
-    const current = settings();
+    const current = await withClickhousePassword(settings(), deps.env ?? process.env);
     if (!current.enabled) {
       const now = deps.now();
       res.status(503).json(disabledReport(now, current.windowMs));

@@ -42,7 +42,8 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
+  authUsers,
+} from "@myrmidon/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -55,6 +56,9 @@ import {
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import type { ComposioClient } from "../services/composio.js";
 import { secretService } from "../services/secrets.js";
+// myrmidon(DB-PERF-C-P4): the fixtures below write profiles, bindings, entries and policies
+// around the tool-access CRUD, so they drop the company snapshot the way those CRUD paths do.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -69,7 +73,7 @@ type Db = ReturnType<typeof createDb>;
 type ToolGatewayServiceOptions = NonNullable<Parameters<typeof createToolGatewayService>[1]>;
 
 async function createCompany(db: Db) {
-  return db
+  const company = await db
     .insert(companies)
     .values({
       name: `Gateway ${randomUUID()}`,
@@ -77,6 +81,25 @@ async function createCompany(db: Db) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  const now = new Date();
+  await db
+    .insert(authUsers)
+    .values({
+      id: "board-user",
+      name: "Board User",
+      email: "board-user@example.com",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: "board-user",
+    membershipRole: "owner",
+    status: "active",
+  });
+  return company;
 }
 
 async function createAgent(db: Db, companyId: string, permissions: Record<string, unknown> = {}) {
@@ -162,6 +185,8 @@ async function allowToolsForAgent(db: Db, companyId: string, agentId: string, to
       toolName,
     })));
   }
+  // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+  invalidateToolPolicyCache(db, companyId);
   return profile;
 }
 
@@ -182,6 +207,8 @@ async function allowAllToolsForAgent(db: Db, companyId: string, agentId: string)
     targetType: "agent",
     targetId: agentId,
   });
+  // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+  invalidateToolPolicyCache(db, companyId);
   return profile;
 }
 
@@ -575,6 +602,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(projects);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -2685,6 +2713,54 @@ rl.on("line", (line) => {
     }
   });
 
+  it("canonicalizes MCP schemas so property order cannot change the descriptor", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer(() => ({
+      body: { jsonrpc: "2.0", result: { content: [{ type: "text", text: "ok" }] } },
+    }));
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "canonical-schema",
+        toolName: "ordered_tool",
+        url: fake.url,
+      });
+      await db.update(toolCatalogEntries).set({
+        inputSchema: {
+          type: "object",
+          required: ["z", "a"],
+          properties: {
+            z: { type: "string", description: "last" },
+            a: { type: "object", properties: { y: { type: "number" }, b: { type: "boolean" } } },
+          },
+        },
+        outputSchema: { z: { type: "string" }, a: { type: "number" } },
+        annotations: { z: "last", a: "first" },
+      }).where(eq(toolCatalogEntries.id, remoteTool.catalogEntry.id));
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find(
+        (entry) => entry.catalogEntryId === remoteTool.catalogEntry.id,
+      );
+      expect(tool?.parametersSchema).toEqual({
+        type: "object",
+        required: ["z", "a"],
+        properties: {
+          a: { type: "object", properties: { b: { type: "boolean" }, y: { type: "number" } } },
+          z: { type: "string", description: "last" },
+        },
+      });
+      expect(tool?.providerMetadata).toMatchObject({
+        inputSchema: tool?.parametersSchema,
+        outputSchema: { a: { type: "number" }, z: { type: "string" } },
+        annotations: { a: "first", z: "last" },
+      });
+    } finally {
+      await fake.close();
+    }
+  });
   it("uses virtual on-demand run_tool while applying target tool policy and audit metadata", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -3308,6 +3384,8 @@ rl.on("line", (line) => {
         description: "Connected MCP writes need review.",
         priority: 10,
       });
+      // myrmidon(DB-PERF-C-P4): the direct insert bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
 
       await gateway.executeTool({
         sessionToken: session.token,

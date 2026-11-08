@@ -116,10 +116,22 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "OpenCode",
     description: "OpenCode multi-provider harness",
     icon: OpenCodeLogoIcon,
+    // Recommended so first-run onboarding offers a way on that needs no
+    // vendor subscription at all: any OpenAI-compatible endpoint (a LiteLLM
+    // gateway, a self-hosted vLLM) is configured as an API-key style source
+    // through PAPERCLIP_OPENCODE_PROVIDERS. Claude and Codex sign-ins stay
+    // recommended too — the step is a choice between ways on, and a
+    // subscription is one of them rather than the only one (OPE-10206).
+    recommended: true,
   },
   pi_local: {
     label: "Pi",
     description: "Pi harness",
+    icon: Terminal,
+  },
+  omp_local: {
+    label: "Oh My Pi",
+    description: "Oh My Pi harness",
     icon: Terminal,
   },
   cursor: {

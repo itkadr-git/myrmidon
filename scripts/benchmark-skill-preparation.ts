@@ -1,4 +1,4 @@
-/** Isolated, repeatable preparation benchmark. Run with pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-skill-preparation.ts. */
+/** Isolated, repeatable preparation benchmark. Run with pnpm --filter @myrmidon/server exec tsx ../scripts/benchmark-skill-preparation.ts. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";

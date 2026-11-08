@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
@@ -14,10 +14,11 @@ import {
   updateSecretSchema,
   updateUserSecretDefinitionSchema,
   updateUserSecretValueSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
+import { authorizationService } from "../services/authorization.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -28,6 +29,8 @@ import { issueService } from "../services/issues.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
+import { readGitHubPatExpiration } from "../services/github-pat-expiration.js";
+import { syncSecretToGitHubActions } from "../services/github-actions-secrets.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 
 type SecretRoutesDeps = {
@@ -141,6 +144,43 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     };
   }
 
+  // myrmidon(1.6.5-F-23): an agent without an active run (administrative role
+  // acting from an operator CLI/session) may read its own secret metadata when
+  // every guard holds: own agent key (never automation/service keys), an active
+  // board-issued secrets:read_off_run grant, and only the /agents/me/secrets
+  // scope. Without the grant the historical 403 text is preserved.
+  async function agentSecretContextOffRun(req: Parameters<typeof assertBoard>[0]) {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || req.actor.runId) return null;
+    const keyScopeKind = req.actor.keyScope?.kind ?? "standard";
+    if (req.actor.source !== "agent_key" || keyScopeKind !== "standard") {
+      throw forbidden("Run-bound agent authentication required");
+    }
+    const authorization = authorizationService(db);
+    const decision = await authorization.decidePrincipalGrant({
+      companyId: req.actor.companyId,
+      principalType: "agent",
+      principalId: req.actor.agentId,
+      action: "secrets:read",
+      permissionKey: "secrets:read_off_run",
+    });
+    if (!decision.allowed) {
+      throw forbidden("Run-bound agent authentication required");
+    }
+    // `req.ip` honors Express `trust proxy` (default: trust nothing, i.e. the
+    // socket peer); a client-supplied X-Forwarded-For must never reach the
+    // audit row, or the key holder could forge where the read came from.
+    const remoteAddress = req.ip || req.socket?.remoteAddress || null;
+    return {
+      companyId: req.actor.companyId,
+      agentId: req.actor.agentId,
+      actorSource: "agent_key" as const,
+      keyId: req.actor.keyId ?? null,
+      keyScope: req.actor.keyScope ?? null,
+      responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+      remoteAddress,
+    };
+  }
+
   async function proposalAgentContext(req: Parameters<typeof assertBoard>[0]) {
     const context = agentSecretContext(req);
     if (req.actor.source !== "agent_jwt" || req.actor.keyScope?.kind === "task_bridge" || req.actor.keyScope?.kind === "skill_test") {
@@ -205,6 +245,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
           description: body.description,
           value: body.value,
           justification: body.justification,
+          rotateSecretId: body.rotateSecretId,
         })
       : body.kind === "binding"
         ? await proposals.createBinding({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
@@ -277,7 +318,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
       }),
     });
-    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, issues, heartbeat });
+    // Rotation proposals land as a new version of the target secret; tell the
+    // origin issue which version is now live so the proposer can verify its
+    // env fingerprint instead of guessing.
+    let resolutionNote: string | null = null;
+    if (approved.kind === "secret" && approved.rotationTargetSecretId && approved.createdSecretId) {
+      const rotatedSecret = await svc.getById(approved.createdSecretId);
+      if (rotatedSecret) {
+        resolutionNote = `Rotated existing secret \`${rotatedSecret.name}\` to version ${rotatedSecret.latestVersion}`;
+      }
+    }
+    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, resolutionNote, issues, heartbeat, db });
     res.json(await boardProposalView(req, await proposals.view(approved)));
   });
 
@@ -307,11 +358,37 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       reason,
       issues,
       heartbeat,
+      db,
     });
     res.json(await boardProposalView(req, await proposals.view(proposal)));
   });
 
   router.get("/agents/me/secrets", async (req, res) => {
+    // myrmidon(1.6.5-F-23): an agent without an active run may read its own
+    // secret metadata when it authenticates with its own agent key and holds
+    // an active secrets:read_off_run grant; that path is audited with
+    // details.offRun = true. Run-bound requests keep the historical path.
+    const offRunContext = await agentSecretContextOffRun(req);
+    if (offRunContext) {
+      const secrets = await svc.listAgentSecretAccessOffRun(offRunContext.companyId, offRunContext);
+      await logActivity(db, {
+        companyId: offRunContext.companyId,
+        actorType: "agent",
+        actorId: offRunContext.agentId,
+        action: "secret.access.listed",
+        entityType: "agent",
+        entityId: offRunContext.agentId,
+        agentId: offRunContext.agentId,
+        details: { count: secrets.length, offRun: true },
+      });
+      res.json({
+        secrets: secrets.map(({ secretId, bindingId: _bindingId, configPath: _configPath, ...secret }) => ({
+          ...secret,
+          secretRef: secretId,
+        })),
+      });
+      return;
+    }
     const context = agentSecretContext(req);
     const secrets = await svc.listAgentSecretAccess(context.companyId, context);
     await logActivity(db, {
@@ -904,6 +981,14 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );
+    if (typeof req.body.value === "string" && req.body.value.startsWith("github_pat_")) {
+      const expiresAt = await readGitHubPatExpiration(req.body.value).catch(() => null);
+      if (expiresAt) {
+        await svc.update(created.id, {
+          providerMetadata: { ...(created.providerMetadata ?? {}), githubPatExpiresAt: expiresAt },
+        });
+      }
+    }
 
     await logActivity(db, {
       companyId,
@@ -1015,6 +1100,26 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );
+    if (typeof req.body.value === "string") {
+      if (req.body.value.startsWith("github_pat_")) {
+        const expiresAt = await readGitHubPatExpiration(req.body.value).catch(() => null);
+        if (expiresAt) {
+          await svc.update(id, {
+            providerMetadata: { ...(rotated.providerMetadata ?? {}), githubPatExpiresAt: expiresAt },
+          });
+        }
+      }
+
+      const bindings = await svc.listBindings(rotated.companyId, rotated.id);
+      const ghBindings = bindings.filter((b) => b.targetType === "github_actions");
+      for (const b of ghBindings) {
+        await syncSecretToGitHubActions({
+          repo: b.targetId,
+          secretName: b.configPath,
+          secretValue: req.body.value,
+        }).catch(() => null);
+      }
+    }
 
     await logActivity(db, {
       companyId: rotated.companyId,

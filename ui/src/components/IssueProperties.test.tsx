@@ -10,9 +10,9 @@ import type {
   IssueLabel,
   Project,
   WorkspaceRuntimeService,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue, IssueDocument } from "@paperclipai/shared";
+import type { Issue, IssueDocument } from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
 import { queryKeys } from "../lib/queryKeys";
@@ -393,6 +393,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     pauseReason: null,
     pausedAt: null,
     executionWorkspacePolicy: null,
+    developmentProcess: null,
     codebase: {
       workspaceId: "workspace-main",
       repoUrl: null,
@@ -2270,7 +2271,8 @@ describe("IssueProperties", () => {
         title: null,
         status: "active",
         adapterType: "codex_local",
-        adapterConfig: { model: "gpt-6-astra" },
+        // myrmidon(PERF-DIET-G): the inherited model comes from the list row.
+        adapterModel: "gpt-6-astra",
         icon: null,
       },
     ]);

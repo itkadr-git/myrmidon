@@ -8,35 +8,35 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
-} from "@paperclipai/adapter-utils/local-process-sandbox";
-import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils/local-process-sandbox";
+import { inferOpenAiCompatibleBiller } from "@myrmidon/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidon/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
-} from "@paperclipai/adapter-utils/acpx-engine/constants";
+} from "@myrmidon/adapter-utils/acpx-engine/constants";
 import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
-} from "@paperclipai/adapter-utils/acpx-engine/execute";
+} from "@myrmidon/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
   asStringArray,
   parseObject,
-} from "@paperclipai/adapter-utils/server-utils";
-import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
+} from "@myrmidon/adapter-utils/server-utils";
+import { createWorkspaceRestoreTeardown } from "@myrmidon/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
@@ -59,6 +59,8 @@ export interface CodexEngineSelection {
   explicit: boolean;
   unavailableReason?: string;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 type CodexEngineResolutionInput =
   Pick<AdapterExecutionContext, "config"> &
@@ -330,7 +332,7 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
   return async (ctx) => {
     let currentExecutor = executor;
     if (!currentExecutor) {
-      const { createAcpxEngineExecutor } = await import("@paperclipai/adapter-utils/acpx-engine/execute");
+      const { createAcpxEngineExecutor } = await import("@myrmidon/adapter-utils/acpx-engine/execute");
       currentExecutor = createAcpxEngineExecutor(withCodexAcpDefaults(options));
       executor = currentExecutor;
     }
@@ -497,7 +499,7 @@ export async function testCodexAcpEnvironment(
       code: "codex_acp_remote_target",
       level: "info",
       message: "Codex ACP will run against the remote execution environment.",
-      hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
+      hint: `Remote ACP requires a bidirectional process target such as SSH or ${PRODUCT_NAME}'s sandbox process-session bridge.`,
     });
   }
 
@@ -588,8 +590,8 @@ export async function testCodexAcpEnvironment(
       checks.push({
         code: "codex_acp_credentials_missing",
         level: "warn",
-        message: "No Codex ACP credentials visible to the Paperclip server were detected.",
-        hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
+        message: `No Codex ACP credentials visible to the ${PRODUCT_NAME} server were detected.`,
+        hint: `Set OPENAI_API_KEY in the agent adapter env, set it in the ${PRODUCT_NAME} server environment, or run \`codex login\` for the same OS user that runs the ${PRODUCT_NAME} server before starting a Codex ACP agent. A \`/login\` in a separate Codex/chat session does not authenticate the server.`,
       });
     }
   } else if (targetIsSandbox) {

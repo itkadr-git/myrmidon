@@ -1,4 +1,4 @@
-import type { HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRun } from "@myrmidon/shared";
 
 export type SourceResolvedFoldCleanupOutcome =
   | "terminated"

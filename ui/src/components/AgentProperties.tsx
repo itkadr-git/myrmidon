@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
+import { useTranslation } from "@/i18n";
+import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@myrmidon/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -9,6 +10,8 @@ import { AgentStatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
+// myrmidon(1.6.1 CUSTOM-CASTES C): the role label prefers the caste directory
+import { casteLabelFor, useCasteOptions } from "./myrmidon/castes/useCasteOptions";
 
 interface AgentPropertiesProps {
   agent: Agent;
@@ -27,8 +30,13 @@ function PropertyRow({ label, children }: { label: string; children: React.React
 }
 
 export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const lastErrorIsActive = agent.status === "error";
+  // myrmidon(1.6.1 CUSTOM-CASTES C): the role label comes from the caste
+  // directory; the built-in labels are the fallback when it is unavailable.
+  const { options: casteOptions } = useCasteOptions();
+  const roleLabel = casteLabelFor(agent.role, casteOptions) || roleLabels[agent.role] || agent.role;
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -41,25 +49,25 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
+        <PropertyRow label={t("area.agents-1.agent-properties.status")}>
           <AgentStatusBadge status={agent.status} />
         </PropertyRow>
         {lastErrorIsActive && agent.errorReason && (
-          <PropertyRow label="Error reason">
+          <PropertyRow label={t("area.agents-1.agent-properties.errorReason")}>
             <span className="text-xs text-red-600 dark:text-red-400 break-words min-w-0">
               {agent.errorReason}
             </span>
           </PropertyRow>
         )}
-        <PropertyRow label="Role">
-          <span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span>
+        <PropertyRow label={t("area.agents-1.agent-properties.role")}>
+          <span className="text-sm" data-testid="agent-role-label">{roleLabel}</span>
         </PropertyRow>
         {agent.title && (
-          <PropertyRow label="Title">
+          <PropertyRow label={t("area.agents-1.agent-properties.title")}>
             <span className="text-sm">{agent.title}</span>
           </PropertyRow>
         )}
-        <PropertyRow label="Adapter">
+        <PropertyRow label={t("area.agents-1.agent-properties.adapter")}>
           <span className="text-sm font-mono">{getAdapterLabel(agent.adapterType)}</span>
         </PropertyRow>
       </div>
@@ -68,14 +76,14 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
 
       <div className="space-y-1">
         {(runtimeState?.sessionDisplayId ?? runtimeState?.sessionId) && (
-          <PropertyRow label="Session">
+          <PropertyRow label={t("area.agents-1.agent-properties.session")}>
             <span className="text-xs font-mono">
               {String(runtimeState.sessionDisplayId ?? runtimeState.sessionId).slice(0, 12)}...
             </span>
           </PropertyRow>
         )}
         {runtimeState?.lastError && (
-          <PropertyRow label={lastErrorIsActive ? "Last error" : "Last run error"}>
+          <PropertyRow label={lastErrorIsActive ? t("area.agents-1.agent-properties.lastError") : t("area.agents-1.agent-properties.lastRunError")}>
             <span
               className={
                 lastErrorIsActive
@@ -88,12 +96,12 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           </PropertyRow>
         )}
         {agent.lastHeartbeatAt && (
-          <PropertyRow label="Last Heartbeat">
+          <PropertyRow label={t("area.agents-1.agent-properties.lastHeartbeat")}>
             <span className="text-sm">{formatDate(agent.lastHeartbeatAt)}</span>
           </PropertyRow>
         )}
         {agent.reportsTo && (
-          <PropertyRow label="Reports To">
+          <PropertyRow label={t("area.agents-1.agent-properties.reportsTo")}>
             {reportsToAgent ? (
               <Link to={agentUrl(reportsToAgent)} className="hover:underline">
                 <Identity name={reportsToAgent.name} size="sm" />
@@ -103,7 +111,7 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
             )}
           </PropertyRow>
         )}
-        <PropertyRow label="Created">
+        <PropertyRow label={t("area.agents-1.agent-properties.created")}>
           <span className="text-sm">{formatDate(agent.createdAt)}</span>
         </PropertyRow>
       </div>

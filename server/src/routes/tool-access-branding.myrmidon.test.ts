@@ -4,8 +4,8 @@ import {
   connectionIntentOAuthOutcomeHtml,
 } from "./tool-access.js";
 
-// B1b: the OAuth return page names the product. The Cloud enrollment page is a
-// separate surface and is intentionally left as shipped.
+// B1b: the OAuth return page and the Cloud enrollment completion page both
+// name the product.
 describe("connection authorization return page (B1b)", () => {
   it("names the product while the window closes itself", () => {
     const html = connectionIntentOAuthOutcomeHtml({
@@ -17,8 +17,8 @@ describe("connection authorization return page (B1b)", () => {
     expect(html).not.toContain("Returning to Paperclip");
   });
 
-  it("leaves the Cloud enrollment page as shipped", () => {
+  it("names the product on the Cloud enrollment page too (B1c)", () => {
     const html = cloudConnectorEnrollmentOutcomeHtml("PRE", "/apps/connect");
-    expect(html).toContain("Paperclip connected");
+    expect(html).toContain("Myrmidon connected");
   });
 });

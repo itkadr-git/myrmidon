@@ -5,6 +5,7 @@
 //
 //   GET  /api/myrmidon/companies/:companyId/litellm/costs?from&to&limit
 //   GET  /api/myrmidon/companies/:companyId/litellm/models
+//   GET  /api/myrmidon/companies/:companyId/litellm/key-usage     (OPE-11776)
 //   POST /api/myrmidon/companies/:companyId/litellm/sweep        (board only)
 //
 // Reads need company access (the same check the vendor costs routes use);
@@ -14,7 +15,7 @@
 // instead of showing a bare error.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { secretService } from "../../services/index.js";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { parseCostDateRange } from "../../routes/costs.js";
@@ -26,6 +27,13 @@ import {
   sweepLitellmCosts,
 } from "./litellm-costs.js";
 import { listGatewayBotKeys } from "./bot-keys.js";
+import { readKeyUsageReport } from "./key-budgets.js"; // myrmidon(OPE-11776)
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
 
 export interface LitellmCostsRoutesDeps {
   /** How the gateway key value is resolved; the real wiring reads the company secret. */
@@ -68,6 +76,32 @@ export function litellmCostsRoutes(db: Db, deps: LitellmCostsRoutesDeps) {
     res.json(await listLitellmModels(db));
   });
 
+  // myrmidon(OPE-11776): the cap and spend of every bot's gateway key — the
+  // report the sweep tick refreshes (key-budgets.ts). No key value or hash is
+  // in the answer, only agent ids and names, caps and amounts.
+  router.get("/myrmidon/companies/:companyId/litellm/key-usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const current = settings();
+    if (!current.enabled) {
+      res.status(503).json({ error: "LLM gateway cost collection is not enabled", enabled: false });
+      return;
+    }
+    res.json(
+      await readKeyUsageReport(
+        {
+          db,
+          settings: current,
+          readGatewayKey: deps.readGatewayKey,
+          listBotKeys: deps.listBotKeys,
+          client: deps.client,
+          now: deps.now,
+        },
+        companyId,
+      ),
+    );
+  });
+
   router.post("/myrmidon/companies/:companyId/litellm/sweep", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -77,6 +111,13 @@ export function litellmCostsRoutes(db: Db, deps: LitellmCostsRoutesDeps) {
       res.status(503).json({ error: "LLM gateway cost collection is not enabled", enabled: false });
       return;
     }
+    // myrmidon(HERMES-USAGE-COST): { from: "YYYY-MM-DD" | ISO } pins the
+    // sweep's window start so the board can backfill a month the sweep never
+    // collected (e.g. October's unpriced runs). Invalid or future values are
+    // ignored — the sweep then behaves exactly as before.
+    const rawFrom = asRecord(req.body)?.from;
+    const from = typeof rawFrom === "string" ? new Date(rawFrom) : undefined;
+    const opts = from && !Number.isNaN(from.getTime()) ? { from } : {};
     const result = await sweepLitellmCosts(
       {
         db,
@@ -87,6 +128,7 @@ export function litellmCostsRoutes(db: Db, deps: LitellmCostsRoutesDeps) {
       },
       companyId,
       current,
+      opts,
     );
     res.json(result);
   });

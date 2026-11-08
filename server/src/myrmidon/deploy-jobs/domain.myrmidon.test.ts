@@ -98,9 +98,16 @@ describe("deploy jobs: CI image verification", () => {
     expect(result.reason).toContain("neither on origin/main nor tagged myr-v*");
   });
 
-  it("ignores tags that are not myr-v<semver>", () => {
+  it("ignores tags that are not myr-v<semver> or an rc", () => {
     const result = verifyCiImage({ ...base, commitOnMain: () => false, releaseTagsAtCommit: ["v9.9.9", "myr-v1.2"] });
     expect(result.ok).toBe(false);
+  });
+
+  // RC-VERSIONS: a release candidate tag proves the commit went through the
+  // release flow — the deploy of an rc IS the trial run.
+  it("passes an image from a release candidate tag myr-vX.Y.Z-rc.N", () => {
+    const result = verifyCiImage({ ...base, commitOnMain: () => false, releaseTagsAtCommit: ["myr-v1.2.1-rc.1"] });
+    expect(result.ok).toBe(true);
   });
 });
 
@@ -138,6 +145,18 @@ describe("deploy jobs: document and lifecycle rules", () => {
     const next = retireJob(doc, "job-a", NOW);
     expect(next.jobs).toHaveLength(0);
     expect(next.history[0].id).toBe("job-a");
+    expect(next.history[0].mode).toBe("manual");
+  });
+
+  it("round-trips update mode and maintenance window in the journal", () => {
+    const source = { version: 1 as const, jobs: [job({ status: "succeeded" })], history: [] };
+    const serialized = { ...source, jobs: [{ ...source.jobs[0], mode: "canary", window: "Tue 02:00-04:00 UTC" }] };
+    expect(parseDeployJobDocument(serialized).jobs[0]).toMatchObject({ mode: "canary", window: "Tue 02:00-04:00 UTC" });
+  });
+
+  it("defaults legacy jobs to manual mode without a window", () => {
+    const parsed = parseDeployJobDocument({ version: 1, jobs: [{ ...job(), mode: undefined }], history: [] });
+    expect(parsed.jobs[0]).toMatchObject({ mode: "manual", window: null });
   });
 
   it("appendStep bounds the step log", () => {

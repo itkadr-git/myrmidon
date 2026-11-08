@@ -1,9 +1,33 @@
 import type { Request, Response } from "express";
-import type { Db } from "@paperclipai/db";
-import type { PermissionKey, SecretBindingTargetType } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { PermissionKey, SecretBindingTargetType } from "@myrmidon/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+
+/**
+ * myrmidon(1.6.6 MONITORING E): a linking component's key is issued for one
+ * company and must stay inside it. Its authority cannot follow its owner user's
+ * membership list across tenants — otherwise a leaked aggregator key would read
+ * and write another company's board, which is exactly the "minimal rights" the
+ * link key exists to guarantee.
+ *
+ * Returns `null` for every actor that is not a monitoring link, so the callers
+ * keep their existing semantics untouched.
+ */
+function monitoringLinkCompanyConfines(req: Request, companyId: string): boolean | null {
+  const scope =
+    req.actor.type === "board" && req.actor.source === "board_key"
+      ? req.actor.boardKeyScope
+      : null;
+  // Deliberately the discriminant, not the strict guard the middleware uses:
+  // a link scope that lost its companyId must reach nothing at all, rather
+  // than falling back to the owner user's membership list — the exact escape
+  // this confinement exists to close.
+  if (scope?.kind !== "monitoring_link") return null;
+  const own = (scope as { companyId?: unknown }).companyId;
+  return typeof own === "string" && own.length > 0 && own === companyId;
+}
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
@@ -54,6 +78,44 @@ export function assertBoardOrgAccess(req: Request) {
   throw forbidden("Company membership or instance admin access required");
 }
 
+/**
+ * Agent-grant predicate injected into `assertBoardOrAgentGrant`. Structurally
+ * satisfied by `accessService(db).hasPermission`, so route modules do not need
+ * to import the service barrel into `authz.ts` (import-cycle rule below).
+ */
+export type AgentGrantPermissionChecker = (
+  companyId: string,
+  principalType: "agent",
+  principalId: string,
+  permissionKey: PermissionKey,
+) => Promise<boolean>;
+
+/**
+ * myrmidon(1.6.5-F22): board actors pass as they do under assertBoard,
+ * while an agent actor is admitted only with an explicit company grant of one
+ * of `permissionKeys` (active membership + decidePrincipalGrant, enforced by
+ * the access service). Routes without a companyId in the path must call this
+ * after loading the entity, with the entity's companyId. Denial is 403.
+ * The permission predicate is injected (accessService(db).hasPermission) so
+ * this module keeps no service-runtime import.
+ */
+export async function assertBoardOrAgentGrant(
+  req: Request,
+  hasPermission: AgentGrantPermissionChecker,
+  companyId: string,
+  ...permissionKeys: PermissionKey[]
+): Promise<void> {
+  assertAuthenticated(req);
+  if (req.actor.type === "board") return;
+  if (req.actor.type !== "agent" || !req.actor.agentId) {
+    throw forbidden("Board access or an authenticated agent key required");
+  }
+  for (const permissionKey of permissionKeys) {
+    if (await hasPermission(companyId, "agent", req.actor.agentId, permissionKey)) return;
+  }
+  throw forbidden(`Missing permission: ${permissionKeys.join(" or ")}`);
+}
+
 export function assertBoardOrAgent(req: Request) {
   if (req.actor.type === "agent") {
     return;
@@ -75,6 +137,10 @@ export function assertInstanceAdmin(req: Request) {
 
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
+  // myrmidon(1.6.6 MONITORING E): a link key stays inside its own company.
+  if (monitoringLinkCompanyConfines(req, companyId) === false) {
+    throw forbidden("Monitoring link key cannot access another company");
+  }
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
   }
@@ -119,6 +185,19 @@ export function assertCompanyAccess(req: Request, companyId: string) {
       }
     }
   }
+}
+
+/**
+ * myrmidon(1.6.6 OPE-8999): board actors only, and only a company owner/admin (active membership)
+ * or an instance admin. Viewers, plain members and agents get 403.
+ */
+export function assertCompanyAdmin(req: Request, companyId: string) {
+  assertBoard(req);
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+  assertCompanyAccess(req, companyId);
+  const membership = req.actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
+  if (membership?.membershipRole === "owner" || membership?.membershipRole === "admin") return;
+  throw forbidden("Company admin access required");
 }
 
 /**
@@ -201,7 +280,25 @@ export async function assertActorCompanyPermission(
  * get blanket access to companies they are not a member of.
  */
 export function hasCompanyAccess(req: Request, companyId: string): boolean {
-  if (req.actor.type === "none") return false;
+  if (req.actor.type === "none") {
+    // OPE-10599: the caller will most likely turn this `false` into a 404
+    // (existence-oracle guard). Log the underlying reason so the journal
+    // shows why an unauthenticated request reached a company resource; the
+    // canonical `getAccessibleResource` path answers 401 instead.
+    logger.warn(
+      {
+        actorNoneReason: req.actorNoneReason ?? "unknown",
+        method: req.method,
+        url: req.originalUrl,
+      },
+      "Anonymous actor denied company access",
+    );
+    return false;
+  }
+  // myrmidon(1.6.6 MONITORING E): a link key sees only the company it was
+  // issued for, whatever its owner user's membership list says.
+  const linkConfines = monitoringLinkCompanyConfines(req, companyId);
+  if (linkConfines !== null) return linkConfines;
   if (req.actor.type === "agent") return req.actor.companyId === companyId;
   if (req.actor.source === "local_implicit") return true;
   return (req.actor.companyIds ?? []).includes(companyId);
@@ -212,6 +309,12 @@ export function hasCompanyAccess(req: Request, companyId: string): boolean {
  * handler. Wraps the two-step pattern described on `hasCompanyAccess` so
  * new routes cannot accidentally reintroduce the existence oracle:
  *
+ *   - anonymous actor (OPE-10599) → 401 `{ error: "Authentication required" }`,
+ *     returns null, and the server journal records why the actor ended up
+ *     anonymous. The existence-oracle guard below is only meaningful against
+ *     a caller that *could* authenticate as some tenant; an unauthenticated
+ *     caller must be told to authenticate, not that the resource is missing —
+ *     otherwise agents spin on a phantom "deleted" task.
  *   - missing resource          → 404 `{ error: notFoundMessage }`, returns null
  *   - exists but cross-tenant   → identical 404, returns null
  *   - accessible                → runs `assertCompanyAccess` (write-path
@@ -231,6 +334,18 @@ export async function getAccessibleResource<T extends { companyId: string }>(
   resource: T | null | undefined | Promise<T | null | undefined>,
   notFoundMessage: string,
 ): Promise<T | null> {
+  if (req.actor.type === "none") {
+    logger.warn(
+      {
+        actorNoneReason: req.actorNoneReason ?? "unknown",
+        method: req.method,
+        url: req.originalUrl,
+      },
+      "Anonymous request to company resource; sending 401",
+    );
+    res.status(401).json({ error: "Authentication required" });
+    return null;
+  }
   const resolved = await resource;
   if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
     res.status(404).json({ error: notFoundMessage });

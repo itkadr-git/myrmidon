@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, CompanySecret } from "@paperclipai/shared";
+import type { AgentConfigurationSummary, CompanySecret } from "@myrmidon/shared";
 import type { PaperclipConfig } from "../config/schema.js";
 import { secretsCheck } from "../checks/secrets-check.js";
 import {
@@ -12,31 +12,23 @@ import {
   toPlainEnvValue,
 } from "../commands/client/secrets.js";
 
-function agent(partial: Partial<Agent>): Agent {
+// myrmidon(PERF-DIET-G): the migration reader takes the configuration
+// projection (GET /companies/:id/agent-configurations), not a company list row.
+function agent(partial: Partial<AgentConfigurationSummary>): AgentConfigurationSummary {
   return {
     id: "agent-12345678",
     companyId: "company-1",
     name: "Coder",
-    urlKey: "coder",
     role: "engineer",
     title: null,
-    icon: null,
     status: "idle",
     reportsTo: null,
-    capabilities: null,
     adapterType: "codex_local",
     adapterConfig: {},
     runtimeConfig: {},
-    budgetMonthlyCents: 0,
-    spentMonthlyCents: 0,
-    pauseReason: null,
-    pausedAt: null,
     permissions: {
       canCreateAgents: false,
     },
-    lastHeartbeatAt: null,
-    metadata: null,
-    createdAt: new Date("2026-04-26T00:00:00.000Z"),
     updatedAt: new Date("2026-04-26T00:00:00.000Z"),
     ...partial,
   };
@@ -322,6 +314,35 @@ describe("secrets API parity commands", () => {
       ["GET", "http://localhost:3100/api/secrets/secret-1/access-events"],
       ["DELETE", "http://localhost:3100/api/secrets/secret-1"],
     ]);
+  });
+});
+
+describe("secrets settings (instance secret refs)", () => {
+  it("reads the instance settings endpoint and renders no value field", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        settings: [{
+          name: "sandbox.daytona.api_key",
+          envOverride: "DAYTONA_API_KEY",
+          envOverrideActive: false,
+          effectiveSource: "secret_ref",
+          value: "must-not-print",
+          ref: { secretId: "s-1", secretName: "daytona", status: "active", value: "must-not-print" },
+        }],
+      })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const out: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void out.push(a.join(" ")));
+    await runSecretCommand(["secrets", "settings", "--json"]);
+    spy.mockRestore();
+    expect(fetchMock.mock.calls.map((c) => [c[1]?.method ?? "GET", c[0]])).toEqual([
+      ["GET", "http://localhost:3100/api/instance/secret-settings"],
+    ]);
+    const printed = out.join("\n");
+    expect(printed).toContain("sandbox.daytona.api_key");
+    expect(printed).toContain("s-1");
+    expect(printed).not.toContain("must-not-print");
   });
 });
 

@@ -1,9 +1,14 @@
+import { useTranslation } from "@/i18n";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
+import { useQuery } from "@tanstack/react-query";
+import { accessApi } from "@/api/access";
+import { queryKeys } from "@/lib/queryKeys";
+import { useOptionalCompany } from "@/context/CompanyContext";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
@@ -17,6 +22,8 @@ const items = [
   // myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management
   { value: "instance-board-api-keys", label: "Board API keys", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/board-api-keys` },
   { value: "instance-experimental", label: "Experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
+  // myrmidon(FEATURES): fork features with live health
+  { value: "instance-features", label: "Features", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/features` },
   { value: "instance-plugins", label: "Plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
   { value: "instance-adapters", label: "Adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
   { value: "browsers", label: "Browsers", href: "/company/settings/browsers" },
@@ -25,8 +32,24 @@ const items = [
   { value: "autonomy", label: "Autonomy", href: "/company/settings/autonomy" },
   // myrmidon(1.6.1 WIP-LIMIT B): per-agent work-in-progress limit screen
   { value: "wip-limit", label: "WIP limit", href: "/company/settings/wip-limit" },
-  // myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section
-  { value: "castes", label: "Castes & models", href: "/company/settings/castes" },
+  // myrmidon(1.7 GRD-MODES): guardrail enforcement-mode settings screen
+  { value: "guardrails", label: "Guardrails", href: "/company/settings/guardrails" },
+  // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
+  { value: "review-routing", label: "Review routing", href: "/company/settings/review-routing" },
+  // myrmidon(1.7 BUDGET-CONFIG D): per-level spend limits screen
+  { value: "budgets", label: "Budgets", href: "/company/settings/budgets" },
+  // myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — the settings list splits
+  // into a "Castes" screen (the directory) and a "Models" screen (providers,
+  // which used to live on /company/settings/castes).
+  { value: "castes", label: "Agent castes", href: "/company/settings/castes" },
+  { value: "models", label: "Models & providers", href: "/company/settings/models" },
+  // myrmidon(1.6.5-OWNER-DM-FILTER): owner Telegram delivery mode screen
+  { value: "owner-delivery", label: "Owner Telegram delivery", href: "/company/settings/owner-delivery" },
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus module screen
+  { value: "corpus", label: "Knowledge corpus", href: "/company/settings/corpus" },
+  // myrmidon(1.6.1 VOICE-STT C): the STT settings section
+  { value: "voice-stt", label: "Speech", href: "/company/settings/voice-stt" },
+  { value: "agent-exchange", label: "Agent exchanges", href: "/company/settings/agent-exchange" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -67,6 +90,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`)) {
     return "instance-experimental";
+  }
+
+  // myrmidon(FEATURES): the Features page
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/features`)) {
+    return "instance-features";
   }
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`)) {
@@ -120,29 +148,126 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "autonomy";
   }
 
+  // myrmidon(1.6.5 F-26 T3): /caste-directory is the pre-IA-v2 address of the
+  // caste directory. The route redirects to /castes, and a stale link or
+  // bookmark still highlights the right tab.
+  if (pathname.includes("/company/settings/caste-directory")) {
+    return "castes";
+  }
+
   // myrmidon(1.6.1 WIP-LIMIT B): the WIP limit settings section
   if (pathname.includes("/company/settings/wip-limit")) {
     return "wip-limit";
   }
 
-  // myrmidon(1.6.1 MODEL-PROVIDERS C): the Castes and models settings section
+  // myrmidon(1.6.5-OWNER-DM-FILTER): the owner Telegram delivery settings section
+  if (pathname.includes("/company/settings/owner-delivery")) {
+    return "owner-delivery";
+  }
+
+  // myrmidon(1.7 GRD-MODES): the Guardrails settings section
+  if (pathname.includes("/company/settings/guardrails")) {
+    return "guardrails";
+  }
+
+  // myrmidon(REVIEW-ROUTING): the review routing settings section
+  if (pathname.includes("/company/settings/review-routing")) {
+    return "review-routing";
+  }
+
+  // myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — /castes is the caste
+  // directory now, /models holds the providers that used to sit on /castes.
   if (pathname.includes("/company/settings/castes")) {
     return "castes";
+  }
+
+  if (pathname.includes("/company/settings/models")) {
+    return "models";
+  }
+
+  // myrmidon(1.7 BUDGET-CONFIG D): the Budgets settings section
+  if (pathname.includes("/company/settings/budgets")) {
+    return "budgets";
+  }
+
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings section
+  if (pathname.includes("/company/settings/corpus")) {
+    return "corpus";
+  }
+
+  // myrmidon(1.6.1 VOICE-STT C): the speech recognition settings section
+  if (pathname.includes("/company/settings/voice-stt")) {
+    return "voice-stt";
+  }
+  if (pathname.includes("/company/settings/agent-exchange")) {
+    return "agent-exchange";
   }
 
   return "general";
 }
 
+// myrmidon(UI-RU): settings tab labels run through the fork i18n catalog.
+// myrmidon(UI-RU): Partial so a tab added upstream (e.g. wip-limit in 1.6.1
+// WIP-LIMIT B) merges without a type error here; untranslated tabs fall back
+// to their English item label until a key is added.
+const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
+  general: "settingsNav.general",
+  export: "settingsNav.export",
+  import: "settingsNav.import",
+  members: "settingsNav.members",
+  secrets: "settingsNav.secrets",
+  "instance-profile": "settingsNav.profile",
+  "instance-environments": "settingsNav.environments",
+  "instance-access": "settingsNav.access",
+  "instance-board-api-keys": "settingsNav.boardApiKeys",
+  "instance-experimental": "settingsNav.experimental",
+  "instance-features": "settingsNav.features",
+  "instance-plugins": "settingsNav.plugins",
+  "instance-adapters": "settingsNav.adapters",
+  browsers: "settingsNav.browsers",
+  clouds: "settingsNav.clouds",
+  autonomy: "settingsNav.autonomy",
+  castes: "settingsNav.castes",
+  models: "settingsNav.models",
+  "wip-limit": "settingsNav.wipLimit",
+  guardrails: "settingsNav.guardrails",
+  "review-routing": "settingsNav.reviewRouting",
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings tab
+  corpus: "settingsNav.corpus",
+  "agent-exchange": "settingsNav.agentExchange",
+  budgets: "settingsNav.budgets",
+};
+
 export function CompanySettingsNav() {
+  const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const { hidden: hiddenSettings } = useHiddenSettings();
   // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
   // tab is suppressed there rather than dead-ending.
   const isCloud = Boolean(useCloudInstance());
+  const companyContext = useOptionalCompany();
+  const selectedCompanyId = companyContext?.selectedCompanyId;
+  const boardAccess = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+
+  const boardAccessData = boardAccess.data;
+  const membership = boardAccessData?.memberships?.find((m) => m.companyId === selectedCompanyId);
+  const isModelsAdmin =
+    Boolean(boardAccessData?.isInstanceAdmin) ||
+    boardAccessData?.source === "local_implicit" ||
+    membership?.membershipRole === "owner" ||
+    membership?.membershipRole === "admin" ||
+    (!selectedCompanyId && Boolean(boardAccessData?.memberships?.some((m) => m.membershipRole === "owner" || m.membershipRole === "admin")));
+
   const activeTab = getCompanySettingsTab(location.pathname);
   const visibleItems = items.filter((item) => {
     if (item.value === "import" && isCloud) return false;
+    // myrmidon(1.6.7 OPE-9852): Models & providers tab is visible only to owner and board admins
+    if (item.value === "models" && !isModelsAdmin) return false;
     const hiddenKey = hiddenSettingKeyByTab[item.value];
     return !hiddenKey || !hiddenSettings.has(hiddenKey);
   });
@@ -156,7 +281,12 @@ export function CompanySettingsNav() {
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange}>
       <PageTabBar
-        items={visibleItems.map(({ value, label }) => ({ value, label }))}
+        items={visibleItems.map(({ value, label }) => ({
+          value,
+          label: SETTINGS_TAB_LABEL_KEYS[value]
+            ? t(SETTINGS_TAB_LABEL_KEYS[value]!, { defaultValue: label })
+            : label,
+        }))}
         value={activeTab}
         onValueChange={handleTabChange}
         align="start"

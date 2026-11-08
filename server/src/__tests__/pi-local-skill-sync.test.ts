@@ -5,14 +5,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listPiSkills,
   syncPiSkills,
-} from "@paperclipai/adapter-pi-local/server";
+} from "@myrmidon/adapter-pi-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
 describe("pi local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const paperclipKey = "paperclipai/paperclip/myrmidon";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -42,6 +42,6 @@ describe("pi local skill sync", () => {
 
     const after = await syncPiSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".pi", "agent", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".pi", "agent", "skills", "myrmidon"))).isSymbolicLink()).toBe(true);
   });
 });

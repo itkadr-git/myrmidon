@@ -11,6 +11,14 @@
 #
 # Like rollback.sh this is the emergency path: it warns when the target is not
 # a verified CI image but does not block.
+#
+# The image to go back to is the one the container ran before the rollout
+# (deploy.sh and rollout-component.sh record it from `docker inspect` of the
+# running container, not from a file); the generated override file is rewritten
+# to it, so the deploy, this rollback and the boot unit agree on one image.
+# dockergate is proven healthy by its own log (the container runs; the newest
+# self-check line reports the version of the restored binary and the hash of
+# the restored config), not by a ping the host cannot make.
 set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
@@ -23,7 +31,7 @@ while (($#)); do
     --component) component="$2"; shift 2 ;;
     --to-image) to_image="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -38,16 +46,7 @@ declare -A MYR_COMPONENT_REPOSITORIES=(
 repo="${MYR_COMPONENT_REPOSITORIES[$component]:-}"
 [[ -n "$repo" ]] || die "unknown component: $component (known: dockergate, fleetd)"
 
-COMPONENT_SERVICE_VAR="$(printf 'MYR_%s_COMPOSE_SERVICE' "$component" | tr '[:lower:]' '[:upper:]')"
-COMPONENT_OVERRIDE_VAR="$(printf 'MYR_%s_OVERRIDE_FILE' "$component" | tr '[:lower:]' '[:upper:]')"
-COMPONENT_HEALTH_URL_VAR="$(printf 'MYR_%s_HEALTH_URL' "$component" | tr '[:lower:]' '[:upper:]')"
-COMPONENT_HOST_VAR="$(printf 'MYR_%s_HOST' "$component" | tr '[:lower:]' '[:upper:]')"
-COMPONENT_SERVICE="${!COMPONENT_SERVICE_VAR:-$component}"
-COMPONENT_OVERRIDE_NAME="${!COMPONENT_OVERRIDE_VAR:-docker-compose.myrmidon-$component.yml}"
-COMPONENT_HEALTH_URL="${!COMPONENT_HEALTH_URL_VAR:-}"
-COMPONENT_HOST="${!COMPONENT_HOST_VAR:-local}"
-COMPONENT_OVERRIDE_PATH="$COMPOSE_DIR/$COMPONENT_OVERRIDE_NAME"
-COMPONENT_PREVIOUS_FILE="$STATE_DIR/previous-$component-image"
+component_env "$component"
 
 # HOST-TARGETING (the 02.10 two-host follow-up): the rollback must target the
 # SAME host the rollout targeted. A rollback that ignored MYR_<COMPONENT>_HOST
@@ -70,8 +69,7 @@ else
 fi
 [[ "$ref" =~ ^[A-Za-z0-9./_:@-]+$ ]] || die "rollback target is not an image reference: $ref"
 
-current_ref=""
-current_ref="$(component_host_cat_override | sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]#]+).*/\1/p' | head -n1)"
+current_ref="$(component_host_previous_ref)"
 
 if ! check_ci_image_for_repo "$repo" "$ref"; then
   log "WARNING: $component rollback target is not a verified CI image: $CI_CHECK_REASON"
@@ -82,7 +80,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Plan (${COMPONENT_HOST%%:*} target${COMPONENT_REMOTE:+, ssh $COMPONENT_REMOTE}):"
   plan "1. docker pull $ref"
   plan "2. set image in $COMPONENT_OVERRIDE_PATH (from ${current_ref:-<none>}); docker compose up -d --no-deps $COMPONENT_SERVICE"
-  plan "3. health: ${COMPONENT_HEALTH_URL:-<unset>}"
+  if [[ "$component" == "dockergate" ]]; then
+    plan "3. health: the container runs; its self-check log line reports the version of the restored binary and the hash of the config"
+  else
+    plan "3. health: ${COMPONENT_HEALTH_URL:-<unset>}"
+  fi
   exit 0
 fi
 
@@ -98,7 +100,19 @@ if [[ -n "$current_ref" && "$current_ref" != "$ref" ]]; then
 fi
 
 log "3/3 health"
-if [[ -n "$COMPONENT_HEALTH_URL" ]]; then
+if [[ "$component" == "dockergate" ]]; then
+  # Same proof as the rollout: the host cannot ping dockergate. The version is
+  # the restored binary's; the config hash is the restored config's. An older
+  # dockergate that does not log a hash is accepted with a warning (the
+  # emergency path), a different hash is not.
+  expected_version="$(component_host_docker run --rm --network none "$ref" version 2>/dev/null | head -n1 || true)"
+  [[ -n "$expected_version" ]] || log "WARNING: cannot read the version of $ref; the version is not checked"
+  expected_hash=""
+  dg_config="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
+  [[ -n "$dg_config" && -f "$dg_config" ]] && expected_hash="$(dockergate_config_hash "$dg_config")"
+  dockergate_verify_state "$expected_version" "$expected_hash" "$HEALTH_TIMEOUT_SEC" lenient \
+    || die "dockergate did not prove healthy after the rollback (version '${DG_SEEN_VERSION:-<none>}', config hash '${DG_SEEN_HASH:-<none>}'; expected '${expected_version:-<any>}', '${expected_hash:-<not checked>}')"
+elif [[ -n "$COMPONENT_HEALTH_URL" ]]; then
   # URL plus optional curl arguments; word-splitting is intended.
   health_ok=0
   for _ in $(seq 1 "$((HEALTH_TIMEOUT_SEC / POLL_INTERVAL_SEC + 1))"); do

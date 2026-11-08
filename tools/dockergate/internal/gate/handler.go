@@ -87,7 +87,9 @@ func checkHeaders(r *http.Request) *deny.Error {
 	return nil
 }
 
-func hasBody(id string) bool { return id == route.A4 || id == route.A5 }
+func hasBody(id string) bool {
+	return id == route.A4 || id == route.A5 || id == route.A15 || id == route.A18 || id == route.A20
+}
 
 func (rs *reqState) handle() *deny.Error {
 	g, r := rs.g, rs.r
@@ -116,6 +118,12 @@ func (rs *reqState) handle() *deny.Error {
 	rs.key = rt.BotKey
 	if rt.ID == route.A1 {
 		rs.target = rt.ImageRef
+	} else if rt.ID == route.A14 {
+		rs.target = route.DiskTarget
+	} else if rt.ID == route.A19 {
+		rs.target = route.EventsOomTarget
+	} else if rt.ID == route.A20 {
+		rs.target = rt.ConfigBotKey
 	} else {
 		rs.target = rt.Name
 	}
@@ -124,6 +132,11 @@ func (rs *reqState) handle() *deny.Error {
 		bot config.Bot
 		bs  *botState
 	)
+	if rt.ConfigBotKey != "" {
+		if _, ok := st.cfg.Bot(rt.ConfigBotKey); !ok {
+			return deny.New(deny.BotNotEnrolled)
+		}
+	}
 	if rt.BotKey != "" {
 		b, ok := st.cfg.Bot(rt.BotKey)
 		if !ok {
@@ -150,6 +163,8 @@ func (rs *reqState) handle() *deny.Error {
 		return rs.a2(ctx, st, rt, bs)
 	case route.A3:
 		return rs.a3(ctx, st, rt, bs)
+	case route.A13:
+		return rs.a13(ctx, st, rt, bs)
 	case route.A4:
 		return rs.a4(ctx, st, rt, bot, bs)
 	case route.A5:
@@ -164,10 +179,22 @@ func (rs *reqState) handle() *deny.Error {
 		return rs.a9(ctx, st, rt, bs)
 	case route.A10:
 		return rs.a10(ctx, st, rt, bs)
+	case route.A17:
+		return rs.a17(ctx, st, rt, bs)
 	case route.A11:
 		return rs.a11(ctx, st, rt, bs)
+	case route.A18:
+		return rs.a18(ctx, st, rt, bs, bot)
 	case route.A12:
 		return rs.a12(ctx, st, rt, bs)
+	case route.A15:
+		return rs.a15(ctx, st, rt)
+	case route.A14:
+		return rs.a14(ctx, st)
+	case route.A19:
+		return rs.a19(ctx, st)
+	case route.A20:
+		return rs.a20(st, rt)
 	}
 	return deny.New(deny.RouteNotAllowed)
 }

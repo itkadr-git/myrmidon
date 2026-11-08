@@ -4,7 +4,7 @@
 // preserveMaintenanceGeneralKey().
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 // myrmidon(BROWSER-CONSOLE): preserve the browser console key in `general`
 // (same rule as our maintenance key below).
 import { BROWSER_SESSIONS_GENERAL_KEY } from "../browser-console/store.js";

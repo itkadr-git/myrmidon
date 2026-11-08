@@ -7,11 +7,13 @@ import {
   createDb,
   decisionArchiveNotificationOutbox,
   decisionRetention,
+  instanceSettings,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { attentionService } from "../services/attention.js";
 import { decisionRetentionService } from "../services/decision-retention.js";
+import { decisionRetentionSyncScheduler } from "../services/decision-retention-sync.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
@@ -23,6 +25,18 @@ describePg("decision retention", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decision-retention-");
     db = createDb(tempDb.connectionString);
+    // myrmidon(OPE-10245): DEVFLOW health alerts are on by default since #1986
+    // (opt-out: instance_settings.general.devflowHealth.enabled = false). The
+    // seeded `in_review` issues are months old, so with the collector on every
+    // one of them also gets reviewQueueAgeMs and stalledRouterMs cards in the
+    // feed. This suite tests retention of the review rows, not DEVFLOW cards,
+    // so the collector is switched off for the fixture.
+    await db.insert(instanceSettings)
+      .values({ singletonKey: "default", general: { devflowHealth: { enabled: false } } })
+      .onConflictDoUpdate({
+        target: instanceSettings.singletonKey,
+        set: { general: { devflowHealth: { enabled: false } } },
+      });
   }, 30_000);
 
   afterEach(async () => {
@@ -94,7 +108,13 @@ describePg("decision retention", () => {
     const { companyId, issueIds } = await seedReviewItems(1);
     const now = new Date("2026-08-02T00:00:00.000Z");
     const svc = decisionRetentionService(db);
-    const before = await attentionService(db, { now: () => now.getTime() }).list(companyId, { limit: 100 });
+    const readFeed = () => attentionService(db, { now: () => now.getTime() }).list(companyId, { limit: 100 });
+    // myrmidon(1.6.5-F-15-C): the feed read no longer stores the retention rows
+    // — the background pass does — so run the pass and read the feed again to
+    // get the stored versions before archiving.
+    await readFeed();
+    await decisionRetentionSyncScheduler(db).drainCompany(companyId);
+    const before = await readFeed();
     expect(before.items).toHaveLength(1);
 
     expect(await svc.autoArchive({ companyId, items: before.items, now })).toBe(1);
@@ -120,6 +140,9 @@ describePg("decision retention", () => {
     const notifications: Array<Record<string, unknown>> = [];
     const svc = decisionRetentionService(db, { notifyOriginAgent: async (batch) => notifications.push(batch) });
     await attentionService(db, { now: () => now.getTime() }).list(companyId, { limit: 100 });
+    // myrmidon(1.6.5-F-15-C): setKeep updates the stored row, which the feed
+    // read no longer writes — the background pass has to run first.
+    await decisionRetentionSyncScheduler(db).drainCompany(companyId);
     await svc.setKeep({
       companyId,
       sourceKind: "review",
@@ -143,7 +166,12 @@ describePg("decision retention", () => {
     const { companyId, issueIds } = await seedReviewItems(2);
     const now = Date.parse("2026-08-02T00:00:00.000Z");
     const svc = decisionRetentionService(db);
-    const feed = await attentionService(db, { now: () => now }).list(companyId, { limit: 100 });
+    const readFeed = () => attentionService(db, { now: () => now }).list(companyId, { limit: 100 });
+    // myrmidon(1.6.5-F-15-C): the manifest's expectedVersion comes from the
+    // stored rows, which the background pass writes, not the feed read.
+    await readFeed();
+    await decisionRetentionSyncScheduler(db).drainCompany(companyId);
+    const feed = await readFeed();
     const manifest = feed.items.map((item) => ({
       companyId,
       sourceKind: item.sourceKind,

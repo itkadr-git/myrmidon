@@ -33,6 +33,18 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("accepts provider model declarations and rejects duplicate ids", () => {
+    const base = {
+      id: "paperclip.provider-models", apiVersion: 1, version: "0.1.0",
+      displayName: "Provider", description: "Provider models", author: "Paperclip",
+      categories: ["automation"], capabilities: ["ui.dashboardWidget.register"],
+      entrypoints: { worker: "./worker.js" },
+      providerModels: { provider: "example", baseUrl: "https://api.example.com/v1", credentialSecretName: "example-key", models: [{ id: "m1" }] },
+    };
+    expect(pluginManifestV1Schema.parse(base).providerModels?.models).toHaveLength(1);
+    expect(pluginManifestV1Schema.safeParse({ ...base, providerModels: { ...base.providerModels, models: [{ id: "m1" }, { id: "m1" }] } }).success).toBe(false);
+  });
+
   it("accepts existing-style plugins that do not request access or authorization capabilities", () => {
     const parsed = pluginManifestV1Schema.parse({
       id: "paperclip.compat-dashboard",
@@ -420,5 +432,39 @@ describe("login pty transport capability and legacy alias", () => {
     );
 
     expect(rejected.success).toBe(false);
+  });
+});
+
+// myrmidon(PLUGIN-ENTITLEMENT C): the manifest gate flag is optional and
+// additive — a manifest without it parses exactly as before, a manifest with
+// it parses with the flag true.
+describe("plugin manifest requiresEntitlement (myrmidon PLUGIN-ENTITLEMENT C)", () => {
+  const baseManifest = {
+    id: "example.premium-feature",
+    apiVersion: 1,
+    version: "1.0.0",
+    displayName: "Premium Feature",
+    description: "Example plugin that requires an entitlement key",
+    author: "Paperclip",
+    categories: ["automation"],
+    capabilities: ["plugin.state.read"],
+    entrypoints: { worker: "./dist/worker.js" },
+  };
+
+  it("accepts a manifest with requiresEntitlement: true", () => {
+    const result = pluginManifestV1Schema.safeParse({ ...baseManifest, requiresEntitlement: true });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.requiresEntitlement).toBe(true);
+  });
+
+  it("accepts a manifest without the flag (unchanged vendor behavior)", () => {
+    const result = pluginManifestV1Schema.safeParse(baseManifest);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.requiresEntitlement).toBeUndefined();
+  });
+
+  it("rejects a non-boolean flag value", () => {
+    const result = pluginManifestV1Schema.safeParse({ ...baseManifest, requiresEntitlement: "yes" });
+    expect(result.success).toBe(false);
   });
 });

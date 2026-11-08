@@ -16,7 +16,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { conflict, unprocessable } from "../../errors.js";
+import { badRequest, conflict, unprocessable } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { SkillLifecycleError } from "./domain.js";
@@ -25,6 +25,9 @@ import type { SkillLifecycleActor, SkillLifecycleService } from "./service.js";
 const promoteSchema = z.object({ approvalId: z.string().min(1) });
 const promoteRequestSchema = z.object({ note: z.string().max(2000).optional().nullable() });
 const deprecateSchema = z.object({ reason: z.string().max(2000).optional().nullable() });
+const pilotAgentsSchema = z.object({
+  agentIds: z.array(z.string().trim().min(1).max(120)).max(500),
+});
 
 export interface SkillLifecycleRoutesDeps {
   service: SkillLifecycleService;
@@ -36,6 +39,13 @@ export interface SkillLifecycleRoutesDeps {
     requestedByUserId: string | null;
     requestedByAgentId: string | null;
   }): Promise<{ approvalId: string }>;
+}
+
+function requireSkillId(skillId: string): string {
+  if (!z.string().uuid().safeParse(skillId).success) {
+    throw badRequest("skillId must be a valid UUID", { code: "skill_id_invalid" });
+  }
+  return skillId;
 }
 
 function actorOf(req: Parameters<typeof getActorInfo>[0]): SkillLifecycleActor {
@@ -65,11 +75,31 @@ export function skillLifecycleRoutes(deps: SkillLifecycleRoutesDeps) {
     res.json({ skills: await deps.service.list(companyId) });
   });
 
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-7): the pilot agent set is a board setting.
+  // GET reports the effective set and where it came from (board setting or the
+  // MYRMIDON_SKILL_PILOT_AGENTS env fallback); PUT stores the company list
+  // (an empty list is an explicit "no pilot"). Registered before the `:skillId`
+  // routes so "pilot-agents" is never read as a skill id. Writing is board-only,
+  // reading needs company access, the same rule as the rest of the panel.
+  router.get(`${base}/pilot-agents`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await deps.service.pilotAgents(companyId));
+  });
+
+  router.put(`${base}/pilot-agents`, validate(pilotAgentsSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const agentIds = (req.body as { agentIds: string[] }).agentIds;
+    res.json(await deps.service.setPilotAgents(companyId, agentIds, actorOf(req)));
+  });
+
   router.get(`${base}/:skillId`, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     try {
-      res.json(await deps.service.state(companyId, req.params.skillId as string));
+      res.json(await deps.service.state(companyId, requireSkillId(req.params.skillId as string)));
     } catch (error) {
       lifecycleError(error);
     }
@@ -87,7 +117,7 @@ export function skillLifecycleRoutes(deps: SkillLifecycleRoutesDeps) {
 
   router.post(`${base}/:skillId/promote-request`, validate(promoteRequestSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    const skillId = req.params.skillId as string;
+    const skillId = requireSkillId(req.params.skillId as string);
     assertCompanyAccess(req, companyId);
     assertBoard(req);
     const skill = await deps.service.state(companyId, skillId).catch((error: unknown) => lifecycleError(error));

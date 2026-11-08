@@ -9,7 +9,7 @@ import {
   goals,
   issues,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { onboardingSeedRoutes } from "../routes/onboarding-seed.js";
 import { logActivity } from "../services/activity-log.js";
 import {
@@ -91,10 +91,10 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     expect(companyAgents[0]?.adapterConfig).toMatchObject({
       paperclipSkillSync: {
         desiredSkills: expect.arrayContaining([
-          "paperclipai/paperclip/paperclip",
-          "paperclipai/paperclip/paperclip-board",
-          "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
-          "paperclipai/paperclip/paperclip-create-agent",
+          "paperclipai/paperclip/myrmidon",
+          "paperclipai/paperclip/myrmidon-board",
+          "paperclipai/paperclip/myrmidon-converting-plans-to-tasks",
+          "paperclipai/paperclip/myrmidon-create-agent",
           "paperclipai/paperclip/para-memory-files",
         ]),
       },

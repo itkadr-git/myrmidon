@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
-vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, fetchClaudeQuota: mocks.claudeQuota }));
-vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
+vi.mock("@myrmidon/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, fetchClaudeQuota: mocks.claudeQuota }));
+vi.mock("@myrmidon/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
 vi.mock("../services/local-ai-credential-file.js", () => ({ readLocalAiCredentialFile: mocks.credentialFile }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllGlobals(); });
@@ -55,7 +55,7 @@ describe("explicit local subscription import", () => {
     await expect(readVerifiedLocalAiCredential("anthropic")).rejects.toThrow("claude auth login");
     mocks.claude.mockResolvedValue("fixture-secret");
     mocks.claudeQuota.mockRejectedValue(new Error("credential fixture-secret rejected"));
-    await expect(readVerifiedLocalAiCredential("anthropic")).rejects.toThrow(/^Could not verify the local subscription\. Run claude auth login in a terminal on the machine running Paperclip, then try Connect again\.$/);
+    await expect(readVerifiedLocalAiCredential("anthropic")).rejects.toThrow(/^Could not verify the local subscription\. Run claude auth login in a terminal on the machine running Myrmidon, then try Connect again\.$/);
     mocks.codex.mockResolvedValue({ accessToken: "incomplete" });
     await expect(readVerifiedLocalAiCredential("openai", "/isolated/login")).rejects.toThrow("sign-in command shown");
     expect(mocks.codexQuota).not.toHaveBeenCalled();

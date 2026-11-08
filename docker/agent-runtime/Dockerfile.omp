@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.6
+# pi-natives ships glibc binaries only (no musl): alpine fails with "Cannot find module pi_natives.linux-x64*.node" (OPE-7762)
+FROM oven/bun:1.4.3-slim
+
+ARG OMP_VERSION=18.9.2
+ENV HOME=/home/paperclip \
+    XDG_CONFIG_HOME=/home/paperclip/.config \
+    XDG_DATA_HOME=/home/paperclip/.local/share \
+    XDG_CACHE_HOME=/home/paperclip/.cache \
+    OMP_SESSION_DIR=/home/paperclip/.local/share/omp/sessions
+
+# oven/bun installs global bins into /usr/local/bin already; linking omp onto itself made a symlink loop (OPE-7762)
+RUN mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$OMP_SESSION_DIR" /workspace \
+    && chown -R 1000:1000 /home/paperclip /workspace \
+    && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+    && BUN_GLOBAL_BIN="$(bun pm bin -g)" \
+    && if [ "$BUN_GLOBAL_BIN" != "/usr/local/bin" ]; then ln -sf "$BUN_GLOBAL_BIN/omp" /usr/local/bin/omp; fi \
+    && test -x "$(readlink -f /usr/local/bin/omp)"
+
+USER 1000:1000
+WORKDIR /workspace
+
+# Smoke check prints what it sees: a silent `test` failure hid the real cause on rc.38-rc.40 (OPE-7762).
+RUN set -e; \
+    bv="$(bun --version)"; echo "bun: $bv"; test "$bv" = "1.4.3"; \
+    ov="$(omp --version 2>&1)"; echo "omp --version: $ov"; case "$ov" in *18.9.2*) ;; *) echo "unexpected omp version"; exit 1;; esac; \
+    command -v omp; \
+    omp --help >/dev/null; \
+    if ! omp models ls >/tmp/omp-models.txt 2>&1; then echo "omp models ls (no provider configured at build time):"; head -20 /tmp/omp-models.txt; fi
+
+CMD ["omp"]

@@ -5,13 +5,15 @@ import type {
   CostByBiller,
   CostByAgentModel,
   CostByProject,
+  CostByDay,
   CostWindowSpendRow,
   FinanceSummary,
   FinanceByBiller,
   FinanceByKind,
   FinanceEvent,
   ProviderQuotaResult,
-} from "@paperclipai/shared";
+  ProviderUsageAggregate,
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 function dateParams(from?: string, to?: string): string {
@@ -23,14 +25,21 @@ function dateParams(from?: string, to?: string): string {
 }
 
 export const costsApi = {
+  providerUsage: (companyId: string) =>
+    api.get<{ thresholdPercent: number; usage: ProviderUsageAggregate[] }>(`/companies/${companyId}/provider-usage`),
   summary: (companyId: string, from?: string, to?: string) =>
     api.get<CostSummary>(`/companies/${companyId}/costs/summary${dateParams(from, to)}`),
+  // myrmidon(1.6.3 PROMPT-BUDGET D): the by-agent rows also carry the fleet
+  // prompt columns `avgPromptTokens` and `runsAboveThresholdPct` (both nullable)
+  // — same endpoint, no new request.
   byAgent: (companyId: string, from?: string, to?: string) =>
     api.get<CostByAgent[]>(`/companies/${companyId}/costs/by-agent${dateParams(from, to)}`),
   byAgentModel: (companyId: string, from?: string, to?: string) =>
     api.get<CostByAgentModel[]>(`/companies/${companyId}/costs/by-agent-model${dateParams(from, to)}`),
   byProject: (companyId: string, from?: string, to?: string) =>
     api.get<CostByProject[]>(`/companies/${companyId}/costs/by-project${dateParams(from, to)}`),
+  byDay: (companyId: string, from?: string, to?: string) =>
+    api.get<CostByDay[]>(`/companies/${companyId}/costs/by-day${dateParams(from, to)}`),
   byProvider: (companyId: string, from?: string, to?: string) =>
     api.get<CostByProviderModel[]>(`/companies/${companyId}/costs/by-provider${dateParams(from, to)}`),
   byBiller: (companyId: string, from?: string, to?: string) =>

@@ -174,8 +174,12 @@ export interface HeartbeatRun {
     github: {
       status: "available" | "absent" | "unavailable";
       login?: string;
-      source?: "personal" | "dedicated";
+      // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App token, issued per `repository`
+      source?: "personal" | "dedicated" | "app";
+      repository?: string;
       reason?: string;
+      reasonCode?: "repository_required";
+      availableRepositories?: string[];
       connectionId?: string;
       grantId?: string;
       authenticationMode?: "managed" | "host" | "anonymous";
@@ -189,6 +193,8 @@ export interface HeartbeatRun {
   signal: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
+  /** Bounded, prompt-free run correlation, usage, spend and outcome snapshot. */
+  runTelemetry?: Record<string, unknown> | null;
   sessionIdBefore: string | null;
   sessionIdAfter: string | null;
   logStore: string | null;

@@ -2,10 +2,18 @@
 Description=PostgreSQL for Paperclip
 
 [Container]
-Image=docker.io/library/postgres:17-alpine
+# SHARED-PG: the same PostgreSQL 18 + pgvector image the installer's internal
+# profile uses, so the manual Quadlet rollout and a clean installed stack share
+# one database generation. The per-service databases and roles (board, litellm,
+# langfuse, hindsight) are created by the installer's db-init script; for this
+# manual variant provision them on the first boot with psql inside the container
+# or extend EnvironmentFile with MYRMIDON_SHARED_SERVICES and an init mount.
+Image=docker.io/pgvector/pgvector:pg18
 ContainerName=paperclip-db
 Pod=paperclip.pod
-Volume=paperclip-pgdata:/var/lib/postgresql/data
+# PG18 keeps the cluster at /var/lib/postgresql/18/docker, so the volume
+# mounts at the image's declared VOLUME path.
+Volume=paperclip-pgdata:/var/lib/postgresql
 EnvironmentFile=%h/.config/containers/systemd/paperclip.env
 HealthCmd=pg_isready -U $POSTGRES_USER -d $POSTGRES_DB -h localhost || exit 1
 HealthInterval=15s

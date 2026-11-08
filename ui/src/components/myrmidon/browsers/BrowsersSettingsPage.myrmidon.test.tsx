@@ -13,13 +13,25 @@ const browsersApiMock = vi.hoisted(() => ({
   heartbeat: vi.fn(),
   done: vi.fn(),
   clearSiteData: vi.fn(),
+  consoleToken: vi.fn(),
+}));
+
+const bridgeApiMock = vi.hoisted(() => ({
+  getSettings: vi.fn(),
+  updateSettings: vi.fn(),
 }));
 
 vi.mock("./browsersApi", () => ({ browsersApi: browsersApiMock, egressSummary: (e: Record<string, string>) => Object.entries(e).map(([k, v]) => `${k}: ${v}`).join(", "), formatDuration: () => "1m 0s" }));
 
-import { BrowserScreenPanelView, type ScreenPanelState } from "./BrowserScreenPanel";
+vi.mock("../connectorPanelApi", () => ({
+  bridgeApi: bridgeApiMock,
+  bridgeSettingsQueryKey: ["myrmidon", "browser-bridge", "settings"],
+}));
+
+import { BrowserScreenPanel, BrowserScreenPanelView, type ScreenPanelState } from "./BrowserScreenPanel";
 import { BrowsersSettingsPageView } from "./BrowsersSettingsPage";
-import type { BrowserConsoleStatus } from "@paperclipai/shared/myrmidon-browser-console";
+import type { BridgeSettings } from "../connectorPanelApi";
+import type { BrowserConsoleStatus } from "@myrmidon/shared/myrmidon-browser-console";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -46,6 +58,8 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   for (const fn of Object.values(browsersApiMock)) fn.mockReset();
+  bridgeApiMock.getSettings.mockReset();
+  bridgeApiMock.updateSettings.mockReset();
 });
 
 afterEach(() => {
@@ -138,6 +152,47 @@ describe("BrowserScreenPanelView", () => {
   });
 });
 
+
+describe("BrowserScreenPanel (live screen, part B)", () => {
+  it("asks the server for the console token once the session is live and renders the frame", async () => {
+    browsersApiMock.heartbeat.mockResolvedValue({
+      active: true,
+      screenSessionId: "node-1",
+      autoCloseAt: new Date(Date.now() + 120_000).toISOString(),
+      warnAt: null,
+      closedBy: null,
+    });
+    browsersApiMock.consoleToken.mockResolvedValue({
+      screenSessionId: "node-1",
+      token: "blob",
+      consoleUrl: "https://guac.invalid/#/?data=blob",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+    render(withClient(<BrowserScreenPanel browser={browser({ sessionActive: true })} companyId={COMPANY_ID} />));
+    await flush();
+    expect(browsersApiMock.consoleToken).toHaveBeenCalledWith("browser-a", COMPANY_ID);
+    const frame = container.querySelector<HTMLIFrameElement>('[data-testid="myrmidon-browser-screen-frame-browser-a"]');
+    expect(frame).not.toBeNull();
+    expect(frame!.getAttribute("src")).toBe("https://guac.invalid/#/?data=blob");
+  });
+
+  it("shows the server error when the console is not configured", async () => {
+    browsersApiMock.heartbeat.mockResolvedValue({
+      active: true,
+      screenSessionId: "node-1",
+      autoCloseAt: new Date(Date.now() + 120_000).toISOString(),
+      warnAt: null,
+      closedBy: null,
+    });
+    browsersApiMock.consoleToken.mockRejectedValue(new Error("The instance has no VNC target configured"));
+    render(withClient(<BrowserScreenPanel browser={browser({ sessionActive: true })} companyId={COMPANY_ID} />));
+    await flush();
+    expect(container.querySelector('[data-testid="myrmidon-browser-screen-frame-browser-a"]')).toBeNull();
+    expect(container.textContent).toContain("no VNC target configured");
+  });
+});
+
+
 describe("BrowsersSettingsPageView", () => {
   it("lists the registry with id, display name, egress and occupancy", async () => {
     render(
@@ -213,5 +268,83 @@ describe("BrowsersSettingsPageView", () => {
     expect(browsersApiMock.clearSiteData).toHaveBeenCalledWith("browser-a", COMPANY_ID, "example.com");
     await flush();
     expect(container.querySelector('[data-testid="myrmidon-browser-clear-error-browser-a"]')?.textContent).toContain("Close the screen session");
+  });
+});
+
+describe("BrowsersSettingsPageView signing block", () => {
+  function settings(enabled: boolean): BridgeSettings {
+    return { domains: ["tender.example.test"], signing: { enabled, mode: "manual", types: ["tender.submit"], dailyLimit: 5 } };
+  }
+
+  function renderPage(signing: BridgeSettings | null, overrides: { signingLoading?: boolean; signingError?: string | null } = {}) {
+    render(
+      withClient(
+        <BrowsersSettingsPageView
+          browsers={[browser()]}
+          journal={[]}
+          companyId={COMPANY_ID}
+          loading={false}
+          error={null}
+          signing={signing}
+          signingLoading={overrides.signingLoading ?? false}
+          signingError={overrides.signingError ?? null}
+        />,
+      ),
+    );
+    return flush();
+  }
+
+  it("shows the state and the re-enable button only while signing is off", async () => {
+    await renderPage(settings(true));
+    expect(container.querySelector('[data-testid="myrmidon-signing-state"]')?.textContent).toContain("Signing is on");
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable"]')).toBeNull();
+
+    await renderPage(settings(false));
+    expect(container.querySelector('[data-testid="myrmidon-signing-state"]')?.textContent).toContain("Signing is off");
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable"]')).not.toBeNull();
+  });
+
+  it("opens the confirmation and cancels it without a settings write", async () => {
+    await renderPage(settings(false));
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="myrmidon-signing-reenable"]')!.click());
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable-confirm"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable-cancel"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable"]')).toBeNull();
+
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="myrmidon-signing-reenable-cancel"]')!.click());
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable-confirm"]')).toBeNull();
+    expect(bridgeApiMock.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("confirms the write with enabled true and keeps the stored signing fields", async () => {
+    bridgeApiMock.updateSettings.mockResolvedValue(settings(true));
+    await renderPage(settings(false));
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="myrmidon-signing-reenable"]')!.click());
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="myrmidon-signing-reenable-confirm"]')!.click());
+    await flush();
+    expect(bridgeApiMock.updateSettings).toHaveBeenCalledTimes(1);
+    expect(bridgeApiMock.updateSettings).toHaveBeenCalledWith({
+      signing: { enabled: true, mode: "manual", types: ["tender.submit"], dailyLimit: 5 },
+    });
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable-confirm"]')).toBeNull();
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable-error"]')).toBeNull();
+  });
+
+  it("reports a failed write without re-enabling signing", async () => {
+    bridgeApiMock.updateSettings.mockRejectedValueOnce(new Error("Signing is locked by the operator"));
+    await renderPage(settings(false));
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="myrmidon-signing-reenable"]')!.click());
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="myrmidon-signing-reenable-confirm"]')!.click());
+    await flush();
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable-error"]')?.textContent).toContain("Signing is locked by the operator");
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable"]')).not.toBeNull();
+  });
+
+  it("keeps the page usable and reports the read failure", async () => {
+    await renderPage(null, { signingError: "browser bridge is not configured" });
+    expect(container.querySelector('[data-testid="myrmidon-signing-read-error"]')?.textContent).toContain("browser bridge is not configured");
+    expect(container.querySelector('[data-testid="myrmidon-signing-reenable"]')).toBeNull();
+    expect(container.querySelector('[data-testid="myrmidon-browser-browser-a"]')).not.toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import { classifyProfileChange } from "./types.js";
 import {
   compileHermesProfile,
   compileHermesProfileDetailed,
+  LLM_GATEWAY_SESSION_AFFINITY_HEADER,
   type HermesProfileInput,
 } from "./profile-compiler.js";
 
@@ -94,8 +95,8 @@ describe("myrmidon(G2) compileHermesProfile — shape and determinism", () => {
       "hermes/config.yaml",
       "hermes/.env",
       "hermes/hindsight/config.json",
-      "hermes/skills-board/alpha/SKILL.md",
-      "hermes/skills-board/zeta/SKILL.md",
+      "hermes/skills/paperclip-managed/alpha/SKILL.md",
+      "hermes/skills/paperclip-managed/zeta/SKILL.md",
       "workspace/AGENTS.md",
     ]);
   });
@@ -161,6 +162,9 @@ describe("myrmidon(G2) compileHermesProfile — file modes and secrecy", () => {
     expect(env).toContain('API_SERVER_KEY="fake-gateway-key-0002"');
     expect(env).toContain('PAPERCLIP_API_URL="https://example.com/board"');
     expect(env).toContain('PAPERCLIP_API_KEY="fake-board-key-0002"');
+    // myrmidon(REBRAND-C): canonical MYRMIDON_* names ship in the same .env.
+    expect(env).toContain('MYRMIDON_API_URL="https://example.com/board"');
+    expect(env).toContain('MYRMIDON_API_KEY="fake-board-key-0002"');
   });
 
   it("drops HOME, PATH and HERMES_HOME from the card's env, with a warning, even if the card sets them", () => {
@@ -254,14 +258,37 @@ describe("myrmidon(G2) compileHermesProfile — file modes and secrecy", () => {
 });
 
 describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", () => {
-  it("always sets approvals.mode off, platforms.api_server.enabled true, terminal.cwd /workspace, memory.provider hindsight and skills.external_dirs", () => {
+  it("sets the required profile fields and disables external skill directories", () => {
     const profile = compileHermesProfile(baseInput());
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
     expect(yaml).toContain('approvals:\n  mode: "off"');
     expect(yaml).toContain("platforms:\n  api_server:\n    enabled: true");
     expect(yaml).toContain('terminal:\n  cwd: "/workspace"');
+    // myrmidon(OPE-11947): execute_code receives the board key and URL.
+    expect(yaml).toContain("env_passthrough:");
+    expect(yaml).toContain("PAPERCLIP_API_KEY");
+    expect(yaml).toContain("PAPERCLIP_API_URL");
     expect(yaml).toContain('memory:\n  provider: "hindsight"');
-    expect(yaml).toContain('skills:\n  external_dirs:\n  - "/data/hermes/skills-board"');
+    // Empty mappings/lists are omitted by the deterministic YAML writer, so
+    // absence of the skills block is the serialized form of no external dirs.
+    expect(yaml).not.toContain("skills:");
+  });
+
+  it("opens the MYRMIDON_* board names to execute_code, with the PAPERCLIP_* aliases kept (REBRAND-ENV, OPE-12052)", () => {
+    const profile = compileHermesProfile(baseInput());
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    const passthrough = yaml.slice(yaml.indexOf("env_passthrough:"));
+    for (const name of ["MYRMIDON_API_KEY", "MYRMIDON_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"]) {
+      expect(passthrough, name).toContain(name);
+    }
+    // The canonical names are listed before the legacy aliases.
+    expect(passthrough.indexOf("MYRMIDON_API_KEY")).toBeLessThan(passthrough.indexOf("PAPERCLIP_API_KEY"));
+    expect(passthrough.indexOf("MYRMIDON_API_URL")).toBeLessThan(passthrough.indexOf("PAPERCLIP_API_URL"));
+    // Every passed-through name is a variable the same profile's .env actually carries.
+    const env = fileByPath(profile.files, "hermes/.env").content;
+    for (const name of ["MYRMIDON_API_KEY", "MYRMIDON_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"]) {
+      expect(env, name).toMatch(new RegExp(`^${name}=`, "m"));
+    }
   });
 
   it("sets gateway.api_server.max_concurrent_runs from maxConcurrentRuns", () => {
@@ -282,24 +309,267 @@ describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", 
   });
 });
 
+// myrmidon(MEMORY-CENTRAL-A): the compiler half of the instance switch — with
+// disableLocalMemory on, the bot's Hermes LOCAL memory (the built-in
+// MEMORY.md/USER.md stores) is turned off and durable memory lives only in
+// hindsight; off, the memory block is exactly the pre-feature one.
+describe("myrmidon(MEMORY-CENTRAL-A) compileHermesProfile — local memory off", () => {
+  it("writes memory_enabled/user_profile_enabled false while keeping the hindsight provider", () => {
+    const profile = compileHermesProfile(baseInput({ instanceDefaults: { disableLocalMemory: true } }));
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain(
+      'memory:\n  memory_enabled: false\n  provider: "hindsight"\n  user_profile_enabled: false',
+    );
+  });
+
+  it("does not touch the memory block when the flag is unset or false", () => {
+    for (const instanceDefaults of [{}, { disableLocalMemory: false }]) {
+      const yaml = fileByPath(compileHermesProfile(baseInput({ instanceDefaults })).files, "hermes/config.yaml").content;
+      expect(yaml).toContain('memory:\n  provider: "hindsight"');
+      expect(yaml).not.toContain("memory_enabled");
+    }
+  });
+
+  it("leaves the hindsight config.json rule untouched: mode stays local_external with the flag on", () => {
+    const profile = compileHermesProfile(baseInput({ instanceDefaults: { disableLocalMemory: true } }));
+    const json = JSON.parse(fileByPath(profile.files, "hermes/hindsight/config.json").content);
+    expect(json.mode).toBe("local_external");
+  });
+});
+
+// myrmidon(TOOL-DIET): agent.disabled_tools — single tools kept out of the model's schema.
+describe("myrmidon(TOOL-DIET) compileHermesProfile — disabled tools", () => {
+  const yamlOf = (input: HermesProfileInput) => fileByPath(compileHermesProfile(input).files, "hermes/config.yaml").content;
+
+  it("writes the instance list under agent.disabled_tools", () => {
+    const yaml = yamlOf(baseInput({ instanceDefaults: { disabledTools: ["browser_vault_fill", "vision_analyze"] } }));
+    expect(yaml).toContain('agent:\n  disabled_tools:\n  - "browser_vault_fill"\n  - "vision_analyze"');
+  });
+
+  it("writes no key at all when the list is unset, empty or all blank", () => {
+    const plain = yamlOf(baseInput());
+    for (const disabledTools of [undefined, [], ["", "  "]]) {
+      expect(yamlOf(baseInput({ instanceDefaults: { disabledTools } }))).toBe(plain);
+    }
+    expect(plain).not.toMatch(/disabled_tools:/);
+  });
+
+  it("the card list wins over the instance list and may be empty", () => {
+    const own = yamlOf(
+      baseInput({ adapterConfig: { disabledTools: ["web_extract"] }, instanceDefaults: { disabledTools: ["vision_analyze"] } }),
+    );
+    expect(own).toContain('- "web_extract"');
+    expect(own).not.toContain("vision_analyze");
+    const none = yamlOf(baseInput({ adapterConfig: { disabledTools: [] }, instanceDefaults: { disabledTools: ["vision_analyze"] } }));
+    expect(none).not.toMatch(/disabled_tools:/);
+  });
+
+  it("keeps vision_analyze for a card with its own vision model, but not when the card lists it itself", () => {
+    const instance = { disabledTools: ["vision_analyze", "browser_vault_fill"] };
+    const kept = yamlOf(baseInput({ adapterConfig: { models: { vision: "fleet-vision" } }, instanceDefaults: instance }));
+    expect(kept).not.toContain("vision_analyze");
+    expect(kept).toContain("browser_vault_fill");
+    const listed = yamlOf(
+      baseInput({ adapterConfig: { models: { vision: "fleet-vision" }, disabledTools: ["vision_analyze"] }, instanceDefaults: instance }),
+    );
+    expect(listed).toContain('- "vision_analyze"');
+  });
+
+  it("drops a name that is not a tool name with a warning, and deduplicates", () => {
+    const detailed = compileHermesProfileDetailed(
+      baseInput({ instanceDefaults: { disabledTools: ["web_extract", "web_extract", "a b", "x;y"] } }),
+    );
+    const yaml = fileByPath(detailed.profile.files, "hermes/config.yaml").content;
+    expect(yaml.match(/web_extract/g)).toHaveLength(1);
+    expect(yaml).not.toContain("a b");
+    expect(detailed.warnings.filter((w) => w.includes("agent.disabled_tools"))).toHaveLength(2);
+  });
+});
+
+// myrmidon(TOOL-DIET-ROLES, OPE-11947): the role defaults the caller resolved, merged with the instance list.
+describe("myrmidon(TOOL-DIET-ROLES) compileHermesProfile — role tool diet", () => {
+  const yamlOf = (input: HermesProfileInput) => fileByPath(compileHermesProfile(input).files, "hermes/config.yaml").content;
+  const roleToolDiet = { disabledTools: ["web_search", "clarify", "browser_exec"], disabledToolsets: ["memory"] };
+
+  it("writes the role tools after the instance tools, once each, and the role toolsets under disabled_toolsets", () => {
+    const yaml = yamlOf(baseInput({ instanceDefaults: { disabledTools: ["vision_analyze", "clarify"] }, roleToolDiet }));
+    expect(yaml).toContain('disabled_tools:\n  - "vision_analyze"\n  - "clarify"\n  - "web_search"\n  - "browser_exec"');
+    expect(yaml.match(/"clarify"/g)).toHaveLength(1);
+    expect(yaml).toContain('disabled_toolsets:\n  - "memory"');
+  });
+
+  it("role defaults work without an instance list", () => {
+    const yaml = yamlOf(baseInput({ roleToolDiet }));
+    expect(yaml).toContain('disabled_tools:\n  - "web_search"\n  - "clarify"\n  - "browser_exec"');
+    expect(yaml).toContain('disabled_toolsets:\n  - "memory"');
+  });
+
+  it("keeps delegation first when the helpers are off", () => {
+    const yaml = yamlOf(
+      baseInput({ parallelHelpers: { enabled: false, maxConcurrent: 4, model: "" }, roleToolDiet }),
+    );
+    expect(yaml).toContain('disabled_toolsets:\n  - "delegation"\n  - "memory"');
+  });
+
+  it("empty or absent role defaults compile to exactly the profile without them", () => {
+    const plain = yamlOf(baseInput({ instanceDefaults: { disabledTools: ["vision_analyze"] } }));
+    for (const empty of [undefined, { disabledTools: [], disabledToolsets: [] }]) {
+      expect(yamlOf(baseInput({ instanceDefaults: { disabledTools: ["vision_analyze"] }, roleToolDiet: empty }))).toBe(plain);
+    }
+    expect(yamlOf(baseInput({ roleToolDiet: { disabledTools: [], disabledToolsets: [] } }))).toBe(yamlOf(baseInput()));
+  });
+
+  it("a card with its own disabledTools list replaces the instance list AND the role defaults, toolsets included", () => {
+    const yaml = yamlOf(
+      baseInput({
+        adapterConfig: { disabledTools: ["web_extract"] },
+        instanceDefaults: { disabledTools: ["vision_analyze"] },
+        roleToolDiet,
+      }),
+    );
+    expect(yaml).toContain('disabled_tools:\n  - "web_extract"');
+    expect(yaml).not.toContain("web_search");
+    expect(yaml).not.toContain("browser_exec");
+    expect(yaml).not.toContain("disabled_toolsets");
+    // An empty card list means "this bot keeps every tool": nothing at all is written.
+    const none = yamlOf(baseInput({ adapterConfig: { disabledTools: [] }, instanceDefaults: { disabledTools: ["vision_analyze"] }, roleToolDiet }));
+    expect(none).not.toContain("disabled_tools");
+    expect(none).not.toContain("disabled_toolsets");
+    // The delegation switch is not a default list: it still applies.
+    const helpersOff = yamlOf(
+      baseInput({
+        adapterConfig: { disabledTools: [] },
+        parallelHelpers: { enabled: false, maxConcurrent: 4, model: "" },
+        roleToolDiet,
+      }),
+    );
+    expect(helpersOff).toContain('disabled_toolsets:\n  - "delegation"');
+    expect(helpersOff).not.toContain('"memory"');
+  });
+
+  it("keepTools re-enables single tools of the instance list and of the role list, and a role toolset", () => {
+    const yaml = yamlOf(
+      baseInput({
+        adapterConfig: { keepTools: ["Clarify", " web_search ", "memory"] },
+        instanceDefaults: { disabledTools: ["vision_analyze", "clarify", "skill_manage"] },
+        roleToolDiet,
+      }),
+    );
+    expect(yaml).toContain('disabled_tools:\n  - "vision_analyze"\n  - "skill_manage"\n  - "browser_exec"');
+    expect(yaml).not.toContain("clarify");
+    expect(yaml).not.toContain("web_search");
+    expect(yaml).not.toContain("disabled_toolsets");
+  });
+
+  it("keepTools is ignored when the card lists disabledTools itself (that list is taken as written)", () => {
+    const yaml = yamlOf(
+      baseInput({ adapterConfig: { disabledTools: ["clarify"], keepTools: ["clarify"] }, roleToolDiet }),
+    );
+    expect(yaml).toContain('disabled_tools:\n  - "clarify"');
+  });
+
+  it("a card with a vision model keeps vision_analyze even if a default list names it", () => {
+    const yaml = yamlOf(
+      baseInput({
+        adapterConfig: { models: { vision: "fleet-vision" } },
+        roleToolDiet: { disabledTools: ["vision_analyze", "web_search"], disabledToolsets: [] },
+      }),
+    );
+    expect(yaml).not.toContain("vision_analyze");
+    expect(yaml).toContain('- "web_search"');
+  });
+
+  it("a role tool that is not a tool name is dropped with a warning, like any other name", () => {
+    const detailed = compileHermesProfileDetailed(
+      baseInput({ roleToolDiet: { disabledTools: ["web_search", "bad name"], disabledToolsets: [] } }),
+    );
+    const yaml = fileByPath(detailed.profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('- "web_search"');
+    expect(yaml).not.toContain("bad name");
+    expect(detailed.warnings.filter((w) => w.includes("agent.disabled_tools"))).toHaveLength(1);
+  });
+});
+
 describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 mapping)", () => {
+  it("maps a card maxOutputTokens value to model.max_tokens in Hermes config", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/thinking", provider: "custom", maxOutputTokens: 16_000 } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 16000');
+  });
+
+  it("defaults to 32000 max_tokens for provider custom when unset", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/nghi-claude-fable-5.1", provider: "custom" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 32000');
+  });
+
+  it("maps models.maxOutputTokens from card models block", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "custom/thinking", provider: "custom", models: { maxOutputTokens: 64_000 } } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('  max_tokens: 64000');
+  });
+
+  it("drops an out-of-range maxOutputTokens with a warning", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", maxOutputTokens: 999_999 } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("999999");
+    expect(yaml).toMatch(/^  max_tokens: 32000$/m);
+    expect(warnings.join("\n")).toContain("model.max_tokens");
+  });
+
   it("maps model, provider and a valid reasoning effort", () => {
     const profile = compileHermesProfile(
       baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", effort: "High" } }),
     );
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
-    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  provider: "anthropic"');
+    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  max_tokens: 32000\n  provider: "anthropic"');
     expect(yaml).toContain('agent:\n  reasoning_effort: "high"');
   });
 
-  it("drops an unrecognized reasoning effort with a warning, leaving agent: out of the document", () => {
+  it("drops an effort the model does not accept with a warning, leaving agent: out of the document", () => {
     const { profile, warnings } = compileHermesProfileDetailed(
       baseInput({ adapterConfig: { effort: "super-high" } }),
     );
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
     expect(yaml).not.toContain("reasoning_effort");
     expect(yaml).not.toContain("agent:");
-    expect(warnings.some((w) => w.includes('"super-high"') && w.includes("not a Hermes effort level"))).toBe(true);
+    expect(warnings.some((w) => w.includes('"super-high"') && w.includes("not accepted by model"))).toBe(true);
+  });
+
+  // myrmidon(BOT-TUNING-C): an empty effort compiles to the model's safe
+  // default, never the Hermes-global "medium" a GLM model rejects.
+  it("compiles an empty effort to the GLM model default (high), never medium", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "glm-5.3" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('reasoning_effort: "high"');
+    expect(yaml).not.toContain("medium");
+  });
+
+  it("drops an effort a GLM model rejects (medium) with a warning", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({ adapterConfig: { model: "glm-5.3", effort: "medium" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("reasoning_effort");
+    expect(warnings.some((w) => w.includes('"medium"') && w.includes("low, high, max"))).toBe(true);
+  });
+
+  it("keeps a GLM-accepted effort Hermes does not know (max)", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "glm-5.3", effort: "max" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('reasoning_effort: "max"');
   });
 
   it("maps models.vision to auxiliary.vision.model", () => {
@@ -354,12 +624,17 @@ describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 ma
     expect(warnings.some((w) => w.startsWith("fallback_model:"))).toBe(true);
   });
 
-  it("leaves model, agent, auxiliary and fallback_model out of the document entirely when the card sets no models", () => {
+  it("leaves model, auxiliary and fallback_model out of the document entirely when the card sets no models", () => {
     const profile = compileHermesProfile(baseInput({ adapterConfig: {} }));
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
-    for (const key of ["model:", "agent:", "auxiliary:", "fallback_model:"]) {
+    for (const key of ["model:", "auxiliary:", "fallback_model:"]) {
       expect(yaml).not.toContain(key);
     }
+    // myrmidon(BOT-TUNING-C): agent.reasoning_effort is always written — an
+    // empty card effort compiles to the effort policy's safe default (never
+    // the Hermes-runtime "medium" a restricted model would reject).
+    expect(yaml).toContain("agent:");
+    expect(yaml).toContain('reasoning_effort: "minimal"');
   });
 });
 
@@ -384,6 +659,29 @@ describe("myrmidon(G2) compileHermesProfile — LLM gateway (instance-level base
     // must never write one even if it did.
     expect(yaml).toContain('api_key: "${LLM_GATEWAY_API_KEY}"');
     expect(yaml).not.toMatch(/api_key:\s*"(?!\$\{)/);
+  });
+
+  // myrmidon(4329-hermes-config-backup-secrets): the key's VALUE reaches the
+  // compiler through input.env (it lands in hermes/.env, 0600, secret). Even
+  // with it in hand, config.yaml must never contain it — only the ${VAR}
+  // reference. This is the guarantee whose violation (via the vendor's
+  // hermes/backups copies) the apply-script cleanup exists for.
+  it("never writes the llm key's actual value into config.yaml even though it holds it for .env", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({
+        adapterConfig: { model: "custom-provider/some-model", provider: "custom" },
+        llm: { baseUrl: "https://example.com/llm/v1", apiKeyEnv: "LLM_GATEWAY_API_KEY" },
+        env: { LLM_GATEWAY_API_KEY: { value: "sk-fake-llm-gateway-key-0001", secret: true } },
+      }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("sk-fake-llm-gateway-key-0001");
+    expect(yaml).toContain('api_key: "${LLM_GATEWAY_API_KEY}"');
+    expect(warnings).toEqual([]);
+    // The value itself travels only in hermes/.env, marked secret.
+    const envFile = profile.files.find((file) => file.path === "hermes/.env");
+    expect(envFile?.secret).toBe(true);
+    expect(envFile?.content).toContain('LLM_GATEWAY_API_KEY="sk-fake-llm-gateway-key-0001"');
   });
 
   it("writes base_url alone, with api_key left out, when apiKeyEnv is not set", () => {
@@ -446,6 +744,94 @@ describe("myrmidon(G2) compileHermesProfile — LLM gateway (instance-level base
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
     expect(yaml).not.toContain("fallback_model");
     expect(warnings.some((w) => w.startsWith("fallback_model:"))).toBe(true);
+  });
+});
+
+// myrmidon(OPE-11966): the ChatGPT pool behind the gateway caches a prompt only when the requests of
+// one conversation carry one stable key. The gateway reads it from `x-litellm-session-id`; Hermes
+// sends a header of that name when the providers entry that serves the request's base URL names it as
+// `session_affinity_header` (agent/opencode_affinity.py). Without the entry no key is sent, the pool
+// sees a new session id per call and its cache hit only 25-47% of the input.
+describe("myrmidon(OPE-11966) compileHermesProfile — conversation key for the LLM gateway", () => {
+  const gatewayLlm = { baseUrl: "https://example.com/llm/v1", apiKeyEnv: "LLM_GATEWAY_API_KEY" };
+
+  it("names the header the gateway reads on a providers entry that serves the gateway URL", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(
+        baseInput({ adapterConfig: { model: "chatgpt-pool/gpt-6.1-sol", provider: "custom" }, llm: gatewayLlm }),
+      ).files,
+      "hermes/config.yaml",
+    ).content;
+    expect(LLM_GATEWAY_SESSION_AFFINITY_HEADER).toBe("x-litellm-session-id");
+    expect(yaml).toContain(
+      'providers:\n  myrmidon-gateway:\n    api: "https://example.com/llm/v1"\n    key_env: "LLM_GATEWAY_API_KEY"\n' +
+        '    session_affinity_header: "x-litellm-session-id"',
+    );
+  });
+
+  it("matches the endpoint of model.base_url and of every fallback_model entry (Hermes matches the entry by URL)", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(
+        baseInput({
+          adapterConfig: { model: "chatgpt-pool/gpt-6.1-sol", provider: "custom", models: { fallbacks: ["model-b"] } },
+          llm: gatewayLlm,
+        }),
+      ).files,
+      "hermes/config.yaml",
+    ).content;
+    const urls = [...yaml.matchAll(/^\s*(?:- )?(?:base_url|api): "([^"]+)"$/gm)].map((m) => m[1]);
+    // model.base_url, the fallback entry, and the providers entry: one URL, three places.
+    expect(urls).toEqual(["https://example.com/llm/v1", "https://example.com/llm/v1", "https://example.com/llm/v1"]);
+    expect(yaml.match(/session_affinity_header/g)).toHaveLength(1);
+  });
+
+  it("does not depend on the card: a card with no provider, or auto, gets the same entry", () => {
+    const entry =
+      'providers:\n  myrmidon-gateway:\n    api: "https://example.com/llm/v1"\n    key_env: "LLM_GATEWAY_API_KEY"\n' +
+      '    session_affinity_header: "x-litellm-session-id"';
+    for (const adapterConfig of [{}, { provider: "auto" }, { provider: "custom" }, { provider: "xai", model: "grok-4" }]) {
+      const yaml = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig, llm: gatewayLlm })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain(entry);
+    }
+  });
+
+  it("writes only the variable name of the key, never its value", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({
+        adapterConfig: { provider: "custom" },
+        llm: gatewayLlm,
+        env: { LLM_GATEWAY_API_KEY: { value: "sk-fake-llm-gateway-key-0001", secret: true } },
+      }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("sk-fake-llm-gateway-key-0001");
+    expect(yaml).not.toMatch(/providers:[\s\S]*api_key/);
+    expect(warnings).toEqual([]);
+  });
+
+  it("leaves key_env out of the entry when the instance names no key variable", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(baseInput({ adapterConfig: { provider: "custom" }, llm: { baseUrl: "https://example.com/llm/v1" } }))
+        .files,
+      "hermes/config.yaml",
+    ).content;
+    expect(yaml).toContain(
+      'providers:\n  myrmidon-gateway:\n    api: "https://example.com/llm/v1"\n    session_affinity_header: "x-litellm-session-id"',
+    );
+    expect(yaml).not.toContain("key_env");
+  });
+
+  it("sends no conversation key anywhere when the instance has no gateway endpoint", () => {
+    const yaml = fileByPath(
+      compileHermesProfile(baseInput({ adapterConfig: { provider: "xai", model: "grok-4" } })).files,
+      "hermes/config.yaml",
+    ).content;
+    expect(yaml).not.toContain("providers");
+    expect(yaml).not.toContain("session_affinity_header");
+    expect(yaml).not.toContain("x-litellm-session-id");
   });
 });
 
@@ -732,7 +1118,7 @@ describe("myrmidon(G2) compileHermesProfile — hindsight settings", () => {
 });
 
 describe("myrmidon(G2) compileHermesProfile — skills", () => {
-  it("copies each skill file under hermes/skills-board/<skill>/<path>", () => {
+  it("copies each skill file under hermes/skills/paperclip-managed/<skill>/<path>", () => {
     const profile = compileHermesProfile(
       baseInput({
         skills: {
@@ -743,8 +1129,8 @@ describe("myrmidon(G2) compileHermesProfile — skills", () => {
         },
       }),
     );
-    expect(fileByPath(profile.files, "hermes/skills-board/code-review/SKILL.md").content).toBe("# Code review\n");
-    expect(fileByPath(profile.files, "hermes/skills-board/code-review/scripts/run.py").content).toBe(
+    expect(fileByPath(profile.files, "hermes/skills/paperclip-managed/code-review/SKILL.md").content).toBe("# Code review\n");
+    expect(fileByPath(profile.files, "hermes/skills/paperclip-managed/code-review/scripts/run.py").content).toBe(
       "print('ok')\n",
     );
   });
@@ -767,7 +1153,7 @@ describe("myrmidon(G2) compileHermesProfile — skills", () => {
 
   it("compiles with no skills at all", () => {
     const profile = compileHermesProfile(baseInput({ skills: {} }));
-    expect(profile.files.some((f) => f.path.startsWith("hermes/skills-board/"))).toBe(false);
+    expect(profile.files.some((f) => f.path.startsWith("hermes/skills/paperclip-managed/"))).toBe(false);
   });
 });
 
@@ -956,6 +1342,149 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
     expect(yaml).toContain("compression:\n  enabled: true\n  target_ratio: 0.2\n  threshold: 0.5");
   });
 
+  // myrmidon(BOT-LSP): test LSP settings
+  describe("myrmidon(BOT-LSP) lsp settings", () => {
+    it("writes lsp settings from instance defaults", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            instanceDefaults: {
+              lsp: {
+                enabled: true,
+                idleTimeout: 120,
+                excludeRoots: ["**/myrmidon/**", "/workspace/*/repo"],
+                waitMode: "sync",
+              },
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("enabled: true");
+      expect(yaml).toContain("idle_timeout: 120");
+      expect(yaml).toContain("- \"**/myrmidon/**\"");
+      expect(yaml).toContain("- \"/workspace/*/repo\"");
+      expect(yaml).toContain("wait_mode: \"sync\"");
+    });
+
+    it("writes lsp settings from agent-specific overrides", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            lsp: {
+              enabled: false,
+              idleTimeout: 60,
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("enabled: false");
+      expect(yaml).toContain("idle_timeout: 60");
+    });
+
+    it("agent-specific lsp settings override instance defaults", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            instanceDefaults: {
+              lsp: {
+                enabled: true,
+                idleTimeout: 120,
+              },
+            },
+            lsp: {
+              enabled: false, // This should override the instance default
+              excludeRoots: ["**/test/**"], // This should be added to the config
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("enabled: false"); // From agent override
+      expect(yaml).toContain("idle_timeout: 120"); // From instance default (not overridden)
+      expect(yaml).toContain("- \"**/test/**"); // From agent override
+      expect(yaml).not.toContain("- \"**/myrmidon/**"); // From instance default (not included)
+    });
+
+    it("writes lsp servers configuration", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            lsp: {
+              servers: {
+                tsserver: {
+                  memoryLimit: 1024,
+                },
+                eslint: {
+                  configFile: ".eslintrc.js",
+                },
+              },
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("servers:");
+      expect(yaml).toContain("tsserver:");
+      expect(yaml).toContain("eslint:");
+      expect(yaml).toContain("memoryLimit: 1024");
+      expect(yaml).toContain("configFile: \".eslintrc.js\"");
+    });
+
+    it("merges instance and agent server configurations with agent taking precedence", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            instanceDefaults: {
+              lsp: {
+                servers: {
+                  tsserver: {
+                    memoryLimit: 2048,
+                    maxOldSpaceSize: 2048,
+                  },
+                },
+              },
+            },
+            lsp: {
+              servers: {
+                tsserver: {
+                  memoryLimit: 1024, // This should override instance value
+                  configFile: ".tsconfig.json", // This should be added
+                  // maxOldSpaceSize should come from instance
+                },
+                eslint: {
+                  configFile: ".eslintrc.js", // This should be added
+                },
+              },
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("servers:");
+      expect(yaml).toContain("tsserver:");
+      expect(yaml).toContain("memoryLimit: 1024"); // From agent override
+      expect(yaml).toContain("maxOldSpaceSize: 2048"); // From instance default
+      expect(yaml).toContain("configFile: \".tsconfig.json\""); // From agent
+      expect(yaml).toContain("eslint:"); // From agent
+      expect(yaml).toContain("configFile: \".eslintrc.js\""); // From agent
+    });
+
+    it("does not write lsp section when no lsp settings are provided", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(baseInput()).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).not.toContain("lsp:");
+    });
+  });
+
   // myrmidon(BOT-RUNTIME-TUNING-B): the absolute compression token cap.
   describe("myrmidon(BOT-RUNTIME-TUNING-B) compression.threshold_tokens", () => {
     it("writes threshold_tokens when the instance default sets it", () => {
@@ -1018,6 +1547,91 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
         expect(fileByPath(profile.files, "hermes/config.yaml").content).not.toContain("threshold_tokens");
         expect(warnings.some((warning) => warning.includes("compression.threshold_tokens"))).toBe(true);
       }
+    });
+  });
+
+  // myrmidon(BOT-RUNTIME-TUNING-A): the same cap, set on the agent card.
+  describe("myrmidon(BOT-RUNTIME-TUNING-A) compression.threshold_tokens from the card", () => {
+    const yamlOf = (input: HermesProfileInput): string =>
+      fileByPath(compileHermesProfile(input).files, "hermes/config.yaml").content;
+
+    it("writes the card's threshold when the instance sets none at all", () => {
+      const yaml = yamlOf(baseInput({ adapterConfig: { models: { compressionThresholdTokens: 120_000 } } }));
+      expect(yaml).toContain("compression:\n  threshold_tokens: 120000");
+    });
+
+    it("the card's threshold wins over the instance default", () => {
+      const yaml = yamlOf(
+        baseInput({
+          adapterConfig: { models: { compressionThresholdTokens: 120_000 } },
+          instanceDefaults: { compression: { thresholdTokens: 100_000 } },
+        }),
+      );
+      expect(yaml).toContain("threshold_tokens: 120000");
+      expect(yaml).not.toContain("threshold_tokens: 100000");
+    });
+
+    it("keeps the instance ratio settings around the card's threshold", () => {
+      const yaml = yamlOf(
+        baseInput({
+          adapterConfig: { models: { compressionThresholdTokens: 120_000 } },
+          instanceDefaults: { compression: { enabled: true, threshold: 0.5, targetRatio: 0.2, thresholdTokens: 100_000 } },
+        }),
+      );
+      expect(yaml).toContain(
+        "compression:\n  enabled: true\n  target_ratio: 0.2\n  threshold: 0.5\n  threshold_tokens: 120000",
+      );
+    });
+
+    it("drops an out-of-range card value with a warning instead of substituting the instance default", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { models: { compressionThresholdTokens: 9_999 } },
+          instanceDefaults: { compression: { thresholdTokens: 100_000 } },
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).not.toContain("threshold_tokens");
+      const warning = warnings.find((item) => item.includes("compression.threshold_tokens"));
+      expect(warning).toBeDefined();
+      // The warning names where the rejected value came from.
+      expect(warning).toContain("from the card");
+    });
+
+    it("names the instance default in the warning when that is the rejected value", () => {
+      const { warnings } = compileHermesProfileDetailed(
+        baseInput({ instanceDefaults: { compression: { thresholdTokens: 2_000_001 } } }),
+      );
+      expect(warnings.some((item) => item.includes("compression.threshold_tokens") && item.includes("from the instance default"))).toBe(true);
+    });
+
+    it("writes no compression block when neither the card nor the instance sets a threshold", () => {
+      const yaml = yamlOf(baseInput({ instanceDefaults: { compression: {} } }));
+      expect(yaml).not.toContain("compression:");
+      expect(yaml).not.toContain("threshold_tokens");
+    });
+  });
+
+  // myrmidon(REASONING-OUTPUT-LIMIT): explicit/default model output ceiling.
+  describe("myrmidon(REASONING-OUTPUT-LIMIT) model.max_tokens", () => {
+    it("compiles the card value, defaults to 32000, and warns on invalid overrides", () => {
+      const configured = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { models: { maxTokens: 64_000 } } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(configured).toContain("max_tokens: 64000");
+
+      const defaulted = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { model: "model-a" } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(defaulted).toContain("max_tokens: 32000");
+
+      const invalid = compileHermesProfileDetailed(
+        baseInput({ adapterConfig: { model: "model-a", models: { maxTokens: 1 } } }),
+      );
+      expect(fileByPath(invalid.profile.files, "hermes/config.yaml").content).toContain("max_tokens: 32000");
+      expect(invalid.warnings.some((warning) => warning.includes("model.max_tokens") && warning.includes("outside the supported range"))).toBe(true);
     });
   });
 
@@ -1197,6 +1811,167 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
     });
   });
 
+  // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling of the
+  // auxiliary fallback chains. Hermes walks `auxiliary.<task>.fallback_chain`
+  // before the main chain, so the ceiling is what stops a title or compression
+  // call from being served by a paid model after its own model refused the
+  // request (fact 02.10: the title call's `response_format: json_schema` was
+  // rejected and the chain climbed to a paid model).
+  describe("myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING) auxiliary fallback ceiling", () => {
+    const ceiling = { auxiliary: { fallbackModels: ["model-cheap", "model-cheaper"] } };
+
+    it("writes the ceiling as auxiliary.title_generation.fallback_chain on the card's provider", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            adapterConfig: { provider: "xai", models: { titleGeneration: "model-title" } },
+            instanceDefaults: ceiling,
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain(
+        'auxiliary:\n  title_generation:\n    fallback_chain:\n    - model: "model-cheap"\n      provider: "xai"\n' +
+          '    - model: "model-cheaper"\n      provider: "xai"\n    model: "model-title"',
+      );
+    });
+
+    it("places the entries on the instance gateway endpoint when the card names no provider", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            adapterConfig: { models: { titleGeneration: "model-title" } },
+            llm: { baseUrl: "https://example.com/llm/v1", apiKeyEnv: "LLM_GATEWAY_API_KEY" },
+            instanceDefaults: ceiling,
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain(
+        'fallback_chain:\n    - base_url: "https://example.com/llm/v1"\n      key_env: "LLM_GATEWAY_API_KEY"\n' +
+          '      model: "model-cheap"\n      provider: "custom"',
+      );
+      expect(yaml).toContain('model: "model-title"');
+    });
+
+    it("caps the compression task with the same ceiling", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            adapterConfig: { provider: "xai", models: { compressionSummary: "model-summary" } },
+            instanceDefaults: ceiling,
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain('auxiliary:\n  compression:\n    fallback_chain:');
+      expect(yaml).toContain('    model: "model-summary"');
+    });
+
+    it("caps the instance-default auxiliary model too, and never caps vision", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            adapterConfig: { provider: "xai", models: { vision: "model-vision" } },
+            instanceDefaults: { auxiliary: { titleGenerationModel: "model-title", ...ceiling.auxiliary } },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain('title_generation:\n    fallback_chain:');
+      // Vision keeps its own block, with no ceiling: those entries must be
+      // vision-capable models, a class the ceiling list cannot vouch for.
+      expect(yaml).toContain('  vision:\n    model: "model-vision"');
+      expect(yaml).not.toContain("vision:\n    fallback_chain");
+    });
+
+    it("drops a ceiling entry that repeats the task's own model (it is not a fallback)", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { provider: "xai", models: { titleGeneration: "model-cheap" } },
+          instanceDefaults: ceiling,
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).toContain('fallback_chain:\n    - model: "model-cheaper"\n      provider: "xai"');
+      expect(yaml).not.toContain('- model: "model-cheap"');
+      expect(warnings.filter((warning) => warning.includes("auxiliary.title_generation.fallback_chain"))).toEqual([]);
+    });
+
+    it("warns and drops the ceiling when every entry repeats the task's own model", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { provider: "xai", models: { titleGeneration: "model-cheap" } },
+          instanceDefaults: { auxiliary: { fallbackModels: ["model-cheap"] } },
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).toContain('title_generation:\n    model: "model-cheap"');
+      expect(yaml).not.toContain("fallback_chain");
+      expect(warnings.some((warning) => warning.includes("auxiliary.title_generation.fallback_chain"))).toBe(true);
+    });
+
+    it("warns and drops the ceiling when there is no route to place an entry on", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { models: { titleGeneration: "model-title" } },
+          llm: {},
+          instanceDefaults: ceiling,
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).toContain('title_generation:\n    model: "model-title"');
+      expect(yaml).not.toContain("fallback_chain");
+      expect(
+        warnings.some(
+          (warning) =>
+            warning.includes("auxiliary.title_generation.fallback_chain") && warning.includes("climb the main chain"),
+        ),
+      ).toBe(true);
+    });
+
+    it("drops the gateway ceiling when the profile carries no gateway key name", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { models: { titleGeneration: "model-title" } },
+          llm: { baseUrl: "https://example.com/llm/v1" },
+          instanceDefaults: ceiling,
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).not.toContain("fallback_chain");
+      expect(
+        warnings.some(
+          (warning) =>
+            warning.includes("auxiliary.title_generation.fallback_chain") && warning.includes("gateway key name"),
+        ),
+      ).toBe(true);
+    });
+
+    it("warns when the ceiling is set but no auxiliary model exists to cap", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({ adapterConfig: { provider: "xai" }, instanceDefaults: ceiling }),
+      );
+      expect(fileByPath(profile.files, "hermes/config.yaml").content).not.toContain("auxiliary:");
+      expect(
+        warnings.some(
+          (warning) => warning.includes("auxiliary.fallback_chain") && warning.includes("no auxiliary task block"),
+        ),
+      ).toBe(true);
+    });
+
+    it("leaves the chain out entirely when no ceiling is configured", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({ adapterConfig: { provider: "xai", models: { titleGeneration: "model-title" } } }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain('auxiliary:\n  title_generation:\n    model: "model-title"');
+      expect(yaml).not.toContain("fallback_chain");
+    });
+  });
+
   it("maps sessionsRetentionDays to sessions.retention_days", () => {
     const yaml = fileByPath(
       compileHermesProfile(baseInput({ instanceDefaults: { sessionsRetentionDays: 30 } })).files,
@@ -1329,45 +2104,43 @@ describe("myrmidon(G2) classifyProfileChange integration", () => {
     ).toBe("restart");
   });
 
-  // Skills are restart-class, not files-class: the vendor gateway's skills
-  // index is cached in-process (LRU + disk snapshot) and does not watch the
-  // skills directory, so a running gateway never picks up an added,
-  // removed or edited skill on its own — see the compiler's comment at the
-  // skillFiles call site. A files-class classification here (the old
-  // behavior) meant the reconciler would write the new files and then never
-  // restart the gateway to pick them up.
-  it("reports \"restart\" when an existing skill's content changes (skills are restart-class)", () => {
+  // OPE-9838, OPE-10086: skills are hot-delivered into hermes/skills/paperclip-managed
+  // and picked up run-scoped without container restart or maintenance.
+  it("reports \"files\" when an existing skill's content changes (skills are files-class)", () => {
     const before = compileHermesProfile(
       baseInput({ skills: { "code-review": [{ path: "SKILL.md", content: "v1" }] } }),
     );
     const after = compileHermesProfile(
       baseInput({ skills: { "code-review": [{ path: "SKILL.md", content: "v2" }] } }),
     );
-    expect(before.restartHash).not.toBe(after.restartHash);
+    expect(before.restartHash).toBe(after.restartHash);
+    expect(before.filesHash).not.toBe(after.filesHash);
     expect(classifyProfileChange({ restartHash: before.restartHash, filesHash: before.filesHash }, after)).toBe(
-      "restart",
+      "files",
     );
   });
 
-  it("reports \"restart\" when a skill is added", () => {
+  it("reports \"files\" when a skill is added", () => {
     const before = compileHermesProfile(baseInput({ skills: {} }));
     const after = compileHermesProfile(
       baseInput({ skills: { "new-skill": [{ path: "SKILL.md", content: "# New\n" }] } }),
     );
-    expect(before.restartHash).not.toBe(after.restartHash);
+    expect(before.restartHash).toBe(after.restartHash);
+    expect(before.filesHash).not.toBe(after.filesHash);
     expect(classifyProfileChange({ restartHash: before.restartHash, filesHash: before.filesHash }, after)).toBe(
-      "restart",
+      "files",
     );
   });
 
-  it("reports \"restart\" when a skill is removed", () => {
+  it("reports \"files\" when a skill is removed", () => {
     const before = compileHermesProfile(
       baseInput({ skills: { "old-skill": [{ path: "SKILL.md", content: "# Old\n" }] } }),
     );
     const after = compileHermesProfile(baseInput({ skills: {} }));
-    expect(before.restartHash).not.toBe(after.restartHash);
+    expect(before.restartHash).toBe(after.restartHash);
+    expect(before.filesHash).not.toBe(after.filesHash);
     expect(classifyProfileChange({ restartHash: before.restartHash, filesHash: before.filesHash }, after)).toBe(
-      "restart",
+      "files",
     );
   });
 

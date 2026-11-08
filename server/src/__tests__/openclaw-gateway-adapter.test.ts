@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
-import { execute, testEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
+import { execute, testEnvironment } from "@myrmidon/adapter-openclaw-gateway/server";
 import {
   buildOpenClawGatewayConfig,
   parseOpenClawGatewayStdoutLine,
-} from "@paperclipai/adapter-openclaw-gateway/ui";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-openclaw-gateway/ui";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
 
 function buildContext(
   config: Record<string, unknown>,
@@ -493,7 +493,7 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
-      expect(String(payload?.message ?? "")).toContain("## Paperclip Wake Payload");
+      expect(String(payload?.message ?? "")).toContain("## Myrmidon Wake Payload");
       expect(String(payload?.message ?? "")).toContain(
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
       );

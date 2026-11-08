@@ -1,0 +1,541 @@
+// myrmidon(CHAT-HOLD): a chat is never held, and an owner message always wakes.
+//
+// The seeded state is the production incident: a perpetual chat conversation
+// whose run was cancelled by a host OOM; execution recovery closed it with
+// `evidence.automaticRecovery.replay = "blocked"` and set the issue `blocked`;
+// every later message was parked as `deferred_issue_execution` behind it and
+// the owner only read "Your follow-up is queued". See chat-backed.ts.
+import { randomUUID } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  activityLog,
+  agentWakeupRequests,
+  agents,
+  companies,
+  createDb,
+  heartbeatRuns,
+  issueComments,
+  issueRecoveryActions,
+  issues,
+} from "@myrmidon/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../../__tests__/helpers/embedded-postgres.js";
+
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "Chat-hold test run.",
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof import("../../adapters/index.ts")>("../../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({ supportsLocalAgentJwt: false, execute: mockAdapterExecute })),
+  };
+});
+
+import { createDurableChatWakeupRequest } from "../../services/durable-chat-wakeup.js";
+import { settleUnrecoverableExecutions } from "../../services/execution-recovery-resolution.js";
+import { heartbeatService } from "../../services/heartbeat.js";
+import { queueIssueAssignmentWakeup } from "../../services/issue-assignment-wakeup.js";
+import { instanceSettingsService } from "../../services/instance-settings.js";
+import { LEGACY_RECOVERY_CAUSE } from "../../services/legacy-execution-recovery.js";
+import {
+  compareOwnerChatTurnFirst,
+  countLeadingOwnerChatTurns,
+  isChatOwnerMessageWake,
+  isFailedChatRunRetry,
+  isOwnerChatTurnWake,
+  listOwnerChatTurnRunIds,
+} from "./chat-backed.js";
+import {
+  chatNoticeLanguage,
+  chatWaitNoticeApplies,
+  chatWaitNoticeText,
+  classifyAgentNotInvokable,
+  classifyChatWait,
+} from "./wait-notice.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+const RUN_WAIT_MS = 60_000;
+const TEST_TIMEOUT_MS = 150_000;
+const OWNER = "owner-user";
+
+describe("isChatOwnerMessageWake", () => {
+  const message = {
+    durableChatRequest: true,
+    failedRunRetry: false,
+    commentId: "c1",
+    requestedByActorType: "user",
+    requestedByActorId: "u1",
+  };
+
+  it("a durable inbound message from a linked person is an owner message", () => {
+    expect(isChatOwnerMessageWake(message)).toBe(true);
+  });
+
+  it("a retry, an unlinked sender, a missing comment or a non-chat wake is not", () => {
+    expect(isChatOwnerMessageWake({ ...message, failedRunRetry: true })).toBe(false);
+    expect(isChatOwnerMessageWake({ ...message, requestedByActorType: "system" })).toBe(false);
+    expect(isChatOwnerMessageWake({ ...message, commentId: null })).toBe(false);
+    expect(isChatOwnerMessageWake({ ...message, requestedByActorId: null })).toBe(false);
+    expect(isChatOwnerMessageWake({ ...message, durableChatRequest: false })).toBe(false);
+  });
+});
+
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the queue order the sweep applies.
+describe("owner chat turn queue order", () => {
+  type QueueRun = { id: string; rank: 0 | 1 | 2 | 3; owner: boolean };
+  /** The sweep's comparator shape: owner turn first, then the readiness rank. */
+  const sortQueue = (runs: QueueRun[]) =>
+    [...runs].sort((left, right) => {
+      const leftOwner = left.owner && left.rank !== 3;
+      const rightOwner = right.owner && right.rank !== 3;
+      const ownerOrder = compareOwnerChatTurnFirst(leftOwner, rightOwner);
+      if (ownerOrder !== 0) return ownerOrder;
+      if (!leftOwner && left.rank !== right.rank) return left.rank - right.rank;
+      return 0;
+    });
+
+  it("a todo owner turn goes ahead of an in_progress automatic run of the same agent", () => {
+    const sorted = sortQueue([
+      { id: "auto-in-progress", rank: 0, owner: false },
+      { id: "owner-todo", rank: 1, owner: true },
+    ]);
+    expect(sorted.map((run) => run.id)).toEqual(["owner-todo", "auto-in-progress"]);
+  });
+
+  it("an owner turn whose task waits for dependencies stays behind the ready runs", () => {
+    const sorted = sortQueue([
+      { id: "owner-blocked", rank: 3, owner: true },
+      { id: "auto-todo", rank: 1, owner: false },
+    ]);
+    expect(sorted.map((run) => run.id)).toEqual(["auto-todo", "owner-blocked"]);
+  });
+
+  it("compareOwnerChatTurnFirst is neutral when both or neither are owner turns", () => {
+    expect(compareOwnerChatTurnFirst(true, true)).toBe(0);
+    expect(compareOwnerChatTurnFirst(false, false)).toBe(0);
+    expect(compareOwnerChatTurnFirst(true, false)).toBe(-1);
+    expect(compareOwnerChatTurnFirst(false, true)).toBe(1);
+  });
+
+  it("counts only the owner turns at the front of the sorted queue", () => {
+    const owners = new Set(["a", "b", "d"]);
+    expect(countLeadingOwnerChatTurns([{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }], owners)).toBe(2);
+    expect(countLeadingOwnerChatTurns([{ id: "c" }, { id: "a" }], owners)).toBe(0);
+    expect(countLeadingOwnerChatTurns([], owners)).toBe(0);
+  });
+});
+
+describe("wait notices", () => {
+  it("names the recovery wait, a paused agent and a closed memory gate in plain Russian", () => {
+    const recovery = classifyChatWait({
+      status: "deferred_issue_execution",
+      reason: "issue_assigned",
+      payload: { executionWait: { reason: "execution_recovery" } },
+    });
+    expect(recovery).toBe("recovery");
+    expect(chatWaitNoticeText("recovery", "ru")).toContain("прервался");
+    expect(chatWaitNoticeText("agent_paused", "ru")).toContain("на паузе");
+    expect(chatWaitNoticeText("host_memory", "ru")).toContain("памяти");
+    expect(chatWaitNoticeText("host_memory", "ru")).toContain("каждые 15 секунд");
+    // The wait has no promised start time.
+    expect(chatWaitNoticeText("host_memory", "ru")).not.toContain("~15");
+    expect(chatWaitNoticeText("host_memory", "en")).not.toContain("~15");
+  });
+
+  it("the same reason in English, and a not-started message asks to send it again", () => {
+    expect(chatWaitNoticeText("agent_paused", "en")).toContain("paused");
+    expect(chatWaitNoticeText("agent_paused", "ru", "not_started")).toContain("отправьте его ещё раз");
+  });
+
+  it("classifies a paused agent conflict and ignores unrelated errors", () => {
+    expect(classifyAgentNotInvokable({ status: 409, details: { status: "paused" } })).toBe("agent_paused");
+    expect(classifyAgentNotInvokable({ status: 409, details: { status: "terminated" } })).toBe("agent_unavailable");
+    expect(classifyAgentNotInvokable({ status: 500, details: { status: "paused" } })).toBeNull();
+    expect(classifyAgentNotInvokable(new Error("boom"))).toBeNull();
+  });
+
+  it("applies to the Telegram bridge only, in its language", () => {
+    expect(chatWaitNoticeApplies("telegram")).toBe(true);
+    expect(chatWaitNoticeApplies("slack")).toBe(false);
+    expect(chatNoticeLanguage("telegram")).toBe("ru");
+    expect(chatNoticeLanguage("slack")).toBe("en");
+  });
+
+  it("an unnamed wait keeps the vendor wording (no reason)", () => {
+    expect(classifyChatWait({ status: "queued", reason: null, payload: null })).toBeNull();
+  });
+
+  // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the queue ranks and admits the
+  // owner's own turn in a chat differently, so it has to name it the same way
+  // the wake does.
+  it("names the owner's own turn by its durable inbound receipt", () => {
+    const receipt = {
+      idempotencyKey: "chat-inbound:abc",
+      requestedByActorType: "user",
+      requestedByActorId: OWNER,
+    };
+    expect(isOwnerChatTurnWake(receipt)).toBe(true);
+    // A chat wake a system actor opened is not the owner's turn.
+    expect(isOwnerChatTurnWake({ ...receipt, requestedByActorType: "system" })).toBe(false);
+    expect(isOwnerChatTurnWake({ ...receipt, requestedByActorId: null })).toBe(false);
+    // Nor is a comment or monitor wake, which carries another key.
+    expect(isOwnerChatTurnWake({ ...receipt, idempotencyKey: "comment:abc" })).toBe(false);
+    expect(isOwnerChatTurnWake({ ...receipt, idempotencyKey: null })).toBe(false);
+  });
+
+  it("keeps the chat's retry button out of the owner's own turns", () => {
+    expect(isFailedChatRunRetry({ chatFailedRunRetry: { runId: "run-1" } })).toBe(true);
+    expect(isFailedChatRunRetry({ issueId: "issue-1" })).toBe(false);
+    expect(isFailedChatRunRetry(null)).toBe(false);
+    expect(isFailedChatRunRetry("chatFailedRunRetry")).toBe(false);
+  });
+});
+
+describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-HOLD)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-chat-hold-");
+    db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    // A chat conversation only takes wakes while Agent Chat is on.
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+  }, 60_000);
+
+  afterEach(async () => {
+    for (let attempt = 0; attempt < 1200; attempt += 1) {
+      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      if (!runs.some((run) => ["queued", "running", "scheduled_retry"].includes(run.status))) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    mockAdapterExecute.mockClear();
+  }, TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seed(options: { chat: boolean; status: string }) {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-a",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: OWNER,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-a",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    const [issue] = await db
+      .insert(issues)
+      .values({
+        companyId,
+        title: options.chat ? "chat" : "task",
+        status: options.status,
+        priority: "medium",
+        assigneeAgentId: agentId,
+        ...(options.chat
+          ? { conversationAgentId: agentId, conversationUserId: OWNER, conversationState: "active" }
+          : {}),
+      })
+      .returning();
+    const issueId = issue!.id;
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      body: "note from the agent",
+    });
+    return { companyId, agentId, issueId, commentId };
+  }
+
+  async function seedStoppedRun(input: { companyId: string; agentId: string; issueId: string; commentId: string }) {
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "cancelled",
+        finishedAt: new Date(),
+        contextSnapshot: { issueId: input.issueId, taskKey: input.issueId, wakeCommentId: input.commentId },
+      })
+      .returning();
+    return run!;
+  }
+
+  async function ownerMessageWake(input: { companyId: string; agentId: string; issueId: string; commentId: string }) {
+    // The owner's message arrives after the stopped turn.
+    const messageId = randomUUID();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await db.insert(issueComments).values({
+      id: messageId,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      authorUserId: OWNER,
+      authorType: "user",
+      body: "Please continue",
+    });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    await queueIssueAssignmentWakeup({
+      heartbeat,
+      issue: issue!,
+      reason: "External chat message received",
+      mutation: "chat_message_received",
+      contextSource: "chat:telegram",
+      requestedByActorType: "user",
+      requestedByActorId: OWNER,
+      taskKey: issue!.identifier,
+      wakeCommentId: messageId,
+      durableChatRequest: createDurableChatWakeupRequest({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        issueId: input.issueId,
+        commentId: messageId,
+        requestedByActorType: "user",
+        requestedByActorId: OWNER,
+        requestedAt: new Date(),
+        authorize: async () => {},
+      }),
+      rethrowOnError: true,
+    });
+  }
+
+  async function runsFor(companyId: string, issueId: string) {
+    return db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`));
+  }
+
+  async function waitForRun(companyId: string, issueId: string) {
+    const deadline = Date.now() + RUN_WAIT_MS;
+    while (Date.now() < deadline) {
+      const runs = await runsFor(companyId, issueId);
+      if (runs.some((run) => run.status !== "cancelled")) return runs;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return runsFor(companyId, issueId);
+  }
+
+  it("recovery of a stopped chat turn leaves no hold, and the next owner message starts a run", async () => {
+    const fixture = await seed({ chat: true, status: "in_progress" });
+    const run = await seedStoppedRun(fixture);
+    await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, fixture.issueId));
+    const [action] = await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId: fixture.companyId,
+        sourceIssueId: fixture.issueId,
+        kind: "active_run_watchdog",
+        ownerType: "board",
+        returnOwnerAgentId: fixture.agentId,
+        cause: LEGACY_RECOVERY_CAUSE,
+        fingerprint: `legacy-execution:${run.id}`,
+        evidence: { runId: run.id },
+        nextAction: "Reconcile stopped work",
+      })
+      .returning();
+
+    await settleUnrecoverableExecutions(db);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(issue!.status).toBe("in_review");
+    expect(issue!.executionRunId).toBeNull();
+    const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(settled).toMatchObject({ status: "resolved", outcome: "cancelled" });
+    expect(settled!.evidence.automaticRecovery).toMatchObject({ replay: "chat_continuation" });
+
+    await ownerMessageWake(fixture);
+    const runs = await waitForRun(fixture.companyId, fixture.issueId);
+    expect(runs.filter((entry) => entry.id !== run.id).length, JSON.stringify(runs)).toBeGreaterThan(0);
+  }, TEST_TIMEOUT_MS);
+
+  it("reproduces the incident, then an owner message starts a run, clears the hold and is logged", async () => {
+    const fixture = await seed({ chat: true, status: "todo" });
+    const run = await seedStoppedRun(fixture);
+    const [action] = await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId: fixture.companyId,
+        sourceIssueId: fixture.issueId,
+        kind: "active_run_watchdog",
+        status: "resolved",
+        outcome: "blocked",
+        cause: "uncertain_provider_action",
+        fingerprint: randomUUID(),
+        evidence: { runId: run.id, automaticRecovery: { replay: "blocked" } },
+        nextAction: "Preserve recorded work without replay.",
+      })
+      .returning();
+
+    // The incident: an automatic wake is parked on the hold, the way every
+    // owner message was.
+    const parked = await heartbeat.wakeup(fixture.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      requestedByActorType: "agent",
+      requestedByActorId: fixture.agentId,
+      payload: { issueId: fixture.issueId, commentId: fixture.commentId },
+      contextSnapshot: { issueId: fixture.issueId, taskId: fixture.issueId, wakeReason: "issue_commented", commentId: fixture.commentId },
+    });
+    expect(parked).toBeNull();
+    const [parkedWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, fixture.agentId));
+    expect(parkedWake?.status).toBe("deferred_issue_execution");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    // Recovery had set the chat blocked.
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, fixture.issueId));
+
+    // The owner writes in the chat.
+    await ownerMessageWake(fixture);
+
+    const runs = await waitForRun(fixture.companyId, fixture.issueId);
+    expect(runs.filter((entry) => entry.id !== run.id).length, JSON.stringify(runs)).toBeGreaterThan(0);
+
+    const [cleared] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(cleared!.evidence.automaticRecovery).toMatchObject({
+      replay: "chat_owner_message",
+      replayClearedBy: OWNER,
+      replayClearedByType: "user",
+    });
+    expect(cleared!.status).toBe("resolved");
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(issue!.status).not.toBe("blocked");
+
+    const log = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, fixture.companyId), eq(activityLog.entityId, fixture.issueId)));
+    expect(
+      log.some(
+        (entry) =>
+          entry.action === "issue.execution_recovery_settled" &&
+          (entry.details as Record<string, unknown> | null)?.continuation === "chat_owner_message",
+      ),
+    ).toBe(true);
+  }, TEST_TIMEOUT_MS);
+
+  it("an ordinary work issue keeps its hold: the same message is parked, not run", async () => {
+    const fixture = await seed({ chat: false, status: "blocked" });
+    const run = await seedStoppedRun(fixture);
+    const [action] = await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId: fixture.companyId,
+        sourceIssueId: fixture.issueId,
+        kind: "active_run_watchdog",
+        status: "resolved",
+        outcome: "blocked",
+        cause: "uncertain_provider_action",
+        fingerprint: randomUUID(),
+        evidence: { runId: run.id, automaticRecovery: { replay: "blocked" } },
+        nextAction: "Preserve recorded work without replay.",
+      })
+      .returning();
+
+    await ownerMessageWake(fixture).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const [still] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    // Only a chat's hold is lifted by a message; an ordinary issue's stays.
+    expect(still!.evidence.automaticRecovery).toMatchObject({ replay: "blocked" });
+    expect((still!.evidence.automaticRecovery as Record<string, unknown>).replayClearedBy).toBeUndefined();
+  }, TEST_TIMEOUT_MS);
+
+  it("tells the owner's own turn from the automatic runs, the system sender and the retry", async () => {
+    const fixture = await seed({ chat: true, status: "in_progress" });
+    const ownerReceiptId = randomUUID();
+    const systemReceiptId = randomUUID();
+    const agentReceiptId = randomUUID();
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: ownerReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "chat_message",
+        status: "processed",
+        requestedByActorType: "user",
+        requestedByActorId: OWNER,
+        idempotencyKey: `chat-inbound:${randomUUID()}`,
+        payload: {},
+      },
+      {
+        id: systemReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "chat_message",
+        status: "processed",
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        idempotencyKey: `chat-inbound:${randomUUID()}`,
+        payload: {},
+      },
+      {
+        id: agentReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "issue_commented",
+        status: "queued",
+        requestedByActorType: "agent",
+        requestedByActorId: fixture.agentId,
+        idempotencyKey: `comment:${randomUUID()}`,
+        payload: {},
+      },
+    ]);
+
+    const queued = [
+      {
+        id: "owner-turn",
+        wakeupRequestId: ownerReceiptId,
+        contextSnapshot: { issueId: fixture.issueId },
+      },
+      {
+        id: "owner-retry",
+        wakeupRequestId: ownerReceiptId,
+        contextSnapshot: { issueId: fixture.issueId, chatFailedRunRetry: { runId: randomUUID() } },
+      },
+      { id: "system-turn", wakeupRequestId: systemReceiptId, contextSnapshot: {} },
+      { id: "automatic-run", wakeupRequestId: agentReceiptId, contextSnapshot: {} },
+      { id: "receiptless-run", wakeupRequestId: null, contextSnapshot: {} },
+    ];
+    const ownerTurnRunIds = await listOwnerChatTurnRunIds(db, fixture.companyId, queued);
+    expect([...ownerTurnRunIds]).toEqual(["owner-turn"]);
+    // The same receipt under another company is not this company's turn.
+    expect([...(await listOwnerChatTurnRunIds(db, randomUUID(), queued))]).toEqual([]);
+  }, TEST_TIMEOUT_MS);
+});

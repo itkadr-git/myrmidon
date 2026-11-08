@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   activityLog,
@@ -17,6 +17,7 @@ import {
   heartbeatRuns,
   issueInboxArchives,
   issues,
+  issueRelations,
   pluginManagedResources,
   plugins,
   projects,
@@ -25,7 +26,7 @@ import {
   routineDocuments,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   CreateRoutine,
   CreateRoutineTrigger,
@@ -43,7 +44,7 @@ import type {
   RunRoutine,
   UpdateRoutine,
   UpdateRoutineTrigger,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   getBuiltinRoutineVariableValues,
@@ -55,8 +56,8 @@ import {
   routineRevisionSnapshotSchema,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
-} from "@paperclipai/shared";
-import { trackRoutineRun } from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared";
+import { trackRoutineRun } from "@myrmidon/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -82,6 +83,7 @@ import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { findOpenRoutineExecutionIssue } from "../myrmidon/routine-execution-lock.js";
 // myrmidon(R3): maintenance mode skips scheduled routine ticks
 import { isRoutineUnderMaintenance } from "../myrmidon/maintenance/gate.js";
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -108,7 +110,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
 };
 
 export function routineWebhookUrl(publicId: string): string {
-  const baseUrl = runtimePublicOrigin() ?? process.env.PAPERCLIP_API_URL?.trim();
+  const baseUrl = runtimePublicOrigin() ?? readProductEnv("API_URL")?.trim();
   if (!baseUrl) throw new Error("PAPERCLIP_API_URL is required to create a routine webhook");
   return `${baseUrl.replace(/\/+$/, "")}/api/routine-triggers/public/${publicId}/fire`;
 }
@@ -1270,7 +1272,7 @@ export function routineService(
     routine: typeof routines.$inferSelect,
     activation?: WorktreeRunExecutionActivationState,
   ) {
-    if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) return { eligible: true };
+    if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) return { eligible: true };
 
     const resolvedActivation = activation ?? await resolveWorktreeRunExecutionActivationState({
       getExperimental: instanceSettings.getExperimental,
@@ -1870,7 +1872,33 @@ export function routineService(
             dispatchFingerprint,
           }));
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          let coalescingIssue = activeIssue;
+          if (input.routine.concurrencyPolicy === "coalesce_if_active" && activeIssue.status === "blocked") {
+            const openBlocker = await txDb.select({ id: issueRelations.issueId })
+              .from(issueRelations)
+              .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, issueRelations.companyId)))
+              .where(and(
+                eq(issueRelations.companyId, input.routine.companyId),
+                eq(issueRelations.relatedIssueId, activeIssue.id),
+                eq(issueRelations.type, "blocks"),
+                not(inArray(issues.status, ["done", "cancelled"])),
+                visibleIssueCondition(),
+              )).limit(1);
+            if (openBlocker.length === 0) {
+              const reopened = await issueSvc.update(activeIssue.id, { status: "todo", companyGuard: input.routine.companyId }, txDb);
+              if (!reopened) throw new Error("Failed to reopen blocked routine execution");
+              coalescingIssue = reopened;
+              await queueIssueAssignmentWakeup({
+                heartbeat, issue: reopened, reason: "issue_assigned", mutation: "update",
+                contextSource: "routine.dispatch", requestedByActorType: "system", rethrowOnError: true,
+              });
+            }
+            // A genuinely blocked execution retains the unique index key. Do
+            // not coalesce silently or create a duplicate that will fail on claim.
+          }
+          const status = input.routine.concurrencyPolicy === "skip_if_active" ||
+            !["todo", "in_progress", "in_review"].includes(coalescingIssue.status)
+            ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,
@@ -2206,7 +2234,7 @@ export function routineService(
       const env = input.env === undefined || input.env === null
         ? null
         : await secretsSvc.normalizeEnvBindingsForPersistence(companyId, input.env, {
-            strictMode: process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true",
+            strictMode: readProductEnv("SECRETS_STRICT_MODE") === "true",
             fieldPath: "env",
           });
       const variables = syncRoutineVariablesWithTemplate(
@@ -2276,7 +2304,7 @@ export function routineService(
         : patch.env === null
           ? null
           : await secretsSvc.normalizeEnvBindingsForPersistence(existing.companyId, patch.env, {
-              strictMode: process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true",
+              strictMode: readProductEnv("SECRETS_STRICT_MODE") === "true",
               fieldPath: "env",
             });
       const requestedStatus = patch.status ?? existing.status;
@@ -3080,7 +3108,7 @@ export function routineService(
     },
 
     tickScheduledTriggers: async (now: Date = new Date()) => {
-      const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
+      const worktreeActivation = isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))
         ? await resolveWorktreeRunExecutionActivationState({
           getExperimental: instanceSettings.getExperimental,
           runtimeEnv,

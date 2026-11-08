@@ -48,6 +48,9 @@ export function Ui2Costs() {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [incidentError, setIncidentError] = useState<string | null>(null);
+  // myrmidon(1.6.3 PROMPT-BUDGET D): the by-agent table can be ordered by spend
+  // (the historical default) or by the average prompt size of a run.
+  const [agentSort, setAgentSort] = useState<"cost" | "prompt">("cost");
   const companyId = selectedCompanyId ?? "";
 
   const summaryQuery = useQuery({
@@ -85,8 +88,15 @@ export function Ui2Costs() {
   });
 
   const topAgents = useMemo(
-    () => [...(byAgentQuery.data ?? [])].sort((left, right) => right.costCents - left.costCents).slice(0, 12),
-    [byAgentQuery.data],
+    () =>
+      [...(byAgentQuery.data ?? [])]
+        .sort((left, right) =>
+          agentSort === "prompt"
+            ? (right.avgPromptTokens ?? -1) - (left.avgPromptTokens ?? -1)
+            : right.costCents - left.costCents,
+        )
+        .slice(0, 12),
+    [byAgentQuery.data, agentSort],
   );
 
   if (summaryQuery.isLoading || budgetsQuery.isLoading) {
@@ -124,6 +134,10 @@ export function Ui2Costs() {
   const overview = budgetsQuery.data;
   const utilizationPercent = summary ? Math.round(summary.utilizationPercent) : 0;
   const utilizationTone = utilizationPercent >= 90 ? "danger" : utilizationPercent >= 70 ? "warning" : "ok";
+  const hasSpend = (byAgentQuery.data ?? []).some((row) => row.costCents > 0);
+  const budgetHint = summary && summary.budgetCents > 0
+    ? t("ui2.costs.tile.remaining", { amount: formatCents(Math.max(0, summary.budgetCents - summary.spendCents)) })
+    : undefined;
 
   return (
     <Ui2Page title={t("ui2.costs.title")}>
@@ -136,8 +150,20 @@ export function Ui2Costs() {
         <Ui2Tile
           label={t("ui2.costs.tile.budget")}
           value={summary ? formatCents(summary.budgetCents) : t("ui2.common.unknown")}
+          hint={budgetHint}
         />
-        <Ui2Tile label={t("ui2.costs.tile.utilization")} value={`${utilizationPercent}%`} tone={utilizationTone} />
+        <Ui2Tile
+          label={t("ui2.costs.tile.utilization")}
+          value={`${utilizationPercent}%`}
+          tone={utilizationTone}
+        />
+        {summary && summary.unpricedEvents > 0 ? (
+          <Ui2Tile
+            label={t("ui2.costs.unpriced")}
+            value={String(summary.unpricedEvents)}
+            hint={t("ui2.costs.unpricedEvents", { count: summary.unpricedEvents })}
+          />
+        ) : null}
         <Ui2Tile
           label={t("ui2.costs.tile.incidents")}
           value={String(overview?.activeIncidents.length ?? 0)}
@@ -149,6 +175,11 @@ export function Ui2Costs() {
           }
         />
       </Ui2Tiles>
+      {summary?.forecastCents != null ? (
+        <p className="ui2-costs-forecast text-sm text-muted-foreground">
+          {t("ui2.costs.forecast", { amount: formatCents(summary.forecastCents) })}
+        </p>
+      ) : null}
 
       {overview && overview.activeIncidents.length > 0 ? (
         <Ui2Section title={t("ui2.costs.incidents.title")}>
@@ -194,6 +225,28 @@ export function Ui2Costs() {
           ))}
         </Ui2Section>
       ) : null}
+
+      <Ui2Section title={t("ui2.costs.chart.title")}>
+        {!hasSpend ? (
+          <Ui2EmptyStateView variant="done" title={t("ui2.costs.chart.empty")} />
+        ) : (
+          <div className="ui2-costs-chart flex flex-col gap-2">
+            {(byAgentQuery.data ?? []).slice().sort((a, b) => b.costCents - a.costCents).slice(0, 8).map((row) => {
+              const maximum = Math.max(...(byAgentQuery.data ?? []).map((item) => item.costCents), 1);
+              const width = `${Math.max(2, Math.round((row.costCents / maximum) * 100))}%`;
+              return (
+                <div key={row.agentId} className="ui2-costs-chart-row grid grid-cols-[minmax(6rem,12rem)_1fr_auto] items-center gap-3 text-xs">
+                  <span className="truncate">{row.agentName ?? t("ui2.costs.agents.unnamed")}</span>
+                  <span className="h-2 rounded-full bg-muted" aria-hidden="true">
+                    <span className="block h-2 rounded-full bg-primary" style={{ width }} />
+                  </span>
+                  <span className="font-mono tabular-nums">{formatCents(row.costCents)}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Ui2Section>
 
       <Ui2Section title={t("ui2.costs.policies.title")}>
         {(overview?.policies ?? []).length === 0 ? (
@@ -250,6 +303,22 @@ export function Ui2Costs() {
                 <th className="ui2-costs-agents-agent py-1 font-medium">{t("ui2.costs.agents.agent")}</th>
                 <th className="ui2-costs-agents-cost py-1 text-right font-medium">{t("ui2.costs.agents.cost")}</th>
                 <th className="ui2-costs-agents-tokens py-1 text-right font-medium">{t("ui2.costs.agents.tokens")}</th>
+                <th className="ui2-costs-agents-prompt py-1 text-right font-medium">
+                  {/* myrmidon(1.6.3 PROMPT-BUDGET D): the average prompt size is a
+                      sort key of the table — the header toggles the order. */}
+                  <button
+                    type="button"
+                    className="ui2-costs-agents-sort-prompt font-medium hover:underline"
+                    aria-pressed={agentSort === "prompt"}
+                    onClick={() => setAgentSort((current) => (current === "prompt" ? "cost" : "prompt"))}
+                  >
+                    {t("ui2.costs.agents.avgPrompt")}
+                    {agentSort === "prompt" ? " \u2193" : ""}
+                  </button>
+                </th>
+                <th className="ui2-costs-agents-over-budget py-1 text-right font-medium">
+                  {t("ui2.costs.agents.aboveThreshold")}
+                </th>
                 <th className="ui2-costs-agents-runs py-1 text-right font-medium">{t("ui2.costs.agents.runs")}</th>
               </tr>
             </thead>
@@ -262,6 +331,16 @@ export function Ui2Costs() {
                   </td>
                   <td className="ui2-costs-agents-agent-tokens py-1.5 text-right font-mono tabular-nums">
                     {row.inputTokens.toLocaleString()} / {row.outputTokens.toLocaleString()}
+                  </td>
+                  <td className="ui2-costs-agents-agent-prompt py-1.5 text-right font-mono tabular-nums">
+                    {row.avgPromptTokens == null
+                      ? t("ui2.common.unknown")
+                      : row.avgPromptTokens.toLocaleString()}
+                  </td>
+                  <td className="ui2-costs-agents-agent-over-budget py-1.5 text-right font-mono tabular-nums">
+                    {row.runsAboveThresholdPct == null
+                      ? t("ui2.common.unknown")
+                      : `${row.runsAboveThresholdPct}%`}
                   </td>
                   <td className="ui2-costs-agents-agent-runs py-1.5 text-right font-mono tabular-nums">
                     {row.apiRunCount + row.subscriptionRunCount}

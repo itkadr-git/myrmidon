@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assertValidAdapterLoginCapability } from "@paperclipai/adapter-utils";
-import { listServerAdapters, requireServerAdapter } from "./registry.js";
-import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
+import { assertValidAdapterLoginCapability } from "@myrmidon/adapter-utils";
+import { listEnabledServerAdapters, listServerAdapters, requireServerAdapter } from "./registry.js";
+import * as executionTarget from "@myrmidon/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 
 const { probeInstallation } = vi.hoisted(() => ({ probeInstallation: vi.fn() }));
-vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: probeInstallation }));
+vi.mock("@myrmidon/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: probeInstallation }));
 
 // The registry registers a login capability for the two built-in interactive
 // adapters. The test checks the scalar values and the presence of the required
@@ -51,6 +51,23 @@ describe("built-in adapter login capabilities", () => {
   });
 });
 
+describe("hermes_local availability kill switch", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("keeps hermes_local enabled by default", () => {
+    vi.stubEnv("MYRMIDON_DISABLE_HERMES_LOCAL", "");
+    expect(listEnabledServerAdapters().some((adapter) => adapter.type === "hermes_local")).toBe(true);
+  });
+
+  it("hides hermes_local from enabled selection when the flag is set", () => {
+    vi.stubEnv("MYRMIDON_DISABLE_HERMES_LOCAL", "1");
+    expect(listEnabledServerAdapters().some((adapter) => adapter.type === "hermes_local")).toBe(false);
+    expect(listServerAdapters().some((adapter) => adapter.type === "hermes_local")).toBe(true);
+  });
+});
+
 describe("built-in runtime connection tool delivery", () => {
   const expectedStrategies = new Map([
     ["acpx_local", "environment"],
@@ -67,6 +84,7 @@ describe("built-in runtime connection tool delivery", () => {
     ["opencode_local", "environment"],
     ["paperclip_runner", "environment"],
     ["pi_local", "environment"],
+    ["omp_local", "environment"],
     ["process", "environment"],
     ["http", "invocation_context"],
   ] as const);

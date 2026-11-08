@@ -4,6 +4,9 @@ import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
+import { authApi } from "../api/auth";
+import { projectsApi } from "../api/projects";
+import { filterAgentsByScope, parseAgentScope } from "./Agents.scope-filters";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -22,12 +25,14 @@ import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { OrgChart } from "./OrgChart";
+import { AgentTree } from "../components/AgentTree";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, Network } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
+import { AlertTriangle, Bot, Plus, List, ListTree, Network } from "lucide-react";
+import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@myrmidon/shared";
 import {
   isStarred,
   resourceMembershipState,
@@ -39,8 +44,19 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { AgentWipBadge } from "../components/myrmidon/AgentWipBadge"; // myrmidon(1.6.1 WIP-LIMIT B)
 import { wipLimitApi, wipLimitStatusQueryKey, type WipLimitStatusEntry } from "../components/myrmidon/wip-limit/wipLimitApi"; // myrmidon(1.6.1 WIP-LIMIT B)
+// myrmidon(BOT-RUNTIME-TUNING D2): the model-fallback signal on an agent card
+import { AgentFallbackSignalBadge } from "../components/myrmidon/AgentFallbackSignalBadge";
+import {
+  fallbackSignalApi,
+  fallbackSignalStatusQueryKey,
+  type FallbackSignalStatusRow,
+} from "../components/myrmidon/modelFallbackSignalApi";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
+
+// myrmidon(UI-RU): agents page copy runs through the fork i18n catalog.
+import { useTranslation } from "@/i18n";
+import { localizedAgentRoleLabel } from "../lib/agent-role-labels";
 
 // Lazy-loaded so the roster page doesn't statically pull in the full
 // AgentConfigForm module graph (the modal reuses its adapter/model pickers).
@@ -53,12 +69,12 @@ const ConfigureBuiltInAgentModal = lazy(() =>
 export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
 
-const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "paused", label: "Paused" },
-  { value: "error", label: "Error" },
-  { value: "builtin", label: "Built-in" },
+const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; labelKey: string }[] = [
+  { value: "all", labelKey: "agents.all" },
+  { value: "active", labelKey: "agents.active" },
+  { value: "paused", labelKey: "agents.paused" },
+  { value: "error", labelKey: "agents.error" },
+  { value: "builtin", labelKey: "agents.builtin" },
 ];
 
 function isFilterTab(value: string): value is FilterTab {
@@ -71,6 +87,8 @@ interface EnvironmentDescriptor {
   title: string;
 }
 
+// myrmidon(UI-RU): plain-English fallbacks for module-level constants; the
+// component localizes equivalents through t() where they render.
 const localEnvironmentDescriptor: EnvironmentDescriptor = {
   label: "Local",
   detail: "Myrmidon host",
@@ -108,7 +126,10 @@ function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<stri
 }
 
 function getConfiguredModel(agent: Agent): string | null {
-  const value = agent.adapterConfig?.model;
+  // myrmidon(PERF-DIET-G): the list ships the model precomputed; adapterConfig
+  // no longer travels with the row (the config lives behind
+  // GET /agents/:id/configuration).
+  const value = agent.adapterModel;
   if (typeof value !== "string") return null;
   const model = value.trim();
   return model.length > 0 ? model : null;
@@ -133,13 +154,14 @@ function getSandboxProviderLabel(
 function describeEnvironment(
   environment: Environment,
   capabilities?: EnvironmentCapabilities | null,
+  t: (key: string, options?: Record<string, unknown>) => string = (key) => key,
 ): EnvironmentDescriptor {
   const detail = isPlatformManagedEnvironment(environment)
-    ? "Managed by Myrmidon"
+    ? t("agents.managedByMyrmidon")
     : environment.driver === "sandbox"
-      ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
+      ? t("agents.sandboxProvider", { provider: getSandboxProviderLabel(environment, capabilities) })
       : environment.driver === "local"
-        ? "Myrmidon host"
+        ? t("agents.myrmidonHost")
         : formatEnvironmentDriver(environment.driver);
 
   return {
@@ -149,11 +171,11 @@ function describeEnvironment(
   };
 }
 
-function describeMissingEnvironment(environmentId: string): EnvironmentDescriptor {
+function describeMissingEnvironment(environmentId: string, t: (key: string) => string = (key) => key): EnvironmentDescriptor {
   return {
-    label: "Unknown environment",
+    label: t("agents.unknownEnvironment"),
     detail: environmentId.slice(0, 8),
-    title: `Unknown environment - ${environmentId}`,
+    title: `${t("agents.unknownEnvironment")} - ${environmentId}`,
   };
 }
 
@@ -162,13 +184,14 @@ function resolveAgentEnvironment(
   environmentsById: Map<string, Environment>,
   instanceDefaultEnvironmentId: string | null,
   capabilities?: EnvironmentCapabilities | null,
+  t: (key: string, options?: Record<string, unknown>) => string = (key) => key,
 ): EnvironmentDescriptor {
   const environmentId = agent.defaultEnvironmentId ?? instanceDefaultEnvironmentId;
   if (!environmentId) return localEnvironmentDescriptor;
   const environment = environmentsById.get(environmentId);
   return environment
-    ? describeEnvironment(environment, capabilities)
-    : describeMissingEnvironment(environmentId);
+    ? describeEnvironment(environment, capabilities, t)
+    : describeMissingEnvironment(environmentId, t);
 }
 
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<string>): OrgNode[] {
@@ -192,22 +215,29 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export type AgentsView = "list" | "org";
+export type AgentsView = "tree" | "list" | "org";
 
-export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
+export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = {}) {
   const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
+  const scope = parseAgentScope(location.search);
   const { isMobile } = useSidebar();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
   const [view, setView] = useState<AgentsView>(() => streamlinedUiEnabled ? initialView : "org");
   const forceListView = !streamlinedUiEnabled && isMobile;
-  const effectiveView: AgentsView = forceListView ? "list" : view;
+  // myrmidon(AGENTS-TREE): the hierarchy view works on phones too (the
+  // org-chart's absolute layout was the mobile problem, not nesting).
+  const effectiveView: AgentsView = !streamlinedUiEnabled && isMobile
+    ? view === "org"
+      ? "list"
+      : view
+    : view;
 
   useEffect(() => {
     setView(streamlinedUiEnabled ? initialView : "org");
@@ -218,18 +248,54 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     queryFn: () => instanceSettingsApi.get(),
     enabled: !!selectedCompanyId,
   });
+  // myrmidon(AGENTS-TREE): the tree collapse state is per user; read the
+  // session lazily (same pattern as the sidebar).
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const activeProjects = (projects ?? []).filter((project) => !project.archivedAt);
+  const selectedProject = scope.type === "project"
+    ? activeProjects.find((project) => project.id === scope.projectId) ?? null
+    : null;
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [modelFilter, setModelFilter] = useState("all");
+  const changeScope = (value: string) => {
+    setRoleFilter("all");
+    setModelFilter("all");
+    navigate(value === "company" ? `/agents/${tab}` : `/agents/${tab}?scope=project:${encodeURIComponent(value)}`);
+  };
+  const changeTab = (value: string) => {
+    setRoleFilter("all");
+    setModelFilter("all");
+    navigate(scope.type === "company" ? `/agents/${value}` : `/agents/${value}?scope=project:${encodeURIComponent(scope.projectId)}`);
+  };
   const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
-  const visibleTabItems = useMemo(
-    () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
-    [builtInAgentsEnabled],
-  );
+  useEffect(() => {
+    if (scope.type === "project" && projects && !selectedProject) {
+      navigate(`/agents/${tab}`, { replace: true });
+    }
+  }, [navigate, projects, scope.type, scope.type === "project" ? scope.projectId : "", selectedProject, tab]);
 
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
     queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && builtInAgentsEnabled,
   });
+  const { t } = useTranslation();
+  const visibleTabItems = useMemo(
+    () => AGENT_FILTER_TAB_ITEMS
+      .filter((item) => item.value !== "builtin" || builtInAgentsEnabled)
+      .map((item) => ({ value: item.value, label: t(item.labelKey) })),
+    [builtInAgentsEnabled, t],
+  );
   const builtInByAgentId = useMemo(() => {
     const map = new Map<string, BuiltInAgentState>();
     if (!builtInAgentsEnabled) return map;
@@ -273,7 +339,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     resourceKey: "live-runs:agents-page",
     queryKey: runsQueryKey,
     enabled: !!selectedCompanyId,
-    refetchInterval: 15_000,
+    refetchInterval: 60_000,
     leaderOnly: true,
   });
   const { data: runs, dataUpdatedAt: runsUpdatedAt } = useQuery({
@@ -301,6 +367,22 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     for (const entry of wipStatus ?? []) map.set(entry.agentId, entry);
     return map;
   }, [wipStatus]);
+
+  // myrmidon(BOT-RUNTIME-TUNING D2): the last sweep's per-agent fallback share.
+  // The badge shows the signal on the bot's own card (the attention feed carries
+  // the same event); a failing or empty status simply shows no badge. Read-only:
+  // the threshold and the window are instance settings.
+  const { data: fallbackStatus } = useQuery({
+    queryKey: fallbackSignalStatusQueryKey(selectedCompanyId ?? ""),
+    queryFn: () => fallbackSignalApi.getStatus(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    retry: false,
+  });
+  const fallbackRowsByAgent = useMemo(() => {
+    const map = new Map<string, FallbackSignalStatusRow>();
+    for (const row of fallbackStatus?.rows ?? []) map.set(row.agentId, row);
+    return map;
+  }, [fallbackStatus]);
 
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
@@ -333,15 +415,16 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           environmentsById,
           instanceSettings?.defaultEnvironmentId ?? null,
           environmentCapabilities,
+          t,
         ),
       );
     }
     return map;
-  }, [agents, environmentsById, environmentCapabilities, instanceSettings?.defaultEnvironmentId]);
+  }, [agents, environmentsById, environmentCapabilities, instanceSettings?.defaultEnvironmentId, t]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("agents.title") }]);
+  }, [setBreadcrumbs, t]);
 
   useEffect(() => {
     if (selectedCompanyId && requestedTab === "builtin" && instanceSettings && !builtInAgentsEnabled) {
@@ -350,15 +433,24 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select an organization to view agents." />;
+    return <EmptyState icon={Bot} message={t("agents.selectOrganization")} />;
   }
 
   if (isLoading) {
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
-  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds);
+  const scopedAgents = filterAgentsByScope(agents ?? [], scope, activeProjects);
+  const scopedAgentIds = new Set(scopedAgents.map((agent) => agent.id));
+  const filtered = filterAgents(scopedAgents, tab, builtInAgentIds)
+    .filter((agent) => roleFilter === "all" || agent.role === roleFilter)
+    .filter((agent) => modelFilter === "all" || agent.adapterModel === modelFilter);
+  const scopedTree = (nodes: OrgNode[]): OrgNode[] => nodes.flatMap((node) => {
+    const reports = scopedTree(node.reports);
+    if (!scopedAgentIds.has(node.id)) return reports;
+    return [{ ...node, reports }];
+  });
+  const filteredOrg = filterOrgTree(scopedTree(orgTree ?? []), tab, builtInAgentIds);
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (
@@ -367,7 +459,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       : environmentByAgentId.get(agentId) ?? localEnvironmentDescriptor
   );
 
-  const renderAgentRow = (agent: Agent) => {
+  const renderAgentRow = (agent: Agent, _node?: unknown) => {
     const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
     const agentPending =
       membershipMutation.isPending &&
@@ -395,7 +487,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
               variant="outline"
               onClick={() => setConfigureState(builtInState)}
             >
-              Set up
+              {t("agents.setUp")}
             </Button>
           </span>
         )}
@@ -408,7 +500,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         titleClassName="flex-1 @5xl:flex-none @5xl:w-56"
         titleTextClassName="truncate"
         subtitleClassName="truncate"
-        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+        subtitle={`${localizedAgentRoleLabel(agent.role, t)}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
         className={cn(
           "group py-3",
@@ -416,7 +508,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
         )}
         leading={hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
+          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={t("agents.invalidReportingChain")} />
         ) : (
           <AgentStatusCapsule status={agent.status} />
         )}
@@ -444,9 +536,10 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         metaSpacerClassName="hidden @5xl:block"
         trailing={
           <div className="flex items-center gap-3">
-            {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>Chat</Button>}
+            {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>{t("agents.chat")}</Button>}
             <div className="hidden sm:flex items-center gap-3">
               <AgentWipBadge status={wipStatusByAgent.get(agent.id)} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
+              <AgentFallbackSignalBadge row={fallbackRowsByAgent.get(agent.id)} /> {/* myrmidon(BOT-RUNTIME-TUNING D2) */}
               {liveRunByAgent.has(agent.id) && (
                 <LiveRunIndicator
                   agentRef={agentRouteRef(agent)}
@@ -502,23 +595,66 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         : "space-y-4",
     )}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={visibleTabItems}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
+        <div className="flex flex-wrap items-center gap-3">
+          <Tabs value={scope.type === "company" ? "company" : scope.projectId} onValueChange={changeScope}>
+            <PageTabBar
+              align="start"
+              value={scope.type === "company" ? "company" : scope.projectId}
+              onValueChange={changeScope}
+              items={[
+                { value: "company", label: t("agents.scopeCompany") },
+                ...activeProjects.map((project) => ({ value: project.id, label: project.name })),
+              ]}
+            />
+          </Tabs>
+          <Tabs value={tab} onValueChange={changeTab}>
+            <PageTabBar
+              items={visibleTabItems}
+              value={tab}
+              onValueChange={changeTab}
+            />
+          </Tabs>
+        </div>
         <div className="flex items-center gap-2">
-          {!forceListView ? <div className="flex items-center overflow-hidden rounded-md border border-border" role="group" aria-label="Agent view">
+          <Select value={roleFilter} onValueChange={setRoleFilter}>
+            <SelectTrigger className="w-36"><SelectValue placeholder={t("agents.filterRole")} /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("agents.filterAll")}</SelectItem>
+              {[...new Set(scopedAgents.map((agent) => agent.role))].sort().map((role) => (
+                <SelectItem key={role} value={role}>{role}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={modelFilter} onValueChange={setModelFilter}>
+            <SelectTrigger className="w-36"><SelectValue placeholder={t("agents.filterModel")} /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("agents.filterAll")}</SelectItem>
+              {[...new Set(scopedAgents.map((agent) => agent.adapterModel).filter((model): model is string => !!model))].sort().map((model) => (
+                <SelectItem key={model} value={model}>{model}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {!forceListView ? <div className="flex items-center overflow-hidden rounded-md border border-border" role="group" aria-label={t("agents.agentView")}>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant={effectiveView === "tree" ? "secondary" : "ghost"}
+                className="rounded-none"
+                onClick={() => setView("tree")}
+                title={t("agentsTree.viewTree")}
+                aria-label={t("agentsTree.viewTree")}
+                aria-pressed={effectiveView === "tree"}
+              >
+                <ListTree className="h-3.5 w-3.5" />
+              </Button>
               <Button
                 type="button"
                 size="icon-sm"
                 variant={effectiveView === "list" ? "secondary" : "ghost"}
-                className="rounded-none"
+                className="rounded-none border-l border-border"
                 onClick={() => setView("list")}
-                title="List view"
-                aria-label="List view"
+                title={t("agents.listView")}
+                aria-label={t("agents.listView")}
                 aria-pressed={effectiveView === "list"}
               >
                 <List className="h-3.5 w-3.5" />
@@ -529,8 +665,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
                 variant={effectiveView === "org" ? "secondary" : "ghost"}
                 className="rounded-none border-l border-border"
                 onClick={() => setView("org")}
-                title="Org chart view"
-                aria-label="Org chart view"
+                title={t("agents.orgChartView")}
+                aria-label={t("agents.orgChartView")}
                 aria-pressed={effectiveView === "org"}
               >
                 <Network className="h-3.5 w-3.5" />
@@ -538,13 +674,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           </div> : null}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
+            {t("agents.newAgent")}
           </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-muted-foreground">{t("agents.agentCount", { count: filtered.length })}</p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -552,10 +688,26 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message={t("agents.createFirstAgent")}
+          action={t("agents.newAgent")}
           onAction={openNewAgent}
         />
+      )}
+
+      {/* Tree view — myrmidon(AGENTS-TREE): hierarchy by reportsTo, default */}
+      {effectiveView === "tree" && filtered.length > 0 && (
+        <AgentTree
+          agents={filtered}
+          companyId={selectedCompanyId}
+          userId={currentUserId}
+          renderRow={renderAgentRow}
+        />
+      )}
+
+      {effectiveView === "tree" && agents && agents.length > 0 && filtered.length === 0 && (
+        <p className="text-sm text-muted-foreground text-center py-8">
+          {t("agents.noAgentsMatch")}
+        </p>
       )}
 
       {/* List view */}
@@ -567,7 +719,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
+          {t("agents.noAgentsMatch")}
         </p>
       )}
 
@@ -578,13 +730,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
+          {t("agents.noAgentsMatch")}
         </p>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No organizational hierarchy defined.
+          {t("agents.noHierarchy")}
         </p>
       )}
       {configureState && selectedCompanyId && (
@@ -617,6 +769,7 @@ function OrgTreeNode({
   builtInByAgentId,
   onConfigureBuiltIn,
   wipStatusByAgent,
+  fallbackRowsByAgent,
 }: {
   node: OrgNode;
   depth: number;
@@ -631,6 +784,7 @@ function OrgTreeNode({
   builtInByAgentId: Map<string, BuiltInAgentState>;
   onConfigureBuiltIn: (state: BuiltInAgentState) => void;
   wipStatusByAgent: Map<string, WipLimitStatusEntry>;
+  fallbackRowsByAgent: Map<string, FallbackSignalStatusRow>;
 }) {
   const agent = agentMap.get(node.id);
   const builtInState = builtInByAgentId.get(node.id);
@@ -643,6 +797,7 @@ function OrgTreeNode({
   const starPending = pending && membershipMutation.variables?.starred !== undefined;
   const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
   const starred = isStarred(memberships, "agent", node.id);
+  const { t } = useTranslation();
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
@@ -655,7 +810,7 @@ function OrgTreeNode({
         )}
       >
         {hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label={t("common.invalidReportingChain")} />
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
@@ -666,7 +821,7 @@ function OrgTreeNode({
           <div className="min-w-(--sz-7rem) truncate">
             <span className="text-sm font-medium">{node.name}</span>
             <span className="text-xs text-muted-foreground ml-2">
-              {roleLabels[node.role] ?? node.role}
+              {localizedAgentRoleLabel(node.role, t)}
               {agent?.title ? ` - ${agent.title}` : ""}
             </span>
           </div>
@@ -681,7 +836,7 @@ function OrgTreeNode({
                   }}
                 >
                   <Button size="xs" variant="outline" onClick={() => onConfigureBuiltIn(builtInState)}>
-                    Set up
+                    {t("agents.setUp")}
                   </Button>
                 </span>
               )}
@@ -702,6 +857,7 @@ function OrgTreeNode({
           </span>
           <div className="hidden sm:flex items-center gap-3">
             <AgentWipBadge status={wipStatusByAgent.get(node.id)} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
+            <AgentFallbackSignalBadge row={fallbackRowsByAgent.get(node.id)} /> {/* myrmidon(BOT-RUNTIME-TUNING D2) */}
             {liveRunByAgent.has(node.id) && (
               <LiveRunIndicator
                 agentRef={agent ? agentRouteRef(agent) : node.id}
@@ -778,6 +934,7 @@ function OrgTreeNode({
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={onConfigureBuiltIn}
               wipStatusByAgent={wipStatusByAgent}
+              fallbackRowsByAgent={fallbackRowsByAgent}
             />
           ))}
         </div>
@@ -843,6 +1000,7 @@ function LiveRunIndicator({
   runId: string;
   liveCount: number;
 }) {
+  const { t } = useTranslation();
   return (
     <Link
       to={`/agents/${agentRef}/runs/${runId}`}
@@ -854,7 +1012,7 @@ function LiveRunIndicator({
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
       <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">
-        Live{liveCount > 1 ? ` (${liveCount})` : ""}
+        {liveCount > 1 ? t("agents.liveCount", { count: liveCount }) : t("agents.live")}
       </span>
     </Link>
   );

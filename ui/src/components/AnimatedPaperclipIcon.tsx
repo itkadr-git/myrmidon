@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { cn } from "../lib/utils";
 import { MyrmidonLoadingMark } from "./myrmidon/MyrmidonLoadingMark"; // myrmidon(B1a)
 
@@ -11,13 +12,14 @@ export function AnimatedPaperclipIcon({ className }: { className?: string }) {
 
 /** Full-page loading state: a large, centered, pulsing Myrmidon ant mark. */
 export function PaperclipLoading({ className }: { className?: string }) {
+  const { t } = useTranslation();
   return (
     <div
       role="status"
       className={cn("flex min-h-dvh w-full items-center justify-center", className)}
     >
       <AnimatedPaperclipIcon className="h-24 w-24" />
-      <span className="sr-only">Loading…</span>
+      <span className="sr-only">{t("common.loading")}</span>
     </div>
   );
 }

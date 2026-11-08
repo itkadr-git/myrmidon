@@ -7,6 +7,13 @@
 import type { Ui2Catalog } from "./en";
 
 export const ru: Ui2Catalog = {
+  uiSwitch: {
+    label: "Интерфейс",
+    new: "Новая",
+    legacy: "Прежняя",
+    instanceDefault: "По настройке экземпляра",
+    switchTo: "Переключить версию интерфейса",
+  },
   nav: {
     newTask: "Новая задача",
     search: "Поиск",
@@ -90,6 +97,33 @@ export const ru: Ui2Catalog = {
     savedToast: "Язык сохранён",
     saveFailed: "Не удалось сохранить выбор языка. Он останется только для этого браузера.",
     serverHint: "Выбор сохраняется в профиле пользователя и следует за вами на других устройствах.",
+    telegramBridgeUser: "Бот Telegram тоже отвечает вам на этом языке.",
+    telegramBridgeEnv: "Сейчас бот Telegram не следует этому выбору: переменная окружения сервера принудительно ставит {{language}} во всех чатах.",
+    // myrmidon(1.6.5-TG-LOCALE-C): оставшиеся источники называем честно.
+    telegramBridgeInstance:
+      "Бот Telegram отвечает на {{language}} — это язык инстанса, потому что здесь вы язык не выбирали.",
+    telegramBridgeDefault:
+      "Бот Telegram отвечает на {{language}} — это язык по умолчанию, потому что здесь вы язык не выбирали.",
+    instanceLanguageTitle: "Язык бота Telegram на инстансе",
+    instanceLanguageDescription:
+      "Действует для всех членов доски, которые не выбрали язык выше. Менять может только администратор инстанса; применяется со следующего ответа, без перезапуска.",
+    instanceLanguageSave: "Сохранить",
+    instanceLanguageSaved: "Язык бота Telegram на инстансе: {{language}}.",
+    instanceLanguageFailed: "Не удалось сохранить язык инстанса.",
+    instanceLanguageAdminOnly: "Менять язык инстанса может только администратор инстанса.",
+    uploadTitle: "Загрузить свой перевод",
+    uploadDescription: "Выберите локаль и загрузите полный JSON-каталог. Ключи и плейсхолдеры должны совпадать с английским.",
+    uploadLocale: "Локаль",
+    uploadFile: "Файл JSON-каталога",
+    uploadPreview: "Предпросмотр",
+    uploadApply: "Применить перевод",
+    uploadInvalid: "Ключи или плейсхолдеры каталога не совпадают с английскими.",
+    uploadSaved: "Пользовательский перевод сохранён.",
+    uploadError: "Не удалось сохранить каталог. Попробуйте ещё раз.",
+    uploadSizeError: "Размер каталога не должен превышать 256 КиБ.",
+    uploadMissingCount: "Отсутствуют ключи: {{count}}",
+    uploadUnknownCount: "Неизвестных ключей: {{count}}",
+    uploadPlaceholderCount: "Несовпадений плейсхолдеров: {{count}}",
   },
   status: {
     open: "Открыта",
@@ -200,6 +234,9 @@ export const ru: Ui2Catalog = {
           raiseAndResume: "Поднять и продолжить",
           title: "Инциденты стоимости",
         },
+        forecast: "Прогноз до конца месяца: {{amount}}",
+        unpriced: "Неоценено",
+        unpricedEvents: "{{count}} событий без цены",
         policies: {
           amount: "Сумма",
           empty: "Политик стоимости нет",
@@ -265,8 +302,54 @@ export const ru: Ui2Catalog = {
           },
           subtitle: "Язык интерфейса",
           title: "Язык и форматы",
+          formats: {
+            title: "Часовой пояс и форматы",
+            timeZone: "Часовой пояс",
+            timeZonePlaceholder: "Поиск часовых поясов",
+            numberFormat: "Формат чисел",
+            numberFormatEnUs: "Английский (США)",
+            numberFormatRuRu: "Русский (Россия)",
+            dateFormat: "Формат дат",
+            dateFormatYmd: "Год-месяц-день",
+            dateFormatDmy: "День-месяц-год",
+            dateFormatMdy: "Месяц-день-год",
+            preview: "Предпросмотр",
+            source: { default: "По умолчанию", settings: "Настройки", pending: "Несохранённые изменения" },
+          },
         },
         runs: {
+          drain: {
+            action: {
+              start: "Начать слив",
+              stop: "Остановить слив",
+            },
+            confirm: {
+              cancel: "Отмена",
+              confirm: "Подтвердить запуск",
+              prompt: "Подтвердите запуск слива очереди на {{duration}}. Новые прогоны не будут запускаться.",
+            },
+            duration: {
+              d15m: "15 мин",
+              d1h: "1 ч",
+              d4h: "4 ч",
+              d24h: "24 ч",
+              label: "Срок слива",
+            },
+            error: {
+              actionFailed: "Не удалось выполнить действие.",
+              denied: "Нет прав на управление сливом очереди.",
+              generic: "Не удалось загрузить состояние слива очереди.",
+            },
+            status: {
+              activeRuns: "Активных прогонов: {{count}}",
+              draining: "Идёт слив очереди",
+              idle: "Слив не идёт",
+              noExpiry: "До ручной остановки",
+              until: "До {{time}}",
+            },
+            subtitle: "Остановка приёма новых прогонов и завершение текущих.",
+            title: "Слив очереди",
+          },
           off: "Прогоны выключены",
           reset: "Сбросить",
           save: "Сохранить",
@@ -277,6 +360,21 @@ export const ru: Ui2Catalog = {
             settings: "Настройки",
           },
           subtitle: "Как настроен запуск прогонов",
+          swarmClaim: {
+            enable: "Включить самоорганизацию",
+            leaseTtlSec: "TTL аренды задачи (секунды)",
+            loadError: "Не удалось загрузить настройки самоорганизации",
+            maxActiveTasks: "Лимит задач на агента",
+            saveError: "Не удалось сохранить настройки самоорганизации",
+            source: {
+              default: "по умолчанию",
+              env: "задано окружением",
+              settings: "сохранено",
+            },
+            statusLine: "{{queued}} неназначенных задач в ожидании · {{claimed}} захвачено за последний час · {{cancelled}} отменено за последний час",
+            subtitle: "Настройки автоматического подбора и захвата задач",
+            title: "Самоорганизация (swarm-claim)",
+          },
           title: "Прогоны",
         },
         system: {
@@ -313,6 +411,13 @@ export const ru: Ui2Catalog = {
       },
       owner: "Владелец",
       ownerChannel: "Веб",
+      shell: {
+        activeChannel: {
+          web: "Активен · Веб",
+          telegram: "Активен · Telegram",
+          none: "Давно не появлялся",
+        },
+      },
       nests: {
         all: "Все гнёзда",
       },
@@ -324,6 +429,8 @@ export const ru: Ui2Catalog = {
         fleet: "Флот",
         fleetAttention: "Флот: 1 требует внимания",
         forecast: "{{spend}} из {{budget}}",
+        // myrmidon(HERMES-USAGE-COST): spend-only variant when no budget is set.
+        forecastSpendOnly: "Потрачено {{spend}}",
       },
       commander: {
         aria: "Сказать Командиру (Ctrl K)",
@@ -343,6 +450,42 @@ export const ru: Ui2Catalog = {
         placeholderTitle: "Этот экран появится в 2.0",
         placeholderBody: "Макет 2.0 для этой зоны ещё не подключён; рабочий экран ниже сохраняет поток.",
         placeholderLegacyLink: "Вернуться к текущему макету",
+        fleet: {
+          title: "Серверы",
+          subtitle: "Состояние инфраструктуры по настроенным источникам мониторинга.",
+          monitoringError: "Мониторинг не настроен или недоступен.",
+          monitoringUnavailable: "Данные мониторинга недоступны.",
+          hosts: "Узлы",
+          services: "Сервисы",
+          oom: "Инциденты OOM (24 ч)",
+          oomIncrease: "Инцидентов OOM больше, чем за предыдущие 24 ч",
+          oomAgents: "По агентам",
+          oomRoles: "По ролям",
+          empty: "Нет данных по флоту",
+          emptyBody: "Для этой компании не возвращены узлы или сервисы.",
+          error: "Данные флота недоступны.",
+          metrics: "ЦП {{cpu}}% · память {{memory}}% · диск {{disk}}%",
+          states: { running: "Работает", stopped: "Остановлен", unknown: "Неизвестно" },
+        },
+        more: {
+          title: "Ещё",
+          subtitle: "Дополнительные разделы и настройки.",
+          sections: {
+            navigation: "Навигация",
+            appearance: "Внешний вид",
+          },
+          theme: "Тема",
+          themeLight: "Светлая",
+          themeDark: "Тёмная",
+          themeSystem: "Системная",
+          links: {
+            swarm: "Рой",
+            costs: "Расходы",
+            quality: "Качество",
+            settings: "Настройки",
+            agentCard: "Карточка агента",
+          },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning

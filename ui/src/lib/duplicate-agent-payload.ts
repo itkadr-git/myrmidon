@@ -1,4 +1,4 @@
-import type { AgentDetail } from "@paperclipai/shared";
+import type { AgentDetail } from "@myrmidon/shared";
 
 const INSTRUCTION_CONFIG_KEYS = [
   "instructionsBundleMode",
@@ -15,22 +15,30 @@ export type DuplicateInstructionsBundle = {
   files: Record<string, string>;
 };
 
-type DuplicateAgentSource = Pick<
-  AgentDetail,
-  | "name"
-  | "role"
-  | "title"
-  | "icon"
-  | "reportsTo"
-  | "capabilities"
-  | "adapterType"
-  | "adapterConfig"
-  | "runtimeConfig"
-  | "defaultEnvironmentId"
-  | "budgetMonthlyCents"
-  | "permissions"
-  | "metadata"
->;
+// myrmidon(PERF-DIET-G): the company agent list no longer carries adapterConfig,
+// so a duplicate source may arrive without one — the payload builder already
+// treats an absent config as empty.
+type DuplicateAgentSource = Omit<
+  Pick<
+    AgentDetail,
+    | "name"
+    | "role"
+    | "title"
+    | "icon"
+    | "reportsTo"
+    | "capabilities"
+    | "adapterType"
+    | "adapterConfig"
+    | "runtimeConfig"
+    | "defaultEnvironmentId"
+    | "budgetMonthlyCents"
+    | "permissions"
+    | "metadata"
+  >,
+  "adapterConfig"
+> & {
+  adapterConfig?: Record<string, unknown> | null;
+};
 
 function cloneRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> {
   if (!value) return {};

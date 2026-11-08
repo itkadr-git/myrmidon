@@ -1,7 +1,7 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agentWakeupRequests,
   agents,
@@ -9,11 +9,12 @@ import {
   issueApprovals,
   issueThreadInteractions,
   heartbeatRuns,
+  activityLog,
   issueRecoveryActions,
   issueComments,
   issues,
-} from "@paperclipai/db";
-import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@myrmidon/shared";
 import { parseObject } from "../../../adapters/utils.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { budgetService } from "../../../services/budgets.js";
@@ -22,6 +23,7 @@ import { collectDispositionRepairSourceState } from "../../../services/recovery/
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
+import { randomUUID } from "node:crypto";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -33,10 +35,19 @@ import {
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
+// myrmidon(OPE-11947): the age of a queued run counts from when it began to wait
+import { queuedRunWaitingSince } from "../domain/queued-run-age.js";
 // myrmidon(P2): pending interaction addressee wake
-import { isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
+import { isOwnerExplainWake, isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
+// myrmidon(RUN-GUARD-ESCALATE): the manager's wake after a final run guard stop is not the assignee's.
+import {
+  RUN_GUARD_STOP_NEEDS_INPUT_SOURCE,
+  RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
+  isRunGuardStopWakeRecipient,
+} from "../../../myrmidon/run-guard-escalation.js";
 import type {
   QueuedRunFacts,
+  QueuedRunStalenessErrorCode,
   ReviewParticipantFacts,
   RetryReasonKind,
   ScheduledRetryFacts,
@@ -87,6 +98,7 @@ type LoadStalenessFactsInput = {
   issueId: string;
   contextSnapshot: Record<string, unknown>;
   scheduledRetryReason: string | null;
+  invocationSource: string;
 };
 type CancelSuppressedRetryInput = {
   runId: string;
@@ -108,11 +120,27 @@ const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   currentParticipant: null,
 };
 
+// myrmidon(UNBLOCK-OWNER-WAKE): agent ids recorded as the owner of an issue's block.
+export function blockOwnerAgentIds(blockerMetadata: unknown, unblockDescriptor: unknown): string[] {
+  const ids: string[] = [];
+  for (const holder of [blockerMetadata, unblockDescriptor]) {
+    const owner = parseObject(holder).owner;
+    const agentId = readNonEmptyString(parseObject(owner).agentId);
+    if (agentId && !ids.includes(agentId)) ids.push(agentId);
+  }
+  return ids;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
+function classifyRetryReasonKind(
+  retryReason: string | null,
+  contextSnapshot?: Record<string, unknown> | null,
+): RetryReasonKind {
+  // myrmidon(OPE-11947): the scheduler marks the retry of a model-unavailable run.
+  if (contextSnapshot?.modelUnavailableRetry === true) return "model_unavailable_wait";
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if (retryReason === "ai_connection_busy") return "ai_connection_wait";
@@ -259,7 +287,7 @@ export function createPostgresRunDispatchAdapter(
       input.scheduledRetryReason ??
       null;
     const issueId = readNonEmptyString(input.contextSnapshot.issueId);
-    const retryReasonKind = classifyRetryReasonKind(retryReason);
+    const retryReasonKind = classifyRetryReasonKind(retryReason, input.contextSnapshot);
 
     // Facts fill in through the same rule order `decideScheduledRetryGate`
     // evaluates. A field still awaiting its own read keeps a value that
@@ -329,6 +357,9 @@ export function createPostgresRunDispatchAdapter(
         executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
+        // myrmidon(HUMAN-REVIEW-WAIT): read for collectDispositionRepairSourceState below.
+        reviewPolicy: issues.reviewPolicy,
+        hiddenAt: issues.hiddenAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -347,6 +378,8 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
+    // myrmidon(1.6.5 F-09): a hidden issue is not startable.
+    facts.issueHiddenAt = issue.hiddenAt;
     if (input.conversationContinuation) {
       const [interactions, linkedApprovals] = await Promise.all([
         dbOrTx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -487,6 +520,9 @@ export function createPostgresRunDispatchAdapter(
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
+        hiddenAt: issues.hiddenAt,
+        blockerMetadata: issues.blockerMetadata,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -500,12 +536,17 @@ export function createPostgresRunDispatchAdapter(
       ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
     );
     // myrmidon(P2): a pending interaction wakes its addressee, who may not be the assignee
-    const pendingInteractionAddresseeWake = await isPendingInteractionAddresseeWake(dbOrTx, {
+    // myrmidon(1.6.5-OWNER-VIA-BOT): the wake that asks the AUTHOR of an owner decision to explain it
+    // to the owner gets the same bypass: the author is not the addressee and not always the assignee
+    const ownerWakeFacts = {
       companyId: input.companyId,
       issueId,
       agentId: input.agentId,
       contextSnapshot: context,
-    });
+    };
+    const pendingInteractionAddresseeWake =
+      (await isPendingInteractionAddresseeWake(dbOrTx, ownerWakeFacts)) ||
+      (await isOwnerExplainWake(dbOrTx, ownerWakeFacts));
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason =
@@ -554,6 +595,60 @@ export function createPostgresRunDispatchAdapter(
             .limit(1)
             .then((rows) => Boolean(rows[0]))
         : false;
+    // Recovery-created continuation runs may legitimately execute for a prior assignee.
+    // Bind this bypass to the exact automation source and continuation reason.
+    const isProductiveContinuationRecovery = Boolean(
+      issue &&
+        input.invocationSource === "automation" &&
+        context.source === "issue.productive_terminal_continuation_recovery" &&
+        wakeReason === "issue_continuation_needed" &&
+        retryReason === "issue_continuation_needed",
+    );
+
+    // myrmidon(RUN-GUARD-ESCALATE): the wake that tells the assignee's manager a task
+    // was stopped for good by the run guard. Bound to the exact automation source and
+    // wake reason, to the issue being `blocked` (the state the stop left it in) and to
+    // the run's agent being the assignee's `reports_to` or the agent `adm`: a stranger
+    // agent, or a task that has moved on, gets no bypass and is cancelled as before.
+    const isRunGuardStopNeedsInputWake = Boolean(
+      issue &&
+        issue.status === "blocked" &&
+        input.invocationSource === "automation" &&
+        context.source === RUN_GUARD_STOP_NEEDS_INPUT_SOURCE &&
+        wakeReason === RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON &&
+        (await isRunGuardStopWakeRecipient(dbOrTx, {
+          companyId: input.companyId,
+          assigneeAgentId: issue.assigneeAgentId,
+          agentId: input.agentId,
+        })),
+    );
+
+    // myrmidon(UNBLOCK-OWNER-WAKE): `issue_unblock_requested` wakes the owner of the
+    // block (stranded disposition, routable blocked) to resolve it; that owner is
+    // usually not the assignee. Bound to the automation wake reason, the issue still
+    // being blocked and the run's agent being the recorded block owner.
+    const isUnblockOwnerWake = Boolean(
+      issue &&
+        issue.status === "blocked" &&
+        input.invocationSource === "automation" &&
+        wakeReason === "issue_unblock_requested" &&
+        blockOwnerAgentIds(issue.blockerMetadata, issue.unblockDescriptor).includes(input.agentId),
+    );
+
+    // myrmidon(OPE-11948): an automatic continuation wake — the system's own
+    // `issue_continuation_needed`, not a person's comment, a resume request or
+    // an interaction answer (a card a person resolved keeps its own rules) — is
+    // only started while the issue is actionable.
+    const isAutomaticContinuationWake = Boolean(
+      input.invocationSource === "automation" &&
+        wakeReason === "issue_continuation_needed" &&
+        !wakeCommentId &&
+        !resumeIntent &&
+        !isInteractionWake &&
+        !pendingInteractionAddresseeWake &&
+        !isResolvedInteractionContinuation &&
+        !readNonEmptyString(context.interactionId),
+    );
 
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
@@ -575,6 +670,7 @@ export function createPostgresRunDispatchAdapter(
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
+      issueHiddenAt: issue?.hiddenAt ?? null,
       isResolvedInteractionContinuation,
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
@@ -582,6 +678,10 @@ export function createPostgresRunDispatchAdapter(
       // myrmidon(P2): pending interaction addressee wake
       isPendingInteractionAddresseeWake: pendingInteractionAddresseeWake,
       isAuthorizedSourceScopedRecovery,
+      isProductiveContinuationRecovery,
+      isRunGuardStopNeedsInputWake,
+      isUnblockOwnerWake,
+      isAutomaticContinuationWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
       wakeCommentIdPresent: Boolean(wakeCommentId),
@@ -772,7 +872,8 @@ export function createPostgresRunDispatchAdapter(
         !gate.allowed &&
         gate.errorCode === "issue_not_found" &&
         factsResult.facts.retryReasonKind !== "max_turn_continuation" &&
-        factsResult.facts.retryReasonKind !== "native_safe_replacement";
+        factsResult.facts.retryReasonKind !== "native_safe_replacement" &&
+        factsResult.facts.retryReasonKind !== "model_unavailable_wait";
 
       if (!gate.allowed && !isLegacyMissingIssueException) {
         const cancelled = await cancelSuppressedRetryInTx(tx as unknown as Db, {
@@ -831,8 +932,13 @@ export function createPostgresRunDispatchAdapter(
   async function cancelStaleRunInTx(
     tx: Db,
     run: HeartbeatRun,
-    issueId: string,
-    decision: Extract<ReturnType<typeof decideQueuedRunStaleness>, { stale: true }>,
+    issueId: string | null,
+    decision: {
+      stale: true;
+      errorCode: QueuedRunStalenessErrorCode;
+      reason: string;
+      details: Record<string, unknown>;
+    },
     expectedStatus: "queued" | "running",
     now: Date,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -879,23 +985,75 @@ export function createPostgresRunDispatchAdapter(
               eq(agentWakeupRequests.companyId, row.companyId),
             ),
           );
+
+        // myrmidon(WAKE-STALL-ROOT-A): a wake skipped because execution
+        // reconciliation is required is not terminal — after the
+        // reconciliation commit, re-enqueue it once (new idempotency key,
+        // parent = the skipped record, resurrection_count < 1, and never
+        // when the recovery evidence blocks replay).
+        if (decision.errorCode === "execution_reconciliation_required") {
+          const originalWakeup = await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.id, row.wakeupRequestId),
+                eq(agentWakeupRequests.companyId, row.companyId),
+              ),
+            )
+            .then(rows => rows[0]);
+
+          const payload = parseObject(originalWakeup?.payload);
+          const evidence = parseObject(
+            (payload as Record<string, unknown> | null)?.evidence,
+          );
+          const replayBlocked =
+            parseObject(evidence.automaticRecovery).replay === "blocked";
+
+          if (
+            originalWakeup &&
+            (originalWakeup.resurrectionCount ?? 0) < 1 &&
+            !replayBlocked
+          ) {
+            await tx
+              .insert(agentWakeupRequests)
+              .values({
+                id: randomUUID(),
+                companyId: originalWakeup.companyId,
+                agentId: originalWakeup.agentId,
+                source: originalWakeup.source,
+                triggerDetail: originalWakeup.triggerDetail,
+                reason: "resurrection_execution_reconciliation_required",
+                payload: originalWakeup.payload,
+                status: "pending",
+                requestedByActorType: originalWakeup.requestedByActorType,
+                requestedByActorId: originalWakeup.requestedByActorId,
+                idempotencyKey: `${originalWakeup.idempotencyKey ?? originalWakeup.id}:resurrection:${randomUUID()}`,
+                resurrectionCount: (originalWakeup.resurrectionCount ?? 0) + 1,
+                createdAt: now,
+                updatedAt: now,
+              });
+          }
+        }
       }
 
-      await tx
-        .update(issues)
-        .set({
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.companyId, row.companyId),
-            eq(issues.id, issueId),
-            eq(issues.executionRunId, row.id),
-          ),
-        );
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.companyId, row.companyId),
+              eq(issues.id, issueId),
+              eq(issues.executionRunId, row.id),
+            ),
+          );
+      }
 
       await appendHeartbeatRunEvent(tx as unknown as Db, {
         companyId: row.companyId,
@@ -907,7 +1065,17 @@ export function createPostgresRunDispatchAdapter(
         message: decision.reason,
         payload: decision.details,
       });
-
+      await tx.insert(activityLog).values({
+        companyId: row.companyId,
+        actorType: "system",
+        actorId: "queued-run-timeout",
+        action: "heartbeat_run.cancelled",
+        entityType: "heartbeat_run",
+        entityId: row.id,
+        agentId: row.agentId,
+        runId: row.id,
+        details: { reason: decision.reason, errorCode: decision.errorCode, ...decision.details },
+      });
       return {
         outcome: "cancelled",
         reason: decision.reason,
@@ -933,6 +1101,7 @@ export function createPostgresRunDispatchAdapter(
         issueId,
         contextSnapshot,
         scheduledRetryReason: run.scheduledRetryReason,
+        invocationSource: run.invocationSource,
       },
       now,
       tx,
@@ -945,6 +1114,29 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<CancelStaleQueuedRunOutcome> {
     const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
+      // myrmidon(OPE-11947): a promoted scheduled retry waits since its due time,
+      // not since it was created (same measure as the sweep's selection).
+      const staleAgeMs = input.now.getTime() - queuedRunWaitingSince(run, input.now).getTime();
+      if (
+        input.expectedStatus === "queued" &&
+        input.staleAfterMs !== undefined &&
+        input.staleAfterMs > 0 &&
+        staleAgeMs >= input.staleAfterMs
+      ) {
+        return cancelStaleRunInTx(
+          tx,
+          run,
+          readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+          {
+            stale: true,
+            errorCode: "queued_run_stale_timeout",
+            reason: `Cancelled because it remained queued for more than ${Math.round(input.staleAfterMs / 60000)} minutes without starting`,
+            details: { staleAgeMs, staleAfterMs: input.staleAfterMs },
+          },
+          input.expectedStatus,
+          input.now,
+        );
+      }
       const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now);
       if (!decision.stale || !issueId) {
         if (input.expectedStatus === "queued" && facts?.isInteractionWake) {

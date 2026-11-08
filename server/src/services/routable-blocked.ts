@@ -1,4 +1,4 @@
-import type { IssueUnblockDescriptor } from "@paperclipai/shared";
+import type { IssueUnblockDescriptor } from "@myrmidon/shared";
 
 export const ROUTABLE_BLOCKED_ROLLOUT_AT = new Date("2026-07-23T18:13:03.000Z");
 
@@ -51,4 +51,27 @@ export async function deliverAgentUnblockNotification(input: {
   });
   await input.markNotified((input.now ?? (() => new Date()))());
   return true;
+}
+
+// myrmidon(STALE-BLOCK): transitions into blocked after this rollout moment
+// must carry a reason reference (blockedByIssueIds or unblockDescriptor.reasonRef);
+// records blocked earlier stay valid and are never retro-rejected.
+export const STALE_BLOCK_ROLLOUT_AT = new Date("2026-10-04T13:40:54.000Z");
+
+export function isStaleBlockGuardedTransition(input: {
+  status: string;
+  blockedTransitionAt?: Date | string | null;
+}): boolean {
+  const transitionAt =
+    input.blockedTransitionAt == null
+      ? null
+      : input.blockedTransitionAt instanceof Date
+        ? input.blockedTransitionAt
+        : new Date(input.blockedTransitionAt);
+  return (
+    input.status === "blocked" &&
+    transitionAt !== null &&
+    !Number.isNaN(transitionAt.getTime()) &&
+    transitionAt.getTime() >= STALE_BLOCK_ROLLOUT_AT.getTime()
+  );
 }

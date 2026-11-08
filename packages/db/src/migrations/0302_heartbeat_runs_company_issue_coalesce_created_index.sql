@@ -1,0 +1,15 @@
+-- myrmidon(OPE-4131-B / OPE-4106): persist the production index that serves
+-- the conversation ownership blocker
+-- (server/src/services/conversation-continuation.ts). Its hot-path predicate
+-- is `company_id = ? and runtime_mode = 'legacy' and
+-- coalesce(native_issue_id::text, context_snapshot->>'issueId') = ?`
+-- ordered by created_at desc, id desc; without a matching expression index
+-- every blocker check (~10 per run) detoasted context_snapshot of the whole
+-- company partition. The operator created this index manually on production
+-- to stop the bleeding (OPE-4106); this migration makes it part of the
+-- managed schema. IF NOT EXISTS keeps the manual index in place and makes a
+-- re-run a no-op. Drizzle migrations run transactionally, so CONCURRENTLY is
+-- unavailable; the manual index already exists on the one large production
+-- instance, so the lock window there is zero, and fresh/small instances build
+-- the index in milliseconds.
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_issue_coalesce_created_idx" ON "heartbeat_runs" USING btree ("company_id", (coalesce("native_issue_id"::text, "context_snapshot" ->> 'issueId')), "created_at" DESC, "id" DESC);

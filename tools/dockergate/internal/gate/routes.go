@@ -2,13 +2,18 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/jsonx"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/route"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/upstream"
@@ -61,11 +66,44 @@ func (rs *reqState) a2(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 	return nil
 }
 
-// markerPath is the query of the archive GET of the applied marker.
-const markerPath = "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"
+// markerPath is the query of the archive GET of the applied marker of an
+// isolated bot.
+const markerPath = "/archive?" + route.MarkerQuery
+
+// legacyMarkerPath is the applied marker of a LEGACY-layout bot (contract "1"),
+// read through its /data/hermes bind.
+const legacyMarkerPath = "/archive?" + route.LegacyMarkerQuery
 
 // a3: the applied marker. A marker of more than 1 MiB is reported as absent.
 func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	target := markerPath
+	if rt.LegacyMarker {
+		target = legacyMarkerPath
+	} else if rt.ScopeMarker {
+		target = "/archive?" + route.ScopeMarkerQuery(rt.BotKey)
+	}
+	return rs.archiveRead(ctx, rt, bs, target, maxMarker)
+}
+
+// cloneReportPath is the query of the archive GET of the clone-hygiene report.
+const cloneReportPath = "/archive?" + route.CloneReportQuery
+
+// legacyCloneReportPath is the clone-hygiene report of a LEGACY-layout bot.
+const legacyCloneReportPath = "/archive?" + route.LegacyCloneReportQuery
+
+// a13: the clone-hygiene report of the bot, one fixed file, read-only.
+func (rs *reqState) a13(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	target := cloneReportPath
+	if rt.LegacyMarker {
+		target = legacyCloneReportPath
+	} else if rt.ScopeMarker {
+		target = "/archive?" + route.ScopeCloneReportQuery(rt.BotKey)
+	}
+	return rs.archiveRead(ctx, rt, bs, target, maxCloneReport)
+}
+
+// archiveRead reads one fixed file of the main container as a tar.
+func (rs *reqState) archiveRead(ctx context.Context, rt *route.Route, bs *botState, query string, limit int) *deny.Error {
 	if derr := rs.g.allow(bs, rateInspect); derr != nil {
 		return derr
 	}
@@ -77,8 +115,8 @@ func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 		return rs.notFound()
 	}
 	def, _, _ := rs.timeouts()
-	ans, derr := rs.call(ctx, upstream.Request{Method: "GET", Target: containerPath(ct.ID, markerPath)},
-		def, maxMarker, deny.MarkerTooLarge)
+	ans, derr := rs.call(ctx, upstream.Request{Method: "GET", Target: containerPath(ct.ID, query)},
+		def, limit, deny.MarkerTooLarge)
 	if derr != nil {
 		return derr
 	}
@@ -94,13 +132,17 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 		return derr
 	}
 	env := &policy.Env{
-		VolumeRoot:   st.cfg.VolumeRoot,
-		Network:      st.cfg.Network,
-		Images:       st.set,
-		MountSources: st.cfg.MountSources,
-		MaxMemoryMB:  bot.MaxMemoryMB,
-		MaxCPUs:      bot.MaxCPUs,
-		MaxPids:      bot.MaxPids,
+		VolumeRoot:       st.cfg.VolumeRoot,
+		Network:          st.cfg.Network,
+		Images:           st.set,
+		MountSources:     st.cfg.MountSources,
+		PackageCacheRoot: st.cfg.PackageCacheRoot,
+		BotRuntimeRoot:   st.cfg.BotRuntimeRoot,
+		ScopeRoot:        st.cfg.EffectiveScopeRoot(),
+		ScopeInstances:   bot.ScopeInstances,
+		MaxMemoryMB:      bot.MaxMemoryMB,
+		MaxCPUs:          bot.MaxCPUs,
+		MaxPids:          bot.MaxPids,
 	}
 	cr, derr := policy.ParseCreate(body, rt, env)
 	if derr != nil {
@@ -131,6 +173,11 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 	}
 	if derr := policy.CheckVolumeRoot(rs.g.lstat, st.cfg.VolumeRoot, rt.BotKey); derr != nil {
 		return derr
+	}
+	if cr.ScopeInstance != "" {
+		if derr := policy.CheckScopeDir(rs.g.lstat, st.cfg.EffectiveScopeRoot(), cr.ScopeInstance, rt.BotKey); derr != nil {
+			return derr
+		}
 	}
 
 	unlock, derr := rs.g.lockBot(ctx, bs)
@@ -178,6 +225,16 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 			return derr
 		}
 		ans.body, ans.ctype = trimmed, jsonType
+		if cr.Form == policy.FormBot && rt.Suffix != route.SuffixNext {
+			registerCtx, cancel := context.WithTimeout(ctx, def)
+			_, err := rs.g.opt.Disk.Ensure(registerCtx, rt.BotKey)
+			cancel()
+			if err != nil {
+				rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_register_failed", BotKey: rt.BotKey, Reason: "create"})
+			} else {
+				rs.g.log.Write(Line{Event: "disk_project_registered", BotKey: rt.BotKey})
+			}
+		}
 	}
 	rs.respond(ans)
 	return nil
@@ -379,10 +436,19 @@ func (rs *reqState) a9(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 		return derr
 	}
 	rs.respond(ans)
+	if ans.status >= 200 && ans.status < 300 && rt.Suffix == route.SuffixMain {
+		cleanupCtx, cancel := context.WithTimeout(ctx, def)
+		err := rs.g.opt.Disk.Remove(cleanupCtx, rt.BotKey)
+		cancel()
+		if err != nil {
+			rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_remove_failed", BotKey: rt.BotKey, Reason: "delete"})
+		} else {
+			rs.g.log.Write(Line{Event: "disk_project_removed", BotKey: rt.BotKey})
+		}
+	}
 	return nil
 }
 
-// requireNextCreated checks that the .next container of the bot is ours and
 // has not been started.
 func (rs *reqState) requireNextCreated(ctx context.Context, key string) *deny.Error {
 	next, derr := rs.inspectOurs(ctx, key, route.SuffixNext)
@@ -400,6 +466,14 @@ func (rs *reqState) requireNextCreated(ctx context.Context, key string) *deny.Er
 
 // a10: stop, only inside a recreate.
 func (rs *reqState) a10(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.stopMain(ctx, rt, bs, false)
+}
+
+func (rs *reqState) a17(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.stopMain(ctx, rt, bs, true)
+}
+
+func (rs *reqState) stopMain(ctx context.Context, rt *route.Route, bs *botState, idle bool) *deny.Error {
 	_, stop, _ := rs.timeouts()
 	unlock, derr := rs.g.lockBot(ctx, bs)
 	if derr != nil {
@@ -414,13 +488,36 @@ func (rs *reqState) a10(ctx context.Context, st *runtime, rt *route.Route, bs *b
 	if ct == nil {
 		return rs.notFound()
 	}
-	if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
-		return derr
+	if idle {
+		if ct.Config.Labels["myrmidon.bot"] != rt.BotKey {
+			return deny.New(deny.ForeignContainer)
+		}
+		if ct.State.Health != nil && ct.State.Health.Status != nil && *ct.State.Health.Status == "starting" {
+			return deny.New(deny.IdleStopDenied).WithDetail("container_starting")
+		}
+		if next, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixNext); inspectErr != nil {
+			return inspectErr
+		} else if next != nil {
+			return statePrecondition("recreate_active")
+		}
+		if active, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixHelper); inspectErr != nil {
+			return inspectErr
+		} else if active != nil && active.Status() == "running" {
+			return deny.New(deny.IdleStopDenied).WithDetail("active_helper")
+		}
+	} else {
+		if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
+			return derr
+		}
 	}
 	if derr := rs.g.allow(bs, rateStop); derr != nil {
 		return derr
 	}
-	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/stop?t=30")},
+	target := "/stop?t=30"
+	if idle {
+		target += "&myrmidon-idle=true"
+	}
+	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, target)},
 		stop, maxErrBody, deny.ResponseTooLarge)
 	if derr != nil {
 		return derr
@@ -450,6 +547,83 @@ func (rs *reqState) a11(ctx context.Context, st *runtime, rt *route.Route, bs *b
 	}
 	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/restart?t=30")},
 		stop, maxErrBody, deny.ResponseTooLarge)
+	if derr != nil {
+		return derr
+	}
+	rs.respond(ans)
+	return nil
+}
+
+// updateKeys are the only keys of the body of A18.
+var updateKeys = [...]string{"Memory", "MemorySwap", "PidsLimit"}
+
+// parseUpdateBody reads the body of A18 with the strict parser: exactly the
+// three keys of updateKeys, each an integer. Memory and PidsLimit must be
+// positive and within the limits of the bot; MemorySwap (memory plus swap)
+// must be at least Memory and at most twice Memory, the swap the controller
+// asks for, so the total never goes beyond twice the limit of the bot.
+func parseUpdateBody(body []byte, bot config.Bot) (memory, swap, pids int64, derr *deny.Error) {
+	v, derr := jsonx.Parse(body)
+	if derr != nil {
+		return 0, 0, 0, derr
+	}
+	if v.Kind != jsonx.KindObject {
+		return 0, 0, 0, deny.FieldOnly(deny.JSONType, "$")
+	}
+	for _, m := range v.Members {
+		known := false
+		for _, k := range updateKeys {
+			if m.Key == k {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return 0, 0, 0, deny.Field(deny.JSONUnknownKey, "$", []byte(m.Key))
+		}
+	}
+	var out [len(updateKeys)]int64
+	for i, k := range updateKeys {
+		n := v.Get(k)
+		if n == nil || n.Kind != jsonx.KindInt {
+			return 0, 0, 0, deny.FieldOnly(deny.JSONType, k)
+		}
+		out[i] = n.N
+	}
+	memory, swap, pids = out[0], out[1], out[2]
+	maxMem := bot.MaxMemoryMB * 1024 * 1024
+	if memory <= 0 || memory > maxMem || swap < memory || swap > 2*memory || pids <= 0 || pids > bot.MaxPids {
+		return 0, 0, 0, deny.New(deny.JSONValue)
+	}
+	return memory, swap, pids, nil
+}
+
+// a18: update mutable resource limits without restarting the container.
+func (rs *reqState) a18(ctx context.Context, st *runtime, rt *route.Route, bs *botState, bot config.Bot) *deny.Error {
+	def, _, _ := rs.timeouts()
+	body, derr := rs.readBody(st.cfg.Limits.MaxJSONBody, "application/json", deny.JSONSyntax)
+	if derr != nil {
+		return derr
+	}
+	memory, swap, pids, derr := parseUpdateBody(body, bot)
+	if derr != nil {
+		return derr
+	}
+	// The daemon gets a body that the gate wrote itself from the three checked
+	// numbers, never the bytes of the caller: no other field of the update
+	// call (CpuShares, RestartPolicy, ...) can pass through this route.
+	body = []byte(fmt.Sprintf(`{"Memory":%d,"MemorySwap":%d,"PidsLimit":%d}`, memory, swap, pids))
+	ct, derr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixMain)
+	if derr != nil {
+		return derr
+	}
+	if ct == nil {
+		return rs.notFound()
+	}
+	if derr := rs.g.allow(bs, rateCreate); derr != nil {
+		return derr
+	}
+	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/update"), Body: body, ContentType: jsonType}, def, maxCreateRes, deny.ResponseTooLarge)
 	if derr != nil {
 		return derr
 	}
@@ -494,5 +668,59 @@ func (rs *reqState) a12(ctx context.Context, st *runtime, rt *route.Route, bs *b
 		return derr
 	}
 	rs.respond(ans)
+	return nil
+}
+
+// a14: GET /myrmidon/disk. The partition (statfs of the volume root) and the
+// project quotas (`xfs_quota report`), never a call to the daemon. A partition
+// without prjquota is a normal answer (quotaEnabled=false), not an error; what
+// is an error is a volume root that cannot be read or a report that cannot be
+// understood, and a command that does not finish in time.
+func (rs *reqState) a14(ctx context.Context, st *runtime) *deny.Error {
+	def, _, _ := rs.timeouts()
+	cctx, cancel := context.WithTimeout(ctx, def)
+	defer cancel()
+	resp, err := disk.Collect(cctx, st.cfg.VolumeRoot, rs.g.disk)
+	switch {
+	case err == nil:
+	case errors.Is(err, context.DeadlineExceeded):
+		return deny.New(deny.UpstreamTimeout).WithDetail("xfs_quota")
+	case errors.Is(err, disk.ErrStatfs):
+		return deny.New(deny.UpstreamError).WithDetail("statfs")
+	case errors.Is(err, disk.ErrReport):
+		return deny.New(deny.UpstreamError).WithDetail("xfs_report")
+	default:
+		return deny.New(deny.UpstreamError).WithDetail("disk")
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return deny.New(deny.UpstreamError).WithDetail("disk_json")
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
+	return nil
+}
+
+// a19 answers route A19 (GET /myrmidon/events/oom) with buffered OOM events.
+func (rs *reqState) a19(ctx context.Context, st *runtime) *deny.Error {
+	var sinceNano int64
+	if q := rs.r.URL.Query().Get("since"); q != "" {
+		if val, err := strconv.ParseInt(q, 10, 64); err == nil {
+			sinceNano = val
+		}
+	}
+	events := rs.g.oom.Since(sinceNano)
+	if events == nil {
+		events = []OomEvent{}
+	}
+	resp := struct {
+		Events []OomEvent `json:"events"`
+	}{
+		Events: events,
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return deny.New(deny.UpstreamError).WithDetail("events_oom_json")
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
 	return nil
 }

@@ -48,6 +48,31 @@ Two more rollout facts:
   but no real SSH connection is made (the real client is a later part). Only
   the public half of a key is ever meant to reach a host.
 
+## SSH operations on hosts
+
+`POST /hosts/:hostId/deploy/:secretId`, `/revoke/` and `/dry-run/` run the
+real ssh client with the admin key named by
+`MYRMIDON_ACCESS_HUB_SSH_ADMIN_KEY_SECRET` (see
+[SETTINGS.md](../SETTINGS.md)): deploy adds the key line to
+`authorized_keys` on the host, revoke removes it, dry run reports what a
+deploy would do without writing. Each call answers `{ outcome, note }` and
+writes one journal line (`access_hub.ssh.deployed`, `access_hub.ssh.revoked`
+or `access_hub.ssh.dry_run`) with the same outcome and note.
+
+Outcomes: `deployed` (the host file changed), `already_present` / `dry_run`,
+and `not_deployed` — nothing on the host was touched and the note says why.
+The note is deliberately coarse: a failed ssh step reports only
+`ssh command timed out` or `ssh command failed (exit <code>)`, never the
+host address, the login, the key file path or the remote command — those
+stay out of the API response and the journal. Other `not_deployed` reasons:
+the admin key is not configured (`admin ssh key secret is not configured`),
+the host's key file is too large to process
+(`authorized_keys on the host is too large to process`), an input field is
+invalid (`invalid <field>`), and — before any ssh attempt — the stored
+public key half is missing or unparseable
+(`the secret has no parseable public key half`). Fix the secret (rotate it
+to a fresh pair) and retry.
+
 ## The one secrecy rule
 
 Secret values are never displayed. The list, the card and the journal render
@@ -163,7 +188,7 @@ The server module serves `/api/myrmidon/access-hub/*`, board-only, behind
 | `PUT /accesses/:id/hosts` | Set the host set of an SSH-key secret (deploy/withdraw is one set-shaped write) |
 | `GET /journal` | Journal entries, newest first (`limit` query, default 100, max 500) |
 | `GET /hosts`, `POST /hosts`, `PATCH /hosts/:hostId`, `DELETE /hosts/:hostId` | Fleet host registry (instance-wide, at most 200 hosts) |
-| `POST /hosts/:hostId/deploy/:secretId` | Deploy one SSH key to one host (fake deploy port for now) |
+| `POST /hosts/:hostId/deploy/:secretId` | Deploy one SSH key to one host (also `/revoke/`, `/dry-run/`) |
 
 Paths carry no `:companyId`: the company comes from the `companyId` query
 parameter first, then from the caller's single active company membership;
@@ -171,6 +196,20 @@ zero or several memberships without the parameter answer 422.
 
 Secret values never travel back over this API: records carry no value field,
 and the one write-only value the operator types is never echoed in a response.
+
+## Disabled-module behavior
+
+With the module enabled, the list endpoints return access and host arrays. With
+the module disabled, they return HTTP 200 with `enabled: false` and empty
+arrays. The UI shows the "not available yet" notice instead of the access list.
+This response means the feature flag is off; it does not mean that the API
+failed.
+
+If the notice appears, check `GET /api/myrmidon/access-hub/status` and the
+`MYRMIDON_ACCESS_HUB_ENABLED` setting. A disabled status confirms the module is
+off. If status says enabled but a list request fails, or returns an invalid
+payload, investigate the API/service. A 5xx response or invalid payload is not
+the disabled-feature response.
 
 ## Questions and answers
 

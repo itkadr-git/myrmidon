@@ -11,6 +11,8 @@ export interface LocalProcessSandboxPath {
   path: string;
   access: LocalProcessSandboxAccess;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@myrmidon/shared";
 
 export interface LocalProcessSandboxPathAlias {
   path: string;
@@ -139,9 +141,16 @@ function parseNetworkAllowlistEntry(entry: string, index: number): NetworkAllowl
   return { hostname, port };
 }
 
+// myrmidon(1.6.6 OPE-11239): lists arrive as arrays from JSON/API and as
+// comma-separated text from schema-driven forms (hermes_local); both are honoured.
+function toEntryList(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
 export function parseLocalProcessNetworkAllowlist(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry, index) => {
+  return toEntryList(value).map((entry, index) => {
     if (typeof entry !== "string") throw new Error(`networkAllowlist[${index}] must be a string.`);
     const rule = parseNetworkAllowlistEntry(entry, index);
     return rule.port ? `${rule.hostname}:${rule.port}` : rule.hostname;
@@ -252,11 +261,11 @@ async function startNetworkAllowlistProxy(
     }
     const port = target.port || (target.protocol === "https:" ? "443" : "80");
     if (target.protocol !== "http:") {
-      writeProxyError(response, 400, "https_requires_connect", "HTTPS targets must use CONNECT through the Paperclip sandbox proxy.");
+      writeProxyError(response, 400, "https_requires_connect", `HTTPS targets must use CONNECT through the ${PRODUCT_NAME} sandbox proxy.`);
       return;
     }
     if (!isNetworkTargetAllowed(target.hostname, port, rules)) {
-      writeProxyError(response, 403, "network_target_denied", "Network target denied by Paperclip sandbox policy.");
+      writeProxyError(response, 403, "network_target_denied", `Network target denied by ${PRODUCT_NAME} sandbox policy.`);
       return;
     }
     const upstream = http.request(target, {
@@ -276,7 +285,7 @@ async function startNetworkAllowlistProxy(
     if (!hostname || !/^\d+$/.test(port) || !isNetworkTargetAllowed(hostname, port, rules)) {
       clientSocket.end(connectProxyError(
         "network_target_denied",
-        "Network target denied by Paperclip sandbox policy.",
+        `Network target denied by ${PRODUCT_NAME} sandbox policy.`,
       ));
       return;
     }
@@ -491,8 +500,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
 }
 
 export function parseLocalProcessSandboxExtraPaths(value: unknown): LocalProcessSandboxPath[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry, index) => {
+  return toEntryList(value).map((entry, index) => {
     if (typeof entry === "string") {
       return { path: normalizeAbsolutePath(entry, `filesystemExtraPaths[${index}]`), access: "ro" };
     }

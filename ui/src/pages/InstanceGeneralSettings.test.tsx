@@ -2,10 +2,22 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
+import { setFeedbackTermsUrlForTesting } from "@/lib/myrmidon-links";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
+
+// myrmidon(BACKUP-KEEP-LAST): the shared type gains `keepLastOnly?: boolean`
+// from the server-side part A; until that lands, extend the response shape
+// locally in this test (additive contract).
+type TestBackupRetention = {
+  dailyDays: number;
+  weeklyWeeks: number;
+  monthlyMonths: number;
+  keepLastOnly?: boolean;
+};
 
 const mockAuthApi = vi.hoisted(() => ({ signOut: vi.fn() }));
 const mockHealthApi = vi.hoisted(() => ({ get: vi.fn() }));
@@ -66,6 +78,7 @@ describe("InstanceGeneralSettings sign-out", () => {
   });
 
   afterEach(() => {
+    setFeedbackTermsUrlForTesting(null);
     flushSync(() => root?.unmount());
     queryClient.clear();
     container.remove();
@@ -79,7 +92,9 @@ describe("InstanceGeneralSettings sign-out", () => {
     flushSync(() => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceGeneralSettings />
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -204,6 +219,13 @@ describe("InstanceGeneralSettings sign-out", () => {
     resolveSettings?.();
     await vi.waitFor(() => expect(signOutButton()?.disabled).toBe(false));
   });
+
+  it("renders the link to secret references in the secrets area", async () => {
+    await renderPage(SELF_HOSTED_HEALTH);
+    const link = container.querySelector<HTMLAnchorElement>('[data-testid="system-secrets-link"]');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("/company/settings/secrets");
+  });
 });
 
 describe("InstanceGeneralSettings operator-hidden sections", () => {
@@ -238,7 +260,9 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     flushSync(() => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceGeneralSettings />
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -267,5 +291,211 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     expect(container.textContent).toContain("Deployment and auth");
     expect(container.textContent).toContain("Censor username in logs");
     expect(container.textContent).toContain("Backup retention");
+  });
+
+  it("hides the terms of service link when no operator terms override is configured", async () => {
+    setFeedbackTermsUrlForTesting(null);
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    const termsLink = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.textContent?.includes("Terms of Service") || a.href.includes("terms") || a.href.includes("tos"),
+    );
+    expect(termsLink).toBeUndefined();
+  });
+
+  it("renders the operator terms link when FEEDBACK_TERMS_URL is configured", async () => {
+    setFeedbackTermsUrlForTesting("https://operator.example.org/custom-terms");
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    const termsLink = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.getAttribute("href") === "https://operator.example.org/custom-terms",
+    );
+    expect(termsLink).toBeDefined();
+    expect(termsLink?.getAttribute("target")).toBe("_blank");
+    expect(termsLink?.getAttribute("rel")).toContain("noreferrer");
+    expect(termsLink?.textContent).toMatch(/terms of service/i);
+  });
+});
+
+describe("InstanceGeneralSettings backup retention keep-last-only", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+    });
+    mockInstanceSettingsApi.updateGeneral.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(backupRetention: TestBackupRetention) {
+    mockHealthApi.get.mockResolvedValue(SELF_HOSTED_HEALTH);
+    queryClient.setQueryData(queryKeys.health, SELF_HOSTED_HEALTH);
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention,
+    });
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Backup retention"));
+  }
+
+  function findButton(text: string) {
+    return Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === text,
+    );
+  }
+
+  it("renders the active keep-last-only mode from the settings response", async () => {
+    await renderPage({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true });
+
+    const modeButton = findButton("Keep only the latest backup");
+    expect(modeButton).toBeDefined();
+    expect(modeButton?.className).toContain("border-foreground");
+    expect(container.textContent).toContain(
+      "The daily, weekly and monthly presets are ignored while this mode is on.",
+    );
+    expect(container.textContent).toContain("the older backups stay in place");
+  });
+
+  it("sends keepLastOnly: true when the mode is enabled", async () => {
+    await renderPage({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+
+    const modeButton = findButton("Keep only the latest backup");
+    flushSync(() => modeButton?.click());
+
+    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+    expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledWith(
+      {
+        backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true },
+      },
+      expect.anything(),
+    );
+  });
+
+  it("shows the safety note about a broken new dump even while the mode is off", async () => {
+    await renderPage({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+
+    expect(container.textContent).toContain("the older backups stay in place");
+    expect(container.textContent).not.toContain(
+      "The daily, weekly and monthly presets are ignored while this mode is on.",
+    );
+  });
+
+  it("sends keepLastOnly: false when a preset is picked while the mode is on", async () => {
+    await renderPage({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true });
+
+    const presetButton = findButton("3 days");
+    expect(presetButton).toBeDefined();
+    flushSync(() => presetButton?.click());
+
+    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+    expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledWith(
+      {
+        backupRetention: { dailyDays: 3, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: false },
+      },
+      expect.anything(),
+    );
+  });
+});
+
+describe("InstanceGeneralSettings execution policy", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      executionMode: "kubernetes",
+    });
+    mockHealthApi.get.mockResolvedValue(SELF_HOSTED_HEALTH);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderPage() {
+    queryClient.setQueryData(queryKeys.health, SELF_HOSTED_HEALTH);
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Deployment and auth"));
+  }
+
+  it("renders read-only execution policy badge from general settings", async () => {
+    await renderPage();
+
+    const badge = container.querySelector('[data-testid="execution-mode-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent?.trim()).toBe("kubernetes");
+    expect(container.textContent).toContain("Execution policy");
+    expect(container.textContent).toContain("forces all agent execution into the managed Kubernetes sandbox");
+  });
+
+  it("hides execution policy when hiddenSettings includes instance.general.executionMode", async () => {
+    const healthWithHidden = {
+      ...SELF_HOSTED_HEALTH,
+      hiddenSettings: ["instance.general.executionMode"],
+    };
+    mockHealthApi.get.mockResolvedValue(healthWithHidden);
+    queryClient.setQueryData(queryKeys.health, healthWithHidden);
+
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Deployment and auth"));
+
+    expect(container.querySelector('[data-testid="execution-mode-badge"]')).toBeNull();
   });
 });

@@ -12,6 +12,7 @@ import {
   resolveDefaultStorageDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type EnvSource = "env" | "config" | "file" | "default" | "missing";
 
@@ -37,7 +38,7 @@ function defaultStorageBaseDir(): string {
 }
 
 export async function envCommand(opts: { config?: string }): Promise<void> {
-  p.intro(pc.bgCyan(pc.black(" paperclip env ")));
+  p.intro(pc.bgCyan(pc.black(" myrmidon env ")));
 
   const configPath = resolveConfigPath(opts.config);
   let config: PaperclipConfig | null = null;
@@ -75,8 +76,9 @@ export async function envCommand(opts: { config?: string }): Promise<void> {
         default: "default",
         missing: "missing",
       }[entry.source];
+      const displayValue = maskEnvValue(entry.key, entry.value);
       p.log.message(
-        `${pc.cyan(entry.key)} ${status.padEnd(7)} ${pc.dim(`[${sourceNote}] ${entry.note}`)}${entry.source === "missing" ? "" : ` ${pc.dim("=>")} ${pc.white(quoteShellValue(entry.value))}`}`,
+        `${pc.cyan(entry.key)} ${status.padEnd(7)} ${pc.dim(`[${sourceNote}] ${entry.note}`)}${entry.source === "missing" ? "" : ` ${pc.dim("=>")} ${pc.white(quoteShellValue(displayValue))}`}`,
       );
     }
   };
@@ -86,7 +88,12 @@ export async function envCommand(opts: { config?: string }): Promise<void> {
 
   const exportRows = rows.map((row) => (row.source === "missing" ? { ...row, value: "<set-this-value>" } : row));
   const uniqueRows = uniqueByKey(exportRows);
-  const exportBlock = uniqueRows.map((row) => `export ${row.key}=${quoteShellValue(row.value)}`).join("\n");
+  const exportBlock = uniqueRows
+    .map((row) => {
+      const val = maskEnvValue(row.key, row.value);
+      return `export ${row.key}=${quoteShellValue(val)}`;
+    })
+    .join("\n");
 
   if (configReadError) {
     p.log.error(`Could not load config cleanly: ${configReadError}`);
@@ -94,7 +101,7 @@ export async function envCommand(opts: { config?: string }): Promise<void> {
 
   p.note(
     exportBlock || "No values detected. Set required variables manually.",
-    "Deployment export block",
+    "Deployment export block (secrets masked)",
   );
 
   if (missingRequired.length > 0) {
@@ -119,16 +126,16 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
   const databaseMode = config?.database?.mode ?? "embedded-postgres";
   const dbUrlSource: EnvSource = process.env.DATABASE_URL ? "env" : config?.database?.connectionString ? "config" : "missing";
   const publicUrl =
-    process.env.PAPERCLIP_PUBLIC_URL ??
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
+    readProductEnv("PUBLIC_URL") ??
+    readProductEnv("AUTH_PUBLIC_BASE_URL") ??
     process.env.BETTER_AUTH_URL ??
     process.env.BETTER_AUTH_BASE_URL ??
     config?.auth?.publicBaseUrl ??
     "";
   const publicUrlSource: EnvSource =
-    process.env.PAPERCLIP_PUBLIC_URL
+    readProductEnv("PUBLIC_URL")
       ? "env"
-      : process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL || process.env.BETTER_AUTH_URL || process.env.BETTER_AUTH_BASE_URL
+      : readProductEnv("AUTH_PUBLIC_BASE_URL") || process.env.BETTER_AUTH_URL || process.env.BETTER_AUTH_BASE_URL
         ? "env"
         : config?.auth?.publicBaseUrl
           ? "config"
@@ -145,42 +152,42 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
   const heartbeatInterval = process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS ?? DEFAULT_HEARTBEAT_SCHEDULER_INTERVAL_MS;
   const heartbeatEnabled = process.env.HEARTBEAT_SCHEDULER_ENABLED ?? "true";
   const secretsProvider =
-    process.env.PAPERCLIP_SECRETS_PROVIDER ??
+    readProductEnv("SECRETS_PROVIDER") ??
     config?.secrets?.provider ??
     DEFAULT_SECRETS_PROVIDER;
   const secretsStrictMode =
-    process.env.PAPERCLIP_SECRETS_STRICT_MODE ??
+    readProductEnv("SECRETS_STRICT_MODE") ??
     String(config?.secrets?.strictMode ?? false);
   const secretsKeyFilePath =
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE ??
+    readProductEnv("SECRETS_MASTER_KEY_FILE") ??
     config?.secrets?.localEncrypted?.keyFilePath ??
     defaultSecretsKeyFilePath();
   const storageProvider =
-    process.env.PAPERCLIP_STORAGE_PROVIDER ??
+    readProductEnv("STORAGE_PROVIDER") ??
     config?.storage?.provider ??
     DEFAULT_STORAGE_PROVIDER;
   const storageLocalDir =
-    process.env.PAPERCLIP_STORAGE_LOCAL_DIR ??
+    readProductEnv("STORAGE_LOCAL_DIR") ??
     config?.storage?.localDisk?.baseDir ??
     defaultStorageBaseDir();
   const storageS3Bucket =
-    process.env.PAPERCLIP_STORAGE_S3_BUCKET ??
+    readProductEnv("STORAGE_S3_BUCKET") ??
     config?.storage?.s3?.bucket ??
     "paperclip";
   const storageS3Region =
-    process.env.PAPERCLIP_STORAGE_S3_REGION ??
+    readProductEnv("STORAGE_S3_REGION") ??
     config?.storage?.s3?.region ??
     "us-east-1";
   const storageS3Endpoint =
-    process.env.PAPERCLIP_STORAGE_S3_ENDPOINT ??
+    readProductEnv("STORAGE_S3_ENDPOINT") ??
     config?.storage?.s3?.endpoint ??
     "";
   const storageS3Prefix =
-    process.env.PAPERCLIP_STORAGE_S3_PREFIX ??
+    readProductEnv("STORAGE_S3_PREFIX") ??
     config?.storage?.s3?.prefix ??
     "";
   const storageS3ForcePathStyle =
-    process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE ??
+    readProductEnv("STORAGE_S3_FORCE_PATH_STYLE") ??
     String(config?.storage?.s3?.forcePathStyle ?? false);
 
   const rows: EnvVarRow[] = [
@@ -235,22 +242,22 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     },
     {
       key: "PAPERCLIP_AGENT_JWT_TTL_SECONDS",
-      value: process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS ?? DEFAULT_AGENT_JWT_TTL_SECONDS,
-      source: process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS ? "env" : "default",
+      value: readProductEnv("AGENT_JWT_TTL_SECONDS") ?? DEFAULT_AGENT_JWT_TTL_SECONDS,
+      source: readProductEnv("AGENT_JWT_TTL_SECONDS") ? "env" : "default",
       required: false,
       note: "JWT lifetime in seconds",
     },
     {
       key: "PAPERCLIP_AGENT_JWT_ISSUER",
-      value: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? DEFAULT_AGENT_JWT_ISSUER,
-      source: process.env.PAPERCLIP_AGENT_JWT_ISSUER ? "env" : "default",
+      value: readProductEnv("AGENT_JWT_ISSUER") ?? DEFAULT_AGENT_JWT_ISSUER,
+      source: readProductEnv("AGENT_JWT_ISSUER") ? "env" : "default",
       required: false,
       note: "JWT issuer",
     },
     {
       key: "PAPERCLIP_AGENT_JWT_AUDIENCE",
-      value: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? DEFAULT_AGENT_JWT_AUDIENCE,
-      source: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ? "env" : "default",
+      value: readProductEnv("AGENT_JWT_AUDIENCE") ?? DEFAULT_AGENT_JWT_AUDIENCE,
+      source: readProductEnv("AGENT_JWT_AUDIENCE") ? "env" : "default",
       required: false,
       note: "JWT audience",
     },
@@ -271,7 +278,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_SECRETS_PROVIDER",
       value: secretsProvider,
-      source: process.env.PAPERCLIP_SECRETS_PROVIDER
+      source: readProductEnv("SECRETS_PROVIDER")
         ? "env"
         : config?.secrets?.provider
           ? "config"
@@ -282,7 +289,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_SECRETS_STRICT_MODE",
       value: secretsStrictMode,
-      source: process.env.PAPERCLIP_SECRETS_STRICT_MODE
+      source: readProductEnv("SECRETS_STRICT_MODE")
         ? "env"
         : config?.secrets?.strictMode !== undefined
           ? "config"
@@ -293,7 +300,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
       value: secretsKeyFilePath,
-      source: process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE
+      source: readProductEnv("SECRETS_MASTER_KEY_FILE")
         ? "env"
         : config?.secrets?.localEncrypted?.keyFilePath
           ? "config"
@@ -304,7 +311,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_STORAGE_PROVIDER",
       value: storageProvider,
-      source: process.env.PAPERCLIP_STORAGE_PROVIDER
+      source: readProductEnv("STORAGE_PROVIDER")
         ? "env"
         : config?.storage?.provider
           ? "config"
@@ -315,7 +322,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_STORAGE_LOCAL_DIR",
       value: storageLocalDir,
-      source: process.env.PAPERCLIP_STORAGE_LOCAL_DIR
+      source: readProductEnv("STORAGE_LOCAL_DIR")
         ? "env"
         : config?.storage?.localDisk?.baseDir
           ? "config"
@@ -326,7 +333,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_STORAGE_S3_BUCKET",
       value: storageS3Bucket,
-      source: process.env.PAPERCLIP_STORAGE_S3_BUCKET
+      source: readProductEnv("STORAGE_S3_BUCKET")
         ? "env"
         : config?.storage?.s3?.bucket
           ? "config"
@@ -337,7 +344,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_STORAGE_S3_REGION",
       value: storageS3Region,
-      source: process.env.PAPERCLIP_STORAGE_S3_REGION
+      source: readProductEnv("STORAGE_S3_REGION")
         ? "env"
         : config?.storage?.s3?.region
           ? "config"
@@ -348,7 +355,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_STORAGE_S3_ENDPOINT",
       value: storageS3Endpoint,
-      source: process.env.PAPERCLIP_STORAGE_S3_ENDPOINT
+      source: readProductEnv("STORAGE_S3_ENDPOINT")
         ? "env"
         : config?.storage?.s3?.endpoint
           ? "config"
@@ -359,7 +366,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_STORAGE_S3_PREFIX",
       value: storageS3Prefix,
-      source: process.env.PAPERCLIP_STORAGE_S3_PREFIX
+      source: readProductEnv("STORAGE_S3_PREFIX")
         ? "env"
         : config?.storage?.s3?.prefix
           ? "config"
@@ -370,7 +377,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
     {
       key: "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
       value: storageS3ForcePathStyle,
-      source: process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE
+      source: readProductEnv("STORAGE_S3_FORCE_PATH_STYLE")
         ? "env"
         : config?.storage?.s3?.forcePathStyle !== undefined
           ? "config"
@@ -381,11 +388,11 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
   ];
 
   const defaultConfigPath = resolveConfigPath();
-  if (process.env.PAPERCLIP_CONFIG || configPath !== defaultConfigPath) {
+  if (readProductEnv("CONFIG") || configPath !== defaultConfigPath) {
     rows.push({
       key: "PAPERCLIP_CONFIG",
-      value: process.env.PAPERCLIP_CONFIG ?? configPath,
-      source: process.env.PAPERCLIP_CONFIG ? "env" : "default",
+      value: readProductEnv("CONFIG") ?? configPath,
+      source: readProductEnv("CONFIG") ? "env" : "default",
       required: false,
       note: "Optional path override for config file",
     });
@@ -408,4 +415,56 @@ function uniqueByKey(rows: EnvVarRow[]): EnvVarRow[] {
 function quoteShellValue(value: string): string {
   if (value === "") return "\"\"";
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export function maskEnvValue(key: string, value: string): string {
+  if (!value || value === "<set-this-value>") return value;
+
+  const upper = key.toUpperCase();
+
+  // Handle URL with credentials (e.g. postgres://user:pass@host:5432/db)
+  if (value.includes("://") && value.includes("@")) {
+    try {
+      const url = new URL(value);
+      if (url.password) {
+        url.password = "***";
+        return url.toString();
+      }
+    } catch {
+      return value.replace(/:\/\/(.*?):(.*?)@/, "://$1:***@");
+    }
+  }
+
+  // Key/value connection string style credentials (e.g. password=secret; or Password=secret;)
+  if (/(?:DATABASE|PG|POSTGRES|DB|URL)/i.test(upper) && /password=/i.test(value)) {
+    return value.replace(/(password=)[^; ]+/gi, "$1***");
+  }
+
+  const isSecretKey =
+    upper.includes("SECRET") ||
+    upper.includes("PASSWORD") ||
+    upper.includes("PASSWD") ||
+    upper.includes("TOKEN") ||
+    upper.includes("PRIVATE_KEY") ||
+    upper.includes("API_KEY") ||
+    (upper.endsWith("_KEY") && !upper.endsWith("KEY_ID") && !upper.endsWith("KEY_FILE") && !upper.endsWith("KEY_PATH"));
+
+  const isNonSecretException =
+    upper.endsWith("_FILE") ||
+    upper.endsWith("_PATH") ||
+    upper.endsWith("_MODE") ||
+    upper.endsWith("_PROVIDER") ||
+    upper.endsWith("_TTL_SECONDS") ||
+    upper.endsWith("_INTERVAL_MS") ||
+    upper.endsWith("_ENABLED") ||
+    upper.endsWith("_ISSUER") ||
+    upper.endsWith("_AUDIENCE") ||
+    upper.endsWith("_ORIGINS") ||
+    upper === "AWS_ACCESS_KEY_ID";
+
+  if (isSecretKey && !isNonSecretException) {
+    return "***";
+  }
+
+  return value;
 }

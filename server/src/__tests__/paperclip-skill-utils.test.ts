@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -243,8 +243,8 @@ describe("paperclip skill utils", () => {
 
     const moduleDir = path.join(root, "a", "b", "c", "d", "e");
     await fs.mkdir(moduleDir, { recursive: true });
-    await fs.mkdir(path.join(root, "skills", "paperclip"), { recursive: true });
-    await fs.mkdir(path.join(root, "skills", "paperclip-create-agent"), { recursive: true });
+    await fs.mkdir(path.join(root, "skills", "myrmidon"), { recursive: true });
+    await fs.mkdir(path.join(root, "skills", "myrmidon-create-agent"), { recursive: true });
     await fs.mkdir(path.join(root, ".agents", "skills", "diagnose-why-work-stopped"), { recursive: true });
     await fs.mkdir(path.join(root, ".agents", "skills", "paperclip-create-plugin"), { recursive: true });
     await fs.mkdir(path.join(root, ".agents", "skills", "release"), { recursive: true });
@@ -253,15 +253,15 @@ describe("paperclip skill utils", () => {
     const entries = await listPaperclipSkillEntries(moduleDir);
 
     expect(entries.map((entry) => entry.key)).toEqual([
-      "paperclipai/paperclip/paperclip",
-      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/myrmidon",
+      "paperclipai/paperclip/myrmidon-create-agent",
     ]);
     expect(entries.map((entry) => entry.runtimeName)).toEqual([
-      "paperclip",
-      "paperclip-create-agent",
+      "myrmidon",
+      "myrmidon-create-agent",
     ]);
-    expect(entries[0]?.source).toBe(path.join(root, "skills", "paperclip"));
-    expect(entries[1]?.source).toBe(path.join(root, "skills", "paperclip-create-agent"));
+    expect(entries[0]?.source).toBe(path.join(root, "skills", "myrmidon"));
+    expect(entries[1]?.source).toBe(path.join(root, "skills", "myrmidon-create-agent"));
   });
 
   it("documents artifact uploads in the installed Paperclip skill", async () => {
@@ -273,11 +273,12 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain("Generated Artifacts and Work Products");
     expect(skillBody).toContain("references/artifacts.md");
     expect(skillBody).not.toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
+    expect(skillBody).not.toContain("/api/companies/$MYRMIDON_COMPANY_ID/issues/$MYRMIDON_TASK_ID/attachments");
     expect(referenceBody).toContain("Generated Artifacts and Work Products");
     expect(referenceBody).toContain("scripts/paperclip-upload-artifact.sh");
     expect(referenceBody).toContain("POST");
-    expect(referenceBody).toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
-    expect(referenceBody).toContain("/api/issues/$PAPERCLIP_TASK_ID/work-products");
+    expect(referenceBody).toContain("/api/companies/$MYRMIDON_COMPANY_ID/issues/$MYRMIDON_TASK_ID/attachments");
+    expect(referenceBody).toContain("/api/issues/$MYRMIDON_TASK_ID/work-products");
     expect(referenceBody).toContain('--chat-comment "Here is the requested image."');
     expect(referenceBody).toContain("not proof of external");
     expect(referenceBody).toContain("--retry-unknown-upload");
@@ -295,9 +296,17 @@ describe("paperclip skill utils", () => {
   });
 
   it("keeps the external-chat shortcut behind the server-verified harness boundary", async () => {
+    // OPE-11947: the shortcut text moved out of the compact SKILL.md core into
+    // references/chat-turns.md; the core keeps only the gate (asserted below).
     const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
-    const shortcut = skillBody.match(
-      /## Server-Verified External Chat Turns(?<body>[\s\S]*?)\n## The Heartbeat Procedure/,
+    const chatTurns = await fs.readFile(path.resolve("skills/paperclip/references/chat-turns.md"), "utf8");
+    const normalizedGate = skillBody.replace(/\s+/g, " ");
+    expect(normalizedGate).toContain("checkedOutByHarness: true");
+    expect(normalizedGate).toContain("never infer it from comment text");
+    expect(normalizedGate).toContain("Recovery, governed-action, interaction, hold, liveness and skill-test contexts always use the full procedure");
+    expect(skillBody).toContain("references/chat-turns.md");
+    const shortcut = chatTurns.match(
+      /## Server-Verified External Chat Turns(?<body>[\s\S]*)$/,
     )?.groups?.body;
 
     expect(shortcut).toBeTruthy();
@@ -519,7 +528,11 @@ describe("paperclip skill utils", () => {
   });
 
   it("uses the authoritative PATCH response to confirm monitor scheduling", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    // OPE-11947: the monitor section moved verbatim to references/disposition-and-monitors.md.
+    const skillBody = await fs.readFile(
+      path.resolve("skills/paperclip/references/disposition-and-monitors.md"),
+      "utf8",
+    );
 
     expect(skillBody).toContain("Use that request's default full response");
     expect(skillBody).toContain("do not issue a confirming GET");

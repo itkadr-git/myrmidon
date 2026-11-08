@@ -66,6 +66,12 @@ describe("bot canary: CI image verification", () => {
     expect(verifyBotCanaryImage({ ...base, commitOnMain: () => false, releaseTagsAtCommit: ["myr-v1.2.0"] })).toMatchObject({ ok: true });
   });
 
+  // RC-VERSIONS: a release candidate tag counts too — the canary of an rc
+  // IS the trial run of the release flow.
+  it("accepts an image whose commit carries a release candidate tag", () => {
+    expect(verifyBotCanaryImage({ ...base, commitOnMain: () => false, releaseTagsAtCommit: ["myr-v1.2.0-rc.1"] })).toMatchObject({ ok: true });
+  });
+
   it("refuses an image that is not in the registry", () => {
     const result = verifyBotCanaryImage({ ...base, labels: null });
     expect(result.ok).toBe(false);

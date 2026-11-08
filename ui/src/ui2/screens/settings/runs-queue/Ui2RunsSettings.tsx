@@ -2,7 +2,7 @@
 //
 // myrmidon(UI2): Settings → "Runs & queue" in the new shell. This is the
 // closest-to-port screen of the set: the vendor already ships
-// RuntimeLimitsSettingsPanel (the four admission ceilings, GET/PATCH
+// RuntimeLimitsSettingsPanel (the admission ceilings, GET/PATCH
 // /api/myrmidon/runtime-limits, applied without restart). The ui2 variant
 // restyles the same contract; per the map "the ceilings panel moves over
 // almost ready". P0–P3 priority-class slots, TTL/timeouts/retries per
@@ -11,18 +11,71 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { RunLimitKey, RunLimits, RunLimitsPatch, RunLimitsSource } from "@paperclipai/shared";
-import { runtimeLimitsApi, runtimeLimitsQueryKey, type RuntimeLimitsView } from "@/components/myrmidon/runtimeLimitsApi";
+import type { RunLimitKey, RunLimits, RunLimitsPatch, RunLimitsSource } from "@myrmidon/shared";
+import {
+  runtimeLimitsApi,
+  runtimeLimitsQueryKey,
+  type RuntimeLimitsView,
+} from "@/components/myrmidon/runtimeLimitsApi";
+import { heartbeatsApi, type LiveRunForIssue } from "@/api/heartbeats";
+import { queryKeys } from "@/lib/queryKeys";
+import { useCompany } from "@/context/CompanyContext";
 import { useUi2I18n } from "../../../i18n/Ui2I18n";
 import { Ui2ErrorState, Ui2SkeletonRows } from "../../../components/ui2StateViews";
 import { Ui2Page, Ui2Section } from "../../../components/ui2Primitives";
+import { Ui2TaskDrainBlock } from "./Ui2TaskDrainBlock";
+import { Ui2SwarmClaimBlock } from "./Ui2SwarmClaimBlock";
 
-const LIMIT_FIELDS: Array<{ key: RunLimitKey; labelKey: "ui2.settings.runs.maxConcurrentRuns" | "ui2.settings.runs.maxStartsPerMinute" | "ui2.settings.runs.minFreeMemoryMb" | "ui2.settings.runs.runMemoryEstimateMb"; canOff: boolean }> = [
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share and the
+ * two rc.3 CPU-utilisation ceilings are typed members of `RunLimits` now
+ * (part 2 landed the share, part A of RUN-ADMISSION rc.3 landed the CPU
+ * keys), so no literal stand-ins are needed — `readLimit` below only smooths
+ * over an older server that does not serve a key yet.
+ */
+const FAIR_SHARE_KEY = "maxPerAgentStartSharePercent";
+const FAIR_SHARE_DEFAULT = 15;
+const CPU_BUSY_KEY = "maxHostCpuBusyPercent";
+const CPU_PSI_KEY = "maxHostCpuPsiSomeAvg10";
+
+type ScreenLimitKey = RunLimitKey | typeof CPU_BUSY_KEY | typeof CPU_PSI_KEY;
+
+const LIMIT_FIELDS: Array<{ key: ScreenLimitKey; labelKey: "ui2.settings.runs.maxConcurrentRuns" | "ui2.settings.runs.maxStartsPerMinute" | "ui2.settings.runs.minFreeMemoryMb" | "ui2.settings.runs.runMemoryEstimateMb" | "ui2.settings.runs.minFreeHostMemoryMb" | "ui2.settings.runs.maxHostLoadPercentPerCore" | "ui2.settings.runs.maxHostCpuBusyPercent" | "ui2.settings.runs.maxHostCpuPsiSomeAvg10" | "ui2.settings.runs.maxPerAgentStartSharePercent"; canOff: boolean }> = [
   { key: "maxConcurrentRuns", labelKey: "ui2.settings.runs.maxConcurrentRuns", canOff: true },
   { key: "maxStartsPerMinute", labelKey: "ui2.settings.runs.maxStartsPerMinute", canOff: true },
   { key: "minFreeMemoryMb", labelKey: "ui2.settings.runs.minFreeMemoryMb", canOff: true },
   { key: "runMemoryEstimateMb", labelKey: "ui2.settings.runs.runMemoryEstimateMb", canOff: false },
+  // myrmidon(1.6.2 RUN-ADMISSION): the host free-memory floor (bot containers live on the host).
+  { key: "minFreeHostMemoryMb", labelKey: "ui2.settings.runs.minFreeHostMemoryMb", canOff: true },
+  // myrmidon(1.6.5 RUN-ADMISSION rc.3): the ceilings the gate decides on now —
+  // the measured CPU busy percent and, when the operator sets it, the PSI
+  // cpu pressure. The live host line sits next to the busy field.
+  { key: CPU_BUSY_KEY, labelKey: "ui2.settings.runs.maxHostCpuBusyPercent", canOff: true },
+  { key: CPU_PSI_KEY, labelKey: "ui2.settings.runs.maxHostCpuPsiSomeAvg10", canOff: true },
+  // myrmidon(1.6.5 RUN-ADMISSION): the legacy load-average ceiling —
+  // deprecated since rc.3, kept for settings rows saved before it.
+  { key: "maxHostLoadPercentPerCore", labelKey: "ui2.settings.runs.maxHostLoadPercentPerCore", canOff: true },
+  // myrmidon(1.6.5 RUN-FAIRNESS): one agent's share of the starts in a 10-minute window.
+  { key: FAIR_SHARE_KEY, labelKey: "ui2.settings.runs.maxPerAgentStartSharePercent", canOff: true },
 ];
+
+/** Read a limit from the view; an older server that does not serve a key yet
+ * (a pre-part-2 server has no fair share, a pre-rc.3 server has no CPU
+ * ceilings) gets the fair share at its built-in default and every other
+ * absent key as off. */
+function readLimit(limits: RunLimits, key: ScreenLimitKey): number | null {
+  const value = (limits as Record<string, unknown>)[key];
+  if (value === undefined) {
+    return key === FAIR_SHARE_KEY ? FAIR_SHARE_DEFAULT : null;
+  }
+  if (key === FAIR_SHARE_KEY) {
+    if (typeof value !== "number" || !Number.isInteger(value)) return FAIR_SHARE_DEFAULT;
+    // A share is a percentage; outside 1-100 the served value is ignored.
+    if (value < 1 || value > 100) return FAIR_SHARE_DEFAULT;
+    return value;
+  }
+  return value as number | null;
+}
 
 function sourceLabel(source: RunLimitsSource, t: (key: never) => string): string {
   switch (source) {
@@ -38,7 +91,8 @@ function sourceLabel(source: RunLimitsSource, t: (key: never) => string): string
 export function Ui2RunsSettings() {
   const { t } = useUi2I18n();
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<Partial<RunLimits> | null>(null);
+  const { selectedCompanyId } = useCompany();
+  const [draft, setDraft] = useState<Partial<Record<ScreenLimitKey, number | null>> | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const limitsQuery = useQuery({
@@ -46,10 +100,25 @@ export function Ui2RunsSettings() {
     queryFn: () => runtimeLimitsApi.get(),
   });
 
+  // myrmidon(1.6.5 RUN-FAIRNESS): the live-runs list already serves the
+  // queued runs of the company; the oldest of them is the head of the queue,
+  // and its `contextSnapshot.waitReason` (written by the admission sweep)
+  // says why it still waits. Read-only reuse — no new endpoint. A response
+  // without the snapshot (a server before part 1) shows the queue numbers
+  // without the reason.
+  const liveRunsQuery = useQuery({
+    queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "runs-settings-queue"],
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 15_000,
+  });
+
   const view = limitsQuery.data;
-  const effective: RunLimits | null = draft
-    ? ({ ...(view?.limits ?? null), ...draft } as RunLimits | null)
-    : (view?.limits ?? null);
+  // The draft overlays the served limits; the fair share falls back to its
+  // default while the server does not serve the key yet.
+  const effective: Partial<Record<ScreenLimitKey, number | null>> | null = view
+    ? { ...view.limits, [FAIR_SHARE_KEY]: readLimit(view.limits, FAIR_SHARE_KEY), ...draft }
+    : null;
 
   useEffect(() => {
     setDraft(null);
@@ -90,15 +159,247 @@ export function Ui2RunsSettings() {
   }
 
   const dirty =
-    draft != null && LIMIT_FIELDS.some((field) => (draft[field.key] ?? null) !== null && draft[field.key] !== view.limits[field.key]);
+    draft != null &&
+    LIMIT_FIELDS.some(
+      (field) =>
+        (draft[field.key] ?? null) !== null && draft[field.key] !== readLimit(view.limits, field.key),
+    );
+
+  // myrmidon(1.6.5 RUN-FAIRNESS): a share over 100 % limits nothing; rather
+  // than silently saving it, the screen names it and keeps Apply disabled.
+  const shareOverRange =
+    draft != null &&
+    draft[FAIR_SHARE_KEY] !== undefined &&
+    draft[FAIR_SHARE_KEY] !== null &&
+    draft[FAIR_SHARE_KEY]! > 100;
+
+  // myrmidon(1.6.5 RUN-ADMISSION rc.3): the gate decides on the measured CPU
+  // utilisation now, so the live line leads with the busy percent (and the
+  // PSI pressure when its ceiling is set), its threshold and the verdict; the
+  // load average follows as the auxiliary reading it has become. A gate that
+  // still decides on the load average (a settings row saved before rc.3)
+  // keeps the rc.2 line. `null` when the server sent no reading — the panel
+  // then shows no number instead of a made-up one.
+  const hostLoadLine = ((): string | null => {
+    const load = view.hostLoad;
+    if (!load) return null;
+    if (load.state === "off") return t("ui2.settings.runs.hostLoad.off");
+    if (load.state === "unknown") {
+      return load.reason
+        ? t("ui2.settings.runs.hostLoad.unknownReason", { reason: load.reason })
+        : t("ui2.settings.runs.hostLoad.unknown");
+    }
+
+    // The auxiliary tail: the load average the gate used to decide on. Empty
+    // when the server sent no load-average numbers.
+    const auxiliary =
+      load.loadPercentPerCore === null
+        ? ""
+        : ` ${t("ui2.settings.runs.hostLoad.auxLoad", {
+            load: load.loadPercentPerCore,
+            load1: load.load1 ?? "?",
+            cores: load.cores ?? "?",
+            above:
+              load.loadAboveBackgroundPercent === null || load.backgroundPercentPerCore === null
+                ? ""
+                : `, ${t("ui2.settings.runs.hostLoad.above", {
+                    above: load.loadAboveBackgroundPercent,
+                    background: load.backgroundPercentPerCore,
+                  })}`,
+          })}`;
+
+    if (load.source === "cpu-busy") {
+      // rc.3: the measured CPU utilisation decides. The busy reading leads
+      // the line; the PSI reading joins it when the operator set that
+      // ceiling; the verdict names the busy threshold.
+      const now =
+        load.cpuBusyPercent === null
+          ? t("ui2.settings.runs.hostLoad.busyPending")
+          : t("ui2.settings.runs.hostLoad.busyNow", { busy: load.cpuBusyPercent });
+      const psi =
+        load.psiThresholdPercent === null
+          ? ""
+          : load.psiSomeAvg10 === null
+            ? ` ${t("ui2.settings.runs.hostLoad.psiUnknown", { threshold: load.psiThresholdPercent })}`
+            : ` ${t("ui2.settings.runs.hostLoad.psi", {
+                psi: load.psiSomeAvg10,
+                threshold: load.psiThresholdPercent,
+              })}`;
+      const verdict =
+        load.state === "open"
+          ? t("ui2.settings.runs.hostLoad.busyOpen", { threshold: load.busyThresholdPercent ?? "?" })
+          : t("ui2.settings.runs.hostLoad.busyClosed", {
+              threshold: load.busyThresholdPercent ?? "?",
+              reason: load.reason ? ` (${load.reason})` : "",
+            });
+      return `${now}${psi}. ${verdict}.${auxiliary}`;
+    }
+
+    // Legacy rule: a row saved before rc.3 decides on the load average — the
+    // rc.2 line stands, the load average is the deciding signal here.
+    if (load.loadPercentPerCore === null) {
+      return load.reason
+        ? t("ui2.settings.runs.hostLoad.unknownReason", { reason: load.reason })
+        : t("ui2.settings.runs.hostLoad.unknown");
+    }
+    const now = t("ui2.settings.runs.hostLoad.now", {
+      load: load.loadPercentPerCore,
+      load1: load.load1 ?? "?",
+      cores: load.cores ?? "?",
+    });
+    const above =
+      load.loadAboveBackgroundPercent === null || load.backgroundPercentPerCore === null
+        ? ""
+        : ` ${t("ui2.settings.runs.hostLoad.above", {
+            above: load.loadAboveBackgroundPercent,
+            background: load.backgroundPercentPerCore,
+          })}.`;
+    const verdict =
+      load.state === "open"
+        ? t("ui2.settings.runs.hostLoad.open", { threshold: load.thresholdPercent ?? "?" })
+        : t("ui2.settings.runs.hostLoad.closed", { threshold: load.thresholdPercent ?? "?" });
+    return `${now}${above} ${verdict}.`;
+  })();
+
+  // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and the
+  // server container's cgroup usage, read by the same admission that gates on
+  // them. `null` when the server sent no snapshot (an older server, an early
+  // request, or no cgroup limit to read), so the screen shows nothing rather
+  // than a number it made up.
+  const memoryLine = ((): string | null => {
+    const memory = view.memory;
+    if (!memory || (!memory.host && !memory.container)) return null;
+    const parts: string[] = [];
+    if (memory.host) {
+      parts.push(
+        t("ui2.settings.runs.memory.host", {
+          available: memory.host.availableMb,
+          total: memory.host.totalMb,
+        }),
+      );
+    }
+    if (memory.container) {
+      parts.push(
+        t("ui2.settings.runs.memory.container", {
+          used: memory.container.usedMb,
+          limit: memory.container.limitMb,
+          free: memory.container.freeMb,
+        }),
+      );
+    }
+    return parts.join(" ");
+  })();
+
+  // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — admitted runs against
+  // the ceiling, the queue length, and the head of the queue. `null` when the
+  // server sent no snapshot (an older server, an early request), so the
+  // screen shows nothing rather than a number it made up.
+  const queueLine = ((): string | null => {
+    const queue = view.queue;
+    if (!queue) return null;
+    const active =
+      queue.limit === null
+        ? t("ui2.settings.runs.queue.active.noLimit", { active: queue.active })
+        : t("ui2.settings.runs.queue.active", { active: queue.active, limit: queue.limit });
+    if (queue.queued === 0) return `${active} ${t("ui2.settings.runs.queue.empty")}`;
+    const oldest = queue.oldestQueuedAt ? formatQueueSince(queue.oldestQueuedAt) : null;
+    const queued = oldest
+      ? t("ui2.settings.runs.queue.queued.since", { queued: queue.queued, since: oldest })
+      : t("ui2.settings.runs.queue.queued", { queued: queue.queued });
+    const agent = queue.oldestQueuedAgentId
+      ? ` ${t("ui2.settings.runs.queue.agent", { agent: queue.oldestQueuedAgentId })}`
+      : "";
+    return `${active} ${queued}${agent}`;
+  })();
+
+  /** "14:32:05 UTC (7 min ago)" / "14:32:05 UTC (7 мин назад)" for the head of the queue. */
+  function formatQueueSince(iso: string): string {
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return iso;
+    const clock = at.toISOString().slice(11, 19);
+    const waitedMin = Math.max(0, Math.floor((Date.now() - at.getTime()) / 60_000));
+    return waitedMin >= 1
+      ? t("ui2.settings.runs.queue.sinceAgo", { time: `${clock} UTC`, minutes: waitedMin })
+      : `${clock} UTC`;
+  }
+
+  // myrmidon(1.6.5 RUN-FAIRNESS): why the head of the queue still waits —
+  // `contextSnapshot.waitReason` of the oldest queued run (the live-runs list
+  // comes newest first, so the oldest queued is the last one).
+  const oldestWaitReasonKey = ((): string | null => {
+    const runs = liveRunsQuery.data;
+    if (!runs || !view.queue || view.queue.queued === 0) return null;
+    const oldestQueued = [...runs].reverse().find((run) => run.status === "queued");
+    const snapshot = (oldestQueued as LiveRunForIssue & { contextSnapshot?: Record<string, unknown> | null })
+      ?.contextSnapshot;
+    const reason = snapshot?.["waitReason"];
+    if (typeof reason !== "string" || reason === "") return null;
+    // An unknown reason (a server ahead of this UI) renders as the raw value,
+    // not as an untranslated key.
+    return isKnownWaitReason(reason) ? `ui2.settings.runs.waitReason.${reason}` : reason;
+  })();
+
+  function isKnownWaitReason(reason: string): boolean {
+    return (
+      reason === "global_cap" ||
+      reason === "start_ramp" ||
+      reason === "memory" ||
+      reason === "host_memory" ||
+      reason === "host_cpu" ||
+      reason === "agent_fair_share" ||
+      reason === "agent_concurrency" ||
+      reason === "higher_priority_ready"
+    );
+  }
+
+  const waitReasonLabel = oldestWaitReasonKey
+    ? oldestWaitReasonKey.startsWith("ui2.")
+      ? t(oldestWaitReasonKey as never)
+      : oldestWaitReasonKey
+    : null;
+
+  // myrmidon(1.6.5 F-09): the admission denial counter — how many reservations
+  // the gates refused since the server started (the sweep that could not start
+  // a queued run), broken down by the gate that refused, plus the most recent
+  // refusal. A server that does not serve the field yet sends no counter, so
+  // the block stays hidden rather than showing a made-up zero.
+  const admissionTotal = ((): number | null => {
+    const total = view.admissionDenials?.total;
+    return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
+  })();
+
+  const admissionDenialRows = ((): Array<{ reason: string; label: string; count: number }> => {
+    const byReason = view.admissionDenials?.byReason;
+    if (!byReason || typeof byReason !== "object") return [];
+    return Object.entries(byReason)
+      .filter((entry): entry is [string, number] => typeof entry[1] === "number" && entry[1] > 0)
+      .map(([reason, count]) => ({
+        reason,
+        // An unknown reason (a server ahead of this UI) renders as the raw
+        // value, not as an untranslated key — same rule as the queue line.
+        label: isKnownWaitReason(reason) ? t(`ui2.settings.runs.waitReason.${reason}` as never) : reason,
+        count,
+      }))
+      .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason));
+  })();
+
+  const admissionLastLine = ((): string | null => {
+    const reason = view.admissionDenials?.lastReason;
+    if (typeof reason !== "string" || reason === "") return null;
+    const label = isKnownWaitReason(reason) ? t(`ui2.settings.runs.waitReason.${reason}` as never) : reason;
+    const lastAt = view.admissionDenials?.lastAt;
+    return typeof lastAt === "string" && lastAt !== ""
+      ? t("ui2.settings.runs.denials.lastAt", { reason: label, at: formatQueueSince(lastAt) })
+      : t("ui2.settings.runs.denials.last", { reason: label });
+  })();
 
   return (
     <Ui2Page title={t("ui2.settings.runs.title")} subtitle={t("ui2.settings.runs.subtitle")}>
       <Ui2Section title={t("ui2.settings.runs.title")}>
         <div className="ui2-run-limits flex flex-col gap-4">
           {LIMIT_FIELDS.map((field) => {
-            const value = effective[field.key];
-            const source = view.sources[field.key];
+            const value = effective[field.key] ?? null;
+            const source = view.sources[field.key as RunLimitKey] ?? "default";
             const off = value == null;
             return (
               <div key={field.key} className="ui2-run-limit flex flex-wrap items-center justify-between gap-3">
@@ -109,12 +410,57 @@ export function Ui2RunsSettings() {
                   <span className="ui2-run-limit-source text-xs text-muted-foreground">
                     {sourceLabel(source, t)}
                   </span>
+                  {field.key === CPU_BUSY_KEY && hostLoadLine ? (
+                    <span
+                      data-testid="ui2-run-limit-host-load"
+                      className="ui2-run-limit-host-load text-xs text-muted-foreground"
+                    >
+                      {hostLoadLine}
+                    </span>
+                  ) : null}
+                  {field.key === CPU_BUSY_KEY ? (
+                    <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
+                      {t("ui2.settings.runs.maxHostCpuBusyPercent.hint")}
+                    </span>
+                  ) : null}
+                  {field.key === CPU_PSI_KEY ? (
+                    <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
+                      {t("ui2.settings.runs.maxHostCpuPsiSomeAvg10.hint")}
+                    </span>
+                  ) : null}
+                  {field.key === "maxHostLoadPercentPerCore" ? (
+                    <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
+                      {t("ui2.settings.runs.maxHostLoadPercentPerCore.hint")}
+                    </span>
+                  ) : null}
+                  {field.key === "minFreeMemoryMb" || field.key === "minFreeHostMemoryMb" ? (
+                    <span
+                      data-testid={`ui2-run-limit-hint-${field.key}`}
+                      className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground"
+                    >
+                      {t(`ui2.settings.runs.${field.key}.hint` as never)}
+                    </span>
+                  ) : null}
+                  {field.key === FAIR_SHARE_KEY ? (
+                    <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
+                      {t("ui2.settings.runs.maxPerAgentStartSharePercent.hint")}
+                    </span>
+                  ) : null}
+                  {field.key === FAIR_SHARE_KEY && draft?.[FAIR_SHARE_KEY] != null && draft[FAIR_SHARE_KEY]! > 100 ? (
+                    <span
+                      data-testid="ui2-run-limit-fair-share-error"
+                      className="ui2-run-limit-error text-xs text-destructive"
+                    >
+                      {t("ui2.settings.runs.maxPerAgentStartSharePercent.range")}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="ui2-run-limit-control flex items-center gap-2">
                   <input
                     id={`ui2-run-limit-${field.key}`}
                     type="number"
                     min={1}
+                    max={field.key === FAIR_SHARE_KEY ? 100 : undefined}
                     className="ui2-run-limit-input w-32 rounded-md border border-input bg-background px-2 py-1 text-right font-mono text-sm tabular-nums"
                     value={off ? "" : String(value ?? "")}
                     placeholder={t("ui2.settings.runs.off")}
@@ -135,7 +481,10 @@ export function Ui2RunsSettings() {
                         onChange={(event) => {
                           setDraft((prev) => ({
                             ...(prev ?? {}),
-                            [field.key]: event.target.checked ? null : (view.limits[field.key] ?? 1),
+                            // myrmidon(1.6.5 RUN-FAIRNESS): un-"off"-ing the
+                            // fair share starts from the served value, falling
+                            // back to the 15 % default while part 2 is unmerged.
+                            [field.key]: event.target.checked ? null : (readLimit(view.limits, field.key) ?? 1),
                           }));
                         }}
                       />
@@ -149,18 +498,70 @@ export function Ui2RunsSettings() {
         </div>
       </Ui2Section>
 
+      {/* myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — how full the ceiling
+          is, how many runs wait, and the head of the queue. */}
+      {queueLine ? (
+        <div className="ui2-run-queue">
+          <p data-testid="ui2-run-queue" className="text-xs text-muted-foreground">
+            {queueLine}
+          </p>
+          {waitReasonLabel ? (
+            <p data-testid="ui2-run-queue-wait-reason" className="text-xs text-muted-foreground">
+              {t("ui2.settings.runs.queue.waitReason", { reason: waitReasonLabel })}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* myrmidon(1.6.5 F-09): the admission denial counter — how many times the
+          sweep refused to start a queued run since the server started, by gate
+          and with the most recent refusal. Hidden when the server serves no
+          counter (an older server, or no admission yet). */}
+      {admissionTotal !== null ? (
+        <div className="ui2-run-admission-denials">
+          <p data-testid="ui2-run-admission-denials" className="text-xs text-muted-foreground">
+            {t("ui2.settings.runs.denials.total", { total: admissionTotal })}
+          </p>
+          {admissionDenialRows.length > 0 ? (
+            <ul
+              data-testid="ui2-run-admission-denials-by-reason"
+              className="ui2-run-admission-denials-reasons flex flex-col"
+            >
+              {admissionDenialRows.map((row) => (
+                <li key={row.reason} className="text-xs text-muted-foreground">
+                  {t("ui2.settings.runs.denials.byReason", { reason: row.label, count: row.count })}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {admissionLastLine ? (
+            <p data-testid="ui2-run-admission-denials-last" className="text-xs text-muted-foreground">
+              {admissionLastLine}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and the
+          server container's cgroup usage, next to the queue line. */}
+      {memoryLine ? (
+        <p data-testid="ui2-run-memory" className="text-xs text-muted-foreground">
+          {memoryLine}
+        </p>
+      ) : null}
+
       {saveError ? <Ui2ErrorState message={t("ui2.settings.runs.saveError", { reason: saveError })} withCache /> : null}
 
       <div className="ui2-run-limits-actions flex items-center gap-3">
         <button
           type="button"
           className="ui2-run-limits-save rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
-          disabled={!dirty || saveMutation.isPending}
+          disabled={!dirty || shareOverRange || saveMutation.isPending}
           onClick={() => {
             if (draft == null) return;
-            const patch: RunLimitsPatch = {};
+            const patch: RunLimitsPatch & Record<string, unknown> = {};
             for (const field of LIMIT_FIELDS) {
-              if (draft[field.key] !== undefined && draft[field.key] !== view.limits[field.key]) {
+              if (draft[field.key] !== undefined && draft[field.key] !== readLimit(view.limits, field.key)) {
                 (patch as Record<string, unknown>)[field.key] = draft[field.key];
               }
             }
@@ -179,6 +580,9 @@ export function Ui2RunsSettings() {
         </button>
         {saveMutation.isPending ? <Ui2SkeletonRows rows={1} dense /> : null}
       </div>
+
+      <Ui2TaskDrainBlock />
+      <Ui2SwarmClaimBlock />
     </Ui2Page>
   );
 }

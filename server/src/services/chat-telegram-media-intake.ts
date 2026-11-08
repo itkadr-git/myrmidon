@@ -1,3 +1,14 @@
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 points
+// 53-54): the direct path is deprecated. The core (`chat-channels.ts`) reaches
+// the media intake theme, and this module's own rich tree reaches
+// `bindTelegramRichAttachment`, through the bridge seam
+// `channel-connectors/bridge/telegram-media.js`; with the bridge flag on a
+// registered channel connector serves the theme and this module stays behind
+// the seam as the legacy fallback. The media block of `chat-sdk-runtime.ts` is
+// not a point of the call map (the runtime keeps importing the locator
+// helpers directly), and the voice intake's reverse call (map point 50) is
+// batch 2's. Do not add a new direct importer; removal is the follow-up step,
+// not this PR.
 import { createHash } from "node:crypto";
 import type { Attachment } from "chat";
 

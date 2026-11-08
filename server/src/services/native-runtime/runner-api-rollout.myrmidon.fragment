@@ -1,0 +1,11 @@
+---
+divergence-section: 1.6.6 — SETTINGS-UI C-4: attention feed windows
+settings-section: 1.6.5 — SWARM: the board pairs tasks with free agents, no "look for work" wakes
+---
+
+## divergence
+
+| Old environment name | Replacement |
+| --- | --- |
+| `PAPERCLIP_RUNNER_API_TOOLS_ENABLED` | `MYRMIDON_RUNNER_API_TOOLS_ENABLED` |
+| `PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS` | `MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS` |

@@ -5,16 +5,28 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
+import type { BotApplyJobStatus } from "@myrmidon/db";
 import { forbidden } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
-import { BOT_CONTAINERS_ENV, CONTAINER_GROUP_UNSUPPORTED_REASON } from "./agent-config.js";
+import { BOT_CONTAINERS_ENV, CONTAINER_GROUP_UNSUPPORTED_REASON, botKeyForAgent } from "./agent-config.js";
 import { APPLIED_LIMIT_PENDING_NOTE, EXTERNAL_GATEWAY_NOTE, GATEWAY_RATE_LIMIT_LOOKBACK_MS } from "./concurrency-sync.js";
 import { BOT_IMAGE_ALLOWLIST_ENV } from "./docker-driver.js";
 import type { BotContainerDriver, BotContainerStatus } from "./driver.js";
 import { applyBotContainerNow, type BotContainerRuntimeDeps } from "./index.js";
 import { createBotKeyLock } from "./bot-key-lock.js";
-import { botContainerRoutes, type BotContainerRouteAgent, type BotContainerRoutesDeps } from "./routes.js";
+import {
+  botContainerRoutes,
+  GIT_STORE_NOTE_FLAG_OFF,
+  GIT_STORE_NOTE_NO_READER,
+  GIT_STORE_NOTE_NO_REPORT,
+  GIT_STORE_NOTE_NO_RUNTIME,
+  GIT_STORE_NOTE_NOT_A_BOT,
+  GIT_STORE_NOTE_NO_STORE_FACTS,
+  GIT_STORE_NOTE_READ_FAILED,
+  type BotContainerRouteAgent,
+  type BotContainerRoutesDeps,
+} from "./routes.js";
 
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
@@ -70,8 +82,70 @@ function runtime(driver: BotContainerDriver): BotContainerRuntimeDeps {
   };
 }
 
-function app(actor: unknown, deps: Partial<BotContainerRoutesDeps> & { agent?: BotContainerRouteAgent | null }) {
-  const { agent = card(ENABLED_CARD), ...rest } = deps;
+type FakeJob = {
+  id: string;
+  companyId: string;
+  botId: string;
+  created: boolean;
+  status: BotApplyJobStatus;
+  error: string | null;
+  requestedBy: string | null;
+  createdAt: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+};
+
+// myrmidon(1.6.5 ASYNC-BOT-APPLY): in-memory stand-in for the bot_apply_jobs
+// journal, same contract as the drizzle store (apply-jobs.ts): a live
+// (pending/running) job per bot is reused, outcomes close the job.
+function fakeApplyJobs() {
+  const jobs = new Map<string, FakeJob>();
+  let nextId = 0;
+  const live = () =>
+    [...jobs.values()].find((job) => job.status === "pending" || job.status === "running") ?? null;
+  const close = (id: string, status: BotApplyJobStatus, error: string | null) => {
+    const job = jobs.get(id);
+    if (job) Object.assign(job, { status, error, finishedAt: new Date() });
+  };
+  return {
+    jobs,
+    live,
+    acquireLiveJob: async ({ companyId, botId, requestedBy }: { companyId: string; botId: string; requestedBy: string | null }) => {
+      const existing = live();
+      if (existing) return { ...existing, created: false };
+      const id = `apply-${(nextId += 1)}`;
+      const job: FakeJob = {
+        id,
+        companyId,
+        botId,
+        created: true,
+        status: "pending",
+        error: null,
+        requestedBy,
+        createdAt: new Date(),
+        startedAt: null,
+        finishedAt: null,
+      };
+      jobs.set(id, job);
+      // Snapshot like the drizzle store does: the route's 202 body is frozen
+      // at "pending", the background pass only mutates the journal row.
+      return { ...job };
+    },
+    markRunning: async (id: string) => {
+      const job = jobs.get(id);
+      if (job) Object.assign(job, { status: "running", startedAt: new Date() });
+    },
+    markSucceeded: async (id: string) => close(id, "succeeded", null),
+    markFailed: async (id: string, error: string) => close(id, "failed", error),
+    getJob: async ({ jobId }: { botId: string; jobId: string }) => {
+      const job = jobs.get(jobId);
+      return job ? { ...job, created: false } : null;
+    },
+  };
+}
+
+function app(actor: unknown, deps: Partial<BotContainerRoutesDeps> & { agent?: BotContainerRouteAgent | null; companyAgents?: BotContainerRouteAgent[] }) {
+  const { agent = card(ENABLED_CARD), companyAgents, ...rest } = deps;
   const server = express();
   server.use(express.json());
   server.use((req, _res, next) => {
@@ -82,8 +156,13 @@ function app(actor: unknown, deps: Partial<BotContainerRoutesDeps> & { agent?: B
     "/api",
     botContainerRoutes({
       getAgent: async (id) => (agent && id === agent.id ? agent : null),
+      listCompanyAgents: async (companyId) => {
+        if (companyAgents) return companyAgents.filter((a) => a.companyId === companyId);
+        return agent && agent.companyId === companyId ? [agent] : [];
+      },
       getRuntime: () => null,
       applyNow: applyBotContainerNow,
+      applyJobs: fakeApplyJobs(),
       env: ENABLED_ENV,
       ...rest,
     }),
@@ -161,6 +240,16 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       imageAllowed: true,
       container: { state: "running", image: "bot-image:1.1.0" },
       containerError: null,
+      imageTracking: {
+        category: "pinned",
+        image: "bot-image:1.1.0",
+        reason: expect.stringContaining("not a digest of a bot image repository"),
+      },
+      imageRollout: {
+        onReleaseImage: false,
+        targetImage: null,
+        reason: expect.stringContaining("pinned"),
+      },
       boardMaxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
       gatewayConcurrency: {
         board: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -170,9 +259,69 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       },
       gatewayConcurrencyNote: APPLIED_LIMIT_PENDING_NOTE,
       gatewayConcurrencyWarning: null,
+      idleStopMode: "on_demand",
+      idleStopRuntime: { idleStopped: false, lastStoppedAt: null, lastStartedAt: null },
+      profileUpdatePendingSince: null,
     });
     // No profile hashes leave the server.
     expect(JSON.stringify(res.body)).not.toContain("restartHash");
+  });
+
+  it("says whether the release rollout follows, skips or cannot apply to the bot", async () => {
+    const digest = `ghcr.io/example/myrmidon-hermes@sha256:${"a".repeat(64)}`;
+    const ask = async (agent: BotContainerRouteAgent) =>
+      (await request(app(member, { agent })).get(statusUrl).expect(200)).body.imageTracking;
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }))).toEqual({ category: "tracks_release", image: digest });
+    expect(await ask(card({ ...ENABLED_CARD, image: "other/thing@sha256:" + "b".repeat(64) }))).toMatchObject({
+      category: "pinned",
+      image: "other/thing@sha256:" + "b".repeat(64),
+    });
+    // the legacy shape: image only
+    expect(await ask(card({ image: digest }))).toEqual({
+      category: "not_applicable",
+      image: null,
+      reason: "adapterConfig.container.enabled is not true",
+    });
+    expect(await ask(card(undefined))).toMatchObject({ category: "not_applicable", reason: "adapterConfig.container is not set" });
+    expect(await ask(card(ENABLED_CARD, { adapterType: "hermes_local" }))).toMatchObject({ category: "not_applicable" });
+  });
+
+  it("myrmidon(BOT-ROLLOUT): imageRollout names why a bot is not on the release image", async () => {
+    const digest = `ghcr.io/example/myrmidon-hermes@sha256:${"a".repeat(64)}`;
+    const ask = async (agent: BotContainerRouteAgent, env: Record<string, string> = {}) =>
+      (await request(app(member, { agent, env: { ...ENABLED_ENV, ...env } })).get(statusUrl).expect(200)).body.imageRollout;
+    // tracking + busy (the rollout switches only idle/paused): switches when freed
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }, { status: "running" }))).toEqual({
+      onReleaseImage: false,
+      targetImage: null,
+      reason: "agent busy (status running): переключится при освобождении",
+    });
+    // an unknown status is busy (fail-closed, as the rollout treats it)
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("agent busy (status unknown)"),
+    });
+    // tracking + idle but no release image is known to the instance
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }, { status: "idle" }))).toEqual({
+      onReleaseImage: false,
+      targetImage: null,
+      reason: "no release image configured",
+    });
+    // tracking + idle + a release image known: on it (waiting for the next rollout pass)
+    expect(
+      await ask(card({ ...ENABLED_CARD, image: digest }, { status: "paused" }), {
+        MYRMIDON_BOT_RELEASE_IMAGE: digest,
+      }),
+    ).toEqual({ onReleaseImage: true, targetImage: null, reason: null });
+    // pinned and not applicable keep their reasons
+    expect(await ask(card({ ...ENABLED_CARD, image: "other/thing:1" }, { status: "idle" }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("pinned"),
+    });
+    expect(await ask(card(undefined, { status: "idle" }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("not_applicable: adapterConfig.container is not set"),
+    });
   });
 
   it("flags an image outside the allowlist", async () => {
@@ -219,6 +368,56 @@ describe("myrmidon(W2b) bot container routes: status", () => {
     expect(res.body.container).toBeNull();
     expect(res.body.containerError).toBe("The container runtime did not answer.");
     expect(JSON.stringify(res.body)).not.toContain("docker.sock");
+  });
+});
+
+describe("myrmidon(L6-PROFILE-UPDATE-STARVATION) status: the pending profile update note", () => {
+  it("reports the open window's startedAt when a profile update is pending", async () => {
+    const profileUpdatePendingSince = vi.fn(async () => "2026-10-02T15:04:05.000Z");
+    const res = await request(
+      app(member, { getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }),
+    )
+      .get(statusUrl)
+      .expect(200);
+    expect(res.body.profileUpdatePendingSince).toBe("2026-10-02T15:04:05.000Z");
+    expect(profileUpdatePendingSince).toHaveBeenCalledWith(AGENT_ID);
+  });
+
+  it("null when no window is open (nothing pending)", async () => {
+    const profileUpdatePendingSince = vi.fn(async () => null);
+    const res = await request(
+      app(member, { getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }),
+    )
+      .get(statusUrl)
+      .expect(200);
+    expect(res.body.profileUpdatePendingSince).toBeNull();
+  });
+
+  it("a failed window lookup does not fail the status", async () => {
+    const profileUpdatePendingSince = vi.fn(async () => {
+      throw new Error("db unavailable");
+    });
+    const res = await request(
+      app(member, { getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }),
+    )
+      .get(statusUrl)
+      .expect(200);
+    expect(res.body.profileUpdatePendingSince).toBeNull();
+    expect(JSON.stringify(res.body)).not.toContain("db unavailable");
+  });
+
+  it("is not asked for an agent that is not a gateway or a card that is off", async () => {
+    const profileUpdatePendingSince = vi.fn(async () => "2026-10-02T15:04:05.000Z");
+    const agent = card(ENABLED_CARD, { adapterType: "hermes_local" });
+    await request(app(member, { agent, getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }))
+      .get(statusUrl)
+      .expect(200);
+    expect(profileUpdatePendingSince).not.toHaveBeenCalled();
+    const off = card({ ...ENABLED_CARD, enabled: false });
+    await request(app(member, { agent: off, getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }))
+      .get(statusUrl)
+      .expect(200);
+    expect(profileUpdatePendingSince).not.toHaveBeenCalled();
   });
 });
 
@@ -333,9 +532,28 @@ describe("myrmidon(CONCURRENCY-SYNC) status: the board's limit against the appli
   });
 });
 
-describe("myrmidon(W2b) bot container routes: apply", () => {
-  it("creates the container from the saved card and reports the outcome", async () => {
-    const create = vi.fn(async () => {});
+describe("myrmidon(W2b + 1.6.5 ASYNC-BOT-APPLY) bot container routes: apply", () => {
+  // Wait for the fire-and-forget pass of the live job to close; the route
+  // answers 202 before it finishes, the journal is the only place the outcome
+  // exists, so tests poll it the way the UI (ч.B) polls the GET status.
+  async function settle(store: ReturnType<typeof fakeApplyJobs>) {
+    for (let i = 0; i < 200; i += 1) {
+      for (const job of store.jobs.values()) {
+        if (job.status === "succeeded" || job.status === "failed") return job;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("apply job never settled");
+  }
+
+  it("answers 202 with the apply id in under a second and creates the container in the background", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const create = vi.fn(async () => {
+      await gate;
+    });
     const writeProfile = vi.fn(async () => {});
     const start = vi.fn(async () => {});
     const driver = fakeDriver({
@@ -344,8 +562,23 @@ describe("myrmidon(W2b) bot container routes: apply", () => {
       writeProfile,
       start,
     });
-    const res = await request(app(member, { getRuntime: () => runtime(driver) })).post(applyUrl).expect(200);
-    expect(res.body).toEqual({ outcome: { kind: "created" } });
+    const store = fakeApplyJobs();
+    const startedAt = Date.now();
+    const res = await request(app(member, { getRuntime: () => runtime(driver), applyJobs: store }))
+      .post(applyUrl)
+      .expect(202);
+    // The response must not wait for the reconcile: measured against the clock,
+    // the gate below stays shut until after this assertion block.
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    expect(res.body).toMatchObject({ status: "pending" });
+    expect(typeof res.body.applyId).toBe("string");
+    expect(create).toHaveBeenCalledTimes(1);
+
+    release();
+    const job = await settle(store);
+    expect(job).toMatchObject({ status: "succeeded", error: null });
+    expect(job.startedAt).toBeInstanceOf(Date);
+    expect(job.finishedAt).toBeInstanceOf(Date);
     expect(create).toHaveBeenCalledWith({
       botKey: AGENT_ID,
       image: "bot-image:1.1.0",
@@ -357,64 +590,396 @@ describe("myrmidon(W2b) bot container routes: apply", () => {
     });
     expect(writeProfile).toHaveBeenCalledTimes(1);
     expect(start).toHaveBeenCalledWith(AGENT_ID);
+    expect(job.requestedBy).toBe(member.userId);
+    expect(job.companyId).toBe(COMPANY_ID);
   });
 
-  it("reports an already applied card as unchanged", async () => {
-    const res = await request(app(member, { getRuntime: () => runtime(fakeDriver()) })).post(applyUrl).expect(200);
-    expect(res.body).toEqual({ outcome: { kind: "unchanged" } });
-  });
-
-  it("answers 503 while the instance has no container runtime", async () => {
-    const applyNow = vi.fn();
-    const res = await request(app(member, { applyNow })).post(applyUrl).expect(503);
-    expect(res.body).toMatchObject({ code: "bot_container_runtime_unavailable" });
-    expect(applyNow).not.toHaveBeenCalled();
-  });
-
-  it("answers 409 with the reason for a card that is not applicable", async () => {
+  it("reuses the live job for a repeat POST instead of queueing a second pass", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let creates = 0;
+    const store = fakeApplyJobs();
     const driver = fakeDriver({
-      status: async () => {
-        throw new Error("the driver must not be called for a card that is not applicable");
+      status: async (botKey) => ({ botKey, state: "missing" }),
+      create: async () => {
+        creates += 1;
+        await gate;
       },
     });
-    const off = await request(app(member, { agent: card({ ...ENABLED_CARD, enabled: false }), getRuntime: () => runtime(driver) }))
-      .post(applyUrl)
-      .expect(409);
-    expect(off.body).toMatchObject({ code: "bot_container_not_applicable" });
-    expect(off.body.error).toContain("enabled");
-
-    const other = await request(app(member, { agent: card(ENABLED_CARD, { adapterType: "hermes_local" }), getRuntime: () => runtime(driver) }))
-      .post(applyUrl)
-      .expect(409);
-    expect(other.body.error).toContain("hermes_gateway");
+    const server = app(member, { getRuntime: () => runtime(driver), applyJobs: store });
+    const first = await request(server).post(applyUrl).expect(202);
+    const second = await request(server).post(applyUrl).expect(202);
+    expect(second.body.applyId).toBe(first.body.applyId);
+    expect(["pending", "running"]).toContain(second.body.status);
+    expect(store.jobs.size).toBe(1);
+    release();
+    await settle(store);
+    expect(creates).toBe(1);
   });
 
-  it("refuses a shared container group as not applicable", async () => {
-    const res = await request(app(member, { agent: card({ ...ENABLED_CARD, group: "team-b" }), getRuntime: () => runtime(fakeDriver()) }))
-      .post(applyUrl)
-      .expect(409);
-    expect(res.body.error).toBe(CONTAINER_GROUP_UNSUPPORTED_REASON);
+  it("reports an already applied card as unchanged through the journal", async () => {
+    const store = fakeApplyJobs();
+    await request(app(member, { getRuntime: () => runtime(fakeDriver()), applyJobs: store })).post(applyUrl).expect(202);
+    const job = await settle(store);
+    expect(job.status).toBe("succeeded");
+    expect(job.error).toBeNull();
   });
 
-  it("answers 502 with the failure when the reconcile fails", async () => {
+  it("records a failed apply with the error text in the journal", async () => {
     const driver = fakeDriver({
       status: async (botKey) => ({ botKey, state: "missing" }),
       create: async () => {
         throw new Error('image "bot-image:1.1.0" is not in MYRMIDON_BOT_IMAGE_ALLOWLIST');
       },
     });
-    const res = await request(app(member, { getRuntime: () => runtime(driver) })).post(applyUrl).expect(502);
-    const message = 'image "bot-image:1.1.0" is not in MYRMIDON_BOT_IMAGE_ALLOWLIST';
-    expect(res.body).toEqual({ error: message, outcome: { kind: "error", message } });
+    const store = fakeApplyJobs();
+    const res = await request(app(member, { getRuntime: () => runtime(driver), applyJobs: store })).post(applyUrl).expect(202);
+    const job = await settle(store);
+    expect(job.status).toBe("failed");
+    expect(job.error).toBe('image "bot-image:1.1.0" is not in MYRMIDON_BOT_IMAGE_ALLOWLIST');
+    // ...and the status route serves exactly that from the stored row.
+    const status = await request(app(viewer, { getRuntime: () => runtime(driver), applyJobs: store }))
+      .get(`${applyUrl}/${res.body.applyId}`)
+      .expect(200);
+    expect(status.body).toMatchObject({ status: "failed", error: job.error });
+    expect(status.body.startedAt).toBeTruthy();
+    expect(status.body.finishedAt).toBeTruthy();
   });
 
-  it("clips a very long failure message", async () => {
+  it("clips a very long failure into the journal instead of the response", async () => {
     const driver = fakeDriver({
       status: async () => {
         throw new Error("x".repeat(2000));
       },
     });
-    const res = await request(app(member, { getRuntime: () => runtime(driver) })).post(applyUrl).expect(502);
-    expect(res.body.outcome.message.length).toBeLessThanOrEqual(501);
+    const store = fakeApplyJobs();
+    await request(app(member, { getRuntime: () => runtime(driver), applyJobs: store })).post(applyUrl).expect(202);
+    const job = await settle(store);
+    expect(job.status).toBe("failed");
+    expect(job.error!.length).toBeLessThanOrEqual(501);
   });
+
+  it("answers 503 while the instance has no container runtime, before any job row exists", async () => {
+    const applyNow = vi.fn();
+    const store = fakeApplyJobs();
+    const res = await request(app(member, { applyNow, applyJobs: store })).post(applyUrl).expect(503);
+    expect(res.body).toMatchObject({ code: "bot_container_runtime_unavailable" });
+    expect(applyNow).not.toHaveBeenCalled();
+    expect(store.jobs.size).toBe(0);
+  });
+
+  it("answers 409 with the reason for a card that is not applicable, without journaling it", async () => {
+    const driver = fakeDriver({
+      status: async () => {
+        throw new Error("the driver must not be called for a card that is not applicable");
+      },
+    });
+    const store = fakeApplyJobs();
+    const off = await request(
+      app(member, { agent: card({ ...ENABLED_CARD, enabled: false }), getRuntime: () => runtime(driver), applyJobs: store }),
+    )
+      .post(applyUrl)
+      .expect(409);
+    expect(off.body).toMatchObject({ code: "bot_container_not_applicable" });
+    expect(off.body.error).toContain("enabled");
+
+    const other = await request(
+      app(member, { agent: card(ENABLED_CARD, { adapterType: "hermes_local" }), getRuntime: () => runtime(driver), applyJobs: store }),
+    )
+      .post(applyUrl)
+      .expect(409);
+    expect(other.body.error).toContain("hermes_gateway");
+    expect(store.jobs.size).toBe(0);
+  });
+
+  it("refuses a shared container group as not applicable", async () => {
+    const store = fakeApplyJobs();
+    const res = await request(
+      app(member, { agent: card({ ...ENABLED_CARD, group: "team-b" }), getRuntime: () => runtime(fakeDriver()), applyJobs: store }),
+    )
+      .post(applyUrl)
+      .expect(409);
+    expect(res.body.error).toBe(CONTAINER_GROUP_UNSUPPORTED_REASON);
+    expect(store.jobs.size).toBe(0);
+  });
+
+  it("the status route answers 404 for an unknown apply id", async () => {
+    const store = fakeApplyJobs();
+    await request(app(member, { getRuntime: () => runtime(fakeDriver()), applyJobs: store })).post(applyUrl).expect(202);
+    await request(app(member, { getRuntime: () => runtime(fakeDriver()), applyJobs: store }))
+      .get(`${applyUrl}/apply-does-not-exist`)
+      .expect(404);
+  });
+
+  it("the status route reads only the journal, never the runtime", async () => {
+    const store = fakeApplyJobs();
+    let statusCalls = 0;
+    const driver = fakeDriver({
+      status: async (botKey) => {
+        statusCalls += 1;
+        return { botKey, state: "missing" };
+      },
+    });
+    await request(app(member, { getRuntime: () => runtime(driver), applyJobs: store })).post(applyUrl).expect(202);
+    await settle(store);
+    const before = statusCalls;
+    const res = await request(app(viewer, { getRuntime: () => runtime(driver), applyJobs: store }))
+      .get(`${applyUrl}/apply-1`)
+      .expect(200);
+    expect(res.body.status).toBe("succeeded");
+    expect(statusCalls).toBe(before);
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-G live check, OPE-5281 ч.B): the shared git-object
+// store's FACTS for a reader with an AGENT key. The lead has no board-user
+// channel and the board's attention feed answers an agent key with 403, so this
+// is the one bot-container route that is not assertBoard.
+describe("myrmidon(1.6.5) bot container routes: shared git-object store facts", () => {
+  const gitStoreUrl = `/api/myrmidon/agents/${AGENT_ID}/bot-container/git-store`;
+  const reportWith = (extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ version: 1, inspectedAt: new Date().toISOString(), repos: [], ...extra });
+  const facts = {
+    path: "/data/hermes/.myrmidon/git-objects",
+    enabled: true,
+    mirrorCount: 1,
+    totalBytes: 152 * 1024 * 1024,
+    repos: ["itkadr-git/myrmidon"],
+  };
+  const snapshot = { version: 1, ok: true, store: facts.path, checks: [], storeState: facts };
+
+  it("lets an agent key of the same company read the facts", async () => {
+    const driver = fakeDriver({ readCloneReport: async () => reportWith({ gitStore: facts }) });
+    const res = await request(app(agentActor, { getRuntime: () => runtime(driver) })).get(gitStoreUrl).expect(200);
+    expect(res.body.gitStore).toEqual(facts);
+    expect(res.body.note).toBeNull();
+    expect(res.body.reportAgeMs).toBeGreaterThanOrEqual(0);
+    expect(res.body.inspectedAtMs).not.toBeNull();
+  });
+
+  it("keeps the company boundary: another company's agent learns nothing", async () => {
+    const driver = fakeDriver({ readCloneReport: async () => reportWith({ gitStore: facts }) });
+    const foreign = { ...agentActor, companyId: "other-company" };
+    await request(app(foreign, { getRuntime: () => runtime(driver) })).get(gitStoreUrl).expect(404);
+  });
+
+  it("falls back to the container-start snapshot, and says a report without facts is one", async () => {
+    const fromSnapshot = await request(app(member, { getRuntime: () => runtime(fakeDriver({ readCloneReport: async () => reportWith({ gitRefCheck: snapshot }) })) }))
+      .get(gitStoreUrl)
+      .expect(200);
+    expect(fromSnapshot.body.gitStore).toBeNull();
+    expect(fromSnapshot.body.gitRefCheck?.storeState).toEqual(facts);
+    expect(fromSnapshot.body.note).toBeNull();
+
+    const older = await request(app(member, { getRuntime: () => runtime(fakeDriver({ readCloneReport: async () => reportWith({ gitRefCheck: { ...snapshot, storeState: undefined } }) })) }))
+      .get(gitStoreUrl)
+      .expect(200);
+    expect(older.body.note).toBe(GIT_STORE_NOTE_NO_STORE_FACTS);
+  });
+
+  it("answers the reason, never an error, when the container has no report yet", async () => {
+    const driver = fakeDriver({
+      readCloneReport: async () => null,
+      status: async (botKey) => ({ botKey, state: "missing" }),
+    });
+    const res = await request(app(member, { getRuntime: () => runtime(driver) })).get(gitStoreUrl).expect(200);
+    expect(res.body.note).toBe(GIT_STORE_NOTE_NO_REPORT);
+    expect(res.body.containerState).toBe("missing");
+    expect(res.body.gitStore).toBeNull();
+  });
+
+  it("names a driver without a reader, and a read that fails", async () => {
+    const noReader = await request(app(member, { getRuntime: () => runtime(fakeDriver()) })).get(gitStoreUrl).expect(200);
+    expect(noReader.body.note).toBe(GIT_STORE_NOTE_NO_READER);
+
+    const driver = fakeDriver({
+      readCloneReport: async () => {
+        throw new Error("docker is gone");
+      },
+    });
+    const failing = await request(app(member, { getRuntime: () => runtime(driver) })).get(gitStoreUrl).expect(200);
+    expect(failing.body.note).toBe(GIT_STORE_NOTE_READ_FAILED);
+    expect(failing.body.gitStore).toBeNull();
+  });
+
+  it("never asks the runtime when the flag is off, and names the other refusals", async () => {
+    const readCloneReport = vi.fn(async () => reportWith({ gitStore: facts }));
+    const off = await request(app(member, { env: { [BOT_IMAGE_ALLOWLIST_ENV]: "bot-image:*" }, getRuntime: () => runtime(fakeDriver({ readCloneReport })) }))
+      .get(gitStoreUrl)
+      .expect(200);
+    expect(off.body.enabled).toBe(false);
+    expect(off.body.note).toBe(GIT_STORE_NOTE_FLAG_OFF);
+    expect(readCloneReport).not.toHaveBeenCalled();
+
+    const noRuntime = await request(app(member, {})).get(gitStoreUrl).expect(200);
+    expect(noRuntime.body.note).toBe(GIT_STORE_NOTE_NO_RUNTIME);
+
+    const notABot = await request(app(member, { agent: card(ENABLED_CARD, { adapterType: "hermes_local" }), getRuntime: () => runtime(fakeDriver()) }))
+      .get(gitStoreUrl)
+      .expect(200);
+    expect(notABot.body.note).toBe(GIT_STORE_NOTE_NOT_A_BOT);
+  });
+});
+
+describe("myrmidon(UI-2.0 FLEET) bot container company status route", () => {
+  const companyStatusUrl = (companyId = COMPANY_ID) => `/api/myrmidon/companies/${companyId}/bot-containers/status`;
+
+  it("answers 200 with 3 items when 3 agents exist (running, missing, driver error)", async () => {
+    const agent1 = card(ENABLED_CARD, { id: "11111111-1111-4111-8111-111111111111" });
+    const agent2 = card(ENABLED_CARD, { id: "22222222-2222-4222-8222-222222222222" });
+    const agent3 = card(ENABLED_CARD, { id: "33333333-3333-4333-8333-333333333333" });
+
+    const key1 = botKeyForAgent(agent1.id)!;
+    const key2 = botKeyForAgent(agent2.id)!;
+    const key3 = botKeyForAgent(agent3.id)!;
+
+    const driver = fakeDriver({
+      status: async (botKey) => {
+        if (botKey === key1) return { botKey, state: "running", image: "bot-image:1.1.0" };
+        if (botKey === key2) return { botKey, state: "missing" };
+        if (botKey === key3) throw new Error("Docker daemon failure");
+        return { botKey, state: "missing" };
+      },
+    });
+
+    const res = await request(
+      app(member, {
+        companyAgents: [agent1, agent2, agent3],
+        getRuntime: () => runtime(driver),
+      }),
+    )
+      .get(companyStatusUrl())
+      .expect(200);
+
+    expect(res.body.enabled).toBe(true);
+    expect(res.body.runtimeConfigured).toBe(true);
+    expect(res.body.items).toHaveLength(3);
+
+    const item1 = res.body.items.find((it: any) => it.agentId === agent1.id);
+    const item2 = res.body.items.find((it: any) => it.agentId === agent2.id);
+    const item3 = res.body.items.find((it: any) => it.agentId === agent3.id);
+
+    expect(item1.container).toEqual({ state: "running", image: "bot-image:1.1.0" });
+    expect(item1.containerError).toBeNull();
+
+    expect(item2.container).toEqual({ state: "missing", image: null });
+    expect(item2.containerError).toBeNull();
+
+    expect(item3.container).toBeNull();
+    expect(item3.containerError).toBe("The container runtime did not answer.");
+  });
+
+  it("excludes agents of another company and enforces board access rules", async () => {
+    const foreignCompanyId = "44444444-4444-4444-8444-444444444444";
+    const agentMine = card(ENABLED_CARD, { id: "11111111-1111-4111-8111-111111111111", companyId: COMPANY_ID });
+    const agentOther = card(ENABLED_CARD, { id: "22222222-2222-4222-8222-222222222222", companyId: foreignCompanyId });
+
+    const server = app(member, {
+      companyAgents: [agentMine, agentOther],
+    });
+
+    const res = await request(server).get(companyStatusUrl(COMPANY_ID)).expect(200);
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].agentId).toBe(agentMine.id);
+
+    // Non-board actor (agent) is refused with 403 like the adjacent route
+    await request(app(agentActor, { companyAgents: [agentMine] }))
+      .get(companyStatusUrl(COMPANY_ID))
+      .expect(403);
+
+    // Outsider board member from another company is refused with 403
+    await request(app(outsider, { companyAgents: [agentMine] }))
+      .get(companyStatusUrl(COMPANY_ID))
+      .expect(403);
+  });
+
+  it("returns item data equivalent to the single agent status route", async () => {
+    const singleAgent = card(ENABLED_CARD, {
+      id: AGENT_ID,
+      companyId: COMPANY_ID,
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 4 } },
+    });
+
+    const driver = fakeDriver({
+      status: async (botKey) => ({
+        botKey,
+        state: "running",
+        image: "bot-image:1.1.0",
+        maxConcurrentRuns: 4,
+      }),
+    });
+
+    const server = app(member, {
+      agent: singleAgent,
+      companyAgents: [singleAgent],
+      getRuntime: () => runtime(driver),
+    });
+
+    const singleRes = await request(server).get(statusUrl).expect(200);
+    const companyRes = await request(server).get(companyStatusUrl()).expect(200);
+
+    expect(companyRes.body.enabled).toBe(singleRes.body.enabled);
+    expect(companyRes.body.runtimeConfigured).toBe(singleRes.body.runtimeConfigured);
+
+    const item = companyRes.body.items.find((it: any) => it.agentId === AGENT_ID);
+    const { enabled, runtimeConfigured, gatewayConcurrency, ...singleFields } = singleRes.body;
+    expect(item).toMatchObject({
+      agentId: AGENT_ID,
+      ...singleFields,
+    });
+    expect(item.gatewayConcurrency).toMatchObject({
+      applied: gatewayConcurrency.applied,
+      board: gatewayConcurrency.board,
+      diverged: gatewayConcurrency.diverged,
+    });
+    expect(item.gatewayConcurrency.checkedAt).toEqual(expect.any(String));
+  });
+
+  it("limits driver status concurrency to 8 and handles driver timeout", async () => {
+    let activeCalls = 0;
+    let maxObservedActiveCalls = 0;
+
+    const agents = Array.from({ length: 12 }, (_, i) => {
+      const hex = i.toString(16).padStart(2, "0");
+      return card(ENABLED_CARD, { id: `a0000000-0000-4000-8000-0000000000${hex}` });
+    });
+
+    const timeoutAgent = agents[agents.length - 1];
+    const timeoutBotKey = botKeyForAgent(timeoutAgent.id)!;
+
+    const driver = fakeDriver({
+      status: async (botKey) => {
+        activeCalls++;
+        if (activeCalls > maxObservedActiveCalls) {
+          maxObservedActiveCalls = activeCalls;
+        }
+        if (botKey === timeoutBotKey) {
+          await new Promise((resolve) => setTimeout(resolve, 3500));
+          activeCalls--;
+          return { botKey, state: "running" };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        activeCalls--;
+        return { botKey, state: "running", image: "bot-image:1.1.0" };
+      },
+    });
+
+    const res = await request(
+      app(member, {
+        companyAgents: agents,
+        getRuntime: () => runtime(driver),
+      }),
+    )
+      .get(companyStatusUrl())
+      .expect(200);
+
+    expect(maxObservedActiveCalls).toBeLessThanOrEqual(8);
+    expect(res.body.items).toHaveLength(12);
+
+    const timedOutItem = res.body.items.find((it: any) => it.agentId === timeoutAgent.id);
+    expect(timedOutItem.container).toBeNull();
+    expect(timedOutItem.containerError).toBe("The container runtime did not answer.");
+  }, 10000);
 });

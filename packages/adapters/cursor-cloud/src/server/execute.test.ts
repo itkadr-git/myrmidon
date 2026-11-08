@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
 import { execute } from "./execute.js";
 
 type MockRunOptions = {
@@ -163,7 +163,7 @@ describe("cursor_cloud execute", () => {
     expect(result.exitCode).toBe(0);
     const prompt = String(sdkAgent.send.mock.calls[0]?.[0]);
     expect(prompt).toContain(directive);
-    expect(prompt).toContain(custom ? "Do the work for" : "Continue your Paperclip conversation");
+    expect(prompt).toContain(custom ? "Do the work for" : "Continue your Myrmidon conversation");
     expect(prompt).not.toContain("Execution contract:");
     expect(prompt).not.toContain("Create child issues");
   });

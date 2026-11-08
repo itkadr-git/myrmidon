@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   companies,
@@ -17,7 +17,7 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AgentApiKeyScope,
   AgentEnvConfig,
@@ -34,7 +34,7 @@ import type {
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
   SecretVersionSelector,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   CLASS3_STATIC_LEASE_ALLOWLIST,
   createSecretProviderConfigSchema,
@@ -45,7 +45,7 @@ import {
   secretProviderConfigPayloadSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -61,6 +61,8 @@ import type {
   SecretProviderVaultRuntimeConfig,
   SecretProviderWriteContext,
 } from "../secrets/types.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { isSecretProviderClientError } from "../secrets/types.js";
 import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
@@ -83,7 +85,7 @@ import { logActivity } from "./activity-log.js";
 import {
   assertAccountHomeCacheDirStillValid,
   withAccountHomeSecretMutationLock,
-} from "@paperclipai/adapter-codex-local/server";
+} from "@myrmidon/adapter-codex-local/server";
 // myrmidon(S5): resolved secret values are masked in stored text
 import { registerSecretValues } from "../myrmidon/secret-masking.js";
 
@@ -107,6 +109,7 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 ]);
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
+  openclaw_gateway: ["deviceToken"],
 };
 const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
@@ -407,7 +410,7 @@ async function throwProviderWriteOrReservedRowRollbackError(input: {
       },
       "remote secret provider write failed and reserved secret rollback failed",
     );
-    throw new HttpError(500, "Secret create failed and Paperclip could not roll back the local secret reservation.", {
+    throw new HttpError(500, `Secret create failed and ${PN} could not roll back the local secret reservation.`, {
       code: "secret_create_rollback_failed",
       provider: input.provider,
       operation: input.operation,
@@ -453,7 +456,7 @@ async function deleteLocalSecretCreateReservationOrThrow(input: {
       },
       "secret create failed and local reserved secret rollback failed",
     );
-    throw new HttpError(500, "Secret create failed and Paperclip could not roll back the local secret reservation.", {
+    throw new HttpError(500, `Secret create failed and ${PN} could not roll back the local secret reservation.`, {
       code: "secret_create_rollback_failed",
       provider: input.provider,
       operation: input.operation,
@@ -470,7 +473,7 @@ function throwProviderCleanupFailedAfterCreateRollback(input: {
   operation: string;
 }): never {
   const providerConfigId = providerConfigIdentifier(input);
-  throw new HttpError(500, "Secret create failed and Paperclip could not clean up the remote provider secret.", {
+  throw new HttpError(500, `Secret create failed and ${PN} could not clean up the remote provider secret.`, {
     code: "secret_create_provider_cleanup_failed",
     provider: input.provider,
     operation: input.operation,
@@ -503,14 +506,14 @@ function safeRemoteProviderErrorDetails(
     };
     const region = safeString(context.providerConfig?.region);
     if (region) details.region = region;
-    details.credentialPath = "Paperclip server runtime/provider credential path";
+    details.credentialPath = `${PN} server runtime/provider credential path`;
     if (error?.code === "access_denied") {
       if (context.operation === "secret.create") {
         details.requiredCapability = "secretsmanager:CreateSecret";
         details.actionableMessage =
           "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault. If the vault config uses a KMS key, the runtime credentials also need KMS write permissions for that key.";
         details.safeAlternative =
-          "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.";
+          `If the secret already exists in AWS, link it as an external reference instead of creating a ${PN}-managed value.`;
       } else if (context.operation === "secret.rotate") {
         details.requiredCapability = "secretsmanager:PutSecretValue";
         details.actionableMessage =
@@ -528,11 +531,11 @@ function safeRemoteProviderErrorDetails(
   const region = safeString(context.providerConfig?.region);
   if (region) details.region = region;
   details.providerVaultContext = context.providerConfigId === "discovery-preview" ? "draft_config" : "provider_config";
-  details.credentialPath = "Paperclip server runtime/provider credential path";
+  details.credentialPath = `${PN} server runtime/provider credential path`;
   if (error?.code === "access_denied") {
     details.requiredCapability = "secretsmanager:ListSecrets";
     details.actionableMessage =
-      "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.";
+      `AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the ${PN} server runtime/provider credential path.`;
     details.safeAlternative =
       "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.";
   }
@@ -1406,7 +1409,15 @@ export function secretService(db: Db | DbTransaction) {
         db
           .update(companySecrets)
           .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
-          .where(eq(companySecrets.id, secret.id))
+          .where(
+            and(
+              eq(companySecrets.id, secret.id),
+              or(
+                sql`${companySecrets.lastResolvedAt} IS NULL`,
+                sql`${companySecrets.lastResolvedAt} < ${new Date(Date.now() - 5 * 60_000).toISOString()}`,
+              ),
+            ),
+          )
           .catch(() => undefined),
         recordAccessEvent({
           companyId,
@@ -1857,6 +1868,99 @@ export function secretService(db: Db | DbTransaction) {
     }).sort((left, right) => left.key.localeCompare(right.key));
   }
 
+  // myrmidon(1.6.5-F-23): metadata listing for an agent acting without an
+  // active run (administrative role from an operator session). The route layer
+  // has already verified the active secrets:read_off_run grant; this function
+  // reads the direct agent-target bindings only (no run manifest), and every
+  // call writes a secret_access_events row with details.offRun = true.
+  async function listAgentSecretAccessOffRun(
+    companyId: string,
+    context: {
+      agentId: string;
+      actorSource: "agent_jwt" | "agent_key";
+      keyId?: string | null;
+      keyScope?: AgentApiKeyScope | null;
+      responsibleUserId?: string | null;
+      remoteAddress?: string | null;
+    },
+  ): Promise<AgentSecretAccessEntry[]> {
+    const bindings = await db.select().from(companySecretBindings).where(and(
+      eq(companySecretBindings.companyId, companyId),
+      eq(companySecretBindings.targetType, "agent"),
+      eq(companySecretBindings.targetId, context.agentId),
+      or(
+        like(companySecretBindings.configPath, "env.%"),
+        like(companySecretBindings.configPath, `${AGENT_ACCESS_CONFIG_PATH_PREFIX}%`),
+      ),
+    ));
+    const secrets = bindings.length === 0 ? [] : await db
+      .select()
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        inArray(companySecrets.id, [...new Set(bindings.map((binding) => binding.secretId))]),
+      ));
+    const secretsById = new Map(secrets.map((secret) => [secret.id, secret]));
+    const bindingsBySecret = new Map<string, typeof bindings>();
+    for (const binding of bindings) {
+      const current = bindingsBySecret.get(binding.secretId) ?? [];
+      current.push(binding);
+      bindingsBySecret.set(binding.secretId, current);
+    }
+    const entries = [...bindingsBySecret.entries()].flatMap(([secretId, secretBindings]) => {
+      const secret = secretsById.get(secretId);
+      if (!secret) return [];
+      const accessBinding = secretBindings.find((binding) => binding.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX));
+      const selectedBinding = accessBinding ?? secretBindings[0];
+      const hasEnv = secretBindings.some((binding) => binding.configPath.startsWith("env."));
+      const hasApi = Boolean(accessBinding);
+      const versionSelector: SecretVersionSelector = selectedBinding.versionSelector === "latest"
+        ? "latest"
+        : Number(selectedBinding.versionSelector);
+      const delivery: AgentSecretAccessEntry["delivery"] = hasEnv && hasApi ? "both" : hasEnv ? "env" : "api";
+      return [{
+        secretId,
+        bindingId: selectedBinding.id,
+        configPath: selectedBinding.configPath,
+        key: secret.key,
+        name: secret.name,
+        description: secret.description ?? null,
+        delivery,
+        projectionClass: (selectedBinding.projectionClass ?? "unclassified") as SecretProjectionClass,
+        latestVersion: secret.latestVersion,
+        versionSelector,
+        resolvedVersion: versionSelector === "latest" ? secret.latestVersion : versionSelector,
+      }];
+    }).sort((left, right) => left.key.localeCompare(right.key));
+
+    await db.insert(secretAccessEvents).values({
+      companyId,
+      secretId: null,
+      secretScope: "company",
+      version: null,
+      provider: "local_encrypted",
+      responsibleUserId: context.responsibleUserId ?? null,
+      actorType: "agent",
+      actorId: context.agentId,
+      consumerType: "agent",
+      consumerId: context.agentId,
+      configPath: null,
+      heartbeatRunId: null,
+      outcome: "success",
+      details: {
+        offRun: true,
+        access: "agent_self_metadata",
+        keyId: context.keyId ?? null,
+        remoteAddress: context.remoteAddress ?? null,
+        listedSecretCount: entries.length,
+      },
+    });
+
+    return entries;
+  }
+
   async function resolveSecretVersion(
     companyId: string,
     secretId: string,
@@ -1992,6 +2096,9 @@ export function secretService(db: Db | DbTransaction) {
       throw unprocessable(`${input.key} must be a string, plain binding, or secret reference`);
     }
     const binding = canonicalizeBinding(parsed.data as EnvBinding);
+    if (input.adapterType === "openclaw_gateway" && input.key === "deviceToken" && binding.type !== "secret_ref") {
+      throw unprocessable("deviceToken must be a company secret reference");
+    }
     if (binding.type === "secret_ref") {
       await assertSecretInCompany(companyId, binding.secretId);
       return {
@@ -2726,6 +2833,15 @@ export function secretService(db: Db | DbTransaction) {
   }
 
   function fallbackBindingTarget(binding: typeof companySecretBindings.$inferSelect): CompanySecretBindingTarget {
+    if (binding.targetType === "github_actions") {
+      return {
+        type: "github_actions",
+        id: binding.targetId,
+        label: `GitHub Actions: ${binding.targetId}`,
+        href: `https://github.com/${binding.targetId}/settings/secrets/actions`,
+        status: "active",
+      };
+    }
     return {
       type: binding.targetType as SecretBindingTargetType,
       id: binding.targetId,
@@ -2870,6 +2986,17 @@ export function secretService(db: Db | DbTransaction) {
           status: row.status,
         });
       }
+    }
+
+    const ghBindings = bindings.filter((b) => b.targetType === "github_actions");
+    for (const b of ghBindings) {
+      setTarget({
+        type: "github_actions",
+        id: b.targetId,
+        label: `GitHub Actions: ${b.targetId}`,
+        href: `https://github.com/${b.targetId}/settings/secrets/actions`,
+        status: "active",
+      });
     }
 
     return targetMap;
@@ -4533,6 +4660,7 @@ export function secretService(db: Db | DbTransaction) {
     resolveSecretVersion,
     resolveSecretValueForAgentAccess,
     listAgentSecretAccess,
+    listAgentSecretAccessOffRun,
     resolveSecretValueForEphemeralAccess,
     resolveSecretValueForSandboxCleanup,
     resolveSecretValueForDeviceLoginCheck,

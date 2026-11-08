@@ -1,0 +1,12 @@
+# myrmidon(OPE-8950): area apps-chat-email
+components/EmailConnectionAccess.tsx
+components/EmailMessageCard.tsx
+components/EmailSafetyNotice.tsx
+components/EmailTaskActivity.tsx
+components/chat/AgentChannelsPanel.tsx
+components/chat/ExternallyConnectedTaskBanner.tsx
+pages/apps/chat/ChatEndpointDetail.tsx
+pages/apps/chat/ChatEndpointSetup.tsx
+pages/apps/chat/ChatIdentityConfirm.tsx
+pages/apps/chat/EmailEndpointSetup.tsx
+pages/apps/chat/PhotonConnectStep.tsx

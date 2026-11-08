@@ -1,6 +1,6 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -293,8 +293,9 @@ describe("sandbox callback bridge", () => {
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const schema = { openapi: "3.1.0", paths: {} };
     const forwarded: string[] = [];
+    const client = createFileSystemSandboxCallbackBridgeQueueClient();
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(), queueDir,
+      client, queueDir,
       handleRequest: async (request) => {
         forwarded.push(`${request.method} ${request.path}`);
         return { status: 200, body: JSON.stringify(schema) };
@@ -311,7 +312,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/secrets" },
     ];
     for (const [index, request] of requests.entries()) {
-      await writeFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
+      await client.writeTextFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
         id: `schema-${index}`, ...request, query: "", headers: {}, body: "", createdAt: new Date().toISOString(),
       }));
     }
@@ -358,6 +359,13 @@ describe("sandbox callback bridge", () => {
       "utf8",
     );
 
+    await vi.waitFor(async () => {
+      const response = JSON.parse(
+        await readFile(path.posix.join(directories.responsesDir, "req-1.json"), "utf8"),
+      ) as { status: number; body: string };
+      expect(response.status).toBe(403);
+    });
+
     await worker.stop({ drainTimeoutMs: 1_000 });
 
     const response = JSON.parse(
@@ -377,9 +385,30 @@ describe("sandbox callback bridge", () => {
     const queueDir = path.posix.join(rootDir, "queue");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const processed: string[] = [];
+    const baseClient = createFileSystemSandboxCallbackBridgeQueueClient();
+
+    // Seed both requests before starting the poller. Observing a directory listing
+    // is not a synchronization point: the poller may list the first file before
+    // the second write lands, making the shutdown assertion depend on scheduling.
+    await mkdir(directories.requestsDir, { recursive: true });
+    for (const id of ["req-a", "req-b"]) {
+      await writeFile(
+        path.posix.join(directories.requestsDir, `${id}.json`),
+        `${JSON.stringify({
+          id,
+          method: "GET",
+          path: "/api/agents/me",
+          query: "",
+          headers: {},
+          body: "",
+          createdAt: new Date().toISOString(),
+        })}\n`,
+        "utf8",
+      );
+    }
 
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      client: baseClient,
       queueDir,
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
@@ -392,33 +421,8 @@ describe("sandbox callback bridge", () => {
       },
     });
 
-    await writeFile(
-      path.posix.join(directories.requestsDir, "req-a.json"),
-      `${JSON.stringify({
-        id: "req-a",
-        method: "GET",
-        path: "/api/agents/me",
-        query: "",
-        headers: {},
-        body: "",
-        createdAt: new Date().toISOString(),
-      })}\n`,
-      "utf8",
-    );
-    await writeFile(
-      path.posix.join(directories.requestsDir, "req-b.json"),
-      `${JSON.stringify({
-        id: "req-b",
-        method: "GET",
-        path: "/api/agents/me",
-        query: "",
-        headers: {},
-        body: "",
-        createdAt: new Date().toISOString(),
-      })}\n`,
-      "utf8",
-    );
-
+    // Both files existed before polling began, so the first poll observes the
+    // complete queued batch. Give the worker its normal drain window.
     await worker.stop({ drainTimeoutMs: 1_000 });
 
     expect(processed).toEqual(["req-a", "req-b"]);
@@ -433,6 +437,17 @@ describe("sandbox callback bridge", () => {
     const queueDir = path.posix.join(rootDir, "queue");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const processed: string[] = [];
+    // Deterministic barrier: the handler announces that it started req-a and
+    // then stays in flight until the test releases it, so the drain deadline
+    // is always missed by req-b regardless of poll timing or CI load.
+    let signalStarted: () => void = () => {};
+    const handlerStarted = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    let releaseHandler: () => void = () => {};
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
 
     const worker = await startSandboxCallbackBridgeWorker({
       client: createFileSystemSandboxCallbackBridgeQueueClient(),
@@ -440,7 +455,8 @@ describe("sandbox callback bridge", () => {
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
         processed.push(request.id);
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        signalStarted();
+        await handlerGate;
         return {
           status: 200,
           body: request.id,
@@ -475,17 +491,19 @@ describe("sandbox callback bridge", () => {
       "utf8",
     );
 
-    for (let attempt = 0; attempt < 50 && processed.length === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      await handlerStarted;
+
+      await worker.stop({ drainTimeoutMs: 10 });
+
+      expect(processed).toEqual(["req-a"]);
+      await expect(readFile(path.posix.join(directories.responsesDir, "req-a.json"), "utf8")).resolves.toContain("\"req-a\"");
+      await expect(readFile(path.posix.join(directories.responsesDir, "req-b.json"), "utf8")).resolves.toContain(
+        "Bridge worker stopped before request could be handled.",
+      );
+    } finally {
+      releaseHandler();
     }
-
-    await worker.stop({ drainTimeoutMs: 10 });
-
-    expect(processed).toEqual(["req-a"]);
-    await expect(readFile(path.posix.join(directories.responsesDir, "req-a.json"), "utf8")).resolves.toContain("\"req-a\"");
-    await expect(readFile(path.posix.join(directories.responsesDir, "req-b.json"), "utf8")).resolves.toContain(
-      "Bridge worker stopped before request could be handled.",
-    );
   });
 
   it("handles SSH queue polling failures without emitting an unhandled rejection", async () => {
@@ -1126,11 +1144,14 @@ describe("sandbox callback bridge", () => {
     });
 
     const requestFile = await waitForJsonFile(directories.requestsDir);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+    const responseTempPath = `${responsePath}.tmp`;
     await writeFile(
-      path.posix.join(directories.responsesDir, requestFile),
+      responseTempPath,
       '{"status":200,"headers":{"content-type":"application/json"},"body"',
       "utf8",
     );
+    await rename(responseTempPath, responsePath);
 
     const response = await responsePromise;
     expect(response.status).toBe(502);

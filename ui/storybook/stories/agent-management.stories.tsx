@@ -9,7 +9,7 @@ import {
   type CompanySecret,
   type EnvBinding,
   type Environment,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { ActiveAgentsPanel } from "@/components/ActiveAgentsPanel";
 import { AgentConfigForm, type CreateConfigValues } from "@/components/AgentConfigForm";
 import { defaultCreateValues } from "@/components/agent-config-defaults";
@@ -771,7 +771,7 @@ function AgentManagementStories() {
                   <div className="rounded-lg border border-border p-3">
                     <div className="text-xs text-muted-foreground">Instructions</div>
                     <div className="mt-1 break-all font-mono text-xs">
-                      {String(agentManagementAgents[0]!.adapterConfig.instructionsFilePath)}
+                      {String(agentManagementAgents[0]!.adapterConfig?.instructionsFilePath)}
                     </div>
                   </div>
                   <div className="rounded-lg border border-border p-3">

@@ -147,7 +147,7 @@ const mockDb = vi.hoisted(() => ({
   transaction: mockDbTransaction,
 }));
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
+vi.mock("@myrmidon/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
 }));
@@ -631,6 +631,72 @@ describe.sequential("issue thread interaction routes", () => {
     );
   }, 10_000);
 
+  it("returns 422 when creating an interaction without addressee fails recipient resolution (OPE-9150)", async () => {
+    const { unprocessable } = await import("../errors.js");
+    mockInteractionService.create.mockRejectedValueOnce(
+      unprocessable(
+        "Cannot determine recipient for interaction: decision requires a typed human or matching project role",
+      ),
+    );
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Confirm?",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: expect.stringContaining(
+        "Cannot determine recipient for interaction",
+      ),
+    });
+  });
+
+  it("returns 201 with routeType and timeoutAt populated when interaction has addressee (OPE-9150)", async () => {
+    const timeoutIso = new Date(Date.now() + 30 * 60_000).toISOString();
+    mockInteractionService.create.mockResolvedValueOnce({
+      id: "interaction-routed-1",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "request_confirmation",
+      status: "pending",
+      addresseeAgentId: ASSIGNEE_AGENT_ID,
+      addresseeUserId: null,
+      addresseeQueue: null,
+      routeType: "decision",
+      timeoutAt: timeoutIso,
+      payload: { version: 1, prompt: "Proceed?" },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        addresseeAgentId: ASSIGNEE_AGENT_ID,
+        payload: {
+          version: 1,
+          prompt: "Proceed?",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      id: "interaction-routed-1",
+      routeType: "decision",
+      timeoutAt: timeoutIso,
+      addresseeAgentId: ASSIGNEE_AGENT_ID,
+    });
+  });
+
   it("does not run historical-comment catch-up or queue recovery from the interaction read path", async () => {
     mockIssueService.getById.mockResolvedValue(createIssue({
       status: "in_review",
@@ -698,7 +764,7 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("does not route agent attention for a human-only interaction", async () => {
+  it("wakes the explicit agent addressee even for a human-only interaction", async () => {
     mockInteractionService.create.mockResolvedValueOnce({
       id: "interaction-human-attention",
       companyId: "company-1",
@@ -740,7 +806,10 @@ describe.sequential("issue thread interaction routes", () => {
       });
 
     expect(res.status).toBe(201);
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "interaction_pending" }),
+    );
   });
 
   it("returns 400 for agent-addressed tool-action confirmations", async () => {
@@ -773,6 +842,77 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("cannot be addressed");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
+  });
+
+  it("creates an escalation interaction for an existing issue and returns JSON 404 for a missing issue", async () => {
+    mockInteractionService.create.mockResolvedValue({ id: "interaction-escalation" });
+    const app = await createApp();
+
+    const existingIssueRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({
+        kind: "ask_user_questions",
+        payload: {
+          version: 1,
+          questions: [
+            {
+              id: "next",
+              prompt: "How should this escalate?",
+              selectionMode: "single",
+              options: [{ id: "owner", label: "Ask owner" }],
+            },
+          ],
+        },
+      });
+    expect(existingIssueRes.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ISSUE_ID }),
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      expect.anything(),
+    );
+
+    mockIssueService.getById.mockResolvedValueOnce(null);
+    const missingIssueRes = await request(app)
+      .post(`/api/issues/${OTHER_ISSUE_ID}/interactions`)
+      .send({
+        kind: "ask_user_questions",
+        payload: {
+          version: 1,
+          questions: [
+            {
+              id: "next",
+              prompt: "How should this escalate?",
+              selectionMode: "single",
+              options: [{ id: "owner", label: "Ask owner" }],
+            },
+          ],
+        },
+      });
+    expect(missingIssueRes.status).toBe(404);
+    expect(missingIssueRes.headers["content-type"]).toMatch(/application\/json/);
+    expect(missingIssueRes.body).toMatchObject({ error: "Issue not found" });
+    expect(mockInteractionService.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates escalation interaction payload parameters and returns 400 (not 404)", async () => {
+    const app = await createApp();
+
+    const emptyRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({});
+    expect(emptyRes.status).toBe(400);
+
+    const invalidKindRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({ kind: "invalid_escalation_kind", payload: {} });
+    expect(invalidKindRes.status).toBe(400);
+
+    const malformedPayloadRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({ kind: "ask_user_questions", payload: { version: 1, questions: "not-an-array" } });
+    expect(malformedPayloadRes.status).toBe(400);
+
     expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
@@ -1036,6 +1176,181 @@ describe.sequential("issue thread interaction routes", () => {
       .send({});
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.anything());
+  });
+
+  // myrmidon(OPE-6241): automation runs carry a service account in
+  // responsibleUserId while the agent key is issued to a human; withdrawing
+  // the actor's own card must not depend on that match.
+  it("allows the creator agent to withdraw from an automation run with a service responsible user", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_1,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_1,
+      companyId: "company-1",
+      agentId: CREATED_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-withdraw/withdraw")
+      .send({});
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.withdrawInteraction).toHaveBeenCalled();
+  });
+
+  it("allows the assignee agent to withdraw from an automation run with a service responsible user", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_2,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_2,
+      companyId: "company-1",
+      agentId: ASSIGNEE_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-withdraw/withdraw")
+      .send({});
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.withdrawInteraction).toHaveBeenCalled();
+  });
+
+  it("rejects withdrawal by an unrelated agent from an automation run with a service responsible user", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: UNRELATED_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_3,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_3,
+      companyId: "company-1",
+      agentId: UNRELATED_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-withdraw/withdraw")
+      .send({});
+    // The strict attribution gate (422) fires before the creator/assignee
+    // authorization (403) for a non-creator non-assignee agent; either way
+    // the withdrawal is denied.
+    expect([403, 422]).toContain(res.status);
+    expect(mockInteractionService.withdrawInteraction).not.toHaveBeenCalled();
+  });
+
+  // myrmidon(OPE-6547): an agent API key authenticates as its owner, while an
+  // automation/heartbeat run records the issue's or the company's responsible
+  // user. Resolution routes must not require that match — the resolver-audience
+  // decision stays the authorization boundary.
+  it("allows the assignee agent to accept from an automation run with a service responsible user", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-6547",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1,
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Proceed?" },
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: acceptedOutboxInteraction("interaction-6547", "wake_assignee"),
+      createdIssues: [],
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_2,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_2,
+      companyId: "company-1",
+      agentId: ASSIGNEE_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-6547/accept")
+      .send({ reason: "looks fine" });
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.acceptInteraction).toHaveBeenCalled();
+  });
+
+  it("allows the assignee agent to reject from an automation run with a service responsible user", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-6547",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1,
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Proceed?" },
+    });
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-6547",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: RUN_1,
+      payload: { version: 1, prompt: "Proceed?" },
+      result: { version: 1, outcome: "rejected", reason: "Needs changes" },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_2,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_2,
+      companyId: "company-1",
+      agentId: ASSIGNEE_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-6547/reject")
+      .send({ reason: "Needs changes" });
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.rejectInteraction).toHaveBeenCalled();
   });
 
   it("allows the assignee agent to withdraw without waking itself", async () => {

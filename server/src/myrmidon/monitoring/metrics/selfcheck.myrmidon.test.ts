@@ -1,0 +1,184 @@
+// myrmidon(1.7-METRICS): the self-check probe (1.6.6 annex). The probe runs
+// one scrape of every family and answers {ok, families_ok, families_failed,
+// scrape_ms} — aggregate health only: no secret, no token and no per-family
+// metric value ever leaves it. These tests pin the contract on a pure fake:
+// a db that throws on every read must name every family in families_failed,
+// and a healthy scrape must render the exposition text as part of the probe.
+
+import { describe, expect, it } from "vitest";
+import {
+  METRIC_FAMILIES,
+  collectMetricsParts,
+  renderMetricsText,
+  runMetricsSelfCheck,
+} from "./metrics.js";
+import { auth401BurstMetrics } from "../../auth-401-burst/index.js";
+import { createAuth401BurstMetrics } from "../../auth-401-burst/metrics.js";
+
+const NOW = new Date("2026-10-06T12:00:00.000Z");
+
+const deps = {
+  now: () => NOW,
+  errorWindowSec: 3600,
+  latencyWindowSec: 3600,
+};
+
+describe("metrics self-check probe", () => {
+  it("names every family when every read fails — and never crashes", async () => {
+    const failingDb = {
+      select: () => {
+        throw new Error("database unavailable");
+      },
+    } as never;
+
+    const result = await runMetricsSelfCheck({ ...deps, db: failingDb });
+    expect(result.ok).toBe(false);
+    // myrmidon_scrape_errors is the meta-counter of this very scrape — it is
+    // never a DB read, so on a fully broken database it is the one family
+    // the probe can still affirm. The eight board-process families
+    // (1.6.5-PROCS-Q3 five process families, the event-loop utilization of
+    // PROCS-0.1 as the sixth, the two PROCS-0.3A lane families as the seventh
+    // and eighth) are likewise not DB reads — they survive a broken
+
+    // database too. The bridge fallback and chat-ingress counters are the
+    // ninth and tenth: in-process counters with no database behind them.
+    // (the single-route proxy counter of PROCS-1.5 is the ninth board family)
+    // The four run scratch families (1.6.6 TMP-HYGIENE) are in-process state
+    // too, so they survive a broken database as well.
+    // The four remote-site families (1.6.6 REMOTE-SITES-T4) are in-process state as well.
+    // The continuation and claim counters are process-local too.
+    // The five capacity-dashboard metrics remain available without database reads.
+    // The guardrail trigger counter (1.6.6 GUARDRAILS OPE-10182) is process-local too.
+    // OPE-9476: failed_before_model and recovery event counters are process-local.
+    // The scent classifier alarm is process-local as well.
+    // The two datastore retention metrics (1.6.6 OPE-9967) are process-local too.
+    // The LiteLLM key cap utilization gauge (OPE-11776) reads the sweep's last
+    // evaluation from memory: process-local as well.
+    // The auth-401 burst detector (OPE-11890) is process-local too.
+    expect(result.families_ok).toBe(40);
+    const expectedFailed = METRIC_FAMILIES.filter(
+      (family) =>
+        family !== "myrmidon_scrape_errors" &&
+        !family.startsWith("myrmidon_board_") &&
+        family !== "myrmidon_adapter_fallback_total" &&
+        family !== "myrmidon_chat_ingress_total" &&
+        !family.startsWith("myrmidon_run_scratch_") &&
+        !family.startsWith("myrmidon_fleet_") &&
+        family !== "myrmidon_continuation_created_total" &&
+        family !== "myrmidon_continuation_deduped_total" &&
+        family !== "swarm_claim_conflicts_total" &&
+        family !== "swarm_lease_recovered_total" &&
+        family !== "swarm_scent_classifier_alarm" &&
+        family !== "myrmidon_readiness_ratio" &&
+        family !== "myrmidon_queue_age_seconds" &&
+        family !== "myrmidon_project_share" &&
+        family !== "myrmidon_starvation_total" &&
+        family !== "myrmidon_claim_rejection_total" &&
+        family !== "myrmidon_guardrail_triggers_total" &&
+        family !== "myrmidon_auth_401_burst_total" &&
+        family !== "myrmidon_auth_401_burst_tripped" &&
+        family !== "myrmidon_agent_failed_before_model_total" &&
+        family !== "myrmidon_recovery_created_total" &&
+        family !== "myrmidon_recovery_deduped_total" &&
+        family !== "myrmidon_recovery_success_total" &&
+        family !== "myrmidon_llm_key_budget_utilization_percent" &&
+        !family.startsWith("myrmidon_datastore_retention_"),
+    ).sort();
+    expect(result.families_failed.sort()).toEqual(expectedFailed);
+    expect(result.checked_at).toBe(NOW.toISOString());
+    expect(Number.isFinite(result.scrape_ms)).toBe(true);
+  });
+
+  it("the probe body carries no secrets or metric values", async () => {
+    const failingDb = {
+      select: () => {
+        throw new Error("super-secret-connection-string leaked");
+      },
+    } as never;
+    const result = await runMetricsSelfCheck({ ...deps, db: failingDb });
+    const text = JSON.stringify(result);
+    expect(text).not.toContain("super-secret");
+    expect(text).not.toContain("connection");
+    // Only the documented aggregate keys.
+    expect(Object.keys(result).sort()).toEqual([
+      "checked_at",
+      "families_failed",
+      "families_ok",
+      "ok",
+      "scrape_ms",
+    ]);
+  });
+
+  it("collectMetricsParts reports per-family failures with family names", async () => {
+    const failingDb = {
+      select: () => {
+        throw new Error("database unavailable");
+      },
+    } as never;
+    const collected = await collectMetricsParts({ ...deps, db: failingDb });
+    expect(collected.errors.length).toBeGreaterThan(0);
+    for (const entry of collected.errors) {
+      for (const family of entry.split("|")) {
+        expect(METRIC_FAMILIES).toContain(family as (typeof METRIC_FAMILIES)[number]);
+      }
+    }
+    // The snapshot shape the endpoint renders is intact even on a broken read.
+    expect(collected.fields.runsActive).toBe(0);
+    expect(collected.fields.roleQueueTasks).toEqual([]);
+  });
+
+  it("renders both 401-burst families and never leaks a credential as a label", async () => {
+    // Drive the process-global detector into a tripped state, then build the
+    // snapshot the way the endpoint does (collectMetricsParts + role/errors),
+    // injecting the detector sample. The credential-shaped record below must
+    // not survive into any label or help text.
+    const originalThreshold = process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD;
+    // A low threshold so a handful of rejections trips the latch in-test.
+    process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD = "2";
+    try {
+      const failingDb = { select: () => { throw new Error("database unavailable"); } } as never;
+      const collected = await collectMetricsParts({ ...deps, db: failingDb });
+
+      auth401BurstMetrics.reset();
+      auth401BurstMetrics.record("no_credentials");
+      auth401BurstMetrics.record("Bearer «redacted:sk_…»");
+      const sample = auth401BurstMetrics.read();
+      expect(sample.tripped).toBe(true);
+
+      const text = renderMetricsText({
+        ...collected.fields,
+        role: collected.role,
+        scrapeErrors: collected.errors.length,
+        collectedAt: collected.now.toISOString(),
+        auth401Burst: sample,
+      });
+      expect(text).toContain("# HELP myrmidon_auth_401_burst_total");
+      expect(text).toContain("# TYPE myrmidon_auth_401_burst_total counter");
+      expect(text).toContain("# TYPE myrmidon_auth_401_burst_tripped gauge");
+      expect(text).toContain(`myrmidon_auth_401_burst_total{role="all",reason="no_credentials"} 1`);
+      expect(text).toContain(`myrmidon_auth_401_burst_total{role="all",reason="unknown"} 1`);
+      expect(text).toContain(`myrmidon_auth_401_burst_tripped{role="all"} 1`);
+      // The credential never renders: not the token, not the prefix, nothing.
+      expect(text).not.toContain("sk_ren");
+      expect(text).not.toContain("Bearer");
+      auth401BurstMetrics.reset();
+
+      // A dedicated instance shows the untripped gauge renders 0, not an absent
+      // series — "no burst yet" is information.
+      const quiet = createAuth401BurstMetrics({ threshold: 100, windowMs: 60_000 });
+      quiet.record("no_credentials");
+      const quietText = renderMetricsText({
+        ...collected.fields,
+        role: collected.role,
+        scrapeErrors: collected.errors.length,
+        collectedAt: collected.now.toISOString(),
+        auth401Burst: quiet.read(),
+      });
+      expect(quietText).toContain(`myrmidon_auth_401_burst_tripped{role="all"} 0`);
+    } finally {
+      if (originalThreshold === undefined) delete process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD;
+      else process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD = originalThreshold;
+      auth401BurstMetrics.reset();
+    }
+  });
+});

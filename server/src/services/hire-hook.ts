@@ -1,13 +1,15 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
-import type { HireApprovedPayload } from "@paperclipai/adapter-utils";
+import type { Db } from "@myrmidon/db";
+import { agents } from "@myrmidon/db";
+import type { HireApprovedPayload } from "@myrmidon/adapter-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 const HIRE_APPROVED_MESSAGE =
-  "Tell your user that your hire was approved, now they should assign you a task in Paperclip or ask you to create issues.";
+  `Tell your user that your hire was approved, now they should assign you a task in ${PN} or ask you to create issues.`;
 
 export interface NotifyHireApprovedInput {
   companyId: string;

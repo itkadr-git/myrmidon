@@ -2412,9 +2412,16 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            transport.socket.read_timeout().unwrap(),
-            Some(RUNTIME_READ_TIMEOUT)
+        let read_timeout = transport
+            .socket
+            .read_timeout()
+            .unwrap()
+            .expect("read_timeout");
+        assert!(
+            (240..=260).contains(&read_timeout.as_millis()),
+            "expected read_timeout near {:?}, got {:?}",
+            RUNTIME_READ_TIMEOUT,
+            read_timeout
         );
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");

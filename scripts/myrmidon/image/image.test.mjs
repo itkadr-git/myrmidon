@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 // Guards for the Myrmidon image: reproducible CLI versions, no media tools,
-// and a publish workflow that never runs for pull requests.
+// and a PR build that validates image changes without publishing.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const dockerfile = fs.readFileSync(path.join(ROOT, "Dockerfile"), "utf8");
@@ -44,9 +45,12 @@ describe("Dockerfile production stage", () => {
 });
 
 describe("myrmidon-image.yml", () => {
-  it("never builds for pull requests and only in this repository", () => {
-    assert.doesNotMatch(workflow, /^\s*pull_request(_target)?\s*:/m);
-    assert.match(workflow, /if: \$\{\{ github\.repository == 'itkadr-git\/myrmidon' \}\}/);
+  it("builds the production image for pull requests without publishing", () => {
+    assert.match(workflow, /^\s*pull_request\s*:/m);
+    assert.match(workflow, /name: Build for pull request[\s\S]*?load: true[\s\S]*?push: false/);
+    assert.match(workflow, /if: \$\{\{ github\.event_name == 'pull_request' \}\}/);
+    assert.match(workflow, /if: \$\{\{ github\.event_name != 'pull_request' \}\}/);
+    assert.match(workflow, /Smoke test \/api\/health/);
   });
 
   it("builds amd64 only and publishes to the Myrmidon namespace", () => {
@@ -62,4 +66,32 @@ describe("myrmidon-image.yml", () => {
     assert.match(workflow, /type=raw,value=\$\{\{ steps\.version\.outputs\.image_tag \}\}/);
     assert.doesNotMatch(workflow, /-myr\./);
   });
+});
+
+// RC-TAGS: every release image workflow accepts myr-vX.Y.Z-rc.N and
+// still rejects anything else; none of them publishes `latest` or a floating tag.
+describe("release candidate tags in the image workflows", () => {
+  const files = [
+    "myrmidon-image", "myrmidon-dockergate", "myrmidon-fleetd", "myrmidon-bot-image",
+    "myrmidon-media-tools", "myrmidon-cloud-files", "myrmidon-image-mcp",
+  ];
+  const accepts = (regex, value) =>
+    spawnSync("bash", ["-c", `[[ "$1" =~ ${regex} ]]`, "_", value]).status === 0;
+
+  for (const name of files) {
+    it(`${name}.yml: tag regex takes X.Y.Z and X.Y.Z-rc.N only; no latest/X.Y tag`, () => {
+      const text = fs.readFileSync(path.join(ROOT, `.github/workflows/${name}.yml`), "utf8");
+      const regexes = [...text.matchAll(/\[\[ ! "\$tag" =~ (\S+) \]\]/g)].map((m) => m[1]);
+      assert.ok(regexes.length >= 1, "a tag regex exists");
+      const prefix = name === "myrmidon-image" ? "myr-v" : "v";
+      for (const regex of regexes) {
+        assert.ok(accepts(regex, `${prefix}1.7.0`), regex);
+        assert.ok(accepts(regex, `${prefix}1.7.0-rc.3`), regex);
+        assert.ok(!accepts(regex, `${prefix}1.7.0-rc`), regex);
+        assert.ok(!accepts(regex, `${prefix}1.7.0-beta.1`), regex);
+        assert.ok(!accepts(regex, `${prefix}1.7`), regex);
+      }
+      assert.doesNotMatch(text, /type=raw,value=latest|latest=true|type=semver|type=ref,event=tag/);
+    });
+  }
 });

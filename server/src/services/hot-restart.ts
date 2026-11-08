@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { legacyControllerBootId } from "./legacy-controller-lease.js"; // myrmidon(T1.6): the departing boot id written into the shutdown snapshot
 import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
@@ -48,6 +49,13 @@ export type HotRestartIntent = {
     capturedAt: string;
     signal: "SIGINT" | "SIGTERM";
     activeRuns: HotRestartIntentRun[];
+    /**
+     * myrmidon(T1.6, design BOARD-PROCESSES §4.3): the departing process's
+     * legacy controller boot id. The successor's startup reattach pass may
+     * adopt the predecessor's gateway runs without waiting out the 60s lease:
+     * this process has exited, so its leases are frozen forever.
+     */
+    previousControllerBootId?: string;
   };
 };
 
@@ -445,7 +453,14 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
     ? snapshot.activeRuns.map(parseRun).filter((run): run is HotRestartIntentRun => run !== null)
     : [];
   if (signal && capturedAt) {
-    intent.shutdownSnapshot = { capturedAt, signal, activeRuns };
+    intent.shutdownSnapshot = {
+      capturedAt,
+      signal,
+      activeRuns,
+      ...(asString(snapshot?.previousControllerBootId)
+        ? { previousControllerBootId: asString(snapshot?.previousControllerBootId)! }
+        : {}),
+    };
   }
 
   return intent;
@@ -569,6 +584,12 @@ export async function writeHotRestartShutdownSnapshot(input: {
       capturedAt: (input.capturedAt ?? new Date()).toISOString(),
       signal: input.signal,
       activeRuns: input.activeRuns,
+      // myrmidon(T1.6, design BOARD-PROCESSES §4.3): this process is the
+      // predecessor the successor boots into. Recording its own controller
+      // boot id lets the successor's startup reattach pass adopt the
+      // predecessor's gateway runs without waiting out the 60s lease — the
+      // process has exited, so these leases are frozen forever.
+      previousControllerBootId: legacyControllerBootId,
     },
   };
   const instancePath = resolveHotRestartIntentPath(input.homeDir);

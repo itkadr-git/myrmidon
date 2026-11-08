@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
 import { DEFAULT_AGENT_INSTRUCTION_FILES, DEFAULT_AGENT_INSTRUCTIONS } from "./templates.js";
 
 export const PLUGIN_ID = "paperclipai.plugin-llm-wiki";
@@ -10,6 +10,7 @@ export const WIKI_INGEST_SKILL_KEY = "wiki-ingest";
 export const WIKI_QUERY_SKILL_KEY = "wiki-query";
 export const WIKI_LINT_SKILL_KEY = "wiki-lint";
 export const PAPERCLIP_DISTILL_SKILL_KEY = "paperclip-distill";
+export const FOLDER_HEALTH_CHECK_JOB_KEY = "folder-health-check";
 export const INDEX_REFRESH_SKILL_KEY = "index-refresh";
 export const WIKI_PROJECT_KEY = "llm-wiki";
 export const CURSOR_WINDOW_ROUTINE_KEY = "cursor-window-processing";
@@ -113,6 +114,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.sessions.send",
     "agent.sessions.close",
     "routines.managed",
+    "jobs.schedule",
     "local.folders",
     "agent.tools.register",
     "metrics.write",
@@ -316,6 +318,15 @@ const manifest: PaperclipPluginManifestV1 = {
       }
     }
   ],
+  jobs: [
+    {
+      jobKey: FOLDER_HEALTH_CHECK_JOB_KEY,
+      displayName: "Wiki folder health check",
+      description:
+        "Hourly: reports the wiki-root folder health of every company as a log line and metric point.",
+      schedule: "0 * * * *",
+    },
+  ],
   tools: [
     {
       name: "wiki_search",
@@ -361,7 +372,9 @@ const manifest: PaperclipPluginManifestV1 = {
           path: { type: "string" },
           contents: { type: "string" },
           expectedHash: { type: "string" },
-          summary: { type: "string" }
+          summary: { type: "string" },
+          force: { type: "boolean", description: "Bypass write protection for probe markers or drastic truncation." },
+          reason: { type: "string", description: "Mandatory justification if force is true." }
         },
         required: ["companyId", "wikiId", "path", "contents"]
       }
@@ -472,6 +485,39 @@ const manifest: PaperclipPluginManifestV1 = {
         },
         required: ["companyId", "wikiId"]
       }
+    },
+    {
+      name: "wiki_rollback_page",
+      displayName: "Rollback Wiki Page",
+      description: "Roll back a wiki page to a prior revision by creating a new revision with the target revision's contents.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          companyId: { type: "string" },
+          wikiId: { type: "string" },
+          spaceSlug: { type: "string" },
+          path: { type: "string" },
+          revisionId: { type: "string" },
+          reason: { type: "string" }
+        },
+        required: ["companyId", "wikiId", "path", "revisionId"]
+      }
+    },
+    {
+      name: "wiki_list_revisions",
+      displayName: "List Wiki Page Revisions",
+      description: "List recorded revision history for a wiki page.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          companyId: { type: "string" },
+          wikiId: { type: "string" },
+          spaceSlug: { type: "string" },
+          path: { type: "string" },
+          limit: { type: "number" }
+        },
+        required: ["companyId", "wikiId", "path"]
+      }
     }
   ],
   apiRoutes: [
@@ -560,6 +606,38 @@ const manifest: PaperclipPluginManifestV1 = {
       method: "POST",
       path: "/file-as-page",
       auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" }
+    },
+    {
+      routeKey: "pages",
+      method: "GET",
+      path: "/pages",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "read-page",
+      method: "GET",
+      path: "/pages/read",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "page-revisions",
+      method: "GET",
+      path: "/pages/revisions",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "rollback-page",
+      method: "POST",
+      path: "/pages/rollback",
+      auth: "board-or-agent",
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" }
     }

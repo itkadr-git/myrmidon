@@ -6,11 +6,23 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Foraging } from "./Foraging";
-import type { ForagingBudgetView, ForagingFinding, ForagingSource } from "@/api/foraging";
+import { i18n } from "@/i18n";
+import type {
+  ForagingBudgetView,
+  ForagingFinding,
+  ForagingIdleGateView,
+  ForagingPass,
+  ForagingSource,
+} from "@/api/foraging";
 
 const sourcesMock = vi.hoisted(() => vi.fn());
+const saveSourceMock = vi.hoisted(() => vi.fn());
 const findingsMock = vi.hoisted(() => vi.fn());
 const budgetMock = vi.hoisted(() => vi.fn());
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the idle gate and the history.
+const idleGateMock = vi.hoisted(() => vi.fn());
+const passesMock = vi.hoisted(() => vi.fn());
+const setIdleGateMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const companyContextMock = vi.hoisted(() => ({ companyId: "company-1" as string | null }));
 
@@ -22,7 +34,10 @@ vi.mock("@/api/foraging", async () => {
       sources: (...args: unknown[]) => sourcesMock(...args),
       findings: (...args: unknown[]) => findingsMock(...args),
       budget: (...args: unknown[]) => budgetMock(...args),
-      saveSource: vi.fn(),
+      idleGate: (...args: unknown[]) => idleGateMock(...args),
+      setIdleGate: (...args: unknown[]) => setIdleGateMock(...args),
+      passes: (...args: unknown[]) => passesMock(...args),
+      saveSource: (...args: unknown[]) => saveSourceMock(...args),
       removeSource: vi.fn(),
       sweep: vi.fn(),
     },
@@ -87,6 +102,26 @@ const budget: ForagingBudgetView = {
   intervalMs: 3_600_000,
 };
 
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the toggle and the pass history.
+function idleGate(overrides: Partial<ForagingIdleGateView> = {}): ForagingIdleGateView {
+  return { enabled: true, source: "settings", ...overrides };
+}
+
+function pass(overrides: Partial<ForagingPass> = {}): ForagingPass {
+  return {
+    at: "2026-10-04T12:00:00.000Z",
+    companyId: "company-1",
+    sourcesRead: 2,
+    findings: 1,
+    candidates: 0,
+    errors: 0,
+    stoppedByBudget: false,
+    skippedReason: "no_idle_agent",
+    skipped: [{ role: "engineer", reason: "no_idle_agent" }],
+    ...overrides,
+  };
+}
+
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
@@ -122,8 +157,12 @@ function text() {
 
 beforeEach(() => {
   sourcesMock.mockResolvedValue({ sources: [source()], enabled: true });
+  saveSourceMock.mockResolvedValue(source({ enabled: false }));
   findingsMock.mockResolvedValue({ findings: [finding()], enabled: true });
   budgetMock.mockResolvedValue(budget);
+  idleGateMock.mockResolvedValue(idleGate());
+  passesMock.mockResolvedValue({ passes: [pass()] });
+  setIdleGateMock.mockResolvedValue(idleGate({ enabled: false, source: "settings" }));
 });
 
 afterEach(async () => {
@@ -132,6 +171,7 @@ afterEach(async () => {
   });
   container?.remove();
   queryClient?.clear();
+  await i18n.changeLanguage("en");
   vi.clearAllMocks();
 });
 
@@ -142,6 +182,43 @@ describe("myrmidon(1.6-FORAGE) Foraging page", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("engineer");
     expect(rows[0].textContent).toContain("https://example.com/changelog");
+  });
+
+  it("saves a disabled source without losing its role, URL or kind", async () => {
+    await renderAndSee("foraging-source-enabled-toggle");
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]') as HTMLElement;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { toggle.click(); });
+    expect(saveSourceMock).toHaveBeenCalledWith("company-1", {
+      role: "engineer", url: "https://example.com/changelog", kind: "url", enabled: false,
+    });
+  });
+
+  it("shows localized source status and toggle label from GET in EN and RU", async () => {
+    sourcesMock.mockResolvedValue({ sources: [source({ enabled: false })], enabled: true });
+    await i18n.changeLanguage("en");
+    await renderAndSee("foraging-source-status");
+    const status = container.querySelector('[data-testid="foraging-source-status"]');
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]');
+    expect(status?.textContent).toBe("Paused");
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(toggle?.getAttribute("aria-label")).toBe("Toggle https://example.com/changelog");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(status?.textContent).toBe("На паузе");
+    expect(toggle?.getAttribute("aria-label")).toBe("Переключить https://example.com/changelog");
+  });
+
+  it("keeps a failed toggle visible without changing the GET status", async () => {
+    saveSourceMock.mockRejectedValue(new Error("Board access required"));
+    await renderAndSee("foraging-source-enabled-toggle");
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]') as HTMLElement;
+    await act(async () => { toggle.click(); });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="foraging-source-toggle-error"]')?.textContent)
+        .toContain("Board access required");
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector('[data-testid="foraging-source-status"]')?.textContent).toBe("Active");
   });
 
   it("shows the findings with their lifecycle state and diff size", async () => {
@@ -200,5 +277,85 @@ describe("myrmidon(1.6-FORAGE) Foraging page", () => {
   it("labels the page in the breadcrumbs", async () => {
     await renderAndSee("foraging-sources-table");
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Foraging" }]);
+  });
+
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the toggle with the source of
+  // the value, and the pass history with the reason of a skip.
+  it("shows the idle gate with its value and where the value came from", async () => {
+    idleGateMock.mockResolvedValue(idleGate({ enabled: false, source: "env" }));
+    // The source line only exists once the value arrived.
+    await renderAndSee("foraging-idle-gate-source");
+    expect(container.querySelector('[data-testid="foraging-idle-gate-toggle"]')?.getAttribute("aria-checked")).toBe("false");
+    expect(container.querySelector('[data-testid="foraging-idle-gate-value"]')?.textContent).toContain("off");
+    expect(container.querySelector('[data-testid="foraging-idle-gate-source"]')?.textContent).toContain("the environment");
+  });
+
+  it("names the built-in default when nothing was ever saved", async () => {
+    idleGateMock.mockResolvedValue(idleGate({ enabled: true, source: "default" }));
+    await renderAndSee("foraging-idle-gate-source");
+    expect(container.querySelector('[data-testid="foraging-idle-gate-source"]')?.textContent).toContain("the default");
+  });
+
+  it("switches the setting", async () => {
+    // Wait for the value: the toggle is disabled until it knows the current value.
+    await renderAndSee("foraging-idle-gate-source");
+    const toggle = container.querySelector('[data-testid="foraging-idle-gate-toggle"]') as HTMLButtonElement;
+    await act(async () => {
+      toggle.click();
+    });
+    await vi.waitFor(() => {
+      expect(setIdleGateMock).toHaveBeenCalledWith(false);
+    });
+  });
+
+  it("keeps a failed switch visible instead of swallowing it", async () => {
+    setIdleGateMock.mockRejectedValue(new Error("Board access required"));
+    await renderAndSee("foraging-idle-gate-source");
+    const toggle = container.querySelector('[data-testid="foraging-idle-gate-toggle"]') as HTMLButtonElement;
+    await act(async () => {
+      toggle.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="foraging-idle-gate-error"]')?.textContent).toContain(
+        "Board access required",
+      );
+    });
+  });
+
+  it("shows the pass history with the skipped role and the reason", async () => {
+    await renderAndSee("foraging-passes-table");
+    const row = container.querySelector('[data-testid="foraging-pass-row"]');
+    expect(row?.textContent).toContain("engineer");
+    expect(row?.textContent).toContain("no free agent of the role");
+    expect(container.querySelectorAll('[data-testid="foraging-pass-skip"]')).toHaveLength(1);
+  });
+
+  it("shows both skip reasons when a pass left two roles alone", async () => {
+    passesMock.mockResolvedValue({
+      passes: [
+        pass({
+          skippedReason: "queue_not_empty",
+          skipped: [
+            { role: "engineer", reason: "queue_not_empty" },
+            { role: "researcher", reason: "no_idle_agent" },
+          ],
+        }),
+      ],
+    });
+    await renderAndSee("foraging-passes-table");
+    expect(container.querySelectorAll('[data-testid="foraging-pass-skip"]')).toHaveLength(2);
+    expect(text()).toContain("the role's queue is not empty");
+    expect(text()).toContain("no free agent of the role");
+  });
+
+  it("says so when a pass skipped nothing", async () => {
+    passesMock.mockResolvedValue({ passes: [pass({ skippedReason: null, skipped: [] })] });
+    await renderAndSee("foraging-passes-table");
+    expect(container.querySelector('[data-testid="foraging-pass-row"]')?.textContent).toContain("nothing skipped");
+  });
+
+  it("explains an empty pass history", async () => {
+    passesMock.mockResolvedValue({ passes: [] });
+    await renderAndSee("foraging-passes-empty");
   });
 });

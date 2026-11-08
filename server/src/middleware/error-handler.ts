@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
-import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
+import { trackErrorHandlerCrash } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
@@ -13,6 +13,7 @@ import {
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { recordAuth401 } from "../myrmidon/auth-401-burst/index.js";
 
 export interface ErrorContext {
   error: {
@@ -161,6 +162,12 @@ export function errorHandler(
         ? (responseDetailsValue as Record<string, unknown>)
         : null;
     recordResponsibleUserDenialFromHttpError(req, details);
+    // myrmidon(OPE-11890): count every auth 401 toward the in-process burst
+    // detector. Only the closed-set req.actorNoneReason is passed — the
+    // Authorization header / token never reaches the counter or any log line.
+    if (err.status === 401) {
+      recordAuth401(req.actorNoneReason);
+    }
     if (err.status >= 500) {
       const reportableError = sanitizeSecretSensitiveError(req, err);
       attachErrorContext(
@@ -233,6 +240,18 @@ export function errorHandler(
       error: "Validation error",
       details: sanitizeSecretSensitiveResponse(req, zodIssues),
     });
+    return;
+  }
+
+  // Only body-parser's malformed-JSON errors are client input failures.
+  // Parser messages can quote request bytes; return a constant response and
+  // keep the raw error out of crash reporting and HTTP error context.
+  if (
+    err instanceof SyntaxError &&
+    "status" in err && err.status === 400 &&
+    "type" in err && err.type === "entity.parse.failed"
+  ) {
+    res.status(400).json({ error: "Invalid JSON body" });
     return;
   }
 

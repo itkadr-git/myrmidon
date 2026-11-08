@@ -27,6 +27,10 @@ export interface CostSummary {
   spendCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): unpriced counters and current-month forecast
+  unpricedEvents: number;
+  unpricedTokens: number;
+  forecastCents: number | null;
 }
 
 export interface IssueCostSummary {
@@ -57,6 +61,11 @@ export interface CostByAgent {
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+  // myrmidon(1.6.3 PROMPT-BUDGET D): fleet prompt-report columns. Both are null
+  // when the window holds no prompt data, or when the run cannot be judged
+  // against the configured budget threshold.
+  avgPromptTokens?: number | null;
+  runsAboveThresholdPct?: number | null;
 }
 
 export interface CostByProviderModel {
@@ -127,3 +136,13 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+export interface CostByDay {
+  day: string; // "YYYY-MM-DD" (UTC)
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  unpricedEvents: number;
+}
+

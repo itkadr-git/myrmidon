@@ -4,8 +4,8 @@
 // agent it was just told to stop.
 
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { heartbeatRuns } from "@myrmidon/db";
 import { logger } from "../../../middleware/logger.js";
 
 const MAX_STOPPED_RUNS = 5;

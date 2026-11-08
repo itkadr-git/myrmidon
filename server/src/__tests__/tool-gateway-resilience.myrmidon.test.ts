@@ -12,6 +12,7 @@ import {
   companySecretVersions,
   companyMemberships,
   companies,
+  authUsers,
   connectionGrantMembers,
   connectionGrantDelegations,
   connectionGrants,
@@ -42,7 +43,7 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -56,6 +57,9 @@ import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool
 import { resolveConnectedToolTimeoutMs } from "../myrmidon/tool-gateway-resilience.js";
 import type { ComposioClient } from "../services/composio.js";
 import { secretService } from "../services/secrets.js";
+// myrmidon(DB-PERF-C-P4): the fixtures below write profiles, bindings, entries and policies
+// around the tool-access CRUD, so they drop the company snapshot the way those CRUD paths do.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -70,7 +74,7 @@ type Db = ReturnType<typeof createDb>;
 type ToolGatewayServiceOptions = NonNullable<Parameters<typeof createToolGatewayService>[1]>;
 
 async function createCompany(db: Db) {
-  return db
+  const company = await db
     .insert(companies)
     .values({
       name: `Gateway ${randomUUID()}`,
@@ -78,6 +82,25 @@ async function createCompany(db: Db) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  const now = new Date();
+  await db
+    .insert(authUsers)
+    .values({
+      id: "board-user",
+      name: "Board User",
+      email: "board-user@example.com",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: "board-user",
+    membershipRole: "owner",
+    status: "active",
+  });
+  return company;
 }
 
 async function createAgent(db: Db, companyId: string, permissions: Record<string, unknown> = {}) {
@@ -163,6 +186,8 @@ async function allowToolsForAgent(db: Db, companyId: string, agentId: string, to
       toolName,
     })));
   }
+  // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+  invalidateToolPolicyCache(db, companyId);
   return profile;
 }
 
@@ -183,6 +208,8 @@ async function allowAllToolsForAgent(db: Db, companyId: string, agentId: string)
     targetType: "agent",
     targetId: agentId,
   });
+  // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+  invalidateToolPolicyCache(db, companyId);
   return profile;
 }
 
@@ -595,6 +622,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     await db.delete(projects);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -823,14 +851,16 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         connectionId: remote.connection.id,
         toolName: "kv_get",
       });
-      const call = (attempt: number) =>
+      // 10 ms forces the timeouts; calls to the recovered server get a real budget,
+      // or a loaded CI runner times them out too (main ec7139a, 31.10).
+      const call = (attempt: number, timeoutMs = 10) =>
         gateway.executeTool({
           sessionToken: session.token,
           tool: slowTool,
           // Unique parameters per attempt: identical arguments of a side-effecting
           // tool are replayed from the recorded invocation instead of executed.
           parameters: { key: "a", value: `attempt-${attempt}` },
-          timeoutMs: 10,
+          timeoutMs,
         });
       const connectionHealth = async () =>
         db
@@ -916,9 +946,9 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
       // recorded, so the same arguments really run (no idempotent replay).
       clock += 61_000;
       slowToolRecovered = true;
-      await expect(call(4)).resolves.toMatchObject({ status: "completed" });
+      await expect(call(4, 5_000)).resolves.toMatchObject({ status: "completed" });
       expect(slowCallsReceived).toBe(4);
-      await expect(call(5)).resolves.toMatchObject({ status: "completed" });
+      await expect(call(5, 5_000)).resolves.toMatchObject({ status: "completed" });
     } finally {
       await fake.close();
     }
@@ -1088,6 +1118,14 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const ownerUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: ownerUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
     let slow = true;
     let hits = 0;
     const fake = await startFakeRemoteMcpServer((fakeRequest) => {
@@ -1141,6 +1179,8 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         description: "Blocked for the test.",
         priority: 1,
       }).returning();
+      // myrmidon(DB-PERF-C-P4): the block policy above bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
       await gateway.executeTool({
         sessionToken: session.token,
         tool: toolName,
@@ -1152,6 +1192,8 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         (error) => expectGatewayError(error, 403, "deny_policy_block"),
       );
       await db.delete(toolPolicies).where(eq(toolPolicies.id, blockPolicy!.id));
+      // myrmidon(DB-PERF-C-P4): the delete above bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
 
       // An ask-first policy still creates the approval request (409), not 503...
       const [approvalPolicy] = await db.insert(toolPolicies).values({
@@ -1162,6 +1204,8 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         description: "Needs review.",
         priority: 10,
       }).returning();
+      // myrmidon(DB-PERF-C-P4): the ask-first policy above bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
       const expectApprovalRequired = () =>
         gateway.executeTool({
           sessionToken: session.token,
@@ -1202,6 +1246,8 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
       })).resolves.toMatchObject({ status: "completed" });
       expect(hits).toBe(hitsWhilePaused + 1);
       await db.delete(toolPolicies).where(eq(toolPolicies.id, approvalPolicy!.id));
+      // myrmidon(DB-PERF-C-P4): the direct delete bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
 
       // Paused again: the executed approved action still replays its recorded result.
       slow = true;

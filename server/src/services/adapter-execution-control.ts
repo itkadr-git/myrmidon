@@ -1,11 +1,18 @@
 /** Live adapter ownership shared by routes and scheduler service instances. */
+export type AdapterCancellation = {
+  correlationId: string;
+  source: { code: string; endpoint?: string; actor?: string };
+  reason: string;
+};
+
 export function createAdapterExecutionControl() {
   const controller = new AbortController();
   let finish!: () => void;
   const settled = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  return { controller, settled, finish };
+  const cancellation: { current: AdapterCancellation | null } = { current: null };
+  return { controller, settled, finish, cancellation };
 }
 
 export const adapterExecutionControls = new Map<

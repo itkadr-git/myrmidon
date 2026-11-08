@@ -1,0 +1,9 @@
+# myrmidon(OPE-8950): area apps-detail
+pages/apps/app-detail/ActivityPanel.tsx
+pages/apps/app-detail/AdvancedPanel.tsx
+pages/apps/app-detail/IdentitiesSection.tsx
+pages/apps/app-detail/PermissionsPanel.tsx
+pages/apps/app-detail/ReviewPanel.tsx
+pages/apps/app-detail/ServicesPanel.tsx
+pages/apps/app-detail/SetupPanel.tsx
+pages/apps/app-detail/TestPanel.tsx

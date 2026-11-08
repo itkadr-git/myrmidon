@@ -36,11 +36,27 @@ import {
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { ISSUE_CASTE_SOURCES, issueScentSchema } from "../myrmidon-scent.js";
 import {
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
 } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import {
+  MAX_PHEROMONE_STRENGTH,
+  MIN_PHEROMONE_STRENGTH,
+} from "../myrmidon-swarm-claim.js";
+import { INTERACTION_ROUTE_TYPES } from "../interaction-routing.js";
+import type { IssueBlockerMetadata } from "../types/issue.js";
+
+// 1.6.5 (F-27 PHEROMONE): the issue pheromone strength — a non-negative
+// integer the swarm queue orders by inside the P0 band. Shared between the
+// create/update schemas and the import path.
+export const issuePheromoneStrengthSchema = z
+  .number()
+  .int()
+  .min(MIN_PHEROMONE_STRENGTH)
+  .max(MAX_PHEROMONE_STRENGTH);
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -58,6 +74,7 @@ export const issueBlockedInboxSeveritySchema = z.enum([
 ]);
 
 export const issueBlockedInboxReasonSchema = z.enum([
+  "unassigned_blocked_issue_overdue",
   "blocked_by_unassigned_issue",
   "blocked_by_assigned_backlog_issue",
   "blocked_by_uninvokable_assignee",
@@ -431,6 +448,65 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .default(null),
 });
 
+export const issueBlockReasonSchema = z.enum([
+  "external_wait",
+  "dependency",
+  "recovery",
+  "human_decision",
+  "resource",
+]);
+
+export const issueRewakeFreezeSchema = z.object({
+  agentId: z.string().uuid(),
+  frozenAt: z.string().datetime(),
+  noProgressStreak: z.number().int().positive(),
+  statusVersion: z.number().int().nonnegative().optional(),
+  assigneeAgentId: z.string().uuid().nullable().optional(),
+});
+
+export const realIssueBlockerMetadataSchema = z.object({
+  blockReason: issueBlockReasonSchema,
+  owner: z.union([
+    z.object({ agentId: z.string().uuid() }).strict(),
+    z.object({ userId: z.string().uuid() }).strict(),
+  ]),
+  blockedByIssueIds: z.array(z.string().uuid()).max(20).optional(),
+  externalRef: z.string().trim().min(1).max(500).optional(),
+  nextCheckAt: z.string().datetime(),
+  timeoutAt: z.string().datetime(),
+  escalationPolicy: z.string().trim().min(1).max(120),
+  issueRewakeFreeze: issueRewakeFreezeSchema.nullable().optional(),
+}).strict().refine(
+  (value) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
+  { message: "Provide blockedByIssueIds or externalRef", path: ["externalRef"] },
+);
+
+export const issueFreezeOnlyMetadataSchema = z.object({
+  issueRewakeFreeze: issueRewakeFreezeSchema,
+}).strict();
+
+export const issueBlockerMetadataSchema: z.ZodType<IssueBlockerMetadata> = z
+  .unknown()
+  .superRefine((val, ctx) => {
+    if (!val || typeof val !== "object" || Array.isArray(val)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Expected object",
+      });
+      return;
+    }
+    const isFreezeOnly = !("blockReason" in val) && "issueRewakeFreeze" in val;
+    const targetSchema = isFreezeOnly
+      ? issueFreezeOnlyMetadataSchema
+      : realIssueBlockerMetadataSchema;
+    const parsed = targetSchema.safeParse(val);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue(issue as any);
+      }
+    }
+  }) as unknown as z.ZodType<IssueBlockerMetadata>;
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
@@ -446,6 +522,36 @@ export const issueExecutionPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
+  reviewEscalationPolicy: z.object({
+    maxReviewRounds: z.number().int().positive().max(100).optional(),
+    participantRoles: z.array(z.enum(["lead", "architect", "secondary_reviewer"])).min(1).max(3),
+    fallbackQueue: z.string().trim().min(1).max(200),
+    timeoutAt: z.string().datetime().nullable(),
+    policyRevision: z.string().trim().min(1).max(200),
+    participants: z.object({
+      lead: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      architect: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      secondary_reviewer: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+    }).strict().optional(),
+  }).strict().nullable().optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -492,6 +598,8 @@ export const issueExecutionMonitorStateSchema = z.object({
     .default(null),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
+  // myrmidon(MON-RESTORE): distinct from nextCheckAt, which is null when cleared.
+  nextScheduledAt: z.string().datetime().nullable().optional(),
 });
 
 export const issueReviewRequestSchema = z
@@ -513,6 +621,14 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
+  reviewCycleId: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationPolicyRevision: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationReason: z.literal("review_round_limit").nullable().optional().default(null),
+  escalationFromParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  escalationToParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  // myrmidon(OPE-11970): PR head the last changes-requested decision was made on;
+  // a repeat return on the same head does not wake the executor again.
+  lastChangesRequestedHeadSha: z.string().max(128).nullable().optional(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -683,6 +799,7 @@ const createIssueBaseSchema = z.object({
   goalId: z.string().guid().optional().nullable(),
   parentId: z.string().guid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().guid()).optional(),
+  blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
   unblockDescriptor: z
     .object({
       owner: z.union([
@@ -691,6 +808,42 @@ const createIssueBaseSchema = z.object({
         z.literal("board"),
       ]),
       action: multilineTextSchema.pipe(z.string().trim().min(1).max(2_000)),
+      // myrmidon(STALE-BLOCK): optional reason reference (issue | event | date)
+      // required on transitions into blocked once the route guard is rolled out.
+      reasonRef: z
+        .object({
+          kind: z.enum(["issue", "event", "date"]),
+          issueId: z.string().guid().optional(),
+          eventKey: z.string().trim().min(1).max(500).optional(),
+          dueAt: z.string().datetime().optional(),
+        })
+        .strict()
+        .superRefine((ref, ctx) => {
+          // Each kind must carry its identifying payload so the liveness
+          // sweep (part B) can actually resolve the reference.
+          if (ref.kind === "issue" && !ref.issueId) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "reasonRef kind=issue requires issueId",
+              path: ["issueId"],
+            });
+          }
+          if (ref.kind === "event" && !ref.eventKey) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "reasonRef kind=event requires eventKey",
+              path: ["eventKey"],
+            });
+          }
+          if (ref.kind === "date" && !ref.dueAt) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "reasonRef kind=date requires dueAt",
+              path: ["dueAt"],
+            });
+          }
+        })
+        .optional(),
     })
     .strict()
     .optional()
@@ -702,12 +855,29 @@ const createIssueBaseSchema = z.object({
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  // 1.6.5 (F-27 PHEROMONE): explicit pheromone strength. When omitted the
+  // create path derives it from `priority` via the swarm settings mapping
+  // (swarmClaim.pheromone); the patch keeps the stored value.
+  pheromoneStrength: issuePheromoneStrengthSchema.optional().nullable(),
+  // 1.6.5 (F-27 rework 09.10): the caste key; the server checks it against
+  // the company's caste directory (design §2.1). NULL = project/company
+  // default.
+  casteKey: z.string().trim().min(1).max(120).optional().nullable(),
+  // myrmidon(1.6.5 F-26 T10 SCENT): who set the caste ('manual' when the
+  // caller pins casteKey; the create hook writes 'auto' when the classifier
+  // decides). Server-side only in practice — a client-sent value is accepted
+  // for imports/seeds but the create hook treats a pinned casteKey as manual.
+  casteSource: z.enum(ISSUE_CASTE_SOURCES).optional().nullable(),
+  // The stored scent — normally written by the classifier; accepted on input
+  // so imports/tests can seed it directly.
+  scent: issueScentSchema.optional().nullable(),
   reviewPolicy: z.enum(ISSUE_REVIEW_POLICIES).optional().nullable(),
   assigneeAgentId: z.string().guid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   createdByUserId: z.string().optional().nullable(),
   responsibleUserId: z.string().optional().nullable(),
+  responsibleAgentId: z.string().guid().optional().nullable(),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema
     .optional()
@@ -843,6 +1013,36 @@ const issueCommentAttachmentIdsSchema = z
     message: "Attachment ids must be unique",
   });
 
+// myrmidon(STALE-BLOCK): same object as updateIssueSchema without the
+// blocked-reason superRefine — exported so openapi can .partial() the shape
+// (zod forbids .partial() on refined objects). Runtime validation uses
+// updateIssueSchema with the refine.
+export const updateIssueShapeSchema = objectWithoutDefaults(
+  createIssueBaseSchema.omit({
+    createdByUserId: true,
+    responsibleUserId: true,
+    watchdog: true,
+  }),
+)
+  .partial()
+  .extend({
+    requestDepth: issueRequestDepthInputSchema.optional(),
+    assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+    responsibleAgentId: z.string().guid().optional().nullable(),
+    comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+    commentClientRequestId: z.string().uuid().optional(),
+    attachmentIds: issueCommentAttachmentIdsSchema.optional(),
+    onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
+    reviewInteractionId: z.string().guid().optional(),
+    reviewRequest: issueReviewRequestSchema.optional().nullable(),
+    reopen: z.boolean().optional(),
+    resume: z.boolean().optional(),
+    interrupt: z.boolean().optional(),
+    deferWakeForGoal: z.boolean().optional(),
+    hiddenAt: z.string().datetime().nullable().optional(),
+    blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
+  });
+
 export const updateIssueSchema = objectWithoutDefaults(
   createIssueBaseSchema.omit({
     createdByUserId: true,
@@ -854,6 +1054,7 @@ export const updateIssueSchema = objectWithoutDefaults(
   .extend({
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+    responsibleAgentId: z.string().guid().optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
     /** Only valid with a comment; the route binds these in the update transaction. */
@@ -867,6 +1068,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     /** Assignment-only handoff; the following structured goal action owns the wake. */
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
+    blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
   });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
@@ -1091,6 +1293,7 @@ export const connectionIntentResultSchema = z
   .object({
     version: z.literal(1),
     outcome: z.enum(["connected", "declined", "superseded", "expired"]),
+    expirationReason: z.literal("issue_closed").optional(),
     connectionId: z.string().guid().nullable().optional(),
     reason: z.string().trim().max(4000).nullable().optional(),
     supersededByInteractionId: z.string().guid().nullable().optional(),
@@ -1134,6 +1337,14 @@ export const suggestedTaskDraftSchema = z
       .nullable()
       .optional(),
     priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
+    pheromoneStrength: issuePheromoneStrengthSchema.nullable().optional(),
+    // 1.6.5 (F-27 rework 09.10): the caste key (directory membership is
+    // checked server-side, where the company's directory lives).
+    casteKey: z.string().trim().min(1).max(120).nullable().optional(),
+    casteSource: z.enum(ISSUE_CASTE_SOURCES).nullable().optional(),
+    // Refreshing the stored scent via the API goes through the scent routes;
+    // the patch validator still accepts it for imports/tests.
+    scent: issueScentSchema.nullable().optional(),
     workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
     assigneeAgentId: z.string().guid().nullable().optional(),
     assigneeUserId: z.string().trim().min(1).nullable().optional(),
@@ -1188,6 +1399,7 @@ export const suggestTasksResultSchema = z.object({
   outcome: z
     .enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted"])
     .optional(),
+  expirationReason: z.literal("issue_closed").optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z
@@ -1418,7 +1630,7 @@ export const askUserQuestionsResultSchema = z.object({
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
   expirationReason: z
-    .enum(["superseded_by_comment", "superseded_by_newer_interaction"])
+    .enum(["superseded_by_comment", "superseded_by_newer_interaction", "issue_closed"])
     .optional(),
   commentId: z.string().guid().nullable().optional(),
   // Set alongside expirationReason "superseded_by_newer_interaction": the id of
@@ -1672,6 +1884,7 @@ export const requestConfirmationResultSchema = z.object({
     "issue_closed",
     "addressee_deleted",
   ]),
+  expirationReason: z.literal("issue_closed").optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().guid().nullable().optional(),
   supersededByInteractionId: z.string().guid().nullable().optional(),
@@ -1838,6 +2051,7 @@ export const requestItemVerdictsResultSchema = z
       "issue_closed",
       "addressee_deleted",
     ]),
+    expirationReason: z.literal("issue_closed").optional(),
     reason: z.string().trim().max(4000).nullable().optional(),
     complete: z.boolean(),
     items: z
@@ -1864,6 +2078,9 @@ const createIssueThreadInteractionCommon = {
   resolverPolicy: issueThreadInteractionResolverPolicySchema.optional(),
   addresseeAgentId: z.string().guid().nullable().optional(),
   addresseeUserId: z.string().trim().min(1).nullable().optional(),
+  routeType: z.enum(INTERACTION_ROUTE_TYPES).optional(),
+  addresseeQueue: z.string().trim().min(1).nullable().optional(),
+  timeoutAt: z.union([z.string().datetime(), z.date()]).nullable().optional(),
 };
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [

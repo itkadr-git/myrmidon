@@ -21,6 +21,13 @@ export interface ExecutionContinuationEnvelope {
     updatedAt: string;
     deleted: boolean;
     sourceTrust: unknown;
+    /**
+     * Reference-only entry. The envelope dropped this body to stay inside its
+     * character budget; identity and freshness stay comparable through `id`,
+     * `updatedAt`, `deleted` and the author fields. Read the body from the task
+     * thread when the text is needed.
+     */
+    bodyOmitted?: boolean;
   }>;
   interactionOutcomes: Array<{
     id: string;
@@ -34,6 +41,12 @@ export interface ExecutionContinuationEnvelope {
     messages: ExecutionContinuationEnvelope["messages"];
   };
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
+  /**
+   * The run this wake continues (the handoff/retry source, else the latest
+   * finished run of the agent on the task) and how it ended. A fresh-session
+   * agent reads this instead of the previous run's messages.
+   */
+  previousRun?: { runId: string; status: string } | null;
   completedWork: string | null;
   /** Start a new turn from history; never replay prior tool calls automatically. */
   interruptedRunId?: string;
@@ -46,9 +59,25 @@ export interface ExecutionContinuationEnvelope {
   }>;
   unresolvedInteractionIds: string[];
   coverage: {
-    kind: "full_task_history" | "task_history_delta";
+    /**
+     * `summary_only` and `recent_messages` are set by the wake renderer when a
+     * card's `wakeHistory` mode shortens the message list.
+     */
+    kind: "full_task_history" | "task_history_delta" | "summary_only" | "recent_messages";
     baseRunId?: string;
     throughCommentId: string | null;
     summaryThroughCommentId: null;
   };
+}
+
+/**
+ * References that point at the wake payload of a run instead of copying it.
+ * The continuation row keeps these links so a reader can rebuild the wake
+ * reference without a second copy of `paperclipWake`.
+ */
+export interface ExecutionContinuationWakeLinks {
+  runId: string;
+  originCommentIds: string[];
+  sourceRunId: string | null;
+  interactionId: string | null;
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Settings2, X } from "lucide-react";
-import type { Agent, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem } from "@myrmidon/shared";
 import { useParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
@@ -17,6 +17,7 @@ import {
   attentionIsAging,
   buildAttentionFilterOptions,
   buildDeskShelves,
+  localizeAttentionLabel,
   defaultAttentionFilterState,
   filterAttentionItems,
   groupAttentionItems,
@@ -45,7 +46,10 @@ import { DecisionQueueRail } from "../components/DecisionQueueRail";
 import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
+import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
+import { issuesApi } from "../api/issues";
+import { getStuckSignalCounts } from "../lib/stuckSignal";
 
 /**
  * Queue page. A single queue's pending
@@ -59,6 +63,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
  * is surfaced.
  */
 export function DecisionQueuePage() {
+  const { t } = useTranslation(); // myrmidon(UI-RU)
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -113,6 +118,15 @@ export function DecisionQueuePage() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: openIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "stuck-signal-open"],
+    queryFn: () => issuesApi.listAll(selectedCompanyId!, { status: "todo,in_progress,blocked,in_review" }),
+    enabled: !!selectedCompanyId,
+  });
+  const stuckCounts = useMemo(
+    () => getStuckSignalCounts(feed?.items ?? [], openIssues ?? [], agents ?? []),
+    [feed?.items, openIssues, agents],
+  );
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -126,8 +140,8 @@ export function DecisionQueuePage() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Decisions", href: "/decisions" }, { label: queue?.title ?? queueKey }]);
-  }, [setBreadcrumbs, queue?.title, queueKey]);
+    setBreadcrumbs([{ label: t("nav.decisions"), href: "/decisions" }, { label: queue?.title ?? queueKey }]);
+  }, [setBreadcrumbs, queue?.title, queueKey, t]);
 
   // Re-hydrate per-company preferences when the company changes.
   useEffect(() => {
@@ -205,14 +219,14 @@ export function DecisionQueuePage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.decisionQueues.list(selectedCompanyId!) }),
     onError: (err) =>
       pushToast({
-        title: "Could not update seeding",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("decisions.couldNotUpdateSeeding"),
+        body: err instanceof Error ? err.message : t("decisions.pleaseTryAgain"),
         tone: "error",
       }),
   });
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
+    return <p className="text-sm text-muted-foreground">{t("decisions.selectOrganizationFirst")}</p>;
   }
   if (isLoading) {
     return <PageSkeleton variant="approvals" />;
@@ -222,6 +236,10 @@ export function DecisionQueuePage() {
 
   return (
     <div className="max-w-3xl space-y-4">
+      <section aria-label={t("area.approvals-decisions-notices-2.decision-queue-page.workloadSignals")} className="grid grid-cols-2 gap-3 rounded-lg border bg-card p-3">
+        <div><p className="text-xs text-muted-foreground">{t("area.approvals-decisions-notices-2.decision-queue-page.signaledWithoutMotion")}</p><p className="text-2xl font-semibold">{stuckCounts.attentionIssuesWithoutMotion}</p></div>
+        <div><p className="text-xs text-muted-foreground">{t("area.approvals-decisions-notices-2.decision-queue-page.idleEngineers")}</p><p className="text-2xl font-semibold">{stuckCounts.idleEngineers}</p></div>
+      </section>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <h1 className="text-xl font-bold">{queue?.title ?? queueKey}</h1>
@@ -264,21 +282,21 @@ export function DecisionQueuePage() {
 
       {isEmpty ? (
         <div className="rounded-xl border border-dashed border-border py-14 text-center">
-          <p className="text-sm font-medium text-foreground">This queue is empty.</p>
+          <p className="text-sm font-medium text-foreground">{t("decisions.queueEmpty")}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Decisions land here when they match the queue's rules or an agent adds them.
+            {t("decisions.queueEmptyHint")}
           </p>
         </div>
       ) : (
         <div className="space-y-4">
           {visibleCount === 0 ? (
             <div className="rounded-xl border border-dashed border-border py-10 text-center">
-              <p className="text-sm font-medium text-foreground">No decisions match your filters.</p>
-              <p className="mt-1 text-xs text-muted-foreground">Adjust or clear the filters to see the rest.</p>
+              <p className="text-sm font-medium text-foreground">{t("decisions.noDecisionsMatch")}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t("decisions.adjustFilters")}</p>
             </div>
           ) : (
             groups.map((group) => {
-              const groupLabel = group.label;
+              const groupLabel = localizeAttentionLabel(group.label, t); // myrmidon(UI-RU)
               const collapsed = groupLabel !== null && collapsedGroupKeys.has(group.key);
               return (
                 <section key={group.key} className="space-y-2">
@@ -320,13 +338,13 @@ export function DecisionQueuePage() {
 
           {agingItems.length > 0 && (
             <Curtain
-              label="Aging"
+              label={t("decisions.aging")}
               count={agingItems.length}
               open={agingOpen}
               onToggle={() => setAgingOpen((prev) => !prev)}
             >
               <p className="text-xs text-muted-foreground">
-                Idle past {ATTENTION_AGING_DAYS} days — kept off the queue. Keep any you still want surfaced.
+                {t("area.approvals-decisions-notices-2.decision-queue-page.agingHint", { days: ATTENTION_AGING_DAYS })}
               </p>
               {agingItems.map((item) => (
                 <AgingItemRow
@@ -368,17 +386,18 @@ function SeedRulesCard({
   pending: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation(); // myrmidon(UI-RU)
   return (
     <div className="rounded-xl border border-border bg-muted/20 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2">
           <Settings2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 space-y-1">
-            <p className="text-sm font-medium text-foreground">Auto-seeding is {enabled ? "on" : "off"}</p>
+            <p className="text-sm font-medium text-foreground">{enabled ? t("decisions.autoSeedingOn") : t("decisions.autoSeedingOff")}</p>
             <p className="text-xs text-muted-foreground">
               {enabled
-                ? "This queue fills itself automatically. Decisions are added the moment they match any of its rules:"
-                : "Automatic adds are paused. These rules would add decisions to the queue when on:"}
+                ? t("decisions.seedingOnHint")
+                : t("decisions.seedingOffHint")}
             </p>
             <ul className="mt-0.5 space-y-0.5">
               {rules.map((rule) => (
@@ -390,14 +409,14 @@ function SeedRulesCard({
             </ul>
             <p className="text-(length:--text-nano) text-muted-foreground">
               {enabled
-                ? "Turning it off stops new automatic adds only — decisions already here stay, and you can still add or remove decisions by hand."
-                : "Adding or removing decisions by hand still works while automatic seeding is off."}
+                ? t("decisions.seedingOnNote")
+                : t("decisions.seedingOffNote")}
             </p>
           </div>
         </div>
         <Button type="button" variant="outline" size="xs" className="h-7 shrink-0" disabled={pending} onClick={onToggle}>
           {pending && <Loader2 className="h-3 w-3 animate-spin" />}
-          {enabled ? "Disable" : "Enable"}
+          {enabled ? t("decisions.disable") : t("decisions.enable")}
         </Button>
       </div>
     </div>
@@ -429,6 +448,7 @@ function QueueItemRow({
   onSnooze: (item: AttentionItem, snoozedUntil: string) => void;
   onExcluded: () => void;
 }) {
+  const { t } = useTranslation(); // myrmidon(UI-RU)
   const { pushToast } = useToastActions();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -445,13 +465,13 @@ function QueueItemRow({
     onSuccess: () => {
       setOpen(false);
       setReason("");
-      pushToast({ title: "Removed from queue", body: item.subject.title ?? undefined, tone: "info" });
+      pushToast({ title: t("decisions.removeFromQueueToast"), body: item.subject.title ?? undefined, tone: "info" });
       onExcluded();
     },
     onError: (err) =>
       pushToast({
-        title: "Could not exclude",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("decisions.couldNotExclude"),
+        body: err instanceof Error ? err.message : t("decisions.pleaseTryAgain"),
         tone: "error",
       }),
   });
@@ -463,20 +483,20 @@ function QueueItemRow({
           <PopoverTrigger asChild>
             <Button type="button" variant="ghost" size="xs" className="h-7 gap-1 text-muted-foreground">
               <X className="h-3.5 w-3.5" />
-              Exclude
+              {t("decisions.exclude")}
             </Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-64 space-y-2 p-3">
-            <p className="text-xs font-medium text-foreground">Remove from this queue</p>
+            <p className="text-xs font-medium text-foreground">{t("decisions.removeFromQueue")}</p>
             <textarea
               value={reason}
               onChange={(event) => setReason(event.target.value)}
-              placeholder="Reason (optional)…"
+              placeholder={t("decisions.reasonOptional")}
               className="min-h-16 w-full rounded-sm border border-border bg-background px-2 py-1 text-xs"
             />
             <div className="flex justify-end gap-1">
               <Button type="button" variant="ghost" size="xs" onClick={() => setOpen(false)}>
-                Cancel
+                {t("decisions.cancel")}
               </Button>
               <Button
                 type="button"
@@ -486,7 +506,7 @@ function QueueItemRow({
                 onClick={() => exclude.mutate()}
               >
                 {exclude.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-                Exclude
+                {t("decisions.exclude")}
               </Button>
             </div>
           </PopoverContent>

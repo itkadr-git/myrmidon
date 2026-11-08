@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import pc from "picocolors";
 import type {
-  Agent,
+  AgentConfigurationSummary,
   AgentEnvConfig,
   CompanyPortabilityEnvInput,
   CompanyPortabilityExportPreviewResult,
@@ -10,7 +10,7 @@ import type {
   EnvBinding,
   SecretProvider,
   SecretProviderDescriptor,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   addCommonClientOptions,
   apiPath,
@@ -144,7 +144,10 @@ export function buildInlineMigrationSecretName(agentId: string, key: string): st
 }
 
 export function collectInlineSecretMigrationCandidates(
-  agents: Agent[],
+  // myrmidon(PERF-DIET-G): the configuration projection, not the company list —
+  // the list no longer carries adapterConfig. Both come from the same company,
+  // and this reader only needs id, name and adapterConfig.
+  agents: AgentConfigurationSummary[],
   existingSecrets: CompanySecret[],
 ): InlineSecretMigrationCandidate[] {
   const secretByName = new Map(existingSecrets.map((secret) => [secret.name, secret]));
@@ -221,6 +224,29 @@ function renderDeclaration(input: CompanyPortabilityEnvInput): Record<string, un
   };
 }
 
+// myrmidon(E2.8): read-only view of instance secret-ref settings (instance admin). The API
+// carries names, ref ids and booleans only; this renderer copies an explicit field list so a
+// value could never be printed even if a server added one.
+export interface InstanceSecretSettingRow {
+  name: string;
+  envOverride: string;
+  envOverrideActive: boolean;
+  effectiveSource: string;
+  ref: { secretId: string; secretName: string | null; status: string | null } | null;
+}
+
+export function renderInstanceSecretSetting(row: InstanceSecretSettingRow): Record<string, unknown> {
+  return {
+    name: row.name,
+    effectiveSource: row.effectiveSource,
+    envOverride: row.envOverride,
+    envOverrideActive: row.envOverrideActive ? "yes" : "no",
+    refSecretId: row.ref?.secretId ?? "-",
+    refSecretName: row.ref?.secretName ?? "-",
+    refStatus: row.ref?.status ?? "-",
+  };
+}
+
 function renderSecret(secret: CompanySecret): Record<string, unknown> {
   return {
     id: secret.id,
@@ -283,7 +309,10 @@ function asStringArray(value: unknown): string[] {
 async function migrateInlineEnv(opts: SecretMigrateInlineEnvOptions): Promise<void> {
   const ctx = resolveCommandContext(opts, { requireCompany: true });
   const companyId = ctx.companyId!;
-  const agents = (await ctx.api.get<Agent[]>(apiPath`/api/companies/${companyId}/agents`)) ?? [];
+  // myrmidon(PERF-DIET-G): read the configuration projection. GET /companies/:id/agents
+  // is a slim list now and no longer carries adapterConfig, so this command would
+  // otherwise see no inline env bindings at all.
+  const agents = (await ctx.api.get<AgentConfigurationSummary[]>(apiPath`/api/companies/${companyId}/agent-configurations`)) ?? [];
   const secrets = (await ctx.api.get<CompanySecret[]>(apiPath`/api/companies/${companyId}/secrets`)) ?? [];
   const candidates = collectInlineSecretMigrationCandidates(agents, secrets);
 
@@ -385,6 +414,22 @@ export function registerSecretCommands(program: Command): void {
 
   addCommonClientOptions(
     secrets
+      .command("settings")
+      .description("Show instance secret-ref settings and their bound refs (instance admin; never prints values)")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const res = await ctx.api.get<{ settings: InstanceSecretSettingRow[] }>("/api/instance/secret-settings");
+          const rows = res?.settings ?? [];
+          printOutput(rows.map(renderInstanceSecretSetting), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    secrets
       .command("declarations")
       .description("List portable env declarations emitted by company export")
       .requiredOption("-C, --company-id <id>", "Company ID")
@@ -413,7 +458,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("create")
-      .description("Create a Paperclip-managed secret")
+      .description("Create a Myrmidon-managed secret")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .requiredOption("--name <name>", "Secret display name")
       .option("--key <key>", "Portable secret key")
@@ -441,7 +486,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("link")
-      .description("Link an external provider-owned secret without storing its value in Paperclip")
+      .description("Link an external provider-owned secret without storing its value in Myrmidon")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .requiredOption("--name <name>", "Secret display name")
       .requiredOption("--provider <provider>", "Secret provider id")
@@ -487,7 +532,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("rotate")
-      .description("Rotate a Paperclip-managed secret value")
+      .description("Rotate a Myrmidon-managed secret value")
       .argument("<secretId>", "Secret ID")
       .option("--value <value>", "New secret value")
       .option("--value-env <name>", "Read new secret value from an environment variable")
@@ -555,7 +600,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("doctor")
-      .description("Run secret provider health checks through the Paperclip API")
+      .description("Run secret provider health checks through the Myrmidon API")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .action(async (opts: SecretDoctorOptions) => {
         try {

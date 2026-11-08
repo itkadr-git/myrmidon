@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { documents, heartbeatRuns, issues, routineDocuments, routines } from "@paperclipai/db";
+import { documents, heartbeatRuns, issues, routineDocuments, routines } from "@myrmidon/db";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";

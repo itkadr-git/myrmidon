@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error": "BOT_DISK_QUOTA_EXCEEDED: project 1041 is over its hard quota (6442450944 of 6442450944 bytes)",
+  "exitCode": 3
+}

@@ -2,7 +2,7 @@ import express from "express";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -172,7 +172,7 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
-async function createApp() {
+async function createApp(isInstanceAdmin = true) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -184,8 +184,8 @@ async function createApp() {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
+      source: "session",
+      isInstanceAdmin,
     };
     next();
   });
@@ -239,13 +239,25 @@ async function unregisterTestAdapter(type: string) {
 }
 
 describe("agent routes adapter validation", () => {
-  beforeEach(async () => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../routes/agents.js");
     registerModuleMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
@@ -372,6 +384,101 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.adapterType).toBe("external_test");
+  });
+
+  it.each(["claude_local", "codex_local"])("validates %s sandbox config on create and edit", async (adapterType) => {
+    const app = await createApp(true);
+    const valid = {
+      filesystemScope: "workspace",
+      filesystemExtraPaths: ["/workspace/shared", { path: "/workspace/data", access: "rw" }],
+      networkScope: "allowlist",
+      networkAllowlist: ["example.com"],
+      timeoutSec: 120,
+      graceSec: 10,
+      helloProbeTimeoutSec: 60,
+    };
+    const create = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({ name: "Local agent", adapterType, adapterConfig: valid }));
+    expect(create.status, JSON.stringify(create.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledOnce();
+    const editedValid = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType, adapterConfig: valid }));
+    expect(editedValid.status, JSON.stringify(editedValid.body)).toBe(200);
+    // Creation may also persist the managed instructions bundle via update.
+    const updatesAfterValidSaves = mockAgentService.update.mock.calls.length;
+    expect(updatesAfterValidSaves).toBeGreaterThan(0);
+
+    const invalid = [
+      { filesystemScope: "unrestricted" },
+      { filesystemExtraPaths: ["relative/path"] },
+      { filesystemExtraPaths: [42] },
+      { filesystemExtraPaths: [{ path: "/workspace/data", access: "write" }] },
+      { networkScope: "all" },
+      { networkAllowlist: [false] },
+      { networkAllowlist: ["*.example.com"] },
+      { filesystemSandboxCommand: " " },
+      { timeoutSec: -1 },
+      { graceSec: "15" },
+      { helloProbeTimeoutSec: -5 },
+    ];
+    for (const adapterConfig of invalid) {
+      const created = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({ name: "Invalid local agent", adapterType, adapterConfig }));
+      expect(created.status, JSON.stringify({ adapterType, adapterConfig, body: created.body })).toBe(422);
+      const edited = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType, adapterConfig }));
+      expect(edited.status, JSON.stringify({ adapterType, adapterConfig, body: edited.body })).toBe(422);
+    }
+    expect(mockAgentService.create).toHaveBeenCalledOnce();
+    expect(mockAgentService.update.mock.calls.length).toBe(updatesAfterValidSaves);
+  });
+
+  it.each(["claude_local", "codex_local"])("keeps the default %s form config valid (grace may exceed an unlimited timeout)", async (adapterType) => {
+    // The create form always submits timeoutSec 0 (no limit), graceSec 15 and the
+    // permission default, and edit saves send the whole merged config back.
+    const app = await createApp(false);
+    const defaults = {
+      timeoutSec: 0,
+      graceSec: 15,
+      ...(adapterType === "claude_local"
+        ? { dangerouslySkipPermissions: true }
+        : { dangerouslyBypassApprovalsAndSandbox: true }),
+    };
+    const create = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({ name: "Local agent", adapterType, adapterConfig: defaults }));
+    expect(create.status, JSON.stringify(create.body)).toBe(201);
+    const edited = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType, adapterConfig: defaults }));
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+  });
+
+  it.each(["claude_local", "codex_local"])("requires instance admin for %s sandbox changes", async (adapterType) => {
+    const app = await createApp(false);
+    const create = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({ name: "Local agent", adapterType, adapterConfig: { networkScope: "deny" } }));
+    expect(create.status).toBe(403);
+    const hire = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agent-hires")
+      .send({ name: "Local agent", adapterType, adapterConfig: { filesystemExtraPaths: ["/workspace/shared"] } }));
+    expect(hire.status).toBe(403);
+    const edited = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({
+        adapterType,
+        adapterConfig: adapterType === "claude_local"
+          ? { dangerouslySkipPermissions: false }
+          : { dangerouslyBypassApprovalsAndSandbox: false },
+      }));
+    expect(edited.status).toBe(403);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 
   it("does not inject CODEX_HOME or OPENAI_API_KEY when creating a keyless codex_local agent", async () => {
@@ -582,6 +689,103 @@ describe("agent routes adapter validation", () => {
     expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
   });
 
+  it("refuses a hermes_gateway container block without enabled or limits (myrmidon 1.6.4-BOT-CONTAINER-CARD)", async () => {
+    const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    try {
+      const app = await createApp();
+      const create = (container: Record<string, unknown>) =>
+        requestApp(app, (baseUrl) =>
+          request(baseUrl)
+            .post("/api/companies/company-1/agents")
+            .send({ name: "Bot", adapterType: "hermes_gateway", adapterConfig: { container } }),
+        );
+
+      const legacy = await create({ image: "example/hermes@sha256:aa" });
+      expect(legacy.status, JSON.stringify(legacy.body)).toBe(422);
+      expect(String(legacy.body.error ?? legacy.body.message ?? "")).toContain("container.enabled must be true or false");
+
+      const noLimits = await create({ enabled: true, image: "example/hermes@sha256:aa" });
+      expect(noLimits.status, JSON.stringify(noLimits.body)).toBe(422);
+      expect(String(noLimits.body.error ?? noLimits.body.message ?? "")).toContain("memoryMb");
+
+      const pinned = `example/hermes@sha256:${"a".repeat(64)}`;
+      const limits = { memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+      const byTag = await create({ enabled: true, image: "myrmidon-hermes:latest", ...limits });
+      expect(byTag.status, JSON.stringify(byTag.body)).toBe(422);
+      expect(String(byTag.body.error ?? byTag.body.message ?? "")).toContain("not pinned by digest");
+
+      const complete = await create({ enabled: true, image: pinned, ...limits });
+      expect(complete.status, JSON.stringify(complete.body)).toBe(201);
+    } finally {
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  it("keeps the pinned container image on edit of an existing hermes_gateway agent and refuses a tag-only image (OPE-8916)", async () => {
+    const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    try {
+      const pinned = `example/hermes@sha256:${"b".repeat(64)}`;
+      const container = { enabled: true, image: pinned, memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+      const existing = await mockAgentService.getById();
+      mockAgentService.getById.mockResolvedValue({
+        ...existing,
+        adapterType: "hermes_gateway",
+        adapterConfig: { container, note: "old" },
+      });
+      const app = await createApp();
+      const agentPath = "/api/agents/11111111-1111-4111-8111-111111111111";
+
+      // The UI patch-builder sends the whole merged config back with replaceAdapterConfig.
+      const edit = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: { container: { ...container, memoryMb: 3072 }, note: "new" },
+            replaceAdapterConfig: true,
+          }),
+      );
+      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+      const saved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const savedContainer = (saved.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+      expect(savedContainer.image).toBe(pinned);
+      expect(JSON.stringify(saved)).not.toContain(":latest");
+
+      // A non-container edit without replace keeps the stored container block untouched.
+      mockAgentService.update.mockClear();
+      const plain = await requestApp(app, (baseUrl) =>
+        request(baseUrl).patch(agentPath).send({ adapterConfig: { note: "again" } }),
+      );
+      expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+      const plainSaved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const plainContainer = (plainSaved.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+      expect(plainContainer.image).toBe(pinned);
+
+      // A tag-only image is refused with a clear 422 and nothing is written.
+      mockAgentService.update.mockClear();
+      const bad = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: { container: { ...container, image: "myrmidon-hermes:latest" } },
+            replaceAdapterConfig: true,
+          }),
+      );
+      expect(bad.status, JSON.stringify(bad.body)).toBe(422);
+      expect(String(bad.body.error ?? bad.body.message ?? "")).toContain("not pinned by digest");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    } finally {
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -695,7 +899,7 @@ describe("agent routes adapter validation", () => {
           adapterConfig: {
             provider: "codex",
             paperclipSkillSync: {
-              desiredSkills: ["paperclipai/paperclip/paperclip", "company-1/reviewer"],
+              desiredSkills: ["paperclipai/paperclip/myrmidon", "company-1/reviewer"],
             },
           },
         }),
@@ -731,7 +935,7 @@ describe("agent routes adapter validation", () => {
       adapterConfig: {
         model: "gpt-5.5",
         paperclipSkillSync: {
-          desiredSkills: ["paperclipai/paperclip/paperclip", "company-1/reviewer"],
+          desiredSkills: ["paperclipai/paperclip/myrmidon", "company-1/reviewer"],
         },
       },
     });

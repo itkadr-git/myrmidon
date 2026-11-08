@@ -1,0 +1,36 @@
+-- myrmidon(HEARTBEAT-POLL): companion index for the run-ownership probe
+-- (server/src/services/conversation-continuation.ts,
+-- getConversationOwnershipBlocker). The probe runs on every wake, through
+-- getExecutionBlocker in the run-dispatch path.
+--
+-- Its predicate is: company_id = $1 and runtime_mode = 'legacy' and
+-- (runner_profile_json->'adapterDispatch'->>'adapterType' in (…10 adapters…)
+--  or result_json->>'conversationContinuation' = 'continue_conversation_v1'
+--  or exists (select 1 from heartbeat_run_events … 'adapter.invoke' …))
+-- and coalesce(native_issue_id::text, context_snapshot->>'issueId') = $2
+-- and status in ('failed','timed_out','interrupted','cancelled')
+-- and (process_pid is not null or process_group_id is not null
+--      or exists (select 1 from environment_leases …))
+-- order by created_at desc, id desc.
+--
+-- No index carried the issue reference together with the terminal-legacy
+-- filter, so the planner read the whole runs table (1.1 GB on production) and
+-- ran the two correlated exists per row: 34 584 calls at 2.4 s each. This index
+-- answers the equality on the issue reference inside the terminal-legacy slice,
+-- and its trailing (created_at, id) columns make the statement's ORDER BY free,
+-- so the OR over the JSON evidence and the exists predicates are evaluated on
+-- the matched rows only.
+--
+-- The evidence branch keeps the provider's own
+-- heartbeat_run_events_company_run_idx (company_id, run_id): adding event_type
+-- as a third column would put a CREATE INDEX on a known-large, append-heavy
+-- table (the run log) inside a migration transaction, which holds ACCESS
+-- EXCLUSIVE for the whole build. The safety check reports that as
+-- `large-create-index-not-concurrently`, and a routine migration on that table
+-- is not worth a single-column refinement of an already index-served subquery —
+-- if it is ever wanted, apply it by hand with CREATE INDEX CONCURRENTLY.
+--
+-- heartbeat_runs itself is bucketed "medium" by check-migration-safety.ts, so a
+-- plain CREATE INDEX is the expected form here; a migration cannot use
+-- CONCURRENTLY because it runs inside a transaction.
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_legacy_terminal_issue_idx" ON "heartbeat_runs" USING btree ("company_id",(coalesce("native_issue_id"::text, "context_snapshot" ->> 'issueId')),"created_at" DESC NULLS LAST,"id" DESC NULLS LAST) WHERE "runtime_mode" = 'legacy' and "status" in ('failed', 'timed_out', 'interrupted', 'cancelled');

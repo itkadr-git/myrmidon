@@ -1,0 +1,350 @@
+// server/src/myrmidon/monitoring/dashboard/service.ts
+// myrmidon(1.6.6 MONITORING C): builds the one dashboard answer.
+//
+// The service queries both configured sources and merges per host: VM
+// (node_exporter PromQL) wins when a host has fresh VM data, Zabbix items
+// fill in the hosts VM does not see. A source that is not configured is
+// reported as not_configured, a source that fails degrades to error — the
+// dashboard still answers with whatever the other source returned.
+
+import {
+  classifySourceError,
+  emptyDashboardView,
+  type ContainerReading,
+  type DashboardView,
+  type OomFleetSummary,
+  type HostReading,
+  type LiteLlmReading,
+  type SourceStatus,
+  type VpsReading,
+} from "./domain.js";
+import type { MonitoringConnectionSettings } from "./settings.js";
+import type { VmClient } from "./vm.js";
+import type { ZabbixReadClient } from "./zabbix.js";
+import { DASHBOARD_ZABBIX_ITEM_KEYS, mapZabbixHostName } from "./zabbix.js";
+import { collectBlockerRootMetrics } from "../metrics/blocker-roots.js";
+import { collectBlockedMetrics } from "../metrics/blocked.js";
+import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
+import { blockerRootFanoutAlertLimitFromSettings } from "../../../services/blocker-graph/fanout-limit.js";
+import { activityLog, agents, companies, instanceSettings, type Db } from "@myrmidon/db";
+import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
+
+export interface DashboardServiceDeps {
+  settings: MonitoringConnectionSettings;
+  /** Present only when vmUrl is configured. */
+  vm?: VmClient | null;
+  /** Present only when zabbixUrl is configured. */
+  zabbix?: ZabbixReadClient | null;
+  now?: () => Date;
+  db?: Db;
+}
+
+async function buildBlockerPanels(db: Db): Promise<import("./domain.js").BlockerDashboardData> {
+  const [companyRows, settings] = await Promise.all([
+    db.select({ id: companies.id }).from(companies),
+    db.select({ general: instanceSettings.general }).from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")).limit(1),
+  ]);
+  const limit = blockerRootFanoutAlertLimitFromSettings(settings[0]?.general);
+  const roots = await collectBlockerRootMetrics(db, { fanoutLimit: limit });
+  let blockedAgeSeconds: number | null = null;
+  let missingFields: number | null = null;
+  for (const company of companyRows) {
+    const groups = await collectBlockedMetrics((id) => loadBlockedGraph(db, id), company.id);
+    for (const group of groups) {
+      blockedAgeSeconds = Math.max(blockedAgeSeconds ?? 0, group.ageSeconds.max ?? 0);
+      missingFields = (missingFields ?? 0) + group.missingFields.reason + group.missingFields.owner + group.missingFields.nextCheckAt;
+    }
+  }
+  return {
+    blockedAgeSeconds,
+    rootFanout: roots.companies.flatMap((company) => company.roots.map((root) => ({ root: root.root, fanout: root.fanout }))),
+    missingFields,
+    terminal: roots.companies.reduce((sum, company) => sum + company.terminalCount, 0),
+    fanoutLimit: limit,
+  };
+}
+
+/** PromQL templates of the host readings (job selector interpolated). */
+export function dashboardHostQueries(jobSelector: string) {
+  const sel = `{job=~"${jobSelector}"}`;
+  return {
+    cpu: `100 - (avg by (instance) (rate(node_cpu_seconds_total${sel.replace("}", ',mode="idle"}')}[5m])) * 100)`,
+    memory: `(1 - (node_memory_MemAvailable_bytes${sel} / node_memory_MemTotal_bytes${sel})) * 100`,
+    swap: `(1 - (node_memory_SwapFree_bytes${sel} / node_memory_SwapTotal_bytes${sel})) * 100`,
+    disk: `(1 - (node_filesystem_avail_bytes${sel.replace("}", ',mountpoint="/",fstype!~"tmpfs|overlay"}')} / node_filesystem_size_bytes${sel.replace("}", ',mountpoint="/",fstype!~"tmpfs|overlay"}')})) * 100`,
+    up: `up${sel}`,
+  };
+}
+
+export const DASHBOARD_CONTAINER_QUERIES = {
+  cpu: `sum by (name) (rate(container_cpu_usage_seconds_total{name=~".+"}[5m])) * 100`,
+  memory: `container_memory_working_set_bytes{name=~".+"}`,
+};
+
+export const DASHBOARD_LITELLM_QUERIES = {
+  rps: `sum(rate(litellm_proxy_total_requests_metric[5m]))`,
+  latencyP95: `histogram_quantile(0.95, sum(rate(litellm_request_latency_seconds_bucket[5m])) by (le))`,
+};
+
+function sampleAgeSec(timestampSec: number, now: Date): number | null {
+  if (!timestampSec) return null;
+  return Math.max(0, Math.round(now.getTime() / 1000 - timestampSec));
+}
+
+function numberOrNull(value: unknown): number | null {
+  const n = typeof value === "string" ? Number(value) : (value as number);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Default runbook mapping (part B keys, content is part D): host trouble goes to the infra owner. */
+export function defaultRunbookKey(host: HostReading): string | null {
+  if (host.origin === "none") return "host-unreachable";
+  const worst = Math.max(
+    host.cpuPercent ?? 0,
+    host.memoryPercent ?? 0,
+    host.swapPercent ?? 0,
+    host.diskPercent ?? 0,
+  );
+  if (worst >= 90) return "host-saturation";
+  if ((host.diskPercent ?? 0) >= 85) return "host-disk-pressure";
+  return null;
+}
+
+export async function buildOomFleetSummary(db: Db, companyId: string, at = new Date()): Promise<OomFleetSummary> {
+  const currentStart = new Date(at.getTime() - 24 * 60 * 60 * 1000);
+  const previousStart = new Date(at.getTime() - 48 * 60 * 60 * 1000);
+  const [currentRows, previousRows] = await Promise.all([
+    db.select({ agentId: activityLog.agentId, agentName: agents.name, role: agents.role, count: sql<number>`count(*)::int` })
+      .from(activityLog).innerJoin(agents, and(eq(activityLog.agentId, agents.id), eq(agents.companyId, companyId)))
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.container_oom"), eq(activityLog.entityType, "container_oom"), gte(activityLog.createdAt, currentStart), lt(activityLog.createdAt, at)))
+      .groupBy(activityLog.agentId, agents.name, agents.role).orderBy(desc(sql`count(*)`)),
+    db.select({ count: sql<number>`count(*)::int` }).from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.container_oom"), eq(activityLog.entityType, "container_oom"), gte(activityLog.createdAt, previousStart), lt(activityLog.createdAt, currentStart))),
+  ]);
+  const byAgent = currentRows.map((row) => ({ agentId: row.agentId ?? "unknown", agentName: row.agentName, role: row.role, count: row.count }));
+  const roles = new Map<string, number>();
+  for (const row of byAgent) roles.set(row.role ?? "unknown", (roles.get(row.role ?? "unknown") ?? 0) + row.count);
+  const total24h = byAgent.reduce((sum, row) => sum + row.count, 0);
+  const previous24h = previousRows[0]?.count ?? 0;
+  return { windowStartedAt: currentStart.toISOString(), total24h, previous24h, increaseAlert: total24h > previous24h, byAgent, byRole: [...roles].map(([role, count]) => ({ role, count })).sort((a, b) => b.count - a.count) };
+}
+
+export async function buildDashboardView(deps: DashboardServiceDeps): Promise<DashboardView> {
+  const now = deps.now ?? (() => new Date());
+  const view = emptyDashboardView(now().toISOString());
+  const sources: SourceStatus[] = [];
+
+  const vmHosts = new Map<string, HostReading>();
+  let vmOk = false;
+  if (deps.vm && deps.settings.vmUrl) {
+    const started = Date.now();
+    try {
+      const q = dashboardHostQueries(deps.settings.vmJobSelector);
+      const [cpu, memory, swap, disk, up] = await Promise.all([
+        deps.vm.query(q.cpu),
+        deps.vm.query(q.memory),
+        deps.vm.query(q.swap),
+        deps.vm.query(q.disk),
+        deps.vm.query(q.up),
+      ]);
+      vmOk = true;
+      sources.push({ name: "victoriametrics", ok: true, latency_ms: Date.now() - started, error: null });
+      const put = (name: string, patch: Partial<HostReading>, age: number | null) => {
+        const current = vmHosts.get(name) ?? {
+          name,
+          origin: "victoriametrics" as const,
+          cpuPercent: null,
+          memoryPercent: null,
+          swapPercent: null,
+          diskPercent: null,
+          ageSec: age,
+          runbookKey: null,
+        };
+        vmHosts.set(name, { ...current, ...patch, ageSec: age ?? current.ageSec });
+      };
+      for (const s of cpu) put(s.metric.instance ?? "unknown", { cpuPercent: s.value }, sampleAgeSec(s.timestampSec, now()));
+      for (const s of memory) put(s.metric.instance ?? "unknown", { memoryPercent: s.value }, sampleAgeSec(s.timestampSec, now()));
+      for (const s of swap) put(s.metric.instance ?? "unknown", { swapPercent: s.value }, sampleAgeSec(s.timestampSec, now()));
+      for (const s of disk) put(s.metric.instance ?? "unknown", { diskPercent: s.value }, sampleAgeSec(s.timestampSec, now()));
+      for (const s of up) {
+        const name = s.metric.instance ?? "unknown";
+        if (s.value === 0) put(name, { origin: "victoriametrics" }, sampleAgeSec(s.timestampSec, now()));
+      }
+    } catch (err) {
+      sources.push({
+        name: "victoriametrics",
+        ok: false,
+        latency_ms: Date.now() - started,
+        error: classifySourceError(err),
+      });
+    }
+  } else {
+    sources.push({ name: "victoriametrics", ok: false, latency_ms: null, error: "not_configured" });
+  }
+
+  const zabbixHosts = new Map<string, HostReading>();
+  let zabbixOk = false;
+  if (deps.zabbix && deps.settings.zabbixUrl) {
+    const started = Date.now();
+    try {
+      const readings = await deps.zabbix.hostReadings([...DASHBOARD_ZABBIX_ITEM_KEYS]);
+      zabbixOk = true;
+      sources.push({ name: "zabbix", ok: true, latency_ms: Date.now() - started, error: null });
+      for (const reading of readings) {
+        const readingName = reading.name || reading.host;
+        const mappedName = mapZabbixHostName(reading, deps.settings.zabbixHostMapping);
+        const host: HostReading = {
+          name: readingName,
+          origin: "zabbix",
+          cpuPercent: numberOrNull(reading.items["system.cpu.util"]),
+          memoryPercent:
+            numberOrNull(reading.items["vm.memory.util"]) ?? numberOrNull(reading.items["vm.memory.utilization"]),
+          swapPercent:
+            numberOrNull(reading.items["system.swap.size[,pfree]"]) != null
+              ? 100 - numberOrNull(reading.items["system.swap.size[,pfree]"])!
+              : null,
+          diskPercent:
+            numberOrNull(reading.items["vfs.fs.dependent.size[/,pused]"]) ??
+            numberOrNull(reading.items["vfs.fs.size[/,pused]"]),
+          ageSec: null,
+          runbookKey: null,
+        };
+        host.name = mappedName;
+        zabbixHosts.set(mappedName, host);
+        zabbixHosts.set(reading.host, host);
+      }
+    } catch (err) {
+      sources.push({ name: "zabbix", ok: false, latency_ms: Date.now() - started, error: classifySourceError(err) });
+    }
+  } else {
+    // Unwired (no client — tests, selective deployments) or unconfigured:
+    // report not_configured; the probe list always carries both sources so
+    // the fleet screen can render their status cards.
+    sources.push({ name: "zabbix", ok: false, latency_ms: null, error: "not_configured" });
+  }
+
+  // Merge: VM wins when it has the host, Zabbix-only hosts are appended.
+  const hosts = [...vmHosts.values()];
+  const mappedZabbixHosts = new Set<HostReading>();
+  let buildVpsCandidate: HostReading | null = null;
+  for (const [instance, zabbixName] of Object.entries(deps.settings.zabbixHostMapping)) {
+    const host = zabbixHosts.get(zabbixName);
+    // Prometheus instances may carry a scrape port while the configured mapping
+    // uses the bare VM hostname (or vice versa).
+    const vmName = vmHosts.has(instance) ? instance : `${instance}:9100`;
+    const vmHost = vmHosts.get(vmName);
+    if (vmHost) {
+      if (host) mappedZabbixHosts.add(host);
+      // A build/vps Zabbix host merged into a VM card still feeds the fleet rollup,
+      // even though its card now carries the VM instance name.
+      if (host && /build|vps/i.test(zabbixName)) buildVpsCandidate = vmHost;
+      vmHost.cpuPercent ??= host?.cpuPercent ?? null;
+      vmHost.memoryPercent ??= host?.memoryPercent ?? null;
+      vmHost.swapPercent ??= host?.swapPercent ?? null;
+      vmHost.diskPercent ??= host?.diskPercent ?? null;
+    }
+  }
+  for (const host of new Set(zabbixHosts.values())) {
+    if (mappedZabbixHosts.has(host)) continue;
+    if (!vmHosts.has(host.name)) hosts.push(host);
+  }
+  for (const host of hosts) host.runbookKey = defaultRunbookKey(host);
+  hosts.sort((a, b) => a.name.localeCompare(b.name));
+
+  const containers: ContainerReading[] = [];
+  let litellm: LiteLlmReading | null = null;
+  let vps: VpsReading | null = null;
+  if (vmOk && deps.vm) {
+    try {
+      const [cCpu, cMem] = await Promise.all([
+        deps.vm.query(DASHBOARD_CONTAINER_QUERIES.cpu),
+        deps.vm.query(DASHBOARD_CONTAINER_QUERIES.memory),
+      ]);
+      const memByName = new Map(cMem.map((s) => [s.metric.name ?? "unknown", s.value]));
+      for (const s of cCpu) {
+        const name = s.metric.name ?? "unknown";
+        containers.push({
+          name,
+          cpuPercent: s.value,
+          memoryBytes: memByName.get(name) ?? null,
+          state: "running",
+        });
+      }
+      containers.sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      // container readings are best-effort; the host cards stay
+    }
+    try {
+      const [rps, p95] = await Promise.all([
+        deps.vm.query(DASHBOARD_LITELLM_QUERIES.rps),
+        deps.vm.query(DASHBOARD_LITELLM_QUERIES.latencyP95),
+      ]);
+      if (rps.length > 0 || p95.length > 0) {
+        litellm = { ok: true, rps: rps[0]?.value ?? null, latencyP95Sec: p95[0]?.value ?? null };
+      }
+    } catch {
+      // litellm readings are best-effort
+    }
+    const buildHost = hosts.find((h) => /build|vps/i.test(h.name)) ?? buildVpsCandidate;
+    if (buildHost) {
+      vps = {
+        cpuPercent: buildHost.cpuPercent,
+        memoryPercent: buildHost.memoryPercent,
+        diskPercent: buildHost.diskPercent,
+      };
+    }
+  }
+
+  view.sources = sources;
+  view.hosts = hosts;
+  view.containers = containers;
+  view.litellm = litellm;
+  view.vps = vps;
+  if (deps.db) {
+    try {
+      view.blockerPanels = await buildBlockerPanels(deps.db);
+    } catch {
+      view.blockerPanels = null;
+    }
+  }
+  view.ok = sources.some((s) => s.ok) && sources.filter((s) => s.error !== "not_configured").every((s) => s.ok);
+  return view;
+}
+
+/** Selfcheck: probe each configured source (VM `up`, Zabbix `apiinfo.version`). */
+export async function buildSelfcheckView(deps: DashboardServiceDeps): Promise<{
+  ok: boolean;
+  vm_ok: boolean;
+  zabbix_ok: boolean;
+  sources: SourceStatus[];
+}> {
+  const sources: SourceStatus[] = [];
+  let vm_ok = false;
+  if (deps.vm && deps.settings.vmUrl) {
+    const started = Date.now();
+    try {
+      await deps.vm.query("up");
+      vm_ok = true;
+      sources.push({ name: "victoriametrics", ok: true, latency_ms: Date.now() - started, error: null });
+    } catch (err) {
+      sources.push({ name: "victoriametrics", ok: false, latency_ms: Date.now() - started, error: classifySourceError(err) });
+    }
+  } else {
+    sources.push({ name: "victoriametrics", ok: false, latency_ms: null, error: "not_configured" });
+  }
+  let zabbix_ok = false;
+  if (deps.zabbix && deps.settings.zabbixUrl) {
+    const started = Date.now();
+    try {
+      await deps.zabbix.apiVersion();
+      zabbix_ok = true;
+      sources.push({ name: "zabbix", ok: true, latency_ms: Date.now() - started, error: null });
+    } catch (err) {
+      sources.push({ name: "zabbix", ok: false, latency_ms: Date.now() - started, error: classifySourceError(err) });
+    }
+  } else {
+    sources.push({ name: "zabbix", ok: false, latency_ms: null, error: "not_configured" });
+  }
+  const configured = sources.filter((s) => s.error !== "not_configured");
+  return { ok: configured.length > 0 && configured.every((s) => s.ok), vm_ok, zabbix_ok, sources };
+}

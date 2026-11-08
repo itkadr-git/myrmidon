@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
-import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, runContextPersistenceFields } from "@myrmidon/db";
+import type { IssueComment, IssueQueuedCommentQueue } from "@myrmidon/shared";
 import {
   buildQueuedCommentQueueSnapshot,
   decideQueuedCommentQueueSteering,
@@ -12,6 +12,9 @@ import {
 import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
 import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
+// myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the signal notices left in agent tasks
+// are not queued messages for the agent.
+import { isPromptBudgetSignalNotice } from "../../../myrmidon/prompt-budget/notice.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,
@@ -72,7 +75,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     async updateQueueRunCommentIds({ queueRunId, contextSnapshot, ids, updatedAt }) {
       const row = await tx
         .update(heartbeatRuns)
-        .set({ contextSnapshot: withQueuedCommentIdsInRunContext(contextSnapshot, ids), updatedAt })
+        .set({ ...runContextPersistenceFields(withQueuedCommentIdsInRunContext(contextSnapshot, ids)), updatedAt })
         .where(and(eq(heartbeatRuns.id, queueRunId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -114,7 +117,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
 
     async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
       const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
-      const rows =
+      const rows: Array<typeof issueComments.$inferSelect> =
         commentIds.length > 0
           ? await tx
               .select()
@@ -127,10 +130,18 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
                 ),
               )
           : [];
-      const byId = new Map(rows.map((row) => [row.id, row]));
+      const byId = new Map<string, (typeof issueComments.$inferSelect)>(
+        rows.map((row) => [row.id, row]),
+      );
       const comments = commentIds.flatMap((id) => {
         const row = byId.get(id);
-        return row && !row.deletedAt ? [row] : [];
+        // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the prompt-budget notices the
+        // board wrote into agent tasks are not messages for the agent. The
+        // signal no longer writes them, and the copies still queued in a thread
+        // are dropped here instead of being delivered as the agent's new
+        // messages on the next turn.
+        if (!row || row.deletedAt || isPromptBudgetSignalNotice(row)) return [];
+        return [row];
       });
 
       const assignedAgent = issue.assigneeAgentId

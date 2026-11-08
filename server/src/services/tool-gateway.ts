@@ -1,6 +1,7 @@
-import { runIdentityContexts } from "@paperclipai/db";
+import { runIdentityContexts } from "@myrmidon/db";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
+import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import { logger } from "../middleware/logger.js";
 // myrmidon(P9): a failing tool must not take its whole connection down
 import {
@@ -33,6 +34,15 @@ import {
   runBoundProjectToolDescriptors,
   selectBotGatewayRun,
 } from "../myrmidon/bot-containers/run-bound-tools.js";
+// myrmidon(1.6.6-CORPUS-SHADOW A): corpus-module shadow comparison (part A).
+import { liveBehaviorSetting } from "../myrmidon/behavior-settings/live.js";
+import { createCorpusShadowRunner, maybeRecordShadowSearchCall } from "../myrmidon/corpus-shadow.js";
+import type { CorpusShadowRunner, CorpusShadowSearch } from "../myrmidon/corpus-shadow.js";
+// myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): model-facing tool result limit
+import { applyToolOutputLimit } from "../myrmidon/tool-output-limit.js";
+import { instanceSettingsService } from "./instance-settings.js";
+
+
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -48,7 +58,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   approvals,
@@ -82,8 +92,9 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolStdioCommandTemplates,
-} from "@paperclipai/db";
-import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+} from "@myrmidon/db";
+import type { ToolRunContext } from "@myrmidon/plugin-sdk";
+import { loadToolPolicySnapshot } from "./tool-policy-snapshot.js";
 import type {
   CreateToolMcpGateway,
   CreateToolMcpGatewayToken,
@@ -103,13 +114,15 @@ import type {
   ToolMcpGatewayTokenCreated,
   ToolMcpGatewayWithTokens,
   UpdateToolMcpGateway,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
+// myrmidon(B1c): product name in user-facing gateway texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import type {
   AgentToolDescriptor,
   PluginToolDispatcher,
@@ -137,9 +150,20 @@ import {
 } from "./remote-url-credentials.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 // myrmidon(S6): the per-agent tool/connection permission and its gate.
-import { agentToolPermissionAllows } from "@paperclipai/shared";
+import { agentToolPermissionAllows } from "@myrmidon/shared";
 import { loadAgentToolPermissions } from "../myrmidon/agent-tool-permissions.js";
+// myrmidon(DB-PERF-C-P4): gateway setup binds a profile outside the tool-access CRUD.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
+// myrmidon(1.6-AUTONOMY-GW): the tool -> action-class mapping and the agent-role
+// matrix resolver consulted before a tool call is executed. The mapping is
+// settings-backed (instance settings -> env -> defaults, resolved per call, so a
+// stored change applies without a restart).
+import { resolveToolAutonomyMapping } from "../myrmidon/autonomy/tool-mapping-store.js";
+import { dbAutonomyVerdictForAgent } from "../myrmidon/autonomy/gate.js";
 import { commitToolActionReview } from "./tool-action-review.js";
+// myrmidon(1.6-AUTONOMY): a held autonomy action is decided by our executor.
+import { isAutonomyToolName } from "../myrmidon/autonomy/action-execution.js";
+import { decideHeldAutonomyAction } from "../myrmidon/autonomy/action-decision.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
   createToolRuntimeSupervisor,
@@ -179,6 +203,8 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { browserConsoleMcpPauseForEndpoint } from "../myrmidon/browser-console/mcp-guard.js"; // myrmidon(BROWSER-CONSOLE-B)
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -338,6 +364,8 @@ export interface ToolGatewaySession {
 }
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
+
+export { loadToolPolicySnapshot } from "./tool-policy-snapshot.js";
 
 export class ToolGatewayHttpError extends Error {
   constructor(
@@ -569,41 +597,41 @@ function mcpGatewayProtocolLimits(
   const envDefaults: McpGatewayProtocolLimitOptions = {
     authFailures: {
       windowMs: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_AUTH_FAILURE_WINDOW_MS,
+        readProductEnv("MCP_GATEWAY_AUTH_FAILURE_WINDOW_MS"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.authFailures.windowMs,
       ),
       max: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_AUTH_FAILURE_LIMIT,
+        readProductEnv("MCP_GATEWAY_AUTH_FAILURE_LIMIT"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.authFailures.max,
       ),
     },
     gatewayRequests: {
       windowMs: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_REQUEST_WINDOW_MS,
+        readProductEnv("MCP_GATEWAY_REQUEST_WINDOW_MS"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.gatewayRequests.windowMs,
       ),
       max: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_REQUEST_LIMIT,
+        readProductEnv("MCP_GATEWAY_REQUEST_LIMIT"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.gatewayRequests.max,
       ),
     },
     tokenRequests: {
       windowMs: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_TOKEN_REQUEST_WINDOW_MS,
+        readProductEnv("MCP_GATEWAY_TOKEN_REQUEST_WINDOW_MS"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.tokenRequests.windowMs,
       ),
       max: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_TOKEN_REQUEST_LIMIT,
+        readProductEnv("MCP_GATEWAY_TOKEN_REQUEST_LIMIT"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.tokenRequests.max,
       ),
     },
     sessionSetup: {
       windowMs: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_SESSION_SETUP_WINDOW_MS,
+        readProductEnv("MCP_GATEWAY_SESSION_SETUP_WINDOW_MS"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.sessionSetup.windowMs,
       ),
       max: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_SESSION_SETUP_LIMIT,
+        readProductEnv("MCP_GATEWAY_SESSION_SETUP_LIMIT"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.sessionSetup.max,
       ),
     },
@@ -804,6 +832,24 @@ function stableSerialize(value: unknown): string {
     .join(",")}}`;
 }
 
+/**
+ * Normalize JSON schema objects before they enter the tool descriptor. MCP
+ * servers are allowed to emit object properties in any order; preserving that
+ * order makes otherwise identical profile revisions produce different prompt
+ * prefixes and defeats provider prompt caching.
+ */
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalizeJson(nested)]),
+    );
+  }
+  return value;
+}
+
 function stableHash(value: unknown): string {
   return createHash("sha256").update(stableSerialize(value)).digest("hex");
 }
@@ -951,9 +997,9 @@ const BUILTIN_TOOLS: ToolGatewayDescriptor[] = [
   },
   {
     name: "paperclip-self:list_my_issues",
-    displayName: "List my Paperclip issues",
+    displayName: `List my ${PN} issues`,
     description:
-      "Paperclip self-MCP read fixture that lists the authenticated agent's current issues.",
+      `${PN} self-MCP read fixture that lists the authenticated agent's current issues.`,
     parametersSchema: {
       type: "object",
       properties: { limit: { type: "number" } },
@@ -967,7 +1013,7 @@ const BUILTIN_TOOLS: ToolGatewayDescriptor[] = [
     name: "paperclip-self:get_issue_context",
     displayName: "Get issue context",
     description:
-      "Paperclip self-MCP read fixture that returns scoped issue context and plan document metadata.",
+      `${PN} self-MCP read fixture that returns scoped issue context and plan document metadata.`,
     parametersSchema: {
       type: "object",
       properties: { issueId: { type: "string" } },
@@ -1011,7 +1057,7 @@ const VIRTUAL_SEARCH_TOOLS: ToolGatewayDescriptor = {
   name: "search_tools",
   displayName: "Search available tools",
   description:
-    "Search the tools available through this Paperclip gateway without loading every target tool into the tool list.",
+    `Search the tools available through this ${PN} gateway without loading every target tool into the tool list.`,
   parametersSchema: {
     type: "object",
     properties: {
@@ -1029,7 +1075,7 @@ const VIRTUAL_RUN_TOOL: ToolGatewayDescriptor = {
   name: "run_tool",
   displayName: "Run a selected tool",
   description:
-    "Run a target tool by name after Paperclip applies the target tool's profile, policy, approval, and rate-limit checks.",
+    `Run a target tool by name after ${PN} applies the target tool's profile, policy, approval, and rate-limit checks.`,
   parametersSchema: {
     type: "object",
     properties: {
@@ -1083,6 +1129,9 @@ export function createToolGatewayService(
     beforeManagedArgumentDriftExpiry?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
     beforeLegacyApprovedActionClaim?: () => Promise<void>;
+    /** Corpus SearchIndex used by the shadow runner; production wiring passes it explicitly. */
+    corpusShadowSearch?: CorpusShadowSearch;
+    corpusShadowRunner?: CorpusShadowRunner;
     mcpGatewayProtocolLimits?: Partial<{
       authFailures: Partial<McpGatewayRateLimitConfig>;
       gatewayRequests: Partial<McpGatewayRateLimitConfig>;
@@ -1098,6 +1147,13 @@ export function createToolGatewayService(
     trustedLocalStdioRuntimeHost: options.trustedLocalStdioRuntimeHost,
     ...options.runtimeSupervisor,
   });
+  const corpusShadowRunner: CorpusShadowRunner =
+    options.corpusShadowRunner ??
+    createCorpusShadowRunner({
+      db,
+      isEnabled: () => liveBehaviorSetting<boolean>("corpus.shadow") === true,
+      search: options.corpusShadowSearch ?? undefined,
+    });
   const pluginToolDispatcher = options.pluginToolDispatcher;
   const interactions = issueThreadInteractionService(db);
   const policyService = toolAccessPolicyService(db);
@@ -1130,6 +1186,51 @@ export function createToolGatewayService(
       }
     }
     return policyService.decide(input);
+  }
+
+  // OPE-4129: the policy snapshot is loaded once per tools/list request via
+  // loadToolPolicySnapshot (3 queries) and reused for every tool decision in
+  // that request. No cross-request cache: policy mutations that bypass the
+  // service layer (direct db inserts in tests/ops) would otherwise serve
+  // stale decisions until TTL expiry. The event channel (tool-policy-cache-
+  // events) is kept for future opt-in cross-request caching and is covered by
+  // the perf test's invalidation case.
+
+  /**
+   * Makes a tool access decision using a pre-loaded policy snapshot
+   */
+  async function decideToolAccessWithCache(
+    input: ToolAccessDecisionInput,
+    cachedData: {
+      profiles: Array<typeof toolProfiles.$inferSelect>;
+      profileBindings: Array<typeof toolProfileBindings.$inferSelect>;
+      policies: Array<typeof toolPolicies.$inferSelect>;
+    },
+  ): Promise<ToolAccessDecision> {
+    // S6 agent permission check must run on the cached path as well
+    // (OPE-4129 review fix): without it the agent's tool list restriction is
+    // bypassed when the policy cache is warm (agent-tool-permissions test).
+    const agentId = input.actor.agentId;
+    if (agentId) {
+      const permissions = await loadAgentToolPermissions(db, input.companyId, agentId);
+      if (
+        !agentToolPermissionAllows(permissions, {
+          toolName: input.request.toolName,
+          catalogEntryId: input.request.catalogEntryId ?? null,
+          connectionId: input.request.connectionId ?? null,
+        })
+      ) {
+        return {
+          decision: "deny",
+          allowed: false,
+          reasonCode: "deny_agent_permission",
+          explanation: "Tool access denied by the agent's tool permissions.",
+          effectiveProfileIds: [],
+          matchedPolicyIds: [],
+        };
+      }
+    }
+    return policyService.decideWithCachedData(input, cachedData.policies, cachedData.profileBindings, cachedData.profiles);
   }
   const secrets = secretService(db);
   // Authentication produces a new session object for every operation. Keep
@@ -1327,10 +1428,12 @@ export function createToolGatewayService(
         const applicationKey = application.applicationKey ?? null;
         const inputSchema = projectedConnectionToolInputSchema(
           connection,
-          catalogEntry.inputSchema ?? {},
+          canonicalizeJson(catalogEntry.inputSchema ?? {}) as Record<string, unknown>,
         );
-        const outputSchema = catalogEntry.outputSchema ?? null;
-        const annotations = catalogEntry.annotations ?? {};
+        const outputSchema = catalogEntry.outputSchema
+          ? (canonicalizeJson(catalogEntry.outputSchema) as Record<string, unknown>)
+          : null;
+        const annotations = canonicalizeJson(catalogEntry.annotations ?? {}) as Record<string, unknown>;
         const risk = riskFromCatalogEntry(catalogEntry);
         const onDemandTools = readOnDemandToolsEnabled(connection);
         const providerMetadata: ConnectedMcpGatewayMetadata = {
@@ -2839,11 +2942,14 @@ export function createToolGatewayService(
     const tools = (await connectedMcpToolsForCompany(session.companyId)).filter(
       isOnDemandRemoteTool,
     );
+    // One snapshot per search call (3 queries), reused for all decisions.
+    const snapshot = await loadToolPolicySnapshot(db, session.companyId);
     const decisions = await Promise.all(
       tools.map(async (tool) => ({
         tool,
-        decision: await decideToolAccess(
+        decision: await decideToolAccessWithCache(
           policyInputForTool({ session, tool }),
+          snapshot,
         ),
       })),
     );
@@ -2917,10 +3023,20 @@ export function createToolGatewayService(
         (tool.providerType !== "paperclip_self" &&
           tool.providerType !== "paperclip_plugin"),
     );
+    // OPE-4129 review fix: load the company policy snapshot once per
+    // listToolsForContext call (3 queries) and reuse it for every tool
+    // decision. A cross-request TTL cache is intentionally NOT used here:
+    // tests (and external processes) can insert policy rows directly via the
+    // db without emitting an event, and a stale cross-request cache broke the
+    // require_approval acceptance test. The event-based cross-process cache
+    // remains available through getCachedPolicyData for future opt-in use.
+    const snapshot = await loadToolPolicySnapshot(db, session.companyId);
+
     const decisions = await Promise.all(
       tools.map(async (tool) => {
-        const decision = await decideToolAccess(
+        const decision = await decideToolAccessWithCache(
           policyInputForTool({ session, tool }),
+          snapshot,
         );
         return { tool, decision };
       }),
@@ -3027,7 +3143,7 @@ export function createToolGatewayService(
       if (!session.agentId) {
         throw new ToolGatewayHttpError(
           403,
-          "Paperclip self tools require an agent-scoped gateway session",
+          `${PN} self tools require an agent-scoped gateway session`,
           "agent_context_required",
         );
       }
@@ -3060,7 +3176,7 @@ export function createToolGatewayService(
       if (!session.agentId) {
         throw new ToolGatewayHttpError(
           403,
-          "Paperclip self tools require an agent-scoped gateway session",
+          `${PN} self tools require an agent-scoped gateway session`,
           "agent_context_required",
         );
       }
@@ -4314,7 +4430,7 @@ export function createToolGatewayService(
       detailsMarkdown:
         grantKind === "organization"
           ? "Vercel Connect reports that the shared organization identity needs authorization."
-          : "This run needs your personal authorization. Paperclip will not use another user's identity.",
+          : `This run needs your personal authorization. ${PN} will not use another user's identity.`,
       target: {
         type: "custom" as const,
         key: `connection:${connection.uid}:user:${userId}`,
@@ -5743,7 +5859,7 @@ export function createToolGatewayService(
         status: "awaiting_approval",
         errorCode: "elicitation_required",
         errorMessage:
-          "Remote MCP tool requested elicitation; Paperclip created an issue interaction for the response.",
+          `Remote MCP tool requested elicitation; ${PN} created an issue interaction for the response.`,
         updatedAt: now,
       })
       .where(eq(toolInvocations.id, input.invocationId));
@@ -5909,6 +6025,16 @@ export function createToolGatewayService(
     let endpoint =
       composioSession?.url ??
       (await resolvedRemoteEndpoint(session, connection, grant));
+    // Pause live-browser MCP calls while an owner screen session is open.
+    const browserPause = await browserConsoleMcpPauseForEndpoint(endpoint);
+    if (browserPause) {
+      throw new ToolGatewayHttpError(
+        423,
+        browserPause.message,
+        "browser_console_mcp_paused",
+        { browserId: browserPause.browserId },
+      );
+    }
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
@@ -6483,7 +6609,7 @@ export function createToolGatewayService(
             },
           },
         },
-        notes: ["Use the full Paperclip origin before the endpoint path."],
+        notes: [`Use the full ${PN} origin before the endpoint path.`],
       },
       {
         client: "claude_desktop",
@@ -6543,7 +6669,7 @@ export function createToolGatewayService(
             },
           },
         },
-        notes: ["Use the full Paperclip origin before the endpoint path."],
+        notes: [`Use the full ${PN} origin before the endpoint path.`],
       },
     ];
   }
@@ -8615,6 +8741,9 @@ export function createToolGatewayService(
           createdByUserId: input.actor?.userId ?? null,
         })
         .onConflictDoNothing();
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): a new gateway binding changes the company snapshot.
+      invalidateToolPolicyCache(db, input.companyId);
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
@@ -8772,7 +8901,10 @@ export function createToolGatewayService(
             metadata: { source: "named_mcp_gateway" },
           })
           .onConflictDoNothing();
+        // myrmidon(DB-PERF-C-P4): a re-pointed gateway binding changes the company snapshot.
+        invalidateToolPolicyCache(db, input.companyId);
       }
+      emitToolPolicyChanged();
       return getGatewayWithTokens(input.companyId, updated.id);
     },
 
@@ -9558,6 +9690,28 @@ export function createToolGatewayService(
           "invocation_not_found",
         );
       }
+      // myrmidon(1.6-AUTONOMY): a held autonomy action is not a gateway tool —
+      // no connection, no catalog entry and no signed arguments — so the
+      // conveyor below cannot carry it (it would refuse to verify it and cancel
+      // the request). Decide it through the autonomy executor, which replays it
+      // exactly once; the recovery sweep reaches the same branch.
+      if (isAutonomyToolName(invocation.toolName)) {
+        const decided = await decideHeldAutonomyAction({
+          db,
+          companyId: input.companyId,
+          actionRequestId: input.actionRequestId,
+          decision: "approved",
+          actor: { userId: input.actor.userId ?? null, agentId: null },
+        });
+        if (decided.kind === "decided") {
+          const [settledAutonomy] = await db
+            .select()
+            .from(toolActionRequests)
+            .where(eq(toolActionRequests.id, input.actionRequestId))
+            .limit(1);
+          return actionRequestResolution(settledAutonomy ?? actionRequest);
+        }
+      }
       if (input.issueId !== undefined || input.interactionId !== undefined) {
         if (
           !input.issueId ||
@@ -9827,6 +9981,56 @@ export function createToolGatewayService(
       let invocationId = String(randomUUID());
       const startedAt = Date.now();
 
+      // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): helper to apply model-facing
+      // output limit and store full output in trace/workspace file.
+      const applyOutputLimit = async (rawResult: unknown, invId?: string) => {
+        let cardConfig: Record<string, unknown> | null = null;
+        if (session.agentId) {
+          try {
+            const [agentRow] = await db
+              .select({
+                adapterConfig: agents.adapterConfig,
+                runtimeConfig: agents.runtimeConfig,
+              })
+              .from(agents)
+              .where(eq(agents.id, session.agentId))
+              .limit(1);
+            if (agentRow) {
+              cardConfig = {
+                ...(typeof agentRow.adapterConfig === "object" ? (agentRow.adapterConfig as Record<string, unknown>) : {}),
+                ...(typeof agentRow.runtimeConfig === "object" ? (agentRow.runtimeConfig as Record<string, unknown>) : {}),
+              };
+            }
+          } catch {
+            // Ignore DB lookup error
+          }
+        }
+
+        let instanceGeneral: any = null;
+        try {
+          const settings = await instanceSettingsService(db).get();
+          instanceGeneral = settings?.general;
+        } catch {
+          // Ignore settings lookup error
+        }
+
+
+        return applyToolOutputLimit({
+          result: rawResult,
+          invocationId: invId,
+          runId: session.runId,
+          agentId: session.agentId,
+          companyId: session.companyId,
+          instanceSettings: instanceGeneral
+            ? {
+                toolOutputLimit: instanceGeneral.toolOutputLimit,
+                toolOutputChars: instanceGeneral.toolOutputChars,
+              }
+            : undefined,
+          agentCardConfig: cardConfig,
+        });
+      };
+
       // A retry carries the signed originating operation, even if steering has
       // since accepted instructions from someone else in this same run.
       if (input.approvedActionRequestId) {
@@ -9986,12 +10190,17 @@ export function createToolGatewayService(
             resultSummary: boundResultValidation.summary,
           },
         });
+        const limited = await applyOutputLimit(
+          { content: boundResult.content, data: boundResult.data },
+          boundInvocation.id,
+        );
         return {
           invocationId: boundInvocation.id,
           status: "completed" as const,
           tool: input.tool,
-          result: { content: boundResult.content, data: boundResult.data },
+          result: limited.result,
         };
+
       }
 
       let tool = await findToolForSession(session, input.tool);
@@ -10517,6 +10726,92 @@ export function createToolGatewayService(
           idempotencyKey: input.idempotencyKey,
           consumeRateLimit: true,
         });
+
+        // myrmidon(1.6-AUTONOMY-GW): the autonomy matrix verdict for agent
+        // callers, resolved before the tool access policy. A tool with no
+        // action class is not governed (today's behaviour); a non-agent
+        // caller (board / admin / test call) is not subject to the matrix.
+        const toolMapping = await resolveToolAutonomyMapping(db, tool.name);
+        const actionClass = toolMapping.actionClass;
+        if (actionClass && session.agentId) {
+          const autonomyDecision = await dbAutonomyVerdictForAgent(
+            db,
+            session.agentId,
+            actionClass,
+          );
+
+          if (autonomyDecision.verdict === "forbidden") {
+            throw new ToolGatewayHttpError(
+              403,
+              `This action (${actionClass}) is forbidden for this role by the autonomy matrix`,
+              "autonomy_forbidden",
+              {
+                tool: tool.name,
+                autonomyActionClass: actionClass,
+                autonomyRole: autonomyDecision.role,
+              }
+            );
+          } else if (autonomyDecision.verdict === "approval_required") {
+            // Record the invocation and create an action request for approval
+            const recorded = await policyService.recordInvocation(
+              decisionInput,
+              {
+                decision: "require_approval",
+                allowed: false,
+                reasonCode: "autonomy_approval_required",
+                explanation: `Action ${actionClass} requires approval by the autonomy matrix`,
+                effectiveProfileIds: [],
+                matchedPolicyIds: [],
+              }
+            );
+            invocationId = recorded.invocation.id;
+
+            await requestApprovalForRecordedToolCall({
+              invocation: recorded.invocation,
+              actionRequest: recorded.actionRequest!,
+              session,
+              tool,
+              parameters: effectiveParameters,
+              argumentsSummary: argumentValidation.summary,
+              policyDecision: {
+                decision: "require_approval",
+                allowed: false,
+                reasonCode: "autonomy_approval_required",
+                explanation: `Action ${actionClass} requires approval by the autonomy matrix`,
+                effectiveProfileIds: [],
+                matchedPolicyIds: [],
+              },
+            });
+
+            await writeAudit({
+              session,
+              companyId: session.companyId,
+              agentId: session.agentId,
+              runId: session.runId,
+              issueId: session.issueId,
+              action: "tool_gateway.call_approval_required",
+              details: {
+                invocationId: recorded.invocation.id,
+                decision: "require_approval",
+                reasonCode: "autonomy_approval_required",
+                tool: tool.name,
+                autonomyActionClass: actionClass,
+                autonomyRole: autonomyDecision.role,
+                ...toolAuditMetadata(tool),
+                argumentsSummary: effectiveArgumentsSummary,
+              },
+            });
+
+            return {
+              invocationId: recorded.invocation.id,
+              status: "awaiting_approval" as const,
+              tool: virtualToolName ?? tool.name,
+              targetTool: virtualToolName ? tool.name : undefined,
+              result: null,
+            };
+          }
+        }
+
         const accessDecision = await decideToolAccess(decisionInput);
         // myrmidon(P9): a paused remote tool fails fast here: after replay and
         // policy (a denied call keeps its 403) and before the invocation is
@@ -10634,6 +10929,9 @@ export function createToolGatewayService(
       });
 
       try {
+        // myrmidon(1.6.6-CORPUS-SHADOW A): start stamp for the shadow log's
+        // ragflow_latency_ms; read-only, contributes nothing to the response.
+        const shadowRagflowStartedAt = Date.now();
         const executionTimeoutMs = timeoutMs(input.timeoutMs);
         if (
           tool.providerType === "paperclip_plugin" &&
@@ -10773,13 +11071,33 @@ export function createToolGatewayService(
             execution: connectedMcpExecution?.execution ?? undefined,
           },
         });
+        // myrmidon(1.6.6-CORPUS-SHADOW A): the shadow decision point. The
+        // response below is built and unchanged either way; the runner only
+        // sees read-only copies (tool, result, parameters) and its own leg can
+        // never fail or delay this return. Flag off => isEnabled() false => the
+        // helper returns before touching anything (byte-for-byte old behavior).
+        maybeRecordShadowSearchCall({
+          runner: corpusShadowRunner,
+          companyId: session.companyId,
+          tool,
+          execution: connectedMcpExecution?.execution ?? null,
+          result: resultValidation.value,
+          parameters: effectiveParameters,
+          botId: session.agentId ?? null,
+          latencyMs: Date.now() - shadowRagflowStartedAt,
+        });
+        const limited = await applyOutputLimit(
+          resultValidation.value,
+          invocationId,
+        );
         return {
           invocationId,
           status: "completed" as const,
           tool: virtualToolName ?? tool.name,
           targetTool: virtualToolName ? tool.name : undefined,
-          result: resultValidation.value,
+          result: limited.result,
         };
+
       } catch (err) {
         const normalizedError =
           err instanceof ToolRuntimeSupervisorError

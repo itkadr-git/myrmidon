@@ -1,9 +1,10 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import {
   readRecentSelectionIds,
   trackRecentSelectionId,
 } from "./recent-selections";
 
-const STORAGE_KEY = "paperclip:recent-projects";
+const STORAGE_KEY = "myrmidon:recent-projects";
 
 export function getRecentProjectIds(): string[] {
   return readRecentSelectionIds(STORAGE_KEY);

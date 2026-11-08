@@ -15,6 +15,8 @@ export {
   isEvalVerdict,
   EVAL_TASK_KINDS,
   isEvalTaskKind,
+  EVAL_SUBJECT_KINDS,
+  isEvalSubjectKind,
   isEvalRubric,
   DEFAULT_EVAL_REGRESSION_DROP,
   aggregateEvalScores,
@@ -23,6 +25,7 @@ export {
   isEvalVerdictForLifecycle,
   type EvalVerdict,
   type EvalTaskKind,
+  type EvalSubjectKind,
   type EvalRubric,
   type EvalRubricCriterion,
   type EvalTaskScore,
@@ -49,7 +52,19 @@ export {
   type JudgePort,
   type JudgeTaskResult,
   type JudgeDeps,
+  DEFAULT_EVALS_JUDGE_PRIORITY_MODELS,
+  parseJudgePriorityModels,
+  EVALS_JUDGE_PRIORITY_MODELS_ENV,
 } from "./judge.js";
+// myrmidon(1.6.5 EVALS-JUDGE-FAMILY): family detection, the verified served
+// model list and the candidate order.
+export {
+  SERVED_FREE_GATEWAY_MODELS,
+  DEFAULT_JUDGE_PRIORITY_MODELS,
+  getModelFamily,
+  isSameJudgeFamily,
+  judgeCandidateOrder,
+} from "./model-family.js";
 export {
   createLangfuseScoreExporter,
   noopScoreExporter,
@@ -76,4 +91,32 @@ export {
   type EvalRunStatus,
   type RunOutcome,
 } from "./service.js";
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-9): the evals gate of knowledge — the
+// lifecycle hook, its decision, and the knowledge sink.
+export {
+  KNOWLEDGE_GATE_TRIGGERS,
+  isKnowledgeGateTrigger,
+  subjectKindForTrigger,
+  KNOWLEDGE_GATE_VERDICTS,
+  HALLUCINATION_CRITERION_PATTERN,
+  KNOWLEDGE_GATE_ACTOR_ID,
+  KnowledgeGateError,
+  hallucinationFromScores,
+  decideKnowledgeGateVerdict,
+  createKnowledgeGate,
+  createKnowledgeGateSink,
+  type KnowledgeGateTrigger,
+  type KnowledgeGateVerdict,
+  type KnowledgeGateActor,
+  type KnowledgeGateInput,
+  type KnowledgeGateOutcome,
+  type KnowledgeGateDeps,
+  type KnowledgeGate,
+  type KnowledgeGateSink,
+  type KnowledgeGateModulePort,
+  type KnowledgeGateSinkOptions,
+  type KnowledgeGateJournalEntry,
+  type KnowledgeGateOwnerNotice,
+  type KnowledgeGateRollbackRequest,
+} from "./knowledge-gate.js";
 export { myrmidonEvalsRoutes, EVALS_ACTOR_ID, type EvalsRoutesDeps } from "./routes.js";

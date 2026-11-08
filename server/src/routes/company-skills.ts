@@ -1,10 +1,11 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   catalogSkillListQuerySchema,
   companySkillCommentCreateSchema,
   companySkillCommentUpdateSchema,
   companySkillCreateSchema,
+  companySkillDiscoverSchema,
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
   companySkillForkSchema,
@@ -24,8 +25,8 @@ import {
   companySkillTestRunListQuerySchema,
   companySkillUpdateSchema,
   companySkillVersionCreateSchema,
-} from "@paperclipai/shared";
-import { trackSkillImported } from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared";
+import { trackSkillImported } from "@myrmidon/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -54,7 +55,7 @@ import {
   type SkillPolicyAction,
   type SkillPolicyDecision,
   type SkillPolicyEvaluationResource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 type SkillTelemetryInput = {
   key: string;
@@ -1135,13 +1136,45 @@ export function companySkillRoutes(db: Db) {
   );
 
   router.post(
+    "/companies/:companyId/skills/discover",
+    validate(companySkillDiscoverSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const source = String(req.body.source ?? "");
+      await assertCanMutateCompanySkills(req, companyId, "skills.import", () => skillImportPolicyResource(source));
+      const result = await svc.discoverSkills(companyId, source);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "company.skills_discovered",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          source,
+          discoveredCount: result.skills.length,
+          skillNames: result.skills.map((skill) => skill.name),
+        },
+      });
+
+      res.json(result);
+    },
+  );
+
+  router.post(
     "/companies/:companyId/skills/import",
     validate(companySkillImportSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const source = String(req.body.source ?? "");
+      const skillName: string | null = typeof req.body.skillName === "string" ? req.body.skillName : null;
       await assertCanMutateCompanySkills(req, companyId, "skills.import", () => skillImportPolicyResource(source));
-      const result = await svc.importFromSource(companyId, source);
+      const result = await svc.importFromSource(companyId, source, { skillName });
 
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -1156,6 +1189,7 @@ export function companySkillRoutes(db: Db) {
         entityId: companyId,
         details: {
           source,
+          ...(skillName ? { skillName } : {}),
           importedCount: result.imported.length,
           importedSlugs: result.imported.map((skill) => skill.slug),
           warningCount: result.warnings.length,

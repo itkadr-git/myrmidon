@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, companies, createDb, evalReferenceTasks, evalRuns } from "@paperclipai/db";
+import { activityLog, companies, createDb, evalReferenceTasks, evalRuns } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -73,7 +73,7 @@ describeEmbeddedPostgres("myrmidon(1.6-EVALS): routes", () => {
   });
 
   function app(actor: unknown) {
-    const service = createEvalsService(db, { judge: createHeuristicJudge(({ answer }) => (answer.includes(GOOD) ? 99 : 0)), model: "test-judge", now: () => new Date() });
+    const service = createEvalsService(db, { judge: createHeuristicJudge(({ answer }) => (answer.includes(GOOD) ? 99 : 0)), model: "test-judge", subjectModelFor: () => "test-subject", now: () => new Date() });
     const expressApp = express();
     expressApp.use(express.json());
     expressApp.use((req, _res, next) => {

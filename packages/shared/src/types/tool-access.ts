@@ -1407,6 +1407,8 @@ export type ToolAccessReasonCode =
   | "deny_missing_agent"
   // myrmidon(S6): the agent's own tool/connection permission does not name this tool.
   | "deny_agent_permission"
+  // myrmidon(1.6-AUTONOMY-GW): the autonomy matrix verdicts for agent callers.
+  | "autonomy_approval_required"
   | "rate_limited";
 
 export interface ToolAccessSelector {

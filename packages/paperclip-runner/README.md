@@ -69,7 +69,7 @@ alias during selection and verification. Users can keep selecting models from
 the normal Claude catalog or entering custom IDs; unavailable models still fail
 at the provider rather than silently falling back.
 
-For ACPX Claude, `approve-reads` is shown as **Allow Paperclip reads**. The host
+For ACPX Claude, `approve-reads` is shown as **Restricted (approve reads)**. The host
 intersects the run's public tools with the implementation catalog's read effects
 and writes exact MCP permission rules into the isolated Claude settings. The
 `paperclip` connection is always the runner's authenticated tool bridge; ambient

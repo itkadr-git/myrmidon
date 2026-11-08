@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getOperatorSettingDefaults } from "../services/setting-defaults.js";
 
@@ -10,10 +10,28 @@ function defaultsEnv(raw: string | undefined = DEFAULTS_RAW) {
 }
 
 /** Mirrors the stub in instance-settings-managed-overlay.test.ts. */
+/**
+ * Awaitable result for a stubbed select: the myrmidon(PROCS-Q5) write path
+ * first takes the row lock with `.limit(1).for("update")`, then reads rows via
+ * `.then(...)`. One Promise with the chainable no-ops attached covers both.
+ */
+function stubRows<T>(values: T[]) {
+  const p = Promise.resolve(values) as Promise<T[]> & {
+    limit(_n?: number): Promise<T[]>;
+    for(_mode?: string): Promise<T[]>;
+  };
+  p.limit = () => p;
+  p.for = () => p;
+  return p;
+}
+
 function stubDb(row: Record<string, unknown>) {
   const persistedSets: Array<Record<string, unknown>> = [];
   const db = {
-    select: () => ({ from: () => ({ where: () => Promise.resolve([row]) }) }),
+    // The write path runs inside db.transaction; this stub has no isolation,
+    // so the callback gets the same object back (single-threaded test).
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    select: () => ({ from: () => ({ where: () => stubRows([row]) }) }),
     insert: () => {
       throw new Error("unexpected insert in test");
     },
@@ -53,7 +71,7 @@ describe("getOperatorSettingDefaults", () => {
 
   it("throws on malformed policy JSON (fail closed)", () => {
     expect(() => getOperatorSettingDefaults(defaultsEnv("{broken"))).toThrow(
-      /PAPERCLIP_SETTING_DEFAULTS/,
+      /MYRMIDON_SETTING_DEFAULTS/,
     );
   });
 });
@@ -88,6 +106,18 @@ describe("instanceSettingsService operator setting defaults", () => {
     const svc = instanceSettingsService(db, { runtimeEnv: {} });
     const general = await svc.getGeneral();
     expect(general.feedbackDataSharingPreference).toBe("prompt");
+  });
+
+  it("roundtrips operator-configured API-equivalent model prices", async () => {
+    const modelApiPricing = {
+      "gpt-6-luna": { inputUsdPerMillion: 0.1, cachedInputUsdPerMillion: 0.01, outputUsdPerMillion: 0.5 },
+    };
+    const { db, persistedSets } = stubDb(settingsRow({ modelApiPricing }));
+    const svc = instanceSettingsService(db, { runtimeEnv: {} });
+
+    expect((await svc.getGeneral()).modelApiPricing).toEqual(modelApiPricing);
+    await svc.updateGeneral({ keyboardShortcuts: true });
+    expect((persistedSets[0]!.general as Record<string, unknown>).modelApiPricing).toEqual(modelApiPricing);
   });
 
   it("overlays reads but never persists the operator value", async () => {

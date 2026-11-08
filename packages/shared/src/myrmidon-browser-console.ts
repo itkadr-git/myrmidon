@@ -57,6 +57,47 @@ export interface BrowserScreenOpenResponse {
   warnAt: string;
 }
 
+/** Part B: the address of the x11vnc endpoint that guacd must reach, from MYRMIDON_BROWSER_VNC_TARGET. */
+export interface BrowserVncTarget {
+  hostname: string;
+  port: number;
+}
+
+/** The standard VNC port; used only when MYRMIDON_BROWSER_VNC_TARGET omits its own. */
+export const DEFAULT_BROWSER_VNC_PORT = 5900;
+
+/** A `host[:port]` value: a bare hostname, or a bracketed IPv6 address, then an optional port. */
+const BROWSER_VNC_TARGET_PATTERN = /^(\[[0-9A-Fa-f:.]+]|[A-Za-z0-9][A-Za-z0-9._-]{0,253})(?::([0-9]{1,5}))?$/;
+
+/**
+ * Parse `host[:port]` (the VNC target of the screen node). No default host: an
+ * instance that has not configured it must refuse to issue a token rather than
+ * point guacd at a guess. Schemes, paths, whitespace and out-of-range ports
+ * read as invalid.
+ */
+export function parseBrowserVncTarget(raw: string | undefined | null): BrowserVncTarget | null {
+  const text = raw?.trim();
+  if (!text) return null;
+  const match = BROWSER_VNC_TARGET_PATTERN.exec(text);
+  if (!match) return null;
+  if (match[2] === undefined) return { hostname: match[1], port: DEFAULT_BROWSER_VNC_PORT };
+  const port = Number(match[2]);
+  if (port < 1 || port > 65535) return null;
+  return { hostname: match[1], port };
+}
+
+/** POST /api/myrmidon/browsers/:id/screen/console-token response (part B). */
+export interface BrowserScreenConsoleTokenResponse {
+  /** The existing screen session the token is bound to (no new session record). */
+  screenSessionId: string;
+  /** Signed auth-JSON for the Guacamole client, base64. */
+  token: string;
+  /** URL the browser loads in the screen frame: the token in the `data` parameter. */
+  consoleUrl: string;
+  /** When the issued blob stops working (ISO). */
+  expiresAt: string;
+}
+
 /** POST /api/myrmidon/browsers/:id/screen/heartbeat response (also the session status). */
 export interface BrowserScreenStatusResponse {
   screenSessionId: string;

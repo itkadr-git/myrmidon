@@ -2,10 +2,15 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
+import {
+  validateMaintenanceWindowCronRequestSchema,
+  validateMaintenanceWindowCronSchedule,
+} from "@myrmidon/shared";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
+import { assertDeployClassAllowed } from "../autonomy/deploy-class.js";
 import { MAINTENANCE_ON_TIMEOUT, MAINTENANCE_SCOPE_TYPES, type MaintenanceScope } from "./domain.js";
 import { MaintenanceError, type MaintenanceService } from "./service.js";
 import { MAX_DRAIN_TIMEOUT_SEC } from "./settings.js";
@@ -64,6 +69,8 @@ export function maintenanceRoutes(_db: Db, service: MaintenanceService) {
   });
 
   router.post("/myrmidon/maintenance", validate(maintenanceRequestSchema), async (req, res) => {
+    // myrmidon(1.6-AUTONOMY): the deploy class is answered before the admin check.
+    await assertDeployClassAllowed(_db, req);
     assertInstanceAdmin(req);
     const actor = getActorInfo(req);
     const body = req.body as z.infer<typeof maintenanceRequestSchema>;
@@ -88,6 +95,27 @@ export function maintenanceRoutes(_db: Db, service: MaintenanceService) {
       throw toHttpError(err);
     }
   });
+
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator
+  router.post(
+    "/myrmidon/maintenance/validate-cron",
+    validate(validateMaintenanceWindowCronRequestSchema),
+    async (req, res) => {
+      assertBoardOrgAccess(req);
+      const result = validateMaintenanceWindowCronSchedule(req.body);
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/myrmidon/auto-update/validate-cron",
+    validate(validateMaintenanceWindowCronRequestSchema),
+    async (req, res) => {
+      assertBoardOrgAccess(req);
+      const result = validateMaintenanceWindowCronSchedule(req.body);
+      res.json(result);
+    },
+  );
 
   return router;
 }

@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
 
 // A shared handle so the managed-config test can force the runtime preparation
 // step to throw an error that carries untrusted markers.
@@ -10,9 +10,9 @@ const { prepareAdapterExecutionTargetRuntime } = vi.hoisted(() => ({
   prepareAdapterExecutionTargetRuntime: vi.fn(),
 }));
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
-    "@paperclipai/adapter-utils/execution-target",
+vi.mock("@myrmidon/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@myrmidon/adapter-utils/execution-target")>(
+    "@myrmidon/adapter-utils/execution-target",
   );
   return {
     ...actual,

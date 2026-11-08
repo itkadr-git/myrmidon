@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 // @vitest-environment node
 
 import { beforeEach, describe, expect, it } from "vitest";
@@ -10,7 +11,7 @@ import type {
   Issue,
   JoinRequest,
   ProjectWorkspace,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
   buildGroupedInboxSections,
@@ -524,6 +525,7 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        if (item.kind === "knowledge") return `knowledge:${item.suggestion.id}`;
         return `run:${item.run.id}`;
       }),
     ).toEqual([
@@ -567,6 +569,7 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        if (item.kind === "knowledge") return `knowledge:${item.suggestion.id}`;
         return `run:${item.run.id}`;
       }),
     ).toEqual([
@@ -1160,7 +1163,7 @@ describe("inbox helpers", () => {
   });
 
   it("normalizes invalid inbox filter storage back to safe defaults", () => {
-    localStorage.setItem("paperclip:inbox:filters:company-1", JSON.stringify({
+    localStorage.setItem("myrmidon:inbox:filters:company-1", JSON.stringify({
       allCategoryFilter: "bogus",
       allApprovalFilter: "bogus",
       issueFilters: {
@@ -1227,6 +1230,7 @@ describe("inbox helpers", () => {
       "project",
       "parent",
       "labels",
+      "pheromone",
       "updated",
     ]);
     expect(getAvailableInboxIssueColumns(true)).toEqual([
@@ -1238,6 +1242,7 @@ describe("inbox helpers", () => {
       "workspace",
       "parent",
       "labels",
+      "pheromone",
       "updated",
     ]);
   });
@@ -1329,7 +1334,7 @@ describe("inbox helpers", () => {
   });
 
   it("maps legacy new-tab storage to mine", () => {
-    localStorage.setItem("paperclip:inbox:last-tab", "new");
+    localStorage.setItem("myrmidon:inbox:last-tab", "new");
     expect(loadLastInboxTab()).toBe("mine");
   });
 
@@ -1558,7 +1563,7 @@ describe("inbox helpers", () => {
 
   it("returns empty collapsed inbox groups for missing or invalid storage", () => {
     expect(loadCollapsedInboxGroupKeys("company-1")).toEqual(new Set());
-    localStorage.setItem("paperclip:inbox:collapsed-groups:company-1", JSON.stringify({ nope: true }));
+    localStorage.setItem("myrmidon:inbox:collapsed-groups:company-1", JSON.stringify({ nope: true }));
     expect(loadCollapsedInboxGroupKeys("company-1")).toEqual(new Set());
   });
 
@@ -1575,7 +1580,7 @@ describe("inbox helpers", () => {
 
   it("returns empty collapsed inbox parents for missing or invalid storage", () => {
     expect(loadCollapsedInboxParentIds("company-1")).toEqual(new Set());
-    localStorage.setItem("paperclip:inbox:collapsed-parents:company-1", JSON.stringify({ nope: true }));
+    localStorage.setItem("myrmidon:inbox:collapsed-parents:company-1", JSON.stringify({ nope: true }));
     expect(loadCollapsedInboxParentIds("company-1")).toEqual(new Set());
   });
 
@@ -1587,5 +1592,22 @@ describe("inbox helpers", () => {
     expect(shouldResetInboxWorkspaceGrouping("workspace", false, true)).toBe(true);
     expect(shouldResetInboxWorkspaceGrouping("workspace", true, true)).toBe(false);
     expect(shouldResetInboxWorkspaceGrouping("none", false, true)).toBe(false);
+  });
+});
+
+
+describe("knowledge inbox items", () => {
+  it("includes only pending suggestions with stable keys and type grouping", () => {
+    const suggestion = { id: "proposal-1", targetItemId: null, body: "Reusable lesson", status: "pending" as const, trust: null, createdAt: "2026-10-27T00:00:00Z" };
+    const items = getInboxWorkItems({ issues: [], approvals: [], knowledgeSuggestions: [suggestion, { ...suggestion, id: "accepted", status: "accepted" }] });
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe("knowledge");
+    expect(getInboxWorkItemKey(items[0])).toBe("knowledge:proposal-1");
+    expect(groupInboxWorkItems(items, "type")[0]).toMatchObject({ key: "knowledge", label: "Knowledge" });
+  });
+
+  it("persists the knowledge category per company", () => {
+    saveInboxFilterPreferences("knowledge-company", { ...loadInboxFilterPreferences("knowledge-company"), allCategoryFilter: "knowledge", allApprovalFilter: "all" });
+    expect(loadInboxFilterPreferences("knowledge-company").allCategoryFilter).toBe("knowledge");
   });
 });

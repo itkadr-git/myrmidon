@@ -42,10 +42,12 @@
 //     (hermes_cli/config.py `_expand_env_vars`); the actual value belongs
 //     in input.env under that name.
 import { createHash } from "node:crypto";
+import { writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
-import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
+import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@myrmidon/shared";
+import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
-import { writeYamlDocument, type YamlMapping } from "./deterministic-yaml.js";
+import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
 
 // ---------------------------------------------------------------------------
 // Input
@@ -59,7 +61,12 @@ export interface HermesProfileAdapterConfig {
   provider?: string;
   /** adapterConfig.effort — the vendor "Thinking effort" field (reasoning level). */
   effort?: string;
-  /** adapterConfig.models.{vision,video,stt,tts,fallbacks} — the M1 "Additional models" block. */
+  /**
+   * `adapterConfig.maxOutputTokens` — output budget for the main model, written to
+   * `model.max_tokens` in Hermes config.yaml. An unset value keeps Hermes defaults.
+   */
+  maxOutputTokens?: number;
+  /** `adapterConfig.models.{vision,video,stt,tts,fallbacks}` — the M1 "Additional models" block. */
   models?: {
     vision?: string;
     video?: string;
@@ -72,6 +79,25 @@ export interface HermesProfileAdapterConfig {
      * instance-wide alias map (HermesProfileInstanceDefaults.modelContextLengths).
      */
     contextLength?: number;
+    /**
+    /** myrmidon(BOT-MAXTOKENS): explicit output budget from card models block. */
+    maxOutputTokens?: number;
+    /** myrmidon(REASONING-OUTPUT-LIMIT): canonical Hermes output budget. */
+    maxTokens?: number;
+    /**
+     * myrmidon(BOT-RUNTIME-TUNING-A): the card's own absolute compression
+     * threshold in tokens, written to `compression.threshold_tokens` (Hermes
+     * compresses at the LOWER of the ratio threshold and this count). Wins
+     * over the instance default
+     * ({@link HermesProfileCompressionDefaults.thresholdTokens}); a card that
+     * says nothing keeps that default, so the fleet's 100k cap stays in force.
+     * Range 10_000..2_000_000; an explicit value outside it is dropped with a
+     * warning and never replaced by a different number (the same rule
+     * {@link buildModelContextLength} applies to the card's context window).
+     * There is no "off" value here: turning the cap off is a company-level
+     * decision (MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS=0).
+     */
+    compressionThresholdTokens?: number;
     /**
      * myrmidon(BOT-RUNTIME-TUNING-B): model for `auxiliary.title_generation.model`
      * (a gateway model alias); the instance default
@@ -91,6 +117,19 @@ export interface HermesProfileAdapterConfig {
   parallelHelpers?: ParallelHelpersCard;
   /** adapterConfig.toolsets — comma-separated Hermes toolset names. */
   toolsets?: string;
+  /**
+   * myrmidon(TOOL-DIET): the card's own list of single tools to hide from the model, written to
+   * `agent.disabled_tools`. Present (even empty) it replaces the instance list entirely, so `[]`
+   * means "this bot keeps every tool"; absent, the instance list applies.
+   */
+  disabledTools?: string[];
+  /**
+   * myrmidon(TOOL-DIET-ROLES): the card's own list of tools it keeps although an instance or role
+   * default drops them. A name is a single tool (`skill_manage`) or, for the role groups, a group or
+   * toolset name (`memory`, `web`, `browser`). Ignored when the card lists `disabledTools` itself:
+   * that list is taken as written.
+   */
+  keepTools?: string[];
 }
 
 /** A text file placed under /workspace (the sibling files of an instructions bundle). */
@@ -167,6 +206,41 @@ export interface HermesProfileHindsightSettings {
 }
 
 /**
+ * myrmidon(BOT-LSP): the bot's `lsp` block in config.yaml (Hermes
+ * `hermes_cli/config_defaults.py` "lsp"). Each field is written only when set;
+ * an unset field keeps Hermes' own default. Which values a bot gets is decided
+ * outside the compiler (profile-input.ts, by role and card — see
+ * packages/shared/src/myrmidon-bot-lsp.ts).
+ */
+export interface HermesProfileLspSettings {
+  /**
+   * Whether to enable language server protocol support for code assistance.
+   * Default: true
+   */
+  enabled?: boolean;
+  /**
+   * Timeout in seconds after which idle language servers are shut down.
+   * Default: 600 (10 minutes), recommended: 120 for development to save memory
+   */
+  idleTimeout?: number;
+  /**
+   * `lsp.exclude_roots`: workspace roots (glob patterns) where no language
+   * server starts, e.g. a monorepo whose typecheck runs on the build server.
+   */
+  excludeRoots?: string[];
+  /**
+   * `lsp.wait_mode`: "document" (wait for the edited file's diagnostics) or
+   * "full" (also workspace-wide diagnostics). Hermes default: "document".
+   */
+  waitMode?: string;
+  /**
+   * `lsp.servers`: per-server overrides keyed by Hermes' registry id (e.g.
+   * `typescript`): `disabled`, `command`, `env`, `initialization_options`.
+   */
+  servers?: Record<string, YamlNode>;
+}
+
+/**
  * Instance-wide LLM gateway settings (e.g. an internal OpenAI-compatible
  * gateway endpoint) — not carried by the agent card, merged in once per
  * instance by the caller (G3), the same way
@@ -231,8 +305,14 @@ export interface HermesProfileCompressionDefaults {
    * for a large-window model the 0.5 ratio fires far above 256K). Written to
    * `compression.threshold_tokens` whenever set and in 10_000..2_000_000;
    * outside the range it is dropped with a warning, never thrown. Unset —
-   * nothing is written and Hermes applies its own 256K default: the default
-   * value is the instance's decision (an env default), not this compiler's.
+   * nothing is written and Hermes applies its own 256K default: this compiler
+   * still adds no default of its own; the value comes from the instance's
+   * settings, and the company default is 100_000
+   * (profile-input.ts `BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS`, applied when
+   * MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS is unset).
+   *
+   * myrmidon(BOT-RUNTIME-TUNING-A): the agent card's own
+   * `adapterConfig.models.compressionThresholdTokens` wins over this value.
    */
   thresholdTokens?: number;
 }
@@ -243,11 +323,33 @@ export interface HermesProfileAuxiliaryDefaults {
   titleGenerationModel?: string;
   /** Gateway model alias for `auxiliary.compression.model`. Empty = not written. */
   compressionModel?: string;
+  /**
+   * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling for auxiliary
+   * calls — model aliases written to `auxiliary.<task>.fallback_chain` for the
+   * auxiliary tasks this compiler configures (title generation, compression).
+   * Hermes walks that chain before the main one, so an auxiliary call that
+   * cannot be served by its own model lands on another model of the same
+   * (cheap) class instead of climbing the card's `models.fallbacks` — or the
+   * gateway's own ladder — into a paid model. Empty/absent = no chain written
+   * (Hermes's own policy). Vision is not capped: its entries must be
+   * vision-capable, a class this list cannot vouch for.
+   */
+  fallbackModels?: readonly string[];
 }
 
 export interface HermesProfileInstanceDefaults {
   compression?: HermesProfileCompressionDefaults;
   sessionsRetentionDays?: number;
+  /**
+   * myrmidon(MEMORY-CENTRAL-A): instance-wide switch (MYRMIDON_BOT_LOCAL_MEMORY_OFF)
+   * that turns the bot's Hermes LOCAL memory off: `memory.memory_enabled: false`
+   * and `memory.user_profile_enabled: false` are written into config.yaml (the
+   * vendor flags behind the built-in MEMORY.md/USER.md stores) so durable memory
+   * lives only in hindsight (`memory.provider: hindsight` is unchanged either
+   * way). Unset or false — the memory block is emitted exactly as before, byte
+   * for byte, so flipping the setting off restores the previous restartHash.
+   */
+  disableLocalMemory?: boolean;
   /**
    * myrmidon(BOT-RUNTIME-TUNING-B): explicit context window per model alias
    * (gateway model name -> tokens). The card's own
@@ -257,6 +359,21 @@ export interface HermesProfileInstanceDefaults {
   modelContextLengths?: Record<string, number>;
   /** myrmidon(BOT-RUNTIME-TUNING-B): instance-wide auxiliary model defaults. */
   auxiliary?: HermesProfileAuxiliaryDefaults;
+  /** myrmidon(BOT-LSP): instance-wide LSP settings to control language server behavior. */
+  lsp?: HermesProfileLspSettings;
+  /**
+   * myrmidon(TOOL-DIET): instance-wide list of single tools no bot sends to the model
+   * (MYRMIDON_BOT_DISABLED_TOOLS) — each tool's schema is paid on every model call.
+   * The card's `adapterConfig.disabledTools` replaces it; `vision_analyze` is kept for a
+   * card that names a vision model of its own. Undefined or empty writes no key at all.
+   */
+  disabledTools?: readonly string[];
+}
+
+/** myrmidon(TOOL-DIET-ROLES): the role defaults for `agent.disabled_tools` / `agent.disabled_toolsets`. */
+export interface HermesProfileRoleToolDiet {
+  disabledTools: readonly string[];
+  disabledToolsets: readonly string[];
 }
 
 export interface HermesProfileInput {
@@ -305,12 +422,21 @@ export interface HermesProfileInput {
    */
   parallelHelpers?: ResolvedParallelHelpers;
   instanceDefaults: HermesProfileInstanceDefaults;
+  /**
+   * myrmidon(TOOL-DIET-ROLES): the tools and toolsets this agent's ROLE keeps out of the model's
+   * schema, already resolved against the card by the caller (tool-diet.ts, which knows the role
+   * policy; this function is pure and knows no roles). Merged with the instance list; a card with
+   * its own `disabledTools` list replaces both. Absent = no role defaults.
+   */
+  roleToolDiet?: HermesProfileRoleToolDiet;
   /** Becomes API_SERVER_KEY in .env — the token runs authenticate to this bot's gateway with. */
   apiServerKey: string;
   /** Becomes PAPERCLIP_API_URL in .env — the board's address reachable from inside the bot container. */
   paperclipApiUrl: string;
   /** Becomes PAPERCLIP_API_KEY in .env — this bot's board API key. */
   paperclipApiKey: string;
+  /** myrmidon(BOT-LSP): per-agent LSP settings to override instance defaults. */
+  lsp?: HermesProfileLspSettings;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +453,6 @@ export interface CompileHermesProfileResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const HERMES_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const HINDSIGHT_RECALL_BUDGETS = ["low", "mid", "high"];
 const HINDSIGHT_MODES: readonly HermesProfileHindsightMode[] = ["local_external", "cloud", "local_embedded"];
 /** The fleet's only supported mode — see {@link HermesProfileHindsightSettings.mode}. */
@@ -344,9 +469,6 @@ const HINDSIGHT_DEFAULT_MODE: HermesProfileHindsightMode = "local_external";
  * compiler can only warn against the floor — see the warning text below.
  */
 const AGENTS_MD_WARN_CHARS = 20_000;
-
-/** In-container mount point of the skills-board volume subtree (containers-plan-senior §2.1). */
-const SKILLS_BOARD_CONTAINER_DIR = "/data/hermes/skills-board";
 
 /** env variable names the image itself sets; a card can never override them. */
 const RESERVED_ENV_NAMES = new Set(["HOME", "PATH", "HERMES_HOME"]);
@@ -426,15 +548,27 @@ function resolveLlmApiKeyEnv(llm: HermesProfileLlmSettings, warnings: string[]):
   return apiKeyEnv;
 }
 
-function buildReasoningEffort(effort: string | undefined, warnings: string[]): string | undefined {
-  const trimmed = nonEmpty(effort);
-  if (!trimmed) return undefined;
-  const lowered = trimmed.toLowerCase();
-  if (!HERMES_REASONING_EFFORTS.includes(lowered)) {
-    warnings.push(`agent.reasoning_effort: "${trimmed}" is not a Hermes effort level; dropped`);
+/**
+ * myrmidon(BOT-TUNING-C): the card effort compiles through the shared effort
+ * policy — an empty field resolves to the model's safe default (never the
+ * Hermes-global "medium" a GLM model rejects), and a value outside the
+ * model's accepted list is dropped with a warning. Hermes omits
+ * reasoning_effort only when no value resolves at all.
+ */
+function buildReasoningEffort(
+  model: string | undefined,
+  effort: string | undefined,
+  warnings: string[],
+): string | undefined {
+  const resolved = effortForModel(model, effort);
+  if (resolved.source === undefined || resolved.value === undefined) return undefined;
+  if (resolved.source === "invalid") {
+    warnings.push(
+      `agent.reasoning_effort: "${effort?.trim()}" is not accepted by model "${model ?? ""}" (accepted: ${resolved.efforts.join(", ")}); dropped`,
+    );
     return undefined;
   }
-  return lowered;
+  return resolved.value;
 }
 
 function buildToolsets(toolsets: string | undefined): string[] | undefined {
@@ -501,19 +635,137 @@ const COMPRESSION_THRESHOLD_TOKENS_MAX = 2_000_000;
 // myrmidon(BOT-RUNTIME-TUNING-B): validation range for model.context_length.
 const MODEL_CONTEXT_LENGTH_MIN = 8_000;
 const MODEL_CONTEXT_LENGTH_MAX = 10_000_000;
+const MODEL_MAX_OUTPUT_TOKENS_MIN = 1_000;
+const MODEL_MAX_OUTPUT_TOKENS_MAX = 200_000;
 
+function buildMaxOutputTokens(value: number | undefined, warnings: string[]): number | undefined {
+  if (value === undefined) return undefined;
+  if (Number.isInteger(value) && value >= MODEL_MAX_OUTPUT_TOKENS_MIN && value <= MODEL_MAX_OUTPUT_TOKENS_MAX) return value;
+  warnings.push(`model.max_tokens: ${value} from the card is outside the supported range ${MODEL_MAX_OUTPUT_TOKENS_MIN}..${MODEL_MAX_OUTPUT_TOKENS_MAX}; dropped`);
+  return undefined;
+}
+
+// myrmidon(REASONING-OUTPUT-LIMIT): default output room for reasoning models.
+const MODEL_MAX_TOKENS_DEFAULT = 32_000;
+const MODEL_MAX_TOKENS_MIN = 256;
+const MODEL_MAX_TOKENS_MAX = 10_000_000;
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the resolved cheap ceiling of the
+ * auxiliary fallback chains. `models` non-empty; `provider`/`baseUrl`/
+ * `apiKeyEnv` describe the route the entries live on and may lack `provider`
+ * when the card names none and the instance has no gateway endpoint (there is
+ * then nowhere to place an entry — the chain is dropped with a warning).
+ */
+interface AuxiliaryCeiling {
+  models: readonly string[];
+  provider?: string;
+  baseUrl?: string;
+  apiKeyEnv?: string;
+}
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the provider of an auxiliary
+ * fallback entry. The card's own provider when it names one (a native provider
+ * keeps its identity, exactly like `buildFallbackModelSequence`); a card that
+ * leaves the provider empty or `auto` talks to the instance LLM gateway, whose
+ * entries must carry that endpoint explicitly (`custom` + base_url + key_env)
+ * — Hermes resolves every fallback entry on its own and inherits neither from
+ * `model` (hermes_cli/fallback_config.py). No provider and no gateway endpoint
+ * → undefined: no ceiling can be placed.
+ */
+function auxiliaryCeilingProvider(provider: string | undefined, llmBaseUrl: string | undefined): string | undefined {
+  const explicit = nonEmpty(provider);
+  if (explicit && explicit.toLowerCase() !== "auto") return explicit;
+  return llmBaseUrl ? "custom" : undefined;
+}
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): `fallback_chain` for one auxiliary
+ * task — the ceiling aliases as Hermes fallback entries, in the configured
+ * order. An alias that repeats the task's own model is dropped: Hermes skips
+ * the backend that just failed anyway, so such an entry is not a fallback.
+ * Returns undefined (with a warning) when the route cannot be resolved or every
+ * entry repeats the task's own model — the task block is still written with its
+ * model, only the ceiling is missing.
+ */
+function buildAuxiliaryFallbackChain(
+  task: string,
+  model: string,
+  ceiling: AuxiliaryCeiling,
+  warnings: string[],
+): YamlMapping[] | undefined {
+  const aliases = ceiling.models.filter((alias) => alias !== model);
+  if (aliases.length === 0) {
+    warnings.push(
+      `auxiliary.${task}.fallback_chain: every entry of the auxiliary fallback ceiling repeats the task's own model "${model}"; dropped`,
+    );
+    return undefined;
+  }
+  const provider = ceiling.provider;
+  if (!provider) {
+    warnings.push(
+      `auxiliary.${task}.fallback_chain: the card names no provider and the instance sets no LLM gateway endpoint, so the auxiliary fallback ceiling cannot be placed; dropped (the auxiliary call would climb the main chain)`,
+    );
+    return undefined;
+  }
+  if (provider === "custom" && !ceiling.apiKeyEnv) {
+    warnings.push(
+      `auxiliary.${task}.fallback_chain: the gateway fallback entries need the LLM gateway key name, which this profile does not carry; ceiling dropped`,
+    );
+    return undefined;
+  }
+  return aliases.map(
+    (alias): YamlMapping => ({
+      provider,
+      model: alias,
+      base_url: ceiling.baseUrl,
+      key_env: ceiling.apiKeyEnv,
+    }),
+  );
+}
+
+/** One auxiliary task block: the model, plus the ceiling chain when there is one. */
+function buildAuxiliaryTask(
+  task: string,
+  model: string,
+  ceiling: AuxiliaryCeiling | undefined,
+  warnings: string[],
+): YamlMapping {
+  if (!ceiling) return { model };
+  const chain = buildAuxiliaryFallbackChain(task, model, ceiling, warnings);
+  return chain ? { model, fallback_chain: chain } : { model };
+}
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-B): the `auxiliary` section. Vision, title
+ * generation and compression as far as the card (or the instance default for
+ * the last two) names a model.
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): title generation and compression
+ * also get the cheap fallback ceiling — without it an auxiliary call that fails
+ * on its own model walks the main chain up to a paid model (fact 02.10).
+ */
 function buildAuxiliary(
   vision: string | undefined,
   titleGeneration: string | undefined,
   compression: string | undefined,
+  ceiling: AuxiliaryCeiling | undefined,
+  warnings: string[],
 ): YamlMapping | undefined {
   const visionModel = nonEmpty(vision);
   const titleModel = nonEmpty(titleGeneration);
   const compressionModel = nonEmpty(compression);
-  if (!visionModel && !titleModel && !compressionModel) return undefined;
+  if (!visionModel && !titleModel && !compressionModel) {
+    if (ceiling) {
+      warnings.push(
+        `auxiliary.fallback_chain: the auxiliary fallback ceiling is set, but neither the cards nor the instance name a title-generation or compression model, so no auxiliary task block exists to cap; nothing written`,
+      );
+    }
+    return undefined;
+  }
   const mapping: Record<string, YamlMapping> = Object.create(null);
-  if (compressionModel) mapping.compression = { model: compressionModel };
-  if (titleModel) mapping.title_generation = { model: titleModel };
+  if (compressionModel) mapping.compression = buildAuxiliaryTask("compression", compressionModel, ceiling, warnings);
+  if (titleModel) mapping.title_generation = buildAuxiliaryTask("title_generation", titleModel, ceiling, warnings);
   if (visionModel) mapping.vision = { model: visionModel };
   return mapping;
 }
@@ -554,6 +806,11 @@ function buildDelegation(helpers: ResolvedParallelHelpers | undefined): YamlMapp
   };
 }
 
+/** The names a card keeps (`keepTools`), trimmed and lowercased; Hermes tool and toolset names are lowercase. */
+function keptToolNames(adapterConfig: HermesProfileAdapterConfig): Set<string> {
+  return new Set((adapterConfig.keepTools ?? []).map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0));
+}
+
 /**
  * myrmidon(PARALLEL-HELPERS): the agent-level toolset switch that turns
  * `delegate_task` itself off. `delegate_task` is a member of
@@ -562,12 +819,74 @@ function buildDelegation(helpers: ResolvedParallelHelpers | undefined): YamlMapp
  * and wins over any composite that re-enables it, which is why the switch
  * belongs there rather than in `toolsets`.
  *
- * Returns undefined for the default "helpers off" case so a card that never
- * mentioned helpers compiles to exactly its previous config.yaml.
+ * myrmidon(TOOL-DIET-ROLES): the role defaults add whole toolsets to the same list, after
+ * `delegation` (so a profile that only switches helpers off compiles exactly as before). The
+ * `memory` toolset is the one that matters: it takes the built-in memory tool AND the Hindsight
+ * provider tools with it (the provider tools are injected outside `agent.disabled_tools`). A card
+ * with its own `disabledTools` list replaces the role defaults, a name in `keepTools` re-enables one.
+ *
+ * Returns undefined when nothing is disabled, so a card that never mentioned helpers and has no
+ * role defaults compiles to exactly its previous config.yaml.
  */
-function buildDisabledToolsets(helpers: ResolvedParallelHelpers | undefined): string[] | undefined {
-  if (!helpers || helpers.enabled) return undefined;
-  return ["delegation"];
+function buildDisabledToolsets(
+  helpers: ResolvedParallelHelpers | undefined,
+  roleToolDiet: HermesProfileRoleToolDiet | undefined,
+  adapterConfig: HermesProfileAdapterConfig,
+): string[] | undefined {
+  const names: string[] = [];
+  if (helpers && !helpers.enabled) names.push("delegation");
+  if (adapterConfig.disabledTools === undefined) {
+    const kept = keptToolNames(adapterConfig);
+    for (const raw of roleToolDiet?.disabledToolsets ?? []) {
+      const name = raw.trim();
+      if (!name || names.includes(name) || kept.has(name.toLowerCase())) continue;
+      names.push(name);
+    }
+  }
+  return names.length > 0 ? names : undefined;
+}
+
+/** Tools whose names the compiler accepts under `agent.disabled_tools` (Hermes tool names, plus MCP-style dots). */
+const DISABLED_TOOL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+/**
+ * myrmidon(TOOL-DIET): `agent.disabled_tools` for the bot — the single tools Hermes drops from
+ * the schema after the toolset selection (patch 17-disabled-tools-by-name). The card's own list
+ * wins and is taken as written; without one the instance list and the role defaults
+ * (myrmidon(TOOL-DIET-ROLES), see tool-diet.ts) apply together, minus what the card keeps
+ * (`keepTools`), and `vision_analyze` gives way when the card chose a vision model, because that
+ * card means to look at pictures. Names that are not tool names are dropped with a warning.
+ * Undefined (no key written) when nothing is left, so a compile without any list is exactly the
+ * previous config.yaml.
+ */
+function buildDisabledTools(
+  adapterConfig: HermesProfileAdapterConfig,
+  instanceTools: readonly string[] | undefined,
+  roleTools: readonly string[] | undefined,
+  warnings: string[],
+): string[] | undefined {
+  const fromCard = adapterConfig.disabledTools !== undefined;
+  let names = fromCard ? [...adapterConfig.disabledTools!] : [...(instanceTools ?? []), ...(roleTools ?? [])];
+  if (!fromCard) {
+    if (nonEmpty(adapterConfig.models?.vision)) {
+      names = names.filter((name) => name !== "vision_analyze");
+    }
+    const keep = keptToolNames(adapterConfig);
+    if (keep.size > 0) names = names.filter((name) => !keep.has(name.trim().toLowerCase()));
+  }
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of names) {
+    const name = raw.trim();
+    if (!name || seen.has(name)) continue;
+    if (!DISABLED_TOOL_NAME_RE.test(name)) {
+      warnings.push(`agent.disabled_tools: "${name}" from ${fromCard ? "the card" : "the instance default"} is not a tool name; dropped`);
+      continue;
+    }
+    seen.add(name);
+    kept.push(name);
+  }
+  return kept.length > 0 ? kept : undefined;
 }
 
 /** stt/tts: the card carries only a model name, never a provider — see module docstring. */
@@ -590,30 +909,40 @@ function warnUnplacedVoiceModels(
 
 function buildCompression(
   defaults: HermesProfileCompressionDefaults | undefined,
+  cardThresholdTokens: number | undefined,
   warnings: string[],
 ): YamlMapping | undefined {
-  if (!defaults) return undefined;
+  // myrmidon(BOT-RUNTIME-TUNING-A): the card may carry the absolute cap on its
+  // own, without any instance-level compression block at all.
+  if (!defaults && cardThresholdTokens === undefined) return undefined;
   // myrmidon(BOT-RUNTIME-TUNING-B): absolute token cap. Set means the instance
   // chose it; unset means "let Hermes default" (256K). Out of range — drop
   // with a warning, never fail the compile: a bot profile is still usable.
-  let thresholdTokens = defaults.thresholdTokens;
+  // myrmidon(BOT-RUNTIME-TUNING-A): the card's own value wins over the
+  // instance default. An explicit card value that does not validate is
+  // DROPPED, not replaced by the instance's number — the compiler never
+  // substitutes a different cap for one the card stated (the same rule
+  // buildModelContextLength follows for the card's context window).
+  const fromCard = cardThresholdTokens !== undefined;
+  let thresholdTokens = fromCard ? cardThresholdTokens : defaults?.thresholdTokens;
   if (thresholdTokens !== undefined) {
+    const origin = fromCard ? "the card" : "the instance default";
     if (!Number.isFinite(thresholdTokens) || thresholdTokens <= 0) {
       warnings.push(
-        `compression.threshold_tokens: "${thresholdTokens}" is not a positive number; dropped (Hermes applies its own default)`,
+        `compression.threshold_tokens: "${thresholdTokens}" from ${origin} is not a positive number; dropped (Hermes applies its own default)`,
       );
       thresholdTokens = undefined;
     } else if (!Number.isInteger(thresholdTokens) || thresholdTokens < COMPRESSION_THRESHOLD_TOKENS_MIN || thresholdTokens > COMPRESSION_THRESHOLD_TOKENS_MAX) {
       warnings.push(
-        `compression.threshold_tokens: ${thresholdTokens} is outside the supported range ${COMPRESSION_THRESHOLD_TOKENS_MIN}..${COMPRESSION_THRESHOLD_TOKENS_MAX}; dropped`,
+        `compression.threshold_tokens: ${thresholdTokens} from ${origin} is outside the supported range ${COMPRESSION_THRESHOLD_TOKENS_MIN}..${COMPRESSION_THRESHOLD_TOKENS_MAX}; dropped`,
       );
       thresholdTokens = undefined;
     }
   }
   const mapping: YamlMapping = {
-    enabled: defaults.enabled,
-    threshold: defaults.threshold,
-    target_ratio: defaults.targetRatio,
+    enabled: defaults?.enabled,
+    threshold: defaults?.threshold,
+    target_ratio: defaults?.targetRatio,
     // myrmidon(BOT-RUNTIME-TUNING-B): absolute token cap, see above.
     threshold_tokens: thresholdTokens,
   };
@@ -627,6 +956,29 @@ function buildCompression(
  * (both the bare name and any "provider/model" form's model part). Range
  * 8_000..10_000_000; out of range — dropped with a warning, never thrown.
  */
+function buildMaxTokens(input: HermesProfileInput, warnings: string[]): number | undefined {
+  const cardOutput = buildMaxOutputTokens(
+    input.adapterConfig.maxOutputTokens ?? input.adapterConfig.models?.maxOutputTokens,
+    warnings,
+  );
+  if (cardOutput !== undefined) return cardOutput;
+  const explicit = input.adapterConfig.models?.maxTokens;
+  if (explicit !== undefined) {
+    if (Number.isInteger(explicit) && explicit >= MODEL_MAX_TOKENS_MIN && explicit <= MODEL_MAX_TOKENS_MAX) {
+      return explicit;
+    }
+    warnings.push(
+      `model.max_tokens: ${explicit} from the card is outside the supported range ${MODEL_MAX_TOKENS_MIN}..${MODEL_MAX_TOKENS_MAX}; using default ${MODEL_MAX_TOKENS_DEFAULT}`,
+    );
+    return MODEL_MAX_TOKENS_DEFAULT;
+  }
+  // When a model is configured on the card, default max_tokens so reasoning models have room
+  if (nonEmpty(input.adapterConfig.model)) {
+    return MODEL_MAX_TOKENS_DEFAULT;
+  }
+  return undefined;
+}
+
 function buildModelContextLength(
   input: HermesProfileInput,
   warnings: string[],
@@ -663,6 +1015,79 @@ function buildModelContextLength(
   return undefined;
 }
 
+type MutableYamlMapping = { [key: string]: YamlNode };
+
+function isYamlMapping(node: YamlNode): node is YamlMapping {
+  return typeof node === "object" && node !== null && !Array.isArray(node);
+}
+
+/** Deep merge of two YAML mappings: `over` wins; nested mappings merge, lists and scalars are replaced. */
+function mergeYamlMappings(base: YamlMapping, over: YamlMapping): YamlMapping {
+  const merged: MutableYamlMapping = { ...base };
+  for (const [key, value] of Object.entries(over)) {
+    if (value === undefined) continue;
+    const current = merged[key];
+    merged[key] = isYamlMapping(current) && isYamlMapping(value) ? mergeYamlMappings(current, value) : value;
+  }
+  return merged;
+}
+
+/** One level of LSP settings -> Hermes' `lsp` keys (only the fields that are set). */
+function lspSettingsToYaml(settings: HermesProfileLspSettings | undefined): YamlMapping {
+  if (!settings) return {};
+  const out: MutableYamlMapping = {};
+  if (settings.enabled !== undefined) out.enabled = settings.enabled;
+  if (settings.idleTimeout !== undefined) out.idle_timeout = settings.idleTimeout;
+  if (settings.excludeRoots && settings.excludeRoots.length > 0) out.exclude_roots = [...settings.excludeRoots];
+  if (settings.waitMode) out.wait_mode = settings.waitMode;
+  if (settings.servers && Object.keys(settings.servers).length > 0) out.servers = { ...settings.servers };
+  return out;
+}
+
+/**
+ * myrmidon(BOT-LSP): the `lsp` block from the instance default and the
+ * per-agent value. The agent wins field by field; `servers` merges per server
+ * id and per option (an agent option overrides the instance one, the rest
+ * stay). `exclude_roots` is a list, so the agent's list replaces the
+ * instance's. Undefined when neither level sets anything.
+ */
+function buildLspConfig(input: HermesProfileInput): YamlMapping | undefined {
+  const merged = mergeYamlMappings(lspSettingsToYaml(input.instanceDefaults.lsp), lspSettingsToYaml(input.lsp));
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+/**
+ * myrmidon(OPE-11966): the `providers:` entry of the instance LLM gateway, and the header it names.
+ *
+ * The pool of ChatGPT accounts behind the gateway caches a prompt only when the requests of one
+ * conversation carry one stable key. The gateway (LiteLLM) reads that key from the
+ * `x-litellm-session-id` request header (it becomes the ChatGPT `session_id`); without the header
+ * the id is the call id, new on every request, and the pool's cache hit only 25-47% of the input.
+ * Hermes has a vendor option for exactly this: `providers.<id>.session_affinity_header` names a
+ * header that Hermes fills with the conversation key on every request to the matching endpoint
+ * (agent/opencode_affinity.py: the conversation root, stable across compaction rotation, else the
+ * session id the board sends with the run). An entry is matched to a request by its base URL, so
+ * this one carries the gateway URL that `model.base_url` and every `fallback_model` entry carry;
+ * any other endpoint gets no session id (Hermes never sends one to a URL that did not ask for it).
+ */
+export const LLM_GATEWAY_PROVIDER_ID = "myrmidon-gateway";
+export const LLM_GATEWAY_SESSION_AFFINITY_HEADER = "x-litellm-session-id";
+
+function buildGatewayProviders(
+  llmBaseUrl: string | undefined,
+  llmApiKeyEnv: string | undefined,
+): YamlMapping | undefined {
+  if (!llmBaseUrl) return undefined;
+  return {
+    [LLM_GATEWAY_PROVIDER_ID]: {
+      api: llmBaseUrl,
+      // A bare variable name, like the `key_env` of the fallback entries: Hermes resolves it itself.
+      key_env: llmApiKeyEnv,
+      session_affinity_header: LLM_GATEWAY_SESSION_AFFINITY_HEADER,
+    },
+  };
+}
+
 function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string {
   const { adapterConfig } = input;
   warnUnplacedVoiceModels(adapterConfig.models, warnings);
@@ -673,23 +1098,59 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
   const llmBaseUrl = nonEmpty(input.llm.baseUrl);
   const llmApiKeyEnv = resolveLlmApiKeyEnv(input.llm, warnings);
 
+  // Build LSP configuration
+  const lspConfig = buildLspConfig(input);
+
+  // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling of auxiliary
+  // fallback chains, resolved once per compile (the routes of its entries need
+  // the same provider/base_url/key_env treatment every `fallback_model` entry
+  // gets — Hermes resolves each independently and inherits none of them).
+  const ceilingModels = input.instanceDefaults.auxiliary?.fallbackModels;
+  const auxCeiling: AuxiliaryCeiling | undefined =
+    ceilingModels && ceilingModels.length > 0
+      ? {
+          models: ceilingModels,
+          provider: auxiliaryCeilingProvider(adapterConfig.provider, llmBaseUrl),
+          baseUrl: llmBaseUrl,
+          apiKeyEnv: llmApiKeyEnv,
+        }
+      : undefined;
+
   const root: YamlMapping = {
     agent: {
-      reasoning_effort: buildReasoningEffort(adapterConfig.effort, warnings),
+      reasoning_effort: buildReasoningEffort(adapterConfig.model, adapterConfig.effort, warnings),
       // myrmidon(PARALLEL-HELPERS): "helpers off" removes delegate_task from the
       // agent's tool surface. Omitted entirely when helpers are on (or the card
       // predates the field), so no unrelated toolset is ever disabled.
-      disabled_toolsets: buildDisabledToolsets(input.parallelHelpers),
+      disabled_toolsets: buildDisabledToolsets(input.parallelHelpers, input.roleToolDiet, adapterConfig),
+      // myrmidon(TOOL-DIET): single tools that stay out of the model's schema (see buildDisabledTools).
+      disabled_tools: buildDisabledTools(
+        adapterConfig,
+        input.instanceDefaults.disabledTools,
+        input.roleToolDiet?.disabledTools,
+        warnings,
+      ),
     },
     approvals: { mode: "off" },
     // myrmidon(BOT-RUNTIME-TUNING-B): title/compression auxiliary models — the
     // card's map entry first, the instance default when the card is empty.
+    // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): and their cheap fallback
+    // ceiling, so neither task can climb into a paid model.
     auxiliary: buildAuxiliary(
       adapterConfig.models?.vision,
       adapterConfig.models?.titleGeneration ?? input.instanceDefaults.auxiliary?.titleGenerationModel,
       adapterConfig.models?.compressionSummary ?? input.instanceDefaults.auxiliary?.compressionModel,
+      auxCeiling,
+      warnings,
     ),
-    compression: buildCompression(input.instanceDefaults.compression, warnings),
+    compression: buildCompression(
+      input.instanceDefaults.compression,
+      // myrmidon(BOT-RUNTIME-TUNING-A): the card's own absolute cap, if it has one.
+      adapterConfig.models?.compressionThresholdTokens,
+      warnings,
+    ),
+    // myrmidon(BOT-LSP): language server protocol settings
+    lsp: lspConfig,
     // myrmidon(PARALLEL-HELPERS): delegate_task's own limits and child model.
     delegation: buildDelegation(input.parallelHelpers),
     fallback_model: buildFallbackModelSequence(
@@ -701,10 +1162,22 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     ),
     gateway: { api_server: { max_concurrent_runs: input.maxConcurrentRuns } },
     mcp_servers: buildMcpServers(input.mcpServers, warnings),
-    memory: { provider: "hindsight" },
+    // myrmidon(MEMORY-CENTRAL-A): with the instance switch on, the bot's Hermes
+    // LOCAL memory is turned off and durable memory lives only in hindsight.
+    // The vendor contract for the built-in file stores (MEMORY.md/USER.md) is
+    // memory.memory_enabled / memory.user_profile_enabled (tools/memory_tool.py
+    // get_builtin_memory_store_flags, read by agent_init); the external provider
+    // key memory.provider stays "hindsight" either way — it is a separate
+    // mechanism and is NOT disabled by these flags. Off (the default), the block
+    // is exactly the pre-feature one, byte for byte, so flipping the setting off
+    // restores the previous restartHash.
+    memory: input.instanceDefaults.disableLocalMemory
+      ? { provider: "hindsight", memory_enabled: false, user_profile_enabled: false }
+      : { provider: "hindsight" },
     model: {
       default: nonEmpty(adapterConfig.model),
       provider: nonEmpty(adapterConfig.provider),
+      max_tokens: buildMaxTokens(input, warnings),
       // myrmidon(BOT-RUNTIME-TUNING-B): explicit context window override; see buildModelContextLength.
       context_length: buildModelContextLength(input, warnings),
       // Instance-level LLM gateway settings — see HermesProfileLlmSettings.
@@ -714,9 +1187,26 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     },
     platform_toolsets: { api_server: buildToolsets(adapterConfig.toolsets) },
     platforms: { api_server: { enabled: true } },
-    skills: { external_dirs: [SKILLS_BOARD_CONTAINER_DIR] },
+    // myrmidon(OPE-11966): the gateway endpoint asks Hermes for the conversation key, see buildGatewayProviders.
+    providers: buildGatewayProviders(llmBaseUrl, llmApiKeyEnv),
+    // Company skills are delivered per run into Hermes' local skills root.
+    // Keep the legacy profile mount empty so Hermes cannot index each skill twice.
+    skills: { external_dirs: [] },
     sessions: { retention_days: input.instanceDefaults.sessionsRetentionDays },
-    terminal: { cwd: "/workspace" },
+    // myrmidon(OPE-11947): execute_code scrubs every *KEY*/*TOKEN* variable from its
+    // kernel environment unless config.yaml opts it in via terminal.env_passthrough.
+    // Without it the board key the skill tells Python callers to read is missing in
+    // the kernel, every board call from execute_code goes out without credentials
+    // (07.11: 8 of 8 bots that tried, ~4% of /api answered 401), and agents work
+    // around it by reading /data/hermes/.env into the session history. The board
+    // key is the bot's own per-agent key already present in the terminal env.
+    // myrmidon(REBRAND-ENV, OPE-12052): the canonical MYRMIDON_* names come first
+    // (the skill tells agents to read those); PAPERCLIP_* stays as the legacy alias
+    // that buildEnvFile writes next to them.
+    terminal: {
+      cwd: "/workspace",
+      env_passthrough: ["MYRMIDON_API_KEY", "MYRMIDON_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"],
+    },
   };
   return writeYamlDocument(root);
 }
@@ -771,9 +1261,12 @@ function buildEnvFile(input: HermesProfileInput, warnings: string[]): string {
   // map, and always win over a same-named card entry.
   const reserved: Record<string, string> = {
     API_SERVER_KEY: requireNonEmpty(input.apiServerKey, "apiServerKey"),
-    PAPERCLIP_API_URL: requireNonEmpty(input.paperclipApiUrl, "paperclipApiUrl"),
-    PAPERCLIP_API_KEY: requireNonEmpty(input.paperclipApiKey, "paperclipApiKey"),
   };
+  // myrmidon(REBRAND-C): write the board URL and key under both the canonical
+  // MYRMIDON_* names and the PAPERCLIP_* alias so bots reading either prefix
+  // keep working through the transition.
+  writeProductEnv(reserved, "API_URL", requireNonEmpty(input.paperclipApiUrl, "paperclipApiUrl"));
+  writeProductEnv(reserved, "API_KEY", requireNonEmpty(input.paperclipApiKey, "paperclipApiKey"));
   for (const [name, value] of Object.entries(reserved)) {
     if (entries.has(name)) {
       warnings.push(`.env: "${name}" is reserved for the compiler's own value; the card's value was dropped`);
@@ -906,7 +1399,7 @@ function buildSkillFiles(
         warnings.push(`skills.${name}: file path "${skillFile.path}" escapes the skill directory, dropped`);
         continue;
       }
-      out.push(file(`hermes/skills-board/${name}/${skillFile.path}`, skillFile.content, { secret: false }));
+      out.push(file(`hermes/skills/paperclip-managed/${name}/${skillFile.path}`, skillFile.content, { secret: false }));
     }
   }
   return out;
@@ -989,24 +1482,16 @@ export function compileHermesProfileDetailed(input: HermesProfileInput): Compile
   const configYaml = buildConfigYaml(input, warnings);
   const envFile = buildEnvFile(input, warnings);
   const hindsightConfigJson = buildHindsightConfigJson(input.hindsight, warnings);
-  // Restart-class, same as config.yaml/.env/hindsight config above: the
-  // vendor gateway's skills index is built once and cached in-process (LRU +
-  // disk snapshot) and does not watch the skills directory for changes —
-  // adding, removing or editing a skill's files never takes effect for a
-  // running gateway without a restart (agent/prompt_builder.py skills-index
-  // cache; agent/conversation_loop.py: "The skills index cache ... does not
-  // watch the skills dir"; the vendor's own `/reload-skills` command exists
-  // precisely to force this by hand otherwise). All of a skill's files go
-  // in, not just SKILL.md: its frontmatter alone drives the index entry, but
-  // a skill's other files (scripts, references) are also only ever (re)read
-  // through that same cached external_dirs listing.
+  // Skills are delivered as hot files directly into Hermes's run-scoped skills
+  // directory (/data/hermes/skills/paperclip-managed; patch 14) without a
+  // container restart or maintenance window. Hermes picks them up on the next
+  // run. Cold files (config.yaml, .env, hindsight/config.json) remain restart-class.
   const skillFiles = buildSkillFiles(input.skills, warnings);
 
   const restartFiles = [
     file("hermes/config.yaml", configYaml, { secret: hasMcpServerHeaders(input.mcpServers) }),
     file("hermes/.env", envFile, { secret: true }),
     file("hermes/hindsight/config.json", hindsightConfigJson, { secret: false }),
-    ...skillFiles,
   ];
 
   const hasAgentsMd = input.instructions.trim().length > 0;
@@ -1015,14 +1500,18 @@ export function compileHermesProfileDetailed(input: HermesProfileInput): Compile
       `workspace/AGENTS.md: ${input.instructions.length} characters, over Hermes's ${AGENTS_MD_WARN_CHARS}-character context-file floor; Hermes may truncate it at runtime, depending on the bot's model context window (the floor, not necessarily the effective limit for this bot)`,
     );
   }
-  // Files-class: AGENTS.md is re-read by the gateway on each run (it isn't
-  // cached the way the skills index is), so a running gateway picks up an
-  // edit without a restart. Blank instructions write no AGENTS.md at all (an
+  // Files-class: hot profile files (skills, AGENTS.md, workspace files). AGENTS.md
+  // and skills under /data/hermes/skills/paperclip-managed are picked up on each
+  // run without a restart (OPE-10086). Blank instructions write no AGENTS.md at all (an
   // empty file would still be a context file the gateway loads and reports).
   const agentsMdFiles = hasAgentsMd ? [file("workspace/AGENTS.md", input.instructions, { secret: false })] : [];
   // The bundle's sibling files ride the same class: the instructions name them
   // relatively, and the agent reads them on demand, never through a cache.
-  const filesTrackedFiles = [...agentsMdFiles, ...buildWorkspaceFiles(input.workspaceFiles, warnings)];
+  const filesTrackedFiles = [
+    ...skillFiles,
+    ...agentsMdFiles,
+    ...buildWorkspaceFiles(input.workspaceFiles, warnings),
+  ];
 
   const restartHash = hashEntries(restartFiles);
   const filesHash = hashEntries(filesTrackedFiles);

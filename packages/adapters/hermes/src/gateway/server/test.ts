@@ -2,8 +2,8 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
-} from "@paperclipai/adapter-utils";
-import { asString } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils";
+import { asString } from "@myrmidon/adapter-utils/server-utils";
 import {
   allowsInsecureRemoteHttp,
   isLoopbackHostname,
@@ -99,7 +99,9 @@ export async function testEnvironment(
     });
   }
 
-  if (parsed && isRemotePlainHttp(parsed) && !allowsInsecureRemoteHttp(ctx.config)) {
+  // myrmidon(H3): same narrow trust as execute.ts — bot-container host names
+  // pass without any flag, everything else remote needs the dev escape hatch.
+  if (parsed && isRemotePlainHttp(parsed) && !allowsInsecureRemoteHttp(parsed, ctx.config)) {
     checks.push({
       code: "hermes_gateway_plain_http_remote_denied",
       level: "error",

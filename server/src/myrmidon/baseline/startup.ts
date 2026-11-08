@@ -10,12 +10,14 @@
 // failure of one company is logged and does not stop the others; a tick whose
 // previous run is still going is skipped instead of stacking.
 
-import type { Db } from "@paperclipai/db";
-import { baselineMetricSnapshots, companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { baselineMetricSnapshots, companies } from "@myrmidon/db";
 import { isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { computeBaselineMetrics, type BaselineMetricsResponse } from "./service.js";
 import type { BaselineWindow } from "./metrics.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+import { liveSavedSetting } from "../behavior-settings/live.js";
 
 export const BASELINE_INTERVAL_ENV = "MYRMIDON_BASELINE_INTERVAL_SEC";
 export const BASELINE_WINDOW_DAYS = 14;
@@ -36,8 +38,9 @@ export interface BaselineSettings {
  * not silently turn a deliberate opt-in back off.
  */
 export function readBaselineSettings(env: NodeJS.ProcessEnv): BaselineSettings {
-  const raw = env[BASELINE_INTERVAL_ENV];
-  if (raw === undefined || raw.trim() === "") {
+  const saved = env === process.env ? liveSavedSetting<number>("baseline_interval_sec") : undefined;
+  const raw = saved !== undefined ? String(saved) : env[BASELINE_INTERVAL_ENV];
+  if (raw === undefined || raw.trim() === "" || raw.trim() === "0") {
     return { enabled: false, intervalSec: DEFAULT_INTERVAL_SEC, intervalMs: DEFAULT_INTERVAL_SEC * 1000 };
   }
   const parsed = Number(raw);
@@ -153,7 +156,7 @@ export function startBaselineSnapshots(
     }
   };
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick();
   }, settings.intervalMs);
   if (typeof timer.unref === "function") timer.unref();

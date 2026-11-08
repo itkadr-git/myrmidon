@@ -9,6 +9,14 @@
 // Base scope carried over from the 1.2 localization branch (core screens),
 // plus the 2.0 shell/navigation and the Settings → Language screen.
 export const en = {
+  // myrmidon(OPE-9382): interface version switch in the UI2 account menu (Ui2AccountMenu.tsx).
+  uiSwitch: {
+    label: "Interface",
+    new: "New",
+    legacy: "Previous",
+    instanceDefault: "Follow instance setting",
+    switchTo: "Switch interface version",
+  },
   nav: {
     newTask: "New Task",
     search: "Search",
@@ -94,6 +102,34 @@ export const en = {
     savedToast: "Language saved",
     saveFailed: "Could not save the language choice. It stays for this browser only.",
     serverHint: "The choice is saved to your user profile and follows you across devices.",
+    telegramBridgeUser: "The Telegram bot answers you in this language too.",
+    telegramBridgeEnv: "The Telegram bot ignores this choice right now: the server environment forces {{language}} for every chat.",
+    // myrmidon(1.6.5-TG-LOCALE-C): the two remaining sources the screen must
+    // name honestly — the instance setting and the built-in default.
+    telegramBridgeInstance:
+      "The Telegram bot answers in {{language}} — the instance language, because you have not chosen one here.",
+    telegramBridgeDefault:
+      "The Telegram bot answers in {{language}} — the instance default, because you have not chosen one here.",
+    instanceLanguageTitle: "Telegram bot language for the instance",
+    instanceLanguageDescription:
+      "Used for every board member who has not chosen a language above. Only an instance admin can change it; it applies from the next reply, without a restart.",
+    instanceLanguageSave: "Save",
+    instanceLanguageSaved: "Instance language for the Telegram bot: {{language}}.",
+    instanceLanguageFailed: "Could not save the instance language.",
+    instanceLanguageAdminOnly: "Only an instance admin can change the instance language.",
+    uploadTitle: "Upload a custom translation",
+    uploadDescription: "Choose a locale and upload a complete JSON catalog. Keys and placeholders must match English.",
+    uploadLocale: "Locale",
+    uploadFile: "Catalog JSON file",
+    uploadPreview: "Preview",
+    uploadApply: "Apply translation",
+    uploadInvalid: "The catalog does not match the English keys or placeholders.",
+    uploadSaved: "Custom translation saved.",
+    uploadError: "Could not save the catalog. Please try again.",
+    uploadSizeError: "Catalog must be 256 KiB or smaller.",
+    uploadMissingCount: "{{count}} missing keys",
+    uploadUnknownCount: "{{count}} unknown keys",
+    uploadPlaceholderCount: "{{count}} placeholder mismatches",
   },
   status: {
     open: "Open",
@@ -204,6 +240,9 @@ export const en = {
           raiseAndResume: "Raise and resume",
           title: "Cost incidents",
         },
+        forecast: "Forecast through month-end: {{amount}}",
+        unpriced: "Unpriced",
+        unpricedEvents: "{{count}} events without a price",
         policies: {
           amount: "Amount",
           empty: "No cost policies",
@@ -269,8 +308,54 @@ export const en = {
           },
           subtitle: "Interface language",
           title: "Language and formats",
+          formats: {
+            title: "Time zone and formats",
+            timeZone: "Time zone",
+            timeZonePlaceholder: "Search time zones",
+            numberFormat: "Number format",
+            numberFormatEnUs: "English (United States)",
+            numberFormatRuRu: "Russian (Russia)",
+            dateFormat: "Date format",
+            dateFormatYmd: "Year-month-day",
+            dateFormatDmy: "Day-month-year",
+            dateFormatMdy: "Month-day-year",
+            preview: "Preview",
+            source: { default: "Default", settings: "Settings", pending: "Unsaved changes" },
+          },
         },
         runs: {
+          drain: {
+            action: {
+              start: "Start drain",
+              stop: "Stop drain",
+            },
+            confirm: {
+              cancel: "Cancel",
+              confirm: "Confirm start",
+              prompt: "Confirm starting queue drain for {{duration}}? New runs will not be dispatched.",
+            },
+            duration: {
+              d15m: "15 min",
+              d1h: "1 hour",
+              d4h: "4 hours",
+              d24h: "24 hours",
+              label: "Drain duration",
+            },
+            error: {
+              actionFailed: "Action failed.",
+              denied: "No permission to manage task drain.",
+              generic: "Failed to load task drain status.",
+            },
+            status: {
+              activeRuns: "Active runs: {{count}}",
+              draining: "Queue drain is active",
+              idle: "Queue drain is not active",
+              noExpiry: "Until manually stopped",
+              until: "Until {{time}}",
+            },
+            subtitle: "Stop accepting new runs and wait for active runs to finish.",
+            title: "Queue drain",
+          },
           off: "Runs are off",
           reset: "Reset",
           save: "Save",
@@ -281,6 +366,21 @@ export const en = {
             settings: "Settings",
           },
           subtitle: "How the dispatch of runs is configured",
+          swarmClaim: {
+            enable: "Enable self-organization",
+            leaseTtlSec: "Task lease TTL (seconds)",
+            loadError: "Could not load swarm-claim settings",
+            maxActiveTasks: "Per-agent task limit",
+            saveError: "Could not save swarm-claim settings",
+            source: {
+              default: "Default",
+              env: "Set by environment",
+              settings: "Saved",
+            },
+            statusLine: "{{queued}} unassigned task(s) waiting · {{claimed}} claimed in the last hour · {{cancelled}} cancelled in the last hour",
+            subtitle: "Automatic task matching and claim settings",
+            title: "Self-organization (swarm-claim)",
+          },
           title: "Runs",
         },
         system: {
@@ -317,6 +417,13 @@ export const en = {
       },
       owner: "Owner",
       ownerChannel: "Web",
+      shell: {
+        activeChannel: {
+          web: "Active · Web",
+          telegram: "Active · Telegram",
+          none: "Active · not seen recently",
+        },
+      },
       nests: {
         all: "All nests",
       },
@@ -328,6 +435,8 @@ export const en = {
         fleet: "Fleet",
         fleetAttention: "Fleet: 1 attention",
         forecast: "{{spend}} of {{budget}}",
+        // myrmidon(HERMES-USAGE-COST): spend-only variant when no budget is set.
+        forecastSpendOnly: "{{spend}} spent",
       },
       commander: {
         aria: "Tell the Commander (Ctrl K)",
@@ -347,6 +456,42 @@ export const en = {
         placeholderTitle: "This screen arrives with 2.0",
         placeholderBody: "The 2.0 layout for this area is not wired yet; the working screen below keeps the flow.",
         placeholderLegacyLink: "Back to the current layout",
+        fleet: {
+          title: "Servers",
+          subtitle: "Live infrastructure health from the configured monitoring sources.",
+          monitoringError: "Monitoring is not configured or is unavailable.",
+          monitoringUnavailable: "Monitoring data is unavailable.",
+          hosts: "Hosts",
+          services: "Services",
+          oom: "OOM incidents (24h)",
+          oomIncrease: "OOM incidents increased vs previous 24h",
+          oomAgents: "By agent",
+          oomRoles: "By role",
+          empty: "No fleet data",
+          emptyBody: "No hosts or services were returned for this company.",
+          error: "Fleet data is unavailable.",
+          metrics: "CPU {{cpu}}% · memory {{memory}}% · disk {{disk}}%",
+          states: { running: "Running", stopped: "Stopped", unknown: "Unknown" },
+        },
+        more: {
+          title: "More",
+          subtitle: "Additional sections and preferences.",
+          sections: {
+            navigation: "Navigation",
+            appearance: "Appearance",
+          },
+          theme: "Theme",
+          themeLight: "Light",
+          themeDark: "Dark",
+          themeSystem: "System",
+          links: {
+            swarm: "Swarm",
+            costs: "Costs",
+            quality: "Quality",
+            settings: "Settings",
+            agentCard: "Agent card",
+          },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning
@@ -366,6 +511,13 @@ export const en = {
 };
 
 export type Ui2Catalog = {
+  uiSwitch: {
+    label: string;
+    new: string;
+    legacy: string;
+    instanceDefault: string;
+    switchTo: string;
+  };
   nav: {
     newTask: string;
     search: string;
@@ -447,6 +599,29 @@ export type Ui2Catalog = {
     savedToast: string;
     saveFailed: string;
     serverHint: string;
+    telegramBridgeUser: string;
+    telegramBridgeEnv: string;
+    telegramBridgeInstance: string;
+    telegramBridgeDefault: string;
+    instanceLanguageTitle: string;
+    instanceLanguageDescription: string;
+    instanceLanguageSave: string;
+    instanceLanguageSaved: string;
+    instanceLanguageFailed: string;
+    instanceLanguageAdminOnly: string;
+    uploadTitle: string;
+    uploadDescription: string;
+    uploadLocale: string;
+    uploadFile: string;
+    uploadPreview: string;
+    uploadApply: string;
+    uploadInvalid: string;
+    uploadSaved: string;
+    uploadError: string;
+    uploadSizeError: string;
+    uploadMissingCount: string;
+    uploadUnknownCount: string;
+    uploadPlaceholderCount: string;
   };
   status: Record<
     | "open"
@@ -559,6 +734,9 @@ export type Ui2Catalog = {
           raiseAndResume: string;
           title: string;
         },
+        forecast: string;
+        unpriced: string;
+        unpricedEvents: string;
         policies: {
           amount: string;
           empty: string;
@@ -624,8 +802,54 @@ export type Ui2Catalog = {
           },
           subtitle: string;
           title: string;
-        },
+          formats: {
+            title: string;
+            timeZone: string;
+            timeZonePlaceholder: string;
+            numberFormat: string;
+            numberFormatEnUs: string;
+            numberFormatRuRu: string;
+            dateFormat: string;
+            dateFormatYmd: string;
+            dateFormatDmy: string;
+            dateFormatMdy: string;
+            preview: string;
+            source: { default: string; settings: string; pending: string };
+          };
+        };
         runs: {
+          drain: {
+            action: {
+              start: string;
+              stop: string;
+            },
+            confirm: {
+              cancel: string;
+              confirm: string;
+              prompt: string;
+            },
+            duration: {
+              d15m: string;
+              d1h: string;
+              d4h: string;
+              d24h: string;
+              label: string;
+            },
+            error: {
+              actionFailed: string;
+              denied: string;
+              generic: string;
+            },
+            status: {
+              activeRuns: string;
+              draining: string;
+              idle: string;
+              noExpiry: string;
+              until: string;
+            },
+            subtitle: string;
+            title: string;
+          };
           off: string;
           reset: string;
           save: string;
@@ -634,10 +858,25 @@ export type Ui2Catalog = {
             default: string;
             env: string;
             settings: string;
-          },
+          };
           subtitle: string;
+          swarmClaim: {
+            enable: string;
+            leaseTtlSec: string;
+            loadError: string;
+            maxActiveTasks: string;
+            saveError: string;
+            source: {
+              default: string;
+              env: string;
+              settings: string;
+            };
+            statusLine: string;
+            subtitle: string;
+            title: string;
+          };
           title: string;
-        },
+        };
         system: {
           changelog: {
             actor: string;
@@ -672,6 +911,13 @@ export type Ui2Catalog = {
       },
     owner: string;
     ownerChannel: string;
+    shell: {
+      activeChannel: {
+        web: string;
+        telegram: string;
+        none: string;
+      };
+    };
     nests: {
       all: string;
     },
@@ -683,6 +929,8 @@ export type Ui2Catalog = {
       fleet: string;
       fleetAttention: string;
       forecast: string;
+      // myrmidon(HERMES-USAGE-COST): spend-only variant when no budget is set.
+      forecastSpendOnly: string;
     },
     commander: {
       aria: string;
@@ -702,6 +950,26 @@ export type Ui2Catalog = {
       placeholderTitle: string;
       placeholderBody: string;
       placeholderLegacyLink: string;
+      fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; hosts: string; services: string; oom: string; oomIncrease: string; oomAgents: string; oomRoles: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
+      more: {
+        title: string;
+        subtitle: string;
+        sections: {
+          navigation: string;
+          appearance: string;
+        };
+        theme: string;
+        themeLight: string;
+        themeDark: string;
+        themeSystem: string;
+        links: {
+          swarm: string;
+          costs: string;
+          quality: string;
+          settings: string;
+          agentCard: string;
+        };
+      };
     },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning

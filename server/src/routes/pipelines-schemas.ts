@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { envConfigSchema, pipelineAutomationRetryScopeSchema } from "@paperclipai/shared";
+import { envConfigSchema, pipelineAutomationRetryScopeSchema } from "@myrmidon/shared";
 
 export const stageKindSchema = z.enum(["open", "working", "review", "done", "cancelled"]);
 export const jsonObjectSchema = z.record(z.string(), z.unknown());

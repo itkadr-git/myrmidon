@@ -13,7 +13,10 @@ rest of their logic:
 - upload(path)/download(file_id, path) — REST /v1/files for large files.
 
 Authentication: the environment variables MEDIA_TOOLS_URL (default
-http://media-mcp:8080) and MEDIA_TOOLS_TOKEN (bot bearer, if set).
+http://media-mcp:8080) and MEDIA_TOOLS_TOKEN (bot bearer, if set). A bot that
+authenticates by peer_host instead (auth.py) sets MEDIA_TOOLS_PEER_AUTH=1:
+the client then works without a token; without either, calls raise
+MediaNotConnectedError instead of hammering the facade with 401s.
 The API is synchronous (not async): it is called from plain CLI scripts.
 """
 from __future__ import annotations
@@ -27,6 +30,17 @@ import urllib.request
 
 DEFAULT_URL = os.environ.get("MEDIA_TOOLS_URL", "http://media-mcp:8080")
 TOKEN = os.environ.get("MEDIA_TOOLS_TOKEN", "")
+# A bot may authenticate to the media facade by peer_host instead of a bearer
+# token (auth.py, config.example.json). Such a bot sets MEDIA_TOOLS_PEER_AUTH=1
+# in its card env; the client then sends no Authorization header and does not
+# raise MediaNotConnectedError when MEDIA_TOOLS_TOKEN is unset. The profile
+# compiler omits the media MCP block only on the token gate — peer bots keep
+# the block.
+PEER_AUTH = os.environ.get("MEDIA_TOOLS_PEER_AUTH", "") == "1"
+
+def _require_token() -> None:
+    if not TOKEN and not PEER_AUTH:
+        raise MediaNotConnectedError()
 # The facade validates the Host header (MEDIA_ALLOWED_HOSTS, default
 # media-mcp,media-mcp:8080). We take the hostname from the URL by default;
 # set MEDIA_TOOLS_HOST when using a custom name.
@@ -40,6 +54,16 @@ class MediaError(RuntimeError):
     pass
 
 
+class MediaNotConnectedError(MediaError):
+    """The bot has no working media token: media is not connected. This is a
+    configuration state, not a runtime failure — the caller should report
+    «медиа не подключено» instead of retrying (the old behaviour hammered the
+    facade with tokenless requests that all came back HTTP 401)."""
+    def __init__(self, message: str = "media not connected: MEDIA_TOOLS_TOKEN is not set"):
+        super().__init__(message)
+        self.connected = False
+
+
 def _headers():
     h = {"Content-Type": "application/json",
          "Accept": "application/json, text/event-stream",
@@ -50,6 +74,7 @@ def _headers():
 
 
 def _rpc(method, params=None, timeout=180):
+    _require_token()
     body = {"jsonrpc": "2.0", "id": 1, "method": method}
     if params is not None:
         body["params"] = params
@@ -59,6 +84,9 @@ def _rpc(method, params=None, timeout=180):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode()
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise MediaNotConnectedError(
+                "media not connected: the media service rejected the token (HTTP 401)") from None
         raise MediaError("media-mcp HTTP %d: %s" % (e.code, e.read().decode()[:300])) from None
     data = None
     if raw.startswith("event:") or raw.startswith("data:"):
@@ -92,6 +120,7 @@ def _call(name, args, timeout=180):
 
 def upload(path: str, name: str | None = None) -> dict:
     """Large file -> file_id (REST PUT /v1/files?name=...). Returns file metadata."""
+    _require_token()
     name = name or os.path.basename(path)
     req = urllib.request.Request("%s/v1/files?name=%s" % (DEFAULT_URL, urllib.parse.quote(name)),
                                  method="PUT", data=open(path, "rb").read(),
@@ -100,6 +129,9 @@ def upload(path: str, name: str | None = None) -> dict:
         with urllib.request.urlopen(req, timeout=600) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise MediaNotConnectedError(
+                "media not connected: the media service rejected the token (HTTP 401)") from None
         raise MediaError("upload HTTP %d: %s" % (e.code, e.read().decode()[:300])) from None
 
 
@@ -112,9 +144,16 @@ def file_put(path: str, name: str | None = None) -> dict:
 
 
 def download(file_id: str, path: str) -> str:
+    _require_token()
     req = urllib.request.Request(DEFAULT_URL + "/v1/files/" + file_id, headers=_headers())
-    with urllib.request.urlopen(req, timeout=600) as r:
-        data = r.read()
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            data = r.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise MediaNotConnectedError(
+                "media not connected: the media service rejected the token (HTTP 401)") from None
+        raise MediaError("download HTTP %d: %s" % (e.code, e.read().decode()[:300])) from None
     with open(path, "wb") as fh:
         fh.write(data)
     return path

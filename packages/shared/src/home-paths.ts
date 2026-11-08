@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 export const PAPERCLIP_CONFIG_BASENAME = "config.json";
@@ -14,13 +15,13 @@ export function expandHomePrefix(value: string): string {
 }
 
 export function resolvePaperclipHomeDir(homeOverride?: string): string {
-  const raw = homeOverride?.trim() || process.env.PAPERCLIP_HOME?.trim();
+  const raw = homeOverride?.trim() || readProductEnv("HOME")?.trim();
   if (raw) return path.resolve(expandHomePrefix(raw));
   return path.resolve(os.homedir(), ".paperclip");
 }
 
 export function resolvePaperclipInstanceId(instanceIdOverride?: string): string {
-  const raw = instanceIdOverride?.trim() || process.env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_PAPERCLIP_INSTANCE_ID;
+  const raw = instanceIdOverride?.trim() || readProductEnv("INSTANCE_ID")?.trim() || DEFAULT_PAPERCLIP_INSTANCE_ID;
   if (!PATH_SEGMENT_RE.test(raw)) {
     throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${raw}'.`);
   }
@@ -85,6 +86,19 @@ export function resolveDefaultBackupDir(input: {
   instanceId?: string;
 } = {}): string {
   return path.resolve(resolvePaperclipInstanceRoot(input), "data", "backups");
+}
+
+type BackupDirConfig = { database?: { backup?: { dir?: string } } };
+
+/** Resolve the directory used by every database-backup producer and consumer. */
+export function resolveDatabaseBackupDir(input: {
+  homeDir?: string;
+  instanceId?: string;
+  config?: BackupDirConfig | null;
+} = {}): string {
+  const config = input.config;
+  const configured = readProductEnv("DB_BACKUP_DIR")?.trim() || config?.database?.backup?.dir?.trim();
+  return configured ? path.resolve(expandHomePrefix(configured)) : resolveDefaultBackupDir(input);
 }
 
 export function resolveHomeAwarePath(value: string): string {

@@ -1,0 +1,187 @@
+# myrmidon(BOT-DISK-H5b): build-time regression for 10-run-workspace-open.patch.
+# The import smoke proves the patched modules import; this proves the behaviour
+# the board depends on (contract C6): a run's ``workspace`` body field runs
+# ``myr-ws open <key> <repo> [--base <ref>] --json`` before the model starts,
+# binds the opened path as the run's cwd and MYRMIDON_TASK_WORKSPACE for its
+# children, falls back to /scratch with a warning payload on exit codes 3/4/5,
+# and is a complete no-op when the field is absent. A fake myr-ws script
+# (MYRMIDON_WS_BIN) stands in for the real CLI from the sibling tasks.
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+sys.path.insert(0, sys.argv[1] if len(sys.argv) > 1 else "/opt/hermes-src")
+
+from tools.run_workspace import (
+    RUN_WORKSPACE_FALLBACK_DIR,
+    MYR_WS_OPEN_TIMEOUT_SEC,
+    _validate_workspace_field,
+    open_task_workspace,
+    reset_run_task_workspace,
+    run_task_workspace_env,
+    run_task_workspace_path,
+    set_run_task_workspace,
+    task_workspace_env_name,
+)
+from tools.environments.local import _inject_session_context_env
+
+
+def _fake_myr_ws(tmpdir: str, *, code: int, payload: dict, record: str) -> str:
+    script = os.path.join(tmpdir, "myr-ws-fake")
+    with open(script, "w") as fh:
+        fh.write(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" > {record}\n"
+            f"printf '%s\\n' '{json.dumps(payload)}'\n"
+            f"exit {code}\n"
+        )
+    os.chmod(script, 0o755)
+    return script
+
+
+def main() -> None:
+    tmpdir = tempfile.mkdtemp(prefix="ws-open-test-")
+    record = os.path.join(tmpdir, "argv.txt")
+    os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+        tmpdir, code=0,
+        payload={"ok": True, "key": "OPE-1", "path": "/workspace/OPE-1",
+                 "class": "E", "repo": "acme/widgets", "branch": "bot/OPE-1",
+                 "base": "origin/main", "reused": False},
+        record=record)
+
+    # Field present: open called with the contract argv, path bound, env
+    # fragment carries MYRMIDON_TASK_WORKSPACE only for the bound run context.
+    field = {"key": "OPE-1", "repo": "acme/widgets", "baseRef": "main"}
+    opened = open_task_workspace(field)
+    assert opened == {"path": "/workspace/OPE-1", "fallback": False,
+                      "exit_code": 0, "error": "", "recovered": []}
+    with open(record) as fh:
+        argv_seen = fh.read().strip()
+    assert argv_seen == "open OPE-1 acme/widgets --base main --json", argv_seen
+    token = set_run_task_workspace(opened["path"], fallback=opened["fallback"])
+    try:
+        assert run_task_workspace_path() == "/workspace/OPE-1"
+        assert run_task_workspace_env() == {"MYRMIDON_TASK_WORKSPACE": "/workspace/OPE-1"}
+        env = {"FOO": "1", "MYRMIDON_TASK_WORKSPACE": "stale"}
+        _inject_session_context_env(env)
+        assert env["MYRMIDON_TASK_WORKSPACE"] == "/workspace/OPE-1"
+        # The bridge must not touch the process env concurrent runs share.
+        assert "MYRMIDON_TASK_WORKSPACE" not in os.environ
+    finally:
+        reset_run_task_workspace(token)
+    assert run_task_workspace_path() is None
+
+    # No field: unbound context injects nothing and STRIPS an inherited value —
+    # an earlier surface's path must never serve a different run.
+    env = {"FOO": "1", "MYRMIDON_TASK_WORKSPACE": "stale"}
+    _inject_session_context_env(env)
+    assert "MYRMIDON_TASK_WORKSPACE" not in env
+    assert run_task_workspace_env() == {}
+
+    # No baseRef: argv has no --base pair at all.
+    os.remove(record)
+    open_task_workspace({"key": "OPE-2", "repo": "acme/widgets"})
+    with open(record) as fh:
+        assert fh.read().strip() == "open OPE-2 acme/widgets --json"
+
+    # MYR-WS-RECOVER: a PR branch is passed as --branch; invalid branches are rejected
+    # before any process starts; a repaired copy is reported through ``recovered``.
+    os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+        tmpdir, code=0,
+        payload={"ok": True, "key": "OPE-7", "path": "/workspace/OPE-7.deploy",
+                 "class": "E", "repo": "acme/deploy", "branch": "fix/x", "reused": True,
+                 "recoveryRef": "refs/myr-ws/recovery/OPE-7",
+                 "recovered": [{"problem": "merge_in_progress", "action": "aborted"}]},
+        record=record)
+    opened = open_task_workspace({"key": "OPE-7", "repo": "acme/deploy", "branch": "fix/x"})
+    with open(record) as fh:
+        assert fh.read().strip() == "open OPE-7 acme/deploy --branch fix/x --json"
+    assert opened["fallback"] is False and opened["path"] == "/workspace/OPE-7.deploy"
+    assert opened["recovered"] == [{"problem": "merge_in_progress", "action": "aborted"}], opened
+    assert _validate_workspace_field(
+        {"key": "A-1", "repo": "a/b", "branch": "fix/x"})["branch"] == "fix/x"
+    for bad_branch in ("", " x", "-x", "a..b", "a b", 5):
+        try:
+            _validate_workspace_field({"key": "A-1", "repo": "a/b", "branch": bad_branch})
+            raise AssertionError(f"accepted malformed branch: {bad_branch!r}")
+        except ValueError:
+            pass
+    os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+        tmpdir, code=0,
+        payload={"ok": True, "key": "OPE-1", "path": "/workspace/OPE-1",
+                 "class": "E", "repo": "acme/widgets", "branch": "bot/OPE-1",
+                 "base": "origin/main", "reused": False},
+        record=record)
+
+    # Contract refusal family 3/4/5: fallback to /scratch with the CLI's error
+    # text as the warning (never a silent wrong-directory run, never a raise).
+    for code in (3, 4, 5):
+        os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+            tmpdir, code=code,
+            payload={"ok": False, "error": f"refusal {code}", "exitCode": code},
+            record=record)
+        opened = open_task_workspace({"key": "OPE-3", "repo": "acme/widgets"})
+        assert opened["fallback"] is True, (code, opened)
+        assert opened["path"] == RUN_WORKSPACE_FALLBACK_DIR == "/scratch"
+        assert opened["exit_code"] == code
+        assert f"refusal {code}" in opened["error"]
+
+    # OPE-8946: ANY other open failure (usage exit 2, unknown code, exit 0 without
+    # a path, timeout) also falls back to /scratch with a warning, never raises:
+    # a raise fails the run and drives the agent towards status error.
+    for code in (1, 2, 6, 7):
+        os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+            tmpdir, code=code,
+            payload={"ok": False, "error": f"broken {code}", "exitCode": code},
+            record=record)
+        opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+        assert opened["fallback"] is True and opened["path"] == "/scratch", (code, opened)
+        assert opened["exit_code"] == code and f"broken {code}" in opened["error"]
+    os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+        tmpdir, code=0, payload={"ok": True}, record=record)
+    opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+    assert opened["fallback"] is True and "without a JSON path" in opened["error"], opened
+    import tools.run_workspace as _rw
+    _orig = _rw.MYR_WS_OPEN_TIMEOUT_SEC
+    _rw.MYR_WS_OPEN_TIMEOUT_SEC = 1
+    slow = os.path.join(tmpdir, "myr-ws-slow")
+    with open(slow, "w") as fh:
+        fh.write("#!/bin/sh\nsleep 5\n")
+    os.chmod(slow, 0o755)
+    os.environ["MYRMIDON_WS_BIN"] = slow
+    try:
+        opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+    finally:
+        _rw.MYR_WS_OPEN_TIMEOUT_SEC = _orig
+    assert opened["fallback"] is True and "timed out" in opened["error"], opened
+
+    # Missing binary: the contract refusal family covers a host without the CLI
+    # too — fall back with a warning rather than fail every run there.
+    os.environ["MYRMIDON_WS_BIN"] = os.path.join(tmpdir, "no-such-binary")
+    opened = open_task_workspace({"key": "OPE-5", "repo": "acme/widgets"})
+    assert opened["fallback"] is True and opened["path"] == "/scratch"
+
+    # Field validation mirrors the C6 zod schema: key PREFIX-123, repo
+    # owner/name, optional baseRef a plausible git ref.
+    assert _validate_workspace_field(
+        {"key": "ABC-101", "repo": "acme/widgets", "baseRef": "origin/x"}) == \
+        {"key": "ABC-101", "repo": "acme/widgets", "baseRef": "origin/x"}
+    for bad in ({}, {"key": "ope-1", "repo": "a/b"}, {"key": "A-1"},
+                {"key": "A-1", "repo": "noowner"}, {"key": "A-1", "repo": "a/b", "baseRef": " "},
+                "OPE-1"):
+        try:
+            _validate_workspace_field(bad)
+            raise AssertionError(f"accepted malformed field: {bad!r}")
+        except ValueError:
+            pass
+    assert MYR_WS_OPEN_TIMEOUT_SEC == 120
+    assert task_workspace_env_name() == "MYRMIDON_TASK_WORKSPACE"
+
+    print("run-workspace-open regression: ok")
+
+
+if __name__ == "__main__":
+    main()

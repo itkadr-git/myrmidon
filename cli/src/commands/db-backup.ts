@@ -1,14 +1,14 @@
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
+import { formatDatabaseBackupResult, runDatabaseBackup } from "@myrmidon/db";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
-import { printPaperclipCliBanner } from "../utils/banner.js";
+import { printMyrmidonCliBanner } from "../utils/banner.js";
 
 type DbBackupOptions = {
   config?: string;
@@ -47,8 +47,8 @@ function resolveBackupDir(raw: string): string {
 }
 
 export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip db:backup ")));
+  printMyrmidonCliBanner();
+  p.intro(pc.bgCyan(pc.black(" myrmidon db:backup ")));
 
   const configPath = resolveConfigPath(opts.config);
   const config = readConfig(opts.config);
@@ -77,6 +77,12 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
       filenamePrefix,
     });
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);
+    // myrmidon(SHARED-PG-BACKUP): the engine reports non-fatal diagnostics
+    // (e.g. a pg_dump client older than a shared PostgreSQL 18 server that
+    // forced the JavaScript fallback); keep them visible in the CLI output.
+    for (const warning of result.warnings ?? []) {
+      p.log.warn(pc.yellow(warning));
+    }
 
     if (opts.json) {
       console.log(
@@ -88,6 +94,9 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
             backupDir,
             retentionDays,
             connectionSource: connection.source,
+            // myrmidon(SHARED-PG-BACKUP): keep diagnostics machine-readable
+            // for scheduled-backup log collectors.
+            ...(result.warnings?.length ? { warnings: result.warnings } : {}),
           },
           null,
           2,

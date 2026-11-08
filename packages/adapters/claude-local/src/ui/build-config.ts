@@ -1,4 +1,4 @@
-import { buildAdapterEnvConfig, type CreateConfigValues } from "@paperclipai/adapter-utils";
+import { buildAdapterEnvConfig, type CreateConfigValues } from "@myrmidon/adapter-utils";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -57,7 +57,24 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (runtimeServices && Array.isArray(runtimeServices.services)) {
     ac.workspaceRuntime = runtimeServices;
   }
+  if (v.filesystemScope) ac.filesystemScope = v.filesystemScope;
+  if (v.networkScope) ac.networkScope = v.networkScope;
+  if (v.networkScope === "allowlist") ac.networkAllowlist = (v.networkAllowlist ?? "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  // myrmidon(1.6.6 OPE-11239): sandbox and timeout settings from the Agent Settings form.
+  const form = v.adapterSchemaValues ?? {};
+  if (form.filesystemScope === "workspace") ac.filesystemScope = "workspace";
+  if (Array.isArray(form.filesystemExtraPaths) && form.filesystemExtraPaths.length > 0) {
+    ac.filesystemExtraPaths = form.filesystemExtraPaths;
+  }
+  if (form.networkScope === "deny" || form.networkScope === "allowlist") ac.networkScope = form.networkScope;
+  if (Array.isArray(form.networkAllowlist) && form.networkAllowlist.length > 0) {
+    ac.networkAllowlist = form.networkAllowlist;
+  }
+  for (const key of ["helloProbeTimeoutSec", "terminalResultCleanupGraceMs"] as const) {
+    const value = form[key];
+    if (typeof value === "number" && value > 0) ac[key] = value;
+  }
   return ac;
 }

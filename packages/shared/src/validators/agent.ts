@@ -10,6 +10,7 @@ import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { MAX_BUDGET_LIMIT_CENTS } from "../myrmidon-budget-limits.js";
 
 export const agentPermissionsSchema = z.object({
   // No schema default: the server derives the default (enabled unless the
@@ -100,7 +101,7 @@ export const createAgentSchema = z.object({
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
   runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
   defaultEnvironmentId: z.string().guid().optional().nullable(),
-  budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
+  budgetMonthlyCents: z.number().int().nonnegative().max(MAX_BUDGET_LIMIT_CENTS).optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   // The optional stored-session claim from a completed Claude login session. It
@@ -125,7 +126,7 @@ export type CreateAgent = z.infer<typeof createAgentSchema>;
 export const builtInAgentProvisionSchema = z.object({
   adapterType: agentAdapterTypeSchema.optional(),
   adapterConfig: adapterConfigSchema.optional(),
-  budgetMonthlyCents: z.number().int().nonnegative().optional(),
+  budgetMonthlyCents: z.number().int().nonnegative().max(MAX_BUDGET_LIMIT_CENTS).optional(),
 }).strict();
 
 export type BuiltInAgentProvision = z.infer<typeof builtInAgentProvisionSchema>;
@@ -239,6 +240,12 @@ export const wakeAgentSchema = z.object({
    * binds to the agent's top ready task or is refused.
    */
   issueId: z.string().uuid().optional(),
+  /** Run-scoped managed AI account selection; never changes agent defaults. */
+  externalSession: z.object({
+    connectionId: z.string().uuid(),
+    grantId: z.string().uuid(),
+    model: z.string().trim().min(1).max(200),
+  }).strict().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
@@ -309,6 +316,10 @@ export const updateAgentPermissionsSchema = z.object({
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
   toolAccess: agentToolAccessSchema.optional(), // myrmidon(S6)
   boardAdmin: z.boolean().optional(), // myrmidon(ADMIN-AGENT)
+  // myrmidon(1.6.5-F-23): grant/revoke the secrets:read_off_run grant. The
+  // board actor toggles this on the agent card; the grant is issued with a
+  // +30 days expiry by default.
+  offRunSecretRead: z.boolean().optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

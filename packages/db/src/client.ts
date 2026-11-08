@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
-import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
 import { withTransientWriteRetry } from "./transient-write-retry.js";
+import { withQueryObservation } from "./query-observer.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -110,6 +110,12 @@ function splitMigrationStatements(content: string): string[] {
     .filter((statement) => statement.length > 0);
 }
 
+function migrationRequiresNonTransactionalExecution(statements: readonly string[]): boolean {
+  return statements.some((statement) => /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(
+    statement.replace(/^\s*--.*$/gm, "").trim(),
+  ));
+}
+
 export type MigrationState =
   | {
       status: "upToDate";
@@ -156,6 +162,17 @@ export interface DatabaseClientOptions {
    * `postgres.js`).
    */
   applicationName?: string;
+  /**
+   * Called once per statement this client issues, before the statement reaches
+   * the driver, in the caller's async context.
+   *
+   * myrmidon(1.6.6 PROCS-0.3A) uses it to attribute DB work to a load lane:
+   * the callback reads the lane in force from an AsyncLocalStorage of the
+   * caller, so no query-building code has to know a lane exists. Statements
+   * inside `db.transaction(...)` are not observed, and a throwing callback is
+   * swallowed — observation never fails a query.
+   */
+  onQuery?: (query: string) => void;
 }
 
 /**
@@ -255,6 +272,17 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   return driverOptions;
 }
 
+/**
+ * A raw postgres.js client through the shared driver of this package — for the
+ * call sites that need LISTEN/NOTIFY (the PROCS-1.3 process bus) rather than a
+ * drizzle face. Not registered in the client registry: the caller owns the
+ * lifecycle and ends it with its own teardown (the bus `stop` does).
+ */
+export function createPostgresJsClient(url: string, options?: DatabaseClientOptions) {
+  const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
+  return postgres(url, postgresJsOptions(resolved));
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   const sql = postgres(url, postgresJsOptions(resolved));
@@ -262,8 +290,14 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   if (key) registerClient(key, sql);
   // The registry keeps the real client (teardown must end the actual pool);
   // drizzle gets the retrying face so a pooler-recycled socket replays the
-  // query instead of failing the request that happened to draw it.
-  return drizzlePg(withTransientWriteRetry(sql), { schema });
+  // query instead of failing the request that happened to draw it, wrapped in
+  // the query observer when someone measures (myrmidon 1.6.6 PROCS-0.3A:
+  // observation sits outside the retry, so a replayed statement counts once).
+  const client = withTransientWriteRetry(sql);
+  return drizzlePg(
+    resolved.onQuery ? withQueryObservation(client, resolved.onQuery) : client,
+    { schema },
+  );
 }
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {
@@ -475,20 +509,27 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
-      await runInTransaction(sql, async () => {
-        for (const statement of splitMigrationStatements(migrationContent)) {
+      const statements = splitMigrationStatements(migrationContent);
+      const recordHistory = () => recordMigrationHistoryEntry(
+        sql,
+        qualifiedTable,
+        columnNames,
+        migrationFile,
+        hash,
+        folderMillisByFileName.get(migrationFile) ?? Date.now(),
+      );
+      if (migrationRequiresNonTransactionalExecution(statements)) {
+        // PostgreSQL forbids CREATE INDEX CONCURRENTLY in a transaction.
+        for (const statement of statements) {
           await sql.unsafe(statement);
         }
-
-        await recordMigrationHistoryEntry(
-          sql,
-          qualifiedTable,
-          columnNames,
-          migrationFile,
-          hash,
-          folderMillisByFileName.get(migrationFile) ?? Date.now(),
-        );
-      });
+        await runInTransaction(sql, recordHistory);
+      } else {
+        await runInTransaction(sql, async () => {
+          for (const statement of statements) await sql.unsafe(statement);
+          await recordHistory();
+        });
+      }
     }
   } finally {
     await sql.end();
@@ -587,6 +628,9 @@ async function indexExists(
       WHERE n.nspname = 'public'
         AND c.relkind = 'i'
         AND c.relname = ${indexName}
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_index i WHERE i.indexrelid = c.oid AND NOT i.indisvalid
+        )
     ) AS exists
   `;
   return rows[0]?.exists ?? false;
@@ -706,9 +750,10 @@ async function migrationStatementAlreadyApplied(
     );
   }
 
-  const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)"/i);
+  const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: CONCURRENTLY)?(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createIndexMatch) {
-    return indexExists(sql, createIndexMatch[1]);
+    const isValid = await indexExists(sql, createIndexMatch[1]);
+    return isValid;
   }
 
   const addConstraintMatch = normalized.match(/^ALTER TABLE "([^"]+)" ADD CONSTRAINT "([^"]+)"/i);
@@ -942,6 +987,72 @@ async function discoverMigrationTableSchema(sql: ReturnType<typeof postgres>): P
   return rows[0]?.schemaName ?? null;
 }
 
+export type MigrationChainEntry = { idx: number; tag: string; hash: string; when: number };
+
+/**
+ * myrmidon(MIGRATE-A): the migration chain as drizzle records it in the
+ * migrations table: journal order, tag, journal millis, and the sha256 of each
+ * SQL file. Read-only; used to prove a source database's applied history.
+ */
+export async function listMigrationChain(): Promise<MigrationChainEntry[]> {
+  const raw = await readFile(MIGRATIONS_JOURNAL_JSON, "utf8");
+  const parsed = JSON.parse(raw) as MigrationJournalFile;
+  const out: MigrationChainEntry[] = [];
+  for (const [position, entry] of (parsed.entries ?? []).entries()) {
+    if (typeof entry?.tag !== "string" || typeof entry?.when !== "number") continue;
+    const content = await readMigrationFileContent(`${entry.tag}.sql`);
+    out.push({
+      idx: Number.isInteger(entry.idx) ? Number(entry.idx) : position,
+      tag: entry.tag,
+      hash: createHash("sha256").update(content).digest("hex"),
+      when: entry.when,
+    });
+  }
+  return out;
+}
+
+export type MigrationTargetSchema = {
+  tables: Set<string>;
+  columns: Set<string>;
+};
+
+let cachedMigrationTargetSchema: Promise<MigrationTargetSchema> | null = null;
+
+/**
+ * myrmidon(MIGRATE-D2): the target schema (tables and columns) known from
+ * our migration tree (the newest migration snapshot in meta/).
+ */
+export async function loadMigrationTargetSchema(): Promise<MigrationTargetSchema> {
+  cachedMigrationTargetSchema ??= (async () => {
+    const raw = await readFile(MIGRATIONS_JOURNAL_JSON, "utf8");
+    const parsed = JSON.parse(raw) as MigrationJournalFile;
+    const entries = parsed.entries ?? [];
+    let maxIdx = -1;
+    for (const entry of entries) {
+      if (typeof entry?.idx === "number" && entry.idx > maxIdx) {
+        maxIdx = entry.idx;
+      }
+    }
+    if (maxIdx < 0) throw new Error("migration journal has no entries");
+    const file = `${String(maxIdx).padStart(4, "0")}_snapshot.json`;
+    const snapshotPath = fileURLToPath(new URL(`./migrations/meta/${file}`, import.meta.url));
+    const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as {
+      tables?: Record<string, { name?: string; columns?: Record<string, unknown> }>;
+    };
+    const tables = new Set<string>();
+    const columns = new Set<string>();
+    for (const table of Object.values(snapshot.tables ?? {})) {
+      if (!table?.name) continue;
+      tables.add(table.name);
+      for (const col of Object.keys(table.columns ?? {})) {
+        columns.add(`${table.name}.${col}`);
+      }
+    }
+    return { tables, columns };
+  })();
+  return cachedMigrationTargetSchema;
+}
+
 export async function inspectMigrations(url: string): Promise<MigrationState> {
   const sql = createUtilitySql(url);
 
@@ -1016,30 +1127,14 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   if (initialState.status === "upToDate") return;
 
   if (initialState.reason === "no-migration-journal-empty-db") {
-    const sql = createUtilitySql(url);
-    try {
-      const db = drizzlePg(sql);
-      await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
-    } finally {
-      await sql.end();
+    await applyPendingMigrationsManually(url, initialState.pendingMigrations);
+    const finalState = await inspectMigrations(url);
+    if (finalState.status !== "upToDate") {
+      throw new Error(
+        `Failed to bootstrap migrations: ${finalState.pendingMigrations.join(", ")}`,
+      );
     }
-
-    let bootstrappedState = await inspectMigrations(url);
-    if (bootstrappedState.status === "upToDate") return;
-    if (bootstrappedState.reason === "pending-migrations") {
-      const repair = await reconcilePendingMigrationHistory(url);
-      if (repair.repairedMigrations.length > 0) {
-        bootstrappedState = await inspectMigrations(url);
-      }
-      if (bootstrappedState.status === "needsMigrations" && bootstrappedState.reason === "pending-migrations") {
-        await applyPendingMigrationsManually(url, bootstrappedState.pendingMigrations);
-        bootstrappedState = await inspectMigrations(url);
-      }
-    }
-    if (bootstrappedState.status === "upToDate") return;
-    throw new Error(
-      `Failed to bootstrap migrations: ${bootstrappedState.pendingMigrations.join(", ")}`,
-    );
+    return;
   }
 
   if (initialState.reason === "no-migration-journal-non-empty-db") {
@@ -1099,8 +1194,8 @@ export async function migratePostgresIfEmpty(url: string): Promise<MigrationBoot
       return { migrated: false, reason: "not-empty-no-migration-journal", tableCount };
     }
 
-    const db = drizzlePg(sql);
-    await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    const migrationFiles = await listJournalMigrationFiles();
+    await applyPendingMigrationsManually(url, migrationFiles);
 
     return { migrated: true, reason: "migrated-empty-db", tableCount: 0 };
   } finally {

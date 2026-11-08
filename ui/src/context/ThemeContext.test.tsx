@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -5,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThemeProvider, useTheme } from "./ThemeContext";
 
-const THEME_STORAGE_KEY = "paperclip.theme";
+const THEME_STORAGE_KEY = "myrmidon.theme";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;

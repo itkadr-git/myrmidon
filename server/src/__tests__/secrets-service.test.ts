@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
+import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@myrmidon/adapter-codex-local/server";
 import {
   activityLog,
   agents,
@@ -21,8 +21,8 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@myrmidon/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -1901,6 +1901,28 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("user-one-secret");
   });
 
+  it("requires an OpenClaw device token secret reference and resolves it for runtime", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `openclaw-device-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "device-token-test-value",
+    });
+    await expect(svc.normalizeAdapterConfigForPersistence(companyId, {
+      deviceToken: "raw-token",
+    }, { adapterType: "openclaw_gateway" })).rejects.toThrow(/company secret reference/);
+    const stored = await svc.normalizeAdapterConfigForPersistence(companyId, {
+      deviceToken: { type: "secret_ref", secretId: secret.id, version: "latest" },
+    }, { adapterType: "openclaw_gateway" });
+    expect(JSON.stringify(stored)).not.toContain("device-token-test-value");
+    const resolved = await svc.resolveAdapterConfigForRuntime(companyId, stored, undefined, {
+      adapterType: "openclaw_gateway",
+    });
+    expect(resolved.config.deviceToken).toBe("device-token-test-value");
+    expect(resolved.secretKeys).toEqual(new Set(["deviceToken"]));
+  });
+
   it("can skip user-secret refs while resolving adapter config for non-runtime skill discovery", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -2041,7 +2063,7 @@ describeEmbeddedPostgres("secretService", () => {
       }),
     ).rejects.toMatchObject({
       status: 500,
-      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      message: "Secret create failed and Myrmidon could not roll back the local secret reservation.",
       details: {
         code: "secret_create_rollback_failed",
         provider: "aws_secrets_manager",
@@ -2108,7 +2130,7 @@ describeEmbeddedPostgres("secretService", () => {
       }),
     ).rejects.toMatchObject({
       status: 500,
-      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      message: "Secret create failed and Myrmidon could not roll back the local secret reservation.",
       details: {
         code: "secret_create_rollback_failed",
         provider: "aws_secrets_manager",
@@ -2687,6 +2709,43 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow("provider resolution failed");
   });
 
+  it("updates lastResolvedAt at most once per five minutes per secret", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `resolved-throttle-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "system",
+      targetId: "system",
+      configPath: "env.API_KEY",
+    });
+    const resolveOnce = () =>
+      svc.resolveSecretValue(companyId, secret.id, "latest", {
+        consumerType: "system",
+        consumerId: "system",
+        configPath: "env.API_KEY",
+      });
+    const readResolvedAt = async () =>
+      (await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))[0]!.lastResolvedAt;
+
+    await resolveOnce();
+    const first = await readResolvedAt();
+    expect(first).toBeInstanceOf(Date);
+
+    await resolveOnce();
+    expect((await readResolvedAt())!.getTime()).toBe(first!.getTime());
+
+    const stale = new Date(Date.now() - 6 * 60_000);
+    await db.update(companySecrets).set({ lastResolvedAt: stale }).where(eq(companySecrets.id, secret.id));
+    await resolveOnce();
+    expect((await readResolvedAt())!.getTime()).toBeGreaterThan(stale.getTime() + 5 * 60_000);
+  });
+
   it("keeps one default provider vault per company provider", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -3138,7 +3197,7 @@ describeEmbeddedPostgres("secretService", () => {
       }),
     ).rejects.toMatchObject({
       status: 500,
-      message: "Secret create failed and Paperclip could not clean up the remote provider secret.",
+      message: "Secret create failed and Myrmidon could not clean up the remote provider secret.",
       details: {
         code: "secret_create_provider_cleanup_failed",
         provider: "aws_secrets_manager",
@@ -3207,7 +3266,7 @@ describeEmbeddedPostgres("secretService", () => {
       }),
     ).rejects.toMatchObject({
       status: 500,
-      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      message: "Secret create failed and Myrmidon could not roll back the local secret reservation.",
       details: {
         code: "secret_create_rollback_failed",
         provider: "aws_secrets_manager",
@@ -3631,7 +3690,7 @@ describeEmbeddedPostgres("secretService", () => {
       }),
     ).rejects.toMatchObject({
       status: 500,
-      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      message: "Secret create failed and Myrmidon could not roll back the local secret reservation.",
       details: {
         code: "secret_create_rollback_failed",
         provider: "aws_secrets_manager",
@@ -3761,10 +3820,10 @@ describeEmbeddedPostgres("secretService", () => {
         providerConfigId: "discovery-preview",
         providerVaultContext: "draft_config",
         region: "us-east-1",
-        credentialPath: "Paperclip server runtime/provider credential path",
+        credentialPath: "Myrmidon server runtime/provider credential path",
         requiredCapability: "secretsmanager:ListSecrets",
         actionableMessage:
-          "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.",
+          "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Myrmidon server runtime/provider credential path.",
         safeAlternative:
           "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.",
       },
@@ -4044,7 +4103,7 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(result.results[0]?.reason)).not.toContain("123456789012");
   });
 
-  it("rejects Paperclip-managed AWS namespace refs during preview and import commit", async () => {
+  it("rejects Myrmidon-managed AWS namespace refs during preview and import commit", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
     const awsVault = await svc.createProviderConfig(companyId, {
@@ -4104,7 +4163,7 @@ describeEmbeddedPostgres("secretService", () => {
       errorCount: 1,
       results: [expect.objectContaining({ status: "error" })],
     });
-    expect(result.results[0]?.reason).toMatch(/Paperclip-managed namespace/i);
+    expect(result.results[0]?.reason).toMatch(/Myrmidon-managed namespace/i);
     const imported = await db.select().from(companySecrets).where(eq(companySecrets.key, "foreign-managed-secret"));
     expect(imported).toHaveLength(0);
   });
@@ -4603,5 +4662,77 @@ describeEmbeddedPostgres("secretService", () => {
         actorId: "user-without-membership",
       }),
     ).rejects.toThrow(/active member|secrets:read|forbidden/i);
+  });
+
+  // myrmidon(1.6.5-F-23): off-run self-secret listing writes an auditable
+  // secret_access_events row with the structured details JSONB.
+  it("listAgentSecretAccessOffRun returns own secrets and writes an off-run audit event", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `off-run-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "secret-value",
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Off Run Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      status: "idle",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(companySecretBindings).values({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "env.MY_OFF_RUN_KEY",
+      versionSelector: "latest",
+      required: true,
+      projectionClass: "unclassified",
+    });
+    // svc.create records its own audit rows; drop them so only the off-run
+    // listing event remains.
+    await db.delete(secretAccessEvents);
+
+    const listed = await svc.listAgentSecretAccessOffRun(companyId, {
+      agentId,
+      actorSource: "agent_key",
+      keyId: "key-123",
+      remoteAddress: "127.0.0.1",
+    });
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      secretId: secret.id,
+      configPath: "env.MY_OFF_RUN_KEY",
+      key: expect.stringMatching(/^off-run-secret-/),
+    });
+
+    const events = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(eq(secretAccessEvents.companyId, companyId));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      consumerType: "agent",
+      consumerId: agentId,
+      outcome: "success",
+    });
+    expect(events[0]?.details).toMatchObject({
+      offRun: true,
+      access: "agent_self_metadata",
+      keyId: "key-123",
+      remoteAddress: "127.0.0.1",
+      listedSecretCount: 1,
+    });
   });
 });

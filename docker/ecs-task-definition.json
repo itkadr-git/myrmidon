@@ -29,7 +29,8 @@
         { "name": "PAPERCLIP_DEPLOYMENT_EXPOSURE", "value": "public" },
         { "name": "PAPERCLIP_PUBLIC_URL", "value": "https://<DOMAIN>" },
         { "name": "PAPERCLIP_MIGRATION_AUTO_APPLY", "value": "true" },
-        { "name": "HEARTBEAT_SCHEDULER_ENABLED", "value": "true" }
+        { "name": "HEARTBEAT_SCHEDULER_ENABLED", "value": "true" },
+        { "name": "MYRMIDON_DB_BACKUP_CATCHUP_WINDOW", "value": "Asia/Irkutsk 04:30-06:10" }
       ],
       "secrets": [
         {

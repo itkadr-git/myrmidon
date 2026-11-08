@@ -27,7 +27,7 @@ import {
   issueThreadInteractions,
   issueRecoveryActions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -37,7 +37,7 @@ import { documentService } from "../services/documents.js";
 import { getTaskPlanContext } from "../services/task-plan-context.js";
 import { terminalizeLegacyExecution, LEGACY_RECOVERY_CAUSE } from "../services/legacy-execution-recovery.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
-import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import { renderPaperclipWakePrompt } from "@myrmidon/adapter-utils/server-utils";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   AGENT_CHAT_DIRECTIVE,
@@ -607,6 +607,10 @@ const support = await getEmbeddedPostgresTestSupport();
       }
     });
     it.each([false, true])("runs real process turns and resets without replaying pre-Stop queued input (queued=%s)", async (queuedBeforeStop) => {
+      const previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+      if (previousJwtSecret === undefined) {
+        process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+      }
       const runtimeCompany = randomUUID();
       const runtimeAgent = randomUUID();
       await db
@@ -751,6 +755,11 @@ const support = await getEmbeddedPostgresTestSupport();
       } finally {
         await new Promise<void>((resolve) => listener.close(() => resolve()));
         await rm(cwd, { recursive: true, force: true });
+        if (previousJwtSecret === undefined) {
+          delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+        } else {
+          process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+        }
       }
     }, 30000);
     it("parks successful native interaction-only turns without consuming unrelated or stale gates", async () => {
@@ -877,8 +886,16 @@ const support = await getEmbeddedPostgresTestSupport();
       await settleUnrecoverableExecutions(db);
       const [after] = await db.select().from(issues).where(eq(issues.id, task.id));
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actions[0]!.id));
-      expect(after.status).toBe(scenario.superseded ? status : "blocked");
-      expect(action).toMatchObject({ status: "resolved", outcome: scenario.superseded ? "cancelled" : "blocked" });
+      // myrmidon(CHAT-HOLD): a chat's stopped turn is never put into `blocked`;
+      // only an ordinary task keeps the vendor's recovery.
+      expect(after.status).toBe(scenario.superseded ? status : scenario.ordinary ? "blocked" : "in_review");
+      expect(action).toMatchObject({
+        status: "resolved",
+        outcome: scenario.superseded || !scenario.ordinary ? "cancelled" : "blocked",
+      });
+      if (!scenario.ordinary && !scenario.superseded) {
+        expect(action.evidence.automaticRecovery).toMatchObject({ replay: "chat_continuation" });
+      }
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("cancelled");
       if (!scenario.ordinary) expect(after.conversationSessionGeneration).toBe(scenario.generation);
     });

@@ -8,36 +8,36 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
-} from "@paperclipai/adapter-utils/local-process-sandbox";
+} from "@myrmidon/adapter-utils/local-process-sandbox";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
-} from "@paperclipai/adapter-utils/execution-target";
-import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidon/adapter-utils/execution-target";
+import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
-} from "@paperclipai/adapter-utils/acpx-engine/constants";
+} from "@myrmidon/adapter-utils/acpx-engine/constants";
 import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
-} from "@paperclipai/adapter-utils/acpx-engine/execute";
+} from "@myrmidon/adapter-utils/acpx-engine/execute";
 import {
   asBoolean,
   asNumber,
   asString,
   parseObject,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
@@ -49,7 +49,7 @@ import {
   classifyThrownErrorClass,
   logSandboxProbeDiagnostic,
 } from "./probe-diagnostics.js";
-import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
+import { createWorkspaceRestoreTeardown } from "@myrmidon/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
@@ -67,6 +67,8 @@ export interface ClaudeEngineSelection {
   explicit: boolean;
   unavailableReason?: string;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 type ClaudeEngineResolutionInput =
   Pick<AdapterExecutionContext, "config"> &
@@ -360,7 +362,7 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
   return async (ctx) => {
     let currentExecutor = executor;
     if (!currentExecutor) {
-      const { createAcpxEngineExecutor } = await import("@paperclipai/adapter-utils/acpx-engine/execute");
+      const { createAcpxEngineExecutor } = await import("@myrmidon/adapter-utils/acpx-engine/execute");
       currentExecutor = createAcpxEngineExecutor(withClaudeAcpDefaults(options));
       executor = currentExecutor;
     }
@@ -620,7 +622,7 @@ export async function probeClaudeAcpSandboxLogin(input: {
       trustedEnv: process.env,
     });
     if (!built.command) {
-      return [buildAcpLoginProbeUnavailableCheck("Claude is not installed on the Paperclip host.")];
+      return [buildAcpLoginProbeUnavailableCheck(`Claude is not installed on the ${PRODUCT_NAME} host.`)];
     }
     command = built.command;
     env = built.env;
@@ -715,7 +717,7 @@ export async function testClaudeAcpEnvironment(
       code: "claude_acp_remote_target",
       level: "info",
       message: "Claude ACP will run against the remote execution environment.",
-      hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
+      hint: `Remote ACP requires a bidirectional process target such as SSH or ${PRODUCT_NAME}'s sandbox process-session bridge.`,
     });
   }
 

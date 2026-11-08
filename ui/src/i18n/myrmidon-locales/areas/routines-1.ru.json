@@ -1,0 +1,307 @@
+{
+  "area": {
+    "routines-1": {
+      "routine-contextual-sidebar": {
+        "nav": {
+          "overview": "Обзор",
+          "schedule": "Расписание",
+          "variables": "Переменные",
+          "delivery": "Доставка",
+          "secrets": "Секреты",
+          "runs": "Прогоны",
+          "activity": "Активность"
+        },
+        "fallbackTitle": "Рутина",
+        "navAriaLabel": "Навигация по рутине",
+        "auditHeading": "Аудит"
+      },
+      "routine-sub-sidebar": {
+        "groups": {
+          "routine": "Рутина",
+          "operate": "Работа"
+        },
+        "items": {
+          "overview": "Обзор",
+          "triggers": "Триггеры",
+          "variables": "Переменные",
+          "secrets": "Секреты",
+          "delivery": "Доставка",
+          "runs": "Прогоны",
+          "activity": "Активность",
+          "history": "История"
+        },
+        "navAriaLabel": "Разделы рутины",
+        "unsavedChanges": "Несохранённые изменения",
+        "sectionPickerAriaLabel": "Раздел рутины"
+      },
+      "routine-save-bar": {
+        "conflictMessage": "Рутину изменили в другом месте. Перезагрузите, чтобы объединить правки.",
+        "unsavedCount_one": "{{count}} несохранённое изменение",
+        "unsavedCount_few": "{{count}} несохранённых изменения",
+        "unsavedCount_many": "{{count}} несохранённых изменений",
+        "unsavedCount_other": "{{count}} несохранённого изменения",
+        "pendingChanges": "Ожидают сохранения",
+        "reloadLatest": "Загрузить актуальную версию",
+        "overwriteAnyway": "Всё равно перезаписать",
+        "overwriteHint": "Заменяет более новую ревизию вашими локальными правками.",
+        "discard": "Отменить",
+        "saveChanges": "Сохранить изменения",
+        "discardTitle": "Отменить изменения?",
+        "discardDescription_one": "В этом разделе будет отменено {{count}} несохранённое изменение.",
+        "discardDescription_few": "В этом разделе будет отменено {{count}} несохранённых изменения.",
+        "discardDescription_many": "В этом разделе будет отменено {{count}} несохранённых изменений.",
+        "discardDescription_other": "В этом разделе будет отменено {{count}} несохранённого изменения.",
+        "keepEditing": "Продолжить правку",
+        "discardConfirm": "Отменить изменения",
+        "readOnly": "Только чтение: эта рутина вам не принадлежит."
+      },
+      "routine-trigger-card": {
+        "formAriaLabel": "Триггер: {{name}}",
+        "nextRun": "Следующий запуск: {{time}}",
+        "kindWebhook": "Вебхук",
+        "kindApi": "API",
+        "label": "Название",
+        "schedule": "Расписание",
+        "signingMode": "Режим подписи",
+        "replayWindow": "Окно повтора (секунды)",
+        "delete": "Удалить",
+        "rotateSecret": "Сменить секрет",
+        "saveTrigger": "Сохранить триггер"
+      },
+      "routine-overview": {
+        "noActiveSchedule": "Нет активного расписания",
+        "manualOnly": "Только ручные прогоны",
+        "activeSchedules_one": "{{count}} активное расписание",
+        "activeSchedules_few": "{{count}} активных расписания",
+        "activeSchedules_many": "{{count}} активных расписаний",
+        "activeSchedules_other": "{{count}} активного расписания",
+        "scheduledTrigger": "Триггер по расписанию",
+        "state": "Состояние",
+        "runActive": "Прогон выполняется сейчас",
+        "noActiveRun": "Нет активного прогона",
+        "schedule": "Расписание",
+        "nextRun": "Следующий прогон",
+        "notScheduled": "Не запланирован",
+        "scheduled": "По расписанию",
+        "addSchedule": "Добавьте или включите расписание",
+        "lastRun": "Последний прогон",
+        "noRunsYet": "Прогонов пока нет",
+        "runManuallyOrWait": "Запустите вручную или дождитесь расписания",
+        "defaultAgent": "Агент по умолчанию",
+        "noDefaultAgent": "Агент по умолчанию не назначен. Автоматические триггеры остаются на паузе.",
+        "description": "Описание",
+        "noDescription": "Описания пока нет.",
+        "recentRuns": "Последние прогоны",
+        "viewAllRuns": "Все прогоны",
+        "noRunsEmpty": "Прогонов пока нет. Запустите рутину сейчас или дождитесь расписания.",
+        "routineRun": "Прогон рутины",
+        "viewActivity": "Активность рутины"
+      },
+      "routine-variables-editor": {
+        "title": "Переменные",
+        "detectedFrom": "Найдены по плейсхолдерам `{{placeholder}}` в названии и инструкциях.",
+        "promptBeforeRun": "Запрашивать это значение у пользователя перед каждым ручным прогоном.",
+        "label": "Название",
+        "type": "Тип",
+        "defaultValue": "Значение по умолчанию",
+        "required": "Обязательная",
+        "noDefault": "Нет значения по умолчанию",
+        "true": "Да",
+        "false": "Нет",
+        "options": "Варианты",
+        "optionsPlaceholder": "высокий, средний, низкий",
+        "defaultOption": "Вариант по умолчанию",
+        "builtin": {
+          "dateDescription": "Текущая дата в формате ГГГГ-ММ-ДД (UTC) на момент прогона рутины.",
+          "timestampDescription": "Дата и время (UTC) в читаемом виде на момент прогона рутины."
+        },
+        "hint": "Используйте плейсхолдеры `{{placeholder}}` в названии или инструкциях, чтобы запрашивать значения при прогоне рутины.",
+        "helpAriaLabel": "Показать справку по переменным",
+        "dialogTitle": "Переменные рутины",
+        "dialogDescription": "Как запрашивать значения и какие переменные Myrmidon подставляет автоматически.",
+        "customHeading": "Свои переменные",
+        "customIntro": "Впишите <0>{{placeholder}}</0> в любое место названия или инструкций. Myrmidon найдёт каждый плейсхолдер, покажет его в разделе <1>Переменные</1> и запросит значение перед каждым прогоном.",
+        "rules": {
+          "names": "Имя должно начинаться с буквы и может содержать буквы, цифры и подчёркивания.",
+          "typeAndDefault": "Выберите тип (text, textarea, number, boolean, select, date), значение по умолчанию и признак обязательности.",
+          "dateSuffix": "Переменные, имя которых заканчивается на Date с большой буквы (например, startDate), по умолчанию создаются с типом date.",
+          "sameName": "Одно и то же имя в названии и в инструкциях считается одной переменной."
+        },
+        "builtinHeading": "Встроенные переменные",
+        "builtinIntro": "Они подставляются автоматически: настройка не нужна, и в списке переменных их не будет.",
+        "columns": {
+          "placeholder": "Плейсхолдер",
+          "example": "Пример",
+          "description": "Описание"
+        }
+      },
+      "routine-run-variables-dialog": {
+        "title": "Запустить рутину",
+        "description": "Выберите агента и при необходимости проект для этого прогона. Значения по умолчанию из рутины подставлены и не изменятся.",
+        "agentLabel": "Агент *",
+        "agentPlaceholder": "Агент",
+        "selectAgent": "Выберите агента",
+        "searchAgents": "Поиск агентов...",
+        "noAgentsFound": "Агенты не найдены.",
+        "projectLabel": "Проект",
+        "projectPlaceholder": "Проект",
+        "noProject": "Без проекта",
+        "searchProjects": "Поиск проектов...",
+        "noProjectsFound": "Проекты не найдены.",
+        "noValue": "Нет значения",
+        "true": "Да",
+        "false": "Нет",
+        "chooseValue": "Выберите значение",
+        "defaultAgentRequired": "Для этого прогона нужен агент по умолчанию.",
+        "missing": "Не заполнено: {{names}}",
+        "chooseWorkspace": "Перед запуском выберите существующее рабочее пространство.",
+        "running": "Запуск..."
+      },
+      "routine-history-tab": {
+        "toast": {
+          "restoredTitle": "Ревизия {{from}} восстановлена как ревизия {{to}}",
+          "restoredWithSecrets": "Состояние включения триггеров восстановлено из снимка. Новые секреты вебхуков доступны в баннере выше.",
+          "restored": "Состояние включения триггеров восстановлено из снимка.",
+          "restoreFailed": "Не удалось восстановить ревизию",
+          "restoreFailedBody": "Myrmidon не смог восстановить ревизию."
+        },
+        "loadError": {
+          "title": "Не удалось загрузить ревизии",
+          "unknown": "Неизвестная ошибка при загрузке ревизий."
+        },
+        "empty": {
+          "title": "Правок пока нет",
+          "description": "Единственная запись в истории этой рутины — ревизия 1. После сохранения правки появится следующая ревизия."
+        },
+        "banner": {
+          "viewing": "Просмотр ревизии {{number}} (только чтение)",
+          "restoreHint": "Восстановление создаст новую ревизию {{next}} с тем же содержимым. История только дополняется и не переписывается.",
+          "returnToCurrent": "Вернуться к текущей",
+          "restoreAsNew": "Восстановить как новую ревизию"
+        },
+        "conflict": {
+          "theRoutine": "рутина",
+          "title": "Несохранённые правки рутины",
+          "description": "Изменено, но не сохранено: {{fields}}. Сохраните или отмените правки, прежде чем смотреть или восстанавливать старую ревизию.",
+          "discard": "Отменить изменения",
+          "saveAndContinue": "Сохранить и продолжить"
+        },
+        "list": {
+          "title": "Ревизии",
+          "total": "Всего: {{total}}",
+          "rev": "рев. {{number}}",
+          "current": "Текущая",
+          "restored": "Восстановлена",
+          "meta": "{{time}} • {{actor}}",
+          "metaWithSummary": "{{time}} • {{actor}} • {{summary}}",
+          "showOlder": "Показать более старые ({{n}})…"
+        },
+        "preview": {
+          "restore": "Восстановить эту ревизию",
+          "saved": "Сохранено {{time}}, автор: {{actor}}",
+          "savedWithSummary": "Сохранено {{time}}, автор: {{actor}} · {{summary}}",
+          "compare": "Сравнить с текущей",
+          "structuredFields": "Поля рутины",
+          "differs": "отличается от текущей",
+          "description": "Описание",
+          "noDescription": "Нет описания",
+          "triggers": "Триггеры ({{n}})",
+          "noTriggers": "В этой ревизии нет триггеров.",
+          "webhookNote": "Секреты вебхуков в ревизиях не хранятся. Если вебхук-триггер при восстановлении приходится создавать заново, Myrmidon выпускает новый секрет в момент восстановления.",
+          "variables": "Переменные ({{n}})",
+          "variableDefault": "по умолчанию: {{value}}"
+        },
+        "fields": {
+          "title": "Название",
+          "priority": "Приоритет",
+          "status": "Статус",
+          "defaultAgent": "Агент по умолчанию",
+          "project": "Проект",
+          "concurrency": "Параллельность",
+          "catchUp": "Догон пропущенных",
+          "env": "Окружение",
+          "variables": "Переменные"
+        },
+        "state": {
+          "enabled": "включён",
+          "disabled": "выключен"
+        },
+        "restore": {
+          "title": "Восстановить ревизию {{number}}?",
+          "description": "Будет создана новая ревизия {{next}} с тем же содержимым, что у ревизии {{number}}. Ревизии {{from}}–{{to}} остаются в истории без изменений.",
+          "revertFields": "Значения полей рутины, переменные и cron-расписание вернутся к прежним.",
+          "revertSecrets": "Секреты рутины вернутся к прежним: {{changes}}.",
+          "historyKept": "История прежних прогонов сохраняется.",
+          "webhookRecreated": "Вебхук-триггер {{label}} будет создан заново с новым URL и секретом. Myrmidon покажет секрет один раз после восстановления — скопируйте его, прежде чем закрыть окно.",
+          "changeSummary": "Описание изменения (необязательно)",
+          "changeSummaryPlaceholder": "Зачем вы восстанавливаете? Будет видно в истории.",
+          "restoring": "Восстановление…",
+          "confirm": "Восстановить как ревизию {{number}}"
+        },
+        "diff": {
+          "title": "Сравнение ревизий рутины",
+          "old": "Было",
+          "new": "Стало",
+          "content": "Содержимое",
+          "fieldChanges": "Изменения полей",
+          "noFieldChanges": "Структурных изменений полей нет.",
+          "columnField": "Поле",
+          "columnOld": "Прежнее значение",
+          "columnNew": "Новое значение",
+          "descriptionDiff": "Изменения описания",
+          "restoreAsNew": "Восстановить рев. {{number}} как новую ревизию",
+          "option": "рев. {{number}} — {{time}}",
+          "optionWithSummary": "рев. {{number}} — {{time}} • {{summary}}",
+          "noDescriptions": "Ни в одной из ревизий нет описания.",
+          "identical": "Описания одинаковы."
+        },
+        "actor": {
+          "board": "оператор",
+          "agent": "агент",
+          "system": "система"
+        },
+        "unassigned": "Не назначен",
+        "noProject": "Без проекта",
+        "replay": "повтор {{seconds}} с",
+        "versionLatest": "последняя",
+        "env": {
+          "plainSet": "обычное (задано)",
+          "plainChanged": "обычное (изменено)",
+          "keys_one": "{{count}} ключ",
+          "keys_few": "{{count}} ключа",
+          "keys_many": "{{count}} ключей",
+          "keys_other": "{{count}} ключа",
+          "keysWithSecrets_one": "{{keys}} ({{count}} ссылка на секрет)",
+          "keysWithSecrets_few": "{{keys}} ({{count}} ссылки на секрет)",
+          "keysWithSecrets_many": "{{keys}} ({{count}} ссылок на секрет)",
+          "keysWithSecrets_other": "{{keys}} ({{count}} ссылки на секрет)",
+          "keysAdded_one": "добавлен {{count}} ключ",
+          "keysAdded_few": "добавлено {{count}} ключа",
+          "keysAdded_many": "добавлено {{count}} ключей",
+          "keysAdded_other": "добавлено {{count}} ключа",
+          "keysRemoved_one": "удалён {{count}} ключ",
+          "keysRemoved_few": "удалено {{count}} ключа",
+          "keysRemoved_many": "удалено {{count}} ключей",
+          "keysRemoved_other": "удалено {{count}} ключа",
+          "keysChanged_one": "изменён {{count}} ключ",
+          "keysChanged_few": "изменено {{count}} ключа",
+          "keysChanged_many": "изменено {{count}} ключей",
+          "keysChanged_other": "изменено {{count}} ключа",
+          "added": "Окружение: добавлено ({{key}})",
+          "removed": "Окружение: удалено ({{key}})",
+          "bindingKind": "Окружение {{key}}: тип привязки",
+          "secret": "Окружение {{key}}: секрет",
+          "version": "Окружение {{key}}: версия",
+          "value": "Окружение {{key}}: значение"
+        },
+        "variablesNone": "(нет)",
+        "trigger": {
+          "removed": "Триггер удалён ({{label}})",
+          "added": "Триггер добавлен ({{label}})",
+          "changed": "Триггер {{label}}",
+          "summaryWithState": "{{summary}} ({{state}})"
+        }
+      }
+    }
+  }
+}

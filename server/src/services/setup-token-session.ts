@@ -33,9 +33,9 @@
 
 import { randomBytes } from "node:crypto";
 import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { adapterAuthSessions } from "@paperclipai/db";
-import type { AgentAdapterType } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { adapterAuthSessions } from "@myrmidon/db";
+import type { AgentAdapterType } from "@myrmidon/shared";
 
 // The setup-token login flow supports only the `claude_local` adapter. The
 // unified `adapter_auth_sessions` table also holds the Codex device-login rows,
@@ -109,7 +109,7 @@ export const SETUP_TOKEN_CANCELLABLE_STATES: readonly SetupTokenSessionState[] =
  * per environment.
  */
 export interface SetupTokenSessionScope {
-  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
+  aiConnection?: import("@myrmidon/shared").AiConnectionLoginIntent;
   companyId: string;
   ownerUserId: string;
   // The adapter of the login. It is part of the session identity.
@@ -219,7 +219,7 @@ export interface SetupTokenLeaseManager {
  * column on the row.
  */
 export interface SetupTokenCleanupRecord {
-  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
+  aiConnection?: import("@myrmidon/shared").AiConnectionLoginIntent;
   sessionId: string;
   companyId: string;
   ownerUserId: string;
@@ -345,7 +345,7 @@ export async function reapSetupTokenLeases(
       released += 1;
     } catch {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      log("[myrmidon] Setup-token reaper: a lease release failed; it stays retryable.");
     }
   }
   return { released, failed };
@@ -686,7 +686,7 @@ export interface SetupTokenPromptView {
  * response returns the login URL through the confidential transport guard.
  */
 export interface SetupTokenSessionDescriptor {
-  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
+  aiConnection?: import("@myrmidon/shared").AiConnectionLoginIntent;
   sessionId: string;
   state: SetupTokenSessionState;
   environmentId: string;
@@ -1309,7 +1309,7 @@ export class SetupTokenSessionService {
     try {
       session.process.stop();
     } catch {
-      this.log("[paperclip] Setup-token session: the process stop step errored.");
+      this.log("[myrmidon] Setup-token session: the process stop step errored.");
     }
     await this.runCleanup(session, resolved);
   }
@@ -1368,7 +1368,7 @@ export class SetupTokenSessionService {
       try {
         await this.store.markState(this.identityOf(session), state);
       } catch {
-        this.log("[paperclip] Setup-token session: the cleanup record update failed; it stays retryable.");
+        this.log("[myrmidon] Setup-token session: the cleanup record update failed; it stays retryable.");
       }
     }
     await this.releaseLeaseSafely(session.lease);
@@ -1382,7 +1382,7 @@ export class SetupTokenSessionService {
     try {
       await this.store.remove(this.identityOf(session));
     } catch {
-      this.log("[paperclip] Setup-token session: the cleanup record removal failed; it stays retryable.");
+      this.log("[myrmidon] Setup-token session: the cleanup record removal failed; it stays retryable.");
     }
     this.sessions.delete(session.id);
   }
@@ -1408,7 +1408,7 @@ export class SetupTokenSessionService {
     } catch {
       // The lease release stays retryable and alertable. The startup reaper
       // releases any lease that a crash or a failure left behind.
-      this.log("[paperclip] Setup-token session: the lease release failed; the reaper retries it.");
+      this.log("[myrmidon] Setup-token session: the lease release failed; the reaper retries it.");
     }
   }
 

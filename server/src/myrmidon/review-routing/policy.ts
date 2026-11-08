@@ -1,0 +1,469 @@
+// myrmidon(REVIEW-ROUTING): the pure decisions of the review routing — which
+// tasks need a reviewer, who may be picked, what the stage patch looks like.
+// No database and no clock here; the sweep feeds these functions.
+
+import { randomUUID } from "node:crypto";
+import { SWARM_QUEUE_ELIGIBILITY_METADATA_KEY, type IssueExecutionPolicy } from "@myrmidon/shared";
+import { applyIssueExecutionPolicyTransition } from "../../services/issue-execution-policy.js";
+
+export interface RoutingIssue {
+  id: string;
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  responsibleUserId?: string | null;
+  executionPolicy: unknown;
+  executionState: unknown;
+  // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only wait is never routed to
+  // an agent reviewer — the verdict belongs to a person by policy.
+  reviewPolicy?: string | null;
+  /** Explicit recovery evaluation; omitted by callers that do not evaluate age. */
+  reviewPathRecoveryEligible?: boolean;
+  /** Current evaluation clock and issue timestamp, supplied by recovery callers. */
+  reviewRecoveryNow?: Date;
+  reviewRecoveryUpdatedAt?: Date;
+}
+
+export interface ReviewerCandidate {
+  id: string;
+  name?: string | null;
+  role: string;
+  model?: string | null;
+  metadata?: Record<string, unknown> | null;
+  /** Agent switched out of the automatic-work queue; it must not be a reviewer either. */
+  swarmQueueEligible?: boolean;
+  /** Active runs in flight (queued + running). */
+  load: number;
+  status?: string | null;
+  isIdle?: boolean;
+  activeRuns?: number;
+  readonly invokable?: boolean;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function policyStages(policy: unknown): Array<Record<string, unknown>> {
+  const stages = asRecord(policy)?.stages;
+  return Array.isArray(stages) ? stages.filter((s): s is Record<string, unknown> => asRecord(s) !== null) : [];
+}
+
+/** True when the policy carries at least one stage with at least one participant. */
+export function policyHasReviewerParticipant(policy: unknown): boolean {
+  return policyStages(policy).some((stage) => Array.isArray(stage.participants) && stage.participants.length > 0);
+}
+
+/**
+ * A task that is in review with no reviewer: it has no stage participant at
+ * all, and no execution workflow in flight. A policy with no stages (it may
+ * still carry the trust boundary or a review preset) is kept and extended; a
+ * non-idle execution state or a monitor means a workflow this routing does not
+ * own, and the task is left alone.
+ */
+export function issueNeedsReviewer(issue: RoutingIssue): boolean {
+  if (issue.status !== "in_review") return false;
+  // myrmidon(HUMAN-REVIEW-WAIT): see the RoutingIssue field.
+  if (issue.reviewPolicy === "human_only") return false;
+  if (policyHasReviewerParticipant(issue.executionPolicy)) return false;
+  if (issue.reviewPathRecoveryEligible === false) return false;
+  if (issue.reviewPathRecoveryEligible === true) {
+    if (!issue.reviewRecoveryNow || !issue.reviewRecoveryUpdatedAt) return false;
+    if (issue.reviewRecoveryUpdatedAt.getTime() > issue.reviewRecoveryNow.getTime() - 15 * 60 * 1000) return false;
+  }
+  const state = asRecord(issue.executionState);
+  if (state) {
+    if (typeof state.status === "string" && state.status !== "idle") return false;
+    if (state.monitor != null) return false;
+  }
+  return true;
+}
+
+export interface PendingAgentReview {
+  stageId: string;
+  reviewerAgentId: string;
+  returnAssigneeAgentId: string | null;
+}
+
+/** The pending review stage held by an agent reviewer, or null. */
+export function readPendingAgentReview(issue: RoutingIssue): PendingAgentReview | null {
+  if (issue.status !== "in_review") return null;
+  const state = asRecord(issue.executionState);
+  if (!state || state.status !== "pending" || state.currentStageType !== "review") return null;
+  const participant = asRecord(state.currentParticipant);
+  if (!participant || participant.type !== "agent" || typeof participant.agentId !== "string") return null;
+  if (typeof state.currentStageId !== "string") return null;
+  const returnAssignee = asRecord(state.returnAssignee);
+  return {
+    stageId: state.currentStageId,
+    reviewerAgentId: participant.agentId,
+    returnAssigneeAgentId:
+      returnAssignee && returnAssignee.type === "agent" && typeof returnAssignee.agentId === "string"
+        ? returnAssignee.agentId
+        : null,
+  };
+}
+
+/** Whole hours elapsed since `since`, or 0 when it is in the future. */
+export function hoursSince(since: Date, now: Date): number {
+  return Math.max(0, Math.floor((now.getTime() - since.getTime()) / 3_600_000));
+}
+
+/** Whole minutes elapsed since `since`, or 0 when it is in the future. */
+export function minutesSince(since: Date, now: Date): number {
+  return Math.max(0, Math.floor((now.getTime() - since.getTime()) / 60_000));
+}
+
+/**
+ * True when the review has been waiting at least `afterMinutes` or `afterHours` (0 disables).
+ * When `afterMinutes` is provided, it takes precedence over `afterHours`.
+ */
+export function isReviewOverdue(input: {
+  since: Date;
+  now: Date;
+  afterHours?: number;
+  afterMinutes?: number;
+}): boolean {
+  if (input.afterMinutes !== undefined) {
+    return input.afterMinutes > 0 && input.now.getTime() - input.since.getTime() >= input.afterMinutes * 60_000;
+  }
+  const afterHours = input.afterHours ?? 0;
+  return afterHours > 0 && input.now.getTime() - input.since.getTime() >= afterHours * 3_600_000;
+}
+
+/** True when a stage or execution state has changesRequestedCount >= 3 (escalated). */
+export function isEscalatedReviewStage(issue: RoutingIssue): boolean {
+  const state = asRecord(issue.executionState);
+  if (state?.escalationReason === "review_round_limit") return true;
+  if (state && typeof state.changesRequestedCount === "number" && state.changesRequestedCount >= 3) {
+    return true;
+  }
+  const policy = asRecord(issue.executionPolicy);
+  const stages = policyStages(policy);
+  for (const stage of stages) {
+    if (typeof stage.changesRequestedCount === "number" && stage.changesRequestedCount >= 3) {
+      return true;
+    }
+    const rec = asRecord(stage);
+    if (typeof rec?.changesRequestedCount === "number" && rec.changesRequestedCount >= 3) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The agent whose group anchors the reviewer pool: the assignee engineer, else the task author. */
+export function issueAnchorAgentId(issue: RoutingIssue): string | null {
+  return issue.assigneeAgentId ?? issue.createdByAgentId ?? null;
+}
+
+export function resolveAgentGroupKey(agent?: { name?: string | null; metadata?: unknown } | null): string {
+  if (!agent) return "";
+  if (agent.metadata && typeof agent.metadata === "object" && !Array.isArray(agent.metadata)) {
+    const tg = (agent.metadata as Record<string, unknown>).telegramGroup;
+    if (typeof tg === "string" && tg.trim()) return tg.trim().toLowerCase();
+  }
+  const name = agent.name ?? "";
+  const prefix = name.trim().toLowerCase().split("-")[0] ?? "";
+  if (prefix.startsWith("adm")) return "adm";
+  if (prefix.startsWith("bbq")) return "bbq";
+  if (prefix.startsWith("work")) return "work";
+  return prefix;
+}
+
+/** Agent ids that must never review this task: its author, its assignee, returnAssignee, and `extra`. */
+export function excludedReviewerIds(issue: RoutingIssue, extra: Iterable<string> = []): Set<string> {
+  const excluded = new Set<string>(extra);
+  if (issue.createdByAgentId) excluded.add(issue.createdByAgentId);
+  if (issue.assigneeAgentId) excluded.add(issue.assigneeAgentId);
+  const pending = readPendingAgentReview(issue);
+  if (pending?.returnAssigneeAgentId) excluded.add(pending.returnAssigneeAgentId);
+  const state = asRecord(issue.executionState);
+  const returnAssignee = asRecord(state?.returnAssignee);
+  if (returnAssignee?.type === "agent" && typeof returnAssignee.agentId === "string") {
+    excluded.add(returnAssignee.agentId);
+  }
+  return excluded;
+}
+
+/**
+ * Least-loaded eligible reviewer. Candidates at or above `maxLoad` and
+ * excluded ids are skipped; ties break by id so the choice is deterministic.
+ */
+export interface ReviewerAvailability {
+  selected: ReviewerCandidate | null;
+}
+
+/** Shared reviewer eligibility/load decision used by both PATCH and sweep. */
+export function evaluateReviewerAvailability(input: {
+  reviewers: readonly {
+    id: string;
+    role: string;
+    metadata?: Record<string, unknown> | null;
+    status?: string | null;
+    isIdle?: boolean;
+    activeRuns?: number;
+    invokable?: boolean;
+    model?: string | null;
+  }[];
+  loadByAgent: ReadonlyMap<string, number>;
+  issue: RoutingIssue;
+  maxLoad: number;
+  authorModel?: string | null;
+}): ReviewerAvailability {
+  return {
+    selected: pickReviewer({
+      candidates: input.reviewers.map((reviewer) => ({
+        id: reviewer.id,
+        role: reviewer.role,
+        metadata: reviewer.metadata,
+        status: reviewer.status,
+        isIdle: reviewer.isIdle,
+        activeRuns: reviewer.activeRuns,
+        invokable: reviewer.invokable,
+        model: reviewer.model,
+        load: input.loadByAgent.get(reviewer.id) ?? 0,
+      })),
+      excluded: excludedReviewerIds(input.issue),
+      maxLoad: input.maxLoad,
+      authorModel: input.authorModel,
+    }),
+  };
+}
+
+/** Rank 0 for idle, 1 for busy. Used to prefer idle candidates before least loaded. */
+export function candidateIdleRank(candidate: ReviewerCandidate): number {
+  if (candidate.status === "idle" || candidate.isIdle === true) return 0;
+  if (candidate.activeRuns !== undefined && candidate.activeRuns === 0 && candidate.load === 0) return 0;
+  if (candidate.load === 0) return 0;
+  return 1;
+}
+
+export function pickReviewer(input: {
+  candidates: readonly ReviewerCandidate[];
+  excluded: ReadonlySet<string>;
+  maxLoad: number;
+  authorModel?: string | null;
+}): ReviewerCandidate | null {
+  const eligible = input.candidates.filter((candidate) => {
+    if (candidate.invokable === false) return false;
+    if (candidate.swarmQueueEligible === false || candidate.metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] === false) return false;
+    if (input.authorModel != null && candidate.model === input.authorModel) return false;
+    return !input.excluded.has(candidate.id) && candidate.load < input.maxLoad;
+  });
+  if (eligible.length === 0) return null;
+  return [...eligible].sort((a, b) => {
+    const idleA = candidateIdleRank(a);
+    const idleB = candidateIdleRank(b);
+    return (idleA - idleB) || (a.load - b.load) || a.id.localeCompare(b.id);
+  })[0] ?? null;
+}
+
+/**
+ * myrmidon(REVIEW-ROUTING): the PR lane's reviewer pick. Both gates apply:
+ * the general board ceiling (`maxLoadPerReviewer` over `in_progress` +
+ * `in_review` board tasks) and the lane's own OPEN pr-review ceiling
+ * (`maxOpenReviewsPerReviewer`). `openPrLoadByAgent` counts only this lane's
+ * open review tasks; excluded ids cover the PR author's linked agent and any
+ * other hand-set exclusion. Least combined load wins, ties by id.
+ */
+export function pickPrReviewer(input: {
+  reviewers: readonly ReviewerCandidate[];
+  boardLoadByAgent: ReadonlyMap<string, number>;
+  openPrLoadByAgent: ReadonlyMap<string, number>;
+  excluded: ReadonlySet<string>;
+  maxLoadPerReviewer: number;
+  maxOpenReviewsPerReviewer: number;
+}): ReviewerCandidate | null {
+  const candidates: ReviewerCandidate[] = [];
+  for (const reviewer of input.reviewers) {
+    if (input.excluded.has(reviewer.id)) continue;
+    const openReviews = input.openPrLoadByAgent.get(reviewer.id) ?? 0;
+    if (openReviews >= input.maxOpenReviewsPerReviewer) continue;
+    const boardLoad = input.boardLoadByAgent.get(reviewer.id) ?? 0;
+    if (boardLoad >= input.maxLoadPerReviewer) continue;
+    candidates.push({ id: reviewer.id, role: reviewer.role, load: boardLoad + openReviews });
+  }
+  return pickReviewer({
+    candidates,
+    excluded: new Set<string>(),
+    maxLoad: Number.POSITIVE_INFINITY,
+  });
+}
+
+export const REVIEW_ROUTING_REVIEW_INSTRUCTIONS =
+  "Automatic review routing: this task was in review with no reviewer. Approve only if the work is " +
+  "complete and correct (that closes the task as done); request changes to send it back to the " +
+  "assignee with what still needs to happen.";
+
+/**
+ * Builds the patch that gives a reviewer-less `in_review` task a one-stage
+ * review with `reviewerAgentId`, through the vendor's own execution-policy
+ * transition so the result is the normal review stage the rest of the product
+ * understands (the reviewer becomes the assignee while the review is pending;
+ * the original assignee is the return assignee).
+ */
+export function buildReviewRoutingAssignPatch(input: {
+  issue: RoutingIssue;
+  reviewerAgentId: string;
+}): Record<string, unknown> {
+  const existing = asRecord(input.issue.executionPolicy);
+  const policy = {
+    ...(existing ?? { mode: "normal", commentRequired: false }),
+    stages: [
+      {
+        id: randomUUID(),
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ id: randomUUID(), type: "agent", agentId: input.reviewerAgentId, userId: null }],
+      },
+    ],
+  } as unknown as IssueExecutionPolicy;
+  const transition = applyIssueExecutionPolicyTransition({
+    issue: {
+      status: input.issue.status,
+      assigneeAgentId: input.issue.assigneeAgentId,
+      assigneeUserId: input.issue.assigneeUserId,
+      responsibleUserId: input.issue.responsibleUserId ?? null,
+      createdByUserId: input.issue.createdByUserId ?? null,
+      executionPolicy: null,
+      executionState: null,
+    },
+    policy,
+    previousPolicy: null,
+    requestedStatus: "in_review",
+    requestedAssigneePatch: {},
+    actor: { agentId: null, userId: null },
+    reviewRequest: { instructions: REVIEW_ROUTING_REVIEW_INSTRUCTIONS },
+  });
+  const patch: Record<string, unknown> = { ...transition.patch, executionPolicy: policy };
+  // A task with no assignee has no return assignee, and "request changes"
+  // would then have nowhere to send it back: fall back to the task's author.
+  const state = asRecord(patch.executionState);
+  if (state && !state.returnAssignee) {
+    if (input.issue.createdByAgentId) {
+      state.returnAssignee = { type: "agent", agentId: input.issue.createdByAgentId, userId: null };
+    } else if (input.issue.createdByUserId) {
+      state.returnAssignee = { type: "user", userId: input.issue.createdByUserId, agentId: null };
+    }
+  }
+  return patch;
+}
+
+export interface PrRoutingTaskPatch {
+  status: string;
+  assigneeAgentId: string;
+  assigneeUserId: null;
+  executionPolicy: Record<string, unknown>;
+  executionState: Record<string, unknown> | null;
+}
+
+/**
+ * myrmidon(REVIEW-ROUTING): the create-time shape of a PR-lane task. The new
+ * task gets exactly the review-stage shape the task lane writes when it routes
+ * a fresh `in_review` task — one review stage with the picked agent as its
+ * only participant, produced through `applyIssueExecutionPolicyTransition` —
+ * with the PR author as the return assignee (the human/bot whose PR this is
+ * has no board identity here, so the lane hands changes back to nobody:
+ * `returnAssignee` stays absent and "request changes" lands on the reviewer
+ * like any stage-less task). The transition decides the status; the lane
+ * mirrors whatever it produces (in practice `in_review` with the reviewer as
+ * assignee), never inventing a new stage shape.
+ */
+export function buildPrRoutingTaskPatch(input: {
+  reviewerAgentId: string;
+}): PrRoutingTaskPatch {
+  const policy = {
+    mode: "normal",
+    commentRequired: false,
+    stages: [
+      {
+        id: randomUUID(),
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ id: randomUUID(), type: "agent", agentId: input.reviewerAgentId, userId: null }],
+      },
+    ],
+  } as unknown as IssueExecutionPolicy;
+  const transition = applyIssueExecutionPolicyTransition({
+    issue: {
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      responsibleUserId: null,
+      createdByUserId: null,
+      executionPolicy: null,
+      executionState: null,
+    },
+    policy,
+    previousPolicy: null,
+    requestedStatus: "in_review",
+    requestedAssigneePatch: {},
+    actor: { agentId: null, userId: null },
+    reviewRequest: { instructions: REVIEW_ROUTING_REVIEW_INSTRUCTIONS },
+  });
+  const patch = { ...transition.patch, executionPolicy: policy } as Record<string, unknown>;
+  return {
+    status: typeof patch.status === "string" ? patch.status : "in_review",
+    assigneeAgentId: typeof patch.assigneeAgentId === "string" ? patch.assigneeAgentId : input.reviewerAgentId,
+    assigneeUserId: null,
+    executionPolicy: patch.executionPolicy as Record<string, unknown>,
+    executionState: (patch.executionState as Record<string, unknown> | null) ?? null,
+  };
+}
+
+/**
+ * Builds the patch that moves a pending review to another agent reviewer: the
+ * stage keeps its id and state (round counter, request, return assignee), only
+ * the participant and the assignee change.
+ */
+export function buildReviewRoutingReassignPatch(input: {
+  issue: RoutingIssue;
+  newReviewerAgentId: string;
+}): Record<string, unknown> | null {
+  const pending = readPendingAgentReview(input.issue);
+  const state = asRecord(input.issue.executionState);
+  if (!pending || !state) return null;
+  const policy = asRecord(input.issue.executionPolicy);
+  if (!policy) return null;
+  const participant = { id: randomUUID(), type: "agent", agentId: input.newReviewerAgentId, userId: null };
+  const stages = policyStages(policy).map((stage) =>
+    stage.id === pending.stageId ? { ...stage, participants: [participant] } : stage,
+  );
+  return {
+    executionPolicy: { ...policy, stages },
+    executionState: {
+      ...state,
+      currentParticipant: { type: "agent", agentId: input.newReviewerAgentId, userId: null },
+    },
+    assigneeAgentId: input.newReviewerAgentId,
+    assigneeUserId: null,
+  };
+}
+
+export interface ReviewRoutingWakeContext {
+  wakeRole: "reviewer";
+  stageId: string | null;
+  stageType: string | null;
+  currentParticipant: unknown;
+  returnAssignee: unknown;
+  reviewRequest: unknown;
+  lastDecisionOutcome: unknown;
+  allowedActions: string[];
+}
+
+/** Mirrors the vendor's review wake context, read off the state this module persisted. */
+export function buildReviewRoutingWakeContext(executionState: Record<string, unknown>): ReviewRoutingWakeContext {
+  return {
+    wakeRole: "reviewer",
+    stageId: typeof executionState.currentStageId === "string" ? executionState.currentStageId : null,
+    stageType: typeof executionState.currentStageType === "string" ? executionState.currentStageType : null,
+    currentParticipant: executionState.currentParticipant ?? null,
+    returnAssignee: executionState.returnAssignee ?? null,
+    reviewRequest: executionState.reviewRequest ?? null,
+    lastDecisionOutcome: executionState.lastDecisionOutcome ?? null,
+    allowedActions: ["approve", "request_changes"],
+  };
+}

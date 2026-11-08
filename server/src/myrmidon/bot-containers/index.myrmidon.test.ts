@@ -5,14 +5,21 @@ import type { BotContainerDriver, BotContainerSpec, BotContainerStatus } from ".
 import {
   BOT_CONTAINER_ACTOR,
   applyBotContainerNow,
+  beginBotProfilePass,
   botMaintenancePortFromService,
+  resetBotContainerApplyFreshnessForTests,
   startBotContainerReconciliation,
   type BotContainerAgent,
   type BotContainerRuntimeDeps,
   type BotMaintenanceServiceSlice,
+  type BotProfilePass,
 } from "./index.js";
 
 const ENABLED = { [BOT_CONTAINERS_ENV]: "1" };
+
+// myrmidon(OPE-4789): the freshness stamps are module state; every test starts
+// with none, or one test's pass answers the next test's apply from freshness.
+afterEach(() => resetBotContainerApplyFreshnessForTests());
 
 function agent(overrides: Partial<BotContainerAgent> = {}, containerOverrides: Record<string, unknown> = {}): BotContainerAgent {
   return {
@@ -61,7 +68,7 @@ function minimalDriver(overrides: Partial<BotContainerDriver> = {}): BotContaine
 function deps(driver: BotContainerDriver, extra: Partial<BotContainerRuntimeDeps> = {}): BotContainerRuntimeDeps {
   return {
     driver,
-    compile: async (_agentId, botKey) => ({ botKey, files: [], restartHash: "r", filesHash: "f" }),
+    compile: async (_agentId, botKey) => ({ botKey, files: [], restartHash: "r", filesHash: "f", apiServerKeyVersion: 1 }),
     maintenance: fakeMaintenance(),
     network: "myrmidon-bots",
     lock: createBotKeyLock(),
@@ -88,7 +95,7 @@ describe("applyBotContainerNow", () => {
         throw new Error("the driver must not be called while the feature is off");
       },
     });
-    const compile = vi.fn(async () => ({ botKey: "agent-a", files: [], restartHash: "r", filesHash: "f" }));
+    const compile = vi.fn(async () => ({ botKey: "agent-a", files: [], restartHash: "r", filesHash: "f", apiServerKeyVersion: 1 }));
     for (const env of [{}, { [BOT_CONTAINERS_ENV]: "0" }]) {
       const outcome = await applyBotContainerNow(agent(), deps(driver, { compile }), { env });
       expect(outcome).toEqual({ kind: "not_applicable", reason: `${BOT_CONTAINERS_ENV} is not enabled` });
@@ -138,7 +145,9 @@ describe("applyBotContainerNow", () => {
     try {
       await flush();
       expect(events).toEqual(["status#1"]); // the sweep's reconcile is in flight
-      const applied = applyBotContainerNow(agent(), shared, { env: ENABLED });
+      // myrmidon(OPE-4789): the button's force:true bypasses the freshness
+      // reuse, which would otherwise answer this with "recent_pass".
+      const applied = applyBotContainerNow(agent(), shared, { env: ENABLED, force: true });
       await flush();
       expect(events).toEqual(["status#1"]); // "apply now" is queued, not running
       gate.resolve();
@@ -147,6 +156,87 @@ describe("applyBotContainerNow", () => {
     } finally {
       stop();
     }
+  });
+
+  describe("myrmidon(OPE-4789): freshness reuse — one bot is not reconciled by two paths at once", () => {
+    afterEach(() => resetBotContainerApplyFreshnessForTests());
+
+    it("a second apply within the freshness window is answered without touching the driver", async () => {
+      let statusCalls = 0;
+      const driver = minimalDriver({
+        status: async (botKey) => {
+          statusCalls++;
+          return { botKey, state: "running", restartHash: "r", filesHash: "f" };
+        },
+      });
+      const shared = deps(driver);
+      expect(await applyBotContainerNow(agent(), shared, { env: ENABLED })).toEqual({ kind: "unchanged" });
+      const again = await applyBotContainerNow(agent(), shared, { env: ENABLED });
+      expect(again.kind).toBe("not_applicable");
+      expect(again.kind === "not_applicable" ? again.reason : "").toContain("reconcile pass");
+      expect(statusCalls).toBe(1);
+    });
+
+    it("force:true (the card's Apply now) always runs a real pass", async () => {
+      let statusCalls = 0;
+      const driver = minimalDriver({
+        status: async (botKey) => {
+          statusCalls++;
+          return { botKey, state: "running", restartHash: "r", filesHash: "f" };
+        },
+      });
+      const shared = deps(driver);
+      await applyBotContainerNow(agent(), shared, { env: ENABLED });
+      expect(await applyBotContainerNow(agent(), shared, { env: ENABLED, force: true })).toEqual({ kind: "unchanged" });
+      expect(statusCalls).toBe(2);
+    });
+
+    it("an errored pass does not stamp: the next tick retries it", async () => {
+      let failures = 1;
+      let statusCalls = 0;
+      const driver = minimalDriver({
+        status: async (botKey) => {
+          statusCalls++;
+          if (failures-- > 0) throw new Error("docker socket gone");
+          return { botKey, state: "running", restartHash: "r", filesHash: "f" };
+        },
+      });
+      const shared = deps(driver);
+      const first = await applyBotContainerNow(agent(), shared, { env: ENABLED });
+      expect(first.kind).toBe("error");
+      expect(await applyBotContainerNow(agent(), shared, { env: ENABLED })).toEqual({ kind: "unchanged" });
+      expect(statusCalls).toBe(2);
+    });
+
+    // myrmidon(OPE-4789): regression for the review blocker — the canary wave
+    // asks for a different image inside the sweep's freshness window. With the
+    // rollout path forcing its pass, the bot is really recreated; without it
+    // the wave got "recent_pass" and marked the bot done on the old image.
+    it("a canary pass with a different specImage inside the freshness window still recreates", async () => {
+      let currentImage = "old-image";
+      const recreated: Array<{ image: string }> = [];
+      const driver = minimalDriver({
+        status: async (botKey) => ({ botKey, state: "running", restartHash: "r", filesHash: "f" }),
+        templateDrift: async (spec) => ({ drifted: spec.image !== currentImage, fields: spec.image === currentImage ? [] : [{ field: "image", expected: spec.image, actual: currentImage }] }),
+        recreate: async (spec) => {
+          recreated.push({ image: spec.image });
+          currentImage = spec.image;
+        },
+      });
+      const shared = deps(driver);
+      // The sweep reconciles the card (unchanged) and stamps the bot fresh.
+      expect(await applyBotContainerNow(agent({}, { image: "old-image" }), shared, { env: ENABLED })).toEqual({ kind: "unchanged" });
+      // The wave arrives ≤30s later with the rollout image — forced, so it is
+      // a real pass, not a freshness answer.
+      const wave = await applyBotContainerNow(agent({}, { image: "old-image" }), shared, {
+        env: ENABLED,
+        specImage: "rollout-image",
+        force: true,
+      });
+      expect(wave).toEqual({ kind: "applied_restart" });
+      expect(recreated[0]?.image).toBe("rollout-image");
+      expect(currentImage).toBe("rollout-image");
+    });
   });
 });
 
@@ -226,6 +316,9 @@ describe("startBotContainerReconciliation", () => {
       gate.resolve();
       await vi.advanceTimersByTimeAsync(0);
 
+      // myrmidon(OPE-4789): the freshness window must not swallow the resumed
+      // tick's pass (vi fake timers freeze Date.now, so the window never ages).
+      resetBotContainerApplyFreshnessForTests();
       await vi.advanceTimersByTimeAsync(1_000);
       expect(listAgents.mock.calls.length).toBeGreaterThan(1);
       expect(statusCalls).toBeGreaterThan(1);
@@ -252,7 +345,7 @@ describe("startBotContainerReconciliation", () => {
     const listAgents = vi.fn(async () => [agent({ agentId: "agent-slow" }), agent({ agentId: "agent-fast" })]);
     const stop = startBotContainerReconciliation(
       listAgents,
-      deps(driver, { compile: async (_agentId, botKey) => ({ botKey, files: [], restartHash: "new", filesHash: "new" }) }),
+      deps(driver, { compile: async (_agentId, botKey) => ({ botKey, files: [], restartHash: "new", filesHash: "new", apiServerKeyVersion: 1 }) }),
       { env: ENABLED },
     );
     try {
@@ -312,7 +405,10 @@ describe("applyBotContainerNow: syncCard hook (W2a)", () => {
     expect(syncCard).not.toHaveBeenCalled();
   });
 
-  it("calls syncCard with the agent id and bot key after a pass that left the container applied, and logs a change", async () => {
+  // myrmidon(BOT-KEY-401): the third argument is the API-server-key secret version
+  // the compiled profile carries — the card pins exactly it, so a rotation whose
+  // container switch failed never reaches the card (the card-sync tests cover the pin).
+  it("calls syncCard with the agent id, bot key, and applied key version after a pass that left the container applied, and logs a change", async () => {
     const cases: Array<[string, BotContainerDriver, string]> = [
       ["unchanged", minimalDriver(), "unchanged"],
       [
@@ -327,12 +423,13 @@ describe("applyBotContainerNow: syncCard hook (W2a)", () => {
       ],
     ];
     for (const [label, driver, kind] of cases) {
+      resetBotContainerApplyFreshnessForTests(); // the loop runs three passes for one bot
       const syncCard = vi.fn(async () => ({ changedKeys: ["apiBaseUrl", "apiKey"] }));
       const sink = activitySink();
       const outcome = await applyBotContainerNow(agent(), deps(driver, { syncCard, activity: sink }), { env: ENABLED });
       expect(outcome.kind, label).toBe(kind);
       expect(syncCard, label).toHaveBeenCalledTimes(1);
-      expect(syncCard, label).toHaveBeenCalledWith("agent-a", "agent-a");
+      expect(syncCard, label).toHaveBeenCalledWith("agent-a", "agent-a", 1);
       const synced = sink.entries.filter((entry) => entry.message === "agent card pointed at the bot container");
       expect(synced, label).toHaveLength(1);
       expect(synced[0]?.details).toEqual({ changedKeys: ["apiBaseUrl", "apiKey"] });
@@ -410,7 +507,9 @@ describe("applyBotContainerNow: syncCard hook (W2a)", () => {
     const shared = deps(driver, { syncCard });
     const first = applyBotContainerNow(agent(), shared, { env: ENABLED });
     await flush();
-    const second = applyBotContainerNow(agent(), shared, { env: ENABLED });
+    // myrmidon(OPE-4789): forced — the point under test is the lock, not the
+    // freshness reuse (which the sweep-vs-canary case exercises separately).
+    const second = applyBotContainerNow(agent(), shared, { env: ENABLED, force: true });
     await flush();
     expect(events).toEqual(["status", "sync:start"]);
     gate.resolve();
@@ -545,5 +644,72 @@ describe("applyBotContainerNow: the pass reconciles the card read at pass time",
     const outcome = await applyBotContainerNow(agent(), deps(driver, { readAgent: async () => null }), { env: ENABLED });
     expect(outcome).toEqual({ kind: "not_applicable", reason: "agent agent-a no longer exists" });
     expect(calls).toEqual([]);
+  });
+});
+
+// myrmidon(PERF-DIET-G): the sweep compiles every bot of one tick through ONE
+// shared pass — the company- and instance-scoped reads behind the profiles are
+// paid once per sweep instead of once per bot.
+describe("myrmidon(PERF-DIET-G): the sweep shares one pass between its bots", () => {
+  it("begins one pass, hands the same object to every bot of the tick, and ends it", async () => {
+    const begins: BotProfilePass[] = [];
+    const ends: BotProfilePass[] = [];
+    const seen: Array<BotProfilePass | undefined> = [];
+    const driver = minimalDriver();
+    const runtime = deps(driver, {
+      compile: async (_agentId, botKey, pass) => {
+        seen.push(pass);
+        return { botKey, files: [], restartHash: "r", filesHash: "f" };
+      },
+      beginProfilePass: () => {
+        const pass = beginBotProfilePass();
+        begins.push(pass);
+        return pass;
+      },
+      endProfilePass: (pass) => {
+        ends.push(pass);
+        pass.end();
+      },
+    });
+    const bots = ["agent-a", "agent-b", "agent-c"].map((agentId) => agent({ agentId }));
+    const stop = startBotContainerReconciliation(async () => bots, runtime, { env: ENABLED });
+    try {
+      await vi.waitFor(() => expect(seen.length).toBe(3));
+      await flush();
+
+      expect(begins).toHaveLength(1);
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toBe(begins[0]);
+      expect(seen.every((pass) => pass === begins[0])).toBe(true);
+      // Ended with the sweep: nothing survives into the next tick, so the next
+      // sweep reads live settings and skills.
+      expect(begins[0]?.ended).toBe(true);
+    } finally {
+      stop();
+    }
+  });
+
+  it("needs no pass at all when the wiring supplies none, and a manual pass compiles without one", async () => {
+    const seen: Array<BotProfilePass | undefined> = [];
+    const compile = async (_agentId: string, botKey: string, pass?: BotProfilePass) => {
+      seen.push(pass);
+      return { botKey, files: [], restartHash: "r", filesHash: "f" };
+    };
+    const runtime = deps(minimalDriver(), { compile });
+
+    // A runtime without the pair sweeps exactly as it did before.
+    const stop = startBotContainerReconciliation(async () => [agent()], runtime, { env: ENABLED });
+    try {
+      await vi.waitFor(() => expect(seen.length).toBe(1));
+      expect(seen[0]).toBeUndefined();
+    } finally {
+      stop();
+    }
+
+    // The card's "Apply now": one bot, so there is nothing to share.
+    resetBotContainerApplyFreshnessForTests();
+    seen.length = 0;
+    await applyBotContainerNow(agent(), runtime, { env: ENABLED, force: true });
+    expect(seen).toEqual([undefined]);
   });
 });

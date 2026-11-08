@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import {
   createContext,
   useCallback,
@@ -16,7 +17,7 @@ interface ThemeContextValue {
   toggleTheme: () => void;
 }
 
-const THEME_STORAGE_KEY = "paperclip.theme";
+const THEME_STORAGE_KEY = "myrmidon.theme";
 const DARK_THEME_COLOR = "#18181b";
 const LIGHT_THEME_COLOR = "#ffffff";
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);

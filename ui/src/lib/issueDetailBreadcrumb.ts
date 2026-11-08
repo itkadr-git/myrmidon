@@ -1,4 +1,5 @@
-import type { Issue } from "@paperclipai/shared";
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
+import type { Issue } from "@myrmidon/shared";
 
 type IssueDetailSource = "issues" | "inbox";
 
@@ -40,7 +41,7 @@ type IssueDetailLocationState = {
 
 const ISSUE_DETAIL_SOURCE_QUERY_PARAM = "from";
 const ISSUE_DETAIL_BREADCRUMB_HREF_QUERY_PARAM = "fromHref";
-const ISSUE_DETAIL_STORAGE_KEY_PREFIX = "paperclip:issue-detail-breadcrumb:";
+const ISSUE_DETAIL_STORAGE_KEY_PREFIX = "myrmidon:issue-detail-breadcrumb:";
 
 function isIssueDetailBreadcrumb(value: unknown): value is IssueDetailBreadcrumb {
   if (typeof value !== "object" || value === null) return false;

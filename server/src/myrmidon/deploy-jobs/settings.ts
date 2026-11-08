@@ -9,6 +9,14 @@
 // default — rolling a failed deploy back IS the feature) and
 // MYRMIDON_DEPLOY_AUTO_UPDATE (off by default — unattended deploys wait for
 // the staging stand, STAND).
+//
+// myrmidon(1.7, OPE-4101, SETTINGS-TO-UI E): the behavior keys (enabled,
+// rollback/update switches, timeouts) resolve live through the part A
+// behavior-settings registry — a UI change applies without a restart, and a
+// set env var stays a forced override. Infra fields (paths, URLs, headers)
+// stay env-only.
+
+import { liveDeploySettings } from "../system-settings/live.js"; // myrmidon(1.7, OPE-4101)
 
 function readInt(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number): number {
   const raw = env[name]?.trim();
@@ -57,6 +65,16 @@ export interface DeployJobsSettings {
    * stand is the risk the plan calls out.
    */
   autoUpdate: boolean;
+  /**
+   * 1.7-AUTO-UPDATE-B: how long a job may wait for the maintenance window
+   * before it is aborted. The generic step timeout does not apply to a job
+   * waiting for a window (the window may be a week away), so the wait has its
+   * own budget — an instance whose window never opens must not hold the deploy
+   * slot forever.
+   */
+  windowWaitTimeoutMs: number;
+  /** 1.7-AUTO-UPDATE-B: budget of the fleet canary phase (the batch is watched, then the rest). */
+  canaryTimeoutMs: number;
 }
 
 function readHeaders(env: NodeJS.ProcessEnv, name: string): Record<string, string> | null {
@@ -88,5 +106,30 @@ export function readDeployJobsSettings(env: NodeJS.ProcessEnv = process.env): De
     registryInspectUrl: env.MYRMIDON_DEPLOY_REGISTRY_INSPECT_URL?.trim() || null,
     autoRollback: readBool(env, "MYRMIDON_DEPLOY_AUTO_ROLLBACK", true),
     autoUpdate: readBool(env, "MYRMIDON_DEPLOY_AUTO_UPDATE", false),
+    windowWaitTimeoutMs: readInt(env, "MYRMIDON_DEPLOY_WINDOW_WAIT_TIMEOUT_SEC", 604_800, 60, 2_592_000) * 1000,
+    canaryTimeoutMs: readInt(env, "MYRMIDON_DEPLOY_CANARY_TIMEOUT_SEC", 3600, 60, 86_400) * 1000,
+  };
+}
+
+/**
+ * Live view of the deploy settings: behavior keys come from the UI via the
+ * behavior-settings registry, with a set env var acting as a forced override;
+ * infra fields stay env-only. myrmidon(1.7, OPE-4101).
+ */
+export function resolveDeployJobsSettings(
+  env: NodeJS.ProcessEnv = process.env,
+): DeployJobsSettings {
+  const base = readDeployJobsSettings(env);
+  const live = liveDeploySettings(env);
+  return {
+    ...base,
+    enabled: live.enabled,
+    autoRollback: live.autoRollback,
+    autoUpdate: live.autoUpdate,
+    verifyTimeoutMs: live.verifyTimeoutSec * 1000,
+    tickMs: live.tickSec * 1000,
+    stepTimeoutMs: live.stepTimeoutSec * 1000,
+    healthPollMs: live.healthPollSec * 1000,
+    healthTimeoutMs: live.healthTimeoutSec * 1000,
   };
 }

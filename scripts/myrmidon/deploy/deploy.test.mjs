@@ -27,11 +27,15 @@ case "$1" in
     case "$2" in
       inspect)
         case "$*" in
+          *postgres:16-alpine*)
+            case "$*" in *-f*) echo /var/lib/postgresql/data ;; esac
+            exit 0 ;;
           *org.opencontainers.image.version*)
             # image_label: the label comes from the sandbox file, as before.
             cat "$SANDBOX/label-version"; exit 0 ;;
           *org.opencontainers.image.revision*)
-            cat "$SANDBOX/label-revision"; exit 0 ;;
+            if [[ "$*" == *"sha256:aaaaaaaa"* ]]; then cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision"; else cat "$SANDBOX/label-revision"; fi
+            exit 0 ;;
         esac
         # ROLLBACK-LOCAL: a plain inspect asks whether the image is on the
         # daemon: yes when its reference is listed in $SANDBOX/local-images
@@ -39,7 +43,12 @@ case "$1" in
         # flag or a --format value.
         ref=""
         for a in "\${@:3}"; do
-          case "$a" in --*) continue ;; esac
+          case "$a" in
+          -f) skip_format=1; continue ;;
+          --format=*) continue ;;
+          -*) continue ;;
+          esac
+          if [ "\${skip_format:-0}" = 1 ]; then skip_format=0; continue; fi
           case "$a" in \{*|*\}*) continue ;; esac
           ref="$a"; break
         done
@@ -54,24 +63,67 @@ case "$1" in
         esac ;;
     esac ;;
   buildx)
-    # RELEASE-GATE: the same registry answers the component repositories. A
-    # digest-format inspect gets the component digest file; the board and every
-    # CI check get the image JSON (with labels).
+    echo "docker buildx $*" >> "$SANDBOX/calls.log"
+    # RELEASE-GATE: component inspections must be routed before the generic
+    # board-image response. check-release-support.sh asks for
+    # '{{json .Manifest.Digest}}', while image-label checks ask for the full
+    # image JSON.
     case "$4" in
       *myrmidon-dockergate*|*myrmidon-fleetd*)
         if [ -e "$SANDBOX/components-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
-        for a in "$@"; do case "$a" in *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;; esac; done
-        cat "$SANDBOX/component-image.json" ;;
+        for a in "$@"; do
+          case "$a" in
+            *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;;
+          esac
+        done
+        if [[ "$*" == *"--format"*".Manifest"* || "$*" == *"--format"*".Manifest.Digest"* ]]; then
+          echo '{"Layers":[{"size":1}]}'
+          exit 0
+        fi
+        cat "$SANDBOX/component-image.json"; exit 0 ;;
+    esac
+    if [[ "$*" == *"imagetools inspect"* ]]; then
+      if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: registry image not found" >&2; exit 1; fi
+      if [ -e "$SANDBOX/registry-invalid-revision" ]; then jq '.config.Labels["org.opencontainers.image.revision"]="efe4758"' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [ -e "$SANDBOX/registry-no-labels" ]; then jq '.config |= del(.Labels)' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [ -e "$SANDBOX/registry-no-revision" ]; then jq '.config.Labels |= del(."org.opencontainers.image.revision")' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [[ "$*" == *"--format"*".Manifest"* || "$*" == *"--format"*".Manifest.Digest"* ]]; then
+        echo '{"Layers":[{"size":1}]}'
+        exit 0
+      fi
+      if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
+        jq --arg rev "$(cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision")" '.config.Labels["org.opencontainers.image.revision"]=$rev' "$SANDBOX/imagetools.json"; exit 0
+      fi
+      cat "$SANDBOX/imagetools.json"; exit 0
+    fi
+    # RELEASE-GATE: non-imagetools buildx commands are not expected here.
+    case "$4" in
       *)
         if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
         cat "$SANDBOX/imagetools.json" ;;
     esac ;;
+  run) echo "1.4.0+0123456789ab" ;;
+  ps) echo "cid-x"; exit 0 ;;
+  inspect)
+    # a container exists for every service and runs; its image is not recorded
+    # here (the previous image then falls back to the override file)
+    case "$*" in *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;; esac
+    exit 0 ;;
   compose)
     case "$*" in
-      *--services)
-        # HOST-TARGETING: the declared services of the sandbox's compose
-        # project (the fail-closed pre-check reads them).
-        printf 'server\\ndockergate\\nfleetd\\n' ;;
+      *"config"*|*--services*)
+        if [[ "$*" == *--services* ]]; then
+          if [ -e "$SANDBOX/compose-config-fails" ]; then
+            echo 'service "server" has neither an image nor a build context specified' >&2
+            echo "ERROR: Invalid compose project" >&2
+            exit 1
+          fi
+          printf 'server\\ndockergate\\nfleetd\\n'
+          exit 0
+        fi
+        if [ -f "$SANDBOX/compose-json" ]; then cat "$SANDBOX/compose-json"; fi
+        exit 0 ;;
+      *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
       *) exit 0 ;;
     esac ;;
 esac
@@ -87,13 +139,26 @@ case "$1" in
   remote) cat "$SANDBOX/git-origin" ;;
   fetch) if [ -e "$SANDBOX/git-fetch-fails" ]; then echo "fatal: unable to access" >&2; exit 128; fi ;;
   merge-base) exit "$(cat "$SANDBOX/git-ancestor-exit")" ;;
+  diff) [ -f "$SANDBOX/migration-files" ] && cat "$SANDBOX/migration-files"; exit 0 ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
 esac
 `;
 
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
-cat "$SANDBOX/health.json"
+case "$*" in
+  *"-X POST"*)
+    # ROLLBACK-WITHOUT-BOARD: the rollback may run exactly because the board API
+    # is down; curl-post-fails makes the maintenance POST unreachable.
+    if [ -e "$SANDBOX/curl-post-fails" ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi ;;
+esac
+case "$*" in
+  # PREDEPLOY-DB-CHECK: the throwaway copy of the production database answers
+  # from its own health file (port 13110, never the board's HEALTH_URL port).
+  *":13110"*)
+    if [ -e "$SANDBOX/predeploy-health.json" ]; then cat "$SANDBOX/predeploy-health.json"; else cat "$SANDBOX/health.json"; fi ;;
+  *) cat "$SANDBOX/health.json" ;;
+esac
 `;
 
 // The real boot-unit template, read from the deploy directory, so the tests
@@ -104,25 +169,37 @@ const VENDOR = "ghcr.io/paperclipai/paperclip:2026.916.1";
 
 function sandbox({
   health,
+  newRevision = COMMIT,
+  // PREDEPLOY-DB-CHECK: what the throwaway COPY of the production database
+  // answers on /api/health. Green by default, so only the tests about the
+  // pre-window check have to think about it.
+  predeployHealth,
   dumpBytes = 2048,
   labelVersion = VERSION,
-  labelRevision = COMMIT,
+  labelRevision = newRevision,
+  oldRevision = COMMIT,
   current = OLD,
   currentImage,
   // What the registry reports for the image (imagetools inspect): the labels, or null for none.
   registryLabels,
   registryMissing = false,
+  invalidRevisionLabel = false,
   origin = ORIGIN,
   notAClone = false,
   fetchFails = false,
   onMain = true,
   tags = "",
+  migrationFiles = "",
   noGit = false,
   // ROLLBACK-LOCAL: image references present on the local docker daemon, and
   // what `docker image ls <repo>` lists for the error message.
   localImages = [],
   localTags = "",
   localIds = "",
+
+  // DEPLOY-PRECHECK (the 05.10 incident): the compose project cannot be read —
+  // `docker compose config --services` prints the real compose error and exits 1.
+  composeConfigFails = false,
 
   // BOOT-PATH: the boot unit in the sandbox. A function (gets the template
   // renderer) written into systemd/paperclip.service; null = no unit.
@@ -138,7 +215,12 @@ function sandbox({
   // arguments; the files themselves must exist (a real compose dir does).
   fs.writeFileSync(path.join(composeDir, "docker-compose.yml"), "services: {}\n");
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "systemctl"), `#!/usr/bin/env bash\ncase "$1" in\n  --version) echo systemd 255 ; exit 0 ;;\n  is-enabled|daemon-reload|enable|start) exit 0 ;;\n  *) exit 0 ;;\nesac\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), `#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+printf '/dev/fake 100000000 1000000 99000000 1%% /var/lib/docker\\n'
+`, { mode: 0o755 });
   if (!noGit) fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   const labels =
@@ -154,6 +236,21 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  if (invalidRevisionLabel) fs.writeFileSync(path.join(dir, "registry-invalid-revision"), "");
+  if (registryLabels === null) fs.writeFileSync(path.join(dir, "registry-no-labels"), "");
+  if (registryLabels !== undefined && registryLabels !== null && !Object.hasOwn(registryLabels, "org.opencontainers.image.revision")) {
+    fs.writeFileSync(path.join(dir, "registry-no-revision"), "");
+  }
+  const oldLabelRevision =
+    newRevision === "0123456789abcdef0123456789abcdef01234568"
+      ? "fedcba9876543210fedcba9876543210fedcba98"
+      : labelRevision;
+  fs.writeFileSync(path.join(dir, "label-revision"), oldLabelRevision);
+  fs.writeFileSync(path.join(dir, "old-label-revision"), `${oldRevision}\n`);
+  if (newRevision !== null) {
+    fs.writeFileSync(path.join(dir, "imagetools.json"), JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: { ...labels, "org.opencontainers.image.revision": newRevision } } }));
+  } else fs.rmSync(path.join(dir, "imagetools.json"), { force: true });
+  if (composeConfigFails) fs.writeFileSync(path.join(dir, "compose-config-fails"), "");
   // RELEASE-GATE: component registry answers for the same commit.
   fs.writeFileSync(
     path.join(dir, "component-digests.json"),
@@ -174,10 +271,13 @@ function sandbox({
   fs.writeFileSync(path.join(dir, "git-origin"), `${origin}\n`);
   fs.writeFileSync(path.join(dir, "git-ancestor-exit"), onMain ? "0" : "1");
   fs.writeFileSync(path.join(dir, "git-tags"), tags);
+  if (migrationFiles) fs.writeFileSync(path.join(dir, "migration-files"), migrationFiles);
   if (notAClone) fs.writeFileSync(path.join(dir, "git-not-a-clone"), "");
   if (fetchFails) fs.writeFileSync(path.join(dir, "git-fetch-fails"), "");
   fs.writeFileSync(path.join(dir, "label-version"), `${labelVersion}\n`);
   fs.writeFileSync(path.join(dir, "label-revision"), `${labelRevision}\n`);
+  fs.writeFileSync(path.join(dir, "old-label-revision"), `${oldRevision}\n`);
+  if (migrationFiles) fs.writeFileSync(path.join(dir, "migration-files"), migrationFiles);
   if (localImages.length > 0) fs.writeFileSync(path.join(dir, "local-images"), localImages.join("\n") + "\n");
   if (localTags) fs.writeFileSync(path.join(dir, "local-tags"), localTags);
   if (localIds) fs.writeFileSync(path.join(dir, "local-ids"), localIds);
@@ -185,6 +285,15 @@ function sandbox({
     path.join(dir, "health.json"),
     JSON.stringify(health ?? { status: "ok", version: VERSION, commit: COMMIT }),
   );
+  // PREDEPLOY-DB-CHECK: the copy of the production database answers from its
+  // own file; green unless the test says otherwise.
+  fs.writeFileSync(
+    path.join(dir, "predeploy-health.json"),
+    JSON.stringify(predeployHealth ?? { status: "ok", version: labelVersion, commit: COMMIT }),
+  );
+  // The board's own environment for the throwaway board container.
+  const predeployEnv = path.join(dir, "predeploy-board.env");
+  fs.writeFileSync(predeployEnv, "JWT_SECRET=test-secret\n");
   const override = path.join(composeDir, "docker-compose.myrmidon-image.yml");
   if (currentImage) {
     fs.writeFileSync(override, `services:\n  server:\n    image: ${currentImage}\n`);
@@ -199,12 +308,14 @@ function sandbox({
   if (bootUnit !== null) {
     fs.writeFileSync(path.join(unitDir, "paperclip.service"), bootUnit(sbPaths(composeDir)));
   }
+  if (bootUnit === null) fs.rmSync(path.join(unitDir, "paperclip.service"), { force: true });
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(
     config,
     [
       `COMPOSE_DIR=${composeDir}`,
       "COMPOSE_SERVICE=server",
+      "MYRMIDON_IMAGE=ghcr.io/itkadr-git/myrmidon",
       "HEALTH_URL=http://127.0.0.1:3100/api/health",
       "HEALTH_TIMEOUT_SEC=2",
       "POLL_INTERVAL_SEC=1",
@@ -216,14 +327,29 @@ function sandbox({
       `MAINTENANCE_EXIT_COMMAND='echo exit >> ${path.join(dir, "maintenance.log")}'`,
       "RUNNING_RUNS_COMMAND='echo 0'",
       `SYSTEMD_UNIT_DIR=${unitDir}`,
+      `SYSTEMD_UNIT_INSTALL=${bootUnit === null ? 0 : 1}`,
       // RELEASE-GATE: the release components answer their health probes here
       // (the fake curl serves every URL with the health file).
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
+      // The bot image rollout has its own tests (bot-image-rollout.test.mjs).
+      "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
+      // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
+      // default and refuses without its inputs. This sandbox walks a company-free
+      // path list (the attention list has its own tests in
+      // predeploy-board-check.test.mjs and in the release-gate sandbox, which
+      // knows BOARD_COMPANY_ID).
+      "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data",
+      "MYRMIDON_PREDEPLOY_IO_RATE=30000000",
+      `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
+      "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
+      `MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC=2`,
+      "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",
       "",
     ].join("\n"),
   );
-  return { dir, bin, config, override, unitDir, noGit };
+  return { dir, bin, config, override, unitDir, noGit, predeployEnv };
 }
 
 // The canonical unit rendered for a sandbox compose dir: exactly what
@@ -231,7 +357,7 @@ function sandbox({
 function sbPaths(composeDir) {
   return (template) => template
     .replaceAll("__COMPOSE_DIR__", composeDir)
-    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml`)
+    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml -f ${composeDir}/docker-compose.myrmidon-dockergate.yml -f ${composeDir}/docker-compose.myrmidon-fleetd.yml`)
     .replaceAll("__COMPOSE_SERVICE__", "server");
 }
 
@@ -242,7 +368,7 @@ const sbCanonical = (render) => render(UNIT_TEMPLATE);
 function pathWithoutGit(sb) {
   const tools = path.join(sb.dir, "tools");
   fs.mkdirSync(tools, { recursive: true });
-  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk"]) {
+  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk", "mkdir"]) {
     const found = process.env.PATH.split(":")
       .map((d) => path.join(d, name))
       .find((f) => fs.existsSync(f));
@@ -251,10 +377,10 @@ function pathWithoutGit(sb) {
   return `${sb.bin}:${tools}`;
 }
 
-function run(sb, script, args, input) {
-  const searchPath = sb.noGit ? pathWithoutGit(sb) : `${sb.bin}:${process.env.PATH}`;
+function run(sb, script, args, input, extraEnv = {}) {
+  const searchPath = sb.noGit ? `${sb.bin}:${pathWithoutGit(sb)}` : `${sb.bin}:${process.env.PATH}`;
   const result = spawnSync(bashPath(), [path.join(HERE, script), "--config", sb.config, ...args], {
-    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir },
+    env: { ...process.env, BASH_ENV: "", ENV: "", PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}), ...extraEnv },
     encoding: "utf8",
     input,
   });
@@ -269,6 +395,15 @@ function bashPath() {
 
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
 const calls = (sb) => read(path.join(sb.dir, "calls.log"));
+// myrmidon(F-05): the deploy journal opens with `git describe` of the scripts'
+// clone — read-only, local, never a network call. The "refuses before any
+// docker or git call" checks below ignore exactly these two stamp calls and
+// still require that no OTHER docker or git call happened.
+const callsWithoutVersionStamp = (sb) =>
+  calls(sb)
+    .split("\n")
+    .filter((line) => line && !/^git -C \S+ (rev-parse --show-toplevel|describe --tags --always)$/.test(line))
+    .join("\n");
 const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
@@ -281,6 +416,68 @@ describe("deploy.sh", () => {
     assert.equal(fs.readdirSync(path.join(sb.dir, "dumps")).length, 1);
     assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon@${NEW}`));
     assert.match(calls(sb), /docker compose .* up -d --no-deps server/);
+    assert.equal(maintenance(sb), "enter\nexit\n");
+  });
+
+  // OPE-9318 (1.6.6 DEBRAND): the compose project must be pinnable to the new
+  // board name without changing anything for an install that does not set it.
+  // Unset → the deploy keeps the directory-derived project (no --project-name
+  // flag, identity of volumes/networks untouched); set → every compose call
+  // carries the pin, and the rendered boot unit stays byte-identical so an
+  // existing verify_boot_unit comparison does not flag a unit change.
+  it("keeps the directory-derived compose project when COMPOSE_PROJECT_NAME is unset", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(calls(sb), /--project-name/, "unset must not add a project pin");
+  });
+
+  it("pins the compose project when COMPOSE_PROJECT_NAME is set", () => {
+    const sb = sandbox();
+    const before = read(path.join(sb.dir, "systemd", "paperclip.service"));
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      COMPOSE_PROJECT_NAME: "myrmidon-board",
+    });
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker compose --project-directory \S+ --project-name myrmidon-board /);
+    const after = read(path.join(sb.dir, "systemd", "paperclip.service"));
+    assert.equal(before, after, "the boot unit must render identically with a project pin");
+  });
+
+  // PREDEPLOY-DB-CHECK (the 05.10 incident): release 1.6.3's board started on
+  // the CI database (empty) and crashed on production data. An image that does
+  // not come up on a copy of the production database must stop the deploy
+  // BEFORE the maintenance window, with nothing on production changed.
+  it("stops before the window when the image does not come up on a copy of the production database", () => {
+    const sb = sandbox({ predeployHealth: { status: "degraded", version: VERSION, commit: COMMIT } });
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /PREDEPLOY-DB-CHECK/);
+    assert.match(out, /did not come up on the copy/);
+    assert.match(out, /DEPLOY STOPPED BEFORE THE WINDOW/);
+    // Nothing on production changed: no window opened, no image switch.
+    assert.equal(maintenance(sb), "");
+    assert.equal(read(sb.override), before);
+    assert.doesNotMatch(calls(sb), /up -d/);
+    // The copy was built for the check and torn down again.
+    assert.match(calls(sb), /docker network create myr-predeploy-/);
+    assert.match(calls(sb), /docker rm -f myr-predeploy-board-/);
+  });
+
+  // PREDEPLOY-DB-CHECK: the check is a step of its own with its own tests
+  // (predeploy-board-check.test.mjs); here we only pin that deploy.sh runs it
+  // BEFORE the window and only for a board that actually changes.
+  it("proves the changing image on the copy before the window opens", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    const copyCheck = log.indexOf("docker network create myr-predeploy-");
+    assert.ok(copyCheck >= 0, "the copy of the production database was not built");
+    // The window opened only after the copy answered: the board was recreated
+    // after the throwaway stack was torn down.
+    assert.ok(log.indexOf("docker rm -f myr-predeploy-board-") < log.indexOf("up -d --no-deps server"), "the board was switched before the copy was checked");
     assert.equal(maintenance(sb), "enter\nexit\n");
   });
 
@@ -307,7 +504,10 @@ describe("deploy.sh", () => {
     assert.notEqual(code, 0);
     assert.match(out, /dump .* empty/);
     assert.equal(read(sb.override), before);
-    assert.doesNotMatch(calls(sb), /compose/);
+    // DEPLOY-PRECHECK: the read-only component pre-check (docker compose config
+    // --services) may have run; nothing was recreated and no maintenance was
+    // entered (the pull precedes the dump by design).
+    assert.doesNotMatch(calls(sb), /up -d/);
     assert.equal(maintenance(sb), "");
   });
 
@@ -320,11 +520,157 @@ describe("deploy.sh", () => {
     assert.match(out, /docker pull/);
     assert.match(out, /image check passed/);
     assert.equal(read(sb.override), before);
-    // Only the read-only image check ran: no pull, no compose.
+    // Only read-only checks ran: the registry reads and the component
+    // pre-check's compose project read (docker compose config --services).
     assert.match(calls(sb), /buildx imagetools inspect/);
-    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+    assert.match(calls(sb), /compose .* config --services/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d/);
     assert.equal(maintenance(sb), "");
     assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+  });
+
+  // DEPLOY-PRECHECK (the 05.10 incident): the dry run makes every component
+  // pre-check the real window would, so an unreadable compose project fails
+  // HERE, with the real compose error, instead of passing and surfacing after
+  // the image pull and the database dump.
+  // LICENSE-DIR: the license issuing key must not sit in the directory that is
+  // mounted into the module containers; --dry-run is the check.
+  describe("license directory preflight", () => {
+    const licenseSandbox = () => {
+      const sb = sandbox();
+      const licDir = path.join(sb.dir, "etc-myrmidon-license");
+      fs.mkdirSync(licDir);
+      fs.writeFileSync(path.join(licDir, "license.key"), "MYR1.x\n");
+      sb.env = { MYR_LICENSE_PATH: path.join(licDir, "license.key") };
+      return { sb, licDir };
+    };
+
+    it("passes when the directory holds only the license and instance-id", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(path.join(licDir, "instance-id"), "myr-aaaaaaaaaaaaaaaaaaaa\n");
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+
+    it("stops on an issuer subdirectory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.mkdirSync(path.join(licDir, "issuer"));
+      const before = read(sb.override);
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /ключ выпуска лежит в каталоге лицензии — перенесите: sudo mv .*\/issuer .*-issuer и поправьте монтирование issuer/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+      assert.equal(read(sb.override), before);
+    });
+
+    it("stops on *.pem and *ed25519* files", () => {
+      for (const name of ["signing.pem", "issuer_ed25519.key"]) {
+        const { sb, licDir } = licenseSandbox();
+        fs.writeFileSync(path.join(licDir, name), "x");
+        const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+        assert.notEqual(code, 0, name);
+        assert.match(out, /ключ выпуска лежит в каталоге лицензии/, name);
+      }
+    });
+
+    it("stops when the compose issuer mount points inside the license directory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({ services: { server: { volumes: [{ type: "bind", source: licDir, target: "/etc/myrmidon-license" }, { type: "bind", source: path.join(licDir, "keys"), target: "/run/issuer" }] } } }),
+      );
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /ключ выпуска лежит в каталоге лицензии/);
+    });
+
+    it("accepts an issuer mount outside the license directory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({ services: { server: { volumes: [{ type: "bind", source: licDir, target: "/etc/myrmidon-license" }, { type: "bind", source: `${licDir}-issuer`, target: "/run/issuer" }] } } }),
+      );
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+  });
+
+  describe("shared package cache preflight", () => {
+    const cacheSandbox = ({ readOnly = false, missing = false } = {}) => {
+      const sb = sandbox();
+      const cache = path.join(sb.dir, "shared-cache");
+      if (!missing) fs.mkdirSync(cache);
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({
+          services: {
+            server: {
+              volumes: [{ type: "bind", source: cache, target: cache, ...(readOnly ? { read_only: true } : {}) }],
+            },
+          },
+        }),
+      );
+      sb.env = { MYRMIDON_SHARED_PACKAGE_CACHE_PATH: cache };
+      return { sb, cache };
+    };
+
+    it("requires a writable cache directory and a read/write server bind", () => {
+      const { sb } = cacheSandbox();
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+
+    it("stops before pulling when the cache directory is missing", () => {
+      const { sb } = cacheSandbox({ missing: true });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /shared package cache path is not a directory/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+    });
+
+    it("rejects a read-only cache bind", () => {
+      const { sb } = cacheSandbox({ readOnly: true });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /shared package cache is not mounted read\/write/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+    });
+  });
+  it("--dry-run fails with the real compose error when the compose project cannot be read", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /compose project itself cannot be read/);
+    // The real compose error is reported, not "dockergate is not a service".
+    assert.match(out, /neither an image nor a build context/);
+    assert.doesNotMatch(out, /is not a service of the compose project/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(read(sb.override), before);
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+  });
+
+  it("pre-checks the components before the pull and the database dump", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.match(out, /compose project itself cannot be read/);
+    // Nothing was pulled, dumped or entered maintenance: the refusal came first.
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(maintenance(sb), "");
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+    assert.ok(!fs.existsSync(path.join(sb.dir, "state")));
+  });
+
+  it("runs the component pre-check before the pull when the compose project is valid", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    const precheck = log.indexOf("config --services");
+    const pull = log.indexOf(`docker pull --quiet ${CI_IMAGE}@${NEW}`);
+    assert.ok(precheck >= 0, `the compose pre-check ran:\n${log}`);
+    assert.ok(pull >= 0 && precheck < pull, `the pre-check ran before the pull:\n${log}`);
   });
 
   it("rejects a malformed digest", () => {
@@ -431,6 +777,31 @@ describe("deploy.sh", () => {
 
   // myrmidon(DEPLOY-TIMEOUT-EXIT): dry-run prints the new drain-timeout
   // behaviour in the plan, so operators see the promise before they run it.
+  it("urgent dry run skips dump and predeploy check and shows the reason", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "critical fix", "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /steps 3 and 3b skipped/);
+    assert.match(out, /critical fix/);
+    assert.match(out, /nightly backup/);
+    assert.doesNotMatch(out, /dump database with/);
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+  });
+
+  it("urgent refuses when migrations are present before dry-run exits", () => {
+    const sb = sandbox({
+      newRevision: "0123456789abcdef0123456789abcdef01234568",
+      oldRevision: "fedcba9876543210fedcba9876543210fedcba98",
+      migrationFiles: "packages/db/src/migrations/0433_urgent.sql\n",
+    });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "critical fix", "--dry-run"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /new database migrations exist/);
+    assert.match(out, /database dump is mandatory/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+  });
+
   it("dry run says the drain timeout lifts maintenance", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
@@ -471,13 +842,13 @@ describe("deploy.sh: only CI images from the registry", () => {
       ["a short digest", "sha256:abc", /64 lowercase hex/],
       ["a short digest in a full reference", `${CI_IMAGE}@sha256:abc`, /64 lowercase hex/],
       ["a digest of another algorithm", `${CI_IMAGE}@sha512:${"b".repeat(64)}`, /64 lowercase hex/],
-      ["an empty value", "", /no image given/],
+      ["an empty value", "", /give --digest or --release|no image given/],
     ];
     for (const [name, arg, pattern] of cases) {
       it(`refuses ${name} before any docker or git call`, () => {
         const sb = sandbox();
         assertRefused(sb, ["--digest", arg], pattern);
-        assert.equal(calls(sb), "");
+        assert.equal(callsWithoutVersionStamp(sb), "");
       });
     }
 
@@ -485,8 +856,8 @@ describe("deploy.sh: only CI images from the registry", () => {
       const sb = sandbox();
       const { code, out } = run(sb, "deploy.sh", []);
       assert.notEqual(code, 0);
-      assert.match(out, /no image given/);
-      assert.equal(calls(sb), "");
+      assert.match(out, /give --digest or --release|no image given/);
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
 
     it("accepts the full reference of the CI image", () => {
@@ -501,7 +872,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       const sb = sandbox();
       fs.appendFileSync(sb.config, "MYRMIDON_IMAGE=ghcr.io/example/other\n");
       assertRefused(sb, ["--digest", NEW], /MYRMIDON_IMAGE is 'ghcr\.io\/example\/other'/);
-      assert.equal(calls(sb), "");
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
   });
 
@@ -533,7 +904,7 @@ describe("deploy.sh: only CI images from the registry", () => {
     });
 
     it("refuses a revision label that is not a full commit sha", () => {
-      const sb = sandbox({ registryLabels: { "org.opencontainers.image.revision": "efe4758", "org.opencontainers.image.source": SOURCE } });
+      const sb = sandbox({ registryLabels: { "org.opencontainers.image.revision": "efe4758", "org.opencontainers.image.source": SOURCE }, invalidRevisionLabel: true });
       assertRefused(sb, ["--digest", NEW], /no org\.opencontainers\.image\.revision label with a full commit sha/);
     });
 
@@ -583,12 +954,22 @@ describe("deploy.sh: only CI images from the registry", () => {
       assert.equal(code, 0, out);
     });
 
+    // RC-VERSIONS: a release candidate tag is a release tag — the deploy of
+    // an rc IS the trial run of the release flow.
+    it("accepts a commit that carries a release candidate tag myr-vX.Y.Z-rc.N", () => {
+      const tags = `${"9".repeat(40)}\trefs/tags/myr-v1.2.3-rc.1\n${COMMIT}\trefs/tags/myr-v1.2.3-rc.1^{}\n`;
+      const sb = sandbox({ onMain: false, tags });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(calls(sb), /git -C \S+ ls-remote --tags origin refs\/tags\/myr-v\*/);
+    });
+
     it("refuses when the myr-v tags point at other commits", () => {
       const sb = sandbox({ onMain: false, tags: `${"9".repeat(40)}\trefs/tags/myr-v1.0.0\n${"8".repeat(40)}\trefs/tags/myr-v1.0.0^{}\n` });
       assertRefused(sb, ["--digest", NEW], /neither on origin\/main nor tagged myr-v/);
     });
 
-    it("refuses a tag that CI would not build (not myr-v<x>.<y>.<z>)", () => {
+    it("refuses a tag that CI would not build (not myr-v<x>.<y>.<z> or an rc)", () => {
       const sb = sandbox({ onMain: false, tags: `${COMMIT}\trefs/tags/myr-v1.0.2-rc1\n${COMMIT}\trefs/tags/myr-vnext\n` });
       assertRefused(sb, ["--digest", NEW], /neither on origin\/main nor tagged myr-v/);
     });
@@ -642,7 +1023,7 @@ describe("deploy.sh: only CI images from the registry", () => {
         assert.notEqual(code, 0);
         assert.match(out, /unknown argument/);
       }
-      assert.equal(calls(sb), "");
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
 
     it("--expect-version and --expect-commit do not skip it", () => {
@@ -769,10 +1150,14 @@ echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in *"-X POST"*) if [ -e "$SANDBOX/post-fails" ]; then echo 'curl: (22) The requested URL returned error' >&2; exit 22; fi ;; esac
 url="$*"
 case "$url" in
+  *"-X POST"*)
+    if [ -e "$SANDBOX/post-fails" ]; then echo 'curl: (22) The requested URL returned error' >&2; exit 22; fi
+    echo '{"active":false,"instance":null,"windows":[]}'; exit 0 ;;
   *maintenance*)
     cat "$SANDBOX/maintenance.json" 2>/dev/null || echo '{"active":false,"instance":null,"windows":[]}'
     if [ -e "$SANDBOX/flip-on-read" ]; then rm -f "$SANDBOX/flip-on-read"; echo '{"active":false,"instance":null,"windows":[]}' > "$SANDBOX/maintenance.json"; fi ;;
   *issues*) cat "$SANDBOX/issues.json" 2>/dev/null || echo '[]' ;;
+  *heartbeat-runs*) cat "$SANDBOX/runs.json" 2>/dev/null || echo '[]' ;;
   *) echo '{"status":"ok"}' ;;
 esac
 `;
@@ -788,6 +1173,7 @@ esac
         "MAINTENANCE_MODE=api",
         "MAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance",
         "MAINTENANCE_EXIT_WAIT_SEC=2",
+        "MYRMIDON_DEPLOY_POSTCHECK_RUNS=0",
         "",
       ].join("\n"),
     );
@@ -798,14 +1184,17 @@ esac
   function callLib(sb, functionCall) {
     const libScript = path.join(sb.dir, "call-lib.sh");
     fs.writeFileSync(libScript, `source "$MYR_SCRIPT_DIR/lib.sh"; load_config "$LIB_CONFIG"; ${functionCall}\n`, { mode: 0o755 });
+    const env = {
+      ...process.env,
+      PATH: `${sb.bin}:${process.env.PATH}`,
+      SANDBOX: sb.dir,
+      LIB_CONFIG: sb.config,
+      MYR_SCRIPT_DIR: HERE,
+    };
+    delete env.BASH_ENV;
+    delete env.ENV;
     const result = spawnSync(bashPath(), [libScript], {
-      env: {
-        ...process.env,
-        PATH: `${sb.bin}:${process.env.PATH}`,
-        SANDBOX: sb.dir,
-        LIB_CONFIG: sb.config,
-        MYR_SCRIPT_DIR: HERE,
-      },
+      env,
       encoding: "utf8",
     });
     return { code: result.status, out: `${result.stdout}${result.stderr}` };
@@ -898,6 +1287,44 @@ esac
     assert.match(out, /degraded: maintenance window did not retire after exit/);
   });
 
+  it("post_deploy_fleet_check passes when the first completed gateway runs succeeded", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.writeFileSync(path.join(sb.dir, "runs.json"), JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+      adapterType: "hermes_gateway", status: "succeeded", createdAt: `2026-10-01T00:00:0${i}Z`, finishedAt: `2026-10-01T00:00:0${i}Z`, resultJson: { output: "ok" },
+    }))));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=5\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.match(out, /5 successful, 0 failed of first 5 completed hermes_gateway runs/);
+  });
+
+  it("post_deploy_fleet_check degrades when the first five completed gateway runs fail", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.writeFileSync(path.join(sb.dir, "runs.json"), JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+      adapterType: "hermes_gateway", status: "failed", createdAt: `2026-10-01T00:00:0${i}Z`, finishedAt: `2026-10-01T00:00:0${i}Z`, errorCode: "adapter_failed", resultJson: { output: "run failed" },
+    }))));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=5\nMYRMIDON_DEPLOY_POSTCHECK_RUNS_TIMEOUT_SEC=1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS_INTERVAL_SEC=1\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 1, out);
+    assert.match(out, /no successful hermes_gateway runs among the first 5 completed runs/);
+    assert.match(out, /adapter_failed/);
+  });
+
+  it("post_deploy_fleet_check skips gateway run check when MYRMIDON_DEPLOY_POSTCHECK_RUNS=0", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=0\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /completed hermes_gateway run/);
+    assert.match(out, /no blocked issues in the deploy window, maintenance retired/);
+  });
+
   it("post_deploy_fleet_check is skipped without BOARD_API_URL/BOARD_COMPANY_ID", () => {
     const sb = libSandbox();
     const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
@@ -907,6 +1334,26 @@ esac
 });
 
 describe("rollback.sh", () => {
+  // ROLLBACK-WITHOUT-BOARD (the 05.10 lesson): a rollback usually runs BECAUSE
+  // the board is down. Entering (and leaving) the maintenance window must not
+  // require the board API to answer: the image switch and the health check
+  // decide the outcome, not an admission gate nobody can serve.
+  it("rolls back when the board API is down (ROLLBACK-WITHOUT-BOARD)", () => {
+    const sb = sandbox();
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    // The board is down: its maintenance API does not answer at all.
+    fs.appendFileSync(sb.config, `MAINTENANCE_MODE=api\nMAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance\n`);
+    fs.writeFileSync(path.join(sb.dir, "curl-post-fails"), "");
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: could not enter maintenance/);
+    assert.match(out, /continuing WITHOUT a maintenance window/);
+    // The rollback itself went through: the previous image is running and passed
+    // its health check.
+    assert.match(read(sb.override), new RegExp(`@${OLD}`));
+    assert.match(out, /rolled back to/);
+  });
+
   it("returns to the previous digest without restoring the database", () => {
     const sb = sandbox();
     assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
@@ -1302,5 +1749,214 @@ describe("verify-health.sh", () => {
     );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /token-file/);
+  });
+});
+
+// DB-TUNING (OPE-5009): the PostgreSQL settings of the audit (OPE-4270) reach
+// the server ONLY through the deploy — the declarative source is
+// scripts/myrmidon/deploy/db-tuning.sql, applied by deploy.sh (step 7d) via
+// DB_TUNE_COMMAND and verified pair-by-pair through DB_TUNE_SHOW_COMMAND;
+// rollback.sh returns the settings via DB_TUNE_ROLLBACK_COMMAND and checks
+// SHOW against the values recorded before the first managed deploy. A fake
+// `psql` in the sandbox plays the database: it logs every call, applies the
+// SQL to an "auto.conf" file, and answers SHOW from what is applied.
+describe("DB-TUNING: deploy applies and verifies the settings (OPE-5009)", () => {
+  // The fake psql: -f - reads the SQL on stdin (apply/reset), -tAc "SHOW x"
+  // answers the current value of x. Values land in $SANDBOX/pg-settings:
+  // a line per GUC, written by the apply and cleared by the reset.
+  const FAKE_PSQL = `#!/usr/bin/env bash
+echo "psql $*" >> "$SANDBOX/calls.log"
+SET_FILE="$SANDBOX/pg-settings"
+args=("$@")
+mode="" sql=""
+for ((i = 0; i < $#; i++)); do
+  case "\${args[i]}" in
+    -tAc|-c) mode="show"; sql="\${args[i+1]}"; break ;;
+    -f) mode="apply"
+      if [ "\${args[i+1]}" = "-" ]; then sql="$(cat)"; else sql="$(cat "\${args[i+1]}")"; fi
+      break ;;
+  esac
+done
+case "$mode" in
+  show)
+    name="\${sql#SHOW }"
+    grep -m1 "^$name=" "$SET_FILE" 2>/dev/null | sed "s/^$name=//" ;;
+  apply)
+    while read -r n v; do
+      [ -n "$n" ] || continue
+      grep -v "^$n=" "$SET_FILE" > "$SET_FILE.tmp" 2>/dev/null || true
+      printf '%s=%s\\n' "$n" "$v" >> "$SET_FILE.tmp"
+      mv "$SET_FILE.tmp" "$SET_FILE"
+    done < <(grep -E '^ALTER SYSTEM SET' <<<"$sql" | sed -E "s/^ALTER SYSTEM SET ([a-z_]+) = '?([^';]+)'?;\\$/\\1 \\2/")
+    # a RESET restores the compiled default: jit=on, work_mem=4MB,
+    # wal_compression=off, autovacuum_vacuum_scale_factor=0.2
+    while read -r n; do
+      [ -n "$n" ] || continue
+      grep -v "^$n=" "$SET_FILE" > "$SET_FILE.tmp" 2>/dev/null || true
+      case "$n" in
+        jit) echo "jit=on" ;;
+        work_mem) echo "work_mem=4MB" ;;
+        wal_compression) echo "wal_compression=off" ;;
+        autovacuum_vacuum_scale_factor) echo "autovacuum_vacuum_scale_factor=0.2" ;;
+      esac >> "$SET_FILE.tmp"
+      mv "$SET_FILE.tmp" "$SET_FILE"
+    done < <(grep -E '^ALTER SYSTEM RESET' <<<"$sql" | sed -E "s/^ALTER SYSTEM RESET ([a-z_]+);\\$/\\1/") ;;
+esac
+exit 0
+`;
+
+  // The psql form of the four DB_TUNE_* settings, pointing at the fake. The
+  // real production example uses `docker compose exec db psql` — the fake
+  // binary stands for both psql and the container.
+  function tuneConfig(expected) {
+    return [
+      `DB_TUNE_COMMAND='psql -U example -d example -v ON_ERROR_STOP=1 -f - < "$DB_TUNING_SQL"'`,
+      `DB_TUNE_SHOW_COMMAND='psql -U example -d example -tAc "SHOW $DB_TUNE_PARAM"'`,
+      `DB_TUNE_ROLLBACK_COMMAND='psql -U example -d example -v ON_ERROR_STOP=1 -f - < "$DB_TUNING_ROLLBACK_SQL"'`,
+      `DB_TUNE_EXPECTED='${expected}'`,
+      "",
+    ].join("\n");
+  }
+
+  function tuneSandbox(expected, { initialSettings = "jit=on\nwork_mem=4MB\nwal_compression=off\nautovacuum_vacuum_scale_factor=0.2\n" } = {}) {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.bin, "psql"), FAKE_PSQL, { mode: 0o755 });
+    fs.writeFileSync(path.join(sb.dir, "pg-settings"), initialSettings);
+    fs.appendFileSync(sb.config, tuneConfig(expected));
+    return sb;
+  }
+
+  it("step is skipped when DB_TUNE_COMMAND is empty (plain sandbox config)", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.match(out, /7d\/8 apply\+verify DB settings/);
+    assert.match(out, /DB-TUNING: apply skipped \(DB_TUNE_COMMAND is empty/);
+    assert.doesNotMatch(calls(sb), /psql -U example -d example -v ON_ERROR_STOP=1 -f -/);
+  });
+
+  it("applies db-tuning.sql and a matching SHOW passes the deploy", () => {
+    // The SHOW spellings of the four GUC settings from the audit.
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    // the declarative source was piped to psql (DB_TUNING_SQL resolved to the
+    // repo file), and every parameter was verified through SHOW
+    assert.match(calls(sb), /psql .* -f -/);
+    assert.match(out, /DB-TUNING: deploy jit = off \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy work_mem = 16MB \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy wal_compression = lz4 \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy autovacuum_vacuum_scale_factor = 0\.05 \(as expected\)/);
+    // the previous values were recorded BEFORE the first apply
+    assert.equal(
+      read(path.join(sb.dir, "state/db-tuning-previous")),
+      "jit=on\nwork_mem=4MB\nwal_compression=off\nautovacuum_vacuum_scale_factor=0.2\n",
+    );
+  });
+
+  it("a SHOW mismatch fails the deploy, maintenance stays, settings roll back", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    // A SHOW command that lies about ONE parameter (wal_compression answers
+    // the old default although the apply really set lz4) — the mismatch case.
+    fs.appendFileSync(
+      sb.config,
+      'DB_TUNE_SHOW_COMMAND=\'if [ "$DB_TUNE_PARAM" = wal_compression ]; then echo off; else psql -U example -d example -tAc "SHOW $DB_TUNE_PARAM"; fi\'\n',
+    );
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEPLOY FAILED.*DB-TUNING SHOW check does not match/);
+    assert.match(out, /wal_compression = 'off', expected 'lz4' — MISMATCH/);
+    // the failure shape of the health step: maintenance stays on, the rollback
+    // command is printed, and the half-applied settings were returned
+    assert.match(out, /Maintenance stays on\./);
+    assert.match(out, /rollback\.sh --config/);
+    assert.match(out, /returning the database to the previous settings \(DB_TUNE_ROLLBACK_COMMAND\)/);
+    assert.match(calls(sb), /psql .* -f -/); // the rollback reset ran (DB_TUNE_ROLLBACK_COMMAND)
+    // the last maintenance line is an ENTER (maintenance on), not an exit
+    const m = read(sb.dir + "/maintenance.log").trim().split("\n");
+    assert.equal(m[m.length - 1], "enter");
+  });
+
+  it("rollback.sh applies DB_TUNE_ROLLBACK_COMMAND and verifies the previous values", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    // A managed deploy first: the settings go in and the previous values are
+    // recorded.
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=off$/m);
+    // The emergency rollback: image back + settings back, verified against
+    // what the server had before the first managed deploy.
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /6\/7 rollback DB settings/);
+    assert.match(out, /DB-TUNING: rolling the settings back/);
+    assert.match(out, /DB-TUNING: rollback jit = on \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback work_mem = 4MB \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback wal_compression = off \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback autovacuum_vacuum_scale_factor = 0\.2 \(as expected\)/);
+    // the settings really returned
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=on$/m);
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^wal_compression=off$/m);
+  });
+
+  it("empty DB_TUNE_ROLLBACK_COMMAND: the rollback logs a warning and keeps the settings", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    fs.appendFileSync(sb.config, "DB_TUNE_ROLLBACK_COMMAND=\n");
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: DB-TUNING: rollback skipped \(DB_TUNE_ROLLBACK_COMMAND is empty/);
+    // the database keeps the tuned settings
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=off$/m);
+  });
+
+  it("dry-run describes the DB-TUNING step both ways", () => {
+    const on = tuneSandbox("jit=off\nwork_mem=16MB");
+    const planned = run(on, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(planned.code, 0, planned.out);
+    assert.match(planned.out, /7d\. DB-TUNING: apply the PostgreSQL settings/);
+    const off = sandbox();
+    const skipped = run(off, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(skipped.code, 0, skipped.out);
+    assert.match(skipped.out, /7d\. DB-TUNING: skipped \(DB_TUNE_COMMAND is empty\)/);
+  });
+
+  it("the declarative source carries the settings of the audit and the table names of the schema", () => {
+    // A contract on the SQL itself: the values the audit asked for, the
+    // per-table options with the real drizzle table names, and a rollback that
+    // resets exactly what the apply sets.
+    const apply = fs.readFileSync(path.join(HERE, "db-tuning.sql"), "utf8");
+    const reset = fs.readFileSync(path.join(HERE, "db-tuning-rollback.sql"), "utf8");
+    for (const stmt of [
+      "ALTER SYSTEM SET jit = off;",
+      "ALTER SYSTEM SET work_mem = '16MB';",
+      "ALTER SYSTEM SET wal_compression = 'lz4';",
+      "ALTER SYSTEM SET autovacuum_vacuum_scale_factor = 0.05;",
+      "ALTER TABLE heartbeat_runs SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE agent_wakeup_requests SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE company_secrets SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE issues SET (autovacuum_analyze_scale_factor = 0.02);",
+      "SELECT pg_reload_conf();",
+    ]) {
+      assert.ok(apply.includes(stmt), `db-tuning.sql must carry: ${stmt}`);
+    }
+    for (const stmt of [
+      "ALTER SYSTEM RESET jit;",
+      "ALTER SYSTEM RESET work_mem;",
+      "ALTER SYSTEM RESET wal_compression;",
+      "ALTER SYSTEM RESET autovacuum_vacuum_scale_factor;",
+      "ALTER TABLE heartbeat_runs RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE agent_wakeup_requests RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE company_secrets RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE issues RESET (autovacuum_analyze_scale_factor);",
+      "SELECT pg_reload_conf();",
+    ]) {
+      assert.ok(reset.includes(stmt), `db-tuning-rollback.sql must carry: ${stmt}`);
+    }
+    // the table names must match the drizzle schema
+    const schemaDir = path.join(HERE, "..", "..", "..", "packages", "db", "src", "schema");
+    for (const table of ["heartbeat_runs", "agent_wakeup_requests", "company_secrets", "issues"]) {
+      assert.match(apply, new RegExp(`ALTER TABLE ${table} `));
+      assert.match(fs.readFileSync(path.join(schemaDir, `${table}.ts`), "utf8"), new RegExp(`pgTable\\(\\s*\\n?\\s*"${table}"`));
+    }
   });
 });

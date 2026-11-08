@@ -15,7 +15,7 @@ import {
   getEmbeddedPostgresTestSupport,
   principalPermissionGrants,
   startEmbeddedPostgresTestDatabase,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   chatChannelService,
   telegramCommandsCopyVersion,

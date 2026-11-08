@@ -101,6 +101,8 @@ export type {
 } from "./feedback.js";
 export type {
   InstanceExecutionMode,
+  InstanceNumberFormat,
+  InstanceDateFormat,
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
@@ -129,6 +131,9 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./instance.js";
 export {
@@ -189,6 +194,8 @@ export type {
   CompanySkillResetRequest,
   CompanySkillImportRequest,
   CompanySkillImportResult,
+  CompanySkillDiscoveredSkill,
+  CompanySkillDiscoverResult,
   CompanySkillProjectScanRequest,
   CompanySkillProjectBrowseRequest,
   CompanySkillProjectBrowseEntry,
@@ -277,6 +284,10 @@ export type {
   Agent,
   AgentAccessState,
   AgentChainOfCommandEntry,
+  // myrmidon(PERF-DIET-G): the slim company list row and the configuration read
+  AgentListItem,
+  AgentListFilters,
+  AgentConfigurationSummary,
   AgentDetail,
   ClearAgentErrorResponse,
   AgentPermissions,
@@ -416,6 +427,7 @@ export type {
   ProjectExecutionWorkspaceDefaultMode,
   IssueExecutionWorkspaceSettings,
 } from "./workspace-runtime.js";
+export type { ProjectDevelopmentProcess } from "./project-development-process.js";
 export type {
   WorkspaceOperation,
   WorkspaceOperationPhase,
@@ -666,6 +678,10 @@ export type {
   IssueBlockerAttentionIssueSummary,
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
+  IssueBlockerMetadata,
+  IssueActiveBlockerMetadata,
+  IssueFreezeOnlyMetadata,
+  IssueRewakeFreeze,
   IssueReviewAttention,
   IssueReviewAttentionPath,
   IssueReviewAttentionPathKind,
@@ -874,7 +890,7 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject, CostByDay } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,
@@ -1045,6 +1061,8 @@ export type {
   PluginApiRouteDeclaration,
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,
+  PluginModelProviderDeclaration,
+  PluginProviderModelDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
@@ -1066,3 +1084,5 @@ export * from "./app-definition.js";
 export * from "./chat-channels.js";
 
 export * from "./email.js";
+
+export type { StatusStrip } from "./status-strip.js";

@@ -15,12 +15,15 @@
 // company-scoped, so deletion is auditable per the plan's acceptance criteria.
 
 import { eq, and } from "drizzle-orm";
-import { agents, pluginConfig, plugins, type Db } from "@paperclipai/db";
+import { agents, pluginConfig, plugins, type Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { logger } from "../../middleware/logger.js";
-import { secretService } from "../../services/index.js";
+import { instanceSettingsService, secretService } from "../../services/index.js";
 import { createMemoryHindsightClient, type MemoryHindsightClient } from "./hindsight-client.js";
+import { normalizeAgentMemorySettings } from "@myrmidon/shared";
 import { readMemoryUiSettings, type MemoryUiSettings } from "./settings.js";
+import { AGENT_MEMORY_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
+import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 
 const HINDSIGHT_PLUGIN_KEY = "paperclip-plugin-hindsight";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -36,6 +39,8 @@ export interface MemoryBankResolution {
 export interface MemoryServiceDeps {
   db: Db;
   env?: NodeJS.ProcessEnv;
+  /** The stored general.agentMemory value, read on every request; absent = none. */
+  readStoredSettings?(): Promise<unknown>;
   /** Company secret reader; the real wiring uses secretService. */
   readSecretValue(companyId: string, secretName: string): Promise<string | null>;
   /** Client factory, overridable in tests. */
@@ -115,22 +120,31 @@ function memoryErrorToStatus(err: unknown): number {
 
 export function agentMemoryService(deps: MemoryServiceDeps) {
   const env = deps.env ?? process.env;
-  const settings = () => readMemoryUiSettings(env);
+  /** Re-read on every call, so a settings change needs no restart. A read failure falls back to the environment. */
+  const settings = async (): Promise<MemoryUiSettings> => {
+    let stored: unknown;
+    try {
+      stored = deps.readStoredSettings ? await deps.readStoredSettings() : undefined;
+    } catch {
+      stored = undefined;
+    }
+    return readMemoryUiSettings(env, normalizeAgentMemorySettings(stored));
+  };
 
   /** Client for a company, or null while the section is off. */
   async function clientFor(companyId: string): Promise<MemoryHindsightClient | null> {
-    const current = settings();
+    const current = await settings();
     if (!current.enabled || !current.baseUrl) return null;
     let apiKey: string | undefined;
     if (current.keySecret) {
       const value = await deps.readSecretValue(companyId, current.keySecret);
       apiKey = value ?? undefined;
     }
-    return deps.client(current.baseUrl, apiKey);
+    return trackedClient(deps.client(current.baseUrl, apiKey));
   }
 
   async function status(agentId: string, companyId: string): Promise<MemoryCardStatus> {
-    const current = settings();
+    const current = await settings();
     const bank = await resolveAgentMemoryBank(deps.db, { agentId, companyId });
     if (!current.enabled) {
       return { enabled: false, bank, reason: "not_enabled" };
@@ -276,12 +290,43 @@ function readableError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * myrmidon(FEATURES): every call to the memory service reports its outcome to
+ * the features page, so an unreachable service or a rejected key shows there
+ * and not only in the card that happened to be open.
+ */
+function trackedClient(client: MemoryHindsightClient): MemoryHindsightClient {
+  async function track<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      const result = await call();
+      recordFeatureOutcome(AGENT_MEMORY_FEATURE_KEY, { ok: true, effect: 1 });
+      return result;
+    } catch (err) {
+      // A 4xx means the service answered (unknown memory id, bad request): it is up.
+      const status = (err as { status?: unknown } | null)?.status;
+      if (typeof status === "number" && status < 500) {
+        recordFeatureOutcome(AGENT_MEMORY_FEATURE_KEY, { ok: true, effect: 1 });
+      } else {
+        recordFeatureOutcome(AGENT_MEMORY_FEATURE_KEY, { ok: false, error: readableError(err) });
+      }
+      throw err;
+    }
+  }
+  return {
+    list: (bankId, opts) => track(() => client.list(bankId, opts)),
+    invalidate: (bankId, memoryId, reason) => track(() => client.invalidate(bankId, memoryId, reason)),
+    clear: (bankId) => track(() => client.clear(bankId)),
+  };
+}
+
 /** The real wiring: company secret store, global fetch. */
 export function defaultAgentMemoryDeps(db: Db, env: NodeJS.ProcessEnv = process.env): MemoryServiceDeps {
   const secrets = secretService(db);
+  const instanceSettings = instanceSettingsService(db);
   return {
     db,
     env,
+    readStoredSettings: async () => (await instanceSettings.getGeneral()).agentMemory,
     async readSecretValue(companyId, secretName) {
       const row = await secrets.getByName(companyId, secretName);
       if (!row) return null;

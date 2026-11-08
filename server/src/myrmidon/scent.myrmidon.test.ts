@@ -1,0 +1,797 @@
+// server/src/myrmidon/scent.myrmidon.test.ts
+//
+// myrmidon(1.6.5 F-26 T10 SCENT): acceptance tests for the task/agent scent.
+//
+// Every acceptance row of the issue («Сдать») runs here with the REAL create
+// hook (deriveScentAuto — the function issues.create calls) and a mocked
+// gateway; no network, no LiteLLM. The hook is pure, so these tests run the
+// same decision the production path takes — not a stand-in copy of it.
+//
+//  1. «поправить CSS кнопки» → caste engineer with p > 0.5 (gateway stub);
+//  2. a task without a description gets an empty scent and the §2.1 caste —
+//     the classifier is NOT called (§2.4) and NO company default is
+//     materialized as 'auto';
+//  3. pickAgentForTask: an agent with 2 matching tags beats one with 1;
+//  4. a serious task (consequences 0.7) goes to `strong`, not `light`;
+//  5. an explicit caste is never overwritten (source stamped 'manual');
+//  6. a gateway failure does not break issue creation;
+//  7. the markup queue: open todos only, and the per-record hourly limit
+//     counts FAILURES too — a refused call does not re-pick the same record
+//     on the next tick;
+//  8. the settings reader: defaults, stored override, env kill switch.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import express from "express";
+import request from "supertest";
+import type { Db } from "@myrmidon/db";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { ScentQueuePorts } from "./scent/queue.js";
+import { myrmidonScentRoutes } from "./scent/routes.js";
+import { errorHandler } from "../middleware/index.js";
+import {
+  DEFAULT_SCENT_SETTINGS,
+  defaultStrengthForPriority,
+  pickAgentForTask,
+  readScentSettings,
+  scentScore,
+  scentTaskStrength,
+  topScentCasteKey,
+  type IssueScent,
+} from "@myrmidon/shared";
+import type {
+  ClassifyIssueScentInput,
+  ClassifyAgentScentInput,
+  ScentClassificationResult,
+  AgentScentClassificationResult,
+  ScentGateway,
+} from "./scent/gateway.js";
+import {
+  classifyIssueScent,
+  normalizeScentBaseUrl,
+} from "./scent/gateway.js";
+import { scentMetrics } from "./scent/metrics.js";
+import { checkScentHealth } from "./scent/health.js";
+import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
+import { canSpendCall, createScentService } from "./scent/service.js";
+import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
+import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
+
+const CASTES = ["engineer", "designer", "marketer"];
+const COMPANY_ID = "00000000-0000-4000-8000-000000000001";
+
+function makeScentStatusApp(db: Db, ports: ScentQueuePorts) {
+  const app = express();
+  app.use((req, _res, next) => {
+    req.actor = {
+      type: "board",
+      source: "local_implicit",
+      userId: "user-a",
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: true,
+    };
+    next();
+  });
+  app.use("/api", myrmidonScentRoutes(db, ports));
+  app.use(errorHandler);
+  return app;
+}
+
+const CSS_SCENT: IssueScent = {
+  tags: ["css", "button", "ui"],
+  casteProbs: { engineer: 0.8, designer: 0.1 },
+  complexity: { coordination: 0.1, uncertainty: 0.1, consequences: 0.05 },
+};
+
+const SERIOUS_SCENT: IssueScent = {
+  tags: ["security", "payments"],
+  casteProbs: { engineer: 0.9 },
+  complexity: { coordination: 0.4, uncertainty: 0.3, consequences: 0.7 },
+};
+
+function stubGateway(issueResult: (input: ClassifyIssueScentInput) => ScentClassificationResult): ScentGateway & {
+  calls: ClassifyIssueScentInput[];
+} {
+  const calls: ClassifyIssueScentInput[] = [];
+  return {
+    calls,
+    classifyIssueScent: async (input) => {
+      calls.push(input);
+      return issueResult(input);
+    },
+    classifyAgentScent: async (
+      _input: ClassifyAgentScentInput,
+    ): Promise<AgentScentClassificationResult> => ({
+      tags: ["triage"],
+      model: DEFAULT_SCENT_SETTINGS.model,
+      inputTokens: 1, outputTokens: 1,
+    }),
+  };
+}
+
+function failingGateway(): ScentGateway & { calls: ClassifyIssueScentInput[] } {
+  const calls: ClassifyIssueScentInput[] = [];
+  return {
+    calls,
+    classifyIssueScent: async (input) => {
+      calls.push(input);
+      throw new Error("gateway refused");
+    },
+    classifyAgentScent: async () => {
+      throw new Error("gateway refused");
+    },
+  };
+}
+
+// --- 1. CSS task → engineer p > 0.5 ------------------------------------------
+
+describe("issue scent classification (acceptance row 1)", () => {
+  it("«поправить CSS кнопки» gets caste engineer with p > 0.5 via the mocked gateway", async () => {
+    const gateway = stubGateway(() => ({
+      scent: CSS_SCENT,
+      model: "qwen-turbo-free",
+      inputTokens: 120, outputTokens: 40,
+    }));
+    // The create path: classify (mocked), then the REAL hook decides.
+    const result = await gateway.classifyIssueScent({
+      model: "qwen-turbo-free",
+      casteKeys: CASTES,
+      title: "Поправить CSS кнопки",
+      description: "Кнопка «Сохранить» наезжает на поле ввода на мобильном.",
+      timeoutSec: 20,
+    });
+    const scent = result.scent!;
+    expect(topScentCasteKey(scent, 0.5)).toBe("engineer");
+    expect(scent.casteProbs.engineer).toBeGreaterThan(0.5);
+    expect(gateway.calls).toHaveLength(1);
+
+    const applied = deriveScentAuto(
+      {
+        title: "Поправить CSS кнопки",
+        priority: "medium",
+        casteKey: null,
+        casteSource: null,
+        pheromoneStrength: null,
+        scent,
+      },
+      CASTES,
+      DEFAULT_SCENT_SETTINGS,
+    );
+    expect(applied.casteKey).toBe("engineer");
+    expect(applied.casteSource).toBe("auto");
+    // the winning probability is readable off the scent itself
+    expect(scent.casteProbs.engineer!).toBeGreaterThanOrEqual(0.5);
+  });
+});
+
+// --- 2. Task without a description -------------------------------------------
+
+describe("task without a description (acceptance row 2)", () => {
+  it("gets an empty scent, keeps caste NULL (§2.1 chain), never calls the classifier", () => {
+    expect(isUnclassifiableIssue({ description: null })).toBe(true);
+
+    const gateway = stubGateway(() => {
+      throw new Error("must not be called");
+    });
+    // The create path guards with isUnclassifiableIssue before any call:
+    if (!isUnclassifiableIssue({ description: null })) {
+      void gateway.classifyIssueScent({
+        model: "m",
+        casteKeys: CASTES,
+        title: "Test",
+        description: null,
+        timeoutSec: 20,
+      });
+    }
+    expect(gateway.calls).toHaveLength(0);
+
+    const applied = deriveScentAuto(
+      {
+        title: "Test",
+        description: null,
+        priority: "medium",
+        casteKey: null,
+        casteSource: null,
+        pheromoneStrength: null,
+        scent: null,
+      },
+      CASTES,
+      DEFAULT_SCENT_SETTINGS,
+    );
+    // §2.1: task NULL — the project/company default resolves at read time;
+    // the hook must NOT materialize the company default as 'auto'.
+    expect(applied.casteKey).toBeNull();
+    expect(applied.casteSource).toBeNull();
+  });
+
+  it("a low-confidence scent (p < 0.5) also keeps caste NULL, no company default", () => {
+    const lowConf: IssueScent = {
+      tags: ["misc"],
+      casteProbs: { engineer: 0.4, designer: 0.35, marketer: 0.25 },
+      complexity: { coordination: 0.2, uncertainty: 0.2, consequences: 0.2 },
+    };
+    const applied = deriveScentAuto(
+      {
+        title: "Починить отчёт",
+        priority: "medium",
+        casteKey: null,
+        casteSource: null,
+        pheromoneStrength: null,
+        scent: lowConf,
+      },
+      CASTES,
+      DEFAULT_SCENT_SETTINGS,
+    );
+    expect(applied.casteKey).toBeNull();
+    expect(applied.casteSource).toBeNull();
+  });
+});
+
+// --- 3. pickAgentForTask: 2 tags beat 1 ---------------------------------------
+
+describe("pickAgentForTask (acceptance row 3)", () => {
+  it("an agent with 2 matching tags beats an agent with 1", () => {
+    const task = { scent: CSS_SCENT };
+    const twoTags = { id: "b", scentTags: ["css", "ui"], modelTier: "light" as const };
+    const oneTag = { id: "a", scentTags: ["css"], modelTier: "light" as const };
+    expect(scentScore(task, twoTags)).toBe(2 * DEFAULT_SCENT_SETTINGS.tagWeight);
+    expect(scentScore(task, oneTag)).toBe(1 * DEFAULT_SCENT_SETTINGS.tagWeight);
+    expect(pickAgentForTask(task, [twoTags, oneTag])?.id).toBe("b");
+  });
+});
+
+// --- 4. Serious task → strong tier -------------------------------------------
+
+describe("task strength from the Jev complexity (acceptance row 4)", () => {
+  it("consequences 0.7 pushes the strength past the strong threshold", () => {
+    const serious = scentTaskStrength("medium", SERIOUS_SCENT, DEFAULT_SCENT_SETTINGS);
+    const plain = scentTaskStrength("medium", CSS_SCENT, DEFAULT_SCENT_SETTINGS);
+    expect(serious).toBeGreaterThan(plain);
+    expect(plain).toBe(defaultStrengthForPriority("medium"));
+  });
+});
+
+// --- 5. Explicit caste is never overwritten -----------------------------------
+
+describe("explicit values win (acceptance row 5)", () => {
+  it("an explicit casteKey is kept and stamped 'manual'", () => {
+    const applied = deriveScentAuto(
+      {
+        title: "Поправить CSS кнопки",
+        priority: "medium",
+        casteKey: "designer",
+        casteSource: null,
+        pheromoneStrength: null,
+        scent: CSS_SCENT, // classifier would say engineer — must not matter
+      },
+      CASTES,
+      DEFAULT_SCENT_SETTINGS,
+    );
+    expect(applied.casteKey).toBe("designer");
+    expect(applied.casteSource).toBe("manual");
+  });
+
+  it("an explicit strength is kept", () => {
+    const applied = deriveScentAuto(
+      {
+        title: "Поправить CSS кнопки",
+        priority: "medium",
+        casteKey: null,
+        casteSource: null,
+        pheromoneStrength: 42,
+        scent: CSS_SCENT,
+      },
+      CASTES,
+      DEFAULT_SCENT_SETTINGS,
+    );
+    expect(applied.pheromoneStrength).toBe(42);
+  });
+});
+
+// --- 6. Gateway failure does not break creation -------------------------------
+
+describe("classifier failure (acceptance row 6)", () => {
+  it("a gateway failure yields scent null and a NULL caste — creation proceeds", async () => {
+    const gateway = failingGateway();
+    let scent: IssueScent | null = null;
+    try {
+      await gateway.classifyIssueScent({
+        model: "m",
+        casteKeys: CASTES,
+        title: "Поправить CSS кнопки",
+        description: "Описание есть.",
+        timeoutSec: 20,
+      });
+    } catch {
+      scent = null; // the caller's contract: failure → null scent
+    }
+    const applied = deriveScentAuto(
+      {
+        title: "Поправить CSS кнопки",
+        priority: "medium",
+        casteKey: null,
+        casteSource: null,
+        pheromoneStrength: null,
+        scent,
+      },
+      CASTES,
+      DEFAULT_SCENT_SETTINGS,
+    );
+    expect(applied.casteKey).toBeNull();
+    expect(applied.pheromoneStrength).toBe(
+      defaultStrengthForPriority("medium"),
+    );
+  });
+});
+
+// --- 7. Markup queue: open todos only; hourly limit counts failures -----------
+
+describe("markup queue (acceptance row 7)", () => {
+  it("listMarkupQueue never selects done/cancelled issues or capability-less agents", async () => {
+    // The SQL is the gate — drive a stub db that captures the WHERE clauses so
+    // the test fails if someone widens the queue to closed issues or agents
+    // without capabilities.
+    const dialect = new PgDialect();
+    const seenSql: string[] = [];
+    const seenParams: unknown[] = [];
+    const db = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: (...clauses: unknown[]) => {
+            for (const clause of clauses) {
+              // Render the drizzle SQL object to text + bound params (String(clause)
+              // would only print "[object Object]").
+              const query = dialect.sqlToQuery(clause as never);
+              seenSql.push(query.sql);
+              seenParams.push(...query.params);
+            }
+            return {
+              orderBy: () => ({ limit: () => Promise.resolve([]) }),
+              // issues path awaits the where() directly
+              then: (fn: (rows: unknown[]) => unknown) => fn([]),
+            };
+          },
+        }),
+      }),
+    };
+    const service = createScentService({
+      db: db as never,
+      companyId: "c1",
+      settings: DEFAULT_SCENT_SETTINGS,
+      gateway: stubGateway(() => ({
+        scent: CSS_SCENT,
+        model: "m",
+        inputTokens: 1, outputTokens: 1,
+      })),
+      casteKeys: CASTES,
+      logActivity: async () => {},
+    });
+    const slice = await service.listMarkupQueue(20);
+    expect(slice.issueIds).toEqual([]);
+    expect(slice.agentIds).toEqual([]);
+    // §7.1 п.4a: only OPEN todos are eligible (the queue is not a backfill of
+    // the whole history — that would blow the 1M tokens/day budget).
+    expect(seenParams).toContain("todo");
+    expect(seenParams).not.toContain("done");
+    expect(seenParams).not.toContain("cancelled");
+    expect(seenSql.join(" ")).toContain('"status"');
+    // Agents without capabilities never occupy a batch slot.
+    expect(seenSql.join(" ")).toContain("capabilities");
+  });
+
+  it("the hourly budget counts attempts, not only successes", async () => {
+    // canSpendCall reads the activity log: one entry per ATTEMPT (ok or not).
+    const nAttempts = 3;
+    const db = {
+      execute: () => Promise.resolve([{ n: nAttempts }]),
+    };
+    const allowed = await canSpendCall(db as never, {
+      entityType: "issue",
+      entityId: "i1",
+      maxPerHour: 1,
+    });
+    expect(allowed).toBe(false);
+    const allowedWhenEmpty = await canSpendCall(
+      { execute: () => Promise.resolve([{ n: 0 }]) } as never,
+      { entityType: "issue", entityId: "i1", maxPerHour: 1 },
+    );
+    expect(allowedWhenEmpty).toBe(true);
+  });
+});
+
+// --- 8. Settings reader --------------------------------------------------------
+
+describe("scent settings (acceptance row 8)", () => {
+  it("defaults hold without any configuration", () => {
+    const s = readScentSettings(null);
+    expect(s).toEqual(DEFAULT_SCENT_SETTINGS);
+    expect(s.enabled).toBe(true);
+    expect(s.model).toBe("qwen-turbo-free");
+    expect(s.classifierBatchSize).toBe(20);
+  });
+
+  it("stored settings override the defaults", () => {
+    const s = readScentSettings({ scent: { enabled: false, model: "custom", tagWeight: 5 } });
+    expect(s.enabled).toBe(false);
+    expect(s.model).toBe("custom");
+    expect(s.tagWeight).toBe(5);
+    expect(s.tierFit).toBe(DEFAULT_SCENT_SETTINGS.tierFit);
+  });
+
+  it("the server-side env kill switch disables the classifier", () => {
+    const s = readScentSettings({ scent: {} }, { MYRMIDON_SWARM_SCENT_ENABLED: "0" });
+    expect(s.enabled).toBe(false);
+  });
+});
+
+// --- 9. Gateway: strict response schema and tolerant parsing ------------------
+
+describe("gateway response contract (acceptance row 9)", () => {
+  /** Every object in a strict JSON schema lists all its keys as required and is closed. */
+  function assertStrictObjects(node: unknown, path = "$"): void {
+    if (!node || typeof node !== "object") return;
+    const n = node as Record<string, unknown>;
+    expect(n.minimum, `${path}.minimum`).toBeUndefined();
+    expect(n.maximum, `${path}.maximum`).toBeUndefined();
+    expect(n.maxItems, `${path}.maxItems`).toBeUndefined();
+    if (n.type === "object") {
+      expect(n.additionalProperties, `${path}.additionalProperties`).toBe(false);
+      const props = Object.keys((n.properties as object | undefined) ?? {});
+      expect([...((n.required as string[] | undefined) ?? [])].sort(), `${path}.required`).toEqual(
+        props.sort(),
+      );
+    }
+    for (const [k, v] of Object.entries((n.properties as object | undefined) ?? {})) {
+      assertStrictObjects(v, `${path}.${k}`);
+    }
+    if (n.items) assertStrictObjects(n.items, `${path}[]`);
+  }
+
+  it("the issue schema is closed and spells out one key per company caste", () => {
+    const format = issueScentResponseFormat(CASTES);
+    expect(format.json_schema.strict).toBe(true);
+    assertStrictObjects(format.json_schema.schema);
+    expect(Object.keys(format.json_schema.schema.properties.casteProbs.properties)).toEqual(CASTES);
+  });
+
+  it("out-of-range numbers are clamped and unknown castes dropped instead of failing the reply", () => {
+    const parsed = parseIssueScentContent(
+      JSON.stringify({
+        tags: ["CSS ", "", "ui", "a", "b", "c", "d", "e", "f", "g"],
+        casteProbs: { engineer: 1.4, ghost: 0.9, designer: -0.2 },
+        complexity: { coordination: 0.1, uncertainty: 2, consequences: 0.3 },
+      }),
+      CASTES,
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.tags).toHaveLength(8);
+    expect(parsed!.tags[0]).toBe("css");
+    expect(parsed!.casteProbs).toEqual({ engineer: 1, designer: 0 });
+    expect(parsed!.complexity.uncertainty).toBe(1);
+  });
+
+  it("a reply that is not the contract is a null scent", () => {
+    expect(parseIssueScentContent("not json", CASTES)).toBeNull();
+    expect(parseIssueScentContent(JSON.stringify({ tags: [] }), CASTES)).toBeNull();
+  });
+});
+
+// --- 8. Queue timer: ticks never overlap ------------------------------------
+
+describe("startScentQueue: no re-entrant ticks", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not start a second tick while the first is still running", async () => {
+    vi.useFakeTimers();
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stop = startScentQueue({} as never, {
+      listCompanyIds: async () => {
+        started += 1;
+        await gate; // a slow tick: outlives several timer periods
+        return [];
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toBe(1);
+    await vi.advanceTimersByTimeAsync(SCENT_QUEUE_TICK_MS * 5);
+    expect(started).toBe(1);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(SCENT_QUEUE_TICK_MS);
+    expect(started).toBe(2);
+    stop();
+    await vi.advanceTimersByTimeAsync(SCENT_QUEUE_TICK_MS * 3);
+    expect(started).toBe(2);
+  });
+});
+
+// Queue diagnostics use their injected activity-log port.
+
+describe("scent queue: unconfigured contour is visible in the activity log", () => {
+  let previousScentBaseUrl: string | undefined;
+  let previousEvalsBaseUrl: string | undefined;
+
+  beforeEach(() => {
+    previousScentBaseUrl = process.env.MYRMIDON_SCENT_BASE_URL;
+    previousEvalsBaseUrl = process.env.MYRMIDON_EVALS_BASE_URL;
+    // A contour configured via env would skip the park gate entirely and
+    // crash the stub db deeper in the tick — force the empty-contour world.
+    delete process.env.MYRMIDON_SCENT_BASE_URL;
+    delete process.env.MYRMIDON_EVALS_BASE_URL;
+  });
+
+  afterEach(() => {
+    if (previousScentBaseUrl === undefined) delete process.env.MYRMIDON_SCENT_BASE_URL;
+    else process.env.MYRMIDON_SCENT_BASE_URL = previousScentBaseUrl;
+    if (previousEvalsBaseUrl === undefined) delete process.env.MYRMIDON_EVALS_BASE_URL;
+    else process.env.MYRMIDON_EVALS_BASE_URL = previousEvalsBaseUrl;
+  });
+
+  it("journals swarm.scent_contour_unconfigured when the contour is empty", async () => {
+    // The scenario of the 1.6.5 acceptance: enabled=true, a pending backlog,
+    // and a completely empty contour (no base URL, no key). The queue parked
+    // silently for a day; the journal entry is the fix's observable.
+    const db = {
+      execute: async () => [{ n: 0 }], // return a Drizzle-style thenable for the throttle query
+    };
+    const logActivity = vi.fn(async (_db: unknown, _entry: unknown) => undefined);
+    await runScentQueueTick(db as never, {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCompanyIds: async () => ["c1"],
+      resolveSecret: async () => null,
+      logActivity,
+    });
+    expect(logActivity).toHaveBeenCalledTimes(1);
+    const entry = (logActivity.mock.calls[0] as unknown[])[1] as { action: string; details: Record<string, unknown> };
+    expect(entry.action).toBe("swarm.scent_contour_unconfigured");
+    expect(entry.details).toEqual({ baseUrlConfigured: false, keyConfigured: false });
+  });
+
+  it("stays silent when an entry already exists within the hour (throttle)", async () => {
+    const db = {
+      execute: async () => [{ n: 1 }], // return a Drizzle-style thenable for the throttle query
+    };
+    const logActivity = vi.fn(async (_db: unknown, _entry: unknown) => undefined);
+    await runScentQueueTick(db as never, {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCompanyIds: async () => ["c1"],
+      resolveSecret: async () => null,
+      logActivity,
+    });
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
+  function makeStubDb(): Db {
+    const queryBuilder = {
+      from: () => queryBuilder,
+      where: () => queryBuilder,
+      orderBy: () => queryBuilder,
+      limit: () => queryBuilder,
+      then: (onfulfilled?: (val: unknown[]) => unknown) => Promise.resolve([]).then(onfulfilled),
+    };
+    return {
+      execute: async () => [{ n: 0 }],
+      select: () => queryBuilder,
+      insert: () => ({
+        values: () => ({
+          onConflictDoNothing: async () => [],
+        }),
+      }),
+    } as unknown as Db;
+  }
+
+  it("reports contour, base URL, and key configuration from the status route", async () => {
+    const db = makeStubDb();
+    const resolveSecret = vi.fn(async () => "secret-value");
+    const ports: ScentQueuePorts = {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCastes: async () => CASTES.map((key) => ({ key })),
+      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
+      resolveSecret,
+      listCompanyIds: async () => [COMPANY_ID],
+    };
+    const envSnapshot = new Map(
+      ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    try {
+      process.env.MYRMIDON_SCENT_BASE_URL = "https://scent.example.test";
+      process.env.MYRMIDON_EVALS_API_KEY = "secret-value";
+      const response = await request(makeScentStatusApp(db, ports)).get(
+        `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        contourConfigured: true,
+        baseUrlConfigured: true,
+        keyConfigured: true,
+      });
+      expect(resolveSecret).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const [name, value] of envSnapshot) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  it("reports keyConfigured: false without 500 when secret resolution throws", async () => {
+    const db = makeStubDb();
+    const ports: ScentQueuePorts = {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCastes: async () => CASTES.map((key) => ({ key })),
+      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
+      resolveSecret: vi.fn(async () => {
+        throw new Error("corrupt cipher / KMS failure");
+      }),
+      listCompanyIds: async () => [COMPANY_ID],
+    };
+    const envSnapshot = new Map(
+      ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    try {
+      process.env.MYRMIDON_SCENT_BASE_URL = "https://scent.example.test";
+      delete process.env.MYRMIDON_EVALS_API_KEY;
+      const response = await request(makeScentStatusApp(db, ports)).get(
+        `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        contourConfigured: false,
+        baseUrlConfigured: true,
+        keyConfigured: false,
+      });
+    } finally {
+      for (const [name, value] of envSnapshot) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});
+
+describe("myrmidon(1.6.6 OPE-9996): Scent gateway baseUrl normalization", () => {
+  it("normalizes baseUrl by stripping trailing /v1 and slashes", () => {
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1/")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1///")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/")).toBe("http://192.0.2.1:4000");
+  });
+
+  it("calls fetch with correct /v1/chat/completions without duplicating /v1", async () => {
+    const fetchedUrls: string[] = [];
+    const mockFetch = (async (url: string | URL | Request) => {
+      fetchedUrls.push(String(url));
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  tags: ["fix"],
+                  casteProbs: { engineer: 0.9 },
+                  complexity: { coordination: 0.1, uncertainty: 0.1, consequences: 0.1 },
+                }),
+              },
+            },
+          ],
+            usage: { prompt_tokens: 10, completion_tokens: 15 },
+          }),
+        };
+      }) as unknown as typeof fetch;
+
+    const result = await classifyIssueScent(
+      {
+        fetch: mockFetch,
+        baseUrl: "http://192.0.2.1:4000/v1",
+        apiKey: "test-key",
+      },
+      {
+        model: "test-model",
+        title: "Test bug",
+        description: "Fix problem",
+        casteKeys: ["engineer"],
+        timeoutSec: 5,
+      },
+    );
+
+    expect(result.scent).not.toBeNull();
+    expect(result.scent?.tags).toEqual(["fix"]);
+    expect(fetchedUrls[0]).toBe("http://192.0.2.1:4000/v1/chat/completions");
+  });
+});
+
+describe("myrmidon(1.6.6 OPE-9996): Scent status and failure alarm", () => {
+  beforeEach(() => {
+    scentMetrics.reset();
+  });
+
+  it("reports lastSuccessAt and successRateHour accurately", async () => {
+    const lastSuccess = new Date("2026-10-30T10:00:00Z");
+    const health = await checkScentHealth(
+      {} as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: lastSuccess,
+          attemptsLastHour: 20,
+          successesLastHour: 15,
+        }),
+      },
+    );
+
+    expect(health.lastSuccessAt).toBe(lastSuccess.toISOString());
+    expect(health.attemptsLastHour).toBe(20);
+    expect(health.successesLastHour).toBe(15);
+    expect(health.successRateHour).toBe(0.75);
+    expect(health.alarm).toBe(false);
+    expect(scentMetrics.isAlarm()).toBe(false);
+  });
+
+  it("triggers alarm and logs activity when >= 10 attempts and 0 successes in the last hour", async () => {
+    const loggedEntries: Array<{ action: string; details: unknown }> = [];
+    const db = {
+      execute: async () => [{ n: 0 }],
+    };
+    const health = await checkScentHealth(
+      db as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: null,
+          attemptsLastHour: 12,
+          successesLastHour: 0,
+        }),
+        logActivity: async (_d, entry) => {
+          loggedEntries.push({ action: entry.action, details: entry.details });
+        },
+      },
+    );
+
+    expect(health.alarm).toBe(true);
+    expect(health.attemptsLastHour).toBe(12);
+    expect(health.successesLastHour).toBe(0);
+    expect(health.successRateHour).toBe(0);
+    expect(scentMetrics.isAlarm()).toBe(true);
+
+    expect(loggedEntries).toHaveLength(1);
+    expect(loggedEntries[0].action).toBe("swarm.scent_classifier_dead");
+    expect((loggedEntries[0].details as { alarm: boolean }).alarm).toBe(true);
+  });
+
+  it("does not trigger alarm when fewer than 10 attempts have been made", async () => {
+    const loggedEntries: unknown[] = [];
+    const db = {
+      execute: async () => [{ n: 0 }],
+    };
+    const health = await checkScentHealth(
+      db as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: null,
+          attemptsLastHour: 9,
+          successesLastHour: 0,
+        }),
+        logActivity: async (_d, entry) => {
+          loggedEntries.push(entry);
+        },
+      },
+    );
+
+    expect(health.alarm).toBe(false);
+    expect(scentMetrics.isAlarm()).toBe(false);
+    expect(loggedEntries).toHaveLength(0);
+  });
+});

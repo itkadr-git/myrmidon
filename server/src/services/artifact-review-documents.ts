@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { assets, documentRevisions, documents, issueAttachments, issueDocuments } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { assets, documentRevisions, documents, issueAttachments, issueDocuments } from "@myrmidon/db";
 import {
   MARKDOWN_REVIEW_DOCUMENT_MAX_BYTES,
   artifactReviewDocumentKey,
@@ -9,7 +9,7 @@ import {
   isMarkdownAttachmentContent,
   type AttachmentArtifactWorkProductMetadata,
   type IssueWorkProduct,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   HttpError,
   conflict,
@@ -21,6 +21,8 @@ import {
 import type { StorageService } from "../storage/types.js";
 import { documentAnnotationService } from "./document-annotations.js";
 import { documentService, issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 export type EnsureArtifactReviewWorkProduct = Pick<
   IssueWorkProduct,
@@ -163,7 +165,7 @@ export function artifactReviewDocumentService(db: Db, storage: StorageService) {
       }
       const metadata = getAttachmentArtifactWorkProductMetadata(workProduct);
       if (!metadata) {
-        throw unprocessable("Work product is not an attachment-backed Paperclip artifact", {
+        throw unprocessable(`Work product is not an attachment-backed ${PN} artifact`, {
           code: "not_attachment_backed_artifact",
           workProductId: workProduct.id,
         });

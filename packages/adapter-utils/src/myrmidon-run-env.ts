@@ -57,6 +57,9 @@ export const MYRMIDON_RUN_ENV_TOOL_HOME_ALLOW: readonly string[] = [
   "HERMES_HOME",
   "KIMI_CODE_HOME",
   "PI_CODING_AGENT_DIR",
+  // myrmidon(OMP-LOCAL): OMP agent and profile directory pointers
+  "OMP_HOME",
+  "OMP_CODING_AGENT_DIR",
   "GH_CONFIG_DIR",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
@@ -79,6 +82,8 @@ export const MYRMIDON_RUN_ENV_PROVIDER_ALLOW: Readonly<Record<string, readonly s
   kimi_local: ["KIMI_API_KEY", "KIMI_MODEL_API_KEY"],
   opencode_local: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"],
   pi_local: ["ANTHROPIC_API_KEY", "XAI_API_KEY"],
+  // myrmidon(OMP-LOCAL): OMP model provider credentials
+  omp_local: ["ANTHROPIC_API_KEY", "XAI_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
   hermes_local: [
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -142,6 +147,18 @@ function readExtraAllowFromSetting(): string[] {
   return parseRunEnvAllowList(process.env[MYRMIDON_RUN_ENV_ALLOW_SETTING]);
 }
 
+let liveExtraAllow: string[] | undefined;
+
+/** Replaces the UI-controlled extra env names without weakening other allow checks. */
+export function applyMyrmidonRunEnvAllow(names: readonly string[] | undefined): void {
+  liveExtraAllow = names === undefined ? undefined : parseRunEnvAllowList(names.join(","));
+}
+
+function currentExtraAllow(): string[] {
+  // A list saved from the UI wins; otherwise the environment variable applies.
+  return liveExtraAllow ?? readExtraAllowFromSetting();
+}
+
 function buildAllowSet(extraAllow: readonly string[]): Set<string> {
   const allowed = new Set<string>();
   for (const name of MYRMIDON_RUN_ENV_BASE_ALLOW) {
@@ -156,7 +173,7 @@ function buildAllowSet(extraAllow: readonly string[]): Set<string> {
 
 export function isMyrmidonRunEnvAllowedKey(
   key: string,
-  extraAllow: readonly string[] = readExtraAllowFromSetting(),
+  extraAllow: readonly string[] = currentExtraAllow(),
 ): boolean {
   return makeAllowCheck(extraAllow)(key);
 }
@@ -214,7 +231,7 @@ export function filterMyrmidonInheritedEnv(
     const env: NodeJS.ProcessEnv = { ...processEnv };
     delete env.PAPERCLIPAI_CMD;
     for (const key of Object.keys(env)) {
-      if (!key.startsWith("PAPERCLIP_")) continue;
+      if (!(key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_"))) continue; // myrmidon(REBRAND-C)
       if (MYRMIDON_RUN_ENV_VENDOR_RUNTIME_KEYS.includes(key)) continue;
       delete env[key];
     }
@@ -222,7 +239,7 @@ export function filterMyrmidonInheritedEnv(
   }
 
   const isAllowed = makeAllowCheck([
-    ...(options.extraAllow ?? readExtraAllowFromSetting()),
+    ...(options.extraAllow ?? currentExtraAllow()),
     ...providerEnvAllow(options.adapterType),
   ]);
   const env: NodeJS.ProcessEnv = {};

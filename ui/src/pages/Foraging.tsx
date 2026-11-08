@@ -14,9 +14,11 @@ import { Leaf, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { formatCents } from "@/lib/utils";
 import {
   diffLine,
@@ -24,25 +26,53 @@ import {
   foragingApi,
   foragingBudgetKey,
   foragingFindingsKey,
+  foragingIdleGateKey,
+  foragingPassesKey,
   foragingSourcesKey,
+  type ForagingIdleGateSource,
+  type ForagingSkipReason,
   type ForagingSourceKind,
+  type ForagingSource,
 } from "@/api/foraging";
 
 const NO_COMPANY = "__none__";
 
 const KIND_ORDER: ForagingSourceKind[] = ["url", "feed", "repo", "docs"];
-const KIND_LABELS: Record<ForagingSourceKind, string> = {
-  url: "Page",
-  feed: "Feed",
-  repo: "Repository",
-  docs: "Docs",
+// myrmidon(UI-RU): source kind labels through the fork i18n catalog.
+const KIND_LABEL_KEYS: Record<ForagingSourceKind, string> = {
+  url: "foraging.sources.kinds.url",
+  feed: "foraging.sources.kinds.feed",
+  repo: "foraging.sources.kinds.repo",
+  docs: "foraging.sources.kinds.docs",
 };
 
-function formatWhen(value: string | null): string {
+// myrmidon(UI-RU): finding status labels through the fork i18n catalog.
+const FINDING_STATUS_KEYS: Record<string, string> = {
+  candidate: "foraging.findings.states.candidate",
+  rejected: "foraging.findings.states.rejected",
+  unverified: "foraging.findings.states.unverified",
+};
+
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): where the effective value of the
+// idle-gate toggle came from — the interface, the environment override or the
+// built-in default (contract: packages/shared/src/myrmidon-foraging-idle-gate.ts).
+const IDLE_GATE_SOURCE_KEYS: Record<ForagingIdleGateSource, string> = {
+  settings: "foraging.idleGate.sources.settings",
+  env: "foraging.idleGate.sources.env",
+  default: "foraging.idleGate.sources.default",
+};
+
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): why a pass left a role alone.
+const SKIP_REASON_KEYS: Record<ForagingSkipReason, string> = {
+  queue_not_empty: "foraging.idleGate.reasons.queue_not_empty",
+  no_idle_agent: "foraging.idleGate.reasons.no_idle_agent",
+};
+
+function formatWhen(value: string | null, language: string = "en"): string {
   if (!value) return "never";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("en-US", {
+  return date.toLocaleString(language === "ru" ? "ru-RU" : "en-US", {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -56,6 +86,9 @@ export interface ForagingProps {
 }
 
 export function Foraging({ embedded = false }: ForagingProps = {}) {
+  const { t, i18n } = useTranslation();
+  const language = i18n.language;
+  const locale = language === "ru" ? "ru-RU" : "en-US";
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -66,7 +99,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
   const [kind, setKind] = useState<ForagingSourceKind>("url");
 
   useEffect(() => {
-    if (!embedded) setBreadcrumbs([{ label: "Foraging" }]);
+    if (!embedded) setBreadcrumbs([{ label: t("foraging.title") }]);
   }, [embedded, setBreadcrumbs]);
 
   const sourcesQuery = useQuery({
@@ -90,6 +123,21 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
     staleTime: 30_000,
   });
 
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the idle-gate toggle (an
+  // instance-wide setting) and the pass history of the selected company.
+  const idleGateQuery = useQuery({
+    queryKey: foragingIdleGateKey(),
+    queryFn: () => foragingApi.idleGate(),
+    staleTime: 30_000,
+  });
+
+  const passesQuery = useQuery({
+    queryKey: foragingPassesKey(companyId),
+    queryFn: () => foragingApi.passes(companyId),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+  });
+
   const saveSource = useMutation({
     mutationFn: () => foragingApi.saveSource(companyId, { role: role.trim(), url: url.trim(), kind }),
     onSuccess: () => {
@@ -97,6 +145,13 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
       setUrl("");
       void queryClient.invalidateQueries({ queryKey: foragingSourcesKey(companyId) });
     },
+  });
+
+  // myrmidon(SETTINGS-UI-REMAINDER): persist per-source enablement through the registry PUT.
+  const toggleSource = useMutation({
+    mutationFn: ({ source, enabled }: { source: ForagingSource; enabled: boolean }) =>
+      foragingApi.saveSource(companyId, { role: source.role, url: source.url, kind: source.kind, enabled }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: foragingSourcesKey(companyId) }),
   });
 
   const removeSource = useMutation({
@@ -112,17 +167,30 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
       void queryClient.invalidateQueries({ queryKey: foragingFindingsKey(companyId) });
       void queryClient.invalidateQueries({ queryKey: foragingSourcesKey(companyId) });
       void queryClient.invalidateQueries({ queryKey: foragingBudgetKey(companyId) });
+      // A manual pass lands in the history right away.
+      void queryClient.invalidateQueries({ queryKey: foragingPassesKey(companyId) });
+    },
+  });
+
+  // The toggle is instance-admin only on the server; a 403 stays visible in the
+  // card rather than being swallowed.
+  const setIdleGate = useMutation({
+    mutationFn: (next: boolean) => foragingApi.setIdleGate(next),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: foragingIdleGateKey() });
     },
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Leaf} message="Select an organization to view its foraging sources." />;
+    return <EmptyState icon={Leaf} message={t("foraging.selectOrganization")} />;
   }
 
   const enabled = sourcesQuery.data?.enabled ?? false;
   const sources = sourcesQuery.data?.sources ?? [];
   const findings = findingsQuery.data?.findings ?? [];
   const budget = budgetQuery.data;
+  const idleGate = idleGateQuery.data;
+  const passes = passesQuery.data?.passes ?? [];
 
   return (
     <div className="space-y-6">
@@ -130,14 +198,12 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             {embedded ? (
-              <h2 className="text-lg font-semibold text-foreground">Foraging</h2>
+              <h2 className="text-lg font-semibold text-foreground">{t("foraging.title")}</h2>
             ) : (
-              <h1 className="text-3xl font-semibold tracking-tight">Foraging</h1>
+              <h1 className="text-3xl font-semibold tracking-tight">{t("foraging.title")}</h1>
             )}
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Approved sources per role. Each pass compares a source with its previous snapshot; a
-              difference becomes a finding, and a finding becomes a skill candidate through the skill
-              lifecycle.
+              {t("foraging.intro")}
             </p>
           </div>
 
@@ -149,58 +215,156 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
             data-testid="foraging-run-sweep"
           >
             <RefreshCw className="mr-2 h-4 w-4" />
-            Run a pass now
+            {t("foraging.runSweep")}
           </Button>
         </div>
 
         {!enabled ? (
           <p className="text-sm text-muted-foreground" data-testid="foraging-disabled-note">
-            Periodic foraging is off on this instance, so no pass runs on its own. The registry below is
-            still editable; ask the operator to switch the sweep on.
+            {t("foraging.disabledNote")}
           </p>
         ) : null}
 
         {budget ? (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="foraging-budget">
             <span>
-              Pass budget: {budget.budget.enabled ? formatCents(budget.budget.maxCostCents) : "no limit"}
+              {budget.budget.enabled
+                ? t("foraging.budget.passBudget", { value: formatCents(budget.budget.maxCostCents, locale) })
+                : t("foraging.budget.passBudget", { value: t("foraging.budget.noLimit") })}
             </span>
-            <span>Spent this month: {formatCents(budget.spentCents)}</span>
-            <span>Pass interval: {Math.round(budget.intervalMs / 60_000)} min</span>
-            <span>Same-host pause: {Math.round(budget.minHostIntervalMs / 1000)} s</span>
+            <span>{t("foraging.budget.spentThisMonth", { value: formatCents(budget.spentCents, locale) })}</span>
+            <span>{t("foraging.budget.passInterval", { minutes: Math.round(budget.intervalMs / 60_000) })}</span>
+            <span>{t("foraging.budget.sameHostPause", { seconds: Math.round(budget.minHostIntervalMs / 1000) })}</span>
           </div>
         ) : null}
       </div>
 
       <Card>
         <CardHeader className="px-5 pt-5 pb-2">
-          <CardTitle className="text-base">Sources</CardTitle>
-          <CardDescription>One row per approved source; a role may have several.</CardDescription>
+          <CardTitle className="text-base">{t("foraging.idleGate.title")}</CardTitle>
+          <CardDescription>{t("foraging.idleGate.description")}</CardDescription>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-2 space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <ToggleSwitch
+              checked={idleGate?.enabled ?? false}
+              disabled={!idleGate || setIdleGate.isPending}
+              onCheckedChange={(next) => setIdleGate.mutate(next)}
+              aria-label={t("foraging.idleGate.label")}
+              data-testid="foraging-idle-gate-toggle"
+            />
+            <span className="text-sm text-foreground" data-testid="foraging-idle-gate-value">
+              {idleGate
+                ? t("foraging.idleGate.value", {
+                    value: t(idleGate.enabled ? "foraging.idleGate.on" : "foraging.idleGate.off"),
+                  })
+                : t("foraging.idleGate.unknown")}
+            </span>
+            {idleGate ? (
+              <span className="text-xs text-muted-foreground" data-testid="foraging-idle-gate-source">
+                {t("foraging.idleGate.source", { source: t(IDLE_GATE_SOURCE_KEYS[idleGate.source]) })}
+              </span>
+            ) : null}
+          </div>
+          <p className="text-xs text-muted-foreground">{t("foraging.idleGate.nextPass")}</p>
+          {setIdleGate.error ? (
+            <p className="text-sm text-destructive" data-testid="foraging-idle-gate-error">
+              {t("foraging.idleGate.saveFailed", { message: (setIdleGate.error as Error).message })}
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-2">
+          <CardTitle className="text-base">{t("foraging.passes.title")}</CardTitle>
+          <CardDescription>{t("foraging.passes.description")}</CardDescription>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-2">
+          {passesQuery.isLoading ? (
+            <PageSkeleton variant="costs" />
+          ) : passes.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="foraging-passes-empty">
+              {t("foraging.passes.empty")}
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs" data-testid="foraging-passes-table">
+                <thead>
+                  <tr className="border-b border-border bg-accent/20">
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.when")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.read")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.findings")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.skipped")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {passes.map((pass, index) => (
+                    <tr
+                      key={`${pass.at}-${index}`}
+                      className="border-b border-border last:border-b-0"
+                      data-testid="foraging-pass-row"
+                    >
+                      <td className="px-3 py-2">{formatWhen(pass.at, language)}</td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {pass.sourcesRead}
+                        {pass.stoppedByBudget ? (
+                          <span className="ml-2 text-muted-foreground">{t("foraging.passes.stoppedByBudget")}</span>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">{pass.findings}</td>
+                      <td className="px-3 py-2">
+                        {pass.skipped.length === 0 ? (
+                          <span className="text-muted-foreground">{t("foraging.passes.notSkipped")}</span>
+                        ) : (
+                          pass.skipped.map((skip) => (
+                            <span key={skip.role} className="mr-2 inline-block" data-testid="foraging-pass-skip">
+                              {t("foraging.passes.skip", {
+                                role: skip.role,
+                                reason: t(SKIP_REASON_KEYS[skip.reason]),
+                              })}
+                            </span>
+                          ))
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-2">
+          <CardTitle className="text-base">{t("foraging.sources.title")}</CardTitle>
+          <CardDescription>{t("foraging.sources.description")}</CardDescription>
         </CardHeader>
         <CardContent className="px-5 pb-5 pt-2 space-y-4">
           <div className="flex flex-wrap items-end gap-2" data-testid="foraging-source-form">
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Role
+              {t("foraging.sources.role")}
               <input
                 value={role}
                 onChange={(event) => setRole(event.target.value)}
-                placeholder="engineer"
+                placeholder={t("area.settings-models-runtime-2.foraging.rolePlaceholder")}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
                 data-testid="foraging-source-role"
               />
             </label>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              URL
+              {t("foraging.sources.urlLabel")}
               <input
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
-                placeholder="https://example.com/changelog"
+                placeholder={t("area.settings-models-runtime-2.foraging.urlPlaceholder")}
                 className="h-9 w-80 rounded-md border border-input bg-background px-3 text-sm text-foreground"
                 data-testid="foraging-source-url"
               />
             </label>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Kind
+              {t("foraging.sources.kind")}
               <select
                 value={kind}
                 onChange={(event) => setKind(event.target.value as ForagingSourceKind)}
@@ -209,7 +373,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
               >
                 {KIND_ORDER.map((value) => (
                   <option key={value} value={value}>
-                    {KIND_LABELS[value]}
+                    {t(KIND_LABEL_KEYS[value])}
                   </option>
                 ))}
               </select>
@@ -221,7 +385,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
               data-testid="foraging-source-save"
             >
               <Plus className="mr-2 h-4 w-4" />
-              Add source
+              {t("foraging.sources.add")}
             </Button>
           </div>
 
@@ -231,22 +395,28 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
             </p>
           ) : null}
 
+          {toggleSource.error ? (
+            <p className="text-sm text-destructive" role="alert" data-testid="foraging-source-toggle-error">
+              {t("foraging.sources.saveFailed", { message: (toggleSource.error as Error).message })}
+            </p>
+          ) : null}
           {sourcesQuery.isLoading ? (
             <PageSkeleton variant="costs" />
           ) : sources.length === 0 ? (
             <p className="text-sm text-muted-foreground" data-testid="foraging-sources-empty">
-              No sources yet. Add the first one above.
+              {t("foraging.sources.empty")}
             </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs" data-testid="foraging-sources-table">
                 <thead>
                   <tr className="border-b border-border bg-accent/20">
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Role</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Source</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Kind</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Last snapshot</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Last check</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.role")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.source")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.kind")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.enabled")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.lastSnapshot")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.lastCheck")}</th>
                     <th scope="col" className="px-3 py-2 text-right font-medium text-muted-foreground" />
                   </tr>
                 </thead>
@@ -262,16 +432,30 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
                           </span>
                         ) : null}
                       </td>
-                      <td className="px-3 py-2">{KIND_LABELS[source.kind] ?? source.kind}</td>
-                      <td className="px-3 py-2 tabular-nums">
-                        {source.lastSnapshotAt ? formatWhen(source.lastSnapshotAt) : "no snapshot yet"}
+                      <td className="px-3 py-2">{t(KIND_LABEL_KEYS[source.kind], { defaultValue: source.kind })}</td>
+                      <td className="px-3 py-2">
+                        <ToggleSwitch
+                          checked={source.enabled}
+                          onCheckedChange={(enabled) => toggleSource.mutate({ source, enabled })}
+                          disabled={toggleSource.isPending || sourcesQuery.isFetching}
+                          aria-label={t("foraging.sources.toggleEnabled", { url: source.url })}
+                          data-testid="foraging-source-enabled-toggle"
+                        />
+                        <span className="ml-2 text-muted-foreground" data-testid="foraging-source-status">
+                          {t(source.enabled ? "foraging.sources.active" : "foraging.sources.paused")}
+                        </span>
                       </td>
-                      <td className="px-3 py-2">{formatWhen(source.lastCheckedAt)}</td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {source.lastSnapshotAt
+                          ? formatWhen(source.lastSnapshotAt, language)
+                          : t("foraging.sources.noSnapshotYet")}
+                      </td>
+                      <td className="px-3 py-2">{formatWhen(source.lastCheckedAt, language)}</td>
                       <td className="px-3 py-2 text-right">
                         <Button
                           variant="ghost"
                           size="sm"
-                          aria-label={`Remove ${source.url}`}
+                          aria-label={t("foraging.sources.remove", { url: source.url })}
                           onClick={() => removeSource.mutate(source.id)}
                           disabled={removeSource.isPending}
                         >
@@ -289,43 +473,40 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
 
       <Card>
         <CardHeader className="px-5 pt-5 pb-2">
-          <CardTitle className="text-base">Latest findings</CardTitle>
-          <CardDescription>
-            A difference between a source and its previous snapshot. Unverified findings wait for the
-            skill lifecycle; accepted ones carry the candidate reference.
-          </CardDescription>
+          <CardTitle className="text-base">{t("foraging.findings.title")}</CardTitle>
+          <CardDescription>{t("foraging.findings.description")}</CardDescription>
         </CardHeader>
         <CardContent className="px-5 pb-5 pt-2">
           {findingsQuery.isLoading ? (
             <PageSkeleton variant="costs" />
           ) : findings.length === 0 ? (
             <p className="text-sm text-muted-foreground" data-testid="foraging-findings-empty">
-              No findings yet. A finding appears when a source differs from its last snapshot.
+              {t("foraging.findings.empty")}
             </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs" data-testid="foraging-findings-table">
                 <thead>
                   <tr className="border-b border-border bg-accent/20">
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Detected</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Role</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Skill key</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Change</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">State</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">Candidate</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.findings.detected")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.findings.role")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.findings.skillKey")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.findings.change")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.findings.state")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.findings.candidate")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {findings.map((finding) => (
                     <tr key={finding.id} className="border-b border-border last:border-b-0" data-testid="foraging-finding-row">
-                      <td className="px-3 py-2">{formatWhen(finding.detectedAt)}</td>
+                      <td className="px-3 py-2">{formatWhen(finding.detectedAt, language)}</td>
                       <td className="px-3 py-2 font-mono">{finding.role}</td>
                       <td className="px-3 py-2 font-mono">{finding.skillKey}</td>
                       <td className="px-3 py-2">
                         <span className="font-mono">{diffLine(finding.diff)}</span>
                         <span className="ml-2 text-muted-foreground">{finding.summary}</span>
                       </td>
-                      <td className="px-3 py-2">{findingStatusLabel(finding.status)}</td>
+                      <td className="px-3 py-2">{t(FINDING_STATUS_KEYS[finding.status], { defaultValue: findingStatusLabel(finding.status) })}</td>
                       <td className="px-3 py-2 font-mono">
                         {finding.candidateRef ?? (finding.reason ? finding.reason : "—")}
                       </td>

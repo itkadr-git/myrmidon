@@ -7,13 +7,17 @@ describe("isExplicitWake", () => {
     expect(isExplicitWake({ source: "on_demand", triggerDetail: "manual", reason: "issue_reopened_via_comment", requestedByActorType: "user" })).toBe(true);
   });
 
-  it("never treats a wake that carries a comment id as explicit, whatever else it matches", () => {
+  it("never treats a wake that carries a comment id as explicit without the verified-mention flag", () => {
     // A real comment/message wake already has its own verified path —
     // explicit-native-continuation.ts's admission, or heartbeat.ts's
     // durable chat/comment delivery and coalescing receipts — that this
-    // classifier must not shortcut.
+    // classifier must not shortcut. The one exception (OPE-6011) is a
+    // person's comment that @-mentions the woken agent, gated on the
+    // caller-verified `userCommentMentionsWokenAgent` flag.
     expect(isExplicitWake({ source: "on_demand", triggerDetail: "manual", reason: "issue_commented", commentId: "c1", requestedByActorType: "user" })).toBe(false);
     expect(isExplicitWake({ source: "assignment", reason: "issue_assigned", commentId: "c1", requestedByActorType: "user" })).toBe(false);
+    expect(isExplicitWake({ source: "on_demand", triggerDetail: "manual", reason: "issue_commented", commentId: "c1", requestedByActorType: "user", userCommentMentionsWokenAgent: false })).toBe(false);
+    expect(isExplicitWake({ source: "assignment", reason: "issue_assigned", commentId: "c1", requestedByActorType: "user", userCommentMentionsWokenAgent: false })).toBe(false);
   });
 
   it("treats an assignment and a resumed-paused-subtree wake as explicit", () => {
@@ -76,5 +80,22 @@ describe("isExplicitWake", () => {
   it("never treats a wake with no known requester as explicit", () => {
     expect(isExplicitWake({ source: "assignment", triggerDetail: "system", reason: "issue_assigned" })).toBe(false);
     expect(isExplicitWake({ source: "assignment", triggerDetail: "system", reason: "issue_assigned", requestedByActorType: null })).toBe(false);
+  });
+
+  // myrmidon(OPE-6011): the one exception to the "no comment-carrying wake is
+  // explicit" rule — a person's comment that @-mentions the woken agent. The
+  // caller (heartbeat.ts) sets `userCommentMentionsWokenAgent` only after
+  // verifying the comment's author is a user and the woken agent is among its
+  // @-mentions; the flag is what makes this explicit.
+  it("treats a person's comment that @-mentions the woken agent as explicit", () => {
+    expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "issue_commented", commentId: "c1", requestedByActorType: "user", userCommentMentionsWokenAgent: true })).toBe(true);
+  });
+
+  it("does not treat an agent's comment as explicit even when it mentions the woken agent", () => {
+    expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "issue_commented", commentId: "c1", requestedByActorType: "agent", userCommentMentionsWokenAgent: true })).toBe(false);
+  });
+
+  it("does not treat a person's comment without the verified mention flag as explicit", () => {
+    expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "issue_commented", commentId: "c1", requestedByActorType: "user" })).toBe(false);
   });
 });

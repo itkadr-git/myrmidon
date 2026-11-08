@@ -3,7 +3,7 @@ import {
   ALLOW_ALL_AGENT_TOOL_PERMISSIONS,
   LOW_TRUST_REVIEW_PRESET,
   normalizeAgentToolPermissions,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export type NormalizedAgentPermissions = Record<string, unknown> & {
   canCreateAgents: boolean;

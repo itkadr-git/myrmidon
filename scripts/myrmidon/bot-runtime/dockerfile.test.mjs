@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -13,6 +14,20 @@ const IMAGE_DIR = path.join(ROOT, "docker/bot-runtime");
 const dockerfile = fs.readFileSync(path.join(IMAGE_DIR, "Dockerfile"), "utf8");
 const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/myrmidon-bot-image.yml"), "utf8");
 
+it("pins the async writer-acquire scanner fail-closed patch", () => {
+  const patch = fs.readFileSync(path.join(IMAGE_DIR, "patches/22-async-writer-acquire.patch"), "utf8");
+  const registry = JSON.parse(fs.readFileSync(path.join(ROOT, "scripts/myrmidon/hermes-upstream/deltas.json"), "utf8"));
+  const delta = registry.deltas.find((item) => item.id === "22-async-state-db-writer-acquire");
+  assert.ok(delta, "writer acquire delta must be registered");
+  assert.match(patch, /SidecarScanIncompleteError/);
+  assert.match(patch, /raise SidecarScanIncompleteError/);
+  assert.match(delta.files.join(" "), /hermes_state_dbfile\.py/);
+  assert.match(patch, /myrmidon\(G1\)/);
+  assert.match(delta.reason, /worker-owned async writer acquire/);
+  assert.match(patch, /async def acquire_async/);
+  assert.match(patch, /close_all_db_handles_async/);
+});
+
 // The Dockerfile documents, in a comment, that it deliberately does not
 // install media tools — so "no media tools" is checked against the
 // instructions only, not comment prose explaining that absence.
@@ -23,9 +38,16 @@ assert.ok(variantStart > 0, "Dockerfile must define the node_dist stage of the N
 // The development variant (runtime-dev) is a third final stage. The Node.js
 // variant test must stop before it: the dev stage legitimately runs as root
 // while it installs toolchains, which the Node.js variant must never do.
-const devVariantStart = dockerfile.indexOf("FROM python:3.13-slim AS node24_dist");
-assert.ok(devVariantStart > 0, "Dockerfile must define the node24_dist stage of the development variant");
+// (myrmidon 1.6.5 BOT-DISK-H: the `node24_dist` helper stage now sits before `runtime`,
+// because the workspace mechanism of every variant runs on it; the dev-only helper
+// stages start at `go_dist`.)
+const devVariantStart = dockerfile.indexOf("FROM python:3.13-slim AS go_dist");
+assert.ok(devVariantStart > 0, "Dockerfile must define the go_dist stage of the development variant");
 assert.ok(devVariantStart > variantStart, "the development variant must follow the Node.js variant stages");
+const node24StageStart = dockerfile.indexOf("FROM python:3.13-slim AS node24_dist");
+const runtimeStageStart = dockerfile.indexOf("FROM python:3.13-slim AS runtime\n");
+assert.ok(node24StageStart > 0 && node24StageStart < runtimeStageStart, "Dockerfile must define the node24_dist stage before the runtime stage");
+const node24Stage = dockerfile.slice(node24StageStart, runtimeStageStart);
 const dockerfileInstructions = dockerfile
   .slice(0, variantStart)
   .split("\n")
@@ -90,7 +112,16 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // ends. Every other stage — and the finished dev image — runs as 10001:10001.
     const beforeDevVariant = dockerfile.slice(0, dockerfile.indexOf("Variant `runtime-dev`"));
     assert.ok(beforeDevVariant.length > 0, "expected the runtime/node stages before the development variant");
-    assert.doesNotMatch(beforeDevVariant, /^USER root$/m);
+    // myrmidon(1.6.5 BOT-DISK-H): the base `runtime` stage also switches to root, to install
+    // the workspace mechanism (git wrapper, myr-ws, botd); it must return to the contract
+    // user before it ends. The Node.js variant stage never uses root.
+    const runtimeStage = beforeDevVariant.slice(
+      beforeDevVariant.indexOf("FROM python:3.13-slim AS runtime\n"),
+      beforeDevVariant.indexOf("FROM python:3.13-slim AS node_dist"),
+    );
+    assert.ok(runtimeStage.length > 0, "expected the runtime stage");
+    assert.ok(runtimeStage.lastIndexOf("USER 10001:10001") > runtimeStage.lastIndexOf("USER root"), "the runtime stage must return to the contract user after root");
+    assert.doesNotMatch(beforeDevVariant.slice(beforeDevVariant.indexOf("FROM runtime AS runtime-node")), /^USER root$/m);
     assert.doesNotMatch(dockerfile, /^USER 0(:0)?$/m);
   });
 
@@ -119,10 +150,23 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /^EXPOSE 8642$/m);
   });
 
-  it("declares volumes for state, workspace and scratch, not a host bind", () => {
-    // The three mounts the bot-runtime contract fixes (template.ts
-    // BOT_VOLUME_MOUNTS): hermes (under /data), workspace, scratch.
-    assert.match(dockerfile, /^VOLUME \["\/data", "\/workspace", "\/scratch"\]$/m);
+  it("declares ONE volume, the bot's whole tree, and links the three contract paths into it", () => {
+    // myrmidon(BOT-DISK-D): hard links cannot cross mounts, so /data/hermes,
+    // /workspace and /scratch are links into the single /bot mount
+    // (template.ts BOT_ROOT_MOUNT), not volumes of their own.
+    assert.match(dockerfile, /^VOLUME \["\/bot"\]$/m);
+    assert.match(dockerfile, /ln -s \/bot\/hermes \/data\/hermes/);
+    assert.match(dockerfile, /ln -s \/data\/workspace \/workspace/);
+    assert.match(dockerfile, /ln -s \/data\/scratch \/scratch/);
+  });
+
+  it("can run as a member of a shared isolation scope (BOT-DISK-F): scope label, a working directory that always resolves, /bot-scope write-safe", () => {
+    // The scope label is what the driver checks before it creates a member; WORKDIR must not be a
+    // path that only exists after the entrypoint made its links; hermes may write under /bot-scope.
+    assert.match(dockerfile, /myrmidon\.bot-runtime\.scope="1"/);
+    assert.match(dockerfile, /^WORKDIR \/$/m);
+    assert.doesNotMatch(dockerfile, /^WORKDIR \/workspace$/m);
+    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=[^ ]*:\/bot-scope\b/);
   });
 
   it("declares the bot-runtime contract label the G3 driver requires before it will create a container", () => {
@@ -208,7 +252,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // build-time run; 09-run-scoped-github-broker has
     // github_broker_run_scope.py (contextvar binding + child-env bridge).
     const patchTestRuns = [...dockerfileInstructions.matchAll(/^RUN [^\n]*\/tmp\/patch-tests\/(\S+\.py)\s+\/opt\/hermes-src$/gm)].map((m) => m[1]);
-    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py"]) {
+    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py", "run_skills_materialize.py", "undefined_names.py", "vacuum_by_freelist.py"]) {
       assert.ok(
         patchTestRuns.includes(regression),
         `expected a build-time run of docker/bot-runtime/tests/${regression}`,
@@ -230,6 +274,16 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.doesNotMatch(dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime")), /patch-tests/);
   });
 
+  it("rejects undefined names in patched modules like missing SessionStore in run_startup.py (#1381, OPE-10755)", () => {
+    const script = path.join(IMAGE_DIR, "tests/undefined_names.py");
+    assert.ok(fs.existsSync(script), "docker/bot-runtime/tests/undefined_names.py must exist");
+
+    const res = spawnSync("python3", [script, "--regression-test-only"], {
+      encoding: "utf8",
+    });
+    assert.strictEqual(res.status, 0, `undefined_names.py --regression-test-only failed: ${res.stderr || res.stdout}`);
+  });
+
   it("redirects hermes' lazy installs and write tools off the sealed, read-only venv", () => {
     // Sealing /opt/hermes-src read-only (below) otherwise leaves
     // tools/lazy_deps.py trying to install into it and
@@ -238,7 +292,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // write-safe root".
     assert.match(dockerfile, /HERMES_DISABLE_LAZY_INSTALLS=1/);
     assert.match(dockerfile, /HERMES_LAZY_INSTALL_TARGET=\/data\//);
-    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=\/data[^\n"]*\/scratch/);
+    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=\/data[^\n"]*\/scratch[^\n"]*\/bot/);
   });
 
   it("ships uv in the runtime stage too, so a still-permitted lazy install (an opt-in backend) actually works", () => {
@@ -251,6 +305,12 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // own /home/<user> unwritable at runtime.
     assert.doesNotMatch(dockerfile, /HOME=\/home\/bot/);
     assert.match(dockerfile, /HOME=\/data\/hermes/);
+  });
+
+  it("keeps Cargo build output in the durable per-agent cache, not a workspace", () => {
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+    assert.match(runtimeStage, /^\s*CARGO_TARGET_DIR=\/data\/hermes\/\.cache\/cargo-target(?:\s|$)/m);
+    assert.doesNotMatch(runtimeStage, /^\s*CARGO_TARGET_DIR=\/(?:workspace|scratch)(?:\/|\s|$)/m);
   });
 
   it("strips the clone's .git history before the runtime stage copies /opt/hermes-src", () => {
@@ -290,6 +350,13 @@ describe("docker/bot-runtime/patches/", () => {
       // Comments in code are English (CONVENTIONS.md §8); a Cyrillic comment means a
       // reference-checkout patch was copied instead of rewritten.
       assert.doesNotMatch(patch, /[\u0400-\u04FF]/, `${file} must be written in English`);
+      if (file === "22-async-writer-acquire.patch") {
+        assert.match(patch, /class SidecarScanIncompleteError/);
+        assert.match(patch, /async def acquire_async/);
+        assert.match(patch, /close_all_db_handles_async/);
+        assert.match(patch, /myrmidon\(G1\)/);
+        continue;
+      }
       // Every edit to hermes code carries the fork label (CONVENTIONS.md §8).
       assert.match(patch, /myrmidon\(G1\)/, `${file} must carry the myrmidon(G1) label`);
     }
@@ -302,6 +369,34 @@ describe("docker/bot-runtime/patches/", () => {
     const numbers = files.map((f) => f.match(/^(\d\d)-/)?.[1]);
     assert.ok(numbers.every((n) => n !== undefined), `every patch needs an NN- prefix: ${files.join(", ")}`);
     assert.equal(new Set(numbers).size, numbers.length, "patch numbers must be unique");
+  });
+
+  it("recognises the wake message the hermes_gateway adapter builds (measure A went dead once, at the product rename)", () => {
+    // 16-context-economy.patch finds a board wake message by the identity head and the section
+    // markers that buildInput() writes. When the adapter renamed "Paperclip runtime identity:" to
+    // "Myrmidon runtime identity:" the patch kept matching the old head, measure A never fired again
+    // and its build-time test (fixtures frozen at the old shape) stayed green. Tie the two together.
+    const adapter = fs.readFileSync(
+      path.join(ROOT, "packages/adapters/hermes/src/gateway/server/execute.ts"),
+      "utf8",
+    );
+    const utils = fs.readFileSync(path.join(ROOT, "packages/adapter-utils/src/server-utils.ts"), "utf8");
+    const patch = fs.readFileSync(path.join(IMAGE_DIR, "patches/16-context-economy.patch"), "utf8");
+    const head = adapter.match(/"([A-Za-z]+ runtime identity:)",/);
+    assert.ok(head, "buildInput() must keep writing a '<Product> runtime identity:' head");
+    assert.ok(patch.includes(`"${head[1]}"`), `patch 16 must recognise the adapter's wake head "${head[1]}"`);
+    for (const marker of ["Execution contract:", "Structured wake payload JSON:"]) {
+      assert.ok(adapter.includes(`"${marker}"`), `buildInput() no longer writes "${marker}"`);
+      assert.ok(patch.includes(`"${marker}"`), `patch 16 must recognise "${marker}"`);
+    }
+    assert.ok(adapter.includes("`- Run ID: ${"), "buildInput() no longer writes the '- Run ID:' line");
+    assert.ok(patch.includes('"- Run ID:"'), "patch 16 must recognise the '- Run ID:' line");
+    assert.ok(utils.includes("## Current request and continuation context"));
+    assert.ok(patch.includes('"## Current request and continuation context"'));
+    for (const section of ["Wake Payload", "Resume Delta"]) {
+      assert.ok(utils.includes(`## \${PRODUCT_NAME} ${section}`), `the wake renderer no longer writes the ${section} section`);
+      assert.ok(patch.includes(`"## Myrmidon ${section}"`), `patch 16 must recognise the "## Myrmidon ${section}" section`);
+    }
   });
 
   it("retries a state-database read that finds the database locked, with fixed bounds", () => {
@@ -374,8 +469,12 @@ describe("docker/bot-runtime/patches/", () => {
     // those two files together with it. Neither the Node.js variant nor the development
     // variant is a browser, and neither may carry one: the check below reaches both of
     // them, and the main image (checked against `dockerfileInstructions`, which stops at
-    // the first variant stage) still ships no Node at all.
-    assert.doesNotMatch(dockerfileInstructions, /chromium|playwright|agent-browser|nodejs|\bnpm\b|\bnpx\b/i);
+    // the first variant stage) ships no npm and no browser.
+    // The main image carries Node 24 only for the workspace mechanism (/opt/node24, from the
+    // node24_dist helper stage, which is excluded here): no npm, no browser.
+    const mainImageInstructions = dockerfileInstructions.slice(dockerfileInstructions.indexOf("FROM python:3.13-slim AS runtime"));
+    assert.ok(mainImageInstructions.length > 0, "expected the runtime stage in the main image");
+    assert.doesNotMatch(mainImageInstructions, /chromium|playwright|agent-browser|nodejs|\bnpm\b|\bnpx\b/i);
     const variants = dockerfile.slice(variantStart).split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
     assert.doesNotMatch(variants, /chromium|playwright|agent-browser|puppeteer/i);
   });
@@ -429,7 +528,7 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
   // Everything from the first stage that belongs to the development variant
   // (the helper download stages plus the `runtime-dev` stage itself). Used for
   // cross-stage assertions such as "every download is pinned".
-  const devVariant = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS node24_dist"));
+  const devVariant = node24Stage + dockerfile.slice(devVariantStart);
   const devInstructions = devVariant.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
   // Only the final stage, for assertions about what the finished image is
   // (user, label, PATH, the toolchain check) — the helper stages are throwaway
@@ -478,7 +577,7 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
       const expected = new RegExp(`(^|\\s)${tool.replace(/\+/g, "\\+")}(\\s|$)`);
       assert.match(aptBlock, expected, `the dev variant must install ${tool}`);
     }
-    assert.match(devStage, /^ARG PNPM_VERSION=9\.15\.4$/m);
+    assert.match(devStage, /^ARG PNPM_VERSION=10\.18\.1$/m);
     assert.match(devVariant, /^ARG NODE24_VERSION=24\.\d+\.\d+$/m);
     assert.match(devVariant, /^ARG GO_VERSION=1\.25\.\d+$/m);
     assert.match(devVariant, /^ARG DOCKER_CLI_VERSION=29\.\d+\.\d+$/m);
@@ -537,8 +636,8 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
     for (const tool of ["/opt/node24/bin", "/opt/pnpm/bin", "/opt/go/bin", "/opt/cargo/bin", "/opt/docker-cli/bin"]) {
       assert.ok(path.split(":").includes(tool), `PATH must contain ${tool}`);
     }
-    // The pnpm store is redirected to the durable volume, not the read-only image.
-    assert.match(devStageInstructions, /npm_config_store_dir=\/data\/hermes\//);
+    // The pnpm store sits on the workspace mount (hard links cannot cross mounts), not the read-only image.
+    assert.match(devStageInstructions, /npm_config_store_dir=\/workspace\//);
   });
 
   it("sets no shell-start variable, which dockergate also refuses", () => {
@@ -607,5 +706,79 @@ describe("myrmidon-bot-image.yml", () => {
   it("builds on push to main and myr-v* tags", () => {
     assert.match(workflow, /branches: \[main\]/);
     assert.match(workflow, /tags: \["myr-v\*"\]/);
+  });
+
+  it("runs gateway smoke-start on pull requests for every built image variant (OPE-10755)", () => {
+    const smokeScript = path.join(IMAGE_DIR, "smoke-start.sh");
+    assert.ok(fs.existsSync(smokeScript), "docker/bot-runtime/smoke-start.sh must exist");
+    assert.strictEqual((fs.statSync(smokeScript).mode & 0o111) !== 0, true, "smoke-start.sh must be executable");
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes:pr-check/);
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes-node:pr-check/);
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes-dev:pr-check/);
+  });
+
+  // myrmidon(1.6.5 BOT-DISK-H1c): the real git leaves PATH, the wrapper answers /usr/bin/git.
+  describe("real git in libexec (BOT-DISK-H1c)", () => {
+    const flat = dockerfile.replace(/\\\n/g, " ");
+    // myrmidon(1.6.5 BOT-DISK-H, D9): the mechanism lives in the base `runtime` stage, so
+    // runtime-node and runtime-dev inherit it; the dev stage must not repeat it.
+    const devStage = flat.slice(
+      flat.indexOf("FROM python:3.13-slim AS runtime\n"),
+      flat.indexOf("FROM python:3.13-slim AS node_dist"),
+    );
+    const devOnlyStage = flat.slice(flat.indexOf("FROM runtime AS runtime-dev"));
+
+    it("lives in the base runtime stage only, with node24 and a PATH that reaches botd", () => {
+      assert.match(devStage, /COPY --from=node24_dist --chown=root:root \/opt\/node24 \/opt\/node24/);
+      assert.match(devStage, /^ENV PATH=\/opt\/paperclip\/bin:\$PATH$/m);
+      assert.match(devStage, /sed -i '1s\|\.\*\|#!\/opt\/node24\/bin\/node\|' \/opt\/paperclip\/botd\/botd/);
+      for (const marker of ["dpkg-divert", "COPY --chown=root:root myr-ws/", "COPY --chown=root:root botd/", "git-reference/git", "COPY --from=node24_dist"]) {
+        assert.ok(!devOnlyStage.includes(marker), `${marker} must not be repeated in runtime-dev`);
+      }
+    });
+
+    it("moves the Debian git to /opt/paperclip/libexec/git with dpkg-divert and links /usr/bin/git to the wrapper", () => {
+      assert.match(devStage, /dpkg-divert --local --rename --divert \/opt\/paperclip\/libexec\/git --add \/usr\/bin\/git/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/bin\/git \/usr\/bin\/git/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/bin\/git \/usr\/local\/bin\/git/);
+      // The divert runs after the wrapper is installed (otherwise the symlink dangles in between)
+      // and before the final USER switch.
+      assert.ok(devStage.indexOf("COPY --chown=root:root git-reference/git") < devStage.indexOf("dpkg-divert"));
+      assert.ok(devStage.indexOf("dpkg-divert") < devStage.search(/^USER 10001:10001/m));
+    });
+
+    it("keeps libexec out of every ENV PATH, and no PATH directory holds a real git", () => {
+      for (const line of dockerfile.replace(/\\\n/g, " ").split("\n")) {
+        if (/^\s*(ENV|\s)\s*.*\bPATH=/.test(line) && !line.trim().startsWith("#")) {
+          assert.doesNotMatch(line, /\/opt\/paperclip\/libexec/, `libexec on PATH: ${line}`);
+        }
+      }
+      // The build asserts the same on the finished PATH, plus a clean-PATH answer through the wrapper.
+      assert.match(devStage, /libexec must not be on PATH/);
+      assert.match(devStage, /is a real git outside libexec/);
+      assert.match(devStage, /env -i PATH=\/usr\/bin:\/bin git --version/);
+      assert.match(devStage, /env -i PATH=\/usr\/bin:\/bin git ls-remote/);
+    });
+
+    it("installs the myr-ws and botd directories whole, links myr-ws (bin + /usr/local/bin) and botd, tolerating a missing botd entry point", () => {
+      assert.match(devStage, /COPY --chown=root:root myr-ws\/ \/opt\/paperclip\/myr-ws\//);
+      assert.match(devStage, /COPY --chown=root:root botd\/ \/opt\/paperclip\/botd\//);
+      assert.match(devStage, /chmod 0755 \/opt\/paperclip\/myr-ws\/myr-ws/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/myr-ws\/myr-ws \/opt\/paperclip\/bin\/myr-ws/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/myr-ws\/myr-ws \/usr\/local\/bin\/myr-ws/);
+      assert.match(devStage, /\[ -x \/usr\/local\/bin\/myr-ws \]/);
+      assert.match(devStage, /if \[ -f \/opt\/paperclip\/botd\/botd \]/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/botd\/botd \/opt\/paperclip\/bin\/botd/);
+      assert.match(devStage, /\[ -x \/opt\/paperclip\/bin\/botd \]/);
+      assert.doesNotMatch(devStage, /bot-disk-src/);
+    });
+
+    it("the wrapper's default real git is the libexec path (a wrapper that execs itself would loop)", () => {
+      const wrapper = fs.readFileSync(path.join(IMAGE_DIR, "git-reference/git"), "utf8");
+      assert.match(wrapper, /process\.env\.MYRMIDON_GIT_REAL \|\| "\/opt\/paperclip\/libexec\/git"/);
+      assert.doesNotMatch(wrapper, /MYRMIDON_GIT_REAL \|\| "\/usr\/bin\/git"/);
+      const entry = fs.readFileSync(path.join(IMAGE_DIR, "entrypoint.sh"), "utf8");
+      assert.match(entry, /MYRMIDON_GIT_REAL:-\/opt\/paperclip\/libexec\/git/);
+    });
   });
 });

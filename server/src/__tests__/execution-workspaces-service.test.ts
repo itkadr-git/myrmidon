@@ -22,7 +22,7 @@ import {
   projectWorkspaces,
   projects,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -474,6 +474,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .then((rows) => rows[0]);
 
     expect(sweep.archived).toBe(1);
+    expect(sweep.skippedInspectFailed).toBe(0);
+    expect(sweep.skippedDirty).toBe(0);
+    expect(sweep.skippedUnmerged).toBe(0);
+    expect(sweep.skippedInspectFailedSamples).toEqual([]);
+    expect(sweep.skippedDirtySamples).toEqual([]);
+    expect(sweep.skippedUnmergedSamples).toEqual([]);
     expect(archived).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
@@ -567,7 +573,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         state: "blocked",
         isDestructiveCloseAllowed: false,
         blockingReasons: [
-          "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+          "Myrmidon could not verify the workspace git status. Retry before destructive cleanup.",
         ],
       });
 

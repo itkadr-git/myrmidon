@@ -38,6 +38,8 @@ export const AGENT_ADAPTER_TYPES = [
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): Oh My Pi local adapter
+  "omp_local",
   "cursor",
   "openclaw_gateway",
 ] as const;
@@ -56,6 +58,7 @@ export const AGENT_ROLES = [
   "devops",
   "researcher",
   "general",
+  "architect",
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
@@ -72,6 +75,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   devops: "DevOps",
   researcher: "Researcher",
   general: "General",
+  architect: "Architect",
 };
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
@@ -382,6 +386,18 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
   "configuration_validation",
   "active_run_watchdog",
   "issue_graph_liveness",
+  // myrmidon(1.6.6 RECOVERY-FACTORY P1.7, OPE-9133): the typed kinds of the
+  // recovery factory — infra and operator failures become recovery issues
+  // with a dedupe key instead of naked blocked cards. See recovery-factory.ts.
+  "ci_restart",
+  "github_access",
+  "branch_relay",
+  "review_participant_restore",
+  "workspace_myr_ws",
+  "devbuild",
+  "disk_space",
+  "resource.oom",
+  "operator_action",
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
 
@@ -434,6 +450,9 @@ export type IssueTreeHoldStatus = (typeof ISSUE_TREE_HOLD_STATUSES)[number];
 
 export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_active_runs_finish"] as const;
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
+
+export const ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY = "acceptance-scenarios" as const;
+export type IssueAcceptanceScenariosDocumentKey = typeof ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY;
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
 export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
@@ -757,6 +776,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "run",
   "tool_connection",
   "system",
+  "github_actions",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
 
@@ -952,6 +972,9 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  // myrmidon(1.6.6 PROCS-1.7, design OPE-5394 §5.4.4): a board lease changed
+  // holder — payload carries { lease, holderBootId, epoch }.
+  "board.leader_changed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -1013,6 +1036,9 @@ export const PERMISSION_KEYS = [
   "tools:view_audit",
   "audit:view_agent_actions",
   "tools:use",
+  // myrmidon(1.6.6 POOL-CHAT): explicit capability for module chat routing;
+  // no role default grants this permission, so chat access is deny-by-default.
+  "chat:invoke",
   "tools:manage_runtime",
   "inbox:manage",
   "users:invite",
@@ -1022,8 +1048,38 @@ export const PERMISSION_KEYS = [
   "tasks:manage_active_checkouts",
   "pipelines:write",
   "joins:approve",
+  // myrmidon(1.6.5-F-23): lets the grant holder (an agent without an active
+  // run, e.g. the administrative role acting from an operator session) read
+  // its own secret metadata via GET /agents/me/secrets. Always issued with an
+  // expiresAt (default +30 days); every such read is audited with offRun=true.
+  "secrets:read_off_run",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+// myrmidon(1.6.1 ADMIN-AGENT): the operator permission set granted by the
+// board-administrator switch on an agent. Kept as an explicit list (not derived
+// from PERMISSION_KEYS at runtime) so adding a key to PERMISSION_KEYS never
+// silently widens what an existing board administrator holds.
+export const BOARD_ADMIN_PERMISSION_KEYS = [
+  "agents:create",
+  "agents:configure",
+  "agents:suggest-changes",
+  "skills:create",
+  "environments:manage",
+  "tools:admin",
+  "tools:manage_connections",
+  "tools:manage_profiles",
+  "tools:view_audit",
+  "tools:manage_runtime",
+  "tools:use",
+  "inbox:manage",
+  "users:invite",
+  "users:manage_permissions",
+  "tasks:assign",
+  "tasks:assign_scope",
+  "joins:approve",
+] as const;
+export type BoardAdminPermissionKey = (typeof BOARD_ADMIN_PERMISSION_KEYS)[number];
 
 export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
@@ -1334,6 +1390,8 @@ export const PLUGIN_CAPABILITIES = [
   // Read issue attachment metadata and, via the capability-scoped host
   // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
   "issue.attachments.read",
+  // Upload bounded issue attachments through the host's scoped storage path.
+  "issue.attachments.write",
   // Read company approvals (list + get). The host redacts approval payloads to
   // match the web app's own approval read surface.
   "approvals.read",
@@ -1642,6 +1700,7 @@ export const PLUGIN_JOB_STATUSES = [
   "active",
   "paused",
   "failed",
+  "running",
 ] as const;
 export type PluginJobStatus = (typeof PLUGIN_JOB_STATUSES)[number];
 
@@ -1726,6 +1785,7 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "INVOCATION_SCOPE_DENIED",
   "WORKER_ERROR",
   "TIMEOUT",
+  "UNKNOWN_ACTION",
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];

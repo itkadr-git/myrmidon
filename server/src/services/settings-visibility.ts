@@ -1,13 +1,14 @@
-import { parseHiddenSettingsList } from "@paperclipai/shared";
+import { parseHiddenSettingsList } from "@myrmidon/shared";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { logger } from "../middleware/logger.js";
 
 /**
- * Operator-hidden settings, from the `PAPERCLIP_HIDDEN_SETTINGS` env var
+ * Operator-hidden settings, from the `MYRMIDON_HIDDEN_SETTINGS` env var
  * (comma-separated keys from the shared settings-visibility registry). Unknown
  * keys are warned about once and ignored so one list can be rolled across a
  * fleet of mixed app versions without refusing boot on older images.
  */
-export const HIDDEN_SETTINGS_ENV_KEY = "PAPERCLIP_HIDDEN_SETTINGS";
+export const HIDDEN_SETTINGS_ENV_KEY = "MYRMIDON_HIDDEN_SETTINGS";
 
 export type HiddenSettingsEnv = Record<string, string | undefined>;
 
@@ -23,7 +24,7 @@ let cache: { raw: string | undefined; hidden: ReadonlySet<string> } | null = nul
 export function getHiddenSettings(
   env: HiddenSettingsEnv = process.env,
 ): ReadonlySet<string> {
-  const raw = env[HIDDEN_SETTINGS_ENV_KEY];
+  const raw = readProductEnvFrom(env, "HIDDEN_SETTINGS");
   if (cache && cache.raw === raw) return cache.hidden;
   const { hidden, unknown } = parseHiddenSettingsList(raw);
   if (unknown.length > 0) {

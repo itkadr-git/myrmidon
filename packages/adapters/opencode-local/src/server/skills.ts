@@ -5,20 +5,22 @@ import { fileURLToPath } from "node:url";
 import type {
   AdapterSkillContext,
   AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   buildPersistentSkillSnapshot,
   ensurePaperclipSkillSymlink,
   readPaperclipRuntimeSkillEntries,
   readInstalledSkillTargets,
   resolveLegacyPaperclipDesiredSkillNames,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 export function resolveOpenCodeSkillsHome(config: Record<string, unknown>) {
   const env =
@@ -45,7 +47,7 @@ async function buildOpenCodeSkillSnapshot(config: Record<string, unknown>): Prom
     installedDetail: "Installed in the shared Claude/OpenCode skills home.",
     missingDetail: "Configured but not currently linked into the shared Claude/OpenCode skills home.",
     externalConflictDetail: "Skill name is occupied by an external installation in the shared skills home.",
-    externalDetail: "Installed outside Paperclip management in the shared skills home.",
+    externalDetail: `Installed outside ${PRODUCT_NAME} management in the shared skills home.`,
     warnings: [
       "OpenCode currently uses the shared Claude skills home (~/.claude/skills).",
     ],

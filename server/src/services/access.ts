@@ -1,5 +1,5 @@
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   companyMemberships,
   companySecretBindings,
@@ -13,18 +13,32 @@ import {
   toolAccessAuditEvents,
   toolConnections,
   userSecretDeclarations,
-} from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { PermissionKey, PrincipalType } from "@myrmidon/shared";
 import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
+import { revokeAllUserSessions } from "./session-service.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
+  expiresAt?: Date | null;
 };
+
+// myrmidon(1.6.5-F-23): the off-run self-secret grant is always time-boxed.
+// When the board grants it without an explicit deadline, it expires 30 days
+// out; a missing deadline is never persisted for this key.
+const SECRETS_READ_OFF_RUN_DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function resolveGrantExpiresAt(grant: GrantInput): Date | null {
+  if (grant.permissionKey === "secrets:read_off_run") {
+    return grant.expiresAt ?? new Date(Date.now() + SECRETS_READ_OFF_RUN_DEFAULT_TTL_MS);
+  }
+  return grant.expiresAt ?? null;
+}
 
 type MemberArchiveInput = {
   reassignment?: {
@@ -469,6 +483,7 @@ export function accessService(db: Db) {
             principalId: member.principalId,
             permissionKey: grant.permissionKey,
             scope: grant.scope ?? null,
+            expiresAt: resolveGrantExpiresAt(grant),
             grantedByUserId,
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -568,6 +583,7 @@ export function accessService(db: Db) {
             principalId: existing.principalId,
             permissionKey: grant.permissionKey,
             scope: grant.scope ?? null,
+            expiresAt: resolveGrantExpiresAt(grant),
             grantedByUserId,
             createdAt: now,
             updatedAt: now,
@@ -927,6 +943,7 @@ export function accessService(db: Db) {
           principalId,
           permissionKey: grant.permissionKey,
           scope: grant.scope ?? null,
+          expiresAt: resolveGrantExpiresAt(grant),
           grantedByUserId,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -1030,6 +1047,7 @@ export function accessService(db: Db) {
         .update(principalPermissionGrants)
         .set({
           scope,
+          expiresAt: resolveGrantExpiresAt({ permissionKey }),
           grantedByUserId,
           updatedAt: new Date(),
         })
@@ -1043,6 +1061,7 @@ export function accessService(db: Db) {
       principalId,
       permissionKey,
       scope,
+      expiresAt: resolveGrantExpiresAt({ permissionKey }),
       grantedByUserId,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -1110,6 +1129,9 @@ export function accessService(db: Db) {
         nextStatus === "suspended"
       ) {
         await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
+        // myrmidon(OPE-10179): suspending a member kills every live session and
+        // board API key at once — old tokens must stop working immediately.
+        await revokeAllUserSessions(existing.principalId, tx);
       }
 
       return tx

@@ -14,10 +14,18 @@
 // missing key value). They name the setting or variable, never a value, so a
 // message is safe to show in the reconcile activity log.
 
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
 // myrmidon(PARALLEL-HELPERS): card + company ceiling -> the values the compiler writes
 // into config.yaml's `delegation` section (and the toolset switch).
-import { PARALLEL_HELPERS_DEFAULT_MODEL_ENV, readParallelHelpersCard, resolveParallelHelpers, type ParallelHelpersSettings } from "@paperclipai/shared";
+import { PARALLEL_HELPERS_DEFAULT_MODEL_ENV, readParallelHelpersCard, resolveParallelHelpers, type ParallelHelpersSettings } from "@myrmidon/shared";
+// myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role/card.
+import {
+  BOT_LSP_TSSERVER_MEMORY_MIN_MB,
+  botLspHermesBlock,
+  resolveBotLsp,
+  resolveBotLspHeap,
+  type BotLspSettings,
+} from "@myrmidon/shared";
 import { BOT_BOARD_GATEWAY_SERVER_NAME } from "./board-gateway.js";
 import type {
   HermesProfileAdapterConfig,
@@ -25,10 +33,20 @@ import type {
   HermesProfileHindsightSettings,
   HermesProfileInput,
   HermesProfileInstanceDefaults,
+  HermesProfileLspSettings,
   HermesProfileMcpServer,
+  HermesProfileRoleToolDiet,
   HermesProfileSkillFile,
   HermesProfileWorkspaceFile,
 } from "./profile-compiler.js";
+// myrmidon(TOOL-DIET-ROLES): the per-role default tool lists (role + card -> what the bot keeps out of its schema).
+import {
+  BOT_DEVELOPER_ROLES_ENV,
+  BOT_ROLE_TOOL_DIET_ENV,
+  parseBotDeveloperRoles,
+  parseBotRoleToolDiet,
+  resolveBotToolDiet,
+} from "./tool-diet.js";
 
 // ---------------------------------------------------------------------------
 // Instance settings
@@ -55,13 +73,86 @@ export const BOT_MCP_SERVERS_ENV = "MYRMIDON_BOT_MCP_SERVERS";
 // absolute number of tokens; Hermes compresses at the lower of the ratio
 // threshold and this count. Default 100_000: the ticket's fleet default, set
 // by the instance, not the compiler (unset would mean Hermes's own 256K).
+// myrmidon(BOT-RUNTIME-TUNING-A): that fleet default is applied in code now
+// (BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS below), so a card that sets
+// nothing compacts at ~100k instead of half a large model's window; an
+// explicit 0 in the variable turns the cap off (Hermes's own default applies).
 export const BOT_COMPRESSION_THRESHOLD_TOKENS_ENV = "MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS";
+
+/**
+ * myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS — comma-separated single tool names that every
+ * bot's config.yaml lists under `agent.disabled_tools`, so their schemas are not sent on each
+ * model call. Unset means {@link BOT_DEFAULT_DISABLED_TOOLS}; `none` (also `off`, `-`) means no
+ * tool is disabled — the one-line way back to the previous config.yaml: it also switches the
+ * per-role defaults off (myrmidon(TOOL-DIET-ROLES), see tool-diet.ts). A card's own
+ * `disabledTools` list replaces both lists, its `keepTools` re-enables single names of them, and
+ * `vision_analyze` is kept for a card with a vision model.
+ */
+export const BOT_DISABLED_TOOLS_ENV = "MYRMIDON_BOT_DISABLED_TOOLS";
+
+/**
+ * myrmidon(TOOL-DIET): the fleet default — the tools that no measured role called even once in
+ * ~7000 model calls over three days (engineering, infrastructure and dev roles): the five browser
+ * credential-vault tools and `vision_analyze`. Their schemas cost about 1.2k tokens per call.
+ *
+ * myrmidon(TOOL-DIET-ROLES, OPE-11947) adds two tools that no bot can use or needs, whatever its
+ * role (a 28k-request sample of 21 bots: each called under 0.5 times per 100 requests):
+ *  - `clarify` asks a person at a terminal. Every bot runs behind the Hermes API server, which
+ *    wires no clarify callback (gateway/platforms/api_server.py), so the tool only ever answers
+ *    "not available in this execution context"; Hermes' own `hermes-api-server` toolset leaves it
+ *    out, and only a card that lists the `clarify` toolset pulls it back. About 1.7k characters.
+ *  - `skill_manage` lets the bot write its own skills. Company skills reach a bot through the
+ *    board; while the tool is present Hermes also adds its guidance to the system prompt and
+ *    forks a background skill review (vendor estimate ~30K tokens per event) after every ten
+ *    tool iterations. About 3.5k characters of schema, plus those two costs.
+ * A card that needs either keeps it with `keepTools: ["clarify"]` / `["skill_manage"]`.
+ */
+export const BOT_DEFAULT_DISABLED_TOOLS: readonly string[] = [
+  "browser_vault_enter_code",
+  "browser_vault_fill",
+  "browser_vault_list",
+  "browser_vault_save_login",
+  "browser_vault_unlock",
+  "vision_analyze",
+  "clarify",
+  "skill_manage",
+];
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-A): the company default for the compression
+ * token cap, in tokens — used when MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS
+ * is unset (or holds no usable integer). It is a company-level (instance)
+ * default, not a compiler default: the compiler still writes only what its
+ * input carries, so a caller that passes no instance defaults compiles exactly
+ * as before. The agent card's own
+ * `adapterConfig.models.compressionThresholdTokens` wins over it.
+ */
+export const BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS = 100_000;
 /** myrmidon(BOT-RUNTIME-TUNING-B): default per-alias map, "alias=tokens,alias=tokens". */
 export const BOT_MODEL_CONTEXT_LENGTH_ENV = "MYRMIDON_BOT_MODEL_CONTEXT_LENGTH";
 /** myrmidon(BOT-RUNTIME-TUNING-B): instance default for auxiliary.title_generation.model (a gateway model alias). */
 export const BOT_AUX_TITLE_MODEL_ENV = "MYRMIDON_BOT_AUX_TITLE_MODEL";
 /** myrmidon(BOT-RUNTIME-TUNING-B): instance default for auxiliary.compression.model (a gateway model alias). */
 export const BOT_AUX_COMPRESSION_MODEL_ENV = "MYRMIDON_BOT_AUX_COMPRESSION_MODEL";
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): MYRMIDON_BOT_AUX_FALLBACK_MODELS —
+ * comma-separated gateway model aliases that form the CHEAP CEILING of every
+ * auxiliary call the compiler configures (title generation, compression): they
+ * are written as `auxiliary.<task>.fallback_chain`, which Hermes walks BEFORE
+ * the main chain. Without it an auxiliary call that fails on its own model
+ * climbs the card's `models.fallbacks` / the gateway's own ladder and can be
+ * served by a paid model (fact 02.10: session titles did exactly that).
+ */
+export const BOT_AUX_FALLBACK_MODELS_ENV = "MYRMIDON_BOT_AUX_FALLBACK_MODELS";
+/**
+ * myrmidon(MEMORY-CENTRAL-A): instance-wide switch that turns every bot's Hermes
+ * LOCAL memory off (config.yaml `memory.enabled: false`), so durable memory
+ * lives only in the shared hindsight service. Truthy like the other bot
+ * switches (`1`/`true`/`yes`/`on`, case-insensitive); anything else, including
+ * a typo, keeps local memory on — off is the default, an opt-in feature must
+ * not flip on by accident.
+ */
+export const BOT_LOCAL_MEMORY_OFF_ENV = "MYRMIDON_BOT_LOCAL_MEMORY_OFF";
 
 /**
  * One instance-wide MCP server. The token is never in the setting: `tokenSecret`
@@ -119,11 +210,14 @@ export interface BotProfileSettings {
   mcpServersError: string | null;
   /**
    * myrmidon(BOT-RUNTIME-TUNING-B): MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS,
-   * an absolute token cap written to `compression.threshold_tokens` whenever
-   * set (the compiler adds no default of its own; Hermes's own default is
-   * 256_000). Invalid values are reported per entry, not thrown: a bad
-   * threshold must not stop a bot's profile from compiling. Optional in the
-   * type so preexisting hand-built settings objects (older callers, part C's
+   * an absolute token cap written to `compression.threshold_tokens`.
+   * myrmidon(BOT-RUNTIME-TUNING-A): the variable now carries an OVERRIDE of
+   * the company default (100_000, BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS):
+   * unset or unusable falls back to it, an explicit `0` means "no cap" (null
+   * here, so the compiler writes nothing and Hermes's own default applies).
+   * Invalid values are reported per entry, not thrown: a bad threshold must
+   * not stop a bot's profile from compiling. Optional in the type so
+   * preexisting hand-built settings objects (older callers, part C's
    * card-env tests) keep compiling; `readBotProfileSettings` always fills it.
    */
   compressionThresholdTokens?: number | null;
@@ -149,11 +243,86 @@ export interface BotProfileSettings {
    * for `auxiliary.compression.model`.
    */
   auxiliaryCompressionModel?: string | null;
+  /**
+   * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): MYRMIDON_BOT_AUX_FALLBACK_MODELS
+   * — the auxiliary fallback ceiling: gateway aliases the compiler writes to
+   * `auxiliary.title_generation.fallback_chain` and
+   * `auxiliary.compression.fallback_chain`. Null/empty = no chain is written
+   * and Hermes keeps its own policy (an auxiliary task on `provider: auto`
+   * follows the main chain). The ceiling is an instance-wide policy, not a card
+   * field: it caps a class of models for every bot, and an operator names
+   * aliases the gateway actually serves.
+   */
+  auxiliaryFallbackModels?: string[] | null;
+  /**
+   * myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF — when truthy,
+   * every bot's Hermes LOCAL memory is turned off in config.yaml
+   * (`memory.memory_enabled`/`user_profile_enabled: false`); durable memory
+   * then lives only in hindsight. Optional in the type so preexisting
+   * hand-built settings objects keep compiling; `readBotProfileSettings`
+   * always fills it.
+   */
+  localMemoryOff?: boolean;
+  /**
+   * myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS resolved — the default list when unset, an
+   * empty list for `none`. Optional in the type so hand-built settings objects keep compiling;
+   * `readBotProfileSettings` always fills it.
+   */
+  disabledTools?: string[];
+  /**
+   * myrmidon(TOOL-DIET-ROLES): whether the per-role default tool lists apply
+   * (MYRMIDON_BOT_ROLE_TOOL_DIET, and not MYRMIDON_BOT_DISABLED_TOOLS=none).
+   * Optional in the type so hand-built settings objects keep compiling — absent
+   * means off there; `readBotProfileSettings` always fills it (default on).
+   */
+  roleToolDiet?: boolean;
+  /**
+   * myrmidon(TOOL-DIET-ROLES): MYRMIDON_BOT_DEVELOPER_ROLES resolved — the caste
+   * keys of the developer tier. Absent = the module default. `readBotProfileSettings`
+   * always fills it.
+   */
+  developerRoles?: string[];
+}
+
+/** myrmidon(TOOL-DIET): whether MYRMIDON_BOT_DISABLED_TOOLS says "no tool is disabled" (`none`, `off`, `-`). */
+function isNoneToolList(raw: string | null): boolean {
+  if (raw === null) return false;
+  const lowered = raw.trim().toLowerCase();
+  return lowered === "none" || lowered === "off" || lowered === "-";
+}
+
+/**
+ * myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS -> tool names. Unset/blank -> the fleet default;
+ * `none`/`off`/`-` -> []; otherwise the comma-separated names, trimmed, deduplicated, order kept.
+ */
+export function parseBotDisabledTools(raw: string | null): string[] {
+  if (raw === null) return [...BOT_DEFAULT_DISABLED_TOOLS];
+  if (isNoneToolList(raw)) return [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const item of raw.split(",")) {
+    const name = item.trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
 }
 
 function readSetting(env: NodeJS.ProcessEnv, name: string): string | null {
   const value = env[name]?.trim();
   return value ? value : null;
+}
+
+/**
+ * myrmidon(MEMORY-CENTRAL-A): the shared truthiness of the bot instance
+ * switches (`1`/`true`/`yes`/`on`, case-insensitive) — the same set
+ * `isBotContainersEnabled` accepts in agent-config.ts.
+ */
+function isTruthyBotSwitch(value: string | null): boolean {
+  if (!value) return false;
+  const raw = value.toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 /**
@@ -269,6 +438,11 @@ export function parseBotHindsightAllowedBanks(raw: string | null): string[] | nu
  * (or an empty string) is reported in `error` and dropped, because a bad
  * threshold must not stop a bot's profile from compiling — the warning
  * surface (the reconcile activity log) is where an operator sees it.
+ *
+ * myrmidon(BOT-RUNTIME-TUNING-A): this parser only reads the variable; the
+ * company default (100_000) and the meaning of `0` ("no cap") are applied by
+ * {@link readBotProfileSettings}, so an unusable value never silently removes
+ * the fleet's cap.
  */
 export function parseBotCompressionThresholdTokens(raw: string | null): { value: number | null; error: string | null } {
   if (raw === null) return { value: null, error: null };
@@ -312,18 +486,74 @@ export function parseBotModelContextLengths(raw: string | null): { map: Record<s
   return { map, error: errors.length > 0 ? `${BOT_MODEL_CONTEXT_LENGTH_ENV}: ${errors.join("; ")} (skipped)` : null };
 }
 
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): MYRMIDON_BOT_AUX_FALLBACK_MODELS —
+ * comma-separated gateway model aliases. Comma-separated like
+ * MODEL_CONTEXT_LENGTH, but a bare alias list (no "="): each item is the model
+ * name of one `auxiliary.<task>.fallback_chain` entry. Duplicates are folded
+ * away, order is kept as written (the chain is walked in that order), blanks
+ * are skipped. Unset/blank/commas-only → null: no ceiling, Hermes keeps its own
+ * auxiliary fallback policy. There is no per-entry error path — any non-empty
+ * item is a usable alias, and whether the gateway serves it is the operator's
+ * problem (a dropped entry would look like "no ceiling", the bug this closes).
+ */
+export function parseBotAuxFallbackModels(raw: string | null): string[] | null {
+  if (raw === null) return null;
+  const seen = new Set<string>();
+  const models: string[] = [];
+  for (const item of raw.split(",")) {
+    const model = item.trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    models.push(model);
+  }
+  return models.length > 0 ? models : null;
+}
+
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
+
 export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): BotProfileSettings {
+  // Lists saved from the UI win over the environment (nothing changes before one is saved).
+  const savedBanks = env === process.env ? liveSavedSetting<string[]>("bot_hindsight_allowed_banks") : undefined;
+  const hindsightAllowedBanksValue = Array.isArray(savedBanks)
+    ? savedBanks.join(",")
+    : readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV);
+  const hindsightAllowedBanks = parseBotHindsightAllowedBanks(hindsightAllowedBanksValue);
   const llmApiKeyEnv = readSetting(env, BOT_LLM_API_KEY_ENV_ENV);
-  const mcp = parseBotMcpServers(readSetting(env, BOT_MCP_SERVERS_ENV));
+  const savedServers = env === process.env ? liveSavedSetting<unknown[]>("bot_mcp_servers") : undefined;
+  const mcpValue = Array.isArray(savedServers) ? JSON.stringify(savedServers) : readSetting(env, BOT_MCP_SERVERS_ENV);
+  const mcp = parseBotMcpServers(mcpValue);
+
   // myrmidon(BOT-RUNTIME-TUNING-B): the instance defaults the profile compiler
   // writes into config.yaml — read here so a corrected variable takes effect
   // on the next compile tick, like the rest of this settings object.
-  const compressionTokens = parseBotCompressionThresholdTokens(readSetting(env, BOT_COMPRESSION_THRESHOLD_TOKENS_ENV));
-  const contextLengths = parseBotModelContextLengths(readSetting(env, BOT_MODEL_CONTEXT_LENGTH_ENV));
+  const compressionInput = env[BOT_COMPRESSION_THRESHOLD_TOKENS_ENV] === undefined
+    ? liveBehaviorSetting<number>("botCompressionThresholdTokens").toString()
+    : readSetting(env, BOT_COMPRESSION_THRESHOLD_TOKENS_ENV);
+  const compressionTokens = parseBotCompressionThresholdTokens(compressionInput);
+  // myrmidon(BOT-RUNTIME-TUNING-A): the variable is an override of the company
+  // default, not an all-or-nothing switch. Unset or unusable (an invalid value
+  // already carries its own warning above) falls back to the company default
+  // 100_000, so a card that says nothing still compacts at ~100k instead of
+  // half a large model's window; an explicit 0 means "no cap" and stays null,
+  // which writes no threshold_tokens at all (Hermes's own default applies).
+  const compressionThresholdTokens =
+    compressionTokens.value === null
+      ? BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS
+      : compressionTokens.value === 0
+        ? null
+        : compressionTokens.value;
+  const contextInput = env[BOT_MODEL_CONTEXT_LENGTH_ENV] === undefined
+    ? Object.entries(liveBehaviorSetting<Record<string, number>>("botModelContextLengths")).map(([model, tokens]) => `${model}=${tokens}`).join(",")
+    : readSetting(env, BOT_MODEL_CONTEXT_LENGTH_ENV);
+  const contextLengths = parseBotModelContextLengths(contextInput);
+  // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling of the
+  // auxiliary fallback chains.
+  const auxiliaryFallbackModels = parseBotAuxFallbackModels(readSetting(env, BOT_AUX_FALLBACK_MODELS_ENV));
   return {
     hindsightApiUrl: readSetting(env, BOT_HINDSIGHT_API_URL_ENV),
     hindsightBank: readSetting(env, BOT_HINDSIGHT_BANK_ENV),
-    hindsightAllowedBanks: parseBotHindsightAllowedBanks(readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV)),
+    hindsightAllowedBanks,
     llmBaseUrl: readSetting(env, BOT_LLM_BASE_URL_ENV),
     llmApiKeyEnv,
     llmApiKeySecret: readSetting(env, BOT_LLM_API_KEY_SECRET_ENV) ?? llmApiKeyEnv,
@@ -331,12 +561,25 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
     runtimeMcpUrlBase: readSetting(env, BOT_RUNTIME_MCP_URL_BASE_ENV)?.replace(/\/+$/, "") ?? null,
     mcpServers: mcp.servers,
     mcpServersError: mcp.error,
-    compressionThresholdTokens: compressionTokens.value,
+    compressionThresholdTokens,
     compressionThresholdTokensError: compressionTokens.error,
     modelContextLengths: contextLengths.map,
     modelContextLengthsError: contextLengths.error,
-    auxiliaryTitleModel: readSetting(env, BOT_AUX_TITLE_MODEL_ENV),
-    auxiliaryCompressionModel: readSetting(env, BOT_AUX_COMPRESSION_MODEL_ENV),
+    auxiliaryTitleModel: readSetting(env, BOT_AUX_TITLE_MODEL_ENV) ?? (liveBehaviorSetting<string | null>("botAuxTitleModel") || null),
+    auxiliaryCompressionModel: readSetting(env, BOT_AUX_COMPRESSION_MODEL_ENV) ?? (liveBehaviorSetting<string | null>("botAuxCompressionModel") || null),
+    auxiliaryFallbackModels,
+    // myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF, truthy like
+    // the other bot switches; anything else (including a typo) keeps local
+    // memory on — the feature is opt-in and off by default.
+    localMemoryOff: isTruthyBotSwitch(readSetting(env, BOT_LOCAL_MEMORY_OFF_ENV)),
+    // myrmidon(TOOL-DIET): the single tools no bot sends to the model.
+    disabledTools: parseBotDisabledTools(readSetting(env, BOT_DISABLED_TOOLS_ENV)),
+    // myrmidon(TOOL-DIET-ROLES): the per-role defaults on top of that list. Off with their own
+    // switch, and off with MYRMIDON_BOT_DISABLED_TOOLS=none ("no tool is disabled").
+    roleToolDiet:
+      parseBotRoleToolDiet(readSetting(env, BOT_ROLE_TOOL_DIET_ENV)) &&
+      !isNoneToolList(readSetting(env, BOT_DISABLED_TOOLS_ENV)),
+    developerRoles: parseBotDeveloperRoles(readSetting(env, BOT_DEVELOPER_ROLES_ENV)),
   };
 }
 
@@ -359,8 +602,24 @@ function assertHttpUrl(setting: string, value: string): void {
   }
 }
 
-/** Env variable names the compiler or the image owns; the LLM key variable may not be one of them. */
-const OWNED_ENV_NAMES = new Set(["HOME", "PATH", "HERMES_HOME", "API_SERVER_KEY", "PAPERCLIP_API_URL", "PAPERCLIP_API_KEY"]);
+/**
+ * Env variable names the compiler or the image owns; the LLM key variable may
+ * not be one of them. The board key/address pair is owned under both names:
+ * MYRMIDON_API_KEY / MYRMIDON_API_URL (the canonical names the profile
+ * compiles in, REBRAND-ENV) and the legacy PAPERCLIP_* alias written next to
+ * them — otherwise an admin could name the LLM key variable MYRMIDON_API_KEY
+ * and the bot would hand the board key to the LLM gateway.
+ */
+const OWNED_ENV_NAMES = new Set([
+  "HOME",
+  "PATH",
+  "HERMES_HOME",
+  "API_SERVER_KEY",
+  "MYRMIDON_API_URL",
+  "MYRMIDON_API_KEY",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_API_KEY",
+]);
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -382,7 +641,7 @@ export function assertBotProfileSettings(settings: BotProfileSettings): void {
   if (settings.llmApiKeyEnv) {
     if (!ENV_NAME_PATTERN.test(settings.llmApiKeyEnv) || OWNED_ENV_NAMES.has(settings.llmApiKeyEnv)) {
       throw new BotProfileInputError(
-        `${BOT_LLM_API_KEY_ENV_ENV} must be a valid variable name that is not HOME, PATH, HERMES_HOME, API_SERVER_KEY, PAPERCLIP_API_URL or PAPERCLIP_API_KEY`,
+        `${BOT_LLM_API_KEY_ENV_ENV} must be a valid variable name that is not HOME, PATH, HERMES_HOME, API_SERVER_KEY, MYRMIDON_API_URL, MYRMIDON_API_KEY, PAPERCLIP_API_URL or PAPERCLIP_API_KEY`,
       );
     }
   }
@@ -498,6 +757,17 @@ export interface BotProfileSource {
    * knowledge; `resolveParallelHelpers` also normalizes the model fallback.
    */
   parallelHelpersSettings?: ParallelHelpersSettings;
+  /**
+   * myrmidon(BOT-LSP-DEFAULTS): the agent's role (caste key, `agents.role`).
+   * Decides, with the card's own pin and the instance policy, which
+   * language-server mode the bot runs with. Absent = a non-coding bot.
+   */
+  role?: string;
+  /**
+   * myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy
+   * (`general.botLsp`), as the ports read it. Absent = module defaults.
+   */
+  botLspSettings?: BotLspSettings;
 }
 
 export interface BuiltBotProfileInput {
@@ -539,15 +809,21 @@ function readAdapterConfig(card: Record<string, unknown>): HermesProfileAdapterC
     model: asTrimmedString(card.model),
     provider: asTrimmedString(card.provider),
     effort: asTrimmedString(card.effort),
+    maxOutputTokens: asTrimmedPositiveInt(card.maxOutputTokens ?? models.maxOutputTokens),
     models: {
       vision: asTrimmedString(models.vision),
       video: asTrimmedString(models.video),
       stt: asTrimmedString(models.stt),
       tts: asTrimmedString(models.tts),
       fallbacks: asStringList(models.fallbacks),
+      // myrmidon(BOT-MAXTOKENS): explicit output budget from card or card.models
+      maxOutputTokens: asTrimmedPositiveInt(models.maxOutputTokens),
       // myrmidon(BOT-RUNTIME-TUNING-B): context window and auxiliary models from
       // the card's "Additional models" block; validated by the compiler.
       contextLength: asTrimmedPositiveInt(models.contextLength),
+      // myrmidon(BOT-RUNTIME-TUNING-A): the card's own compression token cap;
+      // the compiler validates the range and it wins over the instance default.
+      compressionThresholdTokens: asTrimmedPositiveInt(models.compressionThresholdTokens),
       titleGeneration: asTrimmedString(models.titleGeneration),
       compressionSummary: asTrimmedString(models.compressionSummary),
     },
@@ -555,6 +831,10 @@ function readAdapterConfig(card: Record<string, unknown>): HermesProfileAdapterC
     // ceiling in buildHermesProfileInput (the ceiling is instance settings).
     parallelHelpers: readParallelHelpersCard(card),
     toolsets,
+    // myrmidon(TOOL-DIET): present (even empty) it replaces the instance list; absent, the instance list applies.
+    disabledTools: Array.isArray(card.disabledTools) ? (asStringList(card.disabledTools) ?? []) : undefined,
+    // myrmidon(TOOL-DIET-ROLES): tools / role groups the card keeps although a default list drops them.
+    keepTools: asStringList(card.keepTools),
   };
 }
 
@@ -742,6 +1022,73 @@ function buildMcpServers(
 // ---------------------------------------------------------------------------
 
 /**
+ * myrmidon(BOT-LSP-DEFAULTS): the role policy and the card's pin -> the
+ * compiler's per-agent `lsp` settings. Full mode writes an enabled block only
+ * to carry conservative default excluded roots; Hermes keeps server defaults.
+ */
+function buildBotLsp(
+  role: string | undefined,
+  card: Record<string, unknown>,
+  settings: BotLspSettings | undefined,
+  warnings: string[],
+): HermesProfileLspSettings | undefined {
+  const resolved = resolveBotLsp(role, card, settings);
+  if (resolved.mode === "off") return { enabled: false };
+  const container = asRecord(card.container);
+  const containerMemoryMb =
+    container.enabled === true && typeof container.memoryMb === "number" && Number.isFinite(container.memoryMb) && container.memoryMb > 0
+      ? container.memoryMb
+      : null;
+  const block = botLspHermesBlock(resolved.mode, settings, containerMemoryMb);
+  if (!block) return undefined;
+  if (resolved.mode === "limited") {
+    const heapRes = resolveBotLspHeap(containerMemoryMb, settings?.tsserverMemoryMb);
+    if (!heapRes.ok) {
+      if (heapRes.reason === "unknown_memory") {
+        warnings.push("lsp: limited language server disabled because container memory limit is unknown");
+      } else {
+        warnings.push(
+          `lsp: limited language server disabled because container memory (${containerMemoryMb} MB) is insufficient for tsserver (minimum heap is ${BOT_LSP_TSSERVER_MEMORY_MIN_MB} MB, 40% cap is ${heapRes.cap} MB)`,
+        );
+      }
+      return { enabled: false };
+    }
+    if (heapRes.clamped) {
+      warnings.push(
+        `lsp: configured tsserver heap (${heapRes.configured} MB) exceeds the 40% container budget (${heapRes.cap} MB for ${containerMemoryMb} MB container); safely clamped to ${heapRes.cap} MB`,
+      );
+    }
+  }
+  return {
+    enabled: block.enabled,
+    ...(block.idleTimeout !== undefined ? { idleTimeout: block.idleTimeout } : {}),
+    ...(block.excludeRoots ? { excludeRoots: block.excludeRoots } : {}),
+    ...(block.servers ? { servers: block.servers } : {}),
+  };
+}
+
+/**
+ * myrmidon(TOOL-DIET-ROLES): the role defaults -> the compiler's `roleToolDiet`. Off (undefined) when the
+ * instance switched them off, when hand-built settings carry no switch, or when the bot has no role.
+ * Resolved here, not in the compiler, for the same reason as the language-server policy: the pure
+ * compiler keeps no role knowledge. The role is matched as a caste key (tool-diet.ts), never by name.
+ */
+function buildRoleToolDiet(
+  role: string | undefined,
+  adapterConfig: HermesProfileAdapterConfig,
+  settings: BotProfileSettings,
+): HermesProfileRoleToolDiet | undefined {
+  if (!settings.roleToolDiet) return undefined;
+  const diet = resolveBotToolDiet({
+    role,
+    cardToolsets: (adapterConfig.toolsets ?? "").split(","),
+    keepTools: adapterConfig.keepTools ?? [],
+    developerRoles: settings.developerRoles,
+  });
+  return diet ? { disabledTools: diet.disabledTools, disabledToolsets: diet.disabledToolsets } : undefined;
+}
+
+/**
  * Card + resolved data + instance settings -> the input of `compileHermesProfile`.
  * Deterministic: the same source and settings give the same input, which is what
  * keeps the compiled hashes stable between reconcile ticks (the reconciler calls
@@ -780,19 +1127,36 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
   // carries instanceDefaults (a caller with its own map) wins per-field where
   // it sets something; the settings-derived values fill the rest, so a card's
   // explicit values keep winning over both.
+  // myrmidon(BOT-RUNTIME-TUNING-A): `settings.compressionThresholdTokens` is
+  // the company default (never null now) and is spread FIRST for exactly that
+  // reason — a caller-provided compression block overrides it, and the card's
+  // own `models.compressionThresholdTokens` overrides both (in the compiler).
   const settingsInstanceDefaults: HermesProfileInstanceDefaults = {
     compression: {
-      ...(source.instanceDefaults?.compression ?? {}),
       ...(settings.compressionThresholdTokens !== null
         ? { thresholdTokens: settings.compressionThresholdTokens }
         : {}),
+      ...(source.instanceDefaults?.compression ?? {}),
     },
     sessionsRetentionDays: source.instanceDefaults?.sessionsRetentionDays,
+    // myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF is an instance
+    // switch read into settings; a hand-built settings object without the
+    // field falls back to the caller's own instanceDefaults.
+    disableLocalMemory: settings.localMemoryOff ?? source.instanceDefaults?.disableLocalMemory,
     modelContextLengths: settings.modelContextLengths ?? source.instanceDefaults?.modelContextLengths,
+    // myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS (default list when unset); a hand-built
+    // settings object without the field falls back to the caller's own instanceDefaults.
+    disabledTools: settings.disabledTools ?? source.instanceDefaults?.disabledTools,
     auxiliary: {
       ...(source.instanceDefaults?.auxiliary ?? {}),
       ...(settings.auxiliaryTitleModel ? { titleGenerationModel: settings.auxiliaryTitleModel } : {}),
       ...(settings.auxiliaryCompressionModel ? { compressionModel: settings.auxiliaryCompressionModel } : {}),
+      // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the instance-wide cheap
+      // ceiling for auxiliary fallback chains; null (unset) leaves Hermes's own
+      // policy in place.
+      ...(settings.auxiliaryFallbackModels && settings.auxiliaryFallbackModels.length > 0
+        ? { fallbackModels: settings.auxiliaryFallbackModels }
+        : {}),
     },
   };
   const instanceDefaultsWarnings: string[] = [];
@@ -800,9 +1164,10 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
   if (settings.modelContextLengthsError) instanceDefaultsWarnings.push(settings.modelContextLengthsError);
   warnings.push(...instanceDefaultsWarnings);
 
+  const adapterConfig = readAdapterConfig(card);
   const input: HermesProfileInput = {
     botKey: source.botKey,
-    adapterConfig: readAdapterConfig(card),
+    adapterConfig,
     env,
     skills: source.skills,
     instructions: source.instructions,
@@ -824,9 +1189,15 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
     parallelHelpers: resolveParallelHelpers(
       card,
       source.parallelHelpersSettings,
-      readSettingFromRecord(env, PARALLEL_HELPERS_DEFAULT_MODEL_ENV) ?? "",
+      readSettingFromRecord(env, PARALLEL_HELPERS_DEFAULT_MODEL_ENV) ?? liveBehaviorSetting<string>("botHelperModel") ?? "",
     ),
     instanceDefaults: settingsInstanceDefaults,
+    // myrmidon(TOOL-DIET-ROLES): role defaults for the tools the bot keeps out of its schema.
+    roleToolDiet: buildRoleToolDiet(source.role, adapterConfig, settings),
+    // myrmidon(BOT-LSP-DEFAULTS): role policy + card pin -> the bot's `lsp` block.
+    // Resolved here (not in the compiler) for the same reason as the helpers:
+    // the pure compiler keeps no settings knowledge.
+    lsp: buildBotLsp(source.role, card, source.botLspSettings, warnings),
     apiServerKey: source.apiServerKey,
     // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
     paperclipApiUrl: settings.boardUrl as string,

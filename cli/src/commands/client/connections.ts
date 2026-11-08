@@ -3,7 +3,8 @@ import {
   CONNECTION_INTENT_AGENT_GUIDANCE,
   connectionRequestInputSchema,
   connectionsSearchInputSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 interface RuntimeConnectionOptions {
   json?: boolean;
@@ -14,7 +15,7 @@ async function callRuntimeConnectionTool(
   body: unknown,
 ) {
   const endpoint = process.env[endpointEnv]?.trim();
-  const token = process.env.PAPERCLIP_RUNTIME_TOOLS_TOKEN?.trim();
+  const token = readProductEnv("RUNTIME_TOOLS_TOKEN")?.trim();
   if (!endpoint || !token) {
     throw new Error("This command requires the runtime connection environment from an active heartbeat run");
   }

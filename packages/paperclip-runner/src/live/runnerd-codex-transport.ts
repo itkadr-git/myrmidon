@@ -2838,7 +2838,7 @@ function resolveBuildOwnedCliArtifact(
   const resolved = candidates.find((candidate) => existsSync(candidate));
   if (resolved) return resolved;
   throw new Error(
-    `runner_local_provider_artifact_missing: ${artifact} is absent; build @paperclipai/paperclip-runner TypeScript artifacts with build:typescript before starting a local JS-backed provider`,
+    `runner_local_provider_artifact_missing: ${artifact} is absent; build @myrmidon/paperclip-runner TypeScript artifacts with build:typescript before starting a local JS-backed provider`,
   );
 }
 
@@ -2864,7 +2864,7 @@ function acpxProviderPackageAuthority(
   // resolves dependencies from <workspace>/node_modules. `pnpm deploy` makes
   // the package itself the deployment root and owns <deploy>/node_modules/.pnpm.
   // The older npm-installed portable shape nests the scoped package at
-  // <deploy>/node_modules/@paperclipai/paperclip-runner. The verifier always
+  // <deploy>/node_modules/@myrmidon/paperclip-runner. The verifier always
   // receives the directory that owns node_modules, regardless of which
   // portable shape launched the already-authenticated sidecar.
   const sourceDependencyRoot = resolve(ownerPackageRoot, "../..");

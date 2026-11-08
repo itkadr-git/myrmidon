@@ -54,6 +54,9 @@ test("gateway subpath export exposes the Hermes Gateway adapter entrypoint", () 
   expect(typeof adapter.sessionCodec?.deserialize).toBe("function");
   expect(adapter.sessionManagement?.nativeContextManagement).toBe("confirmed");
   expect(typeof adapter.getConfigSchema).toBe("function");
+  // myrmidon(OPE-9033): skills are assignable to gateway agents
+  expect(typeof adapter.listSkills).toBe("function");
+  expect(typeof adapter.syncSkills).toBe("function");
 });
 
 test("Hermes adapter exposes bundled Paperclip task bridge skill", async () => {
@@ -71,7 +74,7 @@ test("Hermes adapter exposes bundled Paperclip task bridge skill", async () => {
 test("Hermes keeps the operational Paperclip skill linked after an empty replacement", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-core-skill-"));
   try {
-    const source = path.join(home, "runtime-skills", "paperclip");
+    const source = path.join(home, "runtime-skills", "myrmidon");
     await fs.mkdir(source, { recursive: true });
     await fs.writeFile(path.join(source, "SKILL.md"), "# Paperclip\n", "utf8");
     const adapter = createServerAdapter();
@@ -82,16 +85,16 @@ test("Hermes keeps the operational Paperclip skill linked after an empty replace
       config: {
         env: { HOME: home },
         paperclipRuntimeSkills: [{
-          key: "paperclipai/paperclip/paperclip",
-          runtimeName: "paperclip",
+          key: "paperclipai/paperclip/myrmidon",
+          runtimeName: "myrmidon",
           source,
         }],
         paperclipSkillSync: { desiredSkills: [] },
       },
     }, []);
 
-    expect(snapshot?.desiredSkills).toContain("paperclipai/paperclip/paperclip");
-    expect((await fs.lstat(path.join(home, ".hermes", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect(snapshot?.desiredSkills).toContain("paperclipai/paperclip/myrmidon");
+    expect((await fs.lstat(path.join(home, ".hermes", "skills", "myrmidon"))).isSymbolicLink()).toBe(true);
   } finally {
     await fs.rm(home, { recursive: true, force: true });
   }
@@ -100,8 +103,8 @@ test("Hermes keeps the operational Paperclip skill linked after an empty replace
 test("Hermes rejects a conflicting operational skill target", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-core-conflict-"));
   try {
-    const source = path.join(home, "runtime-skills", "paperclip");
-    const target = path.join(home, ".hermes", "skills", "paperclip");
+    const source = path.join(home, "runtime-skills", "myrmidon");
+    const target = path.join(home, ".hermes", "skills", "myrmidon");
     await fs.mkdir(source, { recursive: true });
     await fs.writeFile(path.join(source, "SKILL.md"), "# Paperclip\n", "utf8");
     await fs.mkdir(target, { recursive: true });
@@ -115,8 +118,8 @@ test("Hermes rejects a conflicting operational skill target", async () => {
       config: {
         env: { HOME: home },
         paperclipRuntimeSkills: [{
-          key: "paperclipai/paperclip/paperclip",
-          runtimeName: "paperclip",
+          key: "paperclipai/paperclip/myrmidon",
+          runtimeName: "myrmidon",
           source,
         }],
       },
@@ -129,9 +132,9 @@ test("Hermes rejects a conflicting operational skill target", async () => {
 test("Hermes rejects a live symlink owned by another operational skill", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-core-link-conflict-"));
   try {
-    const source = path.join(home, "runtime-skills", "paperclip");
-    const conflictingSource = path.join(home, "external-skills", "paperclip");
-    const target = path.join(home, ".hermes", "skills", "paperclip");
+    const source = path.join(home, "runtime-skills", "myrmidon");
+    const conflictingSource = path.join(home, "external-skills", "myrmidon");
+    const target = path.join(home, ".hermes", "skills", "myrmidon");
     await fs.mkdir(source, { recursive: true });
     await fs.writeFile(path.join(source, "SKILL.md"), "# Paperclip\n", "utf8");
     await fs.mkdir(conflictingSource, { recursive: true });
@@ -147,8 +150,8 @@ test("Hermes rejects a live symlink owned by another operational skill", async (
       config: {
         env: { HOME: home },
         paperclipRuntimeSkills: [{
-          key: "paperclipai/paperclip/paperclip",
-          runtimeName: "paperclip",
+          key: "paperclipai/paperclip/myrmidon",
+          runtimeName: "myrmidon",
           source,
         }],
       },

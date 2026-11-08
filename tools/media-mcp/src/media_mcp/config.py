@@ -1,14 +1,18 @@
-"""Environment-driven settings, read once at start."""
+"""Environment-driven settings; the bot ACL registry additionally reloads on change."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 BOT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+log = logging.getLogger("media_mcp.config")
 
 
 def _int(name: str, default: int) -> int:
@@ -121,3 +125,77 @@ def load_settings(*, need_bots: bool = True) -> Settings:
     if need_bots:
         object.__setattr__(s, "bots", load_bots(s.bots_file))
     return s
+
+
+class BotsWatcher:
+    """myrmidon(MEDIA-PROVISION): the bot ACL registry hot-reload cache.
+
+    The board regenerates bots.json whenever a bot card gains or loses its
+    MEDIA_TOOLS_TOKEN (server exporter); the facade must pick that up without a
+    restart. The watcher keys its cache on the file's (mtime_ns, size) stamp:
+    the check costs one stat() per revalidation, and an unchanged stamp keeps
+    serving the last parsed registry. The board writes the file atomically
+    (tmp + rename), so a read never observes a half-written registry.
+
+    A failed reload (unreadable or invalid file, including a vanished one) logs
+    a warning and keeps the last valid registry — a broken write must not take
+    the facade down for the bots that still authenticate against it; the retry
+    happens on the next file change.
+    """
+
+    def __init__(self, path: Path, initial: dict[str, BotPolicy], min_interval_s: float = 1.0):
+        self.path = path
+        self.bots = initial
+        self.min_interval_s = min_interval_s
+        self._stamp: tuple[int, int] | None = _stat_stamp(path)
+        self._last_check = 0.0
+
+    def maybe_reload(self, *, force: bool = False) -> bool:
+        """Revalidate cheaply. Returns True when the parsed registry changed.
+
+        Without ``force`` an elapsed-mtime check is rate-limited to once per
+        ``min_interval_s``: mtime_ns granularity makes a stat per request
+        pointless churn, and a card change lands on the facade within about
+        that interval.
+        """
+        now = time.monotonic()
+        if not force and now - self._last_check < self.min_interval_s:
+            return False
+        self._last_check = now
+        current = _stat_stamp(self.path)
+        if current == self._stamp:
+            return False
+        try:
+            loaded = load_bots(self.path)
+        except Exception as exc:  # noqa: BLE001 — a broken file must not take the facade down
+            log.warning("bots registry reload failed for %s, keeping last valid: %s", self.path, exc)
+            self._stamp = current
+            return False
+        self.bots = loaded
+        self._stamp = current
+        log.info("bots registry reloaded from %s (%d bots)", self.path, len(loaded))
+        return True
+
+
+def _stat_stamp(path: Path) -> tuple[int, int] | None:
+    """(mtime_ns, size) of the registry file, or None when it does not exist.
+    Both components matter: a rewrite that keeps the mtime (same nanosecond,
+    e.g. two edits within the filesystem timestamp granularity) still changes
+    the size; and size alone can repeat while the content differs."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def make_hot_reload_authenticator(cfg: Settings):
+    """Authenticator wired to a BotsWatcher over cfg.bots_file: the facade
+    rebuilds its bot registry whenever the board rewrites the file, without a
+    process restart. MEDIA_BOTS_RELOAD_INTERVAL_S (default 1) bounds how often
+    the file is stat-ed. Lazy import keeps config.py importable without the
+    auth module's deps."""
+    from .auth import Authenticator
+
+    watcher = BotsWatcher(cfg.bots_file, cfg.bots, min_interval_s=_int("MEDIA_BOTS_RELOAD_INTERVAL_S", 1))
+    return Authenticator(cfg, bots_watcher=watcher)

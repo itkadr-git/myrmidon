@@ -16,11 +16,15 @@ export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
+export { poolChatModuleInstances } from "./pool_chat_module_instances.js";
+export { poolChatRequests } from "./pool_chat_requests.js";
+export { poolChatRequestAttempts, poolChatQuotaReservations } from "./pool_chat_ledger.js";
 export { companySkillPolicies } from "./company_skill_policies.js";
 export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
+export { projectTokenQuotas } from "./project_token_quotas.js"; // myrmidon(1.6.6 QUOTA-V2)
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentInstructionsRevisions, type AgentInstructionsRevisionFile } from "./agent_instructions_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
@@ -92,6 +96,7 @@ export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueCreateIdempotencyKeys } from "./issue_create_idempotency_keys.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
+export { interactionEscalations } from "./interaction_escalations.js";
 export { issueQuestionResponseDeliveries } from "./issue_question_response_deliveries.js";
 export {
   decisions,
@@ -130,7 +135,14 @@ export { documentAnnotationComments } from "./document_annotation_comments.js";
 export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_snapshots.js";
 export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
+// myrmidon(DB-CARE DBC-3): continuation envelopes leave heartbeat_runs.context_snapshot.
+export { heartbeatRunContinuations } from "./heartbeat_run_continuations.js";
+export { issueContinuationKeys } from "./issue_continuation_keys.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
+export { providerUsageSnapshots, providerUsageEventReceipts } from "./provider_usage_snapshots.js";
+export { providerUsageWarningDeliveries } from "./provider_usage_warning_deliveries.js";
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace.
+export { llmCallTraces } from "./llm_call_traces.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
@@ -151,6 +163,7 @@ export { managedAgentProfiles } from "./managed_agent_profiles.js";
 export { remoteAgentProfiles } from "./remote_agent_profiles.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
+export { companySecretGitHubAppInstallations } from "./company_secret_github_app_installations.js";
 export { companySecretProposals } from "./company_secret_proposals.js";
 export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
@@ -192,6 +205,8 @@ export {
 } from "./company_skills.js";
 // myrmidon(1.6-SKILL-LIFE): additive skill lifecycle tables.
 export { companySkillLifecycle, companySkillLifecycleEvents } from "./company_skill_lifecycle.js";
+// myrmidon(1.6.5 BASE-SKILLS): the company-level registry of mandatory skills.
+export { companyBaseSkills } from "./company_base_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
@@ -219,12 +234,36 @@ export { litellmCostEvents, litellmModels, type LitellmModelRates } from "./lite
 export { baselineMetricSnapshots } from "./baseline_metric_snapshots.js";
 // myrmidon(EGRESS-B): destination allowlists and per-project mode of the bot egress proxy.
 export { myrmidonEgressPolicies } from "./myrmidon_egress_policies.js";
+// myrmidon(BOT-DISK-F): isolation scope of the bot disk (groups, per-instance settings, per-agent choices).
+export {
+  myrmidonScopeGroups,
+  myrmidonScopeGroupMembers,
+  myrmidonScopeSettings,
+  myrmidonScopeAgentPrefs,
+} from "./myrmidon_bot_scope.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner's last activity per channel (portal / Telegram).
+export { myrmidonOwnerActivity } from "./myrmidon_owner_activity.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
+export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteHealth, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
+export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
+export { myrmidonFleetMoves, type FleetMovePhaseLogEntry } from "./myrmidon_fleet_moves.js";
+export { myrmidonFleetMemorySyncs, fleetMemorySyncs } from "./myrmidon_fleet_memory_syncs.js"; // myrmidon(1.6.6 C-MEM): journal of site memory syncs
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards and the round grid of answers.
+export {
+  agentExchangeRooms,
+  agentExchangeMessages,
+  type AgentExchangeRoomRow,
+  type NewAgentExchangeRoomRow,
+  type AgentExchangeMessageRow,
+  type NewAgentExchangeMessageRow,
+} from "./agent_exchange_rooms.js";
 
 // myrmidon(1.6-FORAGE): source registry and findings log of FORAGING.
 export { foragingSources, foragingFindings, type ForagingSourceKind, type ForagingFindingStatus } from "./myrmidon_foraging.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend ledger the learning limits read.
+export { foragingSpendEvents, type ForagingSpendOutcome } from "./myrmidon_foraging_spend.js";
 // myrmidon(1.6-WIKI): regulations as wiki pages — statuses, revisions and rollback.
 export {
   myrmidonWikiRegulations,
@@ -234,3 +273,80 @@ export {
 } from "./myrmidon_wiki_regulations.js";
 // myrmidon(1.6-EVALS): reference tasks and judge runs for the evals module.
 export { evalReferenceTasks, evalRuns } from "./myrmidon_evals.js";
+// myrmidon(CA-A): the channel allowlist — who may write to the company's bots,
+// keyed by channel identity (no board account required).
+export { myrmidonChannelAllowedUsers } from "./myrmidon_channel_allowed_users.js";
+// myrmidon(1.6.1 MODEL-PROVIDERS): company model-provider registry and model cache.
+export {
+  modelProviders,
+  modelProviderModels,
+  MODEL_PROVIDER_TYPES,
+  type ModelProviderType,
+} from "./model_providers.js";
+// myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
+export { agentCastes } from "./agent_castes.js";
+// myrmidon(CORPUS-A): corpus knowledge module tables.
+export {
+  corpusDatasets,
+  corpusDocuments,
+  corpusChunks,
+  corpusParseJobs,
+  corpusSettings,
+} from "./corpus.js";
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-1): the knowledge module — items, revisions,
+// links, sources, suggestions, events. Additive tables, nest-scoped.
+export {
+  knowledgeItems,
+  knowledgeRevisions,
+  knowledgeSearch,
+  knowledgeLinks,
+  knowledgeSources,
+  knowledgeSuggestions,
+  knowledgeEvents,
+  knowledgeDeviations,
+  type KnowledgeDeviation,
+  type NewKnowledgeDeviation,
+  KNOWLEDGE_KINDS,
+  KNOWLEDGE_ITEM_STATUSES,
+  KNOWLEDGE_REVISION_LANGS,
+  KNOWLEDGE_REVISION_STATUSES,
+  KNOWLEDGE_SOURCE_KINDS,
+  KNOWLEDGE_SUGGESTION_STATUSES,
+  type KnowledgeKind,
+  type KnowledgeItemStatus,
+  type KnowledgeRevisionLang,
+  type KnowledgeRevisionStatus,
+  type KnowledgeSourceKind,
+  type KnowledgeSuggestionStatus,
+} from "./knowledge.js";
+export { agentNests } from "./agent_nests.js";
+// myrmidon(DBC-4): datastore care — hourly snapshots and audit reports of the
+// board's own PostgreSQL (server/src/myrmidon/datastore-care/).
+export { datastoreSnapshots, datastoreAuditReports } from "./datastore_care.js";
+
+// myrmidon(1.6-GRD): flag-only guardrail events (secrets/pii detected on run output).
+export { guardrailEvents } from "./guardrail_events.js";
+// myrmidon(1.7-BUDGET-CONFIG A): spend limits per hierarchy level, their change
+// journal, and the level/period/mode types.
+export {
+  budgetLimits,
+  budgetLimitChanges,
+  type BudgetLimitLevel,
+  type BudgetLimitPeriod,
+  type BudgetLimitMode,
+} from "./myrmidon_budget_limits.js";
+// myrmidon(1.6.5 ASYNC-BOT-APPLY): the "Apply now" journal — one row per apply
+// request, its background pass and its final outcome (including the error).
+export { botApplyJobs, BOT_APPLY_JOB_STATUSES, type BotApplyJobStatus } from "./bot_apply_jobs.js";
+// myrmidon(1.6.5 PROCS-0.1): the process registry and leader leases of the board.
+export { boardProcesses, boardLeases } from "./board_processes.js";
+// myrmidon(1.6.6-CORPUS-SHADOW A): shadow log of the corpus-module comparison.
+export { corpusShadowLog } from "./corpus_shadow_log.js";
+// myrmidon(OPE-8836): the single, permanent installation id of the board (licensing).
+export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
+// myrmidon(OPE-8985): users-admin-a — password-set tokens and the block list.
+export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
+// myrmidon(OPE-9187): idempotency journal for legacy blocked imports.
+export { legacyBlockedImports } from "./legacy_blocked_imports.js";
+// myrmidon(1.7-REDACT): redaction substitutions with expiry TTL
+export { redactionSubstitutions } from "./redaction_substitutions.js";

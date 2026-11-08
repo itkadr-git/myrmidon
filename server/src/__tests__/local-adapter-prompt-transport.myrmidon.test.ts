@@ -2,18 +2,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execute as claudeExecute } from "@paperclipai/adapter-claude-local/server";
-import { execute as codexExecute } from "@paperclipai/adapter-codex-local/server";
-import { execute as cursorExecute } from "@paperclipai/adapter-cursor-local/server";
-import { execute as geminiExecute } from "@paperclipai/adapter-gemini-local/server";
-import { execute as grokExecute } from "@paperclipai/adapter-grok-local/server";
-import { execute as kimiExecute } from "@paperclipai/adapter-kimi-local/server";
-import { execute as opencodeExecute } from "@paperclipai/adapter-opencode-local/server";
-import { execute as piExecute } from "@paperclipai/adapter-pi-local/server";
+import { execute as claudeExecute } from "@myrmidon/adapter-claude-local/server";
+import { execute as codexExecute } from "@myrmidon/adapter-codex-local/server";
+import { execute as cursorExecute } from "@myrmidon/adapter-cursor-local/server";
+import { execute as geminiExecute } from "@myrmidon/adapter-gemini-local/server";
+import { execute as grokExecute } from "@myrmidon/adapter-grok-local/server";
+import { execute as kimiExecute } from "@myrmidon/adapter-kimi-local/server";
+import { execute as opencodeExecute } from "@myrmidon/adapter-opencode-local/server";
+import { execute as piExecute } from "@myrmidon/adapter-pi-local/server";
+import { execute as ompExecute } from "@myrmidon/adapter-omp-local/server";
 import {
   PROMPT_TOO_LARGE_FOR_ARGUMENT,
   resetCliFlagSupportCache,
-} from "@paperclipai/adapter-utils/myrmidon-prompt-transport";
+} from "@myrmidon/adapter-utils/myrmidon-prompt-transport";
 
 // myrmidon(H4): every local adapter must hand a large prompt to its CLI without
 // putting it into argv (spawn E2BIG, and argv is visible in the process list).
@@ -42,8 +43,8 @@ if (argv.includes("--help")) {
   console.log(${JSON.stringify(help)});
   process.exit(0);
 }
-if (argv.includes("--list-models")) {
-  console.log("provider  model\\ngoogle    gemini-3-flash-preview");
+if (argv.includes("--list-models") || (argv.includes("models") && argv.includes("ls"))) {
+  console.log("provider  model\\ngoogle    gemini-3-flash-preview\\nopenai    gpt-4o");
   process.exit(0);
 }
 if (argv.includes("--version") || argv[0] === "version") {
@@ -91,6 +92,7 @@ const STDIN_OR_FILE_ADAPTERS: AdapterCase[] = [
   { name: "grok-local", adapterType: "grok_local", execute: grokExecute as Execute },
   { name: "opencode-local", adapterType: "opencode_local", execute: opencodeExecute as Execute, config: { model: "openai/gpt-5" } },
   { name: "pi-local", adapterType: "pi_local", execute: piExecute as Execute, config: { model: "google/gemini-3-flash-preview" } },
+  { name: "omp-local", adapterType: "omp_local", execute: ompExecute as Execute, config: { model: "openai/gpt-4o" } },
 ];
 
 let root: string;

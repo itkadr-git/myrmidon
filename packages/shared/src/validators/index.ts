@@ -1,4 +1,11 @@
 export {
+  haStandbyStatusSchema,
+  haStandbyCheckSchema,
+  haStandbyCheckStatusSchema,
+  type HaStandbyStatus,
+} from "./ha.js";
+
+export {
   connectionsSearchInputSchema,
   connectionRequestInputSchema,
   completeConnectionIntentSchema,
@@ -41,6 +48,11 @@ export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  boardProcessesSettingsSchema,
+  isValidIanaTimeZone,
+  instanceTimeZoneSchema,
+  instanceNumberFormatSchema,
+  instanceDateFormatSchema,
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -203,6 +215,9 @@ export {
   companySkillAuditFindingSchema,
   companySkillAuditResultSchema,
   companySkillImportSchema,
+  companySkillDiscoverSchema,
+  companySkillDiscoveredSkillSchema,
+  companySkillDiscoverResultSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectBrowseRequestSchema,
   companySkillProjectBrowseEntrySchema,
@@ -238,6 +253,7 @@ export {
   companySkillInstallUpdateSchema,
   companySkillResetSchema,
   type CompanySkillImport,
+  type CompanySkillDiscover,
   type CompanySkillListQuery,
   type CompanySkillProjectScan,
   type CompanySkillProjectBrowse,
@@ -332,6 +348,7 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  agentVisibilityAuthorizationPolicySchema,
   assignmentAuthorizationPolicySchema,
   protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
@@ -339,6 +356,7 @@ export {
   sourceTrustMetadataSchema,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
+  type AgentVisibilityAuthorizationPolicyInput,
   type TrustAuthorizationPolicyInput,
   type SourceTrustMetadataInput,
 } from "./trust-policy.js";
@@ -429,8 +447,14 @@ export {
   issueBlockedInboxSeveritySchema,
   issueBlockedInboxStateSchema,
   updateIssueSchema,
+  updateIssueShapeSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  issueBlockReasonSchema,
+  issueBlockerMetadataSchema,
+  realIssueBlockerMetadataSchema,
+  issueFreezeOnlyMetadataSchema,
+  issueRewakeFreezeSchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
@@ -757,7 +781,10 @@ export {
   resolveCliAuthChallengeSchema,
   createBoardApiKeySchema,
   BOARD_API_KEY_SCOPE_KINDS,
+  BOARD_API_KEY_ROLE_SCOPE_KINDS,
   boardApiKeyScopeSchema,
+  monitoringLinkScopeSchema,
+  isMonitoringLinkScope,
   normalizeBoardApiKeyScope,
   currentUserProfileSchema,
   authSessionSchema,
@@ -780,6 +807,7 @@ export {
   type CreateBoardApiKey,
   type BoardApiKeyScope,
   type BoardApiKeyScopeKind,
+  type MonitoringLinkScope,
   type CurrentUserProfile,
   type AuthSession,
   type UpdateCurrentUserProfile,
@@ -803,6 +831,8 @@ export {
   pluginLauncherRenderDeclarationSchema,
   pluginLauncherDeclarationSchema,
   pluginDatabaseDeclarationSchema,
+  pluginModelProviderDeclarationSchema,
+  pluginProviderModelDeclarationSchema,
   pluginManagedSkillFileDeclarationSchema,
   pluginManagedSkillDeclarationSchema,
   pluginApiRouteDeclarationSchema,
@@ -819,6 +849,8 @@ export {
   type PluginWebhookDeclarationInput,
   type PluginToolDeclarationInput,
   type PluginEnvironmentDriverDeclarationInput,
+  type PluginModelProviderDeclarationInput,
+  type PluginProviderModelDeclarationInput,
   type SandboxProviderCapabilitiesInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
@@ -983,5 +1015,15 @@ export * from "./skill-policy.js";
 export * from "./provider-trace.js";
 export * from "./app-definition.js";
 export * from "./chat-channels.js";
+export * from "./geo-check.js";
 
 export * from "./email.js";
+export * from "./foraging.js";
+export * from "./ideas.js";
+export * from "./guardrails.js";
+export * from "./user-block.js";
+export * from "./audit.js";
+export * from "./server-onboarding.js";
+export * from "./server-onboard.js";
+export * from "./updates.js";
+export * from "./auto-update-settings.js";

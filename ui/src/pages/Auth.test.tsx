@@ -119,7 +119,7 @@ describe("AuthPage", () => {
 
     // 1Password / password-manager recognition: identifier field is "username".
     expect(emailInput.getAttribute("autocomplete")).toBe("username");
-    expect(emailInput.getAttribute("type")).toBe("email");
+    expect(emailInput.getAttribute("type")).toBe("text");
     expect(passwordInput.getAttribute("autocomplete")).toBe("current-password");
 
     // Stable ids/names for both inputs.

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {

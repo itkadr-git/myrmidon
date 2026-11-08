@@ -1,12 +1,18 @@
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
+import { objectWithoutDefaults } from "./validators/partial.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
+export {
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
+} from "./types/instance.js";
 
 /**
  * Operator-configurable setting defaults.
  *
  * A hosting operator (a managed cloud, an internal shared server) can replace
  * the schema default of selected instance settings by setting the
- * `PAPERCLIP_SETTING_DEFAULTS` environment variable to a JSON object, e.g.
+ * `MYRMIDON_SETTING_DEFAULTS` environment variable to a JSON object, e.g.
  * `{"feedbackDataSharingPreference":"allowed"}`. The operator value
  * substitutes for the schema default at read time: any field whose effective
  * value is still the schema default resolves to the operator value, while an
@@ -21,15 +27,21 @@ import type { InstanceGeneralSettings } from "./types/instance.js";
  * fleet of mixed app versions where older images predate a field.
  *
  * Pairing note: an operator that also wants the control invisible hides it
- * with `PAPERCLIP_HIDDEN_SETTINGS` (see settings-visibility.ts); the two
+ * with `MYRMIDON_HIDDEN_SETTINGS` (see settings-visibility.ts); the two
  * mechanisms are orthogonal.
  */
 
-export const SETTING_DEFAULTS_ENV_KEY = "PAPERCLIP_SETTING_DEFAULTS";
+export const SETTING_DEFAULTS_ENV_KEY = "MYRMIDON_SETTING_DEFAULTS";
+
+/** Legacy spelling accepted through the shared env alias resolver. */
+export const LEGACY_SETTING_DEFAULTS_ENV_KEY = "PAPERCLIP_SETTING_DEFAULTS";
 
 /** Instance → General fields whose schema default an operator may replace. */
 export const DEFAULTABLE_GENERAL_SETTINGS = [
   "feedbackDataSharingPreference",
+  "timeZone",
+  "numberFormat",
+  "dateFormat",
 ] as const;
 
 export type DefaultableGeneralSetting = (typeof DEFAULTABLE_GENERAL_SETTINGS)[number];
@@ -45,7 +57,7 @@ export interface ParsedSettingDefaults {
   unknown: string[];
 }
 
-const defaultableFieldsSchema = instanceGeneralSettingsSchema
+const defaultableFieldsSchema = objectWithoutDefaults(instanceGeneralSettingsSchema)
   .pick(
     Object.fromEntries(DEFAULTABLE_GENERAL_SETTINGS.map((key) => [key, true])) as {
       [K in DefaultableGeneralSetting]: true;
@@ -57,7 +69,7 @@ const defaultableFieldsSchema = instanceGeneralSettingsSchema
 const schemaDefaults: InstanceGeneralSettings = instanceGeneralSettingsSchema.parse({});
 
 /**
- * Parse a `PAPERCLIP_SETTING_DEFAULTS`-style JSON object.
+ * Parse a `MYRMIDON_SETTING_DEFAULTS`-style JSON object.
  *
  * @throws when the JSON is malformed, not an object, or a known field carries
  * an invalid value — policy configuration fails closed.
@@ -115,7 +127,7 @@ export function applyOperatorGeneralDefaults(
     if (value === undefined) continue;
     if (general[key] === schemaDefaults[key] && general[key] !== value) {
       next ??= { ...general };
-      next[key] = value;
+      (next as unknown as Record<string, unknown>)[key] = value;
     }
   }
   return next ?? general;
@@ -156,7 +168,7 @@ export function stripOperatorGeneralEchoes(
       next[key] !== schemaDefaults[key]
     ) {
       result ??= { ...next };
-      result[key] = schemaDefaults[key];
+      (result as unknown as Record<string, unknown>)[key] = schemaDefaults[key];
     }
   }
   return result ?? next;

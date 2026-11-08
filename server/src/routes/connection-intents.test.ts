@@ -3,8 +3,9 @@ import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
   CONNECTION_RUNTIME_TOOL_NAMES,
   CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
+  REPOSITORY_REGEX,
   RUNTIME_CONNECTION_TOOL_DEFINITIONS,
   wakeConnectionIntentAfterResolution,
 } from "./connection-intents.js";
@@ -110,4 +111,22 @@ describe("connection intent continuation wake contract", () => {
       expect(wakeup).not.toHaveBeenCalled();
     },
   );
+
+  describe("REPOSITORY_REGEX validation", () => {
+    it("accepts valid owner/repo formats", () => {
+      expect(REPOSITORY_REGEX.test("itkadr-git/myrmidon")).toBe(true);
+      expect(REPOSITORY_REGEX.test("owner.name/repo_name.js")).toBe(true);
+      expect(REPOSITORY_REGEX.test("org-1/my-repo-2")).toBe(true);
+    });
+
+    it("rejects invalid repository formats", () => {
+      expect(REPOSITORY_REGEX.test("")).toBe(false);
+      expect(REPOSITORY_REGEX.test("myrmidon")).toBe(false);
+      expect(REPOSITORY_REGEX.test("owner/repo/extra")).toBe(false);
+      expect(REPOSITORY_REGEX.test("/repo")).toBe(false);
+      expect(REPOSITORY_REGEX.test("owner/")).toBe(false);
+      expect(REPOSITORY_REGEX.test("owner/repo with spaces")).toBe(false);
+      expect(REPOSITORY_REGEX.test("owner/repo$bad")).toBe(false);
+    });
+  });
 });

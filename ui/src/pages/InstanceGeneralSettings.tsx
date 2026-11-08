@@ -1,16 +1,19 @@
+import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
+import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
 import {
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -18,15 +21,56 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
+import { IdleStopSettingsPanel } from "@/components/myrmidon/IdleStopSettingsPanel"; // myrmidon(OPE-7898)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
+import { RunPrioritySettingsPanel } from "@/components/myrmidon/RunPrioritySettingsPanel";
+import { GuardrailsSettingsPanel } from "@/components/myrmidon/GuardrailsSettingsPanel"; // myrmidon(1.7-SETTINGS-C)
+import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
+import { LiteLlmBudgetSyncSettingsPanel } from "@/components/myrmidon/LiteLlmBudgetSyncSettingsPanel"; // myrmidon(SETTINGS-UI-REMAINDER)
+import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
+import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
+import { OwnerActiveChannelSettingsPanel } from "@/components/myrmidon/OwnerActiveChannelSettingsPanel"; // myrmidon(1.7-ACTIVE-CHANNEL)
+import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
+import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
+import { ModelApiPricingSettingsPanel } from "@/components/myrmidon/ModelApiPricingSettingsPanel"; // OPE-9499: configurable API-equivalent pool pricing
+import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { AttentionFeedSettingsPanel } from "@/components/myrmidon/AttentionFeedSettingsPanel"; // myrmidon(1.6.6 SETTINGS-UI C-4, OPE-11234)
+import { InputLimitSettingsPanel } from "@/components/myrmidon/InputLimitSettingsPanel";
+import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
+import { SharedMountSettingsPanel } from "@/components/myrmidon/SharedMountSettingsPanel";
+import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
+import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
+import { BotImageRolloutSettingsPanel } from "@/components/myrmidon/BotImageRolloutSettingsPanel"; // myrmidon(BOT-ROLLOUT)
+import { AutoUpdateSettingsPanel } from "@/components/myrmidon/AutoUpdateSettingsPanel"; // myrmidon(1.7-AUTO-UPDATE-B)
+import { SessionGenerationsSettingsPanel } from "@/components/myrmidon/SessionGenerationsSettingsPanel"; // myrmidon(PERF-DIET-K)
+import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
+import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSettingsPanel"; // myrmidon(TEAM-LIVENESS-SETTINGS)
+import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
+import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
+import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
+import { RunsQueueSettingsPanel } from "@/components/myrmidon/RunsQueueSettingsPanel"; // myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B)
+import { ModelServiceSettingsPanel } from "@/components/myrmidon/ModelServiceSettingsPanel"; // myrmidon(1.7 SETTINGS-TO-UI D)
+import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
+import { BoardLeasesPanel } from "@/components/myrmidon/BoardLeasesPanel"; // myrmidon(1.6.5 BOARD-PROCESSES)
+import { SystemSettingsPanel } from "@/components/myrmidon/SystemSettingsPanel"; // myrmidon(1.7, OPE-4101)
+import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
+import { VendorNameCheckSettingsPanel } from "@/components/myrmidon/VendorNameCheckSettingsPanel"; // myrmidon(1.7-REBRAND-F)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next"; // myrmidon(UI-RU)
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+// myrmidon(BACKUP-KEEP-LAST): the shared `BackupRetentionPolicy` gains
+// `keepLastOnly?: boolean` together with the server side of this feature. This local
+// widening keeps the page typechecking before that merge too; it is purely additive
+// and has no runtime effect.
+type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean };
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
+  const { t, i18n } = useTranslation(); // myrmidon(UI-RU)
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -36,10 +80,10 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   useEffect(() => {
     if (embedded) return;
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "General" },
+      { label: t("settings.title"), href: "/company/settings" },
+      { label: t("settings.general") },
     ]);
-  }, [embedded, setBreadcrumbs]);
+  }, [embedded, setBreadcrumbs, t]);
 
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -63,12 +107,12 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update general settings.");
+      setActionError(error instanceof Error ? error.message : t("settings.failedToUpdate"));
     },
   });
 
   if (generalQuery.isLoading || healthQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
+    return <div className="text-sm text-muted-foreground">{t("settings.loadingSettings")}</div>;
   }
 
   if (generalQuery.error) {
@@ -76,7 +120,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <div className="text-sm text-destructive">
         {generalQuery.error instanceof Error
           ? generalQuery.error.message
-          : "Failed to load general settings."}
+          : t("settings.failedToLoad")}
       </div>
     );
   }
@@ -84,27 +128,33 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
-  const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const backupRetention = (generalQuery.data?.backupRetention ??
+    DEFAULT_BACKUP_RETENTION) as BackupRetentionSettings; // myrmidon(BACKUP-KEEP-LAST)
+  // myrmidon(BACKUP-KEEP-LAST): retention patch payload carrying the additive
+  // `keepLastOnly` flag; the widening is temporary until the shared type has it.
+  const retentionPatch = (updates: Partial<BackupRetentionSettings>): BackupRetentionPolicy =>
+    ({ ...backupRetention, ...updates }) as BackupRetentionPolicy;
   const hiddenSettings = new Set(healthQuery.data?.hiddenSettings ?? []);
   const showDeploymentStatus = !hiddenSettings.has("instance.general.deploymentStatus");
   const showCensorUsernameInLogs = !hiddenSettings.has("instance.general.censorUsernameInLogs");
   const showKeyboardShortcuts = !hiddenSettings.has("instance.general.keyboardShortcuts");
   const showBackupRetention = !hiddenSettings.has("instance.general.backupRetention");
   const showFeedbackDataSharing = !hiddenSettings.has("instance.general.feedbackDataSharingPreference");
+  const showExecutionPolicy = !hiddenSettings.has("instance.general.executionMode");
   const showSignOut = !hiddenSettings.has("instance.general.signOut");
+  const executionMode = generalQuery.data?.executionMode ?? "any";
   const visibleTopics = [
-    ...(showCensorUsernameInLogs ? ["log display"] : []),
-    ...(showKeyboardShortcuts ? ["keyboard shortcuts"] : []),
-    ...(showBackupRetention ? ["backup retention"] : []),
-    ...(showFeedbackDataSharing ? ["data sharing"] : []),
+    ...(showExecutionPolicy ? [t("settings.executionPolicy")] : []),
+    ...(showCensorUsernameInLogs ? [t("area.settings-company.instance-general-settings.topicLogDisplay")] : []),
+    ...(showKeyboardShortcuts ? [t("area.settings-company.instance-general-settings.topicKeyboardShortcuts")] : []),
+    ...(showBackupRetention ? [t("area.settings-company.instance-general-settings.topicBackupRetention")] : []),
+    ...(showFeedbackDataSharing ? [t("area.settings-company.instance-general-settings.topicDataSharing")] : []),
   ];
-  const topicSummary = visibleTopics.length > 2
-    ? `${visibleTopics.slice(0, -1).join(", ")}, and ${visibleTopics[visibleTopics.length - 1]}`
-    : visibleTopics.join(" and ");
+  const topicSummary = new Intl.ListFormat(i18n.language, { style: "long", type: "conjunction" }).format(visibleTopics);
   const visibleActionError = signOutMutation.error instanceof Error
     ? signOutMutation.error.message
     : signOutMutation.error
-      ? "Failed to sign out."
+      ? t("settings.failedToSignOut")
       : actionError;
 
   return (
@@ -113,11 +163,11 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-            <h1 className="text-lg font-semibold">General</h1>
+            <h1 className="text-lg font-semibold">{t("settings.general")}</h1>
           </div>
           <p className="text-sm text-muted-foreground">
-            Configure instance-wide preferences
-            {visibleTopics.length > 0 ? <> including {topicSummary}</> : null}.
+            {t("settings.configureInstance")}
+            {visibleTopics.length > 0 ? <> — {topicSummary}</> : null}.
           </p>
         </div>
       ) : null}
@@ -127,17 +177,54 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
           {visibleActionError}
         </div>
       )}
+      <Link className="inline-flex items-center gap-2 text-sm text-primary underline underline-offset-4" to="/company/settings/secrets" data-testid="system-secrets-link">
+        {t("area.settings-company.instance-general-settings.secretReferencesLink")}
+      </Link>
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
+      <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
+      <RunPrioritySettingsPanel />
+      <GuardrailsSettingsPanel /> {/* myrmidon(1.7-SETTINGS-C) */}
+      <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
+      <LiteLlmBudgetSyncSettingsPanel /> {/* myrmidon(SETTINGS-UI-REMAINDER) */}
+      <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
+      <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
+      <OwnerActiveChannelSettingsPanel /> {/* myrmidon(1.7-ACTIVE-CHANNEL) */}
+      <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
+      <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
+      <ModelApiPricingSettingsPanel /> {/* OPE-9499: pool usage priced at configured API rates */}
+      <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
+      <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.6 SETTINGS-UI C-4, OPE-11234) */}
+      <InputLimitSettingsPanel />
+      <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
+      <SharedMountSettingsPanel />
+      <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
+      <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
+      <BotImageRolloutSettingsPanel /> {/* myrmidon(BOT-ROLLOUT) */}
+      <AutoUpdateSettingsPanel /> {/* myrmidon(1.7-AUTO-UPDATE-B) */}
+      <SessionGenerationsSettingsPanel /> {/* myrmidon(PERF-DIET-K) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
+      <TeamLivenessSettingsPanel /> {/* myrmidon(TEAM-LIVENESS-SETTINGS) */}
+      <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
+      <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
+      <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
+      <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
+      <RunsQueueSettingsPanel /> {/* myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B) */}
+      <ModelServiceSettingsPanel /> {/* myrmidon(1.7 SETTINGS-TO-UI D) */}
+      <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
+      <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
+      <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
+      <SystemSettingsPanel /> {/* myrmidon(1.7, OPE-4101) */}
+      <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
+      <VendorNameCheckSettingsPanel /> {/* myrmidon(1.7-REBRAND-F) */}
 
       {showDeploymentStatus && (
       <section>
         <div className="space-y-3">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold">Deployment and auth</h2>
+            <h2 className="text-sm font-semibold">{t("settings.deploymentAndAuth")}</h2>
             <ModeBadge
               deploymentMode={healthQuery.data?.deploymentMode}
               deploymentExposure={healthQuery.data?.deploymentExposure}
@@ -145,24 +232,44 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
           </div>
           <div className="text-sm text-muted-foreground">
             {healthQuery.data?.deploymentMode === "local_trusted"
-              ? "Local trusted mode is optimized for a local operator. Browser requests run as local board context and no sign-in is required."
+              ? t("settings.localTrustedMode")
               : healthQuery.data?.deploymentExposure === "public"
-                ? "Authenticated public mode requires sign-in for board access and is intended for public URLs."
-                : "Authenticated private mode requires sign-in and is intended for LAN, VPN, or other private-network deployments."}
+                ? t("settings.authenticatedPublicMode")
+                : t("settings.authenticatedPrivateMode")}
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             <StatusBox
-              label="Auth readiness"
-              value={healthQuery.data?.authReady ? "Ready" : "Not ready"}
+              label={t("settings.authReadiness")}
+              value={healthQuery.data?.authReady ? t("settings.ready") : t("settings.notReady")}
             />
             <StatusBox
-              label="Bootstrap status"
-              value={healthQuery.data?.bootstrapStatus === "bootstrap_pending" ? "Setup required" : "Ready"}
+              label={t("settings.bootstrapStatus")}
+              value={healthQuery.data?.bootstrapStatus === "bootstrap_pending" ? t("settings.setupRequired") : t("settings.ready")}
             />
             <StatusBox
-              label="Bootstrap invite"
-              value={healthQuery.data?.bootstrapInviteActive ? "Active" : "None"}
+              label={t("settings.bootstrapInvite")}
+              value={healthQuery.data?.bootstrapInviteActive ? t("settings.active") : t("settings.none")}
             />
+          </div>
+        </div>
+      </section>
+      )}
+
+      {showExecutionPolicy && (
+      <section data-testid="instance-execution-policy-section">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">{t("settings.executionPolicy")}</h2>
+              <Badge variant="outline" data-testid="execution-mode-badge" className="font-mono text-xs capitalize">
+                {executionMode}
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {executionMode === "kubernetes"
+                ? t("settings.executionPolicyDescriptionKubernetes")
+                : t("settings.executionPolicyDescription")}
+            </p>
           </div>
         </div>
       </section>
@@ -172,18 +279,16 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <section>
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Censor username in logs</h2>
+            <h2 className="text-sm font-semibold">{t("settings.censorUsernameTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Hide the username segment in home-directory paths and similar operator-visible log output. Standalone
-              username mentions outside of paths are not yet masked in the live transcript view. This is off by
-              default.
+              {t("settings.censorUsernameHint")}
             </p>
           </div>
           <ToggleSwitch
             checked={censorUsernameInLogs}
             onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
             disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
-            aria-label="Toggle username log censoring"
+            aria-label={t("settings.toggleCensoring")}
           />
         </div>
       </section>
@@ -193,17 +298,16 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <section>
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
+            <h2 className="text-sm font-semibold">{t("settings.keyboardShortcutsTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating tasks or
-              toggling panels. This is off by default.
+              {t("settings.keyboardShortcutsHint")}
             </p>
           </div>
           <ToggleSwitch
             checked={keyboardShortcuts}
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
             disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
-            aria-label="Toggle keyboard shortcuts"
+            aria-label={t("settings.toggleShortcuts")}
           />
         </div>
       </section>
@@ -213,16 +317,44 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <section>
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Backup retention</h2>
+            <h2 className="text-sm font-semibold">{t("settings.backupRetentionTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Configure how long automatic database backups are retained. Backups run roughly
-              every hour and are compressed with gzip. Within the daily window all backups are
-              kept; beyond that, one backup per week and one per month are preserved.
+              {t("settings.backupRetentionHint")}
             </p>
           </div>
 
+          {/* myrmidon(BACKUP-KEEP-LAST): "keep only the latest backup" mode; presets are ignored while it is on. */}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+              className={cn(
+                "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                backupRetention.keepLastOnly === true
+                  ? "border-foreground bg-accent text-foreground"
+                  : "border-border bg-background hover:bg-accent/50",
+              )}
+              onClick={() =>
+                updateGeneralMutation.mutate({
+                  backupRetention: retentionPatch({ keepLastOnly: true }),
+                })
+              }
+            >
+              <div className="text-sm font-medium">{t("settings.keepLastBackupOnly")}</div>
+            </button>
+          </div>
+          {/* myrmidon(BACKUP-KEEP-LAST): server risk note — a broken new dump leaves the older backups in place. */}
+          <p className="max-w-2xl text-xs text-muted-foreground">
+            {t("settings.keepLastBackupOnlyRisk")}
+          </p>
+          {backupRetention.keepLastOnly === true ? (
+            <p className="text-xs text-muted-foreground">
+              {t("settings.keepLastBackupOnlyHint")}
+            </p>
+          ) : null}
+
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Daily</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("settings.daily")}</h3>
             <div className="flex flex-wrap gap-2">
               {DAILY_RETENTION_PRESETS.map((days) => {
                 const active = backupRetention.dailyDays === days;
@@ -239,11 +371,11 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, dailyDays: days },
+                        backupRetention: retentionPatch({ dailyDays: days, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >
-                    <div className="text-sm font-medium">{days} days</div>
+                    <div className="text-sm font-medium">{t("settings.days", { count: days })}</div>
                   </button>
                 );
               })}
@@ -251,11 +383,11 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weekly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("settings.weekly")}</h3>
             <div className="flex flex-wrap gap-2">
               {WEEKLY_RETENTION_PRESETS.map((weeks) => {
                 const active = backupRetention.weeklyWeeks === weeks;
-                const label = weeks === 1 ? "1 week" : `${weeks} weeks`;
+                const label = t("settings.weeks", { count: weeks });
                 return (
                   <button
                     key={weeks}
@@ -269,7 +401,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, weeklyWeeks: weeks },
+                        backupRetention: retentionPatch({ weeklyWeeks: weeks, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >
@@ -281,11 +413,11 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("settings.monthly")}</h3>
             <div className="flex flex-wrap gap-2">
               {MONTHLY_RETENTION_PRESETS.map((months) => {
                 const active = backupRetention.monthlyMonths === months;
-                const label = months === 1 ? "1 month" : `${months} months`;
+                const label = t("settings.months", { count: months });
                 return (
                   <button
                     key={months}
@@ -299,7 +431,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, monthlyMonths: months },
+                        backupRetention: retentionPatch({ monthlyMonths: months, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >
@@ -317,10 +449,9 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <section>
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">AI feedback sharing</h2>
+            <h2 className="text-sm font-semibold">{t("settings.feedbackSharingTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Control whether thumbs up and thumbs down votes can send the voted AI output to
-              Paperclip Labs. Votes are always saved locally.
+              {t("settings.feedbackSharingHint")}
             </p>
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -329,27 +460,26 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                 rel="noreferrer"
                 className="inline-flex text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
               >
-                Read our terms of service
+                {t("settings.termsOfService")}
               </a>
             ) : null}
           </div>
           {feedbackDataSharingPreference === "prompt" ? (
             <div className="rounded-lg bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
-              No default is saved yet. The next thumbs up or thumbs down choice will ask once and
-              then save the answer here.
+              {t("settings.feedbackPrompt")}
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2">
             {[
               {
                 value: "allowed",
-                label: "Always allow",
-                description: "Share voted AI outputs automatically.",
+                label: t("settings.alwaysAllow"),
+                description: t("settings.alwaysAllowHint"),
               },
               {
                 value: "not_allowed",
-                label: "Don't allow",
-                description: "Keep voted AI outputs local only.",
+                label: t("settings.dontAllow"),
+                description: t("settings.dontAllowHint"),
               },
             ].map((option) => {
               const active = feedbackDataSharingPreference === option.value;
@@ -381,11 +511,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
             })}
           </div>
           <p className="text-xs text-muted-foreground">
-            To retest the first-use prompt in local dev, remove the{" "}
-            <code>feedbackDataSharingPreference</code> key from the{" "}
-            <code>instance_settings.general</code> JSON row for this instance, or set it back to{" "}
-            <code>"prompt"</code>. Unset and <code>"prompt"</code> both mean no default has been
-            chosen yet.
+            <Trans i18nKey="area.settings-company.instance-general-settings.retestHint" components={[<code />]} />
           </p>
         </div>
       </section>
@@ -396,9 +522,9 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <section>
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Sign out</h2>
+            <h2 className="text-sm font-semibold">{t("settings.signOutTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Sign out of this Myrmidon instance. You will be redirected to the login page.
+              {t("settings.signOutHint")}
             </p>
           </div>
           <Button
@@ -411,7 +537,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
             }}
           >
             <LogOut className="size-4" />
-            {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+            {signOutMutation.isPending ? t("settings.signingOut") : t("settings.signOut")}
           </Button>
         </div>
       </section>

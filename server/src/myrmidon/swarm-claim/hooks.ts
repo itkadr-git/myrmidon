@@ -6,20 +6,22 @@
 //
 // - recordSwarmClaimOnCheckout: the checkout is the claim event; the run now
 //   holds the issue's lease.
-// - releaseSwarmClaimsForRun: the finishing run frees the lease; the task
-//   returns to its role queue and the next agent is woken.
+// - releaseSwarmClaimsForRun: the finishing run frees the lease. The wake of
+//   the agent that just became free is the matcher's (review item 2), not a
+//   "next agent of the caste" guess made here.
 
 import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
+  readStoredSwarmSettings,
   resolveSwarmClaimSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { planClaim } from "./domain.js";
 import { findLiveClaimForIssue, heartbeatClaim, insertClaim, releaseClaim } from "./store.js";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
-import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./service.js";
+import { invalidateFailedRunsCache, PHEROMONE_EVAPORATING_RUN_STATUSES } from "./effective-pheromone.js";
 
 /** Shared ports shape both hooks need. */
 interface HookDeps {
@@ -30,7 +32,9 @@ interface HookDeps {
 function resolved(deps: HookDeps) {
   return async () =>
     resolveSwarmClaimSettings({
-      stored: ((await deps.settings.getGeneral()) as unknown as Record<string, unknown> | undefined)?.swarmClaim,
+      stored: readStoredSwarmSettings(
+        (await deps.settings.getGeneral()) as unknown as Record<string, unknown> | undefined,
+      ),
       env: process.env,
     });
 }
@@ -52,6 +56,9 @@ export async function recordSwarmClaimOnCheckoutImpl(
 ): Promise<boolean> {
   const { settings } = await resolved(deps)();
   if (!settings.enabled) return false;
+  // 1.6.5 (OPE-6608, review item 5): there is no pilot set. One switch for the
+  // whole instance; a caste keeps its agents out of the queue through the
+  // directory, not through a company list nobody maintains.
 
   const existing = await findLiveClaimForIssue(deps.db, input.issueId);
   if (existing) {
@@ -67,10 +74,15 @@ export async function recordSwarmClaimOnCheckoutImpl(
     agentId: input.agent.id,
     role: input.agent.role,
     runId: input.run.id,
+    origin: "checkout",
     now,
     settings,
   });
-  const claim = await insertClaim(deps.db, { companyId: input.run.companyId, ...plan });
+  const claim = await insertClaim(deps.db, {
+    companyId: input.run.companyId,
+    ...plan,
+    origin: plan.origin ?? "checkout",
+  });
   if (claim) {
     await logActivityService(deps.db, {
       companyId: input.run.companyId,
@@ -97,7 +109,6 @@ export async function releaseSwarmClaimsForRunImpl(
     db: Db;
   },
   run: { id: string; companyId: string },
-  enqueueWakeup?: SwarmClaimServicePorts["enqueueWakeup"],
   now = new Date(),
 ): Promise<string[]> {
   const { settings } = await resolved(deps)();
@@ -106,11 +117,18 @@ export async function releaseSwarmClaimsForRunImpl(
   // The claims of this run's agent on this company's issues — restricted to
   // the issue the run actually held, which the heartbeat run row knows.
   const runRow = await deps.db
-    .select({ nativeIssueId: heartbeatRuns.nativeIssueId, agentId: heartbeatRuns.agentId })
+    .select({
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+    })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
     .limit(1);
   const held = runRow[0];
+  if (held && (PHEROMONE_EVAPORATING_RUN_STATUSES as readonly string[]).includes(held.status)) {
+    invalidateFailedRunsCache(run.companyId);
+  }
   if (!held?.nativeIssueId) return [];
 
   const live = await findLiveClaimForIssue(deps.db, held.nativeIssueId);
@@ -135,22 +153,8 @@ export async function releaseSwarmClaimsForRunImpl(
     details: { reason: SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED },
   }).catch(() => undefined);
 
-  if (enqueueWakeup) {
-    await wakeNextAgentForIssueRole(
-      {
-        db: deps.db,
-        settings: deps.settings as SwarmClaimServicePorts["settings"],
-        enqueueWakeup,
-        env: process.env,
-      },
-      {
-        companyId: run.companyId,
-        issueId: held.nativeIssueId,
-        excludeAgentId: held.agentId,
-        idempotencySuffix: "run_finished",
-        now,
-      },
-    ).catch(() => false);
-  }
+  // No wake from here (review item 2): the hook frees the lease, nothing else.
+  // The release path of the run lifecycle (heartbeat.ts) hands the agent that
+  // just became free to the matcher, which gives it a task of its own.
   return [live.id];
 }

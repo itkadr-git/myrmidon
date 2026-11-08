@@ -1,8 +1,14 @@
-import type { Db } from "@paperclipai/db";
-import type { ExternalObjectCanonicalUrl } from "@paperclipai/shared";
+import { and, eq, isNull } from "drizzle-orm";
+import { companySecrets, type Db } from "@myrmidon/db";
+import type { ExternalObjectCanonicalUrl } from "@myrmidon/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
+export { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
+import { recordGitHubRequest } from "./github-rate-limit.js";
 import { secretService } from "./secrets.js";
+import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
+import { isRepositoryAllowed, normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
+import { mintGitHubAppInstallationToken } from "../myrmidon/github-shared-identity/app-token.js";
 import type {
   ExternalObjectDetection,
   ExternalObjectDetector,
@@ -11,11 +17,11 @@ import type {
   ExternalObjectResolveResult,
 } from "./external-objects.js";
 
-type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface GitHubExternalObjectProviderOptions {
   fetch?: FetchLike;
-  tokenProvider?: (companyId: string) => Promise<string | null> | string | null;
+  tokenProvider?: (companyId: string, repository: string) => Promise<string | null> | string | null;
   secretNames?: readonly string[];
 }
 
@@ -114,10 +120,10 @@ function displayKeyFor(identity: Pick<GitHubObjectIdentity, "objectType">) {
 }
 
 function retryAfterSeconds(response: Response) {
-  const retryAfter = response.headers.get("retry-after");
+  const retryAfter = response.headers?.get ? response.headers.get("retry-after") : null;
   if (retryAfter && /^[0-9]+$/.test(retryAfter)) return Number(retryAfter);
 
-  const reset = response.headers.get("x-ratelimit-reset");
+  const reset = response.headers?.get ? response.headers.get("x-ratelimit-reset") : null;
   if (reset && /^[0-9]+$/.test(reset)) {
     return Math.max(1, Number(reset) - Math.floor(Date.now() / 1000));
   }
@@ -137,7 +143,7 @@ function failureFromGitHubResponse(response: Response): ExternalObjectResolveRes
   }
 
   if (response.status === 403) {
-    const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
+    const rateLimitRemaining = response.headers?.get ? response.headers.get("x-ratelimit-remaining") : null;
     if (rateLimitRemaining === "0") {
       return {
         ok: false,
@@ -169,7 +175,7 @@ function failureFromGitHubResponse(response: Response): ExternalObjectResolveRes
   return null;
 }
 
-function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): ExternalObjectResolverSnapshot {
+function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null, authenticated: boolean): ExternalObjectResolverSnapshot {
   return {
     displayKey: displayKeyFor(identity),
     iconKey: "github",
@@ -188,11 +194,19 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
       repo: identity.repo,
       number: identity.number,
       notFound: true,
+      // GitHub answers 404 for a private repository the caller cannot read:
+      // "not found" is not proof the PR does not exist.
+      authenticated,
     },
   };
 }
 
-function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
+function pullRequestSnapshot(
+  identity: GitHubObjectIdentity,
+  body: Record<string, unknown>,
+  etag: string | null,
+  extra?: { mergeCommitReachable?: boolean },
+): ExternalObjectResolverSnapshot {
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const draft = asBoolean(body.draft) ?? false;
@@ -201,10 +215,24 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headRef = asNestedString(body, "head", "ref");
   const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
+  const baseRepo = asRecord(asRecord(body.base)?.repo);
+  const defaultBranch = asString(baseRepo?.default_branch) ?? "main";
   const reviewDecision = asString(body.review_decision);
+  const rawMergeable = body.mergeable ?? body.mergeable_state ?? body.mergeableState;
+  const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+    ? "CONFLICTING"
+    : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+      ? "MERGEABLE"
+      : asString(rawMergeable);
   const additions = asNonNegativeInteger(body.additions);
   const deletions = asNonNegativeInteger(body.deletions);
   const changedFiles = asNonNegativeInteger(body.changed_files);
+  const mergeCommitSha = asString(body.merge_commit_sha);
+  const mergeCommitReachable = extra?.mergeCommitReachable !== undefined
+    ? extra.mergeCommitReachable
+    : merged
+      ? (!baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/"))
+      : undefined;
 
   let statusKey = state;
   let statusLabel = state === "open" ? "Open" : state === "closed" ? "Closed" : "Unknown";
@@ -258,14 +286,18 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       state,
       merged,
       draft,
+      ...(mergeable ? { mergeable } : {}),
       ...(authorLogin ? { authorLogin } : {}),
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
+      ...(defaultBranch ? { defaultBranch } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
       ...(additions !== null ? { additions } : {}),
       ...(deletions !== null ? { deletions } : {}),
       ...(changedFiles !== null ? { changedFiles } : {}),
+      ...(mergeCommitSha ? { mergeCommitSha } : {}),
+      ...(mergeCommitReachable !== undefined ? { mergeCommitReachable } : {}),
     },
   };
 }
@@ -317,14 +349,128 @@ async function safeJson(response: Response) {
   }
 }
 
-async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
+/** Audit identity of the resolver's secret reads (system consumer, no agent/run). */
+const RESOLVER_CONSUMER_ID = "github-external-object-resolver";
+
+/**
+ * The resolver reads PR/issue state only: a read-only, single-repository token.
+ * `checks: read`: the review-stage recovery reads the check runs of the PR head
+ * with this token (review-stage-recovery/github-ci.ts). Without it GitHub answers
+ * 403, the read falls back to anonymous, and the anonymous per-IP limit runs out,
+ * so a reviewer that waits for CI is blocked as a stalled review (OPE-10246).
+ */
+export const READ_ONLY_APP_PERMISSIONS = {
+  contents: "read",
+  pull_requests: "read",
+  checks: "read",
+  issues: "none",
+  actions: "none",
+  deployments: "none",
+  environments: "none",
+  workflows: "none",
+} as const;
+
+/**
+ * Token for reading one repository, in order:
+ *   1. a company secret by name (GITHUB_TOKEN, ...);
+ *   2. the shared GitHub identity: exactly one company App that allows the
+ *      repository -> a read-only installation token for that repository;
+ *      two or more Apps -> throws (fail closed, never a silent pick);
+ *   3. null (anonymous), as before.
+ * Neither a token nor an App key is logged or returned in an error.
+ */
+export async function resolveGitHubRepositoryToken(
+  db: Db,
+  companyId: string,
+  repository: string,
+  secretNames: readonly string[] = DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+  fetchImpl?: FetchLike,
+) {
+  return defaultTokenProvider(db, companyId, repository, secretNames, fetchImpl);
+}
+
+export async function defaultTokenProvider(
+  db: Db,
+  companyId: string,
+  repository: string,
+  secretNames: readonly string[],
+  fetchImpl?: FetchLike,
+) {
   const secrets = secretService(db);
+  const accessContext = {
+    consumerType: "system" as const,
+    consumerId: RESOLVER_CONSUMER_ID,
+    configPath: `github_token:${repository}`,
+    actorType: "system" as const,
+  };
   for (const secretName of secretNames) {
     const secret = await secrets.getByName(companyId, secretName);
     if (!secret) continue;
-    const token = await secrets.resolveSecretValue(companyId, secret.id, "latest");
+    const token = await secrets.resolveSecretValue(companyId, secret.id, "latest", { accessContext });
     const trimmed = token.trim();
     if (trimmed) return trimmed;
+  }
+
+  const normalized = normalizeGitHubRepository(repository);
+  if (!normalized) return null;
+  const settings = await readGitHubSharedIdentitySettings(db, companyId);
+  if (!settings.enabled) return null;
+  const apps = settings.apps.filter((entry) => isRepositoryAllowed(entry.allowedRepos, normalized));
+  if (apps.length > 1) throw new Error("Several GitHub Apps allow this repository");
+  if (apps.length === 1) {
+    const app = apps[0]!;
+    const [keySecret] = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.id, app.privateKeySecretId),
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        isNull(companySecrets.deletedAt),
+      ));
+    if (!keySecret) return null;
+    try {
+      const privateKeyPem = await secrets.resolveSecretValue(companyId, keySecret.id, "latest", {
+        accessContext: { ...accessContext, configPath: `github_app:${normalized}` },
+      });
+      const minted = await mintGitHubAppInstallationToken({
+        appId: app.appId,
+        privateKeyPem,
+        installationId: app.installationId,
+        repository: normalized,
+        permissions: READ_ONLY_APP_PERMISSIONS,
+        fetchImpl: fetchImpl as typeof fetch | undefined,
+      });
+      return minted.token;
+    } catch {
+      return null;
+    }
+  }
+
+  const pats = settings.pats.filter((entry) => isRepositoryAllowed(entry.allowedRepos, normalized));
+  if (pats.length > 1) throw new Error("Several GitHub PATs allow this repository");
+  if (pats.length === 1) {
+    const pat = pats[0]!;
+    const [tokenSecret] = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.id, pat.tokenSecretId),
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        isNull(companySecrets.deletedAt),
+      ));
+    if (!tokenSecret) return null;
+    try {
+      const token = await secrets.resolveSecretValue(companyId, tokenSecret.id, "latest", {
+        accessContext: { ...accessContext, configPath: `github_pat:${normalized}` },
+      });
+      return token.trim() || null;
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -337,7 +483,7 @@ export function createGitHubExternalObjectProvider(
   const secretNames = opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
   const tokenProvider = Object.prototype.hasOwnProperty.call(opts, "tokenProvider") && opts.tokenProvider !== undefined
     ? opts.tokenProvider
-    : ((companyId: string) => defaultTokenProvider(db, companyId, secretNames));
+    : ((companyId: string, repository: string) => defaultTokenProvider(db, companyId, repository, secretNames, opts.fetch));
 
   const detector: ExternalObjectDetector = {
     key: "github",
@@ -378,7 +524,7 @@ export function createGitHubExternalObjectProvider(
 
         let token: string | null = null;
         try {
-          token = typeof tokenProvider === "function" ? await tokenProvider(companyId) : tokenProvider;
+          token = typeof tokenProvider === "function" ? await tokenProvider(companyId, `${identity.owner}/${identity.repo}`) : tokenProvider;
         } catch {
           return {
             ok: false,
@@ -395,6 +541,7 @@ export function createGitHubExternalObjectProvider(
           "x-github-api-version": "2022-11-28",
         };
         if (token) headers.authorization = `Bearer ${token}`;
+        if (object?.etag) headers["if-none-match"] = object.etag;
 
         const apiKind = objectType === "pull_request" ? "pulls" : "issues";
         const url = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/${apiKind}/${identity.number}`;
@@ -402,6 +549,7 @@ export function createGitHubExternalObjectProvider(
         let response: Response;
         try {
           response = await fetchImpl(url, { headers });
+          recordGitHubRequest("task-pr-sync", response);
         } catch {
           return {
             ok: false,
@@ -412,9 +560,30 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
-        const etag = response.headers.get("etag");
+        if (response.status === 304) {
+          return {
+            ok: true,
+            snapshot: {
+              displayKey: object.displayKey,
+              iconKey: object.iconKey,
+              displayTitle: object.displayTitle,
+              statusKey: object.statusKey,
+              statusLabel: object.statusLabel,
+              statusIconKey: object.statusIconKey,
+              statusCategory: object.statusCategory,
+              statusTone: object.statusTone,
+              isTerminal: object.isTerminal,
+              data: object.data,
+              remoteVersion: object.remoteVersion,
+              etag: object.etag,
+              ttlSeconds: GITHUB_OBJECT_TTL_SECONDS,
+            },
+          };
+        }
+
+        const etag = response.headers?.get ? response.headers.get("etag") : null;
         if (response.status === 404) {
-          return { ok: true, snapshot: notFoundSnapshot(identity, etag) };
+          return { ok: true, snapshot: notFoundSnapshot(identity, etag, Boolean(token)) };
         }
 
         const failure = failureFromGitHubResponse(response);
@@ -440,11 +609,46 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
+        if (objectType === "pull_request") {
+          let mergeCommitReachable: boolean | undefined = undefined;
+          const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
+          const baseRef = asNestedString(body, "base", "ref");
+          const baseRepo = asRecord(asRecord(body.base)?.repo);
+          const defaultBranch = asString(baseRepo?.default_branch) ?? "main";
+          const mergeCommitSha = asString(body.merge_commit_sha);
+
+          if (merged) {
+            if (!baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/")) {
+              mergeCommitReachable = true;
+            } else if (mergeCommitSha) {
+              try {
+                const compareUrl = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/compare/${encodeURIComponent(defaultBranch)}...${encodeURIComponent(mergeCommitSha)}`;
+                const compareRes = await fetchImpl(compareUrl, { headers });
+                if (compareRes.ok) {
+                  const compareBody = await safeJson(compareRes);
+                  if (compareBody) {
+                    const aheadBy = asNonNegativeInteger(compareBody.ahead_by);
+                    const status = asString(compareBody.status);
+                    mergeCommitReachable = aheadBy === 0 || status === "identical" || status === "behind";
+                  }
+                }
+              } catch {
+                mergeCommitReachable = false;
+              }
+            } else {
+              mergeCommitReachable = false;
+            }
+          }
+
+          return {
+            ok: true,
+            snapshot: pullRequestSnapshot(identity, body, etag, { mergeCommitReachable }),
+          };
+        }
+
         return {
           ok: true,
-          snapshot: objectType === "pull_request"
-            ? pullRequestSnapshot(identity, body, etag)
-            : issueSnapshot(identity, body, etag),
+          snapshot: issueSnapshot(identity, body, etag),
         };
       },
     };

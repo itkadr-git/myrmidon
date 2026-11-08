@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -8,7 +9,7 @@ import {
   sanitizeRememberedPathForCompany,
 } from "../lib/company-page-memory";
 
-const STORAGE_KEY = "paperclip.companyPaths";
+const STORAGE_KEY = "myrmidon.companyPaths";
 
 function getCompanyPaths(): Record<string, string> {
   try {

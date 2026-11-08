@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { AttentionFeed, AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
+import type { AttentionFeed, AttentionItem, AttentionSourceKind } from "@myrmidon/shared";
 import {
   ATTENTION_GROUP_BY_KEY,
   ATTENTION_GROUP_BY_OPTIONS,
@@ -188,6 +188,9 @@ describe("sourceMeta + severityStyle", () => {
   it("uses a generic task label for persisted legacy productivity decisions", () => {
     expect(sourceMeta("productivity_review").label).toBe("Task");
   });
+  it("labels overdue issue monitors", () => {
+    expect(sourceMeta("issue_monitor_overdue").label).toBe("Overdue issue monitor");
+  });
   it("labels every catalog source kind", () => {
     const kinds: AttentionSourceKind[] = [
       "approval",
@@ -201,6 +204,7 @@ describe("sourceMeta + severityStyle", () => {
       "failed_run",
       "budget_alert",
       "agent_error_alert",
+      "issue_monitor_overdue",
     ];
     for (const kind of kinds) {
       expect(sourceMeta(kind).label.length).toBeGreaterThan(0);
@@ -389,6 +393,50 @@ describe("attentionDetailLine (§7)", () => {
     );
     expect(line).toContain("1 suggested task");
     expect(line).not.toContain("tasks");
+  });
+
+  it("renders the host disk numbers, growth and consumers", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        sourceKind: "host_disk_alert",
+        detail: {
+          kind: "host_disk",
+          usedPercent: 91,
+          thresholdPercent: 85,
+          usedGb: 91,
+          totalGb: 100,
+          freeGb: 9,
+          growthBytesPerHour: 1024 * 1024 * 1024,
+          mountPoint: "/srv/data",
+          consumers: [{ path: "/srv/data/workspaces", sizeGb: 40 }],
+          images: [],
+        },
+      }),
+    );
+    expect(line).toContain("91% of 100 GB used (9 GB free)");
+    expect(line).toContain("+1.0 GB/hour");
+    expect(line).toContain("/srv/data/workspaces (40 GB)");
+  });
+
+  it("renders the host disk line without growth when the sweep has one sample", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        sourceKind: "host_disk_alert",
+        detail: {
+          kind: "host_disk",
+          usedPercent: 91,
+          thresholdPercent: 85,
+          usedGb: 91,
+          totalGb: 100,
+          freeGb: 9,
+          growthBytesPerHour: null,
+          mountPoint: "/srv/data",
+          consumers: [],
+          images: [],
+        },
+      }),
+    );
+    expect(line).toBe("91% of 100 GB used (9 GB free)");
   });
 
   it("renders a failed run as agent — reason", () => {

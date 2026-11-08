@@ -5,7 +5,7 @@
 // that lags behind its upstream release or whose latest release changed since
 // the previous check.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidon/shared";
 import type { StackDocument, StackPatchClosedState } from "./domain.js";
 
 /** Cap for the release-note excerpt carried on the card. */

@@ -44,7 +44,7 @@ import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types
 import type {
   AdapterLoginPanelMode,
   AdapterLoginTimeoutPolicy,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
@@ -282,6 +282,7 @@ export function adapterRoutes(options: {
     const disabledSet = new Set(getDisabledAdapterTypes());
     const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
     if (!nativeRunnerEnabled) disabledSet.add("paperclip_runner");
+    if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabledSet.add("hermes_local");
 
     const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
       buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),
@@ -437,6 +438,9 @@ export function adapterRoutes(options: {
 
     const externalRecord = getAdapterPluginByType(adapterType);
     const disabledSet = new Set(getDisabledAdapterTypes());
+    const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
+    if (!nativeRunnerEnabled) disabledSet.add("paperclip_runner");
+    if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabledSet.add("hermes_local");
     res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
   });
 

@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+// docker/bot-runtime/build-wrappers/tsc
+//
+// myrmidon(1.6.1 BUILD-OFFLOAD A): tsc wrapper for the dev variant.
+// A monorepo-wide `tsc --noEmit` is one of the heaviest operations in
+// the repository cycle and must run on the build VPS through
+// `devbuild tsc ...`. See blocked-tool.js for the gate mechanics.
+//
+// The real binary is the TypeScript compiler shim installed by the
+// repository's own `pnpm install` into the workspace — NOT an
+// image-baked binary — so the wrapper cannot point at an absolute path
+// the way the pnpm/go/gradle wrappers do. When the devbuild gateway is
+// present the wrapper resolves `tsc` from PATH with this wrapper's own
+// directory REMOVED (so it never finds itself) and execs it; in the
+// ordinary bot container there is no tsc at all outside
+// node_modules/.bin, and the wrapper refuses with the devbuild
+// replacement, which is the correct behaviour in both worlds.
+//
+// CJS on purpose (see devbuild-gate.js): in the image this file lives
+// at /opt/paperclip/bin/, which no package.json reaches.
+"use strict";
+
+const fs = require("node:fs");
+const path = require("node:path");
+const { makeWrapper } = require("./blocked-tool.js");
+
+const SELF_DIR = path.dirname(fs.realpathSync(process.argv[1]));
+
+function resolveRealTsc() {
+  // PATH walk without our own directory: the first `tsc` found outside
+  // /opt/paperclip/bin is the real one (node_modules/.bin, /opt/node24,
+  // ...). Null means "not installed here" — the wrapper then reports a
+  // missing binary, not a silent pass.
+  const pathEnv = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  for (const dir of pathEnv) {
+    const candidate = path.join(dir, "tsc");
+    let real;
+    try {
+      real = fs.realpathSync(candidate);
+    } catch {
+      continue;
+    }
+    if (path.dirname(real) !== SELF_DIR) return candidate;
+  }
+  return null;
+}
+
+const real = resolveRealTsc();
+if (real) {
+  makeWrapper("tsc", real)();
+} else {
+  // No real tsc on PATH: the gateway case never reaches here with a
+  // real binary missing (devbuild's own container ships the workspace's
+  // node_modules), and the no-gateway case must still refuse loudly
+  // rather than 404 silently.
+  process.stderr.write(
+    [
+      "tsc: heavy build operations are blocked inside the bot container (1.6.1 BUILD-OFFLOAD).",
+      "The TypeScript compiler is not installed in this container, and a monorepo typecheck",
+      "must run on the build VPS. Instead run:  devbuild tsc --noEmit",
+    ].join("\n") + "\n",
+  );
+  process.exitCode = 1;
+}

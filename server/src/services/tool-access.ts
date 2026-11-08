@@ -1,8 +1,12 @@
-import { connectionPurposeTransportSchema } from "@paperclipai/shared";
+import { connectionPurposeTransportSchema } from "@myrmidon/shared";
+import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+// myrmidon(DB-PERF-C-P4): drop the company's tool gateway policy snapshot whenever a
+// profile, binding or entry of `tool_profile*` changes here.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import { readFileSync } from "node:fs";
 import {
   and,
@@ -20,7 +24,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   connectionGrantMembers,
@@ -59,7 +63,7 @@ import {
   toolProfiles,
   toolRuntimeMetricCounters,
   toolRuntimeSlots,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AppDefinition,
   ConnectionGrantKind,
@@ -142,7 +146,9 @@ import type {
   UnbindToolProfileBinding,
   VercelConnectCredentialReference,
   VercelConnectGrantReference,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
+// myrmidon(B1c): product name in user-facing connector texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import {
   CLASS3_STATIC_LEASE_ALLOWLIST,
   GITHUB_CONNECTOR_PROFILES,
@@ -160,19 +166,19 @@ import {
   resolveConnectionMethodServerUrl,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
   mcpRemoteHeaderNameFromConfigPath,
   mcpRemoteHeaderRejectionMessage,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   checkOAuthEndpointUrl,
   oauthEndpointUrlRejectionMessage,
   type OAuthEndpointKind,
   type OAuthEndpointUrlRejection,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   badRequest,
   conflict,
@@ -182,6 +188,8 @@ import {
   unprocessable,
 } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): instance-wide switch of the vendor cloud GitHub connector
+import { assertVendorGitHubConnectorAllowed } from "../myrmidon/github-shared-identity/vendor-connector.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -198,12 +206,16 @@ import {
   guardedRemoteHttpFetch,
   type GuardedRemoteHttpFetchOptions,
 } from "./remote-http-fetch.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import {
   REMOTE_URL_SECRET_CONFIG_PATH,
   remoteUrlCredentialMatchesPublicUrl,
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
+import { remoteEndpointOfConfig, toolOauthProviderForConnection } from "./tool-oauth-provider.js"; // myrmidon(SETTINGS-UI E2.4)
+import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.4)
+import { createToolOauthClientSecretLookup } from "../myrmidon/secret-settings/tool-oauth.js";
 import { agentmailApi } from "./agentmail-api.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
@@ -341,18 +353,18 @@ const OAUTH_PROVIDER_ERROR_MESSAGES: Record<string, string> = {
     "The authorization server needs consent to be granted. Try connecting again.",
   interaction_required:
     "The authorization server needs to be signed in to interactively. Try connecting again.",
-  invalid_client: "The authorization server rejected Paperclip's OAuth client.",
+  invalid_client: `The authorization server rejected ${PN}'s OAuth client.`,
   invalid_client_metadata:
-    "The authorization server rejected Paperclip's client registration details.",
+    `The authorization server rejected ${PN}'s client registration details.`,
   invalid_grant:
     "The authorization server rejected the authorization code or refresh token.",
   invalid_redirect_uri:
-    "The authorization server rejected Paperclip's callback URL.",
+    `The authorization server rejected ${PN}'s callback URL.`,
   invalid_request:
     "The authorization server rejected the request as malformed.",
   invalid_scope: "The authorization server rejected the requested permissions.",
   invalid_software_statement:
-    "The authorization server rejected Paperclip's client registration details.",
+    `The authorization server rejected ${PN}'s client registration details.`,
   login_required:
     "The authorization server needs to be signed in to. Try connecting again.",
   server_error:
@@ -360,13 +372,13 @@ const OAUTH_PROVIDER_ERROR_MESSAGES: Record<string, string> = {
   temporarily_unavailable:
     "The authorization server is temporarily unavailable. Try again shortly.",
   unapproved_software_statement:
-    "The authorization server rejected Paperclip's client registration details.",
+    `The authorization server rejected ${PN}'s client registration details.`,
   unauthorized_client:
-    "The authorization server refused to authorize Paperclip's OAuth client.",
+    `The authorization server refused to authorize ${PN}'s OAuth client.`,
   unsupported_grant_type:
-    "The authorization server does not support the grant Paperclip uses.",
+    `The authorization server does not support the grant ${PN} uses.`,
   unsupported_response_type:
-    "The authorization server does not support the sign-in flow Paperclip uses.",
+    `The authorization server does not support the sign-in flow ${PN} uses.`,
 };
 
 /**
@@ -467,7 +479,7 @@ export function oauthClientIdMetadataDocument(input: {
 }): Record<string, unknown> {
   return {
     client_id: input.clientId,
-    client_name: `Paperclip (${new URL(input.redirectUri).host})`,
+    client_name: `${PN} (${new URL(input.redirectUri).host})`,
     client_uri: new URL("/", input.clientId).toString(),
     redirect_uris: [input.redirectUri],
     grant_types: ["authorization_code", "refresh_token"],
@@ -648,6 +660,8 @@ type ToolAccessServiceOptions = {
   paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /** Test seam: lookup of a tool provider's OAuth client secret (env, then bound secret ref). */
+  toolOauthClientSecretLookup?: (provider: string) => Promise<string | null>;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -735,7 +749,7 @@ const APPROVED_STDIO_TEMPLATES: Record<
   }
 > = {
   "paperclip.echo-calculator-time": {
-    name: "Paperclip Echo / Calculator / Time fixture",
+    name: `${PN} Echo / Calculator / Time fixture`,
     tools: [
       {
         name: "echo",
@@ -776,7 +790,7 @@ const APPROVED_STDIO_TEMPLATES: Record<
     ],
   },
   "paperclip.synthetic-todo-kv": {
-    name: "Paperclip Synthetic Todo / KV fixture",
+    name: `${PN} Synthetic Todo / KV fixture`,
     tools: [
       {
         name: "list_items",
@@ -941,15 +955,15 @@ const TOOL_EXAMPLES: ToolExampleDefinition[] = [
     description:
       "Installs a deterministic local MCP fixture and grants only its read-only catalog entries.",
     applicationKey: "paperclip.examples.safe-read-only-todo-kv",
-    applicationName: "Paperclip example: Safe read-only Todo / KV",
+    applicationName: `${PN} example: Safe read-only Todo / KV`,
     applicationDescription:
       "Deterministic MCP fixture for first-run tool governance checks.",
-    connectionName: "Paperclip example: Safe read-only Todo / KV",
+    connectionName: `${PN} example: Safe read-only Todo / KV`,
     templateId: "paperclip.synthetic-todo-kv",
     profileKey: "paperclip.examples.safe-read-only-todo-kv.profile",
     profileName: "Example safe read-only tools",
     profileDescription:
-      "Allows only the read-only tools from the Paperclip Todo / KV example fixture.",
+      `Allows only the read-only tools from the ${PN} Todo / KV example fixture.`,
   },
 ];
 
@@ -2471,7 +2485,7 @@ export async function loadGitHubTokenRepositories(
         headers: {
           ...headers,
           accept: "application/vnd.github+json",
-          "user-agent": "Paperclip",
+          "user-agent": `${PN}/1.0`,
           "x-github-api-version": "2022-11-28",
         },
         signal: AbortSignal.timeout(15_000),
@@ -2542,7 +2556,7 @@ export async function loadGitHubGrantMetadata(
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${accessToken}`,
-        "user-agent": "Paperclip",
+        "user-agent": `${PN}/1.0`,
         "x-github-api-version": "2022-11-28",
       },
       signal: AbortSignal.timeout(15_000),
@@ -2667,7 +2681,7 @@ export async function loadGitHubGrantMetadata(
       ? `https://github.com/apps/${resolvedAppSlug}/installations/new`
       : "https://github.com/settings/installations";
     throw unprocessable(
-      "GitHub access is required. Install Paperclip and grant at least one repository before refreshing access.",
+      `GitHub access is required. Install ${PN} and grant at least one repository before refreshing access.`,
       {
         code: "github_installation_required",
         installationUrl,
@@ -2901,11 +2915,7 @@ function sanitizeHttpFailure(error: unknown): {
 }
 
 function remoteEndpoint(config: Record<string, unknown>): string {
-  const value = config.url ?? config.endpoint ?? config.remoteUrl;
-  const parsed = parseRemoteHttpEndpoint(value, (message, code) =>
-    badRequest(message, { code }),
-  );
-  return parsed.toString();
+  return remoteEndpointOfConfig(config);
 }
 
 function vercelConnectResourcesFor(
@@ -2935,6 +2945,14 @@ export function toolAccessService(
   options: ToolAccessServiceOptions = {},
 ) {
   const secrets = secretService(db);
+  // myrmidon(SETTINGS-UI E2.4): built lazily so services that never start OAuth pay nothing.
+  let toolOauthSecretLookup = options.toolOauthClientSecretLookup ?? null;
+  function lookupToolOauthClientSecret(provider: string) {
+    toolOauthSecretLookup ??= createToolOauthClientSecretLookup({
+      resolver: createInstanceSecretSettingService(db),
+    });
+    return toolOauthSecretLookup(provider);
+  }
 
   async function resolvedRemoteEndpoint(
     connection: typeof toolConnections.$inferSelect,
@@ -3297,12 +3315,12 @@ export function toolAccessService(
   }
 
   function tokenBrokerAllowedPrivateHosts(): Set<string> {
-    const configured = (process.env.PAPERCLIP_TOKEN_BROKER_ALLOWED_HOSTS ?? "")
+    const configured = (readProductEnv("TOKEN_BROKER_ALLOWED_HOSTS") ?? "")
       .split(/[,\s]+/)
       .map(normalizeTokenBrokerAllowedHost)
       .filter((host): host is string => host !== null);
     const pagesApiHost = normalizeTokenBrokerAllowedHost(
-      process.env.PAPERCLIP_PAGES_API_URL ?? "",
+      readProductEnv("PAGES_API_URL") ?? "",
     );
     if (pagesApiHost) configured.push(pagesApiHost);
     return new Set(configured);
@@ -3386,8 +3404,8 @@ export function toolAccessService(
    */
   function firstPartyOrigins(candidate?: string | null): string[] {
     const configured =
-      process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
-      process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+      readProductEnv("PUBLIC_URL")?.trim() ||
+      readProductEnv("AUTH_PUBLIC_BASE_URL")?.trim() ||
       process.env.BETTER_AUTH_URL?.trim() ||
       process.env.BETTER_AUTH_BASE_URL?.trim() ||
       null;
@@ -3462,8 +3480,8 @@ export function toolAccessService(
   function trustedRuntimeHost() {
     return (
       options.trustedLocalStdioRuntimeHost ??
-      process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST ??
-      process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST ??
+      readProductEnv("TRUSTED_MCP_RUNTIME_HOST") ??
+      readProductEnv("TOOL_RUNTIME_TRUSTED_HOST") ??
       null
     );
   }
@@ -4219,7 +4237,7 @@ export function toolAccessService(
       readConfigString(config, "tokenExchangeUrl") ??
       readConfigString(config, "pagesTokenExchangeUrl");
     if (url) return url;
-    const pagesApiBase = process.env.PAPERCLIP_PAGES_API_URL?.trim();
+    const pagesApiBase = readProductEnv("PAGES_API_URL")?.trim();
     if (isPages && pagesApiBase)
       return new URL(
         "/v1/tokens/exchange",
@@ -4480,7 +4498,7 @@ export function toolAccessService(
         description:
           "Tool gateway calls are timing out or being runtime-deferred at an elevated rate.",
         firstResponderAction:
-          "Check upstream MCP health, Paperclip runtime capacity, and recent gateway audit failures before retrying workloads.",
+          `Check upstream MCP health, ${PN} runtime capacity, and recent gateway audit failures before retrying workloads.`,
         runbookSection,
       }),
       runtimeAlert({
@@ -5288,6 +5306,10 @@ export function toolAccessService(
           : input.newCatalogEntryIds,
       ),
     ];
+    // myrmidon(DB-PERF-C-P4): the managed profile, its bindings and the retired
+    // ask-first policies changed above; drop the company snapshot even when no
+    // catalog entry is added.
+    invalidateToolPolicyCache(db, input.connection.companyId);
     if (candidateIds.length === 0) return;
     const existingEntries = await db
       .select({ catalogEntryId: toolProfileEntries.catalogEntryId })
@@ -5305,6 +5327,9 @@ export function toolAccessService(
       ),
     );
     const entryIds = candidateIds.filter((id) => !configuredIds.has(id));
+    // myrmidon(DB-PERF-C-P4): same reason — the profile state changed whether or not
+    // new entries follow.
+    invalidateToolPolicyCache(db, input.connection.companyId);
     if (entryIds.length === 0) return;
     await db.insert(toolProfileEntries).values(
       entryIds.map((catalogEntryId) => ({
@@ -5317,6 +5342,9 @@ export function toolAccessService(
         catalogEntryId,
       })),
     );
+    // myrmidon(DB-PERF-C-P4): the new entries are in; drop the company snapshot again so
+    // nothing cached between the two invalidations is served.
+    invalidateToolPolicyCache(db, input.connection.companyId);
   }
 
   async function listConnectionInstalls(
@@ -5698,6 +5726,10 @@ export function toolAccessService(
       .set({ newToolsReviewedAt: nowAt, updatedAt: nowAt })
       .where(eq(toolProfiles.id, profile.id));
 
+    // myrmidon(DB-PERF-C-P4): the profile's review stamp and its new entries changed;
+    // drop the company snapshot.
+    invalidateToolPolicyCache(db, profile.companyId);
+
     return {
       profile: await profileDetails(profile.id, profile.companyId),
       reviewedAt: nowAt,
@@ -5731,6 +5763,8 @@ export function toolAccessService(
         conditions: entry.conditions ?? null,
       })),
     );
+    // myrmidon(DB-PERF-C-P4): the profile gained entries; drop the company snapshot.
+    invalidateToolPolicyCache(db, companyId);
   }
 
   async function replaceProfileEntries(
@@ -5750,6 +5784,9 @@ export function toolAccessService(
         ),
       );
     await createProfileEntries(companyId, profileId, entries);
+    // myrmidon(DB-PERF-C-P4): the delete above changed the profile even with an empty
+    // entry list; drop the company snapshot.
+    invalidateToolPolicyCache(db, companyId);
   }
 
   /**
@@ -6450,6 +6487,10 @@ export function toolAccessService(
           ),
         );
     }
+
+    // myrmidon(DB-PERF-C-P4): the app-managed profile, its entries and its bindings were
+    // removed or archived above; drop the company snapshot.
+    invalidateToolPolicyCache(db, connection.companyId);
 
     return {
       connection: toConnection(cleared ?? archived.connection),
@@ -8730,20 +8771,18 @@ export function toolAccessService(
     return `PAPERCLIP_TOOL_OAUTH_${provider.replace(/[^a-z0-9]+/gi, "_").toUpperCase()}_${suffix}`;
   }
 
-  function oauthClientConfig(provider: string) {
+  async function oauthClientConfig(provider: string) {
     const clientIdEnv = oauthEnvName(provider, "CLIENT_ID");
     const clientSecretEnv = oauthEnvName(provider, "CLIENT_SECRET");
+    const clientId =
+      process.env[clientIdEnv] ?? readProductEnv("TOOL_OAUTH_CLIENT_ID") ?? null;
     return {
       clientIdEnv,
       clientSecretEnv,
-      clientId:
-        process.env[clientIdEnv] ??
-        process.env.PAPERCLIP_TOOL_OAUTH_CLIENT_ID ??
-        null,
-      clientSecret:
-        process.env[clientSecretEnv] ??
-        process.env.PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET ??
-        null,
+      clientId,
+      // myrmidon(SETTINGS-UI E2.4): emergency env first, then the instance secret ref.
+      // Only looked up for a preconfigured client (a client id exists).
+      clientSecret: clientId ? await lookupToolOauthClientSecret(provider) : null,
     };
   }
 
@@ -8782,7 +8821,7 @@ export function toolAccessService(
     };
   }
 
-  function configuredOAuthClientForConnection(
+  async function configuredOAuthClientForConnection(
     connection: typeof toolConnections.$inferSelect,
     provider: string,
   ) {
@@ -8802,7 +8841,7 @@ export function toolAccessService(
     provider: string,
     actor?: ActorInfo,
   ) {
-    const configured = configuredOAuthClientForConnection(connection, provider);
+    const configured = await configuredOAuthClientForConnection(connection, provider);
     if (configured.clientId) return configured;
     const oauth = oauthConfig(connection);
     const clientId =
@@ -8982,25 +9021,7 @@ export function toolAccessService(
     connection: typeof toolConnections.$inferSelect,
     metadataUrl?: string | null,
   ): string {
-    const oauth = oauthConfig(connection);
-    if (typeof oauth.provider === "string" && oauth.provider.trim())
-      return oauth.provider.trim();
-    const sourceTemplateKey =
-      typeof connection.config.sourceTemplateKey === "string"
-        ? connection.config.sourceTemplateKey.trim()
-        : "";
-    if (sourceTemplateKey) return sourceTemplateKey;
-    const url = metadataUrl ?? remoteEndpoint(connection.config);
-    try {
-      return (
-        new URL(url).hostname
-          .replace(/[^a-z0-9]+/gi, "_")
-          .replace(/^_+|_+$/g, "")
-          .toLowerCase() || "generic"
-      );
-    } catch {
-      return "generic";
-    }
+    return toolOauthProviderForConnection(connection, metadataUrl);
   }
 
   function parseWwwAuthenticateParams(value: string): Record<string, string> {
@@ -9858,7 +9879,7 @@ export function toolAccessService(
 
     const host = new URL(input.redirectUri).host;
     const requestedMetadata = {
-      client_name: `Paperclip (${host})`,
+      client_name: `${PN} (${host})`,
       redirect_uris: [input.redirectUri],
       grant_types: [
         "authorization_code",
@@ -10287,7 +10308,7 @@ export function toolAccessService(
     actor?: ActorInfo;
   }) {
     // 1. A client the deployment preconfigured for this issuer wins outright.
-    const configured = configuredOAuthClientForConnection(
+    const configured = await configuredOAuthClientForConnection(
       input.connection,
       input.endpoints.provider,
     );
@@ -10364,7 +10385,7 @@ export function toolAccessService(
         input.connection.id,
         input.connection.companyId,
       );
-      const latestConfigured = configuredOAuthClientForConnection(
+      const latestConfigured = await configuredOAuthClientForConnection(
         latest,
         input.endpoints.provider,
       );
@@ -12530,7 +12551,7 @@ export function toolAccessService(
       const integration = vercelConnectIntegrationStatus();
       if (!integration.enabled || !integration.configured || !vercelConnect) {
         throw unprocessable(
-          "Vercel Connect setup is not available on this Paperclip instance",
+          `Vercel Connect setup is not available on this ${PN} instance`,
           {
             code: "vercel_connect_unavailable",
           },
@@ -12608,7 +12629,7 @@ export function toolAccessService(
           .limit(1);
         if (connectorInUse) {
           throw conflict(
-            "App-subject Vercel connectors are dedicated to one Paperclip connection. Create or attach a separate connector in Vercel.",
+            `App-subject Vercel connectors are dedicated to one ${PN} connection. Create or attach a separate connector in Vercel.`,
             {
               code: "vercel_connect_app_connector_in_use",
             },
@@ -12667,6 +12688,8 @@ export function toolAccessService(
       const profile = managedConnectorProfile(connectorProfile);
       if (!profile)
         throw badRequest("This app has an invalid managed connector profile");
+      // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+      assertVendorGitHubConnectorAllowed(profile.id);
       config.oauth = {
         strategy: method.oauthStrategy,
         provider: profile.provider,
@@ -12993,7 +13016,7 @@ export function toolAccessService(
         }
         if (!applicationRow) {
           throw conflict(
-            "Paperclip could not allocate a unique connection name",
+            `${PN} could not allocate a unique connection name`,
             {
               code: "tool_access_name_allocation_exhausted",
             },
@@ -13398,6 +13421,9 @@ export function toolAccessService(
             ),
           )
         : await refreshCatalog(catalogConnectionId, actor, refreshOptions);
+      // myrmidon(DB-PERF-C-P4): the default entries may have been written on the
+      // transaction handle above; drop the snapshot after the commit.
+      invalidateToolPolicyCache(db, companyId);
       const [application] = await db
         .select()
         .from(toolApplications)
@@ -13578,6 +13604,9 @@ export function toolAccessService(
           await secrets.remove(secretId).catch(() => undefined);
         }
       }
+      // myrmidon(DB-PERF-C-P4): the rollback may have removed or restored rows a
+      // profile entry hangs on (the connection cascades its entries).
+      invalidateToolPolicyCache(db, companyId);
       if (identityRollbackError) {
         throw new HttpError(
           500,
@@ -13733,6 +13762,11 @@ export function toolAccessService(
           .where(eq(toolPolicies.id, policy.id));
       }
     }
+    emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): ask-first policies were created or disabled for the company;
+    // drop the snapshot. `dbClient` may be a caller's transaction, so the callers of this
+    // helper invalidate again once they commit.
+    invalidateToolPolicyCache(db, input.companyId);
     return results;
   }
 
@@ -14064,6 +14098,10 @@ export function toolAccessService(
       return { profileId, profileBindings, policies, updatedConnection };
     });
 
+    // myrmidon(DB-PERF-C-P4): the transaction above wrote the profile, its bindings and
+    // the app's ask-first policies; drop the company snapshot after the commit.
+    invalidateToolPolicyCache(db, companyId);
+
     const details = await profileDetails(
       transactionResult.profileId,
       companyId,
@@ -14087,6 +14125,11 @@ export function toolAccessService(
       profileBindings: transactionResult.profileBindings,
       policies: transactionResult.policies,
     };
+    // OPE-4129: finishGalleryAppConnection rewrites profile entries, bindings
+    // and ask-first policies in one transaction — invalidate the policy
+    // snapshot cache after it completes (not only from upsertAskFirstPolicies,
+    // which emits before the gallery bindings are written).
+    emitToolPolicyChanged();
   }
 
   /**
@@ -14175,7 +14218,7 @@ export function toolAccessService(
       throw conflict("Archived app connections cannot be reconnected");
     if (connection.credentialSource === "vercel_connect") {
       throw conflict(
-        "Manage this connector in Vercel Connect, then run a Paperclip health check to verify it.",
+        `Manage this connector in Vercel Connect, then run a ${PN} health check to verify it.`,
         {
           code: "vercel_connect_managed_externally",
           manageUrl: vercelConnectIntegrationStatus().manageUrl,
@@ -14538,11 +14581,13 @@ export function toolAccessService(
       const managedProfile = managedConnectorProfile(connectorProfile);
       if (!managedProfile)
         throw badRequest("This app has an invalid managed connector profile");
+      // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+      assertVendorGitHubConnectorAllowed(managedProfile.id);
       const providerName = galleryEntry?.name ?? "Google Workspace";
       const cloudConnector = currentCloudConnector();
       if (!cloudConnector) {
         throw unprocessable(
-          `${providerName} connections through Paperclip are not available on this instance yet`,
+          `${providerName} connections through ${PN} are not available on this instance yet`,
           {
             code: "paperclip_cloud_connector_unavailable",
           },
@@ -15214,7 +15259,7 @@ export function toolAccessService(
     const cloudConnector = currentCloudConnector();
     if (!cloudConnector) {
       throw unprocessable(
-        `${providerName} connections through Paperclip are not available on this instance yet`,
+        `${providerName} connections through ${PN} are not available on this instance yet`,
         {
           code: "paperclip_cloud_connector_unavailable",
         },
@@ -15234,6 +15279,8 @@ export function toolAccessService(
     const connectorProfile = method.connectorProfile;
     const profile = managedConnectorProfile(connectorProfile);
     if (!profile) throw badRequest("Managed connector profile is invalid");
+    // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+    assertVendorGitHubConnectorAllowed(profile.id);
     const connectorSubject = subjectAgentId
       ? `agent:${subjectAgentId}`
       : subjectUserId!;
@@ -17122,6 +17169,9 @@ export function toolAccessService(
         before.profileBinding,
         actor,
       );
+      // myrmidon(DB-PERF-C-P4): this example wrote its profile, entries and binding; drop
+      // the company snapshot (one invalidation per example installed).
+      invalidateToolPolicyCache(db, companyId);
       const after = await exampleRows(companyId, definition);
       return {
         example: exampleSummary(definition, after),
@@ -17396,7 +17446,7 @@ export function toolAccessService(
       ]);
       const repositories = new Map<
         string,
-        import("@paperclipai/shared").ProjectRepository
+        import("@myrmidon/shared").ProjectRepository
       >();
       let connectionCount = 0;
       let failedConnectionCount = 0;
@@ -18487,6 +18537,9 @@ export function toolAccessService(
           });
         }
       });
+      // myrmidon(DB-PERF-C-P4): the transaction created or cleaned up the app profile and
+      // its bindings; drop the company snapshot after the commit.
+      invalidateToolPolicyCache(db, connection.companyId);
       for (const extension of accessExtensions) {
         await logActivity(db, {
           companyId: connection.companyId,
@@ -18498,6 +18551,9 @@ export function toolAccessService(
           details: extension,
         });
       }
+      // OPE-4129: install/uninstall rewrites toolProfileBindings for the
+      // connection profile — invalidate the policy snapshot cache.
+      emitToolPolicyChanged();
       return {
         connectionId: connection.id,
         installs: await listConnectionInstalls(
@@ -19060,6 +19116,7 @@ export function toolAccessService(
         })
         .returning();
       await createProfileEntries(companyId, row.id, input.entries ?? []);
+      emitToolPolicyChanged();
       return profileDetails(row.id, companyId);
     },
 
@@ -19098,6 +19155,7 @@ export function toolAccessService(
           input.entries,
         );
       }
+      emitToolPolicyChanged();
       return profileDetails(profileId, existing.companyId);
     },
 
@@ -19174,6 +19232,10 @@ export function toolAccessService(
           })),
         );
       }
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): the copy added a profile, its entries and its bindings;
+      // drop the company snapshot.
+      invalidateToolPolicyCache(db, existing.companyId);
       return profileDetails(created.id, existing.companyId);
     },
 
@@ -19264,6 +19326,10 @@ export function toolAccessService(
         .where(eq(toolProfiles.id, existing.id))
         .returning();
       if (!deleted) throw notFound("Tool profile not found");
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): the profile and its bindings are gone (or were reassigned);
+      // drop the company snapshot.
+      invalidateToolPolicyCache(db, existing.companyId);
       return {
         profile: toProfile(deleted),
         summary: details.summary,
@@ -19297,6 +19363,9 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, profile.id));
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): the profile gained an entry; drop the company snapshot.
+      invalidateToolPolicyCache(db, profile.companyId);
       return toProfileEntry(row);
     },
 
@@ -19348,6 +19417,9 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, existing.profileId));
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): the entry changed; drop the company snapshot.
+      invalidateToolPolicyCache(db, existing.companyId);
       return toProfileEntry(row);
     },
 
@@ -19361,6 +19433,9 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, row.profileId));
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): the entry is gone; drop the company snapshot.
+      invalidateToolPolicyCache(db, row.companyId);
       return toProfileEntry(row);
     },
 
@@ -19394,6 +19469,9 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, profile.id));
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): the binding changed; drop the company snapshot.
+      invalidateToolPolicyCache(db, profile.companyId);
       return toProfileBinding(row);
     },
 
@@ -19424,6 +19502,10 @@ export function toolAccessService(
           .set({ updatedAt: new Date() })
           .where(eq(toolProfiles.id, profile.id));
       }
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): bindings were removed (or the target was already unbound);
+      // drop the company snapshot.
+      invalidateToolPolicyCache(db, profile.companyId);
       return { unbound: rows.length };
     },
 
@@ -20471,7 +20553,7 @@ export function toolAccessService(
             .sort()
             .map((key) => {
               warnings.push(
-                `Header ${key} will be stored as a Paperclip secret before activation.`,
+                `Header ${key} will be stored as a ${PN} secret before activation.`,
               );
               return {
                 configPath: `headers.${key}`,
@@ -20494,7 +20576,7 @@ export function toolAccessService(
         }
         if (typeof server.command === "string") {
           warnings.push(
-            "Imported stdio commands stay draft-only unless mapped to an approved Paperclip template.",
+            `Imported stdio commands stay draft-only unless mapped to an approved ${PN} template.`,
           );
           return {
             name,

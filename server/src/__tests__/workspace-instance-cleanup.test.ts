@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { parse as parseEnvContents } from "dotenv";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import {
   cleanupWorktreeInstanceArtifacts,
   deriveWorktreeInstanceId,
@@ -9,7 +11,7 @@ import {
   readWorktreeInstancePointer,
   stopEmbeddedPostgresIfRunning,
 } from "../services/workspace-instance-cleanup.js";
-import type { WorkspaceOperation } from "@paperclipai/shared";
+import type { WorkspaceOperation } from "@myrmidon/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.js";
 
 const tempRoots = new Set<string>();
@@ -81,6 +83,15 @@ afterEach(async () => {
 });
 
 describe("worktree instance cleanup", () => {
+  it("reads canonical instance id from a worktree dotenv pointer", async () => {
+    const workspacePath = await makeTempRoot("canonical-worktree-instance-");
+    await fs.mkdir(path.join(workspacePath, ".paperclip"), { recursive: true });
+    await fs.writeFile(path.join(workspacePath, ".paperclip", ".env"), `MYRMIDON_HOME=${JSON.stringify(os.tmpdir())}\nMYRMIDON_INSTANCE_ID=canonical-id\n`);
+    const pointer = await readWorktreeInstancePointer(workspacePath);
+    expect(pointer).not.toBeNull();
+    expect(readProductEnvFrom(parseEnvContents(pointer!.envContents), "INSTANCE_ID")).toBe("canonical-id");
+  });
+
   it("derives different instance IDs for distinct paths with the same normalized name", () => {
     const parent = path.join(os.tmpdir(), "paperclip-instance-id-collision");
     const plusPath = path.join(parent, "feature+cleanup");

@@ -34,6 +34,8 @@ export interface DeployJobView {
   commit: string | null;
   status: DeployJobStatus;
   reason: string;
+  mode: "manual" | "auto" | "canary";
+  window: string | null;
   startedBy: { actorType: string; actorId: string };
   createdAt: string;
   updatedAt: string;
@@ -62,11 +64,14 @@ export interface DeployImagePreview {
 export const deployJobsQueryKey = ["myrmidon", "deploy-jobs"] as const;
 
 export const deployJobsApi = {
-  get: () => api.get<DeployJobState>("/myrmidon/deploy-jobs"),
+  get: (filters?: { mode?: string; status?: string; outcome?: string }) => {
+    const query = new URLSearchParams(filters as Record<string, string> | undefined).toString();
+    return api.get<DeployJobState>(`/myrmidon/deploy-jobs${query ? `?${query}` : ""}`);
+  },
   preview: (reference: string) =>
     api.post<DeployImagePreview>("/myrmidon/deploy-jobs/preview", { reference }),
-  create: (reference: string, reason?: string) =>
-    api.post<DeployJobView>("/myrmidon/deploy-jobs", { reference, ...(reason ? { reason } : {}) }),
+  create: (reference: string, reason?: string, mode?: "manual" | "auto" | "canary", window?: string | null) =>
+    api.post<DeployJobView>("/myrmidon/deploy-jobs", { reference, ...(reason ? { reason } : {}), ...(mode ? { mode } : {}), ...(window ? { window } : {}) }),
   abort: (id: string) => api.post<DeployJobView>(`/myrmidon/deploy-jobs/${id}/abort`, { id }),
 };
 

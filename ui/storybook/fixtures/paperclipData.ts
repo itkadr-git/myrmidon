@@ -1,6 +1,7 @@
 import type {
   ActivityEvent,
   Agent,
+  AgentListItem,
   Approval,
   AuthSession,
   BudgetPolicySummary,
@@ -20,7 +21,7 @@ import type {
   SecretProviderDescriptor,
   SidebarBadges,
   WorkspaceRuntimeService,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { RunForIssue } from "@/api/activity";
 import type { LiveRunForIssue } from "@/api/heartbeats";
 
@@ -116,9 +117,13 @@ export const storybookAuthSession: AuthSession = {
   sentryDsn: null,
 };
 
-export const storybookAgents: Agent[] = [
+// myrmidon(PERF-DIET-G): every fixture is a full agent record, so the map can
+// stand in for a detail read (which always carries the configuration).
+export const storybookAgents: (AgentListItem & { adapterConfig: Record<string, unknown> })[] = [
   {
     id: "agent-codex",
+    adapterModel: null,
+    projectIds: [],
     companyId: "company-storybook",
     name: "CodexCoder",
     urlKey: "codexcoder",
@@ -143,6 +148,8 @@ export const storybookAgents: Agent[] = [
   },
   {
     id: "agent-qa",
+    adapterModel: null,
+    projectIds: [],
     companyId: "company-storybook",
     name: "QAChecker",
     urlKey: "qachecker",
@@ -167,6 +174,8 @@ export const storybookAgents: Agent[] = [
   },
   {
     id: "agent-cto",
+    adapterModel: null,
+    projectIds: [],
     companyId: "company-storybook",
     name: "CTO",
     urlKey: "cto",
@@ -391,7 +400,7 @@ const storybookWorkspaceRuntime = {
       id: "typecheck-ui",
       name: "UI typecheck",
       kind: "job",
-      command: "pnpm --filter @paperclipai/ui typecheck",
+      command: "pnpm --filter @myrmidon/ui typecheck",
       cwd: ".",
     },
   ],
@@ -650,6 +659,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
       runtimePolicy: null,
       cleanupPolicy: null,
     },
+    developmentProcess: null,
     codebase: {
       workspaceId: "workspace-board-ui",
       repoUrl: "https://github.com/paperclipai/paperclip",

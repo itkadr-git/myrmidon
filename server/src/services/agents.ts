@@ -1,7 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
-import type { Db } from "@paperclipai/db";
+import { versionKeyEtag } from "../middleware/version-key-etag.js";
+import {
+  filterAgentListItems,
+  normalizeAgentListFilters,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents-filters.js";
+import type { Db } from "@myrmidon/db";
+import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 import {
   agents,
   toolConnectionInstalls,
@@ -17,20 +25,29 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   agentRuntimeConfigSchema,
+  issueExecutionStateSchema,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
   type AgentEligibilityAgent,
   type AgentApiKeyScope,
-} from "@paperclipai/shared";
+  // myrmidon(PERF-DIET-G): the slim list row of GET /companies/:id/agents
+  type AgentListItem,
+} from "@myrmidon/shared";
 import {
   normalizePaperclipRunnerAdapterConfig,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
+// myrmidon(1.6.5 BASE-SKILLS): the company base skills are merged into every
+// agent at creation, whichever path creates it.
+import {
+  mergeCompanyBaseSkillsIntoAgentConfig,
+} from "./company-base-skill-keys.js";
+import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
 import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
 import {
   collectSecretRefs,
@@ -55,6 +72,8 @@ import {
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -116,6 +135,13 @@ interface ClaudeLoginContext {
   applyExistingWithoutClaim?: boolean;
   inheritedFromAgentId?: string | null;
 }
+
+export {
+  normalizeAgentListFilters,
+  filterAgentListItems,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents-filters.js";
 
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
@@ -416,6 +442,99 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     return normalizeAgentRows([row], allCompanyRows)[0]!;
   }
 
+  // myrmidon(PERF-DIET-G): the slim projection behind GET /companies/:id/agents.
+  // `adapter_config` is the heavy, secret-bearing column (env bindings, access
+  // aliases); the list never selects it, and the model the list column shows is
+  // extracted in SQL instead. The company-wide read that feeds `orgChainHealth`
+  // is narrowed to the five columns the eligibility check reads, so the list no
+  // longer loads every config of the company to render itself.
+  const agentListSummaryColumns = {
+    id: agents.id,
+    companyId: agents.companyId,
+    name: agents.name,
+    role: agents.role,
+    title: agents.title,
+    icon: agents.icon,
+    status: agents.status,
+    reportsTo: agents.reportsTo,
+    capabilities: agents.capabilities,
+    adapterType: agents.adapterType,
+    runtimeConfig: agents.runtimeConfig,
+    defaultEnvironmentId: agents.defaultEnvironmentId,
+    budgetMonthlyCents: agents.budgetMonthlyCents,
+    spentMonthlyCents: agents.spentMonthlyCents,
+    pauseReason: agents.pauseReason,
+    pausedAt: agents.pausedAt,
+    errorReason: agents.errorReason,
+    permissions: agents.permissions,
+    lastHeartbeatAt: agents.lastHeartbeatAt,
+    metadata: agents.metadata,
+    createdAt: agents.createdAt,
+    updatedAt: agents.updatedAt,
+    adapterModel: sql<string | null>`${agents.adapterConfig}->>'model'`,
+  };
+
+  const agentEligibilityColumns = {
+    id: agents.id,
+    companyId: agents.companyId,
+    name: agents.name,
+    status: agents.status,
+    reportsTo: agents.reportsTo,
+  };
+
+  async function listAgentSummaries(
+    companyId: string,
+    options?: { includeTerminated?: boolean; filters?: AgentListFilters },
+  ): Promise<AgentListItem[]> {
+    const conditions = [eq(agents.companyId, companyId)];
+    if (!options?.includeTerminated) {
+      conditions.push(ne(agents.status, "terminated"));
+    }
+    const [rows, allCompanyRows] = await Promise.all([
+      db.select(agentListSummaryColumns).from(agents).where(and(...conditions)),
+      db.select(agentEligibilityColumns).from(agents).where(eq(agents.companyId, companyId)),
+    ]);
+    const hydrated = await hydrateAgentSpend<(typeof rows)[number]>(rows);
+    const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
+    // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): one membership read for the whole
+    // roster — lead projects + joined project_memberships (OPE-7282 contract).
+    const projectIdsByAgent = await listAgentProjectIds(db, companyId);
+    // Field-by-field on purpose: the projection is the contract, so a column
+    // added to AgentListItem must be added here too (or the build breaks).
+    const items = hydrated.map((row) => ({
+      id: row.id,
+      companyId: row.companyId,
+      name: row.name,
+      urlKey: normalizeAgentUrlKey(row.name) ?? row.id,
+      role: row.role,
+      title: row.title,
+      icon: row.icon,
+      status: row.status as AgentListItem["status"],
+      reportsTo: row.reportsTo,
+      capabilities: row.capabilities,
+      adapterType: row.adapterType as AgentListItem["adapterType"],
+      adapterModel: row.adapterModel,
+      projectIds: projectIdsByAgent.get(row.id) ?? [],
+      runtimeConfig: row.runtimeConfig as AgentListItem["runtimeConfig"],
+      defaultEnvironmentId: row.defaultEnvironmentId,
+      budgetMonthlyCents: row.budgetMonthlyCents,
+      spentMonthlyCents: row.spentMonthlyCents,
+      pauseReason: row.pauseReason as AgentListItem["pauseReason"],
+      pausedAt: row.pausedAt,
+      errorReason: row.errorReason,
+      permissions: normalizeAgentPermissions(row.permissions),
+      lastHeartbeatAt: row.lastHeartbeatAt,
+      metadata: row.metadata,
+      orgChainHealth: getAgentWorkEligibility({
+        agent: toEligibilityAgent(row),
+        agents: eligibilityAgents,
+      }).orgChainHealth,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+    return options?.filters ? filterAgentListItems(items, options.filters) : items;
+  }
+
   async function listCompanyAgentRows(companyId: string) {
     return db.select().from(agents).where(eq(agents.companyId, companyId));
   }
@@ -439,6 +558,69 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       )
       .groupBy(costEvents.agentId);
     return new Map(rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]));
+  }
+
+  // myrmidon(PERF-DIET-T): cheap version aggregate for the agents list ETag.
+  // Captures everything that can change the projected list: row content
+  // (updatedAt), row set (count), the per-month spend hydration, and the UTC
+  // month boundary that rolls the spend window. Actors may additionally filter
+  // rows per request; those callers pass their filtered shape through
+  // `actorShape` (see routes/agents.ts) so 304s never go stale per-actor.
+  async function listSummariesVersionKey(
+    companyId: string,
+    actorShape: string = "all",
+    filters?: AgentListFilters | NormalizedAgentListFilters | string | null,
+  ): Promise<string> {
+    const { start } = currentUtcMonthWindow();
+    const [agg] = await db
+      .select({
+        rowCount: sql<number>`count(*)::int`,
+        maxUpdatedAt: sql<string | null>`max(${agents.updatedAt})`,
+        maxStatus: sql<string | null>`max(${agents.status})`,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const [spendAgg] = await db
+      .select({
+        spendSum: sql<string | null>`coalesce(sum(${costEvents.costCents}), 0)::text`,
+        spendRowCount: sql<number>`count(*)::int`,
+      })
+      .from(costEvents)
+      .where(
+        and(
+          eq(costEvents.companyId, companyId),
+          gte(costEvents.occurredAt, start),
+        ),
+      );
+
+    let filterKey: string | null = null;
+    if (typeof filters === "string") {
+      filterKey = filters;
+    } else if (filters) {
+      const normalized = "statuses" in filters
+        ? (filters as NormalizedAgentListFilters)
+        : normalizeAgentListFilters(filters as AgentListFilters);
+      if (normalized) {
+        filterKey = JSON.stringify(normalized);
+      }
+    }
+
+    const parts: Array<string | number | boolean | null | undefined> = [
+      companyId,
+      actorShape,
+    ];
+    if (filterKey) {
+      parts.push(filterKey);
+    }
+    parts.push(
+      agg?.rowCount ?? 0,
+      agg?.maxUpdatedAt ?? null,
+      agg?.maxStatus ?? null,
+      spendAgg?.spendSum ?? "0",
+      spendAgg?.spendRowCount ?? 0,
+      start.toISOString().slice(0, 10),
+    );
+    return versionKeyEtag("agents-list", parts);
   }
 
   async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
@@ -711,7 +893,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     const beforeMarker = readBuiltInAgentMarker(beforeMetadata);
     const afterMarker = readBuiltInAgentMarker(afterMetadata);
     if (builtInAgentMarkersEqual(beforeMarker, afterMarker)) return;
-    throw conflict("Built-in agent marker is managed by Paperclip and cannot be edited directly", {
+    throw conflict(`Built-in agent marker is managed by ${PN} and cannot be edited directly`, {
       code: "built_in_agent_marker_readonly",
       key: beforeMarker?.key ?? afterMarker?.key ?? null,
     });
@@ -773,6 +955,16 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    // myrmidon(OPE-12150): moving an agent out of `error` by a status patch also
+    // clears the stale reason; before, an idle agent kept «контейнер не поднят».
+    if (
+      existing.status === "error" &&
+      data.status &&
+      data.status !== "error" &&
+      !Object.prototype.hasOwnProperty.call(data, "errorReason")
+    ) {
+      normalizedPatch.errorReason = null;
+    }
     if (data.permissions !== undefined) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
@@ -900,6 +1092,14 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       return normalizeAgentRows(hydrated, allCompanyRows);
     },
 
+    // myrmidon(PERF-DIET-G): the slim reader behind GET /companies/:id/agents.
+    // `list` above stays the full-row reader for every other caller (configs,
+    // internal flows); this one never loads adapter_config.
+    listSummaries: listAgentSummaries,
+
+    // myrmidon(PERF-DIET-T): cheap version-key for the list's ETag/304 path.
+    listSummariesVersionKey,
+
     getById,
 
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">, options?: CreateAgentOptions) => {
@@ -923,11 +1123,20 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
         : {};
       const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+      // myrmidon(1.6.5 BASE-SKILLS): the company's base skills become part of
+      // the agent's own selection here, so a new agent has them from its first
+      // run on. Every creation path lands in this function — the hire/create
+      // routes, a template or built-in agent, an approved hire request — and a
+      // company without base skills is untouched.
+      const configWithBaseSkills = mergeCompanyBaseSkillsIntoAgentConfig(
+        adapterConfig,
+        await readCompanyBaseSkillKeysPort(db, companyId),
+      );
       // Run the server-enforced binding invariant after generic normalization
       // and before any database write. A create has no prior config.
       const bindingDecision = assertClaudeOAuthBindingInvariant({
         adapterType,
-        nextConfig: adapterConfig,
+        nextConfig: configWithBaseSkills,
         priorConfig: null,
       });
       return db.transaction(async (tx) => {
@@ -941,7 +1150,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
           consume: true,
           environmentId: (data.defaultEnvironmentId as string | null | undefined) ?? null,
           claudeLogin: options?.claudeLogin,
-          childAdapterConfig: adapterConfig,
+          childAdapterConfig: configWithBaseSkills,
         });
         const created = await tx
           .insert(agents)
@@ -951,7 +1160,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
             companyId,
             role,
             adapterType,
-            adapterConfig,
+            adapterConfig: configWithBaseSkills,
             permissions: normalizedPermissions,
             runtimeConfig,
           })
@@ -1054,7 +1263,6 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     terminate: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
-
       await db
         .update(agents)
         .set({
@@ -1071,6 +1279,48 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         .set({ revokedAt: new Date() })
         .where(eq(agentApiKeys.agentId, id));
 
+      const candidates = await db
+        .select({ id: agents.id, name: agents.name, role: agents.role })
+        .from(agents)
+        .where(and(eq(agents.companyId, existing.companyId), ne(agents.id, id), notInArray(agents.status, ["retired", "terminated"])));
+      const openIssues = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, existing.companyId), notInArray(issues.status, ["done", "cancelled"])));
+      const load = new Map<string, number>();
+      for (const issue of openIssues) if (issue.assigneeAgentId) load.set(issue.assigneeAgentId, (load.get(issue.assigneeAgentId) ?? 0) + 1);
+      const replacement = candidates
+        .filter((candidate) => candidate.role === existing.role)
+        .sort((a, b) => (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0) || a.id.localeCompare(b.id))[0];
+      if (replacement) {
+        for (const issue of openIssues) {
+          const parsed = issueExecutionStateSchema.safeParse(issue.executionState);
+          const state = parsed.success ? parsed.data : null;
+          const assigneeMatch = issue.assigneeAgentId === id;
+          const participantMatch = state?.currentParticipant?.type === "agent" && state.currentParticipant.agentId === id;
+          const returnMatch = state?.returnAssignee?.type === "agent" && state.returnAssignee.agentId === id;
+          if (!assigneeMatch && !participantMatch && !returnMatch) continue;
+          const nextState = state
+            ? {
+                ...state,
+                currentParticipant: participantMatch ? { type: "agent" as const, agentId: replacement.id } : state.currentParticipant,
+                returnAssignee: returnMatch ? { type: "agent" as const, agentId: replacement.id } : state.returnAssignee,
+              }
+            : undefined;
+          await db.update(issues).set({
+            ...(assigneeMatch ? { assigneeAgentId: replacement.id } : {}),
+            ...(nextState ? { executionState: nextState } : {}),
+            updatedAt: new Date(),
+          }).where(eq(issues.id, issue.id));
+          await db.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            authorType: "system",
+            body: `Terminated agent ${existing.name} was replaced by ${replacement.name} for open work.`,
+          });
+          load.set(replacement.id, (load.get(replacement.id) ?? 0) + 1);
+        }
+      }
       return getById(id);
     },
 

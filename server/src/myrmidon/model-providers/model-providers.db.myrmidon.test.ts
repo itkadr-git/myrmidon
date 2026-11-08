@@ -1,0 +1,457 @@
+// server/src/myrmidon/model-providers/model-providers.db.myrmidon.test.ts
+//
+// myrmidon(1.6.1 MODEL-PROVIDERS A): the service against a real database —
+// the schema, the write-only secret path, key validation and the model cache.
+//
+// The secret store is a fake (values in a Map) so the suite does not depend on
+// the encryption master key; the service only needs the store's interface.
+// The provider catalog is a fake too: what matters here is that the service
+// calls it with the CANDIDATE key and stores what it answered.
+
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { companies, createDb, modelProviderModels, modelProviders } from "@myrmidon/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../../__tests__/helpers/embedded-postgres.js";
+import {
+  createModelProviderService,
+  ProviderAuthError,
+  type ModelProviderCatalogPort,
+  type ModelProviderSecretStoreDeps,
+} from "./service.js";
+import { readPackageExpirySignals } from "./signals.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+type Db = ReturnType<typeof createDb>;
+
+const KEY_VALUE = "sk-db-suite-provider-key";
+const ROTATED_VALUE = "sk-db-suite-rotated-key";
+
+function fakeSecrets(): ModelProviderSecretStoreDeps & { store: Map<string, string> } {
+  const store = new Map<string, string>();
+  return {
+    store,
+    readSecretValue: async (_companyId, name) => store.get(name) ?? null,
+    findSecretId: async (_companyId, name) => (store.has(name) ? `id-${name}` : null),
+    createSecret: async ({ name, value }) => {
+      store.set(name, value);
+      return { id: `id-${name}` };
+    },
+    rotateSecret: async (secretId, value) => {
+      store.set(secretId.replace(/^id-/, ""), value);
+    },
+    restoreSecret: async (secretId, value) => {
+      const name = secretId.replace(/^id-/, "");
+      if (value === null) store.delete(name);
+      else store.set(name, value);
+    },
+    deleteSecret: async (secretId) => {
+      store.delete(secretId.replace(/^id-/, ""));
+    },
+  };
+}
+
+function fakeCatalog(): ModelProviderCatalogPort & {
+  calls: Array<{ baseUrl: string; apiKey: string }>;
+  probes: Array<{ baseUrl: string; apiKey: string; model: string }>;
+} {
+  const calls: Array<{ baseUrl: string; apiKey: string }> = [];
+  const probes: Array<{ baseUrl: string; apiKey: string; model: string }> = [];
+  return {
+    calls,
+    probes,
+    async listModels({ baseUrl, apiKey }) {
+      calls.push({ baseUrl, apiKey });
+      if (apiKey === "bad-key") throw new ProviderAuthError("the provider answered 401");
+      if (apiKey === "no-models-key") return { models: [] };
+      if (apiKey === ROTATED_VALUE) return { models: ["model-x", "model-y", "model-z"] };
+      return { models: ["model-a", "model-b"] };
+    },
+    async probeToolCall(input) {
+      probes.push(input);
+      if (input.apiKey === "probe-fail") throw new Error("tool calls are disabled");
+      if (input.apiKey === "probe-leak") throw new Error("upstream said: Authorization Bearer sk-leaked-secret rejected");
+    },
+  };
+}
+
+describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the database", () => {
+  let db!: Db;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId!: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-model-providers-");
+    db = createDb(tempDb.connectionString);
+  }, 30_000);
+
+  afterEach(async () => {
+    await db.delete(modelProviderModels);
+    await db.delete(modelProviders);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  function makeService() {
+    const secrets = fakeSecrets();
+    const catalog = fakeCatalog();
+    const activity: Array<{ action: string; providerId: string }> = [];
+    const service = createModelProviderService({
+      db,
+      secrets,
+      catalog,
+      now: () => new Date("2026-01-02T00:00:00Z"),
+    });
+    // The activity sink is passed per call (the route layer owns it in prod);
+    // wrap the mutating methods so every call carries it.
+    const record = (entry: { action: string; providerId: string }) => {
+      activity.push(entry);
+    };
+    const createProvider = service.createProvider.bind(service);
+    (service as Record<string, unknown>).createProvider = (input: Parameters<typeof createProvider>[0]) =>
+      createProvider({ ...input, activity: record });
+    const rotateKey = service.rotateProviderKey.bind(service);
+    (service as Record<string, unknown>).rotateProviderKey = (input: Parameters<typeof rotateKey>[0]) =>
+      rotateKey({ ...input, activity: record });
+    const removeProvider = service.removeProvider.bind(service);
+    (service as Record<string, unknown>).removeProvider = (input: Parameters<typeof removeProvider>[0]) =>
+      removeProvider({ ...input, activity: record });
+    return { service, secrets: secrets.store, catalog, probes: catalog.probes, activity };
+  }
+
+  async function makeCompany(): Promise<string> {
+    const row = await db
+      .insert(companies)
+      .values({
+        name: `company ${randomUUID()}`,
+        issuePrefix: `MP${randomUUID().slice(0, 6).toUpperCase()}`,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    return row.id;
+  }
+
+  it("creates a provider: row + secret + model cache, key never in the DB", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, catalog, activity } = makeService();
+    const view = await service.createProvider({
+      companyId,
+      body: { type: "dashscope", name: "DashScope prod", key: KEY_VALUE, baseUrl: null },
+    });
+
+    expect(catalog.calls).toEqual([
+      { baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", apiKey: KEY_VALUE },
+    ]);
+    expect(view.hasKey).toBe(true);
+    expect(view.credentialSecretName).toBe(`model-provider-key-${view.id}`);
+    expect(secrets.get(view.credentialSecretName!)).toBe(KEY_VALUE);
+    expect(activity.map((a) => a.action)).toEqual(["model_provider_added"]);
+
+    // The database row references the secret name and holds no value.
+    const row = (await db.select().from(modelProviders))[0]!;
+    expect(row.credentialSecretName).toBe(view.credentialSecretName);
+    expect(JSON.stringify(row)).not.toContain(KEY_VALUE);
+
+    // The model cache was written from the catalog answer.
+    const models = await service.listModels(companyId, view.id);
+    expect(models.map((m) => m.modelName).sort()).toEqual(["model-a", "model-b"]);
+    expect(models[0].litellmModelName).toBe("dashscope/model-a");
+  });
+
+  it("refuses an invalid key with a 4xx and writes nothing", async () => {
+    companyId = await makeCompany();
+    const { service, secrets } = makeService();
+    await expect(
+      service.createProvider({ companyId, body: { type: "openai", name: "p", key: "bad-key", baseUrl: null } }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect((await db.select().from(modelProviders))).toHaveLength(0);
+    expect(secrets.size).toBe(0);
+  });
+
+  it("refuses a duplicate name per company and isolates companies", async () => {
+    companyId = await makeCompany();
+    const other = await makeCompany();
+    const { service } = makeService();
+    await service.createProvider({ companyId, body: { type: "openai", name: "dup", key: KEY_VALUE, baseUrl: null } });
+    await expect(
+      service.createProvider({ companyId, body: { type: "openai", name: "dup", key: KEY_VALUE, baseUrl: null } }),
+    ).rejects.toMatchObject({ status: 409 });
+    // The same name in another company is fine.
+    await service.createProvider({ companyId: other, body: { type: "openai", name: "dup", key: KEY_VALUE, baseUrl: null } });
+    const views = await service.listProviders(companyId);
+    expect(views).toHaveLength(1);
+  });
+
+  it("rotates the key: validation first, store and cache move", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, catalog, activity } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "p", key: KEY_VALUE, baseUrl: null },
+    });
+
+    const rotated = await service.rotateProviderKey({ companyId, providerId: created.id, key: ROTATED_VALUE });
+    expect(rotated.hasKey).toBe(true);
+    expect(secrets.get(created.credentialSecretName!)).toBe(ROTATED_VALUE);
+    expect(catalog.calls.at(-1)?.apiKey).toBe(ROTATED_VALUE);
+    // The cache was replaced with the new snapshot.
+    const models = await service.listModels(companyId, created.id);
+    expect(models.map((m) => m.modelName).sort()).toEqual(["model-x", "model-y", "model-z"]);
+    expect(activity.at(-1)?.action).toBe("model_provider_key_rotated");
+
+    // A bad rotation leaves everything as it was.
+    await expect(
+      service.rotateProviderKey({ companyId, providerId: created.id, key: "bad-key" }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(secrets.get(created.credentialSecretName!)).toBe(ROTATED_VALUE);
+    expect((await service.listModels(companyId, created.id))).toHaveLength(3);
+
+    // Rollback to snapshot restores secret and model snapshot
+    const snapshot = await service.captureKeyRotationSnapshot(companyId, created.id);
+    expect(snapshot.secretValue).toBe(ROTATED_VALUE);
+    await service.rollbackProviderKey(companyId, created.id, {
+      ...snapshot,
+      secretValue: KEY_VALUE,
+      models: snapshot.models.slice(0, 1),
+    });
+    expect(secrets.get(created.credentialSecretName!)).toBe(KEY_VALUE);
+    expect((await service.listModels(companyId, created.id))).toHaveLength(1);
+  });
+
+  it("removes the provider, its cache and its secret", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, activity } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "p", key: KEY_VALUE, baseUrl: null },
+    });
+    await service.removeProvider({ companyId, providerId: created.id });
+
+    expect((await db.select().from(modelProviders))).toHaveLength(0);
+    expect((await db.select().from(modelProviderModels))).toHaveLength(0);
+    expect(secrets.size).toBe(0);
+    expect(activity.at(-1)?.action).toBe("model_provider_removed");
+    await expect(service.readProvider(companyId, created.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("applies per-model enable/disable switches", async () => {
+    companyId = await makeCompany();
+    const { service } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "p", key: KEY_VALUE, baseUrl: null },
+    });
+    const updated = await service.setModels({
+      companyId,
+      providerId: created.id,
+      models: [{ modelName: "model-b", enabled: false, free: true }],
+    });
+    const modelB = updated.find((m) => m.modelName === "model-b")!;
+    expect(modelB.enabled).toBe(false);
+    expect(modelB.free).toBe(true);
+    const modelA = updated.find((m) => m.modelName === "model-a")!;
+    expect(modelA.enabled).toBe(true);
+  });
+
+  it("persists tool-call compatibility probe results", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "probe", key: KEY_VALUE, baseUrl: null },
+    });
+    const compatible = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(compatible.toolCallCompatible).toBe(true);
+    expect(probes[0]?.model).toBe("model-a");
+    expect(probes[0]?.apiKey).toBe(KEY_VALUE);
+    expect(JSON.stringify(compatible)).not.toContain(KEY_VALUE);
+    secrets.set(created.credentialSecretName!, "probe-fail");
+    const failed = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(failed.toolCallCompatible).toBe(false);
+    expect(failed.toolCallCheckError).toBe("probe_failed: the tool-call probe failed");
+  });
+
+  it("probes a provider that has no gpt-4o-mini with a model from its own /models", async () => {
+    companyId = await makeCompany();
+    const { service, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "nomini", key: KEY_VALUE, baseUrl: null },
+    });
+    await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(probes[0]?.model).not.toBe("gpt-4o-mini");
+    await service.checkToolCallCompatibility({ companyId, providerId: created.id, model: "model-b" });
+    expect(probes[1]?.model).toBe("model-b");
+  });
+
+  it("answers a clear no-models error when /models is empty and does not probe", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "empty", key: KEY_VALUE, baseUrl: null },
+    });
+    secrets.set(created.credentialSecretName!, "no-models-key");
+    await expect(
+      service.checkToolCallCompatibility({ companyId, providerId: created.id }),
+    ).rejects.toMatchObject({ details: { code: "provider_no_models" } });
+    expect(probes).toHaveLength(0);
+  });
+
+  it("never stores or returns the raw exception text of a failed probe", async () => {
+    companyId = await makeCompany();
+    const { service, secrets } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "secret", key: KEY_VALUE, baseUrl: null },
+    });
+    secrets.set(created.credentialSecretName!, "probe-leak");
+    const failed = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(failed.toolCallCompatible).toBe(false);
+    expect(failed.toolCallCheckError).not.toContain("sk-leaked-secret");
+    expect(failed.toolCallCheckError).toBe("probe_failed: the tool-call probe failed");
+  });
+
+  it("reports hasKey false when the secret is gone and never leaks the value", async () => {
+    companyId = await makeCompany();
+    const { service, secrets } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "p", key: KEY_VALUE, baseUrl: null },
+    });
+    secrets.clear();
+    const views = await service.listProviders(companyId);
+    expect(views[0].hasKey).toBe(false);
+    expect(JSON.stringify(views)).not.toContain(KEY_VALUE);
+    expect(Object.keys(views[0]).sort()).toEqual(
+      [
+        "id",
+        "type",
+        "name",
+        "baseUrl",
+        "hasKey",
+        "credentialSecretName",
+        "free",
+        "expiresAt",
+        "packageName",
+        "rpmLimit",
+        "toolCallCompatible",
+        "toolCallCheckedAt",
+        "toolCallCheckError",
+        "keyValidatedAt",
+        "packageWarning",
+        "createdAt",
+        "updatedAt",
+      ].sort(),
+    );
+  });
+
+  it("automatically checks tool-call compatibility on key save", async () => {
+    companyId = await makeCompany();
+    const { service, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "auto-probe", key: KEY_VALUE, baseUrl: null },
+      autoProbeToolCall: true,
+    });
+
+    expect(created.toolCallCompatible).toBe(true);
+    expect(created.toolCallCheckedAt).not.toBeNull();
+    expect(created.toolCallCheckError).toBeNull();
+    expect(probes).toHaveLength(1);
+    expect(probes[0]?.apiKey).toBe(KEY_VALUE);
+    expect(probes[0]?.model).toBe("model-a");
+
+    // Verify persisted directly in the registry row
+    const view = await service.readProvider(companyId, created.id);
+    expect(view.toolCallCompatible).toBe(true);
+    expect(view.toolCallCheckedAt).not.toBeNull();
+  });
+
+  it("automatically checks tool-call compatibility on key rotation", async () => {
+    companyId = await makeCompany();
+    const { service, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "auto-rotate", key: KEY_VALUE, baseUrl: null },
+      autoProbeToolCall: false,
+    });
+    expect(probes).toHaveLength(0);
+
+    const rotated = await service.rotateProviderKey({
+      companyId,
+      providerId: created.id,
+      key: ROTATED_VALUE,
+      autoProbeToolCall: true,
+    });
+
+    expect(rotated.toolCallCompatible).toBe(true);
+    expect(rotated.toolCallCheckedAt).not.toBeNull();
+    expect(probes).toHaveLength(1);
+    expect(probes[0]?.apiKey).toBe(ROTATED_VALUE);
+
+    const view = await service.readProvider(companyId, created.id);
+    expect(view.toolCallCompatible).toBe(true);
+  });
+
+  it("evaluates package expiration warnings and records board signals", async () => {
+    companyId = await makeCompany();
+    const { service } = makeService();
+
+    // 15-day package (e.g. nghimmo) created on 2026-10-01, expires on 2026-10-16
+    const created = await service.createProvider({
+      companyId,
+      body: {
+        type: "openai",
+        name: "nghimmo-test",
+        key: KEY_VALUE,
+        baseUrl: null,
+        packageName: "nghimmo-15d",
+        expiresAt: "2026-10-16T00:00:00.000Z",
+      },
+      autoProbeToolCall: false,
+    });
+
+    // Check at day 12 (2026-10-13, 80% elapsed, 3 days remaining)
+    const warnings = await service.checkPackageExpirations(companyId, {
+      now: new Date("2026-10-13T00:00:00.000Z"),
+      thresholdPercent: 80,
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      providerId: created.id,
+      providerName: "nghimmo-test",
+      packageName: "nghimmo-15d",
+      trigger: "time",
+      status: "warning",
+      remainingDays: 3,
+    });
+
+    // Verify signal recorded for board attention
+    const signals = readPackageExpirySignals(companyId);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].providerId).toBe(created.id);
+    expect(signals[0].severity).toBe("medium");
+    expect(signals[0].whyNow).toContain("3 days remaining");
+
+    // Also check expired state
+    const expiredWarnings = await service.checkPackageExpirations(companyId, {
+      now: new Date("2026-10-17T00:00:00.000Z"),
+      thresholdPercent: 80,
+    });
+    expect(expiredWarnings).toHaveLength(1);
+    expect(expiredWarnings[0].status).toBe("expired");
+
+    const expiredSignals = readPackageExpirySignals(companyId);
+    expect(expiredSignals).toHaveLength(1);
+    expect(expiredSignals[0].severity).toBe("high");
+  });
+});
