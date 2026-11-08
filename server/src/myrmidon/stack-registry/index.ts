@@ -54,6 +54,8 @@ export {
   readStackGithubToken,
   STACK_OSV_API_BASE_ENV,
   readStackOsvApiBase,
+  STACK_BACKLOG_LAG_RELEASES_ENV,
+  readStackBacklogLagReleases,
 } from "./settings.js";
 export {
   buildStackAttentionCards,
@@ -61,6 +63,12 @@ export {
   STACK_ATTENTION_EXCERPT_MAX,
   type StackAttentionCard,
 } from "./attention.js";
+export {
+  decideStackBacklogDrafts,
+  STACK_BACKLOG_LAG_DEFAULT,
+  type StackBacklogDraft,
+  type StackBacklogDraftOptions,
+} from "./backlog-draft.js";
 export {
   STACK_GITHUB_API_BASE,
   STACK_HTTP_TIMEOUT_MS,

@@ -4,7 +4,7 @@ import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
-import { resolveGitHubRepositoryToken } from "./github-external-object-provider.js";
+import { resetGitHubObjectCacheForTests, resolveGitHubRepositoryToken } from "./github-external-object-provider.js";
 import type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -480,6 +480,7 @@ export function clearCiCacheForTests(): void {
   prHeadCache.clear();
   checkRunsCache.clear();
   resetGitHubRateLimitForTests();
+  resetGitHubObjectCacheForTests();
 }
 
 export const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
