@@ -4,7 +4,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { usersRoutes } from "../routes/users.js";
 import { auditRoutes } from "../routes/audit.js";
-import { userBlocks } from "@myrmidon/db";
+import {
+  activityLog,
+  authSessions,
+  authUsers,
+  companies,
+  companyMemberships,
+  instanceSettings,
+  userBlocks,
+} from "@myrmidon/db";
 
 const testState = vi.hoisted(() => ({
   auditEntries: [] as any[],
@@ -33,21 +41,39 @@ describe("users block API and audit routes", () => {
   let mockUpdatedMemberships: any[] = [];
   const mockAuditEntries = testState.auditEntries;
 
+  /**
+   * A table-aware mock of the drizzle builder surface the block routes use.
+   * Real call shapes reproduced here (server/src/myrmidon/users-admin-a):
+   *   - insert(userBlocks).values(...).onConflictDoNothing()          (service + in-tx re-insert)
+   *   - insert(instanceSettings).values(...).onConflictDoNothing()   (singleton bootstrap)
+   *   - update(boardApiKeys).set(...).where(...)                     (API-key revoke)
+   *   - delete(authSessions).where(...).returning(...)               (session close)
+   *   - select().from(authUsers).where(...)                          (getUser by id)
+   *   - select().from(instanceSettings).where(...).for("update")     (blocklist row)
+   *   - select().from(companyMemberships).where(...)                 (getMembership)
+   *   - select({id}).from(companies)                                 (audit target companies)
+   *   - select(...).from(activityLog)...limit(...)                   (audit listing)
+   */
   const mockDb = {
     insert: vi.fn((table: any) => ({
       values: vi.fn((vals: any) => {
         if (table === userBlocks) {
           mockInsertedBlocks.push(vals);
         }
-        return {
+        const builder: any = {
           onConflictDoNothing: vi.fn().mockResolvedValue({}),
           returning: vi.fn().mockResolvedValue([{ id: "company-1" }]),
         };
+        if (table === instanceSettings) {
+          // setBlockedUser bootstraps the singleton row; it never reads values back.
+          return { onConflictDoNothing: builder.onConflictDoNothing };
+        }
+        return builder;
       }),
     })),
-    update: vi.fn((table: any) => ({
+    update: vi.fn((_table: any) => ({
       set: vi.fn((setVals: any) => ({
-        where: vi.fn().mockImplementation((condition: any) => {
+        where: vi.fn().mockImplementation(() => {
           mockRevokedKeys.push(setVals);
           mockUpdatedMemberships.push(setVals);
           return Promise.resolve([]);
@@ -56,7 +82,10 @@ describe("users block API and audit routes", () => {
     })),
     delete: vi.fn((table: any) => ({
       where: vi.fn().mockImplementation(() => {
-        const deleted = [{ id: "session-1" }, { id: "session-2" }];
+        const deleted =
+          table === authSessions
+            ? [{ id: "session-1" }, { id: "session-2" }]
+            : [{ id: "row-1" }];
         mockDeletedSessions.push(...deleted);
         return {
           returning: vi.fn().mockResolvedValue(deleted),
@@ -65,14 +94,43 @@ describe("users block API and audit routes", () => {
     })),
     select: vi.fn(() => {
       const query: any = {
-        from: vi.fn(() => query),
+        from: vi.fn((table: any) => {
+          query.__table = table;
+          return query;
+        }),
         where: vi.fn(() => query),
         orderBy: vi.fn(() => query),
         for: vi.fn(() => query),
-        limit: vi.fn().mockImplementation(() => Promise.resolve(mockAuditEntries)),
-        then: vi.fn((resolve: (value: any[]) => void) =>
-          resolve([{ id: "company-1", general: {} }]),
-        ),
+        limit: vi.fn().mockImplementation(() => {
+          if (query.__table === activityLog) {
+            return Promise.resolve(mockAuditEntries);
+          }
+          return Promise.resolve([]);
+        }),
+        then: (onFulfilled: (value: any[]) => any, onRejected?: (reason: unknown) => any) => {
+          let rows: any[];
+          if (query.__table === instanceSettings) {
+            // readStoredBlockedUsers: the singleton row (or none).
+            rows = [{ id: "settings-1", general: {} }];
+          } else if (query.__table === companyMemberships) {
+            // getMembership maps rows[0] ?? null: no membership by default.
+            rows = [];
+          } else if (query.__table === authUsers) {
+            // getUser targets one user id; the mock resolves the target row.
+            rows = [
+              {
+                id: "user-123",
+                name: "User",
+                email: "user@example.com",
+                createdAt: new Date(),
+              },
+            ];
+          } else {
+            // auditUserBlock: the company rows to fan audit entries over.
+            rows = [{ id: "company-1", general: {} }];
+          }
+          return Promise.resolve(rows).then(onFulfilled, onRejected);
+        },
       };
       return query;
     }),
@@ -92,6 +150,9 @@ describe("users block API and audit routes", () => {
     return app;
   }
 
+  // Session user actor passes the instance assertAdmin guard (type "user" +
+  // isInstanceAdmin). Board actor passes both the instance guard and the
+  // company route's assertCompanyAccess + isInstanceAdmin path.
   const adminActor = {
     type: "user",
     actorId: "admin-user-id",
@@ -106,12 +167,12 @@ describe("users block API and audit routes", () => {
     companyIds: ["company-1"],
   };
 
+  // Non-admin board actor: instance routes reject with 403 (assertAdmin), the
+  // company route with 403 (assertCompanyAccess: companyIds not listed).
   const nonAdminActor = {
-    type: "user",
-    actorId: "regular-user-id",
+    type: "board",
+    userId: "regular-user-id",
     isInstanceAdmin: false,
-    source: "session",
-    memberships: [],
   };
 
   beforeEach(() => {
@@ -149,7 +210,11 @@ describe("users block API and audit routes", () => {
         .send({ reason: "" });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toContain("reason");
+      // The shared error handler answers zod failures with the constant
+      // "Validation error" message; the field lives in the issue paths.
+      expect(res.body.error).toBe("Validation error");
+      const issuePaths = JSON.stringify(res.body.details);
+      expect(issuePaths).toContain("reason");
     });
 
     it("rejects whitespace-only reason with 400 Bad Request", async () => {
@@ -159,7 +224,8 @@ describe("users block API and audit routes", () => {
         .send({ reason: "    " });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toContain("reason");
+      expect(res.body.error).toBe("Validation error");
+      expect(JSON.stringify(res.body.details)).toContain("reason");
     });
 
     it("rejects when reason is missing with 400 Bad Request", async () => {
@@ -169,7 +235,8 @@ describe("users block API and audit routes", () => {
         .send({});
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toContain("reason");
+      expect(res.body.error).toBe("Validation error");
+      expect(JSON.stringify(res.body.details)).toContain("reason");
     });
 
     it("rejects when an admin tries to block themselves with 409 Conflict", async () => {
@@ -197,10 +264,16 @@ describe("users block API and audit routes", () => {
         sessionsClosed: 2,
       });
 
-      expect(mockInsertedBlocks.length).toBe(1);
+      // setUserBlocked inserts into userBlocks twice by design: the service
+      // guard write and the idempotent re-insert inside the settings
+      // transaction. The route must not add a third write.
+      expect(mockInsertedBlocks.length).toBe(2);
       expect(mockInsertedBlocks[0].userId).toBe("user-123");
       expect(mockInsertedBlocks[0].blockedByUserId).toBe("admin-user-id");
-      expect(mockInsertedBlocks[0].reason).toBe("Suspicious behavior");
+      expect(mockInsertedBlocks[1]).toEqual(mockInsertedBlocks[0]);
+
+      expect(mockDeletedSessions.length).toBe(2);
+      expect(mockRevokedKeys.length).toBeGreaterThan(0);
 
       expect(testState.auditEntries.length).toBe(1);
       const blockAudit = testState.auditEntries[0];
@@ -313,6 +386,7 @@ describe("users block API and audit routes", () => {
       expect(typeof res.body.token).toBe("string");
       expect(res.body.token.length).toBeGreaterThan(10);
       expect(res.body.resetToken).toBe(res.body.token);
+      expect(res.body.passwordSetLink).toContain(res.body.token);
 
       expect(testState.auditEntries.length).toBe(1);
       const audit = testState.auditEntries[0];
@@ -338,7 +412,9 @@ describe("users block API and audit routes", () => {
         .send({ reason: "" });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toContain("reason");
+      // Same validate() + errorHandler contract as the instance route.
+      expect(res.body.error).toBe("Validation error");
+      expect(JSON.stringify(res.body.details)).toContain("reason");
     });
 
     it("rejects when an admin tries to block themselves within company with 409 Conflict", async () => {
@@ -360,7 +436,6 @@ describe("users block API and audit routes", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
         ok: true,
-        companyId: "company-1",
         userId: "user-123",
         blocked: true,
         reason: "Company violation",

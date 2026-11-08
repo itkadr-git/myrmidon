@@ -238,6 +238,7 @@ describePostgres("user block API with audit (OPE-10215)", () => {
 
   describe("PATCH /api/users/:id/block and POST /api/users/:id/reset-password (OPE-12116)", () => {
     it("returns 404 when target user does not exist", async () => {
+      const adminApp = createApp(db, admin);
       const nonExistentUserId = "00000000-0000-0000-0000-000000000000";
       const blockRes = await request(adminApp)
         .patch(`/api/users/${nonExistentUserId}/block`)
@@ -250,8 +251,11 @@ describePostgres("user block API with audit (OPE-10215)", () => {
     });
 
     it("blocks, unblocks, and resets password for target user", async () => {
+      const adminApp = createApp(db, admin);
+      // The OPE-8985 admin user route is the canonical way to create a managed
+      // user without a password (one-time set link, no SMTP).
       const created = await request(adminApp)
-        .post("/api/users")
+        .post("/api/myrmidon/users-admin-a/users")
         .send({
           username: `user-block-flow-${Date.now()}`,
           name: "Flow User",
@@ -268,10 +272,15 @@ describePostgres("user block API with audit (OPE-10215)", () => {
       expect(blockRes.body.blocked).toBe(true);
       expect(blockRes.body.reason).toBe("Temporary freeze");
 
-      // Verify blocked state in getUser
-      const userAfterBlock = await request(adminApp).get(`/api/users/${targetUserId}`);
-      expect(userAfterBlock.status).toBe(200);
-      expect(userAfterBlock.body.blocked).toBe(true);
+      // Verify the blocked flag through the managed-user listing: the block
+      // must appear in both user_blocks and the instance settings blocklist.
+      const listAfterBlock = await request(adminApp).get("/api/myrmidon/users-admin-a/users");
+      expect(listAfterBlock.status).toBe(200);
+      const blockedEntry = listAfterBlock.body.users.find(
+        (user: { id: string; blocked: boolean }) => user.id === targetUserId,
+      );
+      expect(blockedEntry).toBeDefined();
+      expect(blockedEntry.blocked).toBe(true);
 
       // 2. PATCH unblock
       const unblockRes = await request(adminApp)
@@ -280,10 +289,14 @@ describePostgres("user block API with audit (OPE-10215)", () => {
       expect(unblockRes.status).toBe(200);
       expect(unblockRes.body.blocked).toBe(false);
 
-      // Verify unblocked state
-      const userAfterUnblock = await request(adminApp).get(`/api/users/${targetUserId}`);
-      expect(userAfterUnblock.status).toBe(200);
-      expect(userAfterUnblock.body.blocked).toBe(false);
+      // Verify the unblocked flag through the managed-user listing.
+      const listAfterUnblock = await request(adminApp).get("/api/myrmidon/users-admin-a/users");
+      expect(listAfterUnblock.status).toBe(200);
+      const unblockedEntry = listAfterUnblock.body.users.find(
+        (user: { id: string; blocked: boolean }) => user.id === targetUserId,
+      );
+      expect(unblockedEntry).toBeDefined();
+      expect(unblockedEntry.blocked).toBe(false);
 
       // 3. POST reset-password
       const resetRes = await request(adminApp)
