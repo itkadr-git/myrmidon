@@ -145,6 +145,15 @@ export function boardMergeReturnComment(input: {
   baseRef: string;
 }): string {
   const subject = `PR ${input.repository}#${input.number} (${shortSha(input.headSha)})`;
+  if (input.reason === "head_moved") {
+    return (
+      `Голова сменилась после одобрения. ${subject}: одобрение ревьюера относится к прежней голове, текущую оно не покрывает, ` +
+      "поэтому доска PR не сливает. Проверь, что в ветке только нужные изменения (если просто подтянут main — менять нечего), и верни задачу на ревью: " +
+      "ревьюер одобрит текущую голову, после чего доска сольёт PR.\n\n" +
+      `The head moved after approval. ${subject}: the reviewer's approval covers the previous head, not the current one, ` +
+      "so the board does not merge. Check the branch holds only the intended changes (if main was merged in, nothing to change) and resubmit for review."
+    );
+  }
   if (input.reason === "conflict") {
     return (
       `Конфликт с ${input.baseRef} после одобрения — нужен rebase. ${subject} не сливается: GitHub сообщает конфликт. ` +
@@ -323,7 +332,12 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
                 metadata: metadataFor({
                   "Pull request": pr,
                   Head: headSha,
-                  Reason: final.reason === "conflict" ? `conflict with ${baseRef}` : `behind ${baseRef}`,
+                  Reason:
+                    final.reason === "conflict"
+                      ? `conflict with ${baseRef}`
+                      : final.reason === "head_moved"
+                        ? "head moved after approval"
+                        : `behind ${baseRef}`,
                   "Returned to": returned.implementerAgentId,
                 }),
               },
