@@ -7,51 +7,34 @@
 // settings stored in instance settings `general.goalJudge`, journal of updates in
 // `general.goalJudgeJournal`, and activity log on mutating updates.
 
-import { z } from "zod";
 import type { Db } from "@myrmidon/db";
+import {
+  GOAL_JUDGE_JOURNAL_KEY,
+  GOAL_JUDGE_JOURNAL_LIMIT,
+  GOAL_JUDGE_SETTINGS_KEY,
+  GOAL_JUDGE_SETTINGS_UPDATED_ACTION,
+  mergeGoalJudgeSettings,
+  normalizeGoalJudgeSettings,
+  type GoalJudgeSettings,
+  type GoalJudgeSettingsPatch,
+} from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
-export const GOAL_JUDGE_SETTINGS_KEY = "goalJudge";
-export const GOAL_JUDGE_JOURNAL_KEY = "goalJudgeJournal";
-export const GOAL_JUDGE_JOURNAL_LIMIT = 50;
-export const GOAL_JUDGE_SETTINGS_UPDATED_ACTION = "instance.goal_judge.updated";
+export {
+  GOAL_JUDGE_SETTINGS_KEY,
+  GOAL_JUDGE_JOURNAL_KEY,
+  GOAL_JUDGE_JOURNAL_LIMIT,
+  GOAL_JUDGE_SETTINGS_UPDATED_ACTION,
+  goalJudgeSettingsSchema,
+  patchGoalJudgeSettingsSchema,
+  normalizeGoalJudgeSettings,
+  mergeGoalJudgeSettings,
+  defaultGoalJudgeSettings,
+  type GoalJudgeSettings,
+  type GoalJudgeSettingsPatch,
+} from "@myrmidon/shared";
 
-export const DEFAULT_GOAL_JUDGE_ENABLED = false;
-export const DEFAULT_GOAL_JUDGE_TEMPERATURE = 0;
-export const DEFAULT_GOAL_JUDGE_TIMEOUT_MS = 60_000;
-export const DEFAULT_GOAL_JUDGE_MAX_ROUNDS = 3;
-
-export const goalJudgeSettingsSchema = z.object({
-  enabled: z.boolean().default(DEFAULT_GOAL_JUDGE_ENABLED),
-  providerId: z.string().nullable().default(null),
-  model: z.string().nullable().default(null),
-  temperature: z.number().default(DEFAULT_GOAL_JUDGE_TEMPERATURE),
-  timeoutMs: z.number().int().positive().default(DEFAULT_GOAL_JUDGE_TIMEOUT_MS),
-  maxRounds: z.number().int().positive().default(DEFAULT_GOAL_JUDGE_MAX_ROUNDS),
-});
-
-export type GoalJudgeSettings = z.infer<typeof goalJudgeSettingsSchema>;
-
-export const DEFAULT_GOAL_JUDGE_SETTINGS: GoalJudgeSettings = {
-  enabled: DEFAULT_GOAL_JUDGE_ENABLED,
-  providerId: null,
-  model: null,
-  temperature: DEFAULT_GOAL_JUDGE_TEMPERATURE,
-  timeoutMs: DEFAULT_GOAL_JUDGE_TIMEOUT_MS,
-  maxRounds: DEFAULT_GOAL_JUDGE_MAX_ROUNDS,
-};
-
-export const patchGoalJudgeSettingsSchema = z.object({
-  enabled: z.boolean().optional(),
-  providerId: z.string().nullable().optional(),
-  model: z.string().nullable().optional(),
-  temperature: z.number().optional(),
-  timeoutMs: z.number().int().positive().optional(),
-  maxRounds: z.number().int().positive().optional(),
-});
-
-export type GoalJudgeSettingsPatch = z.infer<typeof patchGoalJudgeSettingsSchema>;
-
+/** One journal entry: who changed what, and when. */
 export interface GoalJudgeJournalEntry {
   at: string;
   actorType: string;
@@ -85,31 +68,6 @@ type GeneralRecord = Record<string, unknown>;
 
 function asGeneral(value: unknown): GeneralRecord {
   return typeof value === "object" && value !== null ? (value as GeneralRecord) : {};
-}
-
-export function normalizeGoalJudgeSettings(raw: unknown): GoalJudgeSettings {
-  if (typeof raw !== "object" || raw === null) {
-    return { ...DEFAULT_GOAL_JUDGE_SETTINGS };
-  }
-  const parsed = goalJudgeSettingsSchema.safeParse(raw);
-  if (parsed.success) {
-    return parsed.data;
-  }
-  return { ...DEFAULT_GOAL_JUDGE_SETTINGS };
-}
-
-export function mergeGoalJudgeSettings(
-  current: GoalJudgeSettings,
-  patch: GoalJudgeSettingsPatch,
-): GoalJudgeSettings {
-  return {
-    enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
-    providerId: patch.providerId !== undefined ? patch.providerId : current.providerId,
-    model: patch.model !== undefined ? patch.model : current.model,
-    temperature: patch.temperature !== undefined ? patch.temperature : current.temperature,
-    timeoutMs: patch.timeoutMs !== undefined ? patch.timeoutMs : current.timeoutMs,
-    maxRounds: patch.maxRounds !== undefined ? patch.maxRounds : current.maxRounds,
-  };
 }
 
 function readJournal(raw: unknown): GoalJudgeJournalEntry[] {

@@ -369,6 +369,7 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
           getGeneral: async () => storedGeneral,
           updateGeneral: async (patch) => {
             storedGeneral = { ...storedGeneral, ...patch };
+            return storedGeneral as any;
           },
         },
       });
@@ -393,6 +394,7 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
           getGeneral: async () => storedGeneral,
           updateGeneral: async (patch) => {
             storedGeneral = { ...storedGeneral, ...patch };
+            return storedGeneral as any;
           },
         },
         logActivity: async (entry) => {
@@ -437,6 +439,7 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
           getGeneral: async () => storedGeneral,
           updateGeneral: async (patch) => {
             storedGeneral = { ...storedGeneral, ...patch };
+            return storedGeneral as any;
           },
         },
       });
