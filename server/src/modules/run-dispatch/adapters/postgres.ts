@@ -120,6 +120,17 @@ const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   currentParticipant: null,
 };
 
+// myrmidon(UNBLOCK-OWNER-WAKE): agent ids recorded as the owner of an issue's block.
+export function blockOwnerAgentIds(blockerMetadata: unknown, unblockDescriptor: unknown): string[] {
+  const ids: string[] = [];
+  for (const holder of [blockerMetadata, unblockDescriptor]) {
+    const owner = parseObject(holder).owner;
+    const agentId = readNonEmptyString(parseObject(owner).agentId);
+    if (agentId && !ids.includes(agentId)) ids.push(agentId);
+  }
+  return ids;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -510,6 +521,8 @@ export function createPostgresRunDispatchAdapter(
         checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
         hiddenAt: issues.hiddenAt,
+        blockerMetadata: issues.blockerMetadata,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -610,6 +623,18 @@ export function createPostgresRunDispatchAdapter(
         })),
     );
 
+    // myrmidon(UNBLOCK-OWNER-WAKE): `issue_unblock_requested` wakes the owner of the
+    // block (stranded disposition, routable blocked) to resolve it; that owner is
+    // usually not the assignee. Bound to the automation wake reason, the issue still
+    // being blocked and the run's agent being the recorded block owner.
+    const isUnblockOwnerWake = Boolean(
+      issue &&
+        issue.status === "blocked" &&
+        input.invocationSource === "automation" &&
+        wakeReason === "issue_unblock_requested" &&
+        blockOwnerAgentIds(issue.blockerMetadata, issue.unblockDescriptor).includes(input.agentId),
+    );
+
     // myrmidon(OPE-11948): an automatic continuation wake — the system's own
     // `issue_continuation_needed`, not a person's comment, a resume request or
     // an interaction answer (a card a person resolved keeps its own rules) — is
@@ -655,6 +680,7 @@ export function createPostgresRunDispatchAdapter(
       isAuthorizedSourceScopedRecovery,
       isProductiveContinuationRecovery,
       isRunGuardStopNeedsInputWake,
+      isUnblockOwnerWake,
       isAutomaticContinuationWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,

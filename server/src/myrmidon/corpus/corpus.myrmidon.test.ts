@@ -170,6 +170,9 @@ function corpusHarness(
       async getDataset(companyId, datasetId) {
         return datasetOf(companyId, datasetId);
       },
+      async hasDataset(companyId, datasetId) {
+        return datasetOf(companyId, datasetId) !== null;
+      },
       async createDataset({ companyId, name, description }) {
         const row: CorpusDatasetRecord = {
           id: nextId("d5"),
@@ -214,6 +217,14 @@ function corpusHarness(
       },
       async getDocument(companyId, documentId) {
         return documentOf(companyId, documentId);
+      },
+      async getDocumentNames(companyId, documentIds) {
+        const names = new Map<string, string>();
+        for (const id of documentIds) {
+          const document = documentOf(companyId, id);
+          if (document) names.set(id, document.filename);
+        }
+        return names;
       },
       async createDocument(input) {
         const row: CorpusDocumentRecord = {
@@ -643,6 +654,8 @@ describe("corpus settings: the instance block drives the module", () => {
     enabled: true,
     parserBaseUrl: "http://parser:8080",
     parserTimeoutMs: 45_000,
+    parserMaxRunMs: 14_400_000,
+    parserQueueTimeoutMs: 7_200_000,
     embedderModel: "corpus-embed-pplx-0.6b",
     embedderDimensions: 1024,
     embedderBaseUrl: "http://litellm:4000",
@@ -736,6 +749,30 @@ describe("corpus settings: the instance block drives the module", () => {
     expect(
       resolveCorpusSettings({ stored: undefined, env: { MYRMIDON_CORPUS_PARSER_TIMEOUT_MS: "7200001" } }).settings.parserTimeoutMs,
     ).toBe(DEFAULT_CORPUS_SETTINGS.parserTimeoutMs);
+  });
+
+  it("takes parserMaxRunMs and parserQueueTimeoutMs and enforces bounds", async () => {
+    const h = corpusHarness();
+    const saved = await request(h.app()).patch(settingsPath).send({
+      parserMaxRunMs: 3600_000,
+      parserQueueTimeoutMs: 1800_000,
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.settings.parserMaxRunMs).toBe(3600_000);
+    expect(saved.body.settings.parserQueueTimeoutMs).toBe(1800_000);
+
+    expect((await request(h.app()).patch(settingsPath).send({ parserMaxRunMs: 86_400_001 })).status).toBe(400);
+    expect((await request(h.app()).patch(settingsPath).send({ parserMaxRunMs: 999 })).status).toBe(400);
+    expect((await request(h.app()).patch(settingsPath).send({ parserQueueTimeoutMs: 86_400_001 })).status).toBe(400);
+    expect((await request(h.app()).patch(settingsPath).send({ parserQueueTimeoutMs: 999 })).status).toBe(400);
+
+    // Resolves env vars within bounds
+    expect(
+      resolveCorpusSettings({ stored: undefined, env: { MYRMIDON_CORPUS_PARSER_MAX_RUN_MS: "7200000" } }).settings.parserMaxRunMs,
+    ).toBe(7_200_000);
+    expect(
+      resolveCorpusSettings({ stored: undefined, env: { MYRMIDON_CORPUS_PARSER_QUEUE_TIMEOUT_MS: "7200000" } }).settings.parserQueueTimeoutMs,
+    ).toBe(7_200_000);
   });
 
   it("materializes the block on a save that moves nothing", async () => {
@@ -1012,6 +1049,13 @@ describe("corpus API: upload, parse and search", () => {
     // REST hits carry the real document name (the filename), not the UUID (OPE-12028).
     expect(found.body.hits[0].documentName).toBe("notes.txt");
     expect(found.body.hits[0].documentName).not.toBe(found.body.hits[0].documentId);
+
+    // OPE-12272: verify lightweight search store methods hasDataset and getDocumentNames
+    expect(await h.ports.store.hasDataset(COMPANY, DATASET_ID)).toBe(true);
+    expect(await h.ports.store.hasDataset(COMPANY, "non-existent")).toBe(false);
+    const names = await h.ports.store.getDocumentNames(COMPANY, [documentId, "unknown-doc"]);
+    expect(names.get(documentId)).toBe("notes.txt");
+    expect(names.has("unknown-doc")).toBe(false);
 
     // The counters the screen reads follow the same rows.
     const stats = (await request(app).get(`${companyPath()}/stats`)).body.stats;

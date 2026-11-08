@@ -275,6 +275,8 @@ Invariants:
 - accepting a fresh `request_confirmation` for the current issue's `plan` revision changes `work_mode = planning` to `work_mode = standard` in the same transaction as the accepted interaction; the existing agent-return transition also moves an eligible `in_review` issue to `todo` without changing its agent owner
 - while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
 - the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
+- task-card readiness gate: when an explicit client request creates an engineer-required issue directly in `todo`, or moves an existing engineer-required issue into `todo`, the server checks the task-card sections and acceptance claims before the write. In enforce mode it returns `422` with code `task_card_not_ready` and the violation list; the transaction does not change status. In warning mode the write proceeds and the violation is logged. Automatic transitions (including resolved-blocker returns), imports, and internal recovery calls do not opt into this client-transition gate.
+- engineer-required is derived from the existing `requiresEngineer(...)` predicate (engineer caste/label and other checkout-required execution paths); non-engineer issues are not checked.
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`

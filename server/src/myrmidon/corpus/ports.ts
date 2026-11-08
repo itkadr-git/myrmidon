@@ -104,6 +104,8 @@ export type CorpusStoreCounters = CorpusStats;
 export interface CorpusStorePort {
   listDatasets(companyId: string): Promise<CorpusDatasetRecord[]>;
   getDataset(companyId: string, datasetId: string): Promise<CorpusDatasetRecord | null>;
+  /** Existence check for search: avoids loading dataset stats and every document. */
+  hasDataset(companyId: string, datasetId: string): Promise<boolean>;
   createDataset(input: {
     companyId: string;
     name: string;
@@ -121,6 +123,8 @@ export interface CorpusStorePort {
     options?: { limit?: number; offset?: number },
   ): Promise<CorpusDocumentRecord[]>;
   getDocument(companyId: string, documentId: string): Promise<CorpusDocumentRecord | null>;
+  /** Fetch only names needed for search citations; no per-document jobs/chunks. */
+  getDocumentNames(companyId: string, documentIds: string[]): Promise<Map<string, string>>;
   createDocument(input: {
     companyId: string;
     datasetId: string;
@@ -235,6 +239,8 @@ export interface DocumentParsePort {
     mimeType: string | null;
     baseUrl: string;
     timeoutMs: number;
+    maxRunMs?: number;
+    queueTimeoutMs?: number;
     /** Aborts the parse and cancels its job in the parse service (the board is shutting down). */
     signal?: AbortSignal;
   }): Promise<ParsedDocument>;

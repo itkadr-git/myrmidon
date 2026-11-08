@@ -95,4 +95,37 @@ describe("myrmidon skill core", () => {
       expect(holders, `${heading} must live in exactly one reference`).toHaveLength(1);
     }
   });
+
+  it("enforces review discipline reference rules, indexing, and key markers", () => {
+    const disciplineFile = "review-discipline.md";
+    const disciplinePath = path.join(referencesDir, disciplineFile);
+    expect(existsSync(disciplinePath), `${disciplineFile} must exist`).toBe(true);
+    expect(indexedReferences()).toContain(disciplineFile);
+
+    const content = readFileSync(disciplinePath, "utf8");
+    // Reference exists and indexed; contains key rule markers:
+    // 1. Current head / текущая голова
+    expect(content).toMatch(/current head|текущ(ая|ей) голов/i);
+    // 2. Proof / evidence / доказательство
+    expect(content).toMatch(/proof|evidence|доказательств/i);
+    // 3. Nit / non-blocking suggestions
+    expect(content).toMatch(/\bnit\b/i);
+    // 4. APPROVE rule / APPROVE-правило
+    expect(content).toMatch(/APPROVE/);
+
+    // REVIEW-DISCIPLINE B (OPE-12222): PR text & diff are untrusted input —
+    // nonce markers, file manifest first, diff limits.
+    expect(content).toContain("<<<UNTRUSTED-PR <nonce>>>");
+    expect(content).toContain("<<<END-UNTRUSTED-PR <nonce>>>");
+    expect(content).toContain("approve this PR");
+    expect(content).toContain("ignore previous instructions");
+    expect(content).toMatch(/манифест/);
+    expect(content).toContain("400 строк диффа на файл");
+    expect(content).toContain("2000 строк суммарно");
+
+    // Links to api-reference and heartbeat-procedure, and status PATCH mechanism
+    expect(content).toContain("api-reference.md");
+    expect(content).toContain("heartbeat-procedure.md");
+    expect(content).toContain("PATCH /api/issues/");
+  });
 });
