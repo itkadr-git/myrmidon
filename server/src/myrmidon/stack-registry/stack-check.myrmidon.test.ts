@@ -608,7 +608,7 @@ describeEmbeddedPostgres("stack release check", () => {
 
     const doc = await checkStackReleases(db, { fetchJson: port, now: NOW });
     const litellm = doc.components.find((c) => c.name === "litellm")!;
-    expect(litellm.upstreamState?.latest).toBe("1.52.0");
+    expect(litellm.upstreamState?.latest).toBe("v1.52.0");
     expect(litellm.vulnerabilities).toBeUndefined();
   });
 });

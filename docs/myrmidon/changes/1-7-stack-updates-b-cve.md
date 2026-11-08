@@ -27,8 +27,12 @@ settings-section: 1.3 — STACK-UPDATES stack registry (SUA, parts A and B)
 
 ## settings-en-append
 
+<!-- section: 1.3 — STACK-UPDATES stack registry (SUA, parts A and B) -->
+
 | `MYRMIDON_STACK_OSV_API_BASE` | 1.7-STACK-UPDATES-B | `https://api.osv.dev` | Base URL for OSV.dev advisory API batch queries | Unset to use default `https://api.osv.dev` |
 
 ## settings-ru-append
+
+<!-- section: 1.3 — STACK-UPDATES реестр стека (SUA, части A и B) -->
 
 | `MYRMIDON_STACK_OSV_API_BASE` | 1.7-STACK-UPDATES-B | `https://api.osv.dev` | Базовый URL API OSV.dev для пакетных запросов известных уязвимостей компонентов | Сбросить переменную для возврата к `https://api.osv.dev` |
