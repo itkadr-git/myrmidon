@@ -86,6 +86,7 @@ import {
   chatChannelRoutes,
   chatWebhookRoutes,
 } from "./routes/chat-channels.js";
+import { intakeRoutes } from "./routes/intake.js";
 import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
@@ -996,6 +997,8 @@ export async function createApp(
   const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
   app.use(emailWebhookRoutes(emailChannels));
   app.use(chatWebhookRoutes(chatChannels));
+  // myrmidon(1.7 WEBHOOK-INTAKE): Public webhook intake route (/api/intake/:source)
+  app.use(intakeRoutes());
   // myrmidon(EXTCASE-B): the extension's one board-less endpoint (the pairing code
   // is the credential), mounted outside `/api` with the other provider ingress.
   app.use(myrmidonBrowserBridgePublicRoutes(db));
