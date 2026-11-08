@@ -35,6 +35,10 @@ export const TASK_CARD_VIOLATION_CODES = {
   EMPTY_CARD: "EMPTY_CARD",
   UNRESOLVED_MARKER: "UNRESOLVED_MARKER",
   NO_CHECKABLE_CLAIM: "NO_CHECKABLE_CLAIM",
+  /** TASK-CARD-READINESS-4: a path named by «МЕСТО ПРАВКИ» is not on the default branch. */
+  EDIT_TARGET_NOT_FOUND: "EDIT_TARGET_NOT_FOUND",
+  /** TASK-CARD-READINESS-4: the path could not be checked; the transition is allowed. */
+  EDIT_TARGET_UNVERIFIED: "EDIT_TARGET_UNVERIFIED",
 } as const;
 
 /** Markers of still-open uncertainty. */
@@ -49,6 +53,14 @@ export type TaskCardRequiredSection = (typeof TASK_CARD_REQUIRED_SECTIONS)[numbe
 export interface TaskCardReadinessViolation {
   code: string;
   message: string;
+  /**
+   * TASK-CARD-READINESS-4: "warning" marks a check that could not be
+   * completed (network, no connection) and therefore never blocks; absent
+   * means "error" — the card is not ready.
+   */
+  severity?: "error" | "warning";
+  /** TASK-CARD-READINESS-4: the card path the violation is about. */
+  path?: string;
 }
 
 /** Input to {@link evaluateTaskCardReadiness}. */
