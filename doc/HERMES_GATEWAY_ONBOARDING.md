@@ -111,6 +111,15 @@ Important URL roles:
 - `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` are injected runtime values for
   Hermes-originated Paperclip API calls after the agent is approved.
 
+## Telegram `/model` and `/think` Commands
+
+For `hermes_gateway` agents interacting via Telegram chat bridge:
+
+- **`/model` Command**: Lists models from the LLM gateway catalog. When the gateway answers, it uses the agent key's own allowlist from `/v1/models`; otherwise it falls back to the board's collected catalog. The reply indicates the source, groups models by provider family (e.g., `dashscope-*`, `zai-*`, `nous-*`), keeps the card's model and fallbacks on top, and respects the 30-model limit.
+- **Profile Application on Override**: Writing an override for `/model` or `/think` immediately applies the agent profile via `applyBotContainerNow` (`force: true`) without restarting the container. If application fails, the previous value is restored and the reason is returned. If the bot-containers runtime is absent, the outcome is `not_applicable` (non-blocking).
+- **`/think` Effort Policy Validation**: Validates the chosen thinking effort level against `effortsForModel` (e.g., GLM models accept `low`, `high`, `max`). Unaccepted levels are rejected with a message listing allowed levels.
+- **Localized Refusals**: Refusals report the adapter type and reason in the user's language.
+
 ## Approve And Claim
 
 After Hermes submits the join request:
