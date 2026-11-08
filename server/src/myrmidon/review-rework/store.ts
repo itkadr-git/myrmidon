@@ -18,11 +18,16 @@ import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   companies,
   issueComments,
+  activityLog,
   issueWorkProducts,
   issues,
   type Db,
 } from "@myrmidon/db";
-import { REVIEW_REWORK_ORIGIN_KIND, isAgentStatusInvokable } from "@myrmidon/shared";
+import {
+  REVIEW_REWORK_CLOSED_ACTION,
+  REVIEW_REWORK_ORIGIN_KIND,
+  isAgentStatusInvokable,
+} from "@myrmidon/shared";
 import { decodeReworkFingerprint } from "./domain.js";
 import type { ReviewReworkChildFacts, ReviewReworkTaskFacts } from "./domain.js";
 
@@ -93,6 +98,15 @@ export interface ReviewReworkStore {
     expectStatus: string;
     comment: string;
   }): Promise<boolean>;
+  /** True only when a human/ADM reactivated an issue the loop had closed. */
+  reopenedAfterLoopClose(companyId: string, issueId: string): Promise<boolean>;
+  awaitAcceptance(input: {
+    issueId: string;
+    companyId: string;
+    expectStatus: string;
+    assigneeAgentId: string | null;
+    comment: string;
+  }): Promise<boolean>;
 }
 
 function taskFacts(row: typeof issues.$inferSelect): ReviewReworkTaskFacts {
@@ -109,6 +123,7 @@ function taskFacts(row: typeof issues.$inferSelect): ReviewReworkTaskFacts {
     companyId: row.companyId,
     identifier: row.identifier,
     title: row.title,
+    description: row.description,
     status: row.status,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
@@ -435,6 +450,76 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
         input.companyId,
         (current) => current.status === input.expectStatus,
         () => ({ status: "done", executionState: null, executionPolicy: null }),
+        input.comment,
+      );
+    },
+
+    // OPE-12260: the loop must never out-shout a person. The veto is a
+    // historical fact, not "the newest audit row looks like a reopen": any
+    // user/agent issue.updated row moving the issue OFF a terminal status
+    // (done/cancelled) after the loop's own close settles it. Later agent
+    // status moves (in_progress on the reopen wake, then in_review) or plain
+    // field edits cannot displace it — the newest-row probe lost the veto
+    // exactly that way, the OPE-7290 relapse the reviewer named.
+    async reopenedAfterLoopClose(companyId, issueId) {
+      const closeRows = await db
+        .select({ createdAt: activityLog.createdAt })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, REVIEW_REWORK_CLOSED_ACTION),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
+      const closeRow = closeRows[0];
+      // The loop never closed it: nothing to veto, an ordinary close applies.
+      if (!closeRow) return false;
+      const createdAtIso =
+        closeRow.createdAt instanceof Date
+          ? closeRow.createdAt.toISOString()
+          : String(closeRow.createdAt);
+      const offTerminalRows = await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, "issue.updated"),
+            or(eq(activityLog.actorType, "user"), eq(activityLog.actorType, "agent")),
+            sql`${activityLog.createdAt} > ${createdAtIso}`,
+            // The route writes `status` plus a `_previous` block (and
+            // `reopened`, `reopenedFrom`) on every status change; anything
+            // moving off a terminal status is a reopen by a person, ADM or
+            // agent — never by this sweep (its close only ever lands on done,
+            // never leaves it). `previousStatus` covers system-shaped audit
+            // rows whose `_previous` block is absent.
+            or(
+              sql`${activityLog.details} -> '_previous' ->> 'status' in ('done', 'cancelled')`,
+              sql`${activityLog.details} ->> 'reopenedFrom' in ('done', 'cancelled')`,
+              sql`${activityLog.details} ->> 'previousStatus' in ('done', 'cancelled')`,
+            ),
+          ),
+        )
+        .limit(1);
+      return offTerminalRows.length > 0;
+    },
+
+    async awaitAcceptance(input) {
+      return applyGuardedPatch(
+        input.issueId,
+        input.companyId,
+        (current) => current.status === input.expectStatus,
+        () => ({
+          status: "in_progress",
+          ...(input.assigneeAgentId ? { assigneeAgentId: input.assigneeAgentId } : {}),
+          executionPolicy: null,
+        }),
         input.comment,
       );
     },

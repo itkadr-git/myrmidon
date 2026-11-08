@@ -29,6 +29,7 @@ import {
 } from "../../services/github-pull-request-merge.js";
 import {
   REVIEW_CI_FINAL_CHECK_NAME,
+  pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
   selectOpenPullRequestWorkProduct,
   type ReviewPullRequestCiFacts,
@@ -190,7 +191,43 @@ export async function resolvePullRequestHeadCi(input: {
   }
   const runs = asRecord(checkRuns.json)?.check_runs;
   if (!Array.isArray(runs)) return { state: "unknown", headSha, reason: "check_runs:unreadable_payload" };
-  return { state: pullRequestHeadCiStateFromChecks({ checkRuns: runs }), headSha };
+  const stateFromFinalCheck = pullRequestHeadCiStateFromChecks({ checkRuns: runs });
+  if (stateFromFinalCheck === "complete") return { state: "complete", headSha };
+  // myrmidon(OPE-12048): a repository without the aggregate `CI result` check
+  // (any third-party workflow, e.g. plain build/test lanes) never completes the
+  // filtered read above, so its verdict gate waited forever. When the head has
+  // no run of that name at all, read the latest run of every check and decide
+  // from the whole head. A run named `CI result` that exists but is queued or
+  // in progress keeps the aggregate-check semantics: pending.
+  const hasFinalCheckRun = runs.some((entry) => asRecord(entry)?.name === REVIEW_CI_FINAL_CHECK_NAME);
+  if (hasFinalCheckRun) return { state: stateFromFinalCheck, headSha };
+  const allRunsUrl =
+    `${apiBase}/repos/${repository}/commits/${encodeURIComponent(headSha)}/check-runs` +
+    `?filter=latest&per_page=100`;
+  const allRuns = await readGitHub(fetchImpl, allRunsUrl, input.token, "check_runs");
+  if (!allRuns.ok) {
+    return {
+      state: "unknown",
+      headSha,
+      reason: allRuns.reason,
+      ...(allRuns.rateLimit ? { rateLimit: allRuns.rateLimit } : {}),
+    };
+  }
+  const allRunsPayload = asRecord(allRuns.json);
+  const allRunsList = allRunsPayload?.check_runs;
+  if (!Array.isArray(allRunsList)) return { state: "unknown", headSha, reason: "check_runs:unreadable_payload" };
+  // A partial list could hide a queued check: decide only from a complete page.
+  const totalCount = typeof allRunsPayload?.total_count === "number" ? allRunsPayload.total_count : allRunsList.length;
+  if (totalCount > allRunsList.length) {
+    return { state: "unknown", headSha, reason: "check_runs:more_than_one_page" };
+  }
+  // The aggregate run exists after all (queued or in progress, e.g. between the
+  // lanes finishing and the aggregate starting): the aggregate decides, pending.
+  const hasAggregateRun = allRunsList.some(
+    (entry) => asRecord(entry)?.name === REVIEW_CI_FINAL_CHECK_NAME,
+  );
+  if (hasAggregateRun) return { state: stateFromFinalCheck, headSha };
+  return { state: pullRequestHeadCiStateFromAllChecks({ checkRuns: allRunsList }), headSha };
 }
 
 /** The pull request work product of an issue and its GitHub reference, as far as the board can read them. */
