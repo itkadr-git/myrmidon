@@ -16,6 +16,7 @@ import {
   RULE_CLAIMED_NOT_VERIFIED,
   GoalJudgeSession,
   applyUnverifiedRule,
+  extractCriterionKeywords,
   hasEvidenceForCriterion,
   parseGoalJudgeResponse,
   runGoalJudgeRounds,
@@ -176,6 +177,39 @@ describe("Goal Judge Domain & Prompts", () => {
       expect(hasEvidenceForCriterion(criterion, null, skippedTest)).toBe(false);
     });
 
+    it("reports no evidence for a Cyrillic criterion against unrelated diff and tests", () => {
+      // Reviewer case: Cyrillic keywords must survive normalization (\p{L}),
+      // and a criterion with no matching keywords must not be "proven"
+      // by the mere presence of any diff and any test output.
+      const criterion = "Чужие блоки не трогать";
+      const unrelatedDiff = "export const VERSION='1.0';";
+      const unrelatedTest = "PASS src/version.test.ts";
+
+      expect(extractCriterionKeywords(criterion)).toContain("чужие");
+      expect(hasEvidenceForCriterion(criterion, unrelatedDiff, unrelatedTest)).toBe(false);
+    });
+
+    it("reports no evidence when test output mixes failures and passes", () => {
+      // Reviewer case: real vitest-style summary "1 failed | 12 passed"
+      // must not count as proof just because the word "passed" appears.
+      const criterion = "Run database integration test";
+      const mixedTest = "Tests  1 failed | 12 passed (13)";
+
+      expect(hasEvidenceForCriterion(criterion, null, mixedTest)).toBe(false);
+      expect(hasEvidenceForCriterion(criterion, "+ db connection code", mixedTest)).toBe(false);
+    });
+
+    it("reports no evidence for skipped-only tests even with a non-empty diff", () => {
+      // Reviewer case: prompts.ts says skipped tests are not proof of
+      // completion; a diff alone must not verify a criterion whose tests
+      // were only skipped.
+      const criterion = "Run database integration test";
+      const skippedTest = "SKIPPED src/db.test.ts (all tests skipped)";
+      const nonEmptyDiff = "+ db connection code";
+
+      expect(hasEvidenceForCriterion(criterion, nonEmptyDiff, skippedTest)).toBe(false);
+    });
+
     it("moves claimed criterion without evidence into missing and sets complete=false", () => {
       const input: GoalJudgeInput = {
         criteria: [
@@ -274,9 +308,12 @@ describe("Goal Judge Domain & Prompts", () => {
 
     it("runs multi-round evaluation loop via runGoalJudgeRounds up to limit", async () => {
       const input: GoalJudgeInput = {
-        criteria: "export const MAX_ROUNDS = 3;",
-        diff: "export const MAX_ROUNDS = 3;",
-        testOutput: "PASS 4 passed",
+        criteria: "Implement goal judge domain",
+        // Evidence must reference the criterion keywords ("goal judge domain"),
+        // otherwise applyUnverifiedRule forces complete=false and the loop
+        // correctly continues to the next round ("заявлено, но не проверено = не сделано").
+        diff: "export const MAX_ROUNDS = 3; // goal judge domain",
+        testOutput: "PASS 4 passed (goal judge domain)",
       };
 
       let callCount = 0;
