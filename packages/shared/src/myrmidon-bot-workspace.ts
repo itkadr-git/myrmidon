@@ -592,7 +592,7 @@ export type WsBotDiskSettings = z.infer<typeof wsBotDiskSettingsSchema>;
  * - `MYRMIDON_BOTD_BOARD_URL`/`MYRMIDON_BOTD_BOARD_KEY_ENV` — where botd reads
  *   its desired state (C3) and posts its disk report (C4): the same board the
  *   gateway already points the bot at, and the NAME of the .env variable that
- *   holds the bot's board key (PAPERCLIP_API_KEY), never the key itself.
+ *   holds the bot's board key (MYRMIDON_API_KEY, fallback PAPERCLIP_API_KEY), never the key itself.
  */
 export const WS_PROFILE_ENV = {
   partitionThresholdPercent: "MYRMIDON_WS_PARTITION_THRESHOLD_PERCENT",
@@ -612,7 +612,7 @@ export const WS_PROFILE_ENV = {
 /** The value {@link WS_PROFILE_ENV.boardKeyEnv} always carries: the board key
  *  the bot already holds for the gateway, so botd authenticates to C3/C4 with
  *  the same identity. */
-export const WS_BOTD_BOARD_KEY_ENV_VALUE = "PAPERCLIP_API_KEY";
+export const WS_BOTD_BOARD_KEY_ENV_VALUE = "MYRMIDON_API_KEY";
 
 /**
  * Card keys (dedup) of `bot_disk_lifecycle/*` plus the standalone cards this

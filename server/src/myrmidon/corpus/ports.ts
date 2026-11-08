@@ -68,6 +68,21 @@ export interface CorpusDocumentRecord {
   createdAt: string;
   updatedAt: string;
   parsedAt: string | null;
+  // OPE-12000: the fields below belong to documents added by address. They are optional on purpose:
+  // an adapter or a test double that knows nothing of URL sources reads as "an upload" (absent = null).
+  /** Where a URL-sourced document comes from; null for an upload. */
+  sourceUrl?: string | null;
+  refreshIntervalHours?: number | null;
+  /** SHA-256 (hex) of the stored bytes; null for an upload. */
+  contentHash?: string | null;
+  lastFetchedAt?: string | null;
+  /** Why the last fetch failed, or null. */
+  sourceError?: string | null;
+  /**
+   * The bytes the current version replaced. They stay until the new version is `ready`
+   * (the parse worker removes them then); null when there is nothing to clean up.
+   */
+  previousBlobRef?: string | null;
 }
 
 export interface CorpusJobRecord {
@@ -114,6 +129,8 @@ export interface CorpusStorePort {
     byteSize: number;
     blobRef: string;
     maxAttempts: number;
+    /** OPE-12000: set for a document added by address. */
+    source?: { url: string; refreshIntervalHours: number; contentHash: string; fetchedAt: string };
   }): Promise<CorpusDocumentRecord>;
   updateDocument(
     companyId: string,
@@ -121,10 +138,32 @@ export interface CorpusStorePort {
     patch: Partial<
       Pick<
         CorpusDocumentRecord,
-        "status" | "chunkCount" | "error" | "attempts" | "parsedAt" | "blobRef"
+        | "status"
+        | "chunkCount"
+        | "error"
+        | "attempts"
+        | "parsedAt"
+        | "blobRef"
+        | "byteSize"
+        | "mimeType"
+        | "contentHash"
+        | "lastFetchedAt"
+        | "sourceError"
+        | "previousBlobRef"
       >
     >,
   ): Promise<CorpusDocumentRecord | null>;
+  /**
+   * OPE-12000: the URL-sourced documents (those with a `sourceUrl`), oldest fetch first. With
+   * `dueAt` only the ones whose `lastFetchedAt + refreshIntervalHours` has passed; without it all
+   * of them. `companyId` / `datasetId` narrow the scope; the scheduled sweep passes neither.
+   */
+  listSourceDocuments(input: {
+    companyId?: string;
+    datasetId?: string;
+    dueAt?: Date;
+    limit: number;
+  }): Promise<CorpusDocumentRecord[]>;
   deleteDocument(companyId: string, documentId: string): Promise<boolean>;
   countDocuments(companyId: string, datasetId: string): Promise<number>;
   getJob(companyId: string, jobId: string): Promise<CorpusJobRecord | null>;
@@ -149,12 +188,28 @@ export interface WorkQueuePort {
     datasetId: string;
     documentId: string;
     maxAttempts: number;
+    /**
+     * A re-parse on request: the document's existing job starts over (queued, attempts and
+     * error cleared) whatever its state is. Without it only a failed job is re-armed.
+     */
+    reset?: boolean;
   }): Promise<CorpusJobRecord>;
   /** Oldest queued jobs, at most `limit`; `[]` when the queue is empty. */
   claim(input: { limit: number }): Promise<CorpusJobRecord[]>;
   complete(companyId: string, jobId: string): Promise<void>;
   /** Release the job for another attempt; the store settles it `failed` at `maxAttempts`. */
   fail(companyId: string, jobId: string, reason: string): Promise<CorpusJobRecord | null>;
+  /**
+   * Give a claimed job back unfinished because this process is stopping: `queued` again at once,
+   * the attempt it used refunded. `null` when the job is not `running` any more.
+   */
+  release(companyId: string, jobId: string, reason: string): Promise<CorpusJobRecord | null>;
+  /**
+   * Settle every job a dead process left `running` (the board was killed or restarted mid-parse):
+   * `queued` again at once, or `failed` when its attempts are used up. For the one worker of the
+   * process, at its start, before its first claim.
+   */
+  releaseRunning(): Promise<CorpusJobRecord[]>;
 }
 
 export interface ParsedChunk {
@@ -180,6 +235,10 @@ export interface DocumentParsePort {
     mimeType: string | null;
     baseUrl: string;
     timeoutMs: number;
+    maxRunMs?: number;
+    queueTimeoutMs?: number;
+    /** Aborts the parse and cancels its job in the parse service (the board is shutting down). */
+    signal?: AbortSignal;
   }): Promise<ParsedDocument>;
 }
 
@@ -202,11 +261,14 @@ export interface SearchIndexPort {
     embedderModel: string;
     embedderDimensions: number;
     embedderBaseUrl: string | null;
+    /** Aborts the embedding requests (the board is shutting down). */
+    signal?: AbortSignal;
   }): Promise<number>;
   deleteDocument(companyId: string, documentId: string): Promise<void>;
   search(input: {
     companyId: string;
-    datasetId: string;
+    datasetId?: string;
+    datasetIds?: string[];
     query: string;
     limit: number;
     mode: CorpusSearchMode;

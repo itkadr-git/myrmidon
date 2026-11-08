@@ -34,12 +34,13 @@ func testClientTLS() *tls.ConnectionState {
 
 func testConfig() *config {
 	cfg := &config{
-		SiteId:  "myr-vm1",
-		Epoch:   1,
-		Listen:  "127.0.0.1:0",
-		Token:   fakeBearer(),
-		Network: "net-a",
-		Images:  []string{"example.com/bot@sha256:aa"},
+		SiteId:        "myr-vm1",
+		Epoch:         1,
+		Listen:        "127.0.0.1:0",
+		Token:         fakeBearer(),
+		Network:       "net-a",
+		GatewayBindIP: "127.0.0.1",
+		Images:        []string{"example.com/bot@sha256:aa"},
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
@@ -61,6 +62,10 @@ type fakeDocker struct {
 	calls           []string
 	startStopStatus int
 	logsBody        []byte
+	// missingImage makes the first create answer 404 "No such image" until an
+	// images/create (pull) arrives — OPE-12194.
+	missingImage bool
+	pullError    string
 }
 
 func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -71,11 +76,23 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = path[i:]
 	} else if i := strings.Index(path, "/_ping"); i >= 0 {
 		path = path[i:]
+	} else if i := strings.Index(path, "/images/"); i >= 0 {
+		path = path[i:]
 	}
 	f.calls = append(f.calls, r.Method+" "+path)
 	switch {
 	case path == "/_ping":
 		_, _ = w.Write([]byte("OK"))
+	case r.Method == http.MethodPost && path == "/images/create":
+		if f.pullError != "" {
+			_, _ = w.Write([]byte(`{"status":"Pulling"}` + "\n" + `{"error":"` + f.pullError + `"}` + "\n"))
+			return
+		}
+		f.missingImage = false
+		_, _ = w.Write([]byte(`{"status":"Pulling from bot"}` + "\n" + `{"status":"Digest: sha256:aa"}` + "\n"))
+	case r.Method == http.MethodPost && path == "/containers/create" && f.missingImage:
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"No such image: example.com/bot@sha256:aa"}`))
 	case r.Method == http.MethodPost && path == "/containers/create":
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -398,6 +415,180 @@ func TestValidateConfig(t *testing.T) {
 	}
 }
 
+func TestValidateGatewayBindIPTable(t *testing.T) {
+	tests := []struct {
+		name        string
+		portStart   int
+		portEnd     int
+		bindIP      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:      "valid IPv4 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "127.0.0.1",
+			wantErr:   false,
+		},
+		{
+			name:      "valid alternate IPv4 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "127.0.0.2",
+			wantErr:   false,
+		},
+		{
+			name:      "valid IPv6 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "::1",
+			wantErr:   false,
+		},
+		{
+			name:      "valid remote site interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "192.0.2.10",
+			wantErr:   false,
+		},
+		{
+			name:      "valid alternate remote site interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "198.51.100.10",
+			wantErr:   false,
+		},
+		{
+			name:      "valid non-loopback IPv6 interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "2001:db8::1",
+			wantErr:   false,
+		},
+		{
+			name:        "missing gatewayBindIp when port range configured",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "whitespace gatewayBindIp when port range configured",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "   ",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "invalid IP format",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "not-an-ip",
+			wantErr:     true,
+			errContains: "not a valid IP address",
+		},
+		{
+			name:        "0.0.0.0 rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "0.0.0.0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        ":: rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "::",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "0:0:0:0:0:0:0:0 rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "0:0:0:0:0:0:0:0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "only portStart set without gatewayBindIp",
+			portStart:   18700,
+			portEnd:     0,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "only portEnd set without gatewayBindIp",
+			portStart:   0,
+			portEnd:     18799,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:      "no port range and empty bind IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "",
+			wantErr:   false,
+		},
+		{
+			name:      "no port range and loopback bind IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "127.0.0.1",
+			wantErr:   false,
+		},
+		{
+			name:      "no port range and remote site interface IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "192.0.2.10",
+			wantErr:   false,
+		},
+		{
+			name:        "no port range but 0.0.0.0 rejected as unspecified",
+			portStart:   0,
+			portEnd:     0,
+			bindIP:      "0.0.0.0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "no port range but :: rejected as unspecified",
+			portStart:   0,
+			portEnd:     0,
+			bindIP:      "::",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.GatewayPortStart = tt.portStart
+			cfg.GatewayPortEnd = tt.portEnd
+			cfg.GatewayBindIP = tt.bindIP
+
+			err := validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && tt.errContains != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("validate() error = %v, want containing %q", err, tt.errContains)
+				}
+			}
+		})
+	}
+}
+
 func TestValidSiteId(t *testing.T) {
 	for _, ok := range []string{"a", "myr-vm1", "site-01", "fleetd-local"} {
 		if !validSiteId(ok) {
@@ -415,6 +606,9 @@ func TestStrictDecodeRejectsUnknownKeys(t *testing.T) {
 	var out config
 	if err := strictDecode([]byte(`{"listen":"a","tlsCert":"server.pem","tlsKey":"server-key.pem","tlsClientCA":"site-ca.pem","unknown":1,"bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]}`), &out); err == nil {
 		t.Fatal("unknown key accepted")
+	}
+	if err := strictDecode([]byte(`{"listen":"a","tlsCert":"server.pem","tlsKey":"server-key.pem","tlsClientCA":"site-ca.pem","bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]} {}`), &out); err == nil {
+		t.Fatal("trailing JSON content accepted")
 	}
 }
 
@@ -566,6 +760,55 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.cfg.VolumeRoot, key, "hermes")); err != nil {
 		t.Fatalf("volume directory not prepared: %v", err)
+	}
+}
+
+func TestCreateFailsClosedWhenGatewayBindIPIsEmpty(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	s.cfg.GatewayPortStart, s.cfg.GatewayPortEnd = 18801, 18810
+	s.cfg.GatewayBindIP = ""
+	s.docker.gatewayBindIP = ""
+	key := s.cfg.Bots[0].BotKey
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "gateway_bind_ip_required") {
+		t.Fatalf("expected gateway_bind_ip_required in body, got: %s", rec.Body.String())
+	}
+	if _, ok := fake.containers["fleet-"+key]; ok {
+		t.Fatalf("container must not be created when gatewayBindIP is empty")
+	}
+}
+
+// myrmidon(OPE-12194): a site without the release image pulls it and creates.
+func TestCreatePullsMissingImageThenCreates(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	fake.missingImage = true
+	key := "bot-example-one"
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
+	if rec.Code >= 300 {
+		t.Fatalf("create failed: %d %s (calls %v)", rec.Code, rec.Body.String(), fake.calls)
+	}
+	joined := strings.Join(fake.calls, ",")
+	if !strings.Contains(joined, "POST /images/create") {
+		t.Fatalf("no pull, calls: %v", fake.calls)
+	}
+	if _, ok := fake.containers["fleet-"+key]; !ok {
+		t.Fatalf("container not created after pull, calls: %v", fake.calls)
+	}
+}
+
+func TestCreateReportsAFailedPull(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	fake.missingImage = true
+	fake.pullError = "manifest unknown"
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody("bot-example-one"))
+	if rec.Code < 300 {
+		t.Fatalf("create must fail when the pull fails: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "manifest unknown") {
+		t.Fatalf("pull error not reported: %s", rec.Body.String())
 	}
 }
 
@@ -938,6 +1181,23 @@ func TestRestoreKeepsSymlinkAndRefusesTruncatedArchive(t *testing.T) {
 		if len(entries) != 0 {
 			t.Fatalf("cut %d: a failed restore left %d entries in the volume root", cut, len(entries))
 		}
+	}
+}
+
+func TestRestoreRejectsUnknownManifestField(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	needle := []byte(`"version":1`)
+	if !bytes.Contains(archive, needle) {
+		t.Fatal("snapshot manifest version not found")
+	}
+	tampered := bytes.Replace(archive, needle, []byte(`"unknown":1`), 1)
+	root := t.TempDir()
+	rec := restoreInto(t, root, key, tampered)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unknown field") {
+		t.Fatalf("expected unknown manifest field rejection, got %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, key)); !os.IsNotExist(err) {
+		t.Fatalf("datadir exists after rejected manifest: %v", err)
 	}
 }
 

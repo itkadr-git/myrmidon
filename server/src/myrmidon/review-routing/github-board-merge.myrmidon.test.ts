@@ -117,6 +117,24 @@ describe("the verdict of a required check: the latest run per name", () => {
     // Only superseded runs: the check has not produced a verdict yet.
     expect(requiredCheckVerdict([run(4, "completed", "cancelled")], "CI result")).toBe("pending");
   });
+
+  it("OPE-10461: a skipped label-event run newer than the real result never decides, in any listing order", () => {
+    expect(requiredCheckVerdict([run(4, "completed", "success"), run(6, "completed", "skipped")], "CI result")).toBe("success");
+    expect(requiredCheckVerdict([run(6, "completed", "skipped"), run(4, "completed", "success")], "CI result")).toBe("success");
+    expect(requiredCheckVerdict([run(4, "completed", "failure"), run(6, "completed", "skipped")], "CI result")).toBe("failed");
+    expect(requiredCheckVerdict([run(6, "completed", "skipped"), run(4, "completed", "failure")], "CI result")).toBe("failed");
+    // Several skipped runs on top of the real one.
+    expect(
+      requiredCheckVerdict([run(4, "completed", "success"), run(6, "completed", "skipped"), run(8, "completed", "skipped")], "CI result"),
+    ).toBe("success");
+    // Nothing but skipped runs: no verdict yet, never green.
+    expect(requiredCheckVerdict([run(6, "completed", "skipped")], "CI result")).toBe("pending");
+    expect(requiredCheckVerdict([run(6, "completed", "skipped"), run(8, "completed", "skipped")], "CI result")).toBe("pending");
+    // A running run behind the skipped one is still the answer.
+    expect(requiredCheckVerdict([run(4, "completed", "success"), run(6, "in_progress", null), run(8, "completed", "skipped")], "CI result")).toBe("pending");
+    // timed_out is a real outcome, not green.
+    expect(requiredCheckVerdict([run(4, "completed", "success"), run(6, "completed", "timed_out"), run(8, "completed", "skipped")], "CI result")).toBe("failed");
+  });
 });
 
 describe("the client", () => {

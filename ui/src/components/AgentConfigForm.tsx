@@ -1022,6 +1022,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // every adapter without a per-adapter edit.
     hideInstructionsFile: hideInstructionsFile || hideHostPaths,
     managedSandboxOnly: hideHostPaths,
+    secrets: availableSecrets,
   };
 
   // Section toggle state — advanced always starts collapsed

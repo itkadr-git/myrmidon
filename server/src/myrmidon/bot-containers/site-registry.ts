@@ -565,7 +565,13 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         const existingFingerprint = createHash("sha256")
           .update(JSON.stringify([site.url, token ?? null, site.caCert ?? null, clientCert ?? null, clientKey ?? null]))
           .digest("hex");
-        if (clients.has(key) && clientFingerprints.get(key) === existingFingerprint) continue;
+        if (clients.has(key) && clientFingerprints.get(key) === existingFingerprint) {
+          // myrmidon(1.6.6 REMOTE-SITES-T4): same connection — keep the client, but take the fresh
+          // row: profile (privateNetwork/tunnel), status and capacity changes must reach getSite()
+          // (the hermes adapter's plain-http decision reads it) without a board restart.
+          clientSites.set(key, site);
+          continue;
+        }
         const fingerprint = existingFingerprint;
         const mtls = site.url.startsWith("https:") && Boolean(site.caCert && clientCert && clientKey);
         const requiresMtls = site.url.startsWith("https:") || Boolean(site.caCert || clientCert || clientKey);

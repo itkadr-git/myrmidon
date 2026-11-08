@@ -72,11 +72,14 @@ import {
 } from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
+import { readAgentSpendWindows } from "../../litellm-keys/key-spend.js"; // myrmidon(OPE-11776)
+import { readLitellmKeyBudgetGauges } from "../../litellm-costs/attention.js"; // myrmidon(OPE-11776)
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
 import { scentMetrics } from "../../scent/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
+import { auth401BurstMetrics, AUTH_401_REASONS, type Auth401BurstSample } from "../../auth-401-burst/index.js";
 import { datastoreRetentionMetrics } from "../../datastore-care/retention/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
@@ -170,6 +173,8 @@ export const METRIC_FAMILIES = [
   "swarm_scent_classifier_alarm",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
+  "myrmidon_llm_key_spend_cents",
+  "myrmidon_llm_key_budget_utilization_percent",
   "myrmidon_recovery_created_total",
   "myrmidon_recovery_deduped_total",
   "myrmidon_recovery_success_total",
@@ -204,6 +209,12 @@ export const METRIC_FAMILIES = [
   // myrmidon(1.6.6 GUARDRAILS OPE-10182): guardrail trigger counters by rule
   // and enforcement mode, process-local like the continuation counters.
   "myrmidon_guardrail_triggers_total",
+
+  // myrmidon(OPE-11890): the product-side auth-401 burst detector — process-
+  // local sliding-window 401 counter, threshold/window from env. Replaces the
+  // paperclip-auth-401-watch host timer.
+  "myrmidon_auth_401_burst_total",
+  "myrmidon_auth_401_burst_tripped",
 
   // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors
   // by path — the adapter and the vendor path that still reads in parallel
@@ -328,6 +339,13 @@ export interface MetricsSnapshotFields {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  /** Per-agent ledger spend in rolling windows, exported by the authenticated /metrics endpoint. */
+  llmKeySpend?: Array<{ companyId: string; agentId: string; window: "24h" | "7d"; cents: number }>;
+  /**
+   * Gateway spend as a percentage of the key cap, per capped bot key (OPE-11776).
+   * Read from the last evaluation held in memory — a scrape never reaches the gateway.
+   */
+  llmKeyBudgetPercent?: Array<{ companyId: string; agentId: string; percent: number }>;
   recoveryCreatedTotal?: Map<IssueRecoveryActionKind, number> | null;
   recoveryDedupedTotal?: Map<IssueRecoveryActionKind, number> | null;
   recoverySuccessTotal?: Map<IssueRecoveryActionKind, number> | null;
@@ -358,6 +376,11 @@ export interface MetricsSnapshotFields {
    * Absent/null renders HELP/TYPE with no samples.
    */
   guardrailTriggers?: GuardrailTriggerCounts | null;
+  /**
+   * myrmidon(OPE-11890): the auth-401 burst detector sample of this process
+   * (in-process, no DB). null renders HELP/TYPE with no samples.
+   */
+  auth401Burst?: Auth401BurstSample | null;
   /**
    * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counters of
    * this process (in-process, no DB). null renders HELP/TYPE with no samples; a
@@ -904,6 +927,23 @@ async function readCostWindow(db: Db, windowStart: Date): Promise<number> {
   return Number(row?.total ?? 0);
 }
 
+/**
+ * Per-agent ledger spend for the authenticated scrape (OPE-11776). The shared,
+ * cached, time-bounded read of the ledger (litellm-keys/key-spend.ts): a scrape
+ * and a key-list page load within the TTL cost one query.
+ */
+async function readKeySpend(db: Db, now: Date): Promise<NonNullable<MetricsSnapshot["llmKeySpend"]>> {
+  const rows = await readAgentSpendWindows(db, now);
+  return rows.flatMap((row) =>
+    typeof row.companyId === "string" && typeof row.agentId === "string"
+      ? [
+          { companyId: row.companyId, agentId: row.agentId, window: "24h" as const, cents: row.dailyCents },
+          { companyId: row.companyId, agentId: row.agentId, window: "7d" as const, cents: row.weeklyCents },
+        ]
+      : [],
+  );
+}
+
 /** One scrape: every family is collected, and one family's failure never kills the rest. */
 export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promise<MetricsSnapshot> {
   const collected = await collectMetricsParts(deps);
@@ -1068,6 +1108,17 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readCostWindow(deps.db, errorWindowStart),
     0,
   );
+  const llmKeySpend = await guarded(
+    "myrmidon_llm_key_spend_cents",
+    () => readKeySpend(deps.db, now),
+    [] as NonNullable<MetricsSnapshot["llmKeySpend"]>,
+  );
+  // Process-local (the sweep tick's last evaluation), so it survives a broken database.
+  const llmKeyBudgetPercent = readLitellmKeyBudgetGauges().map(({ companyId, agentId, percent }) => ({
+    companyId,
+    agentId,
+    percent,
+  }));
   const deferredIssueExecutionOver30m = await guarded(
     "myrmidon_deferred_issue_execution_over_30m",
     () => deps.db.select({ total: count() }).from(agentWakeupRequests).where(and(
@@ -1133,6 +1184,15 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     "myrmidon_guardrail_triggers_total",
     () => Promise.resolve().then(() => guardrailTriggerMetrics.read()),
     null as GuardrailTriggerCounts | null,
+  );
+
+  // myrmidon(OPE-11890): the auth-401 burst detector rides the same guarded
+  // scrape — an in-process sliding-window counter that cannot throw today,
+  // guarded anyway so a future source cannot kill the scrape.
+  const auth401Burst = await guarded(
+    "myrmidon_auth_401_burst_total|myrmidon_auth_401_burst_tripped",
+    () => Promise.resolve().then(() => auth401BurstMetrics.read()),
+    null as Auth401BurstSample | null,
   );
 
   // myrmidon(1.6.6 CONNECTOR-IN): the ingress half rides the same guarded
@@ -1235,6 +1295,8 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
+      llmKeySpend,
+      llmKeyBudgetPercent,
       recoveryCreatedTotal: new Map(recoveryCounters.created),
       recoveryDedupedTotal: new Map(recoveryCounters.deduped),
       recoverySuccessTotal: new Map(recoveryCounters.succeeded),
@@ -1245,6 +1307,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
 
       adapterFallbacks: fallbackSample,
       guardrailTriggers,
+      auth401Burst,
       singletonProxy: singletonProxySample,
 
       chatIngress,
@@ -1658,6 +1721,26 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       [`myrmidon_llm_cost_cents_total{${R}} ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
     ),
   );
+  blocks.push(
+    familyBlock(
+      "myrmidon_llm_key_spend_cents",
+      "Rolling LiteLLM ledger spend in cents by company and agent (24h and 7d).",
+      "gauge",
+      (snapshot.llmKeySpend ?? []).map(({ companyId, agentId, window, cents }) =>
+        `myrmidon_llm_key_spend_cents{${R},company_id="${escapeLabelValue(companyId)}",agent_id="${escapeLabelValue(agentId)}",window="${window}"} ${formatSampleValue(cents)}`,
+      ),
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_llm_key_budget_utilization_percent",
+      "Gateway spend as a percentage of the LiteLLM key cap, by company and agent (capped keys only; above 100 = over the cap).",
+      "gauge",
+      (snapshot.llmKeyBudgetPercent ?? []).map(({ companyId, agentId, percent }) =>
+        `myrmidon_llm_key_budget_utilization_percent{${R},company_id="${escapeLabelValue(companyId)}",agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(Math.round(percent * 10) / 10)}`,
+      ),
+    ),
+  );
   const recoveryCounterFamily = (
     name: string,
     help: string,
@@ -1914,6 +1997,33 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
             ),
           )
         : [],
+    ),
+  );
+
+  // myrmidon(OPE-11890): the auth-401 burst detector. Per-reason cumulative
+  // counter (closed reason set only — never a header or token) plus a tripped
+  // gauge that is 1 from the first crossing until the process resets. Process-
+  // local, like the guardrail counter.
+  const auth401Burst = snapshot.auth401Burst ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_auth_401_burst_total",
+      "Authentication 401 rejections per reason, cumulative since boot. Reason is the closed-set actorNoneReason taxonomy; request credentials are never a label.",
+      "counter",
+      auth401Burst
+        ? AUTH_401_REASONS.map(
+            (reason) =>
+              `myrmidon_auth_401_burst_total{${R},reason="${escapeLabelValue(reason)}"} ${formatSampleValue(auth401Burst.counts[reason] ?? 0)}`,
+          )
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_auth_401_burst_tripped",
+      "1 from the first window that crossed MYRMIDON_AUTH_401_BURST_THRESHOLD 401s inside MYRMIDON_AUTH_401_BURST_WINDOW_SEC until the process resets the detector; 0 otherwise.",
+      "gauge",
+      auth401Burst ? [`myrmidon_auth_401_burst_tripped{${R}} ${auth401Burst.tripped ? 1 : 0}`] : [],
     ),
   );
 

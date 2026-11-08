@@ -2,6 +2,7 @@ import { configFieldsForSection } from "../config-sections";
 import { useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
+import { SecretPicker } from "../../components/environment-variables-editor/SecretPicker";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -118,6 +119,7 @@ export function OpenClawGatewayConfigFields({
   config,
   eff,
   mark,
+  secrets = [],
 }: AdapterConfigFieldsProps) {
   const { t } = useTranslation();
   const configuredHeaders =
@@ -151,6 +153,14 @@ export function OpenClawGatewayConfigFields({
     "sessionKeyStrategy",
     String(config.sessionKeyStrategy ?? "fixed"),
   );
+  const deviceToken = isCreate
+    ? values?.adapterSchemaValues?.deviceToken
+    : eff("adapterConfig", "deviceToken", config.deviceToken);
+  const deviceTokenSecretId = deviceToken && typeof deviceToken === "object" && !Array.isArray(deviceToken) &&
+    "type" in deviceToken && (deviceToken as { type?: unknown }).type === "secret_ref" &&
+    "secretId" in deviceToken && typeof (deviceToken as { secretId?: unknown }).secretId === "string"
+      ? (deviceToken as { secretId: string }).secretId
+      : "";
 
   return configFieldsForSection(section, (
     <>
@@ -325,6 +335,23 @@ export function OpenClawGatewayConfigFields({
           className={inputClass}
           placeholder={t("area.adapters-plugins-1.openclaw-gateway.fields.scopesPlaceholder")}
         />
+      </Field>
+
+      {/* Device identity is a company secret reference; never show or accept token text here. */}
+      <Field label={t("area.adapters-plugins-1.openclaw-gateway.fields.deviceTokenLabel")} configSection="advanced">
+        <SecretPicker
+          secretId={deviceTokenSecretId}
+          secrets={secrets}
+          onSelect={(secretId) => {
+            const binding = secretId ? { type: "secret_ref" as const, secretId, version: "latest" as const } : undefined;
+            if (isCreate) {
+              set?.({ adapterSchemaValues: { ...values?.adapterSchemaValues, deviceToken: binding } });
+            } else {
+              mark("adapterConfig", "deviceToken", binding);
+            }
+          }}
+        />
+        <p className="mt-1 text-xs text-muted-foreground">{t("area.adapters-plugins-1.openclaw-gateway.fields.deviceTokenHint")}</p>
       </Field>
 
       <RuntimeServicesJsonField

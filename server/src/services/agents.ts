@@ -955,6 +955,16 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    // myrmidon(OPE-12150): moving an agent out of `error` by a status patch also
+    // clears the stale reason; before, an idle agent kept «контейнер не поднят».
+    if (
+      existing.status === "error" &&
+      data.status &&
+      data.status !== "error" &&
+      !Object.prototype.hasOwnProperty.call(data, "errorReason")
+    ) {
+      normalizedPatch.errorReason = null;
+    }
     if (data.permissions !== undefined) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }

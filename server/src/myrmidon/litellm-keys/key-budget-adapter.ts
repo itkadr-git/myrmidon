@@ -28,6 +28,37 @@ export interface KeyBudgetLimitView {
   caste: string | null;
 }
 
+/** Spend and cap facts for a managed key, sourced from the board ledger. */
+export interface KeyBudgetUsageView {
+  spentCents: number;
+  weeklySpentCents: number;
+  zeroCostEvents: number;
+  windowStart: string;
+  utilizationPercent: number | null;
+  status: "ok" | "near_cap" | "exhausted" | "unknown";
+}
+
+export function keyBudgetUsage(
+  spentCents: number,
+  amountUsd: number,
+  windowStart: Date,
+  extras: { weeklySpentCents?: number; zeroCostEvents?: number; capSpentCents?: number } = {},
+): KeyBudgetUsageView {
+  const capCents = amountUsd * 100;
+  const utilizationPercent = capCents > 0 && extras.capSpentCents != null
+    ? (extras.capSpentCents / capCents) * 100 : null;
+  return {
+    spentCents,
+    weeklySpentCents: extras.weeklySpentCents ?? spentCents,
+    zeroCostEvents: extras.zeroCostEvents ?? 0,
+    windowStart: windowStart.toISOString(),
+    utilizationPercent,
+    status: utilizationPercent == null ? "unknown"
+      : utilizationPercent >= 100 ? "exhausted"
+      : utilizationPercent >= 80 ? "near_cap" : "ok",
+  };
+}
+
 /** Projected key view for an agent. */
 export interface AgentKeyBudgetView {
   agentId: string;
@@ -38,6 +69,7 @@ export interface AgentKeyBudgetView {
   valueHash: string | null;
   canManageKeys: boolean;
   budget: KeyBudgetLimitView | null;
+  usage?: KeyBudgetUsageView | null;
 }
 
 /** Projected key view for a service or hierarchy scope. */

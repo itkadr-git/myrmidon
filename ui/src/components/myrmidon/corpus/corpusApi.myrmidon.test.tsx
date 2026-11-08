@@ -87,8 +87,8 @@ describe("myrmidon(1.6.6 CORPUS E) corpus api", () => {
   });
 
   it("retries and deletes a document", async () => {
-    await corpusApi.retryDocument(COMPANY, "doc-1");
-    expect(apiMock.post).toHaveBeenCalledWith(`${BASE}/documents/doc-1/retry`, {});
+    await corpusApi.reparseDocument(COMPANY, "doc-1");
+    expect(apiMock.post).toHaveBeenCalledWith(`${BASE}/documents/doc-1/reparse`, {});
     await corpusApi.deleteDocument(COMPANY, "doc-1");
     expect(apiMock.delete).toHaveBeenCalledWith(`${BASE}/documents/doc-1`);
   });

@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  CODE_ROLES,
+  DEFAULT_CODE_NO_PROGRESS_LIMIT,
+  DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT,
   DEFAULT_NO_PROGRESS_LIMIT,
   DEFAULT_REPEATED_TOOL_CALL_LIMIT,
   RUN_GUARD_STOP_REASONS,
   RunGuard,
+  isCodeRole,
   isRunGuardStopReason,
   resolveRunGuardOptions,
 } from "./run-guard.js";
@@ -219,6 +223,44 @@ describe("RunGuard configuration", () => {
     expect(options.noProgressLimit).toBe(40);
     expect(options.repeatedToolCallLimit).toBe(3);
     expect(DEFAULT_NO_PROGRESS_LIMIT).toBe(40);
+  });
+
+  it("defaults to 100 consecutive read-only calls and 5 repeats for code roles", () => {
+    for (const role of ["engineer", "reviewer", "lead", "architect", " ENGINEER ", "Architect"]) {
+      expect(isCodeRole(role)).toBe(true);
+      const options = resolveRunGuardOptions({ role, env: {} });
+      expect(options.noProgressLimit).toBe(100);
+      expect(options.repeatedToolCallLimit).toBe(5);
+      const agentOptions = resolveRunGuardOptions({ agentConfig: { role }, env: {} });
+      expect(agentOptions.noProgressLimit).toBe(100);
+      expect(agentOptions.repeatedToolCallLimit).toBe(5);
+    }
+    for (const nonCode of ["cmo", "pm", "qa", "general", "ceo", "designer"]) {
+      expect(isCodeRole(nonCode)).toBe(false);
+      const options = resolveRunGuardOptions({ role: nonCode, env: {} });
+      expect(options.noProgressLimit).toBe(40);
+      expect(options.repeatedToolCallLimit).toBe(3);
+    }
+    expect(DEFAULT_CODE_NO_PROGRESS_LIMIT).toBe(100);
+    expect(DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT).toBe(5);
+  });
+
+  it("engineer run with 80 distinct reads without write does not stop; 5 identical reads without write stops", () => {
+    const guard = new RunGuard({ role: "engineer" });
+    for (let i = 1; i <= 80; i += 1) {
+      expect(guard.toolStarted("read_file", `src/file-${i}.ts`)).toEqual({ stop: false });
+    }
+    expect(guard.stopped).toBe(false);
+    expect(guard.stats().readOnlyStreak).toBe(80);
+
+    const repeatGuard = new RunGuard({ role: "engineer" });
+    for (let i = 1; i < 5; i += 1) {
+      expect(repeatGuard.toolStarted("read_file", "src/file.ts")).toEqual({ stop: false });
+    }
+    expect(repeatGuard.toolStarted("read_file", "src/file.ts")).toEqual({
+      stop: true,
+      reason: "repeated_tool_call",
+    });
   });
 
   it("takes the limits from the agent card, the team settings and the environment, in that order", () => {

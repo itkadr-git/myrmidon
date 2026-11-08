@@ -412,6 +412,7 @@ describe("pull-request-approval-propagation", () => {
           labels: [REVIEW_APPROVED_LABEL, "ready"], // Already has review-approved!
         }),
         addLabel: vi.fn(),
+        removeLabel: vi.fn(),
         submitReview: vi.fn(),
         listReviews: vi.fn().mockResolvedValue([
           { id: 1, state: "APPROVED", commitId: defaultHeadSha },
@@ -438,6 +439,7 @@ describe("pull-request-approval-propagation", () => {
       expect(result.action).toBe("noop");
       expect(result.reason).toBe("already_labeled");
       expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.removeLabel).not.toHaveBeenCalled();
       expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
@@ -475,6 +477,107 @@ describe("pull-request-approval-propagation", () => {
       expect(result.success).toBe(true);
       expect(mockClient.addLabel).not.toHaveBeenCalled();
       expect(mockClient.submitReview).toHaveBeenCalled();
+    });
+
+    // myrmidon(OPE-12024, OPE-9646): when the head moved after an earlier
+    // approval, the label sits on the old head and the labeled-triggered
+    // hot-files-review workflow never fires on the new one. The propagation
+    // must reseat the label (remove + add) so the labeled event fires on the
+    // current head.
+    it("reseats review-approved when the PR head moved after an earlier approval", async () => {
+      const db = createMockDb();
+      const oldHeadSha = "old-head-sha";
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: defaultHeadSha,
+          labels: [REVIEW_APPROVED_LABEL],
+        }),
+        addLabel: vi.fn(),
+        removeLabel: vi.fn(),
+        submitReview: vi.fn(),
+        listReviews: vi.fn().mockResolvedValue([
+          // Approval pinned to the pre-rebuild head — the head moved after it.
+          { id: 0, state: "APPROVED", commitId: oldHeadSha },
+          // Re-approval on the current head after the rebuild.
+          { id: 1, state: "APPROVED", commitId: defaultHeadSha },
+        ]),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          headSha: defaultHeadSha,
+          decisionOutcome: "approved",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe("propagated");
+      expect(result.labelAdded).toBe(true);
+      expect(mockClient.removeLabel).toHaveBeenCalledWith({
+        repository: "itkadr-git/myrmidon",
+        number: 123,
+        label: REVIEW_APPROVED_LABEL,
+        token: "mock-token",
+      });
+      expect(mockClient.addLabel).toHaveBeenCalledWith({
+        repository: "itkadr-git/myrmidon",
+        number: 123,
+        label: REVIEW_APPROVED_LABEL,
+        token: "mock-token",
+      });
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
+    });
+
+    it("keeps noop already_labeled when the client cannot reseat the label", async () => {
+      const db = createMockDb();
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: defaultHeadSha,
+          labels: [REVIEW_APPROVED_LABEL],
+        }),
+        addLabel: vi.fn(),
+        submitReview: vi.fn(),
+        listReviews: vi.fn().mockResolvedValue([
+          { id: 1, state: "APPROVED", commitId: defaultHeadSha },
+        ]),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          headSha: defaultHeadSha,
+          decisionOutcome: "approved",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe("noop");
+      expect(result.reason).toBe("already_labeled");
+      expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
     it("authorization: fails safely and logs failure when no token is available", async () => {

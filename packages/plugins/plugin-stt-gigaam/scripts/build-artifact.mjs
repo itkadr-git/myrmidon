@@ -14,4 +14,3 @@ pkg.paperclipPlugin = {
   worker: "./worker.js",
 };
 await writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
-

@@ -18,7 +18,13 @@ export {
 } from "./routes.js";
 export {
   CORPUS_PARSE_SWEEP_INTERVAL_MS,
+  CORPUS_SHUTDOWN_ABORT_SETTLE_MS,
+  CORPUS_SHUTDOWN_GRACE_ENV,
+  CORPUS_SHUTDOWN_GRACE_MS,
+  corpusShutdownGraceMs,
   createCorpusParseWorker,
+  type CorpusParseStopOptions,
+  type CorpusParseStopResult,
   type CorpusParseSweepResult,
   type CorpusParseWorker,
   type CorpusParseWorkerDeps,
@@ -26,12 +32,18 @@ export {
 export {
   CORPUS_DATASET_DELETED_ACTION,
   CORPUS_DOCUMENT_DELETED_ACTION,
+  CORPUS_DOCUMENT_REFRESHED_ACTION,
+  CORPUS_DOCUMENT_REPARSED_ACTION,
+  CORPUS_REFRESH_COMPLETED_ACTION,
+  CORPUS_REFRESH_PAUSE_MS,
+  CORPUS_REFRESH_STARTED_ACTION,
   CORPUS_DOCUMENT_UPLOADED_ACTION,
   CORPUS_NOT_CONFIGURED_ERROR,
   CORPUS_SETTINGS_ACTION,
   CorpusRequestError,
   corpusService,
   type CorpusActor,
+  type CorpusAddUrlInput,
   type CorpusAuditEntry,
   type CorpusService,
   type CorpusServiceDeps,
@@ -39,6 +51,14 @@ export {
   type CorpusUploadInput,
   type CorpusUploadResult,
 } from "./service.js";
+export {
+  CORPUS_SOURCE_REFRESH_INTERVAL_MS,
+  createCorpusSourceRefresher,
+  type CorpusSourceRefresher,
+  type CorpusSourceRefresherDeps,
+  type CorpusSourceRefreshSweepResult,
+} from "./source.js";
+export { createCorpusUrlFetcher, type CorpusUrlFetcher } from "./source-fetch.js";
 export type {
   BlobStorePort,
   CorpusDatasetRecord,
