@@ -131,6 +131,34 @@ describe("decideQueuedRunStaleness: run guard stop needs input (RUN-GUARD-ESCALA
   });
 });
 
+describe("decideQueuedRunStaleness: block owner unblock wake (UNBLOCK-OWNER-WAKE)", () => {
+  const ownerWake = (overrides: Partial<QueuedRunFacts> = {}) =>
+    facts({
+      runAgentId: "senior",
+      issueAssigneeAgentId: "agent-a",
+      issueStatus: "blocked",
+      wakeReason: "issue_unblock_requested",
+      ...overrides,
+    });
+
+  it("lets the non-assignee block owner start on the blocked issue", () => {
+    expect(decideQueuedRunStaleness(ownerWake({ isUnblockOwnerWake: true }), NOW)).toEqual({ stale: false });
+  });
+
+  it("still cancels the same wake without the block owner signal", () => {
+    expect(decideQueuedRunStaleness(ownerWake(), NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_assignee_changed",
+    });
+  });
+
+  it("still cancels it once the issue reached a terminal status", () => {
+    expect(
+      decideQueuedRunStaleness(ownerWake({ isUnblockOwnerWake: true, issueStatus: "done" }), NOW),
+    ).toMatchObject({ stale: true, errorCode: "issue_terminal_status" });
+  });
+});
+
 // myrmidon(OPE-11948): a queued automatic continuation dies when the issue was
 // parked or sent to review after the wake was created.
 describe("decideQueuedRunStaleness: automatic continuation wake (OPE-11948)", () => {
