@@ -143,6 +143,34 @@ function fakeSummaries() {
   };
 }
 
+/**
+ * A model port whose calls hang until the room's stop signal aborts them —
+ * the stand-in for an in-flight provider call interrupted by the stop valve.
+ */
+class HangingModels implements AgentExchangeModelPort {
+  calls: AgentExchangeModelCallInput[] = [];
+  landed = 0;
+  async call(input: AgentExchangeModelCallInput): Promise<AgentExchangeModelCallResult> {
+    this.calls.push(input);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 120_000);
+      input.signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          reject(input.signal?.reason instanceof Error ? input.signal.reason : new Error("aborted"));
+        },
+        { once: true },
+      );
+    });
+    this.landed += 1;
+    return { content: "late", promptTokens: 1, completionTokens: 1 };
+  }
+  async prices() {
+    return { promptPriceUsdPerMillion: null, completionPriceUsdPerMillion: null };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -286,6 +314,96 @@ describe("agent-exchange engine (myrmidon 1.7 AGENT-EXCHANGE-A)", () => {
     await expect(
       stopRoom(deps, { roomId: room.id, actorType: "user", actorId: "someone-else" }),
     ).rejects.toMatchObject({ code: "not_room_stopper" });
+  });
+
+  it("a named participant may stop the room (participant_stop)", async () => {
+    const participants: AgentExchangeParticipantSpec[] = [
+      { agentId: "11111111-1111-4111-8111-111111111111", label: "agent-a", providerId: "prov-1", model: "model-a" },
+      { agentId: null, label: "agent-b", providerId: "prov-1", model: "model-b" },
+    ];
+    const room = await openRoom(deps, {
+      companyId: "company-1",
+      issueId: "issue-1",
+      openerType: "user",
+      openerId: "owner-1",
+      participants,
+      prompt: "p",
+      issueTitle: "t",
+    });
+    const stopped = await stopRoom(deps, {
+      roomId: room.id,
+      actorType: "agent",
+      actorId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(stopped.status).toBe("stopped");
+    expect(stopped.stopReason).toBe("participant_stop");
+
+    // A stopped room accepts no further rounds and no finalize either.
+    await expect(runNextRound(deps, room.id, "Task: t")).rejects.toMatchObject({ code: "room_closed" });
+    await expect(finalizeRoom(deps, room.id)).rejects.toMatchObject({ code: "room_closed" });
+  });
+
+  it("a participant who is not in the roster may not stop the room", async () => {
+    const room = await openRoom(deps, {
+      companyId: "company-1",
+      issueId: "issue-1",
+      openerType: "user",
+      openerId: "owner-1",
+      participants: PARTICIPANTS,
+      prompt: "p",
+      issueTitle: "t",
+    });
+    await expect(
+      stopRoom(deps, { roomId: room.id, actorType: "agent", actorId: "22222222-2222-4222-8222-222222222222" }),
+    ).rejects.toMatchObject({ code: "not_room_stopper" });
+  });
+
+  it("the stop valve interrupts an in-flight round: calls aborted, no totals, next round 409s", async () => {
+    const hanging = new HangingModels();
+    const hangDeps: AgentExchangeEngineDeps = { ...deps, models: hanging };
+    const participantAgents: AgentExchangeParticipantSpec[] = [
+      { agentId: "11111111-1111-4111-8111-111111111111", label: "agent-a", providerId: "prov-1", model: "model-a" },
+      { agentId: null, label: "agent-b", providerId: "prov-1", model: "model-b" },
+    ];
+    const room = await openRoom(deps, {
+      companyId: "company-1",
+      issueId: "issue-1",
+      openerType: "user",
+      openerId: "owner-1",
+      participants: participantAgents,
+      prompt: "p",
+      issueTitle: "t",
+    });
+    const callsBeforeRound2 = hanging.calls.length;
+
+    const running = runNextRound(hangDeps, room.id, "Task: t\\np");
+    // Give the round a tick to dispatch its calls, then stop the room.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const stopped = await stopRoom(hangDeps, {
+      roomId: room.id,
+      actorType: "agent",
+      actorId: "11111111-1111-4111-8111-111111111111",
+    });
+    const after = await running;
+
+    expect(stopped.status).toBe("stopped");
+    expect(stopped.stopReason).toBe("participant_stop");
+    // The round was interrupted: no totals were added, the round count stayed.
+    expect(after.tokensUsed).toBe(room.tokensUsed);
+    expect(after.costCents).toBe(room.costCents);
+    expect(after.currentRound).toBe(1);
+    // The in-flight cells landed as room_stopped errors.
+    const roundTwoCells = store.messages.filter((m) => m.round === 2);
+    expect(roundTwoCells).toHaveLength(2);
+    for (const cell of roundTwoCells) {
+      expect(cell.status).toBe("error");
+      expect(cell.error).toBe("room_stopped:interrupted_by_stop");
+    }
+    // No call landed after the stop.
+    expect(hanging.landed).toBe(callsBeforeRound2);
+
+    // Further rounds are refused: room_closed maps to HTTP 409.
+    await expect(runNextRound(hangDeps, room.id, "Task: t\\np")).rejects.toMatchObject({ code: "room_closed" });
   });
 
   it("a disabled feature refuses to open a room before any model call", async () => {
