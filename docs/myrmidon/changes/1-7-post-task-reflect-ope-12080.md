@@ -1,9 +1,3 @@
----
-issue: OPE-12080
-roadmap: Д16/NEW POST-TASK-REFLECT
-module: server/src/myrmidon/hindsight/reflection/
----
-
 ## changelog-en
 
 ### POST-TASK-REFLECT: lesson format and hindsight reflection domain (OPE-12080)
