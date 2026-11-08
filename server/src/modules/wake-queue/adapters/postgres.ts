@@ -1245,6 +1245,17 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
             !interruptedQueue &&
             !input.deferredWakesPostdateRun,
+          // vendor #16357 (OPE-12205): a board-operator stop of a run that
+          // never started (no startedAt: queued/claimed without a running
+          // process) is not an execution either. Its deferred follow-up must
+          // stay deferred like any other operator stop; otherwise stopping
+          // work that had not begun would launch the next link of the chain.
+          executionCancellationUnstartedOperatorStop:
+            run.status === "cancelled" &&
+            !run.startedAt &&
+            !run.processPid &&
+            !run.processGroupId &&
+            parseObject(run.resultJson?.executionCancellation).source?.code === "board_operator",
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
