@@ -10,6 +10,7 @@ import {
   documents,
   heartbeatRuns,
   issueComments,
+  issueExecutionDecisions,
   issuePlanDecompositions,
   issueRelations,
   issues,
@@ -46,6 +47,7 @@ import {
   readIdlePickupRecentSuccessWindowMs,
   isReviewPendingWaitingForCi,
 } from "../myrmidon/idle-pickup.ts";
+import { logger } from "../middleware/logger.js";
 
 // IDLE-PICKUP (1.3): the board wakes an agent with a free queue on its
 // highest-priority ready task, reusing the normal wake admission path.
@@ -889,6 +891,122 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     },
   );
 
+  // OPE-12445: the reviewer's REQUEST CHANGES return is the executor's work
+  // order. The last run SUCCEEDED — the run that produced what the reviewer
+  // rejected — so the recent-success quiet window must not mute the task: the
+  // REVIEW-RETURN-GUARD wake was suppressed by design, and ENG_IDLE firing
+  // 20-40 minutes later was the only recovery left before this lane existed.
+  it("wakes a task returned from review (changes_requested) whose last run succeeded, inside the quiet window", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    // The succeeded run IS the run whose work the reviewer returned: finished
+    // moments ago, well inside the 2h recent-success window.
+    const runEndedAt = new Date(Date.now() - 5 * 60_000);
+    await seedSucceededRun({ companyId, agentId, issueId, finishedAt: runEndedAt });
+    // The REQUEST CHANGES decision landed AFTER that run: it returned the
+    // run's work. lastDecisionId points at the decision row.
+    const decisionId = randomUUID();
+    await db.insert(issueExecutionDecisions).values({
+      id: decisionId,
+      companyId,
+      issueId,
+      stageId: randomUUID(),
+      stageType: "review",
+      outcome: "changes_requested",
+      body: "CI of the head is red",
+      createdAt: new Date(Date.now() - 2 * 60_000),
+    });
+    await db
+      .update(issues)
+      .set({ executionState: { status: "changes_requested", lastDecisionId: decisionId } })
+      .where(eq(issues.id, issueId));
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(result.alreadyActive).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays quiet when the changes_requested decision predates the succeeded run (loop safety)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    // The run succeeded AFTER the decision: the rework already happened. The
+    // quiet window must own the task again, or every pass re-wakes it.
+    await db.insert(issueExecutionDecisions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      stageId: randomUUID(),
+      stageType: "review",
+      outcome: "changes_requested",
+      body: "fix the handler",
+      createdAt: new Date(Date.now() - 30 * 60_000),
+    });
+    await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 5 * 60_000) });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("still quiets a recent success without changes_requested (the window protects a dispositionless handoff)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 5 * 60_000) });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("still quiets a todo task with changes_requested and a recent success (the return lane is an in_progress lane)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "todo" });
+    await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, issueId));
+    await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 5 * 60_000) });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("reports per-skip reasons in the quiet-window skip log (OPE-12445 blind-spot logging)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 5 * 60_000) });
+    const deps = fakeDeps();
+    vi.mocked(logger.info).mockClear();
+
+    await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    const quietLog = vi
+      .mocked(logger.info)
+      .mock.calls.find(([, msg]) => msg === "myrmidon.idle_pickup: skipped a candidate still inside the recent-run quiet window");
+    expect(quietLog).toBeDefined();
+    const [fields] = quietLog!;
+    expect(fields).toMatchObject({
+      agentId,
+      companyId,
+      issueId,
+      reason: "quiet_recent_run",
+      recentRunStatus: "succeeded",
+      reviewChangesRequested: false,
+    });
+  });
+
   it("does not repeatedly wake review changes after a system cancellation", async () => {
     const { companyId, agentId } = await seedAgent();
     const systemCancelled = await seedIssue({ companyId, agentId, status: "in_progress" });
@@ -1580,6 +1698,31 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
     return { sweeper, enqueueWakeup: enqueueWakeup as unknown as ReturnType<typeof vi.fn>, deps };
   }
 
+  // Local row seeds (the per-agent describe's helpers live in its own scope).
+  async function seedIssue(input: { companyId: string; agentId: string | null; status: string }) {
+    const id = randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId: input.companyId,
+      title: "Ready task",
+      status: input.status,
+      priority: "medium",
+      assigneeAgentId: input.agentId,
+    });
+    return id;
+  }
+
+  async function seedLiveRun(input: { companyId: string; agentId: string; issueId: string; status: string }) {
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: input.status,
+      invocationSource: "automation",
+      contextSnapshot: { issueId: input.issueId },
+    });
+  }
+
   it("retries suppressed review work on later ticks before general development work", async () => {
     const { companyId, agentId } = await seedAgent();
     await db.insert(issues).values({
@@ -1595,6 +1738,76 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
     expect(pickupReviewForAgent).toHaveBeenCalledTimes(2);
     expect(pickupReviewForAgent).toHaveBeenCalledWith(expect.objectContaining({ id: agentId, companyId }));
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  // OPE-12445 acceptance: an engineer with no live run whose task sits in todo
+  // without blockers is a candidate — the pass must count it (considered >= 1)
+  // and wake the agent.
+  it("counts and wakes a todo task of an idle engineer (considered >= 1)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    await seedIssue({ companyId, agentId, status: "todo" });
+    const { sweeper, enqueueWakeup } = sweeperDeps();
+
+    const result = await sweeper.sweep(new Date());
+
+    expect(result.considered).toBeGreaterThanOrEqual(1);
+    expect(result.woken).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ reason: IDLE_WAKE_REASON }));
+  });
+
+  // OPE-12445: the pass log read considered: 0 while agentsChecked: 79 /
+  // alreadyActive: 13 proved candidates were scanned — the per-agent counts
+  // were never aggregated into the totals.
+  it("aggregates per-agent considered into the pass totals when no one is woken", async () => {
+    const { companyId, agentId } = await seedAgent();
+    // A live run makes this candidate considered-but-alreadyActive: scanned,
+    // skipped, woken stays 0 — exactly the production blind-spot shape.
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedLiveRun({ companyId, agentId, issueId, status: "running" });
+    const { sweeper } = sweeperDeps();
+
+    const result = await sweeper.sweep(new Date());
+
+    expect(result.agentsChecked).toBe(1);
+    expect(result.woken).toBe(0);
+    expect(result.considered).toBe(1);
+    expect(result.alreadyActive).toBe(1);
+  });
+
+  it("logs the woke-none diagnostic when candidates were scanned but nobody was woken", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedLiveRun({ companyId, agentId, issueId, status: "running" });
+    const { sweeper } = sweeperDeps();
+    vi.mocked(logger.info).mockClear();
+
+    await sweeper.sweep(new Date());
+
+    const wokeNoneLog = vi
+      .mocked(logger.info)
+      .mock.calls.find(([, msg]) => msg === "idle pickup considered ready assigned issues but woke none");
+    expect(wokeNoneLog).toBeDefined();
+    const [fields] = wokeNoneLog!;
+    expect(fields).toMatchObject({ agentsChecked: 1, considered: 1, alreadyActive: 1, woken: 0 });
+  });
+
+  // OPE-12445: the review lane consumes the agent's whole pass when handled;
+  // its candidates must count toward the pass totals or the pass log still
+  // reads considered: 0 while the review lane owns the queue.
+  it("adds the review lane's considered count to the pass totals when the lane handles the pass", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const pickupReviewForAgent = vi.fn().mockResolvedValue({ handled: true, woken: 0, considered: 2 });
+    const { sweeper } = sweeperDeps({ pickupReviewForAgent });
+    vi.mocked(logger.info).mockClear();
+
+    const result = await sweeper.sweep(new Date());
+
+    expect(result.woken).toBe(0);
+    expect(result.considered).toBe(2);
+    const wokeNoneLog = vi
+      .mocked(logger.info)
+      .mock.calls.find(([, msg]) => msg === "idle pickup considered ready assigned issues but woke none");
+    expect(wokeNoneLog).toBeDefined();
   });
 
   it("wakes a ready issue of an invokable idle agent on the tick", async () => {

@@ -20560,6 +20560,10 @@ export function heartbeatService(
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   async function pickupReviewForAgent(agent: { id: string; companyId: string }, excludeIssueId?: string) {
     let woken = 0;
+    // OPE-12445: the sweep's pass log reports `considered` per lane; count the
+    // review lane's own candidates so its slice of the agent's queue is not
+    // reported as zero while the lane owns the pass.
+    let considered = 0;
     const handled = await pickupNextReview({
       serialize: async (work) => {
         const [candidateExists] = await db.select({ id: issues.id }).from(issues).where(and(
@@ -20611,7 +20615,10 @@ export function heartbeatService(
         sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
         sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
         sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
-      )),
+      )).then(async (rows) => {
+        considered = rows.length;
+        return rows;
+      }),
       wake: async (candidate) => {
         if (!idleWakeBudget.tryConsume(agent.companyId)) return null;
         const result = await enqueueWakeup(agent.id, {
@@ -20627,7 +20634,7 @@ export function heartbeatService(
         return result;
       },
     }, { excludeIssueId });
-    return { handled, woken };
+    return { handled, woken, considered };
   }
 
   const idlePickupSweeper = createIdlePickupSweeper({
