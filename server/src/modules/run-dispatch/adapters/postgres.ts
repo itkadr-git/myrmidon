@@ -45,6 +45,12 @@ import {
   RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
   isRunGuardStopWakeRecipient,
 } from "../../../myrmidon/run-guard-escalation.js";
+// myrmidon(OPE-12297): the unblock-owner wake is not the assignee's; the owner
+// named by the issue's unblockDescriptor must not be cancelled for ownership.
+import {
+  UNBLOCK_OWNER_WAKE_REASON,
+  isUnblockOwnerWakeRecipient,
+} from "../../../myrmidon/unblock-owner-wake.js";
 import type {
   QueuedRunFacts,
   QueuedRunStalenessErrorCode,
@@ -610,6 +616,22 @@ export function createPostgresRunDispatchAdapter(
         })),
     );
 
+    // myrmidon(OPE-12297): the wake of the unblock descriptor's owner on a
+    // blocked issue. The owner is usually not the assignee; the bypass is
+    // bound to the issue still being blocked and to the run's agent still
+    // being the descriptor owner — otherwise the run is cancelled as before.
+    const isUnblockOwnerWake = Boolean(
+      issue &&
+        issue.status === "blocked" &&
+        input.invocationSource === "automation" &&
+        wakeReason === UNBLOCK_OWNER_WAKE_REASON &&
+        (await isUnblockOwnerWakeRecipient(dbOrTx, {
+          companyId: input.companyId,
+          issueId,
+          agentId: input.agentId,
+        })),
+    );
+
     // myrmidon(OPE-11948): an automatic continuation wake — the system's own
     // `issue_continuation_needed`, not a person's comment, a resume request or
     // an interaction answer (a card a person resolved keeps its own rules) — is
@@ -652,6 +674,8 @@ export function createPostgresRunDispatchAdapter(
       isInteractionWake,
       // myrmidon(P2): pending interaction addressee wake
       isPendingInteractionAddresseeWake: pendingInteractionAddresseeWake,
+      // myrmidon(OPE-12297): unblock descriptor owner wake
+      isUnblockOwnerWake,
       isAuthorizedSourceScopedRecovery,
       isProductiveContinuationRecovery,
       isRunGuardStopNeedsInputWake,

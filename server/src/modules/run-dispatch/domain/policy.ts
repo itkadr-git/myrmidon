@@ -163,6 +163,12 @@ export type QueuedRunFacts = {
   isAuthorizedSourceScopedRecovery: boolean;
   isProductiveContinuationRecovery?: boolean;
   /**
+   * myrmidon(OPE-12297): the run is the wake of the owner named by the issue's
+   * unblockDescriptor (`issue_unblock_requested`). The owner is usually not the
+   * assignee and must stay woken: the descriptor does not change with the assignee.
+   */
+  isUnblockOwnerWake?: boolean;
+  /**
    * myrmidon(RUN-GUARD-ESCALATE): the run is the wake of the assignee's manager
    * after a final run guard stop (`run_guard_stop_needs_input`). The manager is
    * not the assignee and must stay woken: the assignee does not change.
@@ -197,6 +203,8 @@ type OwnershipFacts = {
   isInteractionWake?: boolean;
   // myrmidon(P2): pending interaction addressee wake bypass
   isPendingInteractionAddresseeWake?: boolean;
+  // myrmidon(OPE-12297): unblock descriptor owner wake bypass
+  isUnblockOwnerWake?: boolean;
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
   isProductiveContinuationRecovery?: boolean;
@@ -217,6 +225,8 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isInteractionWake) return "current_owner";
   // myrmidon(P2): the addressee of a pending interaction is often not the assignee
   if (facts.isPendingInteractionAddresseeWake) return "current_owner";
+  // myrmidon(OPE-12297): the unblock descriptor owner wake is not the assignee's
+  if (facts.isUnblockOwnerWake) return "current_owner";
   if (facts.isCurrentReviewParticipant) return "current_owner";
   if (facts.isProductiveContinuationRecovery) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
@@ -619,6 +629,8 @@ export function decideQueuedRunStaleness(
     isInteractionWake: facts.isInteractionWake,
     // myrmidon(P2): forward the addressee bypass; this call site lists bypasses explicitly
     isPendingInteractionAddresseeWake: facts.isPendingInteractionAddresseeWake,
+    // myrmidon(OPE-12297): forward the unblock owner bypass; listed explicitly
+    isUnblockOwnerWake: facts.isUnblockOwnerWake,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.participantIsAgent &&

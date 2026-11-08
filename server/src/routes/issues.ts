@@ -404,6 +404,7 @@ import {
 import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification, isStaleBlockGuardedTransition } from "../services/routable-blocked.js";
+import { hasRecentUnblockOwnerWakeWithFingerprint } from "../myrmidon/unblock-owner-wake.js";
 import { isRegisteredEventKey } from "../myrmidon/stale-block/index.js";
 import {
   BLOCKED_LOOP_SIGNATURE_KEY,
@@ -16204,6 +16205,16 @@ export function issueRoutes(
           markNotified: async (blockedOwnerNotifiedAt) => {
             ownerNotifiedAt = blockedOwnerNotifiedAt;
           },
+          // myrmidon(OPE-12297): a blocked↔in_progress flap must not deliver a
+          // fresh wake every cycle; an identical-descriptor wake inside the
+          // cooldown window stands down.
+          wasRecentlyNotified: async (descriptorFingerprint, since) =>
+            hasRecentUnblockOwnerWakeWithFingerprint(db, {
+              companyId: blockedIssue.companyId,
+              issueId: blockedIssue.id,
+              descriptorFingerprint,
+              since,
+            }),
         });
         if (ownerNotifiedAt) {
           await db

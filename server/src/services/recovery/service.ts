@@ -203,6 +203,13 @@ import {
   STRANDED_AUTO_POLICY_RETRY_SOURCE,
   isPendingCiForOpenPr,
 } from "../../myrmidon/stranded-autopolicy.js";
+// myrmidon(OPE-12297): the unblock-owner wake dedup — one wake per descriptor per cooldown
+import {
+  hasRecentUnblockOwnerWakeWithFingerprint,
+  UNBLOCK_OWNER_WAKE_COOLDOWN_MS,
+} from "../../myrmidon/unblock-owner-wake.js";
+import { unblockDescriptorFingerprint } from "../routable-blocked.js";
+import type { IssueUnblockDescriptor } from "@myrmidon/shared";
 // myrmidon(L3b): an operator-paused agent's issues are not stranded
 import { operatorPauseExemptsStrandedIssue } from "../../myrmidon/paused-stranded.js";
 // myrmidon(OPE-10045): a reviewer run without a decision is not a stall while
@@ -5360,21 +5367,36 @@ export function recoveryService(
             },
           );
           try {
-            await deps.enqueueWakeup(ownerAgentId, {
-              source: "automation",
-              triggerDetail: "system",
-              reason: "issue_unblock_requested",
-              idempotencyKey: wakeKey,
-              payload: { issueId: input.issue.id, action: STRANDED_DISPOSITION_ACTION },
-              requestedByActorType: "system",
-              requestedByActorId: null,
-              contextSnapshot: {
-                issueId: input.issue.id,
-                taskId: input.issue.id,
-                wakeReason: "issue_unblock_requested",
-                source: STRANDED_DISPOSITION_WAKE_SOURCE,
-              },
+            // myrmidon(OPE-12297): the descriptor fingerprint dedup doubles as a
+            // per-episode guard here: a repeat stranded pass for the same
+            // descriptor stands down instead of spending another run slot.
+            const fingerprint = unblockDescriptorFingerprint({
+              owner: { agentId: ownerAgentId },
+              action: STRANDED_DISPOSITION_ACTION,
+            } as IssueUnblockDescriptor);
+            const recentlyNotified = await hasRecentUnblockOwnerWakeWithFingerprint(db, {
+              companyId: input.issue.companyId,
+              issueId: input.issue.id,
+              descriptorFingerprint: fingerprint,
+              since: new Date(Date.now() - UNBLOCK_OWNER_WAKE_COOLDOWN_MS),
             });
+            if (!recentlyNotified) {
+              await deps.enqueueWakeup(ownerAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "issue_unblock_requested",
+                idempotencyKey: wakeKey,
+                payload: { issueId: input.issue.id, action: STRANDED_DISPOSITION_ACTION, descriptorFingerprint: fingerprint },
+                requestedByActorType: "system",
+                requestedByActorId: null,
+                contextSnapshot: {
+                  issueId: input.issue.id,
+                  taskId: input.issue.id,
+                  wakeReason: "issue_unblock_requested",
+                  source: STRANDED_DISPOSITION_WAKE_SOURCE,
+                },
+              });
+            }
           } catch (error) {
             logger.warn(
               {
