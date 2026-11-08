@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { and, asc, count, eq, isNotNull, sql as drizzleSql, type SQL } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNotNull, sql as drizzleSql, type SQL } from "drizzle-orm";
 import { companySecrets, corpusChunks, corpusDatasets, corpusDocuments, corpusParseJobs, type Db } from "@myrmidon/db";
 import { createHttpDocumentParser, createPostgresSearchIndex, LocalBlobStore, PostgresCorpusStore, PostgresWorkQueue } from "@myrmidon/corpus";
 import type { SqlExecutor } from "@myrmidon/corpus";
@@ -12,6 +12,7 @@ import { secretService } from "../../services/secrets.js";
 import type { Config } from "../../config.js";
 import { CORPUS_EMBED_BATCH_SIZE, embedInBatches } from "./embed-batches.js";
 import { CorpusRequestError } from "./service.js";
+import { logger } from "../../middleware/logger.js";
 
 /** How long one embedding request may take before it is aborted. A document is sent as many requests. */
 const CORPUS_EMBED_REQUEST_TIMEOUT_MS = 120_000;
@@ -153,8 +154,17 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     },
     async deleteDocument(companyId: string, documentId: string) { await store.replaceDocumentChunks({ companyId, documentId, chunks: [] }); },
     async search(input: { companyId: string; datasetId?: string; datasetIds?: string[]; query: string; limit: number; mode: "hybrid" | "vector" | "fulltext"; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
+      // OPE-12272: step durations of one search, on the debug log, so a slow
+      // search on a stand can be attributed to the embedding call vs the SQL.
+      const embedStarted = performance.now();
       const vector = input.mode === "fulltext" ? undefined : await queryVector(input);
+      const embedMs = Math.round(performance.now() - embedStarted);
+      const indexStarted = performance.now();
       const hits = await searchIndex.search({ companyId: input.companyId, datasetId: input.datasetId, datasetIds: input.datasetIds, text: input.mode === "vector" ? "" : input.query, embedding: vector, limit: input.limit });
+      logger.debug(
+        { companyId: input.companyId, datasetId: input.datasetId ?? null, datasetIds: input.datasetIds ?? null, mode: input.mode, embedMs, indexMs: Math.round(performance.now() - indexStarted), hits: hits.length },
+        "corpus search: embed and index timings",
+      );
       return hits.map((hit) => ({ chunkId: hit.chunkId, documentId: hit.documentId, datasetId: hit.datasetId, score: hit.score, text: hit.content, metadata: hit.metadata }));
     },
     async countChunks(companyId: string, datasetId?: string) {
@@ -189,6 +199,11 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     store: {
       async listDatasets(companyId) { const rows = await store.listDatasets(companyId); const mapped: CorpusDatasetRecord[] = []; for (const item of rows) { const record = await datasetRecord(companyId, item); if (record) mapped.push(record); } return mapped; },
       getDataset,
+      async hasDataset(companyId, id) {
+        const rows = await db.select({ id: corpusDatasets.id }).from(corpusDatasets)
+          .where(and(eq(corpusDatasets.companyId, companyId), eq(corpusDatasets.id, id))).limit(1);
+        return rows.length > 0;
+      },
       async createDataset(input) { return (await datasetRecord(input.companyId, await store.createDataset({ companyId: input.companyId, name: input.name, description: input.description })))!; },
       async updateDataset(companyId, id, patch) {
         const row = await db.update(corpusDatasets).set({ ...patch, updatedAt: new Date() }).where(and(eq(corpusDatasets.companyId, companyId), eq(corpusDatasets.id, id))).returning().then((rows) => rows[0] ?? null);
@@ -243,6 +258,15 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
         return updated.length ? getDocument(companyId, id) : null;
       },
       async deleteDocument(companyId, id) { const d = await getDocument(companyId, id); if (!d) return false; await store.deleteDocument(companyId, id); await blobs.delete(d.blobRef); return true; },
+      // Search needs only titles, not documentRecord's per-hit jobs and chunk embeddings.
+      async getDocumentNames(companyId, ids) {
+        const uniqueIds = [...new Set(ids)];
+        if (uniqueIds.length === 0) return new Map<string, string>();
+        const rows = await db.select({ id: corpusDocuments.id, title: corpusDocuments.title })
+          .from(corpusDocuments)
+          .where(and(eq(corpusDocuments.companyId, companyId), inArray(corpusDocuments.id, uniqueIds)));
+        return new Map(rows.map((row) => [row.id, row.title]));
+      },
       // OPE-12000. Rows are mapped without the per-document job and chunk reads `documentRecord`
       // does: the refresh needs the source fields and the bytes' handle, and a pass over
       // every page of a dataset must not load every chunk embedding. `chunkCount` and `attempts`
@@ -399,14 +423,9 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
 
         // The index returns documentId per hit; resolve real names so bots can
         // cite sources by book title instead of UUID (OPE-12028).
+        // One company-scoped title query; do not load jobs/chunks for search hits.
         const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
-        const documentNames = new Map<string, string>();
-        await Promise.all(
-          documentIds.map(async (id) => {
-            const document = await ports.store.getDocument(companyId, id);
-            if (document) documentNames.set(id, document.filename);
-          }),
-        );
+        const documentNames = await ports.store.getDocumentNames(companyId, documentIds);
 
         const filteredHits = hits
           .filter((hit) => request.minScore === null || hit.score >= request.minScore)
