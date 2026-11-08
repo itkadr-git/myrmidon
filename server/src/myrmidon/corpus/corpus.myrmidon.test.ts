@@ -2157,14 +2157,16 @@ describe("corpus API: documents by address, refreshed on a schedule", () => {
       }
       await addByUrl(app, { url: "https://docs.example.com/healthy", refreshIntervalHours: 24 });
 
-      // Finish initial ingestion before turning the failing URLs into 404s.
-      await h.worker.sweep();
+      // Finish initial ingestion before turning the failing URLs into 404s. The worker's
+      // in-memory fake uses the production concurrency setting, so one sweep is sufficient;
+      // the loop also keeps this fixture correct if the setting is reduced later.
+      while ((await h.worker.sweep()).claimed > 0) { /* drain */ }
 
-      // After initial ingestion, 51 pages now start returning 404.
+      // After initial ingestion, 51 pages now start returning 404. The healthy page stays
+      // byte-identical: it must come back as `unchanged` in the sweeps below.
       for (let i = 0; i < 51; i++) {
         web.pages[`https://docs.example.com/fail/${i}`] = { status: 404 };
       }
-      web.pages["https://docs.example.com/healthy"] = { body: "healthy, unchanged" };
 
       // At T0 + 25 hours, all 52 documents are due for their 24h refresh.
       // Batch limit is 50: 50 failing docs fail and back off to T0 + 25h + 2h = T0 + 27h.
