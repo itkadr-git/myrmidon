@@ -10,6 +10,7 @@ import { ProfilesIndex } from "./profiles/ProfilesIndex";
 import { GatewaysTab } from "./GatewaysTab";
 import { PasteConfigTab } from "./PasteConfigTab";
 import { SmokeLabTab } from "./SmokeLabTab";
+import { ToolComplaintsTab } from "./ToolComplaintsTab";
 import {
   ADVANCED_TABS,
   TOOL_TABS,
@@ -26,6 +27,8 @@ function renderTab(tab: ToolTabKey, companyId: string) {
       return <GatewaysTab companyId={companyId} />;
     case "smoke-lab":
       return <SmokeLabTab companyId={companyId} />;
+    case "complaints":
+      return <ToolComplaintsTab companyId={companyId} />;
     case "paste-config":
     default:
       return <PasteConfigTab companyId={companyId} />;

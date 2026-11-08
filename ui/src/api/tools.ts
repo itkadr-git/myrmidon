@@ -603,4 +603,10 @@ export const toolsApi = {
         `/tool-gateway/audit?companyId=${encodeURIComponent(companyId)}&window=30d&limit=${Math.min(limit, 100)}`,
       )
       .then((res) => res.events),
+
+  // --- Tool Complaints ---
+  listComplaints: (companyId: string) =>
+    api.get<ToolComplaintsFeedResponse>(`/myrmidon/tool-complaints?companyId=${encodeURIComponent(companyId)}`),
+  updateComplaint: (companyId: string, complaintId: string, input: { status?: "open" | "acknowledged" | "resolved"; disableTool?: boolean }) =>
+    api.patch<ToolComplaint>(`/myrmidon/tool-complaints/${complaintId}?companyId=${encodeURIComponent(companyId)}`, input),
 };

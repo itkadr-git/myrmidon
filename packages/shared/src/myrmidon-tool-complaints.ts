@@ -1,9 +1,9 @@
 // packages/shared/src/myrmidon-tool-complaints.ts
 //
-// myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228): the shared contract of the
+// myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228/OPE-12229): the shared contract of the
 // agent tool-complaint channel. An agent (bearer agent API key) files a
 // complaint about a tool; the board lists the per-company feed with
-// lifecycle statuses. Company-scoped: complaints never cross companies.
+// lifecycle statuses and triage actions. Company-scoped: complaints never cross companies.
 
 import { z } from "zod";
 
@@ -34,6 +34,17 @@ export const toolComplaintCreateSchema = z
   .strict();
 export type ToolComplaintCreate = z.infer<typeof toolComplaintCreateSchema>;
 
+/**
+ * PATCH /api/myrmidon/tool-complaints/:id — update complaint status or disable tool.
+ */
+export const toolComplaintUpdateSchema = z
+  .object({
+    status: z.enum(TOOL_COMPLAINT_STATUSES).optional(),
+    disableTool: z.boolean().optional(),
+  })
+  .strict();
+export type ToolComplaintUpdate = z.infer<typeof toolComplaintUpdateSchema>;
+
 /** The API shape of one tool complaint returned by GET. */
 export interface ToolComplaint {
   id: string;
@@ -48,5 +59,20 @@ export interface ToolComplaint {
   updatedAt: string;
 }
 
+/** Threshold warning for a tool with N open complaints. */
+export interface ToolComplaintThresholdWarning {
+  tool: string;
+  openCount: number;
+  threshold: number;
+  warning: boolean;
+}
+
+export interface ToolComplaintsFeedResponse {
+  complaints: ToolComplaint[];
+  thresholdWarnings: ToolComplaintThresholdWarning[];
+}
+
 /** The activity-log action stamped when an agent files a complaint. */
 export const TOOL_COMPLAINT_CREATED_ACTION = "tool_complaint.created";
+export const TOOL_COMPLAINT_UPDATED_ACTION = "tool_complaint.updated";
+export const TOOL_COMPLAINT_TOOL_DISABLED_ACTION = "tool_complaint.tool_disabled";

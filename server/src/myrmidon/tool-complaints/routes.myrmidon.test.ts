@@ -209,4 +209,61 @@ describeEmbeddedPostgres("myrmidon(1.7 TOOL-COMPLAINTS-API) tool complaints", ()
     expect([400, 422]).toContain(res.status);
     expect(await db.select().from(toolComplaints)).toHaveLength(0);
   });
+
+  it("complaint status update (PATCH) and tool disabling via tool access service", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const filed = await request(createApp(db, agentActor(company.id, agent.id)))
+      .post("/api/myrmidon/tool-complaints")
+      .send({ tool: "bad_tool", issue: "crashing repeatedly", severity: "high" });
+    expect(filed.status).toBe(201);
+    const complaintId = filed.body.id;
+
+    // Board updates status to acknowledged, then resolved, and disables the tool
+    const patched = await request(createApp(db, boardActor(company.id)))
+      .patch(`/api/myrmidon/tool-complaints/${complaintId}`)
+      .send({ status: "resolved", disableTool: true });
+    expect(patched.status).toBe(200);
+    expect(patched.body.status).toBe("resolved");
+
+    const feed = await request(createApp(db, boardActor(company.id)))
+      .get("/api/myrmidon/tool-complaints");
+    expect(feed.status).toBe(200);
+    expect(feed.body.complaints[0].status).toBe("resolved");
+  });
+
+  it("threshold warnings count open/acknowledged complaints and exclude resolved complaints", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+
+    // File 3 complaints for 'flaky_tool'
+    for (let i = 0; i < 3; i++) {
+      const res = await request(createApp(db, agentActor(company.id, agent.id)))
+        .post("/api/myrmidon/tool-complaints")
+        .send({ tool: "flaky_tool", issue: `error ${i}`, severity: "medium" });
+      expect(res.status).toBe(201);
+    }
+
+    // Feed should show warning (openCount = 3 >= threshold 3)
+    let feed = await request(createApp(db, boardActor(company.id)))
+      .get("/api/myrmidon/tool-complaints");
+    expect(feed.status).toBe(200);
+    let warning = feed.body.thresholdWarnings.find((w: any) => w.tool === "flaky_tool");
+    expect(warning).toBeDefined();
+    expect(warning.openCount).toBe(3);
+    expect(warning.warning).toBe(true);
+
+    // Resolve one complaint
+    const firstComplaint = feed.body.complaints.find((c: any) => c.tool === "flaky_tool");
+    await request(createApp(db, boardActor(company.id)))
+      .patch(`/api/myrmidon/tool-complaints/${firstComplaint.id}`)
+      .send({ status: "resolved" });
+
+    // Now openCount is 2 (< threshold 3), warning should be false
+    feed = await request(createApp(db, boardActor(company.id)))
+      .get("/api/myrmidon/tool-complaints");
+    warning = feed.body.thresholdWarnings.find((w: any) => w.tool === "flaky_tool");
+    expect(warning.openCount).toBe(2);
+    expect(warning.warning).toBe(false);
+  });
 });
