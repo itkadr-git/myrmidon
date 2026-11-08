@@ -10,6 +10,63 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+## 1.6.7
+
+### An approved pull request whose head moved goes back to the implementer instead of waiting forever
+
+The board merge loop only merges the head a review verdict names. When the branch moved after
+the approval (a new push, or the base merged in), the loop skipped the pull request silently and
+nobody was asked to look again: approved PRs sat open for a day with green CI. Now, when the verdict
+names another head, the task goes back to the implementer with a "head moved after approval" note,
+the same path as a conflict or a branch behind its base; the implementer resubmits and the reviewer
+approves the current head. A verdict that names no head is still skipped.
+
+### Corpus search no longer loads every hit's chunks and jobs
+
+One corpus search resolved each hit's document with a full read that also loaded the
+document's chunks (embeddings included) and parse jobs, and the dataset check loaded every
+document of the dataset (OPE-12272). Both are now one bounded company-scoped query (document
+titles for the hits, dataset existence), and the search handler and the search index log
+their step durations on the debug log (`corpus search: handler step timings`,
+`corpus search: embed and index timings`), so a slow search can be attributed to the
+embedding call or to the SQL.
+
+### Remote sites: fleet restart/stop/logs reach the site, the network profile is editable, a new bot's first apply no longer races
+
+- Fleet bot actions (`POST /api/myrmidon/fleet/bots/:key/restart|stop`, `GET …/logs`) looked up the site transport
+  as `companyId:siteName`, while the client manager keys it as `companyId/siteName` (`fleetSiteKey`): every call
+  answered 502 "no valid mTLS client certificate". The lookups now use `fleetSiteKey`.
+- The same `companyId:siteName` lookup broke the bot move between sites (`fleet-move-wiring`); fixed the same way.
+- The fleet client manager kept the old site row when a refresh found the connection unchanged, so a changed
+  profile, status or capacity never reached `getSite()` (the hermes adapter's plain-http check) until a restart.
+  The fresh row now replaces the cached one; the client is kept.
+- `PATCH /api/myrmidon/fleet/sites/:name` accepts `privateNetwork` and `tunnel` and merges them into the stored
+  site profile (admin only). A site enrolled without `privateNetwork` could not get it later, and the hermes
+  adapter refused its plain-http gateway on an IPsec-internal address.
+- The bot profile compiler ensures the card's board API key before the parallel block: the MCP source listing
+  ensures it too, and on a new bot's first apply the two concurrent get-or-create calls both created the
+  secret ("Secret already exists: …-paperclip-api-key").
+
+### OMP agents resume their session again with omp 18.9.2
+
+omp 18.9.2 writes a `{"type":"title",…}` line before the `{"type":"session",…,"cwd":…}`
+header of a session file. The omp-local adapter read only the first line, never found the
+saved working directory and started every next heartbeat as a fresh session (OPE-12287).
+The header is now looked up among the first 10 lines (the remote path reads `head -n 10`
+too), so both the old and the new session file formats resume with `--session <file>`.
+
+### The block owner's unblock wake is no longer cancelled as "assignee changed"
+
+When the board blocks an issue and wakes its block owner with `issue_unblock_requested`
+(stranded-issue disposition, routable blocked issues), that owner — typically a senior
+agent asked to assign a final status — is usually not the assignee. The queued-run gate
+cancelled every such run as `issue_assignee_changed`, so the block could never be resolved
+and the same owner was woken again and again (on 2026-11-08 the operator agent spent 36 runs
+in an hour on two issues this way). The gate now lets the run start when it is an automation
+`issue_unblock_requested` wake, the issue is still `blocked`, and the run's agent is the
+recorded block owner (`blockerMetadata.owner` or `unblockDescriptor.owner`); any other
+non-assignee is cancelled as before, and a terminal issue still stops the run.
+
 ## 1.6.6
 
 ### IDLE-STOP: stop idle bot containers, wake on demand with health check (IDLE-STOP)
@@ -3780,7 +3837,6 @@ in the middle of a session. Every setting is a key of the `context_economy:` blo
   run-backed wake keeps the key, run-backed or running duplicates are re-keyed with audit
   metadata and keep their status, and only duplicates that never acquired a run are
   marked `skipped`. Running work is never cancelled.
-
 
 ### Merge queue: CI checks the candidate commit on top of fresh main (MERGE-QUEUE)
 
