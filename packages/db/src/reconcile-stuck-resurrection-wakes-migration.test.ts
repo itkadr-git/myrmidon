@@ -47,15 +47,15 @@ describeEmbedded("migration 0463 reconcile stuck resurrection wakes", () => {
       INSERT INTO "agent_wakeup_requests" ("id", "company_id", "agent_id", "source", "trigger_detail", "reason", "payload", "status", "requested_at", "created_at", "updated_at")
       VALUES
         -- 1. scoped stranded wake -> requeued as deferred_issue_execution
-        (${wakeScopedA}, ${companyId}, ${agentId}, 'automation', 'system', 'resurrection_execution_reconciliation_required', ${JSON.stringify({ issueId: issueAId })}::jsonb, 'pending', NOW() - INTERVAL '20 hours', NOW() - INTERVAL '20 hours', NOW() - INTERVAL '20 hours'),
-        -- 2. scoped stranded wake with empty-string issueId -> requeued (NULLIF matches)
-        (${wakeScopedB}, ${companyId}, ${agentId}, 'automation', 'system', 'resurrection_execution_reconciliation_required', ${JSON.stringify({ issueId: "" })}::jsonb, 'pending', NOW() - INTERVAL '18 hours', NOW() - INTERVAL '18 hours', NOW() - INTERVAL '18 hours'),
+        (${wakeScopedA}, ${companyId}, ${agentId}, 'automation', 'system', 'resurrection_execution_reconciliation_required', ${sql.json({ issueId: issueAId })}::jsonb, 'pending', NOW() - INTERVAL '20 hours', NOW() - INTERVAL '20 hours', NOW() - INTERVAL '20 hours'),
+        -- 2. scoped stranded wake with empty-string issueId -> closed as failed (NULLIF misses the double-encoded string)
+        (${wakeScopedB}, ${companyId}, ${agentId}, 'automation', 'system', 'resurrection_execution_reconciliation_required', ${sql.json({ issueId: "" })}::jsonb, 'pending', NOW() - INTERVAL '18 hours', NOW() - INTERVAL '18 hours', NOW() - INTERVAL '18 hours'),
         -- 3. unscoped stranded wake (no issueId) -> closed as failed
         (${wakeUnscoped}, ${companyId}, ${agentId}, 'automation', 'system', 'resurrection_execution_reconciliation_required', '{}'::jsonb, 'pending', NOW() - INTERVAL '16 hours', NOW() - INTERVAL '16 hours', NOW() - INTERVAL '16 hours'),
         -- 4. same reason but different status -> untouched
-        (${wakeOtherReason}, ${companyId}, ${agentId}, 'automation', 'system', 'resurrection_execution_reconciliation_required', ${JSON.stringify({ issueId: issueBId })}::jsonb, 'queued', NOW() - INTERVAL '10 hours', NOW() - INTERVAL '10 hours', NOW() - INTERVAL '10 hours'),
+        (${wakeOtherReason}, ${companyId}, ${agentId}, 'automation', 'system', 'resurrection_execution_reconciliation_required', ${sql.json({ issueId: issueBId })}::jsonb, 'queued', NOW() - INTERVAL '10 hours', NOW() - INTERVAL '10 hours', NOW() - INTERVAL '10 hours'),
         -- 5. pending but different reason -> untouched
-        (${wakeOtherStatus}, ${companyId}, ${agentId}, 'automation', 'system', 'issue_review_path_lost', ${JSON.stringify({ issueId: issueBId })}::jsonb, 'pending', NOW() - INTERVAL '5 hours', NOW() - INTERVAL '5 hours', NOW() - INTERVAL '5 hours')
+        (${wakeOtherStatus}, ${companyId}, ${agentId}, 'automation', 'system', 'issue_review_path_lost', ${sql.json({ issueId: issueBId })}::jsonb, 'pending', NOW() - INTERVAL '5 hours', NOW() - INTERVAL '5 hours', NOW() - INTERVAL '5 hours')
     `;
 
     // Apply migration 0463
