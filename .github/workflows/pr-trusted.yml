@@ -308,6 +308,8 @@ jobs:
           "${{ github.event.pull_request.base.sha }}"
           "${{ github.event.pull_request.head.sha }}"
 
+      - name: Validate SKILL.md file size limits
+        run: node .github/scripts/check-skill-size.mjs
       - name: Validate Dockerfile deps stage
         run: node ./scripts/check-docker-deps-stage.mjs
 
