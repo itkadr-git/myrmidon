@@ -569,9 +569,9 @@ describe("PR lane triggers (pr-policy)", () => {
     // stale head's own merge is forbidden.
     expect(desc).toContain("Wait for the refreshed head to go green");
     expect(desc).toContain("Do NOT merge a head that is not the PR's current head");
-    // Step 3: the merge comes last and is the plain merge command — no
-    // auto-merge flag and no hosted ordering feature anywhere in the text.
-    expect(desc).toContain("gh pr merge acme/widgets#7 --merge");
+    // Step 3: the merge comes last and binds the exact head commit when known —
+    // no auto-merge flag and no hosted ordering feature anywhere in the text.
+    expect(desc).toContain("gh pr merge acme/widgets#7 --merge --match-head-commit aaaaaaaa");
     expect(desc).not.toMatch(/--auto\b/i);
     expect(desc).not.toMatch(/queue/i);
     // REVIEW-DISCIPLINE B (OPE-12222): the pointer belongs to review tasks only.
@@ -581,10 +581,25 @@ describe("PR lane triggers (pr-policy)", () => {
   it("UPDATE-BRANCH-STEWARD: the landing commands are update-branch first, plain merge second", () => {
     const h = head({ repository: "itkadr-git/myrmidon", number: 816 });
     expect(stewardUpdateBranchCommand(h)).toBe("gh pr update-branch itkadr-git/myrmidon#816");
-    expect(stewardMergeCommand(h)).toBe("gh pr merge itkadr-git/myrmidon#816 --merge");
+    expect(stewardMergeCommand(h)).toBe("gh pr merge itkadr-git/myrmidon#816 --merge --match-head-commit aaaaaaaa");
     // The merge is not the auto-merge variant: the lane merges only after the
     // refreshed head went green, never hands the wait to GitHub.
     expect(stewardMergeCommand(h)).not.toContain("--auto");
+
+    // Negative case: headSha is null -> command is valid without --match-head-commit flag
+    const hNoSha = head({ repository: "itkadr-git/myrmidon", number: 816, headSha: null });
+    expect(stewardMergeCommand(hNoSha)).toBe("gh pr merge itkadr-git/myrmidon#816 --merge");
+    expect(stewardMergeCommand(hNoSha)).not.toContain("--match-head-commit");
+  });
+
+  it("UPDATE-BRANCH-STEWARD: task description omits --match-head-commit when headSha is null", () => {
+    const descNoSha = prRoutingTaskDescription(
+      head({ reviewDecision: "APPROVED", url: "https://github.com/acme/widgets/pull/7", baseRef: "main", headSha: null }),
+      "merge",
+    );
+    expect(descNoSha).toContain("gh pr merge acme/widgets#7 --merge");
+    expect(descNoSha).not.toContain("--match-head-commit");
+    expect(descNoSha).toContain("Do NOT merge a head that is not the PR's current head");
   });
 
   it("UPDATE-BRANCH-STEWARD: a superseded refreshed head stops the old merge task", () => {
@@ -604,6 +619,38 @@ describe("PR lane triggers (pr-policy)", () => {
     expect(stewardTaskDueForHead(refreshed)).toBe(false);
     // …until it turns green AND stays approved on the new head.
     expect(stewardTaskDueForHead(head({ headSha: "bbbbbbbb", reviewDecision: "APPROVED" }))).toBe(true);
+  });
+
+  it("MERGE-EXACT-HEAD: head moving between read and merge supersedes task and locks merge command to head A", () => {
+    // Steward task created for head A:
+    const headA = head({ repository: "acme/widgets", number: 7, headSha: "aaaaaaaa1111" });
+    const stewardTaskForA = {
+      issueId: "task-merge-7",
+      repository: headA.repository,
+      number: headA.number,
+      kind: "merge" as const,
+      headSha: headA.headSha,
+    };
+
+    // The merge command contains --match-head-commit with the exact head SHA of A
+    const cmdA = stewardMergeCommand(headA);
+    expect(cmdA).toBe("gh pr merge acme/widgets#7 --merge --match-head-commit aaaaaaaa1111");
+
+    // By the time the operator would run the command, the PR head moved to B:
+    const headShaB = "bbbbbbbb2222";
+    // 1. prTaskIsSuperseded cancels the task by recorded headSha:
+    expect(prTaskIsSuperseded(stewardTaskForA, headShaB)).toBe(true);
+    // 2. Even if run directly bypassing task cancellation, the command is locked to head A
+    // (--match-head-commit aaaaaaaa1111), so GitHub refuses the merge with 409:
+    expect(cmdA).toContain("--match-head-commit aaaaaaaa1111");
+
+    // Negative case: when headSha is null, command remains valid without flag
+    const headNullSha = head({ repository: "acme/widgets", number: 7, headSha: null });
+    const cmdNull = stewardMergeCommand(headNullSha);
+    expect(cmdNull).toBe("gh pr merge acme/widgets#7 --merge");
+    expect(cmdNull).not.toContain("--match-head-commit");
+    // A task without a recorded headSha is never superseded by prTaskIsSuperseded
+    expect(prTaskIsSuperseded({ ...stewardTaskForA, headSha: null }, headShaB)).toBe(false);
   });
 });
 
