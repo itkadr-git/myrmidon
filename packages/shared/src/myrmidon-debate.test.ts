@@ -9,15 +9,21 @@
 import { describe, expect, it } from "vitest";
 import {
   DEBATE_AGREE_MARKER,
+  DEBATE_PROTOCOL_DOCUMENT_KEY,
+  DEBATE_PROTOCOL_TEXT_LIMIT,
+  appendDebateProtocolEntry,
   debateCallCostCents,
   debateFamilyProblem,
   defaultDebateSettings,
   getModelFamily,
   criticAgrees,
+  parseDebateProtocolDocument,
+  renderDebateProtocolDocument,
   renderDebateResultDocument,
   resolveDebateSettings,
   runDebate,
   type DebateModelCall,
+  type DebateProtocolEntry,
   type DebateSettings,
 } from "./myrmidon-debate.js";
 
@@ -267,5 +273,108 @@ describe("myrmidon(1.7-DEBATE-ASYM): cost and the result document (acceptance 3)
   it("the agreement marker is matched case-insensitively on the exact token", () => {
     expect(criticAgrees("agree")).toBe(false);
     expect(criticAgrees(`all resolved [${DEBATE_AGREE_MARKER.toLowerCase()}]`)).toBe(true);
+  });
+});
+
+describe("myrmidon(1.7-DEBATE-PERSIST): the round protocol document", () => {
+  it("appends an ordered, idempotent JSON entry per replica and round-trips through parse", () => {
+    const base = { recordedAt: "2026-11-08T12:00:00.000Z" };
+    let rounds: Record<string, DebateProtocolEntry> = {};
+    rounds = appendDebateProtocolEntry(rounds, { role: "generator", round: 0, independent: true, model: "qwen-plus-free", family: "qwen", text: "gen-first", inputTokens: 10, outputTokens: 20, costCents: 1, ...base });
+    rounds = appendDebateProtocolEntry(rounds, { role: "critic", round: 0, independent: true, model: "GLM-4-Flash-Free", family: "glm", text: "critic-first", inputTokens: 10, outputTokens: 20, costCents: 1, ...base });
+    rounds = appendDebateProtocolEntry(rounds, { role: "generator", round: 1, independent: false, model: "qwen-plus-free", family: "qwen", text: "gen-exchange", inputTokens: 10, outputTokens: 20, costCents: 1, ...base });
+    rounds = appendDebateProtocolEntry(rounds, { role: "critic", round: 1, independent: false, model: "GLM-4-Flash-Free", family: "glm", text: "critic-exchange", inputTokens: 10, outputTokens: 20, costCents: 1, ...base });
+    expect(Object.keys(rounds)).toEqual(["r0#0", "r0#1", "r1#0", "r1#1"]);
+    // Idempotent: rewriting r0#0 leaves the same four entries.
+    rounds = appendDebateProtocolEntry(rounds, { ...rounds["r0#0"]!, ...base });
+    expect(Object.keys(rounds)).toEqual(["r0#0", "r0#1", "r1#0", "r1#1"]);
+    const body = renderDebateProtocolDocument({
+      question: "q",
+      runId: "run-1",
+      status: "running",
+      casteKey: "eng",
+      rounds,
+      roundsPlanned: 2,
+      roundsRun: 2,
+      stopReason: null,
+    });
+    const parsed = parseDebateProtocolDocument(body);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.runId).toBe("run-1");
+    expect(parsed?.status).toBe("running");
+    expect(parsed?.rounds["r0#1"]?.text).toBe("critic-first");
+    expect(Object.keys(parsed?.rounds ?? {})).toEqual(["r0#0", "r0#1", "r1#0", "r1#1"]);
+    expect(parseDebateProtocolDocument("no block here")).toBeNull();
+  });
+
+  it("the sink records every charged replica in transcript order and a failed sink never fails the debate", async () => {
+    const recorder: string[] = [];
+    const sinkEntries: DebateProtocolEntry[] = [];
+    const outcome = await runDebate({
+      question: "q",
+      settings: settings({ rounds: 1 }),
+      call: fakeCall({ critic: "done agree" }, undefined, recorder),
+      onRoundComplete: async (entry) => {
+        sinkEntries.push({ ...entry, recordedAt: "2026-11-08T12:00:00.000Z" });
+        if (sinkEntries.length === 2) throw new Error("sink is broken on the second append");
+      },
+    });
+    // Independent first answers (round 0) + one exchange round + judge.
+    expect(sinkEntries.map((e) => `${e.role}:${e.round}:${e.independent}`)).toEqual([
+      "generator:0:true",
+      "critic:0:true",
+      "generator:1:false",
+      "critic:1:false",
+    ]);
+    // The judge never enters the protocol — only the two debate roles do.
+    expect(sinkEntries.every((e) => e.role !== "judge")).toBe(true);
+    // The broken sink is visible on the outcome but did not fail the debate.
+    expect(outcome.protocolWriteFailed).toBe(true);
+    expect(outcome.completed).toBe(true);
+    expect(outcome.stopReason).toBe("agreement");
+    // Sink appends keep the engine free of clock knowledge: no recordedAt was set by the engine.
+    expect(Object.keys(outcome).not.toContain("recordedAt")).toBe(true);
+    expect(DEBATE_PROTOCOL_DOCUMENT_KEY).toBe("debate-protocol");
+  });
+
+  it("a replica longer than the per-entry cap is truncated and marked (documents contract)", async () => {
+    const longText = "x".repeat(DEBATE_PROTOCOL_TEXT_LIMIT + 5000);
+    const captured: string[] = [];
+    await runDebate({
+      question: "q",
+      settings: settings({ rounds: 1 }),
+      call: fakeCall({ default: longText }),
+      onRoundComplete: async (entry) => {
+        captured.push(entry.text.length > DEBATE_PROTOCOL_TEXT_LIMIT ? "truncated" : "full");
+      },
+    });
+    // The engine hands the raw text to the sink; the service-level sink applies
+    // the cap before writing — this test pins the engine's raw-handoff side.
+    expect(captured.every((c) => c === "full")).toBe(true);
+    const marked = renderDebateProtocolDocument({
+      question: "q",
+      runId: "run-2",
+      status: "finished",
+      casteKey: null,
+      rounds: {
+        "r0#0": {
+          role: "generator",
+          round: 0,
+          independent: true,
+          model: "m",
+          family: "f",
+          text: `${"y".repeat(DEBATE_PROTOCOL_TEXT_LIMIT)}…[protocol entry truncated at ${DEBATE_PROTOCOL_TEXT_LIMIT} chars]`,
+          inputTokens: 1,
+          outputTokens: 1,
+          costCents: 0,
+          recordedAt: "2026-11-08T12:00:00.000Z",
+        },
+      },
+      roundsPlanned: 1,
+      roundsRun: 1,
+      stopReason: "agreement",
+    });
+    expect(marked).toContain(`[protocol entry truncated at ${DEBATE_PROTOCOL_TEXT_LIMIT} chars]`);
+    expect(parseDebateProtocolDocument(marked)?.rounds["r0#0"]?.text).toContain("truncated at");
   });
 });
