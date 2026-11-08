@@ -393,6 +393,7 @@ describe("myrmidon(1.6-BASELINE) snapshot settings and job", () => {
               costPerTask: { totalCents: 0, meanCents: 0 },
             },
           ],
+          runSuccess: { succeeded: 0, failed: 0, total: 0, rate: null },
           overall: {
             key: "overall",
             tasksCompleted: 1,
@@ -445,6 +446,7 @@ describe("myrmidon(1.6-BASELINE) snapshot settings and job", () => {
             source: { statusLog: "activity_log", costs: "none" },
             byProject: [],
             byRole: [],
+            runSuccess: { succeeded: 0, failed: 0, total: 0, rate: null },
             overall: {
               key: "overall",
               tasksCompleted: 0,

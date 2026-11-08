@@ -11,7 +11,7 @@ import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Link, useLocation } from "@/lib/router";
 import { toCompanyRelativePath } from "@/lib/company-routes";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
-import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
+import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
@@ -142,21 +142,9 @@ export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean 
   const relativePath = toCompanyRelativePath(pathname);
   const normalizedPath = relativePath.split("?")[0].replace(/\/$/, "") || "/";
   const normalizedTabPath = tabPath.replace(/\/$/, "") || "/";
-  const matchesPath = (candidate: string) => {
-    const normalizedCandidate = candidate.replace(/\/$/, "") || "/";
-    if (normalizedCandidate === "/agents") {
-      return normalizedPath === "/agents" || normalizedPath.startsWith("/agents/") && !normalizedPath.startsWith("/agents/all");
-    }
-    return normalizedPath === normalizedCandidate || normalizedPath.startsWith(`${normalizedCandidate}/`);
-  };
-
-  if (normalizedTabPath === "/agents/all") {
-    if (normalizedPath === "/agents/all") return true;
-    const fixedTabActive = UI2_PHONE_TABS.some((tab) => tab.to !== "/agents/all" && matchesPath(tab.to));
-    const drawerRouteActive = UI2_NAV_GROUPS.some((group) => group.items.some((item) => matchesPath(item.to)));
-    return drawerRouteActive && !fixedTabActive;
-  }
-  return matchesPath(normalizedTabPath);
+  if (normalizedTabPath === "/agents/all") return normalizedPath === "/agents/all";
+  if (normalizedTabPath === "/agents") return normalizedPath === "/agents" || normalizedPath.startsWith("/agents/") && !normalizedPath.startsWith("/agents/all");
+  return normalizedPath === normalizedTabPath || normalizedPath.startsWith(`${normalizedTabPath}/`);
 }
 
 export function Ui2PhoneTabBar() {

@@ -130,7 +130,8 @@ describe("myrmidon(UI2) route table integration", () => {
       expect(prefixed).toBe(`/ACME${path}`);
       expect(toCompanyRelativePath(prefixed)).toBe(path);
       const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, path));
-      expect(active.map((tab) => tab.to)).toEqual(["/agents/all"]);
+      // System and quality live in the phone More drawer: no fixed tab lights up there.
+      expect(active).toEqual([]);
     }
   });
 
