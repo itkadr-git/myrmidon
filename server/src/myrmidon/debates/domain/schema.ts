@@ -12,9 +12,9 @@ import {
   type DebateParticipant,
   type DebateParticipantRole,
   type DebateRun,
+  type DebateRunState,
   type DebateStatement,
 } from "./types.js";
-import type { DebateRunState } from "./types.js";
 
 export const debateParticipantRoleSchema = z.enum(["pro", "contra", "judge"]);
 
