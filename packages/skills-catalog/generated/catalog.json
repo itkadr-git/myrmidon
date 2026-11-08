@@ -241,11 +241,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4938,
-          "sha256": "9c52a44a30ec8d306119da51bf298e9e3e6c382a9a9559ffd3054bf5e0c75f36"
+          "sizeBytes": 5445,
+          "sha256": "0819fff517fb20865b49187ad4364d72630f57448df53fa92ad7bdd417affe03"
         }
       ],
-      "contentHash": "sha256:487c3116eead89fef4f71c984329c41836bd69951b7ef9ed8736c69435e02438"
+      "contentHash": "sha256:9ed58cf48e597e5df19261c7262b2e53cc73f0e7fc641ef95bab32ec455eaeb6"
     },
     {
       "id": "paperclipai:bundled:product:paperclip-capsules",

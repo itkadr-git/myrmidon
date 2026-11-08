@@ -35,3 +35,14 @@ export function readStackGithubToken(env: NodeJS.ProcessEnv = process.env): stri
   const raw = env[STACK_GITHUB_TOKEN_ENV]?.trim();
   return raw ? raw : null;
 }
+
+export const STACK_OSV_API_BASE_ENV = "MYRMIDON_STACK_OSV_API_BASE";
+
+/**
+ * Optional base URL for OSV.dev advisory API.
+ * Unset or blank falls back to https://api.osv.dev.
+ */
+export function readStackOsvApiBase(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env[STACK_OSV_API_BASE_ENV]?.trim();
+  return raw ? raw : null;
+}

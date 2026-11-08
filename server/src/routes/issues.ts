@@ -127,6 +127,7 @@ import {
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
 import { assertTaskCardReady } from "../myrmidon/task-card-readiness/guard.js";
+import { buildRequiresEngineerMessage } from "../myrmidon/guard-return/domain.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -3982,20 +3983,22 @@ export function issueRoutes(
       }
 
       const roleStr = agent?.role ?? "non-engineer";
-      const hint = suggested
-        ? `Assign this code task to engineer ${suggested.name} (${suggested.id}) or return to PR author.`
-        : "Assign this code task to an agent with the engineer role or return to PR author.";
+      // 1.6.7 CASTE-422-HINT (OPE-12142): name the task's caste and hint the casteKey path.
+      const message = buildRequiresEngineerMessage({
+        assigneeRole: roleStr,
+        casteKey: input.casteKey ?? input.issue?.casteKey ?? casteKey ?? null,
+        projectDefaultCasteKey,
+        suggested,
+      });
 
-      throw unprocessable(
-        `This issue requires an engineer. Cannot assign or keep in progress on non-coding role "${roleStr}". Suggested assignee: ${suggested ? `${suggested.name} (${suggested.id})` : "an agent with role engineer"}.`,
-        {
+      throw unprocessable(message, {
           code: "issue_requires_engineer",
           issueId: input.issue?.id ?? null,
           assigneeAgentId: input.assigneeAgentId,
           assigneeRole: roleStr,
           suggestedAssigneeAgentId: suggested?.id ?? null,
           suggestedAssigneeName: suggested?.name ?? null,
-          hint,
+          hint: message,
         },
       );
     }

@@ -461,7 +461,11 @@ Order:
    reference goes to `$STATE_DIR/previous-image` (so the first switch from a vendor image
    works too), the fork digest also to `$STATE_DIR/previous-digest`.
 3. A database dump by `DUMP_COMMAND` into `DUMP_DIR`. If the file is missing or smaller than
-   `DUMP_MIN_BYTES`, the deploy refuses and the image does not change.
+   `DUMP_MIN_BYTES`, the deploy refuses and the image does not change. Only after the dump
+   passes both checks, retention removes older `myrmidon-*.dump` files so that the newest
+   `DUMP_KEEP` (default 3) by filesystem modification time remain. Listing or deletion errors
+   abort the deploy before maintenance/image changes; a failed dump or size gate never prunes.
+   Restore and rollback policy is unchanged.
 4. Entering maintenance mode (`MAINTENANCE_MODE`):
    - `api` — `POST /api/myrmidon/maintenance` per the contract of
      [design/maintenance-mode.md](design/maintenance-mode.md), section 7 (track 5, R3).

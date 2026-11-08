@@ -21,23 +21,32 @@ export interface StackHttpResponse {
   json: unknown;
 }
 
-/** A JSON GET. Throws on transport failure; returns any HTTP status as data. */
-export type StackFetchJson = (url: string) => Promise<StackHttpResponse>;
+/** A JSON GET or POST. Throws on transport failure; returns any HTTP status as data. */
+export interface StackFetchOptions {
+  method?: string;
+  body?: string;
+  headers?: Record<string, string>;
+}
+
+export type StackFetchJson = (url: string, options?: StackFetchOptions) => Promise<StackHttpResponse>;
 
 export function githubJsonPort(options: { timeoutMs?: number; token?: string } = {}): StackFetchJson {
   const timeoutMs = options.timeoutMs ?? STACK_HTTP_TIMEOUT_MS;
   const token = options.token?.trim() || null;
-  return async (url) => {
+  return async (url, fetchOptions) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const headers: Record<string, string> = {
         accept: "application/vnd.github+json",
         "user-agent": "myrmidon-stack-registry",
+        ...(fetchOptions?.headers ?? {}),
       };
       if (token) headers.authorization = `Bearer ${token}`;
       const res = await fetch(url, {
+        method: fetchOptions?.method ?? (fetchOptions?.body ? "POST" : "GET"),
         headers,
+        body: fetchOptions?.body,
         signal: controller.signal,
       });
       const text = await res.text();
