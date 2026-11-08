@@ -12,6 +12,24 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### Native runner: Codex can use an OpenAI-compatible gateway
+
+The native runner passes only an allowlist of environment variables to the Codex app-server. The
+list had the API key but not `OPENAI_BASE_URL`, so a Codex agent that was configured for an LLM
+gateway (for example LiteLLM) still sent its requests, and its key, to api.openai.com and got
+401. `OPENAI_BASE_URL` is now on both allowlists (the TypeScript transport and the Rust runnerd).
+It is an address, not a credential.
+
+### A bot on a remote site can read its managed skills
+
+fleetd writes the profile files of a bot on a remote site. It created the missing directories of a
+file as its own user and gave the bot user only the file's own directory. So `hermes/skills` and
+`hermes/skills/paperclip-managed` stayed owned by root with mode 0700, and the bot gateway failed:
+"Permission denied: /data/hermes/skills/paperclip-managed". fleetd now gives the bot user every
+directory between the bot volume root and the file. The volume root itself stays as it is.
+
+## 1.6.7
+
 ### An approved pull request whose head moved goes back to the implementer instead of waiting forever
 
 The board merge loop only merges the head a review verdict names. When the branch moved after
