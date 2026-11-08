@@ -153,5 +153,14 @@ export function agentExchangeStore(db: DbExecutor): AgentExchangeStore {
         .orderBy(asc(agentExchangeMessages.round), asc(agentExchangeMessages.participantIndex));
       return rows.map(toMessage);
     },
+
+    async failPendingMessages(roomId: string, error: string): Promise<number> {
+      const rows = await db
+        .update(agentExchangeMessages)
+        .set({ status: "error", error, completedAt: new Date() })
+        .where(and(eq(agentExchangeMessages.roomId, roomId), eq(agentExchangeMessages.status, "pending")))
+        .returning({ id: agentExchangeMessages.id });
+      return rows.length;
+    },
   };
 }
