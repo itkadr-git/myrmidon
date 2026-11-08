@@ -229,7 +229,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
   it("renders accessible spend breakdown rows for agents", async () => {
     await renderScreen();
 
-    const chart = container.querySelector(".ui2-costs-chart");
+    const chart = container.querySelector(".ui2-costs-agents");
     expect(chart).not.toBeNull();
     expect(chart?.hasAttribute("role")).toBe(false);
     expect(chart?.textContent).toContain("agent-a");
@@ -242,7 +242,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     mockCostsApi.byAgent.mockResolvedValue([]);
     await renderScreen();
 
-    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.querySelector(".ui2-costs-agents")).toBeNull();
     expect(container.textContent).toContain("No spend in this period");
   });
 
