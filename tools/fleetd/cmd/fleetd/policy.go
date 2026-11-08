@@ -335,8 +335,26 @@ func (s *server) writeProfileFile(realRoot string, f profileFile) error {
 		return e
 	}
 	_ = os.Chown(tmpName, botUID, botUID) // best effort: fleetd may run unprivileged
-	_ = os.Chown(dir, botUID, botUID)
+	chownDirsUp(realRoot, realDir)
 	return os.Rename(tmpName, target)
+}
+
+// chownDirsUp gives the bot user every directory from dir up to, but not
+// including, realRoot (the root of the bot volume stays as the volume rules
+// require). MkdirAll creates the missing intermediate directories as the
+// fleetd user, so chowning only the file's own directory left e.g.
+// hermes/skills and hermes/skills/paperclip-managed root-owned with mode 0700,
+// and the bot could not read its managed skills ("Permission denied:
+// /data/hermes/skills/paperclip-managed", T4 canary on myr-vm1, 08.11).
+// Best effort like the file chown above: fleetd may run unprivileged.
+func chownDirsUp(realRoot, dir string) {
+	for d := dir; ; d = filepath.Dir(d) {
+		rel, err := filepath.Rel(realRoot, d)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+			return
+		}
+		_ = lchown(d, botUID, botUID)
+	}
 }
 
 // fillApplied sets the applied profile hashes of a status from the marker.

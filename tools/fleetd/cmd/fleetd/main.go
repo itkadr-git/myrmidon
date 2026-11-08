@@ -20,6 +20,7 @@ import (
 	"hash"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -257,6 +258,20 @@ func validate(cfg *config) error {
 	}
 	if cfg.Upstream == "" {
 		cfg.Upstream = "/var/run/docker.sock"
+	}
+	if cfg.GatewayPortStart != 0 || cfg.GatewayPortEnd != 0 {
+		if strings.TrimSpace(cfg.GatewayBindIP) == "" {
+			return fmt.Errorf("gatewayBindIp is required when gatewayPortStart/gatewayPortEnd is configured")
+		}
+	}
+	if cfg.GatewayBindIP != "" {
+		ip := net.ParseIP(cfg.GatewayBindIP)
+		if ip == nil {
+			return fmt.Errorf("gatewayBindIp %q is not a valid IP address", cfg.GatewayBindIP)
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("gatewayBindIp %q is unspecified (0.0.0.0 or :: is not allowed; must be a specific interface IP or loopback)", cfg.GatewayBindIP)
+		}
 	}
 	if len(cfg.Bots) == 0 {
 		return fmt.Errorf("at least one bots[] entry is required")

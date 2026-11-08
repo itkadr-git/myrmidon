@@ -169,6 +169,14 @@ export type QueuedRunFacts = {
    */
   isRunGuardStopNeedsInputWake?: boolean;
   /**
+   * myrmidon(UNBLOCK-OWNER-WAKE): the run is the `issue_unblock_requested` wake
+   * of the agent that owns the issue's block (blocker metadata or unblock
+   * descriptor owner) — typically a senior agent asked to assign a final
+   * status. It is not the assignee and must be allowed to start: cancelling it
+   * as `issue_assignee_changed` left the block without anyone able to act.
+   */
+  isUnblockOwnerWake?: boolean;
+  /**
    * myrmidon(OPE-11948): the run is an automatic `issue_continuation_needed`
    * wake of the system — no comment, no resume intent, no interaction. It is
    * only worth starting while the issue is todo or in_progress.
@@ -202,6 +210,8 @@ type OwnershipFacts = {
   isProductiveContinuationRecovery?: boolean;
   // myrmidon(RUN-GUARD-ESCALATE): the manager's wake after a final run guard stop
   isRunGuardStopNeedsInputWake?: boolean;
+  // myrmidon(UNBLOCK-OWNER-WAKE): the block owner's unblock wake
+  isUnblockOwnerWake?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -221,6 +231,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isProductiveContinuationRecovery) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   if (facts.isRunGuardStopNeedsInputWake) return "current_owner";
+  if (facts.isUnblockOwnerWake) return "current_owner";
   return "reassigned";
 }
 
@@ -626,6 +637,7 @@ export function decideQueuedRunStaleness(
     isAuthorizedSourceScopedRecovery: facts.isAuthorizedSourceScopedRecovery,
     isProductiveContinuationRecovery: facts.isProductiveContinuationRecovery,
     isRunGuardStopNeedsInputWake: facts.isRunGuardStopNeedsInputWake,
+    isUnblockOwnerWake: facts.isUnblockOwnerWake,
   });
   if (ownership === "reassigned") {
     return {

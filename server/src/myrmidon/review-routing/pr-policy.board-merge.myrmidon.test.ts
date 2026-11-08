@@ -127,8 +127,14 @@ describe("the decision for one approved pull request", () => {
     expect(decide({ headSha: null })).toEqual({ kind: "skip", reason: "no_head" });
     expect(decide({ baseRef: "rel/1.6.6" })).toEqual({ kind: "skip", reason: "base_not_allowed" });
     expect(decide({ baseRef: null })).toEqual({ kind: "skip", reason: "base_not_allowed" });
-    expect(decide({ headSha: "0123456789abcdef0123456789abcdef01234567" })).toEqual({ kind: "skip", reason: "head_not_approved" });
     expect(decide({}, { "CI result": "success" }, null)).toEqual({ kind: "skip", reason: "head_not_approved" });
+    expect(decide({}, { "CI result": "success" }, "APPROVE, looks good")).toEqual({ kind: "skip", reason: "head_not_approved" });
+  });
+
+  it("an approval of another head goes back to the implementer to resubmit (the branch moved after the verdict)", () => {
+    expect(decide({ headSha: "0123456789abcdef0123456789abcdef01234567" })).toEqual({ kind: "return", reason: "head_moved" });
+    expect(decide({ headSha: "0123456789abcdef0123456789abcdef01234567" }, null)).toEqual({ kind: "return", reason: "head_moved" });
+    expect(decide({ headSha: "0123456789abcdef0123456789abcdef01234567", open: false })).toEqual({ kind: "skip", reason: "closed" });
   });
 
   it("a configured release base is merged into", () => {

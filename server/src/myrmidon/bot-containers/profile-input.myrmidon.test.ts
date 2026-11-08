@@ -754,6 +754,16 @@ describe("myrmidon(W2a) assertBotProfileSettings", () => {
       expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: name })), name).toThrow(BOT_LLM_API_KEY_ENV_ENV);
     }
   });
+
+  // myrmidon(REBRAND-ENV-2, OPE-12070): the board key/address are owned under
+  // the canonical MYRMIDON_* names too — an admin naming the LLM key variable
+  // MYRMIDON_API_KEY would otherwise hand the board key to the LLM gateway.
+  it("rejects MYRMIDON_API_KEY / MYRMIDON_API_URL as the LLM key variable", () => {
+    expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: "MYRMIDON_API_KEY" }))).toThrow(BOT_LLM_API_KEY_ENV_ENV);
+    expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: "MYRMIDON_API_URL" }))).toThrow(BOT_LLM_API_KEY_ENV_ENV);
+    expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: "PAPERCLIP_API_URL" }))).toThrow(BOT_LLM_API_KEY_ENV_ENV);
+    expect(() => assertBotProfileSettings(settings({ llmApiKeyEnv: "FLEET_MYRMIDON_API_KEY" }))).not.toThrow();
+  });
 });
 
 describe("myrmidon(W2a) readMaxConcurrentRuns", () => {

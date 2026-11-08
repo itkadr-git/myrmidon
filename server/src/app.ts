@@ -86,6 +86,7 @@ import {
   chatChannelRoutes,
   chatWebhookRoutes,
 } from "./routes/chat-channels.js";
+import { intakeRoutes } from "./routes/intake.js";
 import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
@@ -254,6 +255,7 @@ import { userProfileRoutes } from "./routes/user-profiles.js";
 import { usersRoutes } from "./routes/users.js";
 import { auditRoutes } from "./routes/audit.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
+import { statusStripRoutes } from "./routes/status-strip.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { announcementRoutes } from "./routes/announcements.js";
 import { serverVersion } from "./version.js";
@@ -262,8 +264,10 @@ import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { updatesRoutes } from "./routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
 import { systemUpdatesRoutes } from "./routes/system-updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186)
+import { systemRoutes } from "./routes/system.js"; // myrmidon(OPE-10218)
 // myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
+import { systemDeploymentRoutes } from "./myrmidon/system-settings/routes.js"; // myrmidon(1.7, OPE-4101)
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
 import { myrmidonLitellmAuditRoutes } from "./myrmidon/litellm-audit/wiring.js"; // myrmidon(OPE-9857)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
@@ -994,6 +998,8 @@ export async function createApp(
   const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
   app.use(emailWebhookRoutes(emailChannels));
   app.use(chatWebhookRoutes(chatChannels));
+  // myrmidon(1.7 WEBHOOK-INTAKE): Public webhook intake route (/api/intake/:source)
+  app.use(intakeRoutes());
   // myrmidon(EXTCASE-B): the extension's one board-less endpoint (the pairing code
   // is the credential), mounted outside `/api` with the other provider ingress.
   app.use(myrmidonBrowserBridgePublicRoutes(db));
@@ -1197,12 +1203,14 @@ export async function createApp(
   api.use(userProfileRoutes(db));
   api.use(usersRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(statusStripRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
   api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, { processBus: opts.processBus ?? undefined }));
   api.use(updatesRoutes(db)); // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
+  api.use(systemRoutes(db)); // myrmidon(OPE-10218)
   api.use(instanceSecretSettingsRoutes(db)); // myrmidon(SETTINGS-UI E2.1)
   installInstanceSecretResolver(createInstanceSecretSettingService(db)); // myrmidon(SETTINGS-UI E2.2)
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
@@ -1234,6 +1242,7 @@ export async function createApp(
   api.use(boardJanitorRoutes(db)); // myrmidon(BOARD-JANITOR)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
+  api.use(systemDeploymentRoutes()); // myrmidon(1.7, OPE-4101): GET /api/myrmidon/system/deployment
   api.use(systemUpdatesRoutes()); // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186)
   api.use(licensingRoutes({ installId: installIdProviderFor(db), installedModules: installedClosedModules(db) })); // myrmidon(LICENSING): install id, license request, license state and save (instance admin)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)
