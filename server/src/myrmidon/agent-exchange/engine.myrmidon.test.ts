@@ -196,13 +196,54 @@ describe("agent-exchange engine (myrmidon 1.7 AGENT-EXCHANGE-A)", () => {
     expect(messages).toHaveLength(3);
     expect(new Set(messages.map((m) => m.content)).size).toBe(3);
 
-    // The finisher adds the summary document with the cost line.
+    // The finisher adds the summary document with the cost line and writes a
+    // finisher message into the room transcript.
     const closed = await finalizeRoom(deps, room.id);
     expect(closed.status).toBe("completed");
     expect(models.calls).toHaveLength(4); // 3 participants + finisher
     expect(summaries.written).toHaveLength(1);
     expect(summaries.written[0].body).toMatch(/Room cost: \d+ tokens/);
     expect(closed.summaryDocumentKey).toBe(`exchange:${room.id}`);
+
+    // Finisher message is in the room transcript with [finisher] tag
+    const transcriptMessages = await deps.store.listMessages(room.id);
+    const finisherMsg = transcriptMessages.find((m) => m.content?.startsWith("[finisher]"));
+    expect(finisherMsg).toBeDefined();
+    expect(finisherMsg?.status).toBe("done");
+    expect(finisherMsg?.round).toBe(room.currentRound + 1);
+    expect(finisherMsg?.participantIndex).toBe(PARTICIPANTS.length);
+    expect(finisherMsg?.content).toContain("Room cost:");
+  });
+
+  it("acceptance: 2 participants → one finisher message in room transcript", async () => {
+    const twoParticipants = PARTICIPANTS.slice(0, 2);
+    const room = await openRoom(deps, {
+      companyId: "company-1",
+      issueId: "issue-2",
+      openerType: "user",
+      openerId: "owner-1",
+      participants: twoParticipants,
+      prompt: "Two participant room prompt",
+      issueTitle: "OPE-12121",
+    });
+
+    // 2 participants yielded independent first answers
+    expect(models.calls).toHaveLength(2);
+    const round1Messages = await deps.store.listMessages(room.id);
+    expect(round1Messages.filter((m) => m.status === "done")).toHaveLength(2);
+
+    // Finalize: finisher runs synthesis
+    await finalizeRoom(deps, room.id);
+
+    // After finisher: 2 participant answers + 1 finisher message = 3 total messages
+    const allMessages = await deps.store.listMessages(room.id);
+    expect(allMessages).toHaveLength(3);
+
+    const finisherMessages = allMessages.filter((m) => m.content?.startsWith("[finisher]"));
+    expect(finisherMessages).toHaveLength(1);
+    expect(finisherMessages[0].status).toBe("done");
+    expect(finisherMessages[0].participantIndex).toBe(2);
+    expect(finisherMessages[0].content).toContain("Room cost:");
   });
 
   it("the stop valve stops the room without new model calls", async () => {

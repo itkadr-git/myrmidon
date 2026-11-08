@@ -39,7 +39,8 @@ import {
   readReleaseList,
   type StackFetchJson,
 } from "./releases.js";
-import { readStackCheckIntervalSec } from "./settings.js";
+import { readStackCheckIntervalSec, readStackOsvApiBase } from "./settings.js";
+import { osvJsonPort, queryOsvAdvisories, type StackAdvisoryQuery } from "./advisory.js";
 import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import { readStackDocument, writeStackDocument } from "./store.js";
 import { collectStackLocal, type CollectStackLocalOptions } from "./collector.js";
@@ -63,6 +64,8 @@ export interface StackCheckOptions {
    * keep the stored local state untouched (tests that only exercise part B).
    */
   collect?: CollectStackLocalOptions | false;
+  /** Injected base URL for OSV.dev advisory API; defaults to STACK_OSV_API_BASE_ENV or DEFAULT_OSV_API_BASE. */
+  osvApiBase?: string | null;
 }
 
 function readOnlyUpstream(previous: StackUpstreamState | null, checkedAt: string, error: string): StackUpstreamState {
@@ -227,6 +230,47 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
   const components: StackSnapshot[] = [];
   for (const component of base.components) {
     components.push(await checkComponent(component, port, opts, checkedAt));
+  }
+
+  // Query OSV.dev advisories for components with advisory packages and known versions.
+  // Auxiliary step: gracefully degrades without failing release check if OSV is down.
+  const advisoryQueries: StackAdvisoryQuery[] = [];
+  for (const c of components) {
+    const pkg = c.advisoryPackage;
+    const version = c.local.version ? normaliseVersion(c.local.version) : null;
+    if (pkg && version) {
+      advisoryQueries.push({
+        componentName: c.name,
+        package: pkg,
+        version,
+      });
+    }
+  }
+
+  if (advisoryQueries.length > 0) {
+    try {
+      const osvBase = options.osvApiBase ?? readStackOsvApiBase() ?? undefined;
+      const advisoryPort = options.fetchJson ?? osvJsonPort();
+      const vulnsByComponent = await queryOsvAdvisories(advisoryQueries, advisoryPort, osvBase);
+      for (let i = 0; i < components.length; i++) {
+        const c = components[i]!;
+        const vulns = vulnsByComponent.get(c.name);
+        if (vulns && vulns.length > 0) {
+          components[i] = {
+            ...c,
+            vulnerabilities: vulns,
+          };
+        } else if (c.vulnerabilities && !vulnsByComponent.has(c.name) && advisoryQueries.some((q) => q.componentName === c.name)) {
+          // If queried and no vulns returned, clear any stale vulnerabilities
+          components[i] = {
+            ...c,
+            vulnerabilities: [],
+          };
+        }
+      }
+    } catch {
+      // Degrade gracefully: network/transport failure for advisory never fails release check
+    }
   }
   const next: StackDocument = {
     version: STACK_DOCUMENT_VERSION,
