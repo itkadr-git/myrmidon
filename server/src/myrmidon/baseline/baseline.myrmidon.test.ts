@@ -376,7 +376,7 @@ describe("myrmidon(1.6-BASELINE) snapshot settings and job", () => {
       env: { MYRMIDON_BASELINE_INTERVAL_SEC: "3600" },
       ports: {
         listCompanyIds: async () => ["company-a", "company-b"],
-        compute: async (_db, companyId, window) => ({
+        compute: async (_db, companyId, window, _now) => ({
           window: { from: window.from.toISOString(), to: window.to.toISOString() },
           generatedAt: now.toISOString(),
           source: { statusLog: "activity_log", costs: "none" },
@@ -437,7 +437,7 @@ describe("myrmidon(1.6-BASELINE) snapshot settings and job", () => {
       env: { MYRMIDON_BASELINE_INTERVAL_SEC: "3600" },
       ports: {
         listCompanyIds: async () => ["company-a", "company-b"],
-        compute: async (_db, companyId, window) => {
+        compute: async (_db, companyId, window, _now) => {
           if (companyId === "company-a") throw new Error("boom");
           return {
             window: { from: window.from.toISOString(), to: window.to.toISOString() },
