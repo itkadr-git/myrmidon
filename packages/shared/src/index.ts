@@ -458,6 +458,8 @@ export {
   ISSUE_TREE_CONTROL_MODES,
   ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES,
   ISSUE_TREE_HOLD_STATUSES,
+  ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY,
+  type IssueAcceptanceScenariosDocumentKey,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   PIPELINE_CASE_BODY_DOCUMENT_KEY,
   SYSTEM_ISSUE_DOCUMENT_KEYS,
@@ -1657,6 +1659,7 @@ export type {
   OAuthRedirectConstraints,
   QuotaWindow,
   ProviderQuotaResult,
+  StatusStrip,
 } from "./types/index.js";
 export { WORKSPACE_READINESS_STATES } from "./types/index.js";
 export {
