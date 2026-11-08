@@ -218,7 +218,7 @@ async function runParticipantCall(
   participant: AgentExchangeParticipantSpec,
   userPrompt: string,
   active: AbortController | null,
-): Promise<{ tokens: number; costCents: number; interrupted: boolean }> {
+): Promise<RoundConsumption> {
   void room;
   try {
     const result = await deps.models.call({
@@ -266,6 +266,13 @@ function isStopInterruption(error: unknown): boolean {
 }
 
 /**
+ * What one round consumed. `RoundTotals` carries the money (room-runner.ts);
+ * `interrupted` is the stop-valve signal: true when the round was aborted
+ * mid-flight, so the caller must not write the room totals or bump the round.
+ */
+type RoundConsumption = RoundTotals & { interrupted: boolean };
+
+/**
  * Runs one round: creates the pending cells, then dispatches every
  * participant of the round in parallel. Returns what the round consumed;
  * `interrupted` is true when the stop valve aborted the round mid-flight.
@@ -275,7 +282,7 @@ async function runRound(
   room: AgentExchangeRoom,
   round: number,
   openingPrompt: string,
-): Promise<RoundTotals> {
+): Promise<RoundConsumption> {
   const participants = room.participants;
   const messages = round > 1 ? await deps.store.listMessages(room.id) : [];
   // Round 1: previousRoundAnswers is empty, so every prompt is the opening
@@ -303,7 +310,7 @@ async function runRound(
     // The room-round total = the sum over ALL participants' calls (room-runner);
     // `interrupted` rides along per call and OR-folds here so the stop valve
     // can tell an aborted round from a landed one.
-    const folded = results.reduce<{ tokens: number; costCents: number; interrupted: boolean }>(
+    const folded = results.reduce<RoundConsumption>(
       (acc, r) => ({
         tokens: acc.tokens + r.tokens,
         costCents: acc.costCents + r.costCents,
@@ -311,7 +318,9 @@ async function runRound(
       }),
       { tokens: 0, costCents: 0, interrupted: false },
     );
-    return { tokens: folded.tokens, costCents: folded.costCents };
+    // The interrupted flag MUST ride with the totals: dropping it here made the
+    // caller write round totals and bump currentRound for an aborted round.
+    return { tokens: folded.tokens, costCents: folded.costCents, interrupted: folded.interrupted };
   } finally {
     if (activeRounds.get(room.id) === active) activeRounds.delete(room.id);
   }
