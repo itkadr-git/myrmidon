@@ -1255,7 +1255,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             !run.startedAt &&
             !run.processPid &&
             !run.processGroupId &&
-            parseObject(run.resultJson?.executionCancellation).source?.code === "board_operator",
+            parseObject(parseObject(parseObject(run.resultJson).executionCancellation).source).code === "board_operator",
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
