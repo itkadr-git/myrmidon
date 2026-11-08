@@ -139,7 +139,13 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     };
     return embedInBatches({ input, batchSize: CORPUS_EMBED_BATCH_SIZE, embedBatch });
   };
-  const searchIndex = createPostgresSearchIndex({ sql: createSqlExecutor(db) });
+  const searchIndex = createPostgresSearchIndex({
+    sql: createSqlExecutor(db),
+    // The full-text ranking has a time bound. When it is cancelled, the search answers from the vector
+    // ranking alone; say so, because that answer is weaker than a hybrid one.
+    onFullTextTimeout: (event) =>
+      logger.warn(event, "corpus search: the full-text ranking hit its time bound; the vector ranking answered alone"),
+  });
   // Share identical in-flight queries and retain only a small, short-lived set of vectors.
   const queryVector = (input: { companyId: string; query: string; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }): Promise<number[]> => {
     const key = queryVectorKey(input);
