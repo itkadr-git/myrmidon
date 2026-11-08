@@ -321,7 +321,6 @@ describe("agent-exchange room-runner acceptance criteria (OPE-12079)", () => {
       store,
       models,
       summaries: {
-        written: summariesWritten,
         async putSummary(input: any) {
           summariesWritten.push(input);
           return `exchange:${input.roomId}`;

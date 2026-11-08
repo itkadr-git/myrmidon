@@ -299,7 +299,7 @@ export function buildSummaryBody(input: {
     input.finisherAnswer,
     "",
     "---",
-    `Room cost: ${input.totalTokens} tokens, ${(input.totalCostCents / 100).toFixed(2)} ¢ ` +
+    `Room cost: ${input.totalTokens} tokens, ${input.totalCostCents.toFixed(2)} ¢ ` +
       `(${input.participantCount} participants, ${input.answerCount} answers + finisher).`,
   ].join("\n");
 }
