@@ -85,8 +85,12 @@ function createTestApp(options: {
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const status = err.statusCode || err.status || 500;
     const detail = err instanceof Error ? err.message : String(err);
+    // Mirror the production errorHandler contract (server/src/middleware/error-handler.ts):
+    // the routes pass the machine-readable code as the badRequest message
+    // (same convention as server/src/myrmidon/locale-upload), so the body's
+    // `error` field carries that message ("INVALID_LOCALE", "INVALID_CATALOG_JSON").
     res.status(status).json({
-      error: err.details?.code || err.code || err.name || "ERROR",
+      error: detail,
       message: err.details?.message || detail,
       ...(err.details?.errors ? { errors: err.details.errors } : {}),
     });
