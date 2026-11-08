@@ -9498,7 +9498,7 @@ export function issueRoutes(
       pullRequestsCi: [] as unknown[],
     };
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const prs = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -9525,7 +9525,7 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const pullRequests = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],

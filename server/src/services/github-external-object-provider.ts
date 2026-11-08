@@ -4,7 +4,7 @@ import type { ExternalObjectCanonicalUrl } from "@myrmidon/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 export { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
-import { getGitHubRateLimitResetEpochSeconds, isGitHubRateLimited, recordGitHubRequest } from "./github-rate-limit.js";
+import { getGitHubRateLimitResetEpochSeconds, isGitHubRateLimited, recordGitHubRequest, type GitHubRequestSource } from "./github-rate-limit.js";
 import { secretService } from "./secrets.js";
 import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
 import { isRepositoryAllowed, normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
@@ -23,6 +23,14 @@ export interface GitHubExternalObjectProviderOptions {
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null> | string | null;
   secretNames?: readonly string[];
+  /**
+   * myrmidon(OPE-12397): the rate-limit accounting bucket this provider's
+   * GitHub reads count into. Every reader passes its own (`review-rework`,
+   * `run-context`, `ui-refresh`, `task-pr-sync`, `board-merge`, …) so the
+   * `[github-rate-limit]` log attributes the spend; the historical default
+   * keeps the pre-OPE-12397 behavior unchanged for callers that do not care.
+   */
+  source?: GitHubRequestSource;
 }
 
 interface GitHubObjectIdentity {
@@ -649,7 +657,7 @@ export function createGitHubExternalObjectProvider(
         let response: Response;
         try {
           response = await fetchImpl(url, { headers });
-          recordGitHubRequest("task-pr-sync", response);
+          recordGitHubRequest(opts.source ?? "task-pr-sync", response);
         } catch {
           return {
             ok: false,

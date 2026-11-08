@@ -43,6 +43,9 @@ import {
   REVIEW_REWORK_UNBLOCKED_ACTION,
   REVIEW_REWORK_WAKE_IDEMPOTENCY_PREFIX,
   REVIEW_REWORK_WAKE_REASON,
+  DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
   type ReviewReworkSettings,
 } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
@@ -58,7 +61,9 @@ import {
 import type { ReviewReworkPrResolver } from "./resolver.js";
 import type { ReworkCandidateRow, ReviewReworkStore } from "./store.js";
 
-export const DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC = 60;
+export { DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC } from "@myrmidon/shared";
+/** Deployment fallback for `sweepIntervalSec` before the instance row stores one (OPE-12397). */
+export const REVIEW_REWORK_SWEEP_INTERVAL_SEC_ENV = "MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC";
 /** Candidates inspected per company per pass (oldest update first). */
 export const REVIEW_REWORK_PAGE_SIZE = 200;
 /** Moves (create/reopen/block/unblock/close) per company per pass. */
@@ -86,6 +91,12 @@ export interface ReviewReworkSweepResult {
 }
 
 export interface ReviewReworkSweepDeps {
+  /**
+   * myrmidon(OPE-12397): when wired, the pass runs only on the "scheduler"
+   * leader process (the same gate TASK-PR-SYNC uses); without it the sweep
+   * behaves as before (every process).
+   */
+  isLeader?: () => boolean;
   store: ReviewReworkStore;
   /** The GitHub seam (state, head sha, review decision, updated_at). */
   resolvePr: ReviewReworkPrResolver;
@@ -112,8 +123,20 @@ export interface ReviewReworkSweepDeps {
   }) => Promise<void>;
   isUnderMaintenance?: () => Promise<boolean>;
   intervalMs?: number;
+  /** Deployment fallback for the interval before the instance row stores one (OPE-12397). */
+  env?: NodeJS.ProcessEnv;
   now?: () => Date;
   log?: Pick<Logger, "info" | "warn">;
+}
+
+function readIntervalSec(env: NodeJS.ProcessEnv | undefined, fallback: number) {
+  const raw = env?.[REVIEW_REWORK_SWEEP_INTERVAL_SEC_ENV]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC || value > MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC) {
+    return fallback;
+  }
+  return value;
 }
 
 export interface ReviewReworkSweep {
@@ -216,18 +239,29 @@ function reworkDescription(input: {
 }
 
 export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewReworkSweep {
-  const intervalMs = deps.intervalMs ?? DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC * 1000;
   const log = deps.log ?? logger;
   let lastSweepAtMs = 0;
+  let effectiveIntervalMs = deps.intervalMs ?? readIntervalSec(deps.env, DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC) * 1000;
 
   async function prFacts(
     row: ReworkCandidateRow,
     commentBodies: readonly string[],
+    seen: ReadonlySet<string>,
   ): Promise<ReviewReworkPrFact[]> {
+    // myrmidon(OPE-12397): a PR already read this pass (a sibling review task
+    // links it, or this task named it twice) is skipped — one GitHub read per
+    // PR per pass. The first candidate in scan order wins the read; the set is
+    // owned by the pass and mutates here despite the readonly view.
+    const seenPrs = seen as Set<string>;
     const coordinates = extractPrCoordinates(
       [...row.textParts, ...commentBodies],
       row.products.map((product) => ({ repo: product.repo, number: product.number, url: product.url ?? null })),
-    );
+    ).filter((coordinate) => {
+      const key = reviewReworkPrKey(coordinate);
+      if (seenPrs.has(key)) return false;
+      seenPrs.add(key);
+      return true;
+    });
     const facts: ReviewReworkPrFact[] = [];
     for (const coordinate of coordinates) {
       const [owner, repo] = coordinate.repo.split("/");
@@ -294,13 +328,14 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     now: Date,
     result: ReviewReworkSweepResult,
     moves: { count: number },
+    prsSeenThisPass: Set<string>,
   ): Promise<void> {
     const rows = await deps.store.listCandidateTasks(companyId, REVIEW_REWORK_PAGE_SIZE);
     result.scanned += rows.length;
     for (const row of rows) {
       if (moves.count >= REVIEW_REWORK_MAX_MOVES_PER_PASS) return;
       try {
-        const moved = await processTask(row, settings, now, result, moves);
+        const moved = await processTask(row, settings, now, result, moves, prsSeenThisPass);
         if (moved) moves.count += 1;
       } catch (err) {
         result.failed += 1;
@@ -315,11 +350,24 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     now: Date,
     result: ReviewReworkSweepResult,
     _moves: { count: number },
+    prsSeenThisPass: ReadonlySet<string>,
   ): Promise<boolean> {
     const { task } = row;
+    // myrmidon(OPE-12397): a task with neither a rework child, nor a verdict
+    // keyword on it, nor a live PR work product can never produce a move — its
+    // GitHub reads were spent on a `no_linked_pr` no-op. Both flags ride on the
+    // candidate row from the store query; `undefined` (hand-built test rows)
+    // assumes present, so the guard never skips what the old path would have
+    // processed.
+    if (
+      (row.childPresent === false && row.verdictPresent === false)
+      && !row.products.some((product) => product.status !== "archived")
+    ) {
+      return false;
+    }
     const comments = await deps.store.listComments(task.id);
     const child = await deps.store.findReworkChild(task.companyId, task.id);
-    const prs = await prFacts(row, comments.map((comment) => comment.body));
+    const prs = await prFacts(row, comments.map((comment) => comment.body), prsSeenThisPass);
     if (prs.length === 0) return false;
     // The delivering task's assignee: the first PR with coordinates that names
     // a task other than this review.
@@ -591,7 +639,23 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
         baselinesRecorded: 0,
         failed: 0,
       };
-      if (!options?.force && now.getTime() - lastSweepAtMs < intervalMs) {
+      const settings = await deps.readSettings();
+      if (deps.intervalMs === undefined) {
+        // myrmidon(OPE-12397): the stored interval is read on every pass, so a
+        // change applies without a restart — the deployment env is only the
+        // fallback before the row stores a value.
+        effectiveIntervalMs = readIntervalSec(deps.env, settings.sweepIntervalSec) * 1000;
+      }
+      if (!options?.force && now.getTime() - lastSweepAtMs < effectiveIntervalMs) {
+        result.skippedPass = true;
+        return result;
+      }
+      // myrmidon(OPE-12397): when wired with a leadership gate, only the
+      // "scheduler" leader sweeps — secondary processes never re-read every
+      // candidate's PRs (the pre-1.6.7 drain), and no replica waste. The
+      // timer still ticks so `lastSweepAtMs` stays consistent; a leader
+      // changeover re-sweeps immediately.
+      if (deps.isLeader && !deps.isLeader()) {
         result.skippedPass = true;
         return result;
       }
@@ -600,13 +664,15 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
         result.skippedPass = true;
         return result;
       }
-      const settings = await deps.readSettings();
       if (!settings.enabled) return result;
       const moves = { count: 0 };
+      // myrmidon(OPE-12397): one GitHub read per PR per pass, shared across
+      // every candidate that links the same PR.
+      const prsSeenThisPass = new Set<string>();
       const companyIds = await deps.store.listActiveCompanyIds();
       for (const companyId of companyIds) {
         try {
-          await sweepCompany(companyId, settings, now, result, moves);
+          await sweepCompany(companyId, settings, now, result, moves, prsSeenThisPass);
         } catch (err) {
           result.failed += 1;
           log.warn({ err, companyId }, "review rework sweep failed for one company");
