@@ -5677,7 +5677,7 @@ registry.registerPath({
   tags: ["sidebar"],
   summary: "Get the UI2 header status strip for a company",
   request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
