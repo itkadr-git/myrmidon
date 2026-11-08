@@ -142,7 +142,7 @@ function aggregatePatchClosed(patches: readonly StackPatchEntry[]): StackPatchCl
 async function checkComponent(
   component: StackSnapshot,
   port: StackFetchJson,
-  opts: Required<Pick<StackCheckOptions, "perPage">> & { noteLimit?: number },
+  opts: Required<Pick<StackCheckOptions, "perPage">> & Pick<StackCheckOptions, "noteLimit" | "retryDelayMs">,
   checkedAt: string,
 ): Promise<StackSnapshot> {
   if (component.upstream.kind !== "github" || !STACK_CHECKABLE_RELEASE_SOURCES.includes(component.releaseSource)) {

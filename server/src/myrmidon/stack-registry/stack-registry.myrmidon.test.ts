@@ -188,7 +188,15 @@ describeEmbeddedPostgres("stack registry", () => {
       now: NOW,
       serverInfo: {
         processStartedAt: "2026-09-30T11:00:00.000Z",
-        git: { available: true, fullSha: BOARD_COMMIT },
+        git: {
+          available: true,
+          fullSha: BOARD_COMMIT,
+          shortSha: BOARD_COMMIT.slice(0, 7),
+          branchName: "main",
+          subject: "test commit",
+          committedAt: null,
+          localChanges: { available: false, unavailableReason: "git_status_unavailable" },
+        },
       },
     });
     const hermes = doc.components.find((c) => c.name === "hermes-agent")!;

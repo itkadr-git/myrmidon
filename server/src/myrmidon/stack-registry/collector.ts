@@ -5,6 +5,7 @@
 // External release data is part B and is deliberately not touched here.
 
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../../server-info.js";
+import { request as httpRequest } from "node:http";
 import {
   STACK_DOCUMENT_VERSION,
   STACK_SEED,
@@ -45,7 +46,7 @@ function dockerImageInspectRequest(
 ): Promise<DockerHttpResponse> {
   return new Promise((resolve, reject) => {
     const segment = imageRef.split("/").map(encodeURIComponent).join("/");
-    const req = http.request(
+    const req = httpRequest(
       { socketPath, path: `/${DOCKER_API_VERSION}/images/${segment}/json`, method: "GET" },
       (res) => {
         const chunks: Buffer[] = [];

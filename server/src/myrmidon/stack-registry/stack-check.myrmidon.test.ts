@@ -21,6 +21,7 @@ import {
 } from "./attention.js";
 import {
   buildStackLagTask,
+  buildStackDigestLine,
   cardsForDigest,
   cardsForLagTasks,
 } from "./escalation.js";
@@ -80,8 +81,8 @@ function documentWithLocal(overrides: Record<string, Partial<StackLocalState>>):
   };
 }
 
-function fakeImages(states: Record<string, Awaited<ReturnType<DockerImagesPort["inspectImage"]>>>): DockerImagesPort {
-  return { inspectImage: async (ref) => states[ref] ?? null };
+function fakeImages(states: Record<string, Awaited<ReturnType<DockerImagesPort>>>): DockerImagesPort {
+  return async (ref) => states[ref] ?? null;
 }
 
 describe("stack release check helpers", () => {
@@ -440,7 +441,7 @@ describeEmbeddedPostgres("stack release check", () => {
     const saved = process.env.MYRMIDON_STACK_HTTP_HINDSIGHT;
     process.env.MYRMIDON_STACK_HTTP_HINDSIGHT = "http://hindsight.local:8080/version";
     try {
-      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "test" } }, images: fakeImages({}) });
+      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } }, images: fakeImages({}) });
       const hindsight = doc.components.find((c) => c.name === "hindsight")!;
       expect(hindsight.local.version).toBe("1.1.0");
       expect(hindsight.local.runningOn).toBe("http://hindsight.local:8080");
@@ -456,7 +457,7 @@ describeEmbeddedPostgres("stack release check", () => {
     const saved = process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
     delete process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
     try {
-      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "test" } }, images: fakeImages({}) });
+      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } }, images: fakeImages({}) });
       const langfuse = doc.components.find((c) => c.name === "langfuse")!;
       expect(langfuse.local.version).toBeNull();
       expect(langfuse.local.unknownReason).toContain("MYRMIDON_STACK_HTTP_LANGFUSE is not set");

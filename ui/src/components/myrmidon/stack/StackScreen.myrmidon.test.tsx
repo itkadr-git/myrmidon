@@ -110,6 +110,7 @@ const DOCUMENT: StackDocument = {
         behindBy: 0,
         notes: null,
         error: null,
+        staleSince: null,
       },
       patchClosed: { state: "closed", reason: "no carried deltas" },
     }),
