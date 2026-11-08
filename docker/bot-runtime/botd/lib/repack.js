@@ -7,6 +7,10 @@ export const MAX_PACKS_THRESHOLD = 20;
 export const REPACK_IDLE_LOAD = 1;
 export const FLEET_LOCK_FILE = ".myrmidon-repack.lock";
 export const MARKER_FILE = ".myrmidon-repack";
+export const FAILURE_MARKER_FILE = ".myrmidon-repack-failed";
+export const REPACK_FAILURE_BACKOFF_MS = 6 * 3600 * 1000;
+export const STALE_TEMP_PACK_AGE_MS = 30 * 60 * 1000;
+const TEMP_PACK_PATTERNS = [/^\.tmp-.*-pack-.*$/, /^tmp_pack_/, /^tmp_idx_/, /^tmp_rev_/];
 
 export function formatBytes(bytes) {
   if (bytes == null || !Number.isFinite(bytes)) return "unknown";
@@ -87,6 +91,16 @@ export function shouldRepack(repoPath, options = {}) {
   const intervalMs = options.intervalMs ?? REPACK_INTERVAL_MS;
   const now = options.now ?? Date.now();
   const packs = countPacks(repoPath);
+
+  const failureMarkerPath = path.join(repoPath, FAILURE_MARKER_FILE);
+  try {
+    const failedAt = fs.statSync(failureMarkerPath).mtimeMs;
+    if (now - failedAt < (options.failureBackoffMs ?? REPACK_FAILURE_BACKOFF_MS)) {
+      return { should: false, reason: "failure-backoff", packs, failedAt };
+    }
+  } catch {
+    // No recorded failure.
+  }
 
   if (packs > maxPacks) {
     return { should: true, reason: "pack-count", packs };
@@ -210,6 +224,44 @@ export function defaultRunCmd(bin, args, cwdOrOpts) {
   });
 }
 
+/**
+ * Removes stale git temp pack/index files from objects/pack: `.tmp-*-pack-*`,
+ * `tmp_pack_*`, `tmp_idx_*`, `tmp_rev_*` older than 30 minutes (OPE-12263:
+ * a failed repack on a partial clone leaves ~73 MB temp packs behind, and the
+ * 5-min retry loop accumulated gigabytes). Guarded by hasLockFile() so files
+ * of a live git process are never touched; in botd it also runs at startup.
+ */
+export function cleanupStaleTempPacks(repoPath, options = {}) {
+  const now = options.now ?? Date.now();
+  const maxAgeMs = options.maxAgeMs ?? STALE_TEMP_PACK_AGE_MS;
+  const log = options.log || (() => {});
+  const removed = [];
+  if (hasLockFile(repoPath)) {
+    log(`botd repack: skipping stale temp cleanup for ${repoPath}, lock file present`);
+    return removed;
+  }
+  const packDir = path.join(repoPath, "objects", "pack");
+  let entries = [];
+  try {
+    entries = fs.readdirSync(packDir);
+  } catch {
+    return removed;
+  }
+  for (const name of entries) {
+    if (!TEMP_PACK_PATTERNS.some((re) => re.test(name))) continue;
+    try {
+      const st = fs.statSync(path.join(packDir, name));
+      if (now - st.mtimeMs < maxAgeMs) continue;
+      fs.rmSync(path.join(packDir, name), { force: true });
+      removed.push(name);
+    } catch {}
+  }
+  if (removed.length > 0) {
+    log(`botd repack: removed ${removed.length} stale temp pack file(s) from ${packDir}: ${removed.join(", ")}`);
+  }
+  return removed;
+}
+
 export async function repackRepo(repoPath, options = {}) {
   const log = options.log || (() => {});
   const runCmd = options.runCmd || defaultRunCmd;
@@ -228,6 +280,8 @@ export async function repackRepo(repoPath, options = {}) {
     return { ok: false, skipped: true, reason: "locked" };
   }
 
+  cleanupStaleTempPacks(repoPath, { log });
+
   let uid = options.uid;
   let gid = options.gid;
   if (uid == null || gid == null) {
@@ -245,11 +299,17 @@ export async function repackRepo(repoPath, options = {}) {
   const packsBefore = countPacks(repoPath);
   const sizeBefore = getDirSizeBytes(repoPath);
 
-  // Resource limits (ADM review 01.11): repack runs nice -n 19 / ionice -c 3
-  // (idle class, best-effort fallback to plain nice when ionice is missing)
-  // with pack.threads=1, mirroring the proven git-migration.js pattern that
-  // kept the board responsive while repacking repos in the background.
-  const repackArgs = [gitBin, "-c", "pack.threads=1", "repack", "-A", "-d"];
+  // Partial clones (promisor, e.g. blob:none) have no full object closure, so
+  // bitmap write fails with "Packfile doesn't have full closure" (OPE-12263);
+  // disable bitmaps explicitly, and prune leftover temp packs from earlier
+  // failed attempts before starting a new one.
+  const repackArgs = [
+    gitBin,
+    "-c", "pack.threads=1",
+    "-c", "repack.writeBitmaps=false",
+    "-c", "pack.writeBitmaps=false",
+    "repack", "-A", "-d",
+  ];
   const niceWrap = wrapNiceIonice(repackArgs, log);
   const repackRes = await runCmd(niceWrap.bin, niceWrap.args, {
     ...cmdOpts,
@@ -257,6 +317,20 @@ export async function repackRepo(repoPath, options = {}) {
   });
   if (repackRes.code !== 0) {
     log(`botd repack: git repack failed on ${repoPath} (code ${repackRes.code}): ${repackRes.stderr || repackRes.stdout}`);
+    // Record the failure with a backoff marker so shouldRepack (whose
+    // pack-count branch ignores the success marker) does not retry every ~5
+    // min cycle; next attempt is allowed after REPACK_FAILURE_BACKOFF_MS (6h).
+    try {
+      const failurePath = path.join(repoPath, FAILURE_MARKER_FILE);
+      const fd = fs.openSync(failurePath, "w");
+      fs.writeFileSync(fd, `${new Date().toISOString()}\n${repackRes.stderr || repackRes.stdout}`.slice(0, 2048), "utf8");
+      fs.closeSync(fd);
+      if (typeof uid === "number" && typeof gid === "number" && (process.getuid ? process.getuid() === 0 : true)) {
+        try {
+          fs.chownSync(failurePath, uid, gid);
+        } catch {}
+      }
+    } catch {}
     return { ok: false, error: repackRes.stderr || repackRes.stdout };
   }
 
@@ -283,6 +357,9 @@ export async function repackRepo(repoPath, options = {}) {
         fs.chownSync(markerPath, uid, gid);
       } catch {}
     }
+  } catch {}
+  try {
+    fs.rmSync(path.join(repoPath, FAILURE_MARKER_FILE), { force: true });
   } catch {}
 
   log(`botd repack: git-base ${repoPath} repacked: packs ${packsBefore} -> ${packsAfter}, size ${formatBytes(sizeBefore)} -> ${formatBytes(sizeAfter)}`);

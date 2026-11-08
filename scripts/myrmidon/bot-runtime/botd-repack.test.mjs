@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import {
   countPacks,
+  cleanupStaleTempPacks,
   formatBytes,
   getDirSizeBytes,
   hasLockFile,
@@ -19,6 +20,46 @@ function makeTempDir() {
 }
 
 describe("botd repack: git-base optimization (OPE-10039)", () => {
+  it("cleans stale temporary pack files only when no Git lock exists", () => {
+    const dir = makeTempDir();
+    const packDir = path.join(dir, "objects", "pack");
+    fs.mkdirSync(packDir, { recursive: true });
+    const now = Date.now();
+    const stale = [".tmp-123-pack-abc.pack", "tmp_pack_abc.pack", "tmp_idx_abc", "tmp_rev_abc"];
+    for (const name of stale) {
+      const file = path.join(packDir, name);
+      fs.writeFileSync(file, "temp");
+      fs.utimesSync(file, new Date(now - 31 * 60 * 1000), new Date(now - 31 * 60 * 1000));
+    }
+    const recent = path.join(packDir, "tmp_idx_recent");
+    fs.writeFileSync(recent, "temp");
+    assert.equal(cleanupStaleTempPacks(dir, { now }).length, 4);
+    assert.equal(fs.existsSync(recent), true);
+
+    const protectedTemp = path.join(packDir, "tmp_pack_protected");
+    fs.writeFileSync(protectedTemp, "temp");
+    fs.utimesSync(protectedTemp, new Date(now - 31 * 60 * 1000), new Date(now - 31 * 60 * 1000));
+    fs.writeFileSync(path.join(dir, "packed-refs.lock"), "");
+    assert.equal(cleanupStaleTempPacks(dir, { now }).length, 0);
+    assert.equal(fs.existsSync(protectedTemp), true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("shouldRepack failure backoff takes precedence over pack-count", () => {
+    const dir = makeTempDir();
+    const packDir = path.join(dir, "objects", "pack");
+    fs.mkdirSync(packDir, { recursive: true });
+    for (let i = 0; i < 25; i++) fs.writeFileSync(path.join(packDir, `pack-${i}.pack`), "pack");
+    const now = Date.now();
+    const failurePath = path.join(dir, ".myrmidon-repack-failed");
+    fs.writeFileSync(failurePath, "failed");
+    fs.utimesSync(failurePath, new Date(now - 5 * 3600 * 1000), new Date(now - 5 * 3600 * 1000));
+    assert.equal(shouldRepack(dir, { now }).reason, "failure-backoff");
+    fs.utimesSync(failurePath, new Date(now - 7 * 3600 * 1000), new Date(now - 7 * 3600 * 1000));
+    assert.equal(shouldRepack(dir, { now }).reason, "pack-count");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("formats bytes into human readable sizes", () => {
     assert.equal(formatBytes(500), "500 B");
     assert.equal(formatBytes(2048), "2.0 KB");
@@ -170,7 +211,7 @@ describe("botd repack: git-base optimization (OPE-10039)", () => {
     assert.equal(res.packsAfter, 1);
     assert.equal(commands.length, 2);
     assert.equal(commands[0].bin, "nice");
-    assert.deepEqual(commands[0].args, ["-n", "19", "ionice", "-c", "3", "git", "-c", "pack.threads=1", "repack", "-A", "-d"]);
+    assert.deepEqual(commands[0].args, ["-n", "19", "ionice", "-c", "3", "git", "-c", "pack.threads=1", "-c", "repack.writeBitmaps=false", "-c", "pack.writeBitmaps=false", "repack", "-A", "-d"]);
     assert.equal(commands[0].opts.cwd, dir);
     assert.equal(commands[0].opts.uid, st.uid);
     assert.equal(commands[0].opts.gid, st.gid);
@@ -181,6 +222,20 @@ describe("botd repack: git-base optimization (OPE-10039)", () => {
     assert.ok(fs.existsSync(path.join(dir, MARKER_FILE)));
     assert.ok(logs.some((l) => l.includes("repacked") && l.includes("packs 3 -> 1")));
 
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("repackRepo records failure and logs why repack failed", async () => {
+    const dir = makeTempDir();
+    const reason = "Failed to write bitmap index";
+    const logs = [];
+    const res = await repackRepo(dir, {
+      runCmd: async () => ({ code: 128, stdout: "", stderr: reason }),
+      log: (line) => logs.push(line),
+    });
+    assert.equal(res.ok, false);
+    assert.match(fs.readFileSync(path.join(dir, ".myrmidon-repack-failed"), "utf8"), /Failed to write bitmap index/);
+    assert.ok(logs.some((line) => line.includes(reason)));
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
