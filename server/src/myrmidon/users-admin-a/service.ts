@@ -84,7 +84,9 @@ function toManagedUser(
   };
 }
 
-export async function listUsers(db: Db): Promise<ManagedUser[]> {
+export async function listUsers(db: Db, options: { page?: number; limit?: number; role?: "instance_admin" | "member" } = {}): Promise<{ users: ManagedUser[]; total: number }> {
+  const page = options.page ?? 1;
+  const limit = options.limit ?? 20;
   const rows = await db
     .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, createdAt: authUsers.createdAt })
     .from(authUsers);
@@ -93,9 +95,18 @@ export async function listUsers(db: Db): Promise<ManagedUser[]> {
       .map((r) => r.userId),
   );
   const blocked = new Set((await db.select({ userId: userBlocks.userId }).from(userBlocks)).map((r) => r.userId));
-  return rows
+  let managed = rows
     .map((row) => toManagedUser(row, admins, blocked))
     .sort((a, b) => a.email.localeCompare(b.email));
+
+  if (options.role) {
+    managed = managed.filter((u) => u.role === options.role);
+  }
+
+  const total = managed.length;
+  const start = (page - 1) * limit;
+  const users = managed.slice(start, start + limit);
+  return { users, total };
 }
 
 export async function getUser(db: Db, userId: string) {
