@@ -12,6 +12,31 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### Settings → General no longer crashes on the Runs & Queue panel (SETTINGS-GENERAL-CRASH)
+
+- Fixed: a few seconds after opening Settings → General the page fell to the error screen "values is not iterable". The Runs & Queue panel read a `values[]` array from `GET /api/myrmidon/behavior-settings`, while the server answers `{ settings, sources }` (the contract every other behavior-settings panel uses). The panel now reads that contract; a response of any other shape, or a failed request, is shown as an error inside the panel and never takes the page down. A value typed into a field that cannot be parsed is flagged and not sent.
+- Fixed: a non-administrator who opens the Channels or Bot disk settings now sees "Нужны права администратора экземпляра" / "Instance admin access required" (translated) instead of raw English or no message at all.
+- Fixed: the swarm "scent" block of Settings → General showed raw `swarmClaim.scent.*` keys; the ru/en strings are added.
+- Test: the server contract test now pins that `GET /api/myrmidon/behavior-settings` answers `{ settings, sources }` and carries every runs-queue key; the panel's key list is checked against the registry.
+
+### Instance → General: the "Workspace hygiene" panel is on the page (1.6.7 SETTINGS-UI, OPE-6249)
+
+- The two disk ceilings of the workspace quota sweep, `workspaceQuotaMb` (one execution workspace) and
+  `totalQuotaMb` (the sum of one company's measured workspaces), had a read/write route
+  (`GET`/`PATCH /api/myrmidon/workspace-hygiene`) and a finished panel component, but the component was
+  never placed on the page, so the production UI had no way to see or change them. The panel "Workspace
+  hygiene" now sits on Settings → General next to the bot disk panels. It shows both ceilings, the source
+  of each value (default, environment override, saved here), the biggest measured workspaces and the last
+  sweep, and saves through the existing `PATCH` route. An empty field means the cap is off.
+- A save applies at once: the sweep reads the stored ceilings at the top of every tick, no restart.
+- The source labels of the panel went through i18n (they were fixed English strings). A save or a read
+  refused with 403 now says "Instance admin rights are required." instead of the raw server text; the
+  `PATCH` route stays instance-admin only.
+- The merged-workspace cooldown and the stuck-workspace signal delay stay in the Runs & Queue panel; they
+  are not part of this one.
+
+## 1.6.7
+
 ### Corpus: the embedder key is kept for 60 s, the full-text ranking starts with the embedding, and the step timings reach the info log (1.6.7 CORPUS-LATENCY, OPE-12272)
 
 - A cold question needs the API key of the company's embedder secret. The secrets service resolved it
