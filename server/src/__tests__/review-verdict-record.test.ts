@@ -4,8 +4,8 @@ import {
   extractReviewVerdictRecord,
   readReviewVerdictRecord,
   withReviewVerdictRecord,
-} from "./record.js";
-import { isApprovalOutcome, parseReviewedHead } from "../../services/pull-request-approval-propagation.js";
+} from "../myrmidon/review-verdict/record.js";
+import { isApprovalOutcome, parseReviewedHead } from "../services/pull-request-approval-propagation.js";
 
 const HEAD = "28f15c1be15204153f0e06464842d88875c373f8";
 
