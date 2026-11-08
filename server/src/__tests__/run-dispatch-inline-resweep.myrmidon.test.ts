@@ -78,7 +78,7 @@ describe("run dispatch settings", () => {
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: -30 } })).toMatchObject({
       queuedResweepSec: 5,
     });
-    expect(resolveRunDispatchSettings({ processes: { queuedRunStaleAfterSec: 0 } })).toMatchObject({ queuedRunStaleAfterSec: 60 });
+    expect(resolveRunDispatchSettings({ processes: { queuedRunStaleAfterSec: 0 } })).toMatchObject({ queuedRunStaleAfterSec: 300 });
     expect(resolveRunDispatchSettings({ processes: { queuedRunStaleAfterSec: 999999 } })).toMatchObject({ queuedRunStaleAfterSec: 604800 });
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: 99_999 } })).toMatchObject({
       queuedResweepSec: 3600,

@@ -877,7 +877,7 @@ describe('IdleStopService', () => {
         }),
       }));
       vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
-      vi.mocked(mockDriver.stopIdle).mockResolvedValue(undefined);
+      vi.mocked(mockDriver.stopIdle!).mockResolvedValue(undefined);
 
       await idleStopService.performSweep();
 
