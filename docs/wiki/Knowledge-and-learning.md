@@ -34,6 +34,25 @@ existing slugs on rerun, and applies supersede links in a second pass so that
 both records exist first; superseded decisions remain available as history.
 The seed corpus and seeder are part of release 1.6.6.
 
+## The knowledge corpus
+
+Datasets of documents with the company's own content — files uploaded in the
+board or pages added by address with
+`POST …/corpus/datasets/:datasetId/documents/url`: the board fetches the page
+over its guarded transport (public addresses only), stores the bytes and
+parses them like an upload. A document added by address remembers its
+`sourceUrl` and `refreshIntervalHours` (168 by default) and is re-fetched by
+the board on an hourly tick behind the corpus switch, so the corpus follows
+the page without operator work.
+
+A document whose parse failed is parsed again with the «Reparse» button
+(«Разобрать заново» in the Russian interface) in the documents table of the
+knowledge screen; the row flips back to `queued` immediately and the failure
+reasons (`409 document_not_failed`, `422` when the embedder is not
+configured, `502 enqueue_failed`) are shown with their human text. Bots read
+the corpus through the board's own MCP tools — see
+[Corpus MCP tools for board bots](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/corpus-mcp-tools.md).
+
 ## Foraging: gathering fresh knowledge
 
 Foraging lets the colony collect fresh knowledge from approved external
