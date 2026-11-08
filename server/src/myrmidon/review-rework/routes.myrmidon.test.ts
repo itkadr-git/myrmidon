@@ -15,7 +15,12 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import type { Db } from "@myrmidon/db";
-import { REVIEW_REWORK_SETTINGS_UPDATED_ACTION } from "@myrmidon/shared";
+import {
+  REVIEW_REWORK_SETTINGS_UPDATED_ACTION,
+  instanceGeneralSettingsSchema,
+  instanceExperimentalSettingsSchema,
+  type InstanceSettings,
+} from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { reviewReworkRoutes } from "./routes.js";
 import { reviewReworkSettingsService, type ReviewReworkSettingsPorts } from "./settings.js";
@@ -43,13 +48,28 @@ function harness(options: HarnessOptions = {}) {
     reviewRework: { enabled: true, fallbackAssigneeAgentId: null },
   };
 
+  // The fakes return the real contract shapes: `getGeneral` parses the stored
+  // document through the same zod schemas the production service normalizes
+  // with, and `updateGeneral` returns a minimal but complete InstanceSettings
+  // row — the real port types (TS2322 in the first CI run came from loose
+  // `Record<string, unknown>` fakes, not from the production fix).
+  const fakeGeneral = () => instanceGeneralSettingsSchema.parse(stored);
+  const fakeSettingsRow = (): InstanceSettings => ({
+    id: "instance-settings-row",
+    defaultEnvironmentId: null,
+    general: fakeGeneral(),
+    experimental: instanceExperimentalSettingsSchema.parse({}),
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  });
+
   const ports: ReviewReworkSettingsPorts = {
     settings: {
-      getGeneral: async () => stored,
+      getGeneral: async () => fakeGeneral(),
       updateGeneral: async (patch) => {
         stored = { ...stored, ...patch };
         updated.push(patch as Record<string, unknown>);
-        return {};
+        return fakeSettingsRow();
       },
     },
     activity: {
