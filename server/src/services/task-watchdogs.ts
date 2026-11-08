@@ -946,6 +946,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           origin_kind,
           updated_at,
           created_at,
+          created_by_agent_id,
+          created_by_user_id,
           0 AS depth
         FROM issues
         WHERE company_id = ${companyId}
@@ -965,6 +967,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           child.origin_kind,
           child.updated_at,
           child.created_at,
+          child.created_by_agent_id,
+          child.created_by_user_id,
           watched_issues.depth + 1
         FROM issues child
         JOIN watched_issues ON child.parent_id = watched_issues.id
@@ -985,7 +989,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         assignee_user_id AS "assigneeUserId",
         origin_kind AS "originKind",
         updated_at AS "updatedAt",
-        created_at AS "createdAt"
+        created_at AS "createdAt",
+        created_by_agent_id AS "createdByAgentId",
+        created_by_user_id AS "createdByUserId"
       FROM watched_issues
     `);
 
@@ -1020,6 +1026,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       commentActivityRows,
       documentActivityRows,
       workProductActivityRows,
+      operatorActivityRows,
     ] = await Promise.all([
       db
         .select({
@@ -1144,10 +1151,24 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueWorkProducts.issueId, subtreeIssueIds),
         ))
         .groupBy(issueWorkProducts.issueId),
+      db
+        .select({ entityId: activityLog.entityId })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          inArray(activityLog.entityId, subtreeIssueIds),
+          eq(activityLog.actorType, "user"),
+        )),
     ]);
     const latestCommentByIssueId = new Map(commentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestDocumentByIssueId = new Map(documentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestWorkProductByIssueId = new Map(workProductActivityRows.map((row) => [row.issueId, row.latestAt]));
+    const operatorActivityIssueIds = new Set(operatorActivityRows.map((row) => row.entityId));
+    const operatorBacklogIssueIds = issueRows
+      .filter((issue) => issue.status === "backlog" && (issue.createdByUserId != null || operatorActivityIssueIds.has(issue.id)))
+      .map((issue) => issue.id)
+      .sort();
 
     const evaluatedAt = new Date();
     const evaluatedAtMs = evaluatedAt.getTime();
@@ -1192,6 +1213,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       evaluatedAt,
       firstRunGraceMs: TASK_WATCHDOG_FIRST_RUN_GRACE_MS,
       completedRunIssueIds,
+      operatorBacklogIssueIds,
+      rewakeCooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
     } satisfies TaskWatchdogClassifierInput;
   }
 
@@ -1521,6 +1544,19 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state !== "stopped") {
       return { state: classification.state, reason: classification.reason, classification };
+    }
+
+    if (watchdog.lastTriggeredAt && watchdog.lastObservedFingerprint === classification.stopFingerprint) {
+      const lastTriggeredMs = toEpochMs(watchdog.lastTriggeredAt);
+      const nowMs = Date.now();
+      const cooldownMs = TASK_WATCHDOG_REWAKE_COOLDOWN_MS;
+      if (lastTriggeredMs != null && nowMs - lastTriggeredMs < cooldownMs) {
+        return {
+          state: "skipped" as const,
+          reason: "rewake_cooldown",
+          classification,
+        };
+      }
     }
 
     const existingWatchdogIssueId = watchdog.watchdogIssueId ?? (await findTaskWatchdogIssue(
