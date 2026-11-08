@@ -41,10 +41,10 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 895,
+    "unique_names": 897,
     "secret": 108,
     "infra": 373,
-    "product": 414
+    "product": 416
   },
   "entries": [
     {
@@ -9951,6 +9951,36 @@
       "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
       "ticket_or_pr": "не требуется",
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
+    },
+    {
+      "name": "MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/review-stage-recovery/github-ci.ts:177",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; сколько секунд вердикт CI головы PR и список упавших проверок (OPE-12397) отдаются из памяти доски без запроса после завершения CI головы; 0 вместе со второй переменной выключает кэш",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
+      "name": "MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/review-stage-recovery/github-ci.ts:176",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; сколько секунд голова PR и ещё не окончательный вердикт CI (OPE-12397) отдаются из памяти доски без запроса; 0 вместе со второй переменной выключает кэш",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env до решения владельца о настройке в UI"
     },
     {
       "name": "MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS",
