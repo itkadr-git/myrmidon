@@ -23,7 +23,11 @@ import {
   issues,
   type Db,
 } from "@myrmidon/db";
-import { REVIEW_REWORK_ORIGIN_KIND, isAgentStatusInvokable } from "@myrmidon/shared";
+import {
+  REVIEW_REWORK_CLOSED_ACTION,
+  REVIEW_REWORK_ORIGIN_KIND,
+  isAgentStatusInvokable,
+} from "@myrmidon/shared";
 import { decodeReworkFingerprint } from "./domain.js";
 import type { ReviewReworkChildFacts, ReviewReworkTaskFacts } from "./domain.js";
 
@@ -450,13 +454,32 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
       );
     },
 
-    // OPE-12260: the loop must never out-shout a person. The audit's newest
-    // terminal write decides: a done row that a human or ADM reactivated (the
-    // update actor is a user/agent, not this sweep) after the loop's own
-    // close means the close was vetoed — the loop keeps its hands off.
+    // OPE-12260: the loop must never out-shout a person. The veto is a
+    // historical fact, not "the newest audit row looks like a reopen": any
+    // user/agent issue.updated row moving the issue OFF a terminal status
+    // (done/cancelled) after the loop's own close settles it. Later agent
+    // status moves (in_progress on the reopen wake, then in_review) or plain
+    // field edits cannot displace it — the newest-row probe lost the veto
+    // exactly that way, the OPE-7290 relapse the reviewer named.
     async reopenedAfterLoopClose(companyId, issueId) {
-      const rows = await db
-        .select({ actorType: activityLog.actorType, actorId: activityLog.actorId, details: activityLog.details })
+      const closeRows = await db
+        .select({ createdAt: activityLog.createdAt })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, REVIEW_REWORK_CLOSED_ACTION),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
+      const closeRow = closeRows[0];
+      // The loop never closed it: nothing to veto, an ordinary close applies.
+      if (!closeRow) return false;
+      const offTerminalRows = await db
+        .select({ id: activityLog.id })
         .from(activityLog)
         .where(
           and(
@@ -465,23 +488,22 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
             eq(activityLog.entityId, issueId),
             eq(activityLog.action, "issue.updated"),
             or(eq(activityLog.actorType, "user"), eq(activityLog.actorType, "agent")),
+            sql`${activityLog.createdAt} > ${closeRow.createdAt}`,
+            // The route writes `status` plus a `_previous` block (and
+            // `reopened`, `reopenedFrom`) on every status change; anything
+            // moving off a terminal status is a reopen by a person, ADM or
+            // agent — never by this sweep (its close only ever lands on done,
+            // never leaves it). `previousStatus` covers system-shaped audit
+            // rows whose `_previous` block is absent.
+            or(
+              sql`${activityLog.details} -> '_previous' ->> 'status' in ('done', 'cancelled')`,
+              sql`${activityLog.details} ->> 'reopenedFrom' in ('done', 'cancelled')`,
+              sql`${activityLog.details} ->> 'previousStatus' in ('done', 'cancelled')`,
+            ),
           ),
         )
-        .orderBy(desc(activityLog.createdAt))
         .limit(1);
-      const row = rows[0];
-      if (!row) return false;
-      const details = (row.details ?? {}) as Record<string, unknown>;
-      // The route writes `status` plus a `_previous` block (and `reopened`,
-      // `reopenedFrom`) on every status change; anything moving off a terminal
-      // status is a reopen by a person, ADM or agent — never by this sweep
-      // (its close only ever lands on done, never leaves it).
-      const previous =
-        (details._previous as Record<string, unknown> | undefined)?.status ??
-        details.reopenedFrom ??
-        details.previousStatus;
-      const previousStatus = typeof previous === "string" ? previous : null;
-      return previousStatus === "done" || previousStatus === "cancelled";
+      return offTerminalRows.length > 0;
     },
 
     async awaitAcceptance(input) {
