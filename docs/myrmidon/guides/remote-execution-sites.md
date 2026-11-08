@@ -390,6 +390,14 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
   -H "Authorization: Bearer $(cat token)" https://192.0.2.10:9100/v1/health | jq .
 ```
 
+#### Audit log, limits, client certificate allowlist and hardening
+
+- **Audit log.** fleetd writes one JSON line per API request to stdout, which the journal keeps (`journalctl -u myrmidon-fleetd -o cat | grep '"event":"audit"'`). A line has the time, the route (the bot key is shown as `{botKey}`), the method, `botKey`, the status, `clientCertSha256` and the duration in milliseconds. Bodies, query strings and tokens are not logged. A snapshot that broke off in the middle of the stream is marked `"aborted":true`.
+- **Limits.** A JSON request body is limited to 1 MiB. A restore is limited to 20 GiB of file content and 2,000,000 archive entries; above that it answers `413 restore_too_large` and changes nothing. The server limits the time for the request headers (5 s) and for the request (60 s), and it closes idle connections after 2 minutes. A restore upload may pause for up to 2 minutes between two reads. There is no write timeout: a snapshot streams a whole datadir for as long as the board reads it.
+- **Clean-up.** The datadirs that a restore or a quarantine moves aside (`.replaced-*` and `.quarantined-*` in `volumeRoot`) are removed after 7 days. The first sweep runs when fleetd starts, then one sweep runs every 24 hours.
+- **Client certificate allowlist (optional).** By default fleetd accepts every client certificate that the site CA signed. To allow only some of them, add `"clientCertSha256": ["<64 hex digits>"]` to `fleetd.json`. Each entry is the SHA-256 fingerprint of a client certificate. Colons, upper case and a `sha256:` prefix are accepted. fleetd then refuses any other certificate in the TLS handshake. An empty or missing list keeps the old behaviour. Take the fingerprint from the `clientCertSha256` field of the audit log, or from `openssl x509 -in client.crt -noout -fingerprint -sha256`. A change needs a restart of the unit, and `--check-config` rejects a malformed entry. The board renews its client certificate 30 days before it expires, and the renewed certificate has a new fingerprint. Add the new fingerprint to the list before the board uses the new certificate, or the board loses the site.
+- **systemd drop-in.** [`docs/myrmidon/fleetd/myrmidon-fleetd.service.d/hardening.conf`](../fleetd/myrmidon-fleetd.service.d/hardening.conf) adds `ProtectSystem=strict`, a short `CapabilityBoundingSet`, `NoNewPrivileges`, `PrivateTmp` and other sandboxing options to the unit above. Its comments list what fleetd writes and reads. Set `ReadWritePaths` to your `volumeRoot` and install the file in `/etc/systemd/system/myrmidon-fleetd.service.d/`.
+
 ---
 
 ### 4.3 Board Configuration (`vm-core`): enroll the site
