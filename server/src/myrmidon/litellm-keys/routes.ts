@@ -16,6 +16,8 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@myrmidon/db";
 import { readGatewayKeySettings } from "@myrmidon/shared";
+import { modelProviderModels, modelProviders } from "@myrmidon/db";
+import { eq } from "drizzle-orm";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import {
   assertAgentMayReadOwnGatewayKey,
@@ -37,6 +39,50 @@ import { createLiteLlmAuditService } from "../litellm-audit/service.js";
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
   env?: NodeJS.ProcessEnv;
+}
+
+/** The provider kinds that are subscription pools, not per-token paid APIs. */
+const POOL_PROVIDER_TYPES = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"] as const;
+
+/**
+ * LiteLLM carries every pool deployment under the generic "openai" provider
+ * prefix, so provider-based heuristics (single-provider diversity, paid
+ * fallback ordering) misfire on pool model groups. The real provider is the
+ * board channel registry's pool type — join model_provider_models with
+ * model_providers and map litellm model names to it (OPE-12361).
+ */
+async function readPoolGroupProviders(
+  db: Db,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    const rows = await db
+      .select({
+        litellmModelName: modelProviderModels.litellmModelName,
+        providerType: modelProviders.type,
+      })
+      .from(modelProviderModels)
+      .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id));
+    for (const row of rows) {
+      if ((POOL_PROVIDER_TYPES as readonly string[]).includes(row.providerType)) {
+        map.set(row.litellmModelName, row.providerType);
+      }
+    }
+  } catch {
+    // Registry tables not ready — treat every group as a regular LiteLLM model.
+  }
+  return map;
+}
+
+/** Applies pool provider types to the catalog copy used by the UI heuristics. */
+function withPoolProviders<T extends { modelName: string; provider: string }>(
+  models: T[],
+  poolGroups: Map<string, string>,
+): T[] {
+  return models.map((m) => {
+    const poolType = poolGroups.get(m.modelName);
+    return poolType ? { ...m, provider: poolType } : m;
+  });
 }
 
 export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
@@ -177,13 +223,14 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     }
     const report = await readGatewayFallbackTopology({ ...input.deps, db }, { companyId, settings: current });
     try {
+      const poolGroups = await readPoolGroupProviders(db);
       const known = await listLitellmModels(db);
-      report.models = known.map((m) => ({
+      report.models = withPoolProviders(known, poolGroups).map((m) => ({
         modelName: m.modelName,
         provider: m.provider,
         inputCostPerToken: m.inputCostPerToken,
         outputCostPerToken: m.outputCostPerToken,
-        isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
+        isFree: m.inputCostPerToken === 0 && m.outputCostPerToken === 0,
       }));
     } catch {
       // models are optional if litellmModels table is unpopulated
@@ -208,16 +255,17 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const chains = (req.body?.chains ?? []) as FallbackChain[];
     let catalog: Map<string, KnownModelInfo> | undefined;
     try {
+      const poolGroups = await readPoolGroupProviders(db);
       const known = await listLitellmModels(db);
       catalog = new Map(
-        known.map((m) => [
+        withPoolProviders(known, poolGroups).map((m) => [
           m.modelName,
           {
             modelName: m.modelName,
             provider: m.provider,
             inputCostPerToken: m.inputCostPerToken,
             outputCostPerToken: m.outputCostPerToken,
-            isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
+            isFree: m.inputCostPerToken === 0 && m.outputCostPerToken === 0,
           },
         ]),
       );
