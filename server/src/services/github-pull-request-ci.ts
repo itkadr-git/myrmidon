@@ -1038,3 +1038,114 @@ export function createPullRequestCiResolver(
     },
   };
 }
+
+export type PullRequestHeadLane = "test" | "lint";
+
+export interface PullRequestHeadLaneEvidence {
+  lane: PullRequestHeadLane;
+  name: string;
+  headSha: string | null;
+  state: "success" | "failure" | "pending" | "missing" | "unknown";
+  status: "queued" | "in_progress" | "completed" | "missing" | "unknown";
+  conclusion: string | null;
+  finishedAt: string | null;
+}
+
+export function isTestCheckRun(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return (
+    /\b(test|tests|vitest|jest|pytest)\b/.test(n) ||
+    n.startsWith("tests (") ||
+    n.startsWith("test (")
+  );
+}
+
+export function isLintCheckRun(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return (
+    /\b(lint|linter|typecheck|type-check|checks|eslint|biome)\b/.test(n) ||
+    n.startsWith("checks (") ||
+    n.includes("typecheck")
+  );
+}
+
+export function summarizeHeadLaneEvidence(
+  runs: readonly PullRequestCiJob[],
+  options?: { headSha?: string | null },
+): PullRequestHeadLaneEvidence[] {
+  const headSha = options?.headSha ?? null;
+  const testRuns = runs.filter((r) => isTestCheckRun(r.name));
+  const lintRuns = runs.filter((r) => isLintCheckRun(r.name));
+
+  function summarizeLane(
+    lane: PullRequestHeadLane,
+    laneRuns: readonly PullRequestCiJob[],
+  ): PullRequestHeadLaneEvidence {
+    if (laneRuns.length === 0) {
+      return {
+        lane,
+        name: lane,
+        headSha,
+        state: "missing",
+        status: "missing",
+        conclusion: null,
+        finishedAt: null,
+      };
+    }
+
+    const pendingRun = laneRuns.find(
+      (r) => r.status === "queued" || r.status === "in_progress" || (r.status as string) === "pending",
+    );
+    if (pendingRun) {
+      return {
+        lane,
+        name: pendingRun.name,
+        headSha,
+        state: "pending",
+        status: pendingRun.status,
+        conclusion: pendingRun.conclusion,
+        finishedAt: null,
+      };
+    }
+
+    const failedRun = laneRuns.find(
+      (r) =>
+        r.conclusion &&
+        r.conclusion !== "success" &&
+        r.conclusion !== "neutral" &&
+        r.conclusion !== "skipped",
+    );
+    if (failedRun) {
+      return {
+        lane,
+        name: failedRun.name,
+        headSha,
+        state: "failure",
+        status: failedRun.status,
+        conclusion: failedRun.conclusion,
+        finishedAt: failedRun.completedAt ?? null,
+      };
+    }
+
+    let latestCompletedAt: string | null = null;
+    for (const r of laneRuns) {
+      if (r.completedAt) {
+        if (!latestCompletedAt || new Date(r.completedAt).getTime() > new Date(latestCompletedAt).getTime()) {
+          latestCompletedAt = r.completedAt;
+        }
+      }
+    }
+
+    return {
+      lane,
+      name: lane,
+      headSha,
+      state: "success",
+      status: "completed",
+      conclusion: "success",
+      finishedAt: latestCompletedAt,
+    };
+  }
+
+  return [summarizeLane("test", testRuns), summarizeLane("lint", lintRuns)];
+}
