@@ -59,6 +59,7 @@ function brokerCandidateUrls(env) {
     urls.push(trimmed);
   };
   push(env.PAPERCLIP_GITHUB_BROKER_URL);
+  push(env.MYRMIDON_API_URL);
   push(env.PAPERCLIP_API_URL);
   push(env.PAPERCLIP_RUNTIME_API_URL);
   let extra = [];

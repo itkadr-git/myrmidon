@@ -10,7 +10,8 @@
 // Plain Node (no dependencies): the schema of `wsDesiredStateSchema` is
 // mirrored by hand and checked against the contract fixtures in the test.
 
-import { boardEnv, boardKeyValues } from "./board-env.js";
+import { boardEnv, boardKeyValues, redact as redactWithEnv } from "./board-env.js";
+export { redact } from "./board-env.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 // botd never runs this timer alongside the main loop (the entry wires .poll()
@@ -114,11 +115,7 @@ export function createDesiredClient(opts = {}) {
   let onSignal = null;
 
   // The key must never reach a log or a reason string.
-  const redact = (text) => {
-    let out = String(text);
-    for (const key of boardKeyValues(env)) out = out.split(key).join("[redacted]");
-    return out;
-  };
+  const redact = (text) => redactWithEnv(text, env);
   const fail = (reason) => {
     const safe = redact(reason);
     log(`botd desired: ${safe}`);
