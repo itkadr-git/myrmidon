@@ -507,7 +507,7 @@ describe("startLitellmModelReconciliation resolves provider credentials", () => 
       listCompanyIds: async () => ["company-a"],
       readAdminKey: async () => "admin-value",
       resolveCredential: async () => null,
-      refreshAgentAllowlists: vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] })),
+      reportAgentAllowlists: vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] })),
       log: { info: () => {}, warn: () => {} },
       ...overrides,
     };
