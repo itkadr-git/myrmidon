@@ -128,6 +128,7 @@ import {
 } from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
+import { assertTaskCardReady } from "../myrmidon/task-card-readiness/guard.js";
 import { buildRequiresEngineerMessage } from "../myrmidon/guard-return/domain.js";
 import {
   addIssueCommentSchema,
@@ -12781,10 +12782,11 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      const initialStatus = typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo";
       await assertEngineerForCodeIssue({
         companyId,
         issue: null,
-        status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
+        status: initialStatus,
         assigneeAgentId: normalizedAssigneeAgentId,
         projectId: effectiveProjectId,
         labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
@@ -12795,6 +12797,40 @@ export function issueRoutes(
             ? rawCreateBody.executionWorkspacePreference
             : null,
       });
+      // TASK-CARD-READINESS-3: when creating a task born in todo for an
+      // engineer, assert readiness at the route boundary before insertion.
+      // Only explicit engineer signals on the create body itself gate the
+      // create (casteKey: "engineer" pinned by the caller or a
+      // needs-engineer label): the project default and the workspace
+      // preference are inferrable signals, and gating on them would reject
+      // ordinary non-engineer creates whose project happens to default to
+      // the engineer caste. The richer requiresEngineer set stays on
+      // assertEngineerForCodeIssue and the swarm queue; this gate only needs
+      // the card-completeness subset.
+      if (initialStatus === "todo") {
+        let createLabelNames: string[] = [];
+        if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
+          createLabelNames = await db
+            .select({ name: labels.name })
+            .from(labels)
+            .where(and(eq(labels.companyId, companyId), inArray(labels.id, rawCreateBody.labelIds as string[])))
+            .then((rows) => rows.map((r) => r.name));
+        }
+        const createCasteKey =
+          typeof rawCreateBody.casteKey === "string" && rawCreateBody.casteKey.trim().length > 0
+            ? rawCreateBody.casteKey
+            : null;
+        const createGateInputs: Parameters<typeof requiresEngineer>[0] = {
+          casteKey: createCasteKey,
+          labels: createLabelNames,
+        };
+        if (requiresEngineer(createGateInputs)) {
+          assertTaskCardReady({
+            title: typeof rawCreateBody.title === "string" ? rawCreateBody.title : null,
+            description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
+          });
+        }
+      }
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
         parentIssueId:
@@ -15411,6 +15447,23 @@ export function issueRoutes(
         commentBody,
         actorAgentId: actor.agentId ?? null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        // myrmidon(TASK-CARD-READINESS-3): the flag is only set (true) for an
+        // explicit client request that hands the task to an engineer (PATCH
+        // status: "todo"). It reads req.body.status, not the route-rebuilt
+        // updateFields: internal policy/monitor rebuilds write status into
+        // updateFields (review admission, monitor rescheduling) and those are
+        // not client handoffs. When not applicable the key is undefined — the
+        // service treats undefined like false, and the flag never surfaces as
+        // a `taskCardGate: false` column-like field in update receipts or
+        // response bodies (a change-receipt diff would otherwise report a
+        // field no client can set). Internal auto-transitions (auto-unblock
+        // by resolved blocker, review returns, recovery updates) never carry
+        // status in the request body this way and call the same service
+        // without the flag.
+        taskCardGate:
+          req.body.status === "todo" && existing.status !== "todo"
+            ? true
+            : undefined,
       };
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
