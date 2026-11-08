@@ -32,6 +32,13 @@
 //    forbidden" — the operator opts in by enabling models.
 //  - One agent's failure never stops the company pass: results count every
 //    attempted key and name every skip; nothing here throws per agent.
+//  - The pass can run as a DRY RUN (`apply: false`): it reads every key and
+//    reports what would be added and removed, and sends nothing. The startup
+//    check and the provider-change hooks run this way; only an explicit admin
+//    action applies the pass to the agents' keys (the board's
+//    `POST .../litellm/keys/allowlist-sync?apply=true`). Applying adds every
+//    enabled registry model to every restricted key, which can widen a curated
+//    list, so it is never a side effect.
 
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -124,26 +131,71 @@ function keyAddress(ref: AgentKeyRef): { alias: string; keyHash?: string } {
   return ref.keyHash ? { alias: ref.alias, keyHash: ref.keyHash } : { alias: ref.alias };
 }
 
+/** What a pass would change on one agent key. */
+export interface AllowlistKeyChange {
+  agentId: string;
+  /** Model names the key does not hold and the pass would add. */
+  add: string[];
+  /** Model names the key holds and the pass would remove. */
+  remove: string[];
+}
+
+/** The report of a dry run: nothing was sent to the gateway. */
+export interface AllowlistDryRunReport {
+  /** Keys whose list would change. */
+  wouldChange: number;
+  /** Keys whose list already is what the pass would set. */
+  unchanged: number;
+  /** Model name -> number of keys it would be added to. */
+  added: Record<string, number>;
+  /** Model name -> number of keys it would be removed from. */
+  removed: Record<string, number>;
+  /** The per-key changes (agent ids only, never secret names or values). */
+  changes: AllowlistKeyChange[];
+}
+
 export interface AllowlistSyncResult {
-  /** Agents whose key the pass tried to update. */
+  /** Agents whose key the pass tried to update (a dry run: examined). */
   attempted: number;
-  /** Keys the gateway acknowledged. */
+  /** Keys the gateway acknowledged (a dry run: always 0). */
   updated: number;
   /** Machine-readable skip reasons (no secret names, no values). */
   skipped: string[];
+  /** Present only on a dry run (`apply: false`). */
+  dryRun?: AllowlistDryRunReport;
+}
+
+export interface AllowlistSyncOptions {
+  /**
+   * false: read the keys and report the differences, send nothing.
+   * Default true, the behavior every earlier caller relies on.
+   */
+  apply?: boolean;
+  /**
+   * false: leave the provider registry out, so the pass handles only the names
+   * the caller passes (the plugin lifecycle does this). Default true.
+   */
+  includeRegistryModels?: boolean;
 }
 
 /** The company's model names and enabled state as registered in the gateway. */
 async function listCompanyModels(db: Db, companyId: string): Promise<{ name: string; enabled: boolean }[]> {
+  // Explicit, flat columns: a bare `select()` over a join returns the rows
+  // keyed by the SQL table names (`model_provider_models`), not by the
+  // drizzle export names, and the pass then saw no enabled model at all.
   const rows = await db
-    .select()
+    .select({
+      modelName: modelProviderModels.modelName,
+      litellmModelName: modelProviderModels.litellmModelName,
+      enabled: modelProviderModels.enabled,
+    })
     .from(modelProviderModels)
     .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
     .where(eq(modelProviders.companyId, companyId));
   return rows.map((row: any) => {
-    // Drizzle returns joined tables under their table keys; keeping the flat
-    // fallback makes this port easy to exercise with lightweight adapters.
-    const model = row.modelProviderModels ?? row;
+    // The flat columns are the normal shape. A nested row (an adapter that
+    // returns the joined tables under their names) is read as well.
+    const model = row.model_provider_models ?? row.modelProviderModels ?? row;
     return {
       name: model.litellmModelName ?? model.modelName,
       enabled: model.enabled === true,
@@ -164,8 +216,22 @@ export async function updateAgentAllowlistsForCompany(
   additionalModelNames: readonly string[] = [],
   removedModelNames: readonly string[] = [],
   allowEmpty = false,
+  options: AllowlistSyncOptions = {},
 ): Promise<AllowlistSyncResult> {
-  const skip = (reason: string): AllowlistSyncResult => ({ attempted: 0, updated: 0, skipped: [reason] });
+  const dryRun = options.apply === false;
+  const emptyReport = (): AllowlistDryRunReport => ({
+    wouldChange: 0,
+    unchanged: 0,
+    added: {},
+    removed: {},
+    changes: [],
+  });
+  const skip = (reason: string): AllowlistSyncResult => ({
+    attempted: 0,
+    updated: 0,
+    skipped: [reason],
+    ...(dryRun ? { dryRun: emptyReport() } : {}),
+  });
 
   const env = agentGatewayKeys.env ?? process.env;
   const settings = readGatewayKeySettings(env);
@@ -173,7 +239,8 @@ export async function updateAgentAllowlistsForCompany(
     return skip("gateway-key-management-not-configured");
   }
 
-  const companyModels = await listCompanyModels(db, companyId);
+  const companyModels: { name: string; enabled: boolean }[] =
+    options.includeRegistryModels === false ? [] : await listCompanyModels(db, companyId);
   const enabledNames = companyModels.filter((model) => model.enabled).map((model) => model.name);
   const models = [...new Set([
     ...enabledNames,
@@ -202,7 +269,8 @@ export async function updateAgentAllowlistsForCompany(
     return skip("admin-key-secret-unresolved");
   }
   const gateway = agentGatewayKeys.gateway({ baseUrl: settings.baseUrl, adminKey });
-  if (!gateway.setKeyAllowedModels) {
+  // A dry run only reads the keys, so it does not need the write method.
+  if (!gateway.setKeyAllowedModels && !dryRun) {
     return skip("gateway-port-without-allowlist-support");
   }
   const companyAgents = await db
@@ -213,6 +281,7 @@ export async function updateAgentAllowlistsForCompany(
   let attempted = 0;
   let updated = 0;
   const skipped: string[] = [];
+  const report = emptyReport();
   for (const agent of companyAgents) {
     let found: Awaited<ReturnType<typeof resolveAgentKeyRef>>;
     try {
@@ -261,7 +330,22 @@ export async function updateAgentAllowlistsForCompany(
         : survivors.length > 0
           ? survivors
           : [DISABLED_MODEL_SENTINEL];
-      const applied = await gateway.setKeyAllowedModels({ ...keyAddress(ref), models: next });
+      if (dryRun) {
+        const nextSet = new Set(next);
+        const currentSet = new Set(current);
+        const add = [...nextSet].filter((name) => !currentSet.has(name));
+        const remove = [...currentSet].filter((name) => !nextSet.has(name));
+        if (add.length === 0 && remove.length === 0) {
+          report.unchanged += 1;
+        } else {
+          report.wouldChange += 1;
+          report.changes.push({ agentId: agent.id, add, remove });
+          for (const name of add) report.added[name] = (report.added[name] ?? 0) + 1;
+          for (const name of remove) report.removed[name] = (report.removed[name] ?? 0) + 1;
+        }
+        continue;
+      }
+      const applied = await gateway.setKeyAllowedModels!({ ...keyAddress(ref), models: next });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
     } catch {
@@ -270,7 +354,7 @@ export async function updateAgentAllowlistsForCompany(
       skipped.push(`key-update-failed:${agent.id}`);
     }
   }
-  return { attempted, updated, skipped };
+  return { attempted, updated, skipped, ...(dryRun ? { dryRun: report } : {}) };
 }
 
 /**

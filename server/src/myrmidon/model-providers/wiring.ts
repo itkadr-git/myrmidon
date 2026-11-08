@@ -35,6 +35,8 @@ import { createLitellmSyncService, type LitellmSyncService } from "../litellm-sy
 import { createLitellmSyncClient } from "../litellm-sync/client.js";
 import { defaultAgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 import { updateAgentAllowlistsForCompany } from "../litellm-sync/agent-allowlist-handler.js";
+import { summarizeAllowlistResult } from "../litellm-sync/allowlist-report.js";
+import { logger } from "../../middleware/logger.js";
 import { createLiteLlmAuditService } from "../litellm-audit/service.js";
 import { redactCredentials } from "../litellm-audit/redaction.js";
 
@@ -134,8 +136,25 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
   const deps: ModelProviderRoutesWithSyncDeps = {
     service: modelProviderService,
     getLitellmSync: syncForCompany,
-    refreshAgentAllowlists: (companyId) =>
-      updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId),
+    // A provider change only CHECKS the agent key lists (dry run) and logs the
+    // difference. Rewriting the lists of every restricted key is an explicit
+    // admin action (POST .../litellm/keys/allowlist-sync?apply=true).
+    refreshAgentAllowlists: async (companyId) => {
+      const result = await updateAgentAllowlistsForCompany(
+        db,
+        defaultAgentGatewayKeyDeps(db, env),
+        companyId,
+        [],
+        [],
+        false,
+        { apply: false },
+      );
+      logger.info(
+        { companyId, ...summarizeAllowlistResult(result) },
+        "litellm agent key allowlists checked after a provider change (dry run, nothing applied)",
+      );
+      return result;
+    },
     recordActivity: (entry) => recordModelProviderActivity(db, entry),
     listChangeLog: (companyId) => auditService.list(companyId, { limit: 50 }),
   };
@@ -220,7 +239,15 @@ export function createPluginProviderModelSync(
       }
       // Lifecycle models are separate from provider-table models; keep every
       // ready plugin's names and let the handler merge them with provider rows.
-      await updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId, companyPluginModelNames);
+      await updateAgentAllowlistsForCompany(
+        db,
+        defaultAgentGatewayKeyDeps(db, env),
+        companyId,
+        companyPluginModelNames,
+        [],
+        false,
+        { includeRegistryModels: false },
+      );
     },
     async remove(companyId, plugin) {
       const provider = declaration(plugin);
@@ -255,6 +282,7 @@ export function createPluginProviderModelSync(
         [...stillOwnedNames],
         removableModelNames,
         true,
+        { includeRegistryModels: false },
       );
     },
   };

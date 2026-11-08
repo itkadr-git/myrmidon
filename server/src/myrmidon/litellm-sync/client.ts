@@ -17,6 +17,7 @@
 //    stored key, an empty string would erase it, so it is only sent when the
 //    board holds a value.
 
+import { isPoolModelProviderType } from "@myrmidon/shared";
 import { unprocessable } from "../../errors.js";
 import { LitellmSyncPort, type LitellmChannelView } from "./port.js";
 /**
@@ -112,7 +113,16 @@ export interface LitellmSyncClientDeps {
 export function litellmProviderPrefix(providerType: string): string {
   // These board connectors expose OpenAI-compatible APIs. LiteLLM routes them
   // through its `openai` provider; `openai-compatible` is not a LiteLLM prefix.
-  if (providerType === "openai-compatible" || providerType === "dashscope" || providerType === "google") {
+  // The subscription pools (`chatgpt-pool`, `antigravity-pool`, `google-ai-pool`)
+  // are OpenAI-compatible routers too, and LiteLLM has no provider of those
+  // names. The board does not register pool deployments at all (the service
+  // skips them); the prefix stays right for any caller that still asks.
+  if (
+    providerType === "openai-compatible" ||
+    providerType === "dashscope" ||
+    providerType === "google" ||
+    isPoolModelProviderType(providerType)
+  ) {
     return "openai";
   }
   return providerType;

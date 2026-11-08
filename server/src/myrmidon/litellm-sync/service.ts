@@ -13,9 +13,18 @@
 // two can differ (`kimi/kimi-for-coding` -> `kimi-for-coding`). A registration
 // never duplicates a deployment the gateway already holds under the same group
 // name and api_base.
+//
+// Subscription pools (chatgpt-pool, antigravity-pool, google-ai-pool) are the
+// exception: a pool lives on its own gateway deployments (the pool's router
+// or proxy), so nothing in this module writes to the gateway for a pool
+// provider - no register, update or delete on enable, disable, rotation,
+// provider removal or the startup reconciliation. The board manages which pool
+// models are visible, the fallback order and the agent key lists, never the
+// pool's deployments.
 
 import { and, eq } from "drizzle-orm";
 import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
+import { isPoolModelProviderType } from "@myrmidon/shared";
 import { LitellmSyncPort } from "./port.js";
 
 export interface LitellmSyncServiceDeps {
@@ -100,6 +109,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       }
 
       const provider = providerRecords[0];
+      if (isPoolModelProviderType(provider.type)) return;
       const providerCompanyId = companyId ?? provider.companyId;
 
       if (!provider.credentialSecretName) {
@@ -132,6 +142,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
         .where(eq(modelProviders.id, providerId))
         .limit(1);
       const provider = providerRecords[0];
+      if (provider && isPoolModelProviderType(provider.type)) return;
       if (provider) {
         await deps.litellm.unregisterModel(model.litellmModelName, { baseUrl: provider.baseUrl });
       } else {
@@ -180,6 +191,10 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       throw new Error(`Provider ${providerId} not found in company ${companyId}`);
     }
 
+    // A pool keeps its own deployments: enabling or disabling a pool model
+    // changes what the board shows, not what the gateway holds.
+    if (isPoolModelProviderType(providerRecords[0].type)) return;
+
     await syncModel(providerId, modelName, enabled, companyId);
   }
 
@@ -218,24 +233,31 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       .where(and(eq(modelProviderModels.enabled, true), eq(modelProviders.companyId, companyId)));
 
     // Credential names this company's providers own — the board's footprint
-    // in the gateway registry.
+    // in the gateway registry. A pool's credential is not part of it: the
+    // pool's deployments are not the board's to register or reclaim.
     const ownedSecretNames = await deps.db
-      .select({ credentialSecretName: modelProviders.credentialSecretName })
+      .select({ credentialSecretName: modelProviders.credentialSecretName, type: modelProviders.type })
       .from(modelProviders)
       .where(eq(modelProviders.companyId, companyId));
     const owned = new Set(
-      ownedSecretNames.map((row) => row.credentialSecretName).filter((n): n is string => Boolean(n)),
+      ownedSecretNames
+        .filter((row) => !isPoolModelProviderType(row.type))
+        .map((row) => row.credentialSecretName)
+        .filter((n): n is string => Boolean(n)),
     );
 
     // Get current registrations from LiteLLM
     const currentRegistrations = await deps.litellm.listRegisteredModels();
 
+    // Pool models are skipped on both sides of the diff (see the header).
+    const gatewayOwnedModels = enabledModels.filter((m) => !isPoolModelProviderType(m.provider.type));
+
     // Create sets for quick lookup
-    const dbEnabledModelNames = new Set(enabledModels.map(m => m.litellmModelName));
+    const dbEnabledModelNames = new Set(gatewayOwnedModels.map(m => m.litellmModelName));
     const litellmRegisteredModelNames = new Set(currentRegistrations.map(r => r.litellmModelName));
 
     // Register models that are enabled in DB but not in LiteLLM
-    for (const model of enabledModels) {
+    for (const model of gatewayOwnedModels) {
       if (!litellmRegisteredModelNames.has(model.litellmModelName)) {
         if (model.provider.credentialSecretName) {
           const credentialValue = deps.resolveCredential
@@ -304,6 +326,10 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     }
 
     const provider = providerRecords[0];
+
+    // A pool's gateway deployments carry the pool router's own credential, not
+    // the board key: rotating the board key changes nothing in the gateway.
+    if (isPoolModelProviderType(provider.type)) return;
 
     if (!provider.credentialSecretName) {
       throw new Error(`Provider ${providerId} has no credential secret name`);
@@ -377,6 +403,26 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
   }
 
   /**
+   * Removes the gateway deployments of ONE removed provider: those in the given
+   * model groups that carry the provider's own `api_base` (the port deletes by
+   * deployment id and never targets a deployment of the static gateway
+   * config). Other deployments of the same group - another provider's, a
+   * pool router's - stay; `unregisterModels` would take all of them with it.
+   *
+   * A pool provider is a no-op.
+   */
+  async function unregisterProviderModels(
+    provider: { type: string; baseUrl: string | null },
+    litellmModelNames: string[],
+  ): Promise<void> {
+    if (isPoolModelProviderType(provider.type)) return;
+    for (const name of litellmModelNames) {
+      await deps.litellm.unregisterModel(name, { baseUrl: provider.baseUrl });
+      await trigger?.onModelUnregistered?.(name);
+    }
+  }
+
+  /**
    * Fetches model groups and routed channels from LiteLLM.
    */
   async function listChannels() {
@@ -420,6 +466,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     reconcileWithLitellm,
     handleProviderCredentialRotation,
     unregisterModels,
+    unregisterProviderModels,
     listChannels,
   };
 }

@@ -14,7 +14,13 @@
 //    NAME, then the allowlists re-applied.
 //  - DELETE …/:id: the provider's enabled models are unregistered from the
 //    gateway after the row is removed (otherwise they would stay callable
-//    under a credential the company no longer owns).
+//    under a credential the company no longer owns). Only the deployments that
+//    carry the provider's own api_base go: the gateway groups are shared with
+//    other providers and with the pools' routers.
+//
+// Subscription pools (chatgpt-pool, antigravity-pool, google-ai-pool) are not
+// gateway-owned: none of the three mutations writes a pool's deployments (the
+// sync service skips them), and DELETE does not touch the gateway for a pool.
 //
 // Reads and mutations require company admin access (owner or admin, or instance admin).
 // Plain members, operators, viewers and agents are denied (403).
@@ -32,6 +38,7 @@
 import { Router, type Request } from "express";
 import {
   createModelProviderSchema,
+  isPoolModelProviderType,
   listAvailableModelProviderTypes,
   patchModelProviderSchema,
   poolAccountOAuthBeginSchema,
@@ -232,8 +239,9 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
     assertCompanyAdmin(req, companyId);
-    // Read the model set before the row goes: after deletion the board can no
-    // longer name what the gateway still holds under this provider.
+    // Read the provider and its model set before the row goes: after deletion
+    // the board can no longer name what the gateway still holds under it.
+    const provider = await deps.service.readProvider(companyId, providerId);
     const models: ModelProviderModelView[] = await deps.service.listModels(companyId, providerId);
     await deps.service.removeProvider({
       companyId,
@@ -241,9 +249,14 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
       activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     const enabledNames = models.filter((m) => m.enabled).map((m) => m.litellmModelName);
-    if (enabledNames.length > 0) {
+    // A pool keeps its own gateway deployments: removing the board record
+    // changes what the board shows, never what the gateway holds.
+    if (enabledNames.length > 0 && !isPoolModelProviderType(provider.type)) {
       await propagate(companyId, async (sync) => {
-        await sync.unregisterModels(enabledNames);
+        await sync.unregisterProviderModels(
+          { type: provider.type, baseUrl: provider.baseUrl },
+          enabledNames,
+        );
         if (deps.refreshAgentAllowlists) await deps.refreshAgentAllowlists(companyId);
       });
     }
