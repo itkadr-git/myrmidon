@@ -70,6 +70,12 @@ const (
 
 	// Config update routes.
 	LimitExceedsCeiling = "limit_exceeds_ceiling"
+	// The configured limits-override file (or, when none is configured, the
+	// main config file) cannot be written or re-read, so the ceilings update
+	// is refused before any limit is applied. A 403 with this code, never an
+	// upstream_error: the caller must not retry a write the filesystem will
+	// refuse again (OPE-12383).
+	ConfigReadOnly = "config_read_only"
 )
 
 // Error is a denial: an HTTP status, a reason code and, when the reason is a
@@ -95,6 +101,12 @@ func StatusFor(code string) int {
 	switch code {
 	case TargetForm, JSONSyntax, TarSyntax, ContentType, BodyNotAllowed, BadQuota, LimitExceedsCeiling:
 		return http.StatusBadRequest
+	// OPE-12383: the update was fine, the filesystem refuses the write (the
+	// config file or the state directory is read-only for the gate): a client
+	// configuration/deployment fault that must not be retried blindly, and
+	// must not read as a Docker-side upstream fault (502).
+	case ConfigReadOnly:
+		return http.StatusForbidden
 	case QuotaUnavailable:
 		return http.StatusServiceUnavailable
 	case BodyTooLarge, TarTooLarge:
