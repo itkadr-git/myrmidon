@@ -568,7 +568,10 @@ export async function runDebate(input: DebateEngineInput): Promise<DebateOutcome
   }
 
   async function emitProtocolEntry(turn: DebateTurn): Promise<void> {
-    if (!input.onRoundComplete) return;
+    // Only the two debate roles enter the round protocol (OPE-12096): the
+    // judge sits outside the dispute, and its verdict is carried by the result
+    // document — the protocol is the record of the exchange itself.
+    if (!input.onRoundComplete || turn.role === "judge") return;
     try {
       await input.onRoundComplete({
         role: turn.role,
@@ -917,13 +920,20 @@ export function parseDebateProtocolDocument(body: string): DebateProtocolDoc | n
 /**
  * Merge one replica into the protocol's rounds map (OPE-12096): the entry
  * index is `r${round}#${position}` — round, then the replica's position
- * within the round. Appends are idempotent: rewriting the same entry twice
- * leaves the same document.
+ * within the round. A replica's identity is its place in the debate
+ * (round, role, independent flag): rewriting an already recorded replica
+ * replaces its entry under the same key, so appends are idempotent; a new
+ * replica is appended after the ones its round already recorded.
  */
 export function appendDebateProtocolEntry(
   rounds: Record<string, DebateProtocolEntry>,
   entry: DebateProtocolEntry,
 ): Record<string, DebateProtocolEntry> {
+  const existing = Object.entries(rounds).find(
+    ([, recorded]) =>
+      recorded.round === entry.round && recorded.role === entry.role && recorded.independent === entry.independent,
+  );
+  if (existing) return { ...rounds, [existing[0]]: entry };
   const position = Object.keys(rounds).filter((key) => key.startsWith(`r${entry.round}#`)).length;
   const key = `r${entry.round}#${position}`;
   return { ...rounds, [key]: entry };
