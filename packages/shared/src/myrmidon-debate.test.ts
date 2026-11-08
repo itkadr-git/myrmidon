@@ -333,7 +333,7 @@ describe("myrmidon(1.7-DEBATE-PERSIST): the round protocol document", () => {
     expect(outcome.completed).toBe(true);
     expect(outcome.stopReason).toBe("agreement");
     // Sink appends keep the engine free of clock knowledge: no recordedAt was set by the engine.
-    expect(Object.keys(outcome).not.toContain("recordedAt")).toBe(true);
+    expect(Object.keys(outcome)).not.toContain("recordedAt");
     expect(DEBATE_PROTOCOL_DOCUMENT_KEY).toBe("debate-protocol");
   });
 
