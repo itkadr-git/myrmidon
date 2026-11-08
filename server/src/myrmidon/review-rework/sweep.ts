@@ -48,6 +48,7 @@ import {
   MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
   type ReviewReworkSettings,
 } from "@myrmidon/shared";
+import { TERMINAL_PULL_REQUEST_PRODUCT_STATUSES } from "../../services/github-pull-request-ci.js";
 import { logger } from "../../middleware/logger.js";
 import {
   REVIEW_REWORK_HEAD_ACK_MARKER,
@@ -358,10 +359,17 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     // GitHub reads were spent on a `no_linked_pr` no-op. Both flags ride on the
     // candidate row from the store query; `undefined` (hand-built test rows)
     // assumes present, so the guard never skips what the old path would have
-    // processed.
+    // processed. Terminal PR products (merged/closed/…) are not live either:
+    // the loop already settled those tasks, and re-reading them every pass
+    // burned reads on `pr_terminal` no-ops.
+    const hasLivePrProduct = row.products.some(
+      (product) =>
+        product.status !== "archived" &&
+        !TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(product.status.toLowerCase()),
+    );
     if (
       (row.childPresent === false && row.verdictPresent === false)
-      && !row.products.some((product) => product.status !== "archived")
+      && !hasLivePrProduct
     ) {
       return false;
     }
@@ -642,8 +650,9 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       const settings = await deps.readSettings();
       if (deps.intervalMs === undefined) {
         // myrmidon(OPE-12397): the stored interval is read on every pass, so a
-        // change applies without a restart — the deployment env is only the
-        // fallback before the row stores a value.
+        // change applies without a restart; a set MYRMIDON_REVIEW_REWORK_
+        // SWEEP_INTERVAL_SEC overrides the stored value (the LiteLlm budget
+        // sync rule) and the panel shows the override read-only.
         effectiveIntervalMs = readIntervalSec(deps.env, settings.sweepIntervalSec) * 1000;
       }
       if (!options?.force && now.getTime() - lastSweepAtMs < effectiveIntervalMs) {

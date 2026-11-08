@@ -19,12 +19,18 @@
 
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
-import { patchReviewReworkSettingsSchema, type ReviewReworkSettingsPatch } from "@myrmidon/shared";
+import {
+  MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  patchReviewReworkSettingsSchema,
+  type ReviewReworkSettingsPatch,
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logActivity } from "../../services/activity-log.js";
 import { reviewReworkSettingsService, type ReviewReworkSettingsService } from "./settings.js";
+import { REVIEW_REWORK_SWEEP_INTERVAL_SEC_ENV } from "./sweep.js";
 
 export function reviewReworkRoutes(db: Db, service?: ReviewReworkSettingsService) {
   const router = Router();
@@ -52,7 +58,22 @@ export function reviewReworkRoutes(db: Db, service?: ReviewReworkSettingsService
   router.get("/myrmidon/review-rework", async (req, res) => {
     assertBoardOrgAccess(req);
     const [settings, journal] = await Promise.all([settingsService.read(), settingsService.journal()]);
-    res.json({ settings, journal });
+    // myrmidon(OPE-12397): the panel shows where the sweep interval is in
+    // force from; a set MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC forces the
+    // value and the input stays read-only (the LiteLlm budget panel's rule).
+    const sweepIntervalEnvRaw = process.env[REVIEW_REWORK_SWEEP_INTERVAL_SEC_ENV]?.trim();
+    const sweepIntervalEnvValue = sweepIntervalEnvRaw ? Number(sweepIntervalEnvRaw) : NaN;
+    const envForced =
+      sweepIntervalEnvRaw !== undefined &&
+      Number.isInteger(sweepIntervalEnvValue) &&
+      sweepIntervalEnvValue >= MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC &&
+      sweepIntervalEnvValue <= MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC;
+    res.json({
+      settings,
+      journal,
+      sweepIntervalSource: envForced ? "env" : "settings",
+      sweepIntervalEnvName: envForced ? REVIEW_REWORK_SWEEP_INTERVAL_SEC_ENV : "",
+    });
   });
 
   router.patch(

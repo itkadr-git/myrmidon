@@ -137,11 +137,17 @@ function build(input: {
   snapshot: ReviewReworkPrSnapshot | null;
   settings?: Partial<ReviewReworkSettings>;
   maintenance?: boolean;
+  intervalMs?: number;
+  env?: NodeJS.ProcessEnv;
+  isLeader?: () => boolean;
 }) {
   const wakes: WakeCall[] = [];
   const activities: Array<{ action: string; details: Record<string, unknown> }> = [];
-  const resolvePr: ReviewReworkPrResolver = async () =>
-    input.snapshot ?? { state: "unknown", headSha: null, reviewDecision: null, updatedAt: null };
+  let resolveCalls = 0;
+  const resolvePr: ReviewReworkPrResolver = async () => {
+    resolveCalls += 1;
+    return input.snapshot ?? { state: "unknown", headSha: null, reviewDecision: null, updatedAt: null };
+  };
   const deps: ReviewReworkSweepDeps = {
     store: input.store,
     resolvePr,
@@ -157,9 +163,11 @@ function build(input: {
       activities.push({ action: entry.action, details: entry.details });
     },
     isUnderMaintenance: async () => input.maintenance ?? false,
-    intervalMs: 60_000,
+    ...(input.intervalMs === undefined ? {} : { intervalMs: input.intervalMs }),
+    ...(input.env === undefined ? {} : { env: input.env }),
+    ...(input.isLeader === undefined ? {} : { isLeader: input.isLeader }),
   };
-  return { sweep: createReviewReworkSweep(deps), wakes, activities };
+  return { sweep: createReviewReworkSweep(deps), wakes, activities, getResolveCalls: () => resolveCalls };
 }
 
 describe("review rework sweep", () => {
@@ -472,6 +480,7 @@ describe("review rework sweep", () => {
     const { sweep } = build({
       store,
       snapshot: { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+      intervalMs: 60_000,
     });
     await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
     store.created = [];
@@ -531,6 +540,196 @@ describe("review rework sweep", () => {
     expect(result.failed).toBe(0);
     expect(result.reworkCreated).toBe(1);
     expect(store.created[0]!.originFingerprint).toBe(`acme/repo#484@${HEAD_OLD}`);
+  });
+
+  // myrmidon(OPE-12397): the sweep's GitHub budget. Every candidate pass used
+  // to re-read every linked PR — the acceptance is one read per PR per pass,
+  // no reads for rows that cannot move, and the pass itself paced by the
+  // stored setting (the env override wins only as the deployment fallback).
+  describe("one GitHub read per pull request per pass (OPE-12397)", () => {
+    const PASS_AT = new Date("2026-10-04T17:00:00Z");
+    const snapshot = { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null };
+
+    it("reads one PR once even when the task names it twice", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      // The URL in the text, the full-repo reference and the work product all
+      // point at the same pull request; the old path resolved it per match.
+      row.textParts = [`Review https://github.com/acme/repo/pull/484 (acme/repo#484)`, ""];
+      store.rows = [row];
+      store.comments = verdictComment();
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      expect(getResolveCalls()).toBe(1);
+      expect(result.reworkCreated).toBe(1);
+    });
+
+    it("reads a shared PR once when two review tasks link it", async () => {
+      const store = new FakeStore();
+      const first = candidateRow(reviewTask());
+      const second = candidateRow(reviewTask({ id: "review-2", identifier: "OPE-4418" }));
+      store.rows = [first, second];
+      store.comments = verdictComment();
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      // One read for acme/repo#484; the second task rides on the same pass.
+      expect(getResolveCalls()).toBe(1);
+      expect(result.reworkCreated + result.blocked).toBeGreaterThanOrEqual(1);
+    });
+
+    it("skips a candidate with no rework child, no verdict and no live product", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      row.childPresent = false;
+      row.verdictPresent = false;
+      row.products = []; // nothing live either
+      store.rows = [row];
+      store.comments = [];
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      // The read would have been a `no_linked_pr` no-op; the guard drops the
+      // row before the comments and GitHub reads.
+      expect(getResolveCalls()).toBe(0);
+      expect(result.scanned).toBe(1);
+      expect(store.created).toHaveLength(0);
+    });
+
+    it("skips a candidate whose only product is terminal", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      row.childPresent = false;
+      row.verdictPresent = false;
+      row.products = [{ repo: "acme/repo", number: 484, url: PR_URL, status: "merged" }];
+      store.rows = [row];
+      store.comments = [];
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      expect(getResolveCalls()).toBe(0);
+      expect(store.created).toHaveLength(0);
+    });
+
+    it("keeps a row whose flags are unknown (hand-built) — the guard never skips the old path", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      row.childPresent = undefined;
+      row.verdictPresent = undefined;
+      row.products = [];
+      store.rows = [row];
+      store.comments = verdictComment();
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      expect(getResolveCalls()).toBe(1);
+      expect(result.reworkCreated).toBe(1);
+    });
+  });
+
+  describe("the sweep interval is a setting with an env override (OPE-12397)", () => {
+    const snapshot = { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null };
+
+    function seeded(store: FakeStore) {
+      store.rows = [candidateRow(reviewTask())];
+      store.comments = verdictComment();
+    }
+
+    it("paces by the stored setting (300 s default) without intervalMs", async () => {
+      const store = new FakeStore();
+      seeded(store);
+      const { sweep } = build({ store, snapshot, settings: { sweepIntervalSec: 300 } });
+      await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+      const second = await sweep.sweep(new Date("2026-10-04T17:04:59Z"));
+      expect(second.skippedPass).toBe(true);
+      const third = await sweep.sweep(new Date("2026-10-04T17:05:00Z"));
+      expect(third.skippedPass).toBe(false);
+    });
+
+    it("the env override beats the stored setting and the input range holds", async () => {
+      const store = new FakeStore();
+      seeded(store);
+      const { sweep } = build({
+        store,
+        snapshot,
+        settings: { sweepIntervalSec: 3600 },
+        env: { MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC: "120" },
+      });
+      await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+      // The stored 3600 s would hold the pass; the env 120 s does not.
+      const second = await sweep.sweep(new Date("2026-10-04T17:02:00Z"));
+      expect(second.skippedPass).toBe(false);
+    });
+
+    it("an out-of-range or malformed env value falls back to the stored setting", async () => {
+      const store = new FakeStore();
+      seeded(store);
+      const { sweep } = build({
+        store,
+        snapshot,
+        settings: { sweepIntervalSec: 300 },
+        env: { MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC: "banana" },
+      });
+      await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+      const second = await sweep.sweep(new Date("2026-10-04T17:04:00Z"));
+      expect(second.skippedPass).toBe(true); // still inside the stored 300 s
+      const third = await sweep.sweep(new Date("2026-10-04T17:05:00Z"));
+      expect(third.skippedPass).toBe(false);
+    });
+
+    it("an explicit intervalMs (tests, callers pinning the pace) wins over everything", async () => {
+      const store = new FakeStore();
+      seeded(store);
+      const { sweep } = build({
+        store,
+        snapshot,
+        settings: { sweepIntervalSec: 3600 },
+        intervalMs: 60_000,
+        env: { MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC: "3600" },
+      });
+      await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+      const second = await sweep.sweep(new Date("2026-10-04T17:01:00Z"));
+      expect(second.skippedPass).toBe(false);
+    });
+  });
+
+  it("only the leader sweeps; a secondary process keeps its timer but reads nothing", async () => {
+    const store = new FakeStore();
+    store.rows = [candidateRow(reviewTask())];
+    store.comments = verdictComment();
+    const { sweep, getResolveCalls } = build({
+      store,
+      snapshot: { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+      isLeader: () => false,
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+
+    expect(result.skippedPass).toBe(true);
+    expect(getResolveCalls()).toBe(0);
+    expect(store.created).toHaveLength(0);
+
+    // The leader changeover: the next tick runs the pass immediately.
+    const store2 = new FakeStore();
+    store2.rows = [candidateRow(reviewTask())];
+    store2.comments = verdictComment();
+    let leading = false;
+    const { sweep: sweep2, getResolveCalls: getCalls2 } = build({
+      store: store2,
+      snapshot: { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+      isLeader: () => leading,
+    });
+    await sweep2.sweep(new Date("2026-10-04T17:00:00Z"));
+    leading = true;
+    const second = await sweep2.sweep(new Date("2026-10-04T17:00:10Z"));
+    expect(second.skippedPass).toBe(false);
+    expect(getCalls2()).toBe(1);
   });
 });
 

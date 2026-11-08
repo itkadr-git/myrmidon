@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 //
 // myrmidon(REVIEW-REWORK): the "Review-return loop" section of Instance →
-// General. The switch and the fallback executor must round-trip through the
-// patch the panel builds, an empty fallback must mean "the role queue", and a
-// non-UUID draft must refuse to save.
+// General. The switch, the fallback executor and the sweep interval must
+// round-trip through the patch the panel builds, an empty fallback must mean
+// "the role queue", a non-UUID draft must refuse to save, and an interval
+// outside [60, 3600] must refuse to save (OPE-12397).
 
 import { flushSync } from "react-dom";
+import {
+  MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+} from "@myrmidon/shared";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReviewReworkSettingsPanelView, parseReviewReworkDraft } from "./ReviewReworkSettingsPanel";
@@ -29,12 +34,19 @@ afterEach(() => {
 });
 
 const AGENT_UUID = "887ed69b-5982-4572-a151-f8c809543f29";
+const DEFAULT_INTERVAL_SEC = 300;
 
 const view: ReviewReworkSettingsView = {
-  settings: { enabled: true, fallbackAssigneeAgentId: AGENT_UUID },
+  settings: {
+    enabled: true,
+    fallbackAssigneeAgentId: AGENT_UUID,
+    sweepIntervalSec: DEFAULT_INTERVAL_SEC,
+  },
   journal: [
     { at: "2026-10-05T07:00:00.000Z", actorType: "user", actorId: "user-1", patch: { enabled: true } },
   ],
+  sweepIntervalSource: "settings",
+  sweepIntervalEnvName: "",
 };
 
 function render(
@@ -51,24 +63,86 @@ function render(
   return onSave;
 }
 
+function typeInto(selector: string, value: string): void {
+  const input = container.querySelector(selector) as HTMLInputElement;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  flushSync(() => setter.call(input, value));
+  flushSync(() => input.dispatchEvent(new Event("input", { bubbles: true })));
+}
+
 describe("parseReviewReworkDraft", () => {
   it("empty fallback means the role queue (null), not a validation error", () => {
-    const { patch, errors } = parseReviewReworkDraft({ enabled: true, fallback: "" });
+    const { patch, errors } = parseReviewReworkDraft({
+      enabled: true,
+      fallback: "",
+      sweepIntervalSec: String(DEFAULT_INTERVAL_SEC),
+    });
     expect(errors).toEqual({});
-    expect(patch).toEqual({ enabled: true, fallbackAssigneeAgentId: null });
+    expect(patch).toEqual({ enabled: true, fallbackAssigneeAgentId: null, sweepIntervalSec: 300 });
   });
 
   it("accepts a UUID and the word none", () => {
-    expect(parseReviewReworkDraft({ enabled: false, fallback: AGENT_UUID }).patch.fallbackAssigneeAgentId)
-      .toBe(AGENT_UUID);
-    expect(parseReviewReworkDraft({ enabled: true, fallback: "NONE" }).patch.fallbackAssigneeAgentId)
-      .toBeNull();
+    expect(
+      parseReviewReworkDraft({
+        enabled: false,
+        fallback: AGENT_UUID,
+        sweepIntervalSec: "120",
+      }).patch.fallbackAssigneeAgentId,
+    ).toBe(AGENT_UUID);
+    expect(
+      parseReviewReworkDraft({
+        enabled: true,
+        fallback: "NONE",
+        sweepIntervalSec: "120",
+      }).patch.fallbackAssigneeAgentId,
+    ).toBeNull();
   });
 
   it("refuses anything that is not a UUID", () => {
-    const { patch, errors } = parseReviewReworkDraft({ enabled: true, fallback: "adm-dev-lead" });
+    const { patch, errors } = parseReviewReworkDraft({
+      enabled: true,
+      fallback: "adm-dev-lead",
+      sweepIntervalSec: "120",
+    });
     expect(errors.fallback).toBeTruthy();
     expect(patch.fallbackAssigneeAgentId).toBeUndefined();
+  });
+
+  it("keeps a valid interval in the patch", () => {
+    const { patch, errors } = parseReviewReworkDraft({
+      enabled: true,
+      fallback: "",
+      sweepIntervalSec: "600",
+    });
+    expect(errors).toEqual({});
+    expect(patch.sweepIntervalSec).toBe(600);
+  });
+
+  it("refuses a non-integer or out-of-range interval", () => {
+    for (const bad of ["abc", "90.5", "0", "59", "3601", ""]) {
+      const { patch, errors } = parseReviewReworkDraft({
+        enabled: true,
+        fallback: "",
+        sweepIntervalSec: bad,
+      });
+      expect(errors.sweepIntervalSec).toBeTruthy();
+      expect(patch.sweepIntervalSec).toBeUndefined();
+    }
+  });
+
+  it(`interval bounds are [${MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC}, ${MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC}]`, () => {
+    const ok = parseReviewReworkDraft({
+      enabled: true,
+      fallback: "",
+      sweepIntervalSec: String(MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC),
+    });
+    expect(ok.errors).toEqual({});
+    const tooBig = parseReviewReworkDraft({
+      enabled: true,
+      fallback: "",
+      sweepIntervalSec: String(MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC + 1),
+    });
+    expect(tooBig.errors.sweepIntervalSec).toBeTruthy();
   });
 });
 
@@ -79,30 +153,49 @@ describe("ReviewReworkSettingsPanelView", () => {
     const toggle = container.querySelector("[data-testid='review-rework-enabled-toggle']") as HTMLElement;
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect((container.querySelector("#review-rework-fallback") as HTMLInputElement).value).toBe(AGENT_UUID);
+    expect((container.querySelector("[data-testid='review-rework-interval']") as HTMLInputElement).value).toBe("300");
     expect(container.textContent).toContain("2026-10-05T07:00:00.000Z");
   });
 
-  it("saves the merged draft patch", () => {
+  it("saves the merged draft patch, interval included", () => {
     const onSave = render(view) as ReturnType<typeof vi.fn>;
-    const input = container.querySelector("#review-rework-fallback") as HTMLInputElement;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-    flushSync(() => setter.call(input, ""));
-    flushSync(() => input.dispatchEvent(new Event("input", { bubbles: true })));
+    typeInto("#review-rework-fallback", "");
+    typeInto("[data-testid='review-rework-interval']", "600");
     const button = container.querySelector("[data-testid='review-rework-save']") as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     flushSync(() => button.click());
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave.mock.calls[0][0]).toEqual({ enabled: true, fallbackAssigneeAgentId: null });
+    expect(onSave.mock.calls[0][0]).toEqual({
+      enabled: true,
+      fallbackAssigneeAgentId: null,
+      sweepIntervalSec: 600,
+    });
   });
 
   it("disables save while the draft is malformed", () => {
     render(view);
-    const input = container.querySelector("#review-rework-fallback") as HTMLInputElement;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-    flushSync(() => setter.call(input, "not-a-uuid"));
-    flushSync(() => input.dispatchEvent(new Event("input", { bubbles: true })));
+    typeInto("#review-rework-fallback", "not-a-uuid");
     const button = container.querySelector("[data-testid='review-rework-save']") as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(container.textContent).toContain("Enter an agent UUID");
+  });
+
+  it("disables save on an out-of-range interval and shows the range error", () => {
+    render(view);
+    typeInto("[data-testid='review-rework-interval']", "59");
+    const button = container.querySelector("[data-testid='review-rework-save']") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(container.textContent).toContain("between 60 and 3600");
+  });
+
+  it("locks the interval input while an env override is in force", () => {
+    render({
+      ...view,
+      sweepIntervalSource: "env",
+      sweepIntervalEnvName: "MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC",
+    });
+    const input = container.querySelector("[data-testid='review-rework-interval']") as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    expect(container.textContent).toContain("MYRMIDON_REWORK_SWEEP_INTERVAL_SEC");
   });
 });

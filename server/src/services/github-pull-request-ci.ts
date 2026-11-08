@@ -461,7 +461,7 @@ export const PR_HEAD_CACHE_TTL_MS = 60 * 1000; // 60s for PR head
 export const CI_RESOLVE_FOR_ISSUE_MAX_REFS = 10;
 
 /** PR work products whose state can no longer change (their reads never return). */
-const TERMINAL_PULL_REQUEST_PRODUCT_STATUSES = new Set([
+export const TERMINAL_PULL_REQUEST_PRODUCT_STATUSES = new Set([
   "merged",
   "closed",
   "abandoned",
