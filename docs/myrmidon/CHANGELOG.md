@@ -12,6 +12,28 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- The change "the full-text ranking starts together with the embedding" is taken back. The full-text
+  ranking has a time bound of 800 ms. When it started first, the bound ran out while the question was
+  still being embedded, and whether the ranking finished in time or was cancelled depended on a race with
+  the embedding and with the load of the database. The top 5 of the same question then changed between
+  identical runs (21 of 70 questions of the golden set, against 5 before), and hit@5 of the cold run fell
+  to 57 of 70 (the limit is 58).
+- A search embeds the question first and then starts the vector and the full-text ranking side by side, as
+  it did in the full-text bound change. `CorpusSearchQuery.embedding` is a plain vector again.
+- Kept from the same change: the cache of the resolved embedder key
+  (`MYRMIDON_CORPUS_EMBED_KEY_CACHE_TTL_SEC`) and the sampled step timings on the info log
+  (`MYRMIDON_CORPUS_STEP_TIMINGS_SAMPLE`).
+
+### Saving the bot disk settings no longer erases keys the screen does not show (SETTINGS-BOTDISK-MERGE)
+
+- Found by QA on 1.6.7-rc.9: after a Save of Settings -> General -> "Bot disk lifecycle" the stored `general.botDisk.gitMigrationEnabled: true` was gone, so `MYRMIDON_GIT_MIGRATION_ENABLED` was no longer set when a bot container was recreated.
+- Cause: `PATCH /api/myrmidon/bot-disk` merges the patch over `resolveBotDiskSettings(...).settings` and stores the result as the whole `botDisk` object (instance settings replace nested objects). That effective view left out the five BOT-DISK-H5c / OPE-9673 mechanics keys (`botdIntervalSec`, `legacyPressureIdleDays`, `hermesPruneEnabled`, `hermesPruneDays`, `gitMigrationEnabled`), so any PATCH of another key (also every Save of this panel) dropped them from the row.
+- Fix: the effective settings now carry every stored mechanics key, so the merge keeps them; an explicit `null` still returns a key to its default. `GET /api/myrmidon/bot-disk` shows these keys when they are stored. No contract change, no UI change.
+
+## 1.6.7
+
 ### Settings → General no longer crashes on the Runs & Queue panel (SETTINGS-GENERAL-CRASH)
 
 - Fixed: a few seconds after opening Settings → General the page fell to the error screen "values is not iterable". The Runs & Queue panel read a `values[]` array from `GET /api/myrmidon/behavior-settings`, while the server answers `{ settings, sources }` (the contract every other behavior-settings panel uses). The panel now reads that contract; a response of any other shape, or a failed request, is shown as an error inside the panel and never takes the page down. A value typed into a field that cannot be parsed is flagged and not sent.
