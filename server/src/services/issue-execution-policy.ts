@@ -880,12 +880,6 @@ function clearExecutionStatePatch(input: {
   }
 }
 
-/**
- * myrmidon(OPE-12231): everyone who is currently doing (or just finished) the
- * work — the assignee and the resubmitting actor — must never be selected as
- * the reviewer of their own stage.
- */
-
 function canAutoSkipPendingStage(input: {
   stage: IssueExecutionStage;
   returnAssignee: IssueExecutionStagePrincipal | null;
