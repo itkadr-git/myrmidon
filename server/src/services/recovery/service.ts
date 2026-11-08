@@ -5293,7 +5293,7 @@ export function recoveryService(
       } else if (autoPolicyDecision.kind === "disposition_blocked") {
         // myrmidon(OPE-9072): the issue has its own workflow (policy, monitor
         // or execution state): never take it over and never change the
-        // assignee. Block it with complete metadata owned by a senior agent
+        // assignee. Block it with complete metadata owned by the nearest lead
         // and wake that agent once. The wake key ties it to this successful
         // run, so a repeat pass stands down instead of waking again.
         const ownerAgentId = autoPolicyDecision.ownerAgentId;
@@ -5362,7 +5362,7 @@ export function recoveryService(
             {},
             {
               authorType: "system",
-              presentation: compactRecoveryPresentation("Escalated to a senior agent"),
+              presentation: compactRecoveryPresentation("Escalated to the nearest lead"),
               metadata: recoveryNoticeMetadata({
                 cause: recoveryCause,
                 latestRun,

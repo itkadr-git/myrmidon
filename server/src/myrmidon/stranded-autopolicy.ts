@@ -235,11 +235,6 @@ export function decideStrandedAutoPolicy(input: {
     return { kind: "retry", attempt: input.attemptsInWindow + 1, maxAttemptsPerDay: input.maxAttemptsPerDay };
   }
   const targetAgentId = input.managerAgentId ?? input.escalationAgentId ?? null;
-  // OPE-12265: the owner of a disposition_blocked escalation is the nearest
-  // lead/manager, never the assignee's direct reviewer (the reviewer reports-to
-  // edge is a review-routing edge, not an ownership edge). Without a lead the
-  // operator fallback (`adm`) owns it, as before.
-  const blockedOwnerAgentId = input.dispositionOwnerAgentId ?? targetAgentId;
   if (
     targetAgentId &&
     (input.successfulRunHandoffExhausted ||
@@ -247,9 +242,14 @@ export function decideStrandedAutoPolicy(input: {
       input.targetIsAdm ||
       input.requireAgentDisposition)
   ) {
+    // OPE-12265: the owner of a disposition_blocked escalation is the nearest
+    // lead/manager, never the assignee's direct reviewer (the reviewer
+    // reports-to edge is a review-routing edge, not an ownership edge).
+    // Without a lead the operator fallback (`adm`) owns it, as before.
+    // Computed inside the guard: `targetAgentId` is narrowed to `string` here.
     return {
       kind: "disposition_blocked",
-      ownerAgentId: blockedOwnerAgentId,
+      ownerAgentId: input.dispositionOwnerAgentId ?? targetAgentId,
       attemptsInWindow: input.attemptsInWindow,
       maxAttemptsPerDay: input.maxAttemptsPerDay,
     };
@@ -776,7 +776,7 @@ export function buildStrandedDispositionBlockedComment(input: {
     `${productPossessive("automatic policy")} could not get a final status from the assignee: ${input.attemptsInWindow} ` +
       `automatic continuation attempt(s) within 24 hours (cause \`${input.cause}\`, limit ${input.maxAttemptsPerDay} per day).`,
     "The issue carries its own execution workflow, so it was not taken over and the assignee is unchanged. " +
-      "It is now `blocked` and owned by the nearest lead, who is asked to unstick it.",
+      "It is now `blocked` and owned by the nearest lead or, when no lead exists, the board operator.",
     "What the owner must do here: give the issue a fresh directive with the first step, split it into subtasks, " +
       "or close it — a plain review is not enough; a reviewer cannot resolve this block.",
   ].join("\n");
