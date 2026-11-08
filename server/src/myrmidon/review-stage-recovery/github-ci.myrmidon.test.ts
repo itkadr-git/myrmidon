@@ -358,7 +358,7 @@ describe("resolvePullRequestHeadCi", () => {
         calls,
       ),
     });
-    expect(result).toEqual({ state: "complete", headSha: "abc123" });
+    expect(result).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: "success" });
     expect(calls.map((call) => Boolean(call.headers.authorization))).toEqual([true, false, true, false]);
   });
 });
