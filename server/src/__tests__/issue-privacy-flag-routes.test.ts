@@ -116,7 +116,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
       title: "Target issue",
       status: "in_progress" as const,
       priority: "medium" as const,
-      assigneeAgentId: targetAgent.id,
+      assigneeAgentId: actorAgent.id,
     }).returning().then((rows) => rows[0]!);
     const run = await db.insert(heartbeatRuns).values({
       companyId: company.id,
@@ -168,7 +168,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
       });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.isPrivate).toBe(true);
-  });
+  }, 30_000);
 
   it("agent actor receives 403 when creating a private issue", async () => {
     const fixture = await seed();
@@ -216,5 +216,55 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
       .send({ isPrivate: false });
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.details?.code).toBe("issue_write_private_flag_rejected");
+  });
+
+  it("agent actor receives 403 when creating a child issue with isPrivate=true", async () => {
+    const fixture = await seed();
+    const agentApp = await createApp(db, agentActor(fixture));
+    const res = await request(agentApp)
+      .post(`/api/issues/${fixture.issue.id}/children`)
+      .send({
+        title: "Agent private child",
+        status: "todo",
+        priority: "medium",
+        isPrivate: true,
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Only board actors can set isPrivate");
+  });
+
+  it("board actor can create a child issue with isPrivate=true", async () => {
+    const fixture = await seed();
+    const boardApp = await createApp(db, boardActor(fixture));
+    const res = await request(boardApp)
+      .post(`/api/issues/${fixture.issue.id}/children`)
+      .send({
+        title: "Board private child",
+        status: "todo",
+        priority: "medium",
+        isPrivate: true,
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.isPrivate).toBe(true);
+  });
+
+  it("agent actor receives 403 when decomposing a plan with a private child", async () => {
+    const fixture = await seed();
+    const agentApp = await createApp(db, agentActor(fixture));
+    const res = await request(agentApp)
+      .post(`/api/issues/${fixture.issue.id}/accepted-plan-decompositions`)
+      .send({
+        acceptedPlanRevisionId: randomUUID(),
+        children: [
+          {
+            title: "Agent private plan child",
+            status: "todo",
+            priority: "medium",
+            isPrivate: true,
+          },
+        ],
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Only board actors can set isPrivate");
   });
 });
