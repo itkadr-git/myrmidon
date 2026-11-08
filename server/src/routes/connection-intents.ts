@@ -13,7 +13,6 @@ import {
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
 } from "@myrmidon/shared";
-import { recordGitHubRequest } from "../services/github-rate-limit.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { verifyRuntimeToolsToken } from "../runtime-tools-token.js";
 import { connectionIntentService } from "../services/connection-intents.js";
@@ -56,7 +55,11 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   const service = connectionIntentService(db);
 
   router.post("/runtime-tools/github/credentials", boardLoadRequestMiddleware(), async (req, res) => {
-    recordGitHubRequest("broker", null);
+    // myrmidon(OPE-12446): the GitHub App budget counts real GitHub API mints
+    // (recorded inside app-token.ts on actual POST /app/installations/.../access_tokens),
+    // not HTTP requests to this endpoint. Per-run request spam is contained by
+    // the 429 fuse inside resolveGitHubOperationCredentials, so the broker
+    // counter reflects broker mint traffic only.
     // This capability is never accepted as board/session authentication.
     // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
     if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");

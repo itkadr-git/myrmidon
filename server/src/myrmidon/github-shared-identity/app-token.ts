@@ -115,16 +115,23 @@ export function githubAppJwt(appId: string, privateKeyPem: string, now = new Dat
 type CachedToken = { token: string; expiresAt: number };
 const tokenCache = new Map<string, CachedToken>();
 const installationCache = new Map<string, string>();
+// myrmidon(OPE-12446): single-flight minting. Concurrent requests for the same
+// (App, repository, permission set) join one in-flight mint instead of each
+// missing the not-yet-populated token cache and POSTing its own access token:
+// a credential storm outpacing one mint was exhausting the installation's
+// 5000/hour budget (852 credentials requests in 10 minutes).
+const tokenInflight = new Map<string, Promise<{ token: string; expiresAt: string; installationId: string; reused: boolean }>>();
 
 const resetListeners: Array<() => void> = [];
 export function onResetGitHubAppTokenCache(fn: () => void) {
   resetListeners.push(fn);
 }
 
-/** Tests only: forget cached tokens and installation ids. */
+/** Tests only: forget cached tokens, installation ids and in-flight mints. */
 export function resetGitHubAppTokenCacheForTests() {
   tokenCache.clear();
   installationCache.clear();
+  tokenInflight.clear();
   for (const fn of resetListeners) {
     try {
       fn();
@@ -180,12 +187,48 @@ export async function mintGitHubAppInstallationToken(input: {
   fetchImpl?: typeof fetch;
   now?: () => number;
 }): Promise<{ token: string; expiresAt: string; installationId: string; reused: boolean }> {
+  const now = input.now ?? Date.now;
+  const repoKey = input.repository.toLowerCase();
+  const requestedPermissions = githubAppTokenPermissionsFor(input.permissions);
+  const permissionsKey = GITHUB_APP_TOKEN_PERMISSION_KEYS.map((key) => `${key}=${requestedPermissions[key] ?? "none"}`).join(",");
+  // myrmidon(OPE-12446): one flight per (App, repository, permission set).
+  // Installation ids are remembered per App+repository, so callers that differ
+  // only in a pre-known installation id still mint the same token and must
+  // join, not race.
+  const flightKey = `${input.appId}:${repoKey}:${permissionsKey}`;
+  let installationId = input.installationId ?? installationCache.get(`${input.appId}:${repoKey}`) ?? null;
+  if (installationId) {
+    const cached = tokenCache.get(`${input.appId}:${installationId}:${repoKey}:${permissionsKey}`);
+    if (cached && cached.expiresAt - TOKEN_REUSE_MARGIN_MS > now()) {
+      return { token: cached.token, expiresAt: new Date(cached.expiresAt).toISOString(), installationId, reused: true };
+    }
+  }
+  const inflight = tokenInflight.get(flightKey);
+  if (inflight) return inflight;
+  const mint = mintGitHubAppInstallationTokenUncached(input, requestedPermissions).finally(() => {
+    if (tokenInflight.get(flightKey) === mint) tokenInflight.delete(flightKey);
+  });
+  tokenInflight.set(flightKey, mint);
+  return mint;
+}
+
+async function mintGitHubAppInstallationTokenUncached(
+  input: {
+    appId: string;
+    privateKeyPem: string;
+    installationId: string | null;
+    repository: string;
+    permissions?: Partial<GitHubAppPermissions>;
+    fetchImpl?: typeof fetch;
+    now?: () => number;
+  },
+  requestedPermissions: Record<string, "read" | "write">,
+): Promise<{ token: string; expiresAt: string; installationId: string; reused: boolean }> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const now = input.now ?? Date.now;
   const [owner, repo] = input.repository.split("/") as [string, string];
   const repoKey = input.repository.toLowerCase();
   const installationKey = `${input.appId}:${repoKey}`;
-  const requestedPermissions = githubAppTokenPermissionsFor(input.permissions);
   const permissionsKey = GITHUB_APP_TOKEN_PERMISSION_KEYS.map((key) => `${key}=${requestedPermissions[key] ?? "none"}`).join(",");
   let installationId = input.installationId ?? installationCache.get(installationKey) ?? null;
   const cacheKey = (id: string) => `${input.appId}:${id}:${repoKey}:${permissionsKey}`;

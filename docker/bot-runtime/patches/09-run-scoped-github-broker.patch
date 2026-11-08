@@ -90,6 +90,19 @@ index 89a06ee..48607c0 100644
 +    bound = github_broker_bound()
 +    if bound:
 +        env.update(github_broker_env())
++        # myrmidon(OPE-12446): name this run's credential-cache directory so
++        # the helpers reuse a still-valid token instead of minting one per
++        # git/gh call. Derived from this run's scratch root, which is already
++        # unique per run and cleaned up with the run: entries never outlive
++        # the run on disk.
++        cache_root = "/".join(
++            part for part in (
++                os.environ.get("PAPERCLIP_RUN_SCRATCH_DIR", "")
++                or os.environ.get("PAPERCLIP_SCRATCH_DIR", "")
++            ).strip().split("/") if part
++        )
++        if cache_root:
++            env["PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR"] = "/" + cache_root
 +        # A broker capability is present, so managed GitHub credentials are in
 +        # charge: blank any inherited card/profile token (GH_TOKEN/GITHUB_TOKEN
 +        # plus the other keys the board's launcher blanks) so a dead or stale
