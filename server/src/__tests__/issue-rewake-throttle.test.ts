@@ -133,9 +133,11 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(evaluateIssueRewakeThrottle({ ...input,
       recentTerminalRuns: [stale("r3", 1), runSample({ id: "other", status: "cancelled", finishedSecondsAgo: 2 }), stale("r2", 3600)],
     })).toEqual({ blocked: false, noProgressStreak: 0 });
+    // Admission bookkeeping after the last stale run is not an explicit thaw.
     expect(evaluateIssueRewakeThrottle({ ...input, hasNewIssueInputSinceLastRun: true,
       recentTerminalRuns: [stale("r2", 3600), stale("r1", 7200)],
-    })).toEqual({ blocked: false, noProgressStreak: 0 });
+    })).toEqual({ blocked: true, frozen: true, noProgressStreak: 2,
+      frozenAt: new Date(NOW.getTime() - 3600_000) });
   });
 
   it("allows when there is no run history", () => {

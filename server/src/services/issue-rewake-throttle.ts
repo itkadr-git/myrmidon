@@ -242,11 +242,13 @@ export function computeIssueRewakeCooldownMs(noProgressStreak: number): number {
 export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): IssueRewakeThrottleDecision {
   const runs = input.recentTerminalRuns;
   if (runs.length === 0) return { blocked: false, noProgressStreak: 0 };
-  if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
   // Stale queued runs never reached the adapter. Repeated cancellation is not
   // recovery progress: freeze after two consecutive timeouts, regardless of
   // cooldown expiry or the instance's configurable no-progress threshold.
+  // Check before the generic new-input bypass: wake admission itself writes
+  // system issue activity, but only the sticky-freeze thaw path distinguishes
+  // that bookkeeping from genuine external input.
   let staleTimeoutStreak = 0;
   for (const run of runs) {
     if (run.status !== "cancelled" || run.errorCode !== "queued_run_stale_timeout" || !run.finishedAt) break;
@@ -255,6 +257,7 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   if (staleTimeoutStreak >= 2) {
     return { blocked: true, frozen: true, noProgressStreak: staleTimeoutStreak, frozenAt: runs[0]!.finishedAt! };
   }
+  if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
   let noProgressStreak = 0;
   for (const run of runs) {
