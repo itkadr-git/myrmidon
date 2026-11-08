@@ -68,6 +68,8 @@ import { issueListAgentDefaultsSchema } from "../myrmidon-issue-list-agent-defau
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
 import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
+// myrmidon(1.7-GOAL-JUDGE): the goal-achievement judge settings stored in the same row
+import { goalJudgeSettingsSchema } from "../myrmidon-goal-judge.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
@@ -326,6 +328,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // task; review blocked until the PR head moves), changed from
   // /api/myrmidon/review-rework; absent means the defaults (the fix is on).
   reviewRework: reviewReworkSettingsSchema.optional(),
+  // myrmidon(1.7-GOAL-JUDGE): the goal-achievement judge model and master switch
+  goalJudge: goalJudgeSettingsSchema.optional(),
+  // myrmidon(1.7-GOAL-JUDGE): the change journal of the goal judge settings
+  goalJudgeJournal: z.array(z.unknown()).optional(),
   // myrmidon(F16): the issue-list agent defaults (compact view, limit 200/500,
   // description omitted in compact), read at the list route; absent means the
   // fix is ON — `{enabled: false}` restores the pre-feature agent behaviour
