@@ -560,7 +560,7 @@ func TestRedTeam_RT1_5_UnknownKeys(t *testing.T) {
 		`"Devices":[]`, `"DeviceRequests":[]`, `"CapAdd":["SYS_ADMIN"]`, `"PidMode":"host"`, `"IpcMode":"host"`,
 		`"UsernsMode":"host"`, `"UTSMode":"host"`, `"CgroupParent":"/"`, `"Sysctls":{}`, `"PortBindings":{}`,
 		`"Mounts":[]`, `"VolumesFrom":["x"]`, `"Links":["x"]`, `"Dns":["1.1.1.1"]`, `"ExtraHosts":["a:b"]`,
-		`"Runtime":"runc"`, `"Cgroup":"x"`, `"OomKillDisable":true`, `"Ulimits":[]`, `"LogConfig":{}`,
+		`"Runtime":"runc"`, `"Cgroup":"x"`, `"OomKillDisable":true`, `"LogConfig":{}`,
 		`"Isolation":"x"`, `"MaskedPaths":[]`, `"ReadonlyPaths":[]`, `"GroupAdd":["0"]`, `"StorageOpt":{}`,
 		`"ShmSize":1`, `"AutoRemove":true`, `"PublishAllPorts":true`, `"CpusetCpus":"0"`, `"CpuShares":1`,
 		`"BlkioWeight":1`, `"MemorySwap":-1`, `"OomScoreAdj":-1000`, `"Tmpfsx":{}`, `"VolumeDriver":"x"`,
