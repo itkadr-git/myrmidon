@@ -2012,8 +2012,8 @@ export function secretService(db: Db | DbTransaction) {
             `Strict secret mode requires secret references for sensitive key: ${key}`,
           );
         }
-        if (binding.value === REDACTED_SENTINEL) {
-          throw unprocessable(`Refusing to persist redacted placeholder for key: ${key}`);
+        if (binding.value.includes(REDACTED_SENTINEL)) {
+          throw unprocessable(`Refusing to persist redacted placeholder for key: ${key}; value came from a redacted response, send the original value`);
         }
         normalized[key] = binding;
         continue;
@@ -2114,8 +2114,8 @@ export function secretService(db: Db | DbTransaction) {
     }
     const value = binding.value.trim();
     if (!value) return undefined;
-    if (value === REDACTED_SENTINEL) {
-      throw unprocessable(`Refusing to persist redacted placeholder for key: ${input.key}`);
+    if (value.includes(REDACTED_SENTINEL)) {
+      throw unprocessable(`Refusing to persist redacted placeholder for key: ${input.key}; value came from a redacted response, send the original value`);
     }
     const id = randomUUID();
     const adapterPart = normalizeSecretKey(input.adapterType ?? "adapter");
