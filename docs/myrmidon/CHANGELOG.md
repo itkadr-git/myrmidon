@@ -12,6 +12,43 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### Native runner: the gateway address now reaches Codex through its config file
+
+Codex 0.157 ignores the `OPENAI_BASE_URL` environment variable and reads the gateway address only
+from the `openai_base_url` key of its config. Passing the variable (previous fix) was therefore not
+enough: a native Codex agent that used an LLM gateway (for example LiteLLM) still sent its gateway
+key to api.openai.com and got 401 on the first turn. When the agent environment has
+`OPENAI_BASE_URL`, the native runner now also writes `openai_base_url = "<url>"` to the
+`config.toml` of the isolated Codex home, ahead of all tables and next to the existing keys. Only an
+`http://` or `https://` address without whitespace, quotes or control characters is accepted; any
+other value stops the launch with a clear error that does not repeat the value. Without
+`OPENAI_BASE_URL` the config is unchanged.
+
+### Corpus: a search no longer counts every dataset, and a repeated question reuses its vector (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- The `corpus_search` tool (the route the agents use) called the same store read as `corpus_list_datasets`
+  on every search. That read counts the documents and the chunks of every dataset of the company, to get
+  the id and the name of each dataset. On a corpus of hundreds of thousands of chunks it took 3 to 5 s, so
+  the agent route was about 3 s slower than the REST search of one dataset. The search now reads only the
+  ids and names (new store port method `listDatasetNames`, one query with no counters). The answer of the
+  search does not change: the same datasets, the same hits, the same `datasetName` in each hit. The tools
+  `corpus_get_document` and `corpus_list_documents` also take the dataset name from this read and no
+  longer count the dataset.
+- The dataset list with its counters (`corpus_list_datasets`, the board screen, the shadow search) is kept
+  per company for 60 s. A write through the corpus ports (dataset, document or chunk change) drops the
+  list of that company at once, so an upload, a parse result or a delete shows in the list without
+  waiting. A change made outside the board process (an import script on its own connection) shows after
+  at most the TTL. The counters of one dataset (`getDataset`) no longer load every document row to count
+  the documents: the count is the sum of the per-status counts that the same read already had.
+- The vector of a search question is kept for 600 s (was 60 s) and for at most 512 questions (was 128),
+  so a repeated question, for example a run of a golden set, does not call the embedder again. The key is
+  the company, the embedder (base URL, model, dimensions) and the exact text of the question. Identical
+  questions in flight at the same time share one embedder call. A failed embedder call is never kept.
+- Two new settings, both in seconds: `MYRMIDON_CORPUS_QUERY_EMBED_CACHE_TTL_SEC` and
+  `MYRMIDON_CORPUS_DATASET_LIST_CACHE_TTL_SEC`. `0` turns the matching cache off.
+
+## 1.6.7
+
 ### A bot's npx and cargo caches stay under a byte quota (OPE-12110)
 
 One bot grew `hermes/.npm/_npx` by 2.2 GB in 45 minutes (npx fetched a whole vendor package with all

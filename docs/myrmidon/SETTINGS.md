@@ -2776,6 +2776,8 @@ mounted on the board; botd sends it unchanged.
 | `MYRMIDON_CORPUS_EMBEDDER_BASE_URL` | Optional embedder endpoint; unset uses the company LLM gateway | unset |
 | `MYRMIDON_LLM_GATEWAY_BASE_URL` | Optional fallback gateway endpoint used when the Corpus embedder base URL is unset | unset |
 | Corpus credential source | The active company secret; never store its value in settings or logs | — |
+| `MYRMIDON_CORPUS_QUERY_EMBED_CACHE_TTL_SEC` | CORPUS-LATENCY (OPE-12272) | `600` | How many seconds the vector of a search question is reused, so the same question does not call the embedder again (up to 512 questions; the key is the company, the embedder base URL, model, dimensions and the exact text). Identical questions in flight share one embedder call. Read when a search starts, so a change needs no restart | `0` turns the cache off: every search embeds its question. Unset, empty, non-numeric or negative - the default. Above `86400` - `86400` |
+| `MYRMIDON_CORPUS_DATASET_LIST_CACHE_TTL_SEC` | CORPUS-LATENCY (OPE-12272) | `60` | How many seconds the dataset list with its document and chunk counters (`corpus_list_datasets`, the board screen) is reused per company. A write through the corpus ports of the board process drops the list of that company at once; a change from another process shows after at most this many seconds. A search does not read this list | `0` turns the cache off: every list call counts again. Unset, empty, non-numeric or negative - the default. Above `86400` - `86400` |
 ## 1.6.5 — F16 A: issue list agent defaults
 
 The defaults of `GET /api/companies/:companyId/issues` for an actor of type `agent`.
