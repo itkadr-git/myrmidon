@@ -265,6 +265,7 @@ import { updatesRoutes } from "./routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE
 import { systemUpdatesRoutes } from "./routes/system-updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186)
 // myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
+import { systemDeploymentRoutes } from "./myrmidon/system-settings/routes.js"; // myrmidon(1.7, OPE-4101)
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
 import { myrmidonLitellmAuditRoutes } from "./myrmidon/litellm-audit/wiring.js"; // myrmidon(OPE-9857)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
@@ -1237,6 +1238,7 @@ export async function createApp(
   api.use(boardJanitorRoutes(db)); // myrmidon(BOARD-JANITOR)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
+  api.use(systemDeploymentRoutes()); // myrmidon(1.7, OPE-4101): GET /api/myrmidon/system/deployment
   api.use(systemUpdatesRoutes()); // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186)
   api.use(licensingRoutes({ installId: installIdProviderFor(db), installedModules: installedClosedModules(db) })); // myrmidon(LICENSING): install id, license request, license state and save (instance admin)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)

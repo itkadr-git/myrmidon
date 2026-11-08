@@ -79,6 +79,7 @@ import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-cla
 import { scentMetrics } from "../../scent/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
+import { auth401BurstMetrics, AUTH_401_REASONS, type Auth401BurstSample } from "../../auth-401-burst/index.js";
 import { datastoreRetentionMetrics } from "../../datastore-care/retention/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
@@ -208,6 +209,12 @@ export const METRIC_FAMILIES = [
   // myrmidon(1.6.6 GUARDRAILS OPE-10182): guardrail trigger counters by rule
   // and enforcement mode, process-local like the continuation counters.
   "myrmidon_guardrail_triggers_total",
+
+  // myrmidon(OPE-11890): the product-side auth-401 burst detector — process-
+  // local sliding-window 401 counter, threshold/window from env. Replaces the
+  // paperclip-auth-401-watch host timer.
+  "myrmidon_auth_401_burst_total",
+  "myrmidon_auth_401_burst_tripped",
 
   // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors
   // by path — the adapter and the vendor path that still reads in parallel
@@ -369,6 +376,11 @@ export interface MetricsSnapshotFields {
    * Absent/null renders HELP/TYPE with no samples.
    */
   guardrailTriggers?: GuardrailTriggerCounts | null;
+  /**
+   * myrmidon(OPE-11890): the auth-401 burst detector sample of this process
+   * (in-process, no DB). null renders HELP/TYPE with no samples.
+   */
+  auth401Burst?: Auth401BurstSample | null;
   /**
    * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counters of
    * this process (in-process, no DB). null renders HELP/TYPE with no samples; a
@@ -1174,6 +1186,15 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as GuardrailTriggerCounts | null,
   );
 
+  // myrmidon(OPE-11890): the auth-401 burst detector rides the same guarded
+  // scrape — an in-process sliding-window counter that cannot throw today,
+  // guarded anyway so a future source cannot kill the scrape.
+  const auth401Burst = await guarded(
+    "myrmidon_auth_401_burst_total|myrmidon_auth_401_burst_tripped",
+    () => Promise.resolve().then(() => auth401BurstMetrics.read()),
+    null as Auth401BurstSample | null,
+  );
+
   // myrmidon(1.6.6 CONNECTOR-IN): the ingress half rides the same guarded
   // scrape: an in-process counter that cannot throw today, guarded anyway so a
   // future source cannot kill the scrape — it names its family instead.
@@ -1286,6 +1307,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
 
       adapterFallbacks: fallbackSample,
       guardrailTriggers,
+      auth401Burst,
       singletonProxy: singletonProxySample,
 
       chatIngress,
@@ -1975,6 +1997,33 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
             ),
           )
         : [],
+    ),
+  );
+
+  // myrmidon(OPE-11890): the auth-401 burst detector. Per-reason cumulative
+  // counter (closed reason set only — never a header or token) plus a tripped
+  // gauge that is 1 from the first crossing until the process resets. Process-
+  // local, like the guardrail counter.
+  const auth401Burst = snapshot.auth401Burst ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_auth_401_burst_total",
+      "Authentication 401 rejections per reason, cumulative since boot. Reason is the closed-set actorNoneReason taxonomy; request credentials are never a label.",
+      "counter",
+      auth401Burst
+        ? AUTH_401_REASONS.map(
+            (reason) =>
+              `myrmidon_auth_401_burst_total{${R},reason="${escapeLabelValue(reason)}"} ${formatSampleValue(auth401Burst.counts[reason] ?? 0)}`,
+          )
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_auth_401_burst_tripped",
+      "1 from the first window that crossed MYRMIDON_AUTH_401_BURST_THRESHOLD 401s inside MYRMIDON_AUTH_401_BURST_WINDOW_SEC until the process resets the detector; 0 otherwise.",
+      "gauge",
+      auth401Burst ? [`myrmidon_auth_401_burst_tripped{${R}} ${auth401Burst.tripped ? 1 : 0}`] : [],
     ),
   );
 

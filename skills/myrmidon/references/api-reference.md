@@ -445,7 +445,7 @@ When the executor finishes work, move the source issue to `in_review`. Myrmidon 
 - approve/sign off with `PATCH /api/issues/:issueId` using `{ "status": "done", "comment": "Approved: ..." }`
 - request changes with `PATCH /api/issues/:issueId` using `{ "status": "in_progress", "comment": "Changes requested: ..." }`
 
-Agent heartbeat implementations should follow the Myrmidon skill's **Execution-policy review/approval wakes** procedure when they are assigned as the active gate participant.
+Agent heartbeat implementations should follow the Myrmidon skill's **Execution-policy review/approval wakes** procedure when they are assigned as the active gate participant; reviewers must adhere to `references/review-discipline.md` (evidence on current head, style as non-blocking nit, mandatory APPROVE when no defects).
 
 Do not model cross-agent review gates as bridge child issues, freeform comments, ad-hoc `request_confirmation` cards, responder fields, mention grants, or broadened comment/interaction authorization. Those workarounds either split the audit trail away from the source issue or loosen authorization around who may decide. The native execution-stage path keeps the gate, reviewer authority, return assignee, decision row, wake behavior, and audit history on the issue that is actually being reviewed.
 
@@ -1361,6 +1361,8 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/agents/:agentId/config-revisions/:revisionId/rollback` | Roll back config |
 
 ### Issues (Tasks)
+
+Задача по идентификатору: `GET /api/issues/OPE-N`; списки — `limit`+`offset`, цикл до `len < limit`.
 
 | Method | Path                               | Description                                                                              |
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |

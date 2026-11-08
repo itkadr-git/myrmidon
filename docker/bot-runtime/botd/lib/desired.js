@@ -10,6 +10,9 @@
 // Plain Node (no dependencies): the schema of `wsDesiredStateSchema` is
 // mirrored by hand and checked against the contract fixtures in the test.
 
+import { boardEnv, boardKeyValues, redact as redactWithEnv } from "./board-env.js";
+export { redact } from "./board-env.js";
+
 const DEFAULT_TIMEOUT_MS = 10_000;
 // botd never runs this timer alongside the main loop (the entry wires .poll()
 // only); 300 s keeps even an autonomous start() off the board's hot path
@@ -81,13 +84,14 @@ export function parseDesiredState(body) {
 }
 
 function desiredUrl(env) {
-  const base = String(env.PAPERCLIP_API_URL || "").trim().replace(/\/+$/, "").replace(/\/api$/, "");
+  const base = String(boardEnv(env, "API_URL") || "").trim().replace(/\/+$/, "").replace(/\/api$/, "");
   return base ? `${base}${DESIRED_PATH}` : null;
 }
 
 /**
  * @param {object} [opts]
- * @param {object} [opts.env]       process.env-like: PAPERCLIP_API_URL, PAPERCLIP_API_KEY
+ * @param {object} [opts.env]       process.env-like: MYRMIDON_API_URL, MYRMIDON_API_KEY
+ *   (PAPERCLIP_API_URL / PAPERCLIP_API_KEY are read as the legacy alias)
  * @param {Function} [opts.fetchImpl]
  * @param {(line: string) => void} [opts.log]
  * @param {() => Date} [opts.now]
@@ -111,12 +115,7 @@ export function createDesiredClient(opts = {}) {
   let onSignal = null;
 
   // The key must never reach a log or a reason string.
-  const redact = (text) => {
-    const key = env.PAPERCLIP_API_KEY;
-    let out = String(text);
-    if (key) out = out.split(key).join("[redacted]");
-    return out;
-  };
+  const redact = (text) => redactWithEnv(text, env);
   const fail = (reason) => {
     const safe = redact(reason);
     log(`botd desired: ${safe}`);
@@ -124,10 +123,10 @@ export function createDesiredClient(opts = {}) {
   };
 
   async function pollOnce() {
-    const key = env.PAPERCLIP_API_KEY;
-    if (!key) return fail("PAPERCLIP_API_KEY is not set");
+    const key = boardEnv(env, "API_KEY");
+    if (!key) return fail("MYRMIDON_API_KEY is not set");
     const url = desiredUrl(env);
-    if (!url) return fail("PAPERCLIP_API_URL is not set");
+    if (!url) return fail("MYRMIDON_API_URL is not set");
     if (typeof fetchImpl !== "function") return fail("fetch is not available");
     const ctl = new AbortController();
     const timeout = setTimeout(() => ctl.abort(), timeoutMs);

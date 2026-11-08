@@ -129,4 +129,33 @@ describe("hermes gateway feeds tool events to the run guard (read-only loops)", 
     expect(onRunGuardStop).toHaveBeenCalledWith("no_progress_exploration");
     expect(guard.stats().toolCalls).toBe(5);
   });
+
+  // myrmidon(OPE-12004): engineer defaults (100 / 5)
+  it("uses code role defaults (100 / 5) for engineer and does not stop at 80 reads", async () => {
+    const guard = new RunGuard({ role: "engineer" });
+    const { onRunGuardStop } = await runFrames(withCompletions(files(80).map(read)), guard);
+    expect(guard.stopped).toBe(false);
+    expect(onRunGuardStop).not.toHaveBeenCalled();
+    expect(guard.stats().readOnlyStreak).toBe(80);
+  });
+
+  it("stops code role (engineer) on the 5th identical read call", async () => {
+    const guard = new RunGuard({ role: "engineer" });
+    const sameReads = [
+      read("src/a.ts"),
+      read("src/b.ts"),
+      read("src/a.ts"),
+      read("src/c.ts"),
+      read("src/a.ts"),
+      read("src/d.ts"),
+      read("src/a.ts"),
+      read("src/e.ts"),
+      read("src/a.ts"),
+    ];
+    const { onRunGuardStop } = await runFrames(withCompletions(sameReads), guard);
+    expect(guard.stopped).toBe(true);
+    expect(guard.stopReason).toBe("repeated_tool_call");
+    expect(onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(onRunGuardStop).toHaveBeenCalledWith("repeated_tool_call");
+  });
 });

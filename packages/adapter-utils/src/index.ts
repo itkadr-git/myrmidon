@@ -84,7 +84,11 @@ export {
   DEFAULT_MODEL_CALL_LIMIT,
   DEFAULT_NO_PROGRESS_LIMIT,
   DEFAULT_REPEATED_TOOL_CALL_LIMIT,
+  DEFAULT_CODE_NO_PROGRESS_LIMIT,
+  DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT,
   DEFAULT_TOOL_RETRY_LIMIT,
+  CODE_ROLES,
+  isCodeRole,
   toolFailureSignature,
 } from "./run-guard.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
