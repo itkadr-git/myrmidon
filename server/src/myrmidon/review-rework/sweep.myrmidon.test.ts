@@ -96,10 +96,10 @@ class FakeStore implements ReviewReworkStore {
     this.closed.push(input);
     return true;
   }
-  reopenedAfterLoopClose = false;
+  reopenedAfterLoopCloseResult = false;
   awaited: Array<{ issueId: string; assigneeAgentId: string | null; comment: string }> = [];
   async reopenedAfterLoopClose(_companyId: string, _issueId: string) {
-    return this.reopenedAfterLoopClose;
+    return this.reopenedAfterLoopCloseResult;
   }
   async awaitAcceptance(input: { issueId: string; companyId: string; expectStatus: string; assigneeAgentId: string | null; comment: string }) {
     this.awaited.push({ issueId: input.issueId, assigneeAgentId: input.assigneeAgentId, comment: input.comment });
@@ -340,7 +340,7 @@ describe("review rework sweep", () => {
 
   it("OPE-12260: a task reopened by a person after the loop closed it is handed back for acceptance, not closed again", async () => {
     const store = new FakeStore();
-    store.reopenedAfterLoopClose = true;
+    store.reopenedAfterLoopCloseResult = true;
     store.rows = [candidateRow(reviewTask({ status: "in_review" }))];
     store.comments = verdictComment();
     const { sweep, activities } = build({
