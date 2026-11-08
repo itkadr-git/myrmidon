@@ -12,6 +12,35 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### Corpus: the embedder key is kept for 60 s, the full-text ranking starts with the embedding, and the step timings reach the info log (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- A cold question needs the API key of the company's embedder secret. The secrets service resolved it
+  on every such question: several reads and one write of a secret access event, and the reads queue
+  behind a busy database. The resolved key is now kept in the board process for 60 s (setting
+  `MYRMIDON_CORPUS_EMBED_KEY_CACHE_TTL_SEC`, `0` turns it off). The lookup of the secret row still runs
+  on every question and the cache key holds the secret id and its latest version, so a rotated,
+  replaced or deactivated secret is never served from an older entry. An embedder without the secret
+  still answers `corpus_embedder_not_configured` at once.
+- **Audit change, on purpose.** The access event of the embedder secret is written when the key is
+  actually resolved, that is at most once per TTL and company (and once per secret version), not on every
+  search. A reader of the access log sees about one `myrmidon-corpus` read a minute under load instead
+  of one per cold question. Set the TTL to `0` to get one event per question again.
+- The full-text ranking of a search does not need the vector. A search now starts the embedding and the
+  full-text ranking together: the index receives the embedding as a promise (the type of
+  `CorpusSearchQuery.embedding` is `number[] | PromiseLike<number[]>`), runs the full-text ranking at
+  once and runs the vector ranking when the embedding is ready. The 800 ms time bound of the full-text
+  ranking runs from its own start, so it now elapses while the question is still being embedded. The
+  fusion and the hits are the same as before; a failed embedding still fails the search; a cancelled
+  full-text ranking is still replaced by the vector ranking alone.
+- The step timings of a search (`corpus search: handler step timings` of the REST route, the new
+  `corpus mcp search: handler step timings` of the agent route, and `corpus search: embed and index
+  timings`) went to the debug log. One search in N now writes them on the info log, so the split of a
+  slow search can be read in production without debug (setting
+  `MYRMIDON_CORPUS_STEP_TIMINGS_SAMPLE`, default 20; `1` is every search, `0` keeps them on debug). The
+  other searches still write them on debug.
+
+## 1.6.7
+
 ### MODEL-PROVIDERS-POOLS-WEB: model channels, the ChatGPT and Antigravity pools, the fallback order and the agent key lists work from the board web UI
 
 - The "Model providers" screen called `/model-providers/providers/...`, a path the server never had, so every call answered 404 (the list, the model list, the channels, the key rotation and the removal). The client now calls the paths the server mounts: `/model-providers` and `/model-providers/:id/...`. The change log of the screen no longer adds a second `/api` prefix, and the LiteLLM channel rows of both server spellings fill the same table columns.
