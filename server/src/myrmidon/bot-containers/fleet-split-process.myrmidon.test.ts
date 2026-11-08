@@ -107,8 +107,8 @@ describe("fleet bot management across the api/worker split (OPE-12032)", () => {
       clientKey: pki.clientKey,
       mtls: true,
     };
-    const transports = new Map<string, FleetSiteTransport>([[`${COMPANY_ID}:${SITE}`, transport]]);
-    const clients = new Map<string, any>([[`${COMPANY_ID}:${SITE}`, { restart: restartSpy, stop: stopSpy }]]);
+    const transports = new Map<string, FleetSiteTransport>([[`${COMPANY_ID}/${SITE}`, transport]]);
+    const clients = new Map<string, any>([[`${COMPANY_ID}/${SITE}`, { restart: restartSpy, stop: stopSpy }]]);
     return {
       getClients: () => clients,
       getTransports: () => transports,
