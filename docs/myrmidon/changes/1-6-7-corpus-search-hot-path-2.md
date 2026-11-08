@@ -4,7 +4,7 @@ settings-section: 1.6.6 — CORPUS-2.0 C: knowledge corpus server side
 
 ## changelog-en
 
-### Corpus: the embedder key is kept for 60 s, the full-text ranking starts with the embedding, and the step timings reach the info log (1.6.7 CORPUS-LATENCY, OPE-12272)
+### Corpus: the embedder key is kept for 60 s, and the step timings reach the info log (1.6.7 CORPUS-LATENCY, OPE-12272)
 
 - A cold question needs the API key of the company's embedder secret. The secrets service resolved it
   on every such question: several reads and one write of a secret access event, and the reads queue
@@ -17,13 +17,6 @@ settings-section: 1.6.6 — CORPUS-2.0 C: knowledge corpus server side
   actually resolved, that is at most once per TTL and company (and once per secret version), not on every
   search. A reader of the access log sees about one `myrmidon-corpus` read a minute under load instead
   of one per cold question. Set the TTL to `0` to get one event per question again.
-- The full-text ranking of a search does not need the vector. A search now starts the embedding and the
-  full-text ranking together: the index receives the embedding as a promise (the type of
-  `CorpusSearchQuery.embedding` is `number[] | PromiseLike<number[]>`), runs the full-text ranking at
-  once and runs the vector ranking when the embedding is ready. The 800 ms time bound of the full-text
-  ranking runs from its own start, so it now elapses while the question is still being embedded. The
-  fusion and the hits are the same as before; a failed embedding still fails the search; a cancelled
-  full-text ranking is still replaced by the vector ranking alone.
 - The step timings of a search (`corpus search: handler step timings` of the REST route, the new
   `corpus mcp search: handler step timings` of the agent route, and `corpus search: embed and index
   timings`) went to the debug log. One search in N now writes them on the info log, so the split of a
@@ -33,7 +26,7 @@ settings-section: 1.6.6 — CORPUS-2.0 C: knowledge corpus server side
 
 ## changelog-ru
 
-### Корпус: ключ эмбеддера хранится 60 с, полнотекстовая часть стартует вместе с эмбеддингом, тайминги шагов попадают в info-журнал (1.6.7 CORPUS-LATENCY, OPE-12272)
+### Корпус: ключ эмбеддера хранится 60 с, тайминги шагов попадают в info-журнал (1.6.7 CORPUS-LATENCY, OPE-12272)
 
 - Для холодного вопроса нужен API-ключ секрета эмбеддера компании. Сервис секретов разрешал его на
   каждый такой вопрос: несколько чтений и одна запись события доступа к секрету, причём чтения
@@ -46,12 +39,6 @@ settings-section: 1.6.6 — CORPUS-2.0 C: knowledge corpus server side
   разрешении ключа, то есть не чаще одного раза за TTL на компанию (и один раз на версию секрета), а не на
   каждый поиск. Читающий журнал доступа под нагрузкой видит примерно одно чтение `myrmidon-corpus` в минуту
   вместо одного на каждый холодный вопрос. TTL `0` возвращает одно событие на вопрос.
-- Полнотекстовой части поиска вектор не нужен. Теперь поиск запускает эмбеддинг и полнотекстовую часть
-  одновременно: индекс получает эмбеддинг как обещание (тип `CorpusSearchQuery.embedding` —
-  `number[] | PromiseLike<number[]>`), сразу запускает полнотекстовую часть, а векторную — когда эмбеддинг
-  готов. Граница полнотекстовой части в 800 мс считается от её собственного старта, поэтому она истекает,
-  пока вопрос ещё встраивается. Слияние и найденные фрагменты прежние; неудавшийся эмбеддинг по-прежнему
-  проваливает поиск; отменённую полнотекстовую часть по-прежнему заменяет одна векторная.
 - Тайминги шагов поиска (`corpus search: handler step timings` маршрута REST, новая
   `corpus mcp search: handler step timings` маршрута агентов и `corpus search: embed and index timings`)
   шли в debug-журнал. Теперь один поиск из N пишет их в info-журнал, поэтому разложение медленного

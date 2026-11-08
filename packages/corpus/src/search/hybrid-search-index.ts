@@ -206,11 +206,6 @@ function clampLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_SEARCH_LIMIT);
 }
 
-/** An embedding that is still being computed. An array has no `then`. */
-function isPromiseLike(value: unknown): value is PromiseLike<number[]> {
-  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
-}
-
 /** A query text of whitespace only cannot rank anything, so the full-text leg is skipped. */
 function hasText(text: string | undefined): boolean {
   return typeof text === "string" && text.trim().length > 0;
@@ -535,14 +530,9 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         ilikeMaxLength > 0 &&
         (text.length <= ilikeMaxLength || (text.length <= ILIKE_SINGLE_TOKEN_MAX_LENGTH && !/\s/.test(text)));
       const likePattern = `%${escapeLikePattern(text)}%`;
-      // An embedding that is still being computed (a promise) is waited for by the vector ranking alone;
-      // the full-text ranking does not need it and starts at once. A ready vector is checked here, before
-      // any statement runs, as it always was; a late one is checked when it arrives.
-      const pendingEmbedding = isPromiseLike(query.embedding) ? query.embedding : null;
-      const embeddingLiteral =
-        hasEmbedding && pendingEmbedding === null
-          ? toPgVectorLiteral(assertEmbeddingVector((query.embedding as number[] | undefined) ?? []))
-          : null;
+      const embeddingLiteral = hasEmbedding
+        ? toPgVectorLiteral(assertEmbeddingVector(query.embedding ?? []))
+        : null;
 
       // The vector ranking has a transaction of its own, so its `SET LOCAL` settings stay on its
       // connection and a cancelled full-text ranking cannot abort it.
@@ -637,16 +627,8 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
       // The rankings run side by side, so the search takes the longer of them, not their sum. Both are
       // waited for, so no statement is left running behind a failed search; when both fail, the error of
       // the vector ranking wins, as it did when the rankings ran one after the other.
-      // With a late embedding the full-text ranking starts first and its time bound (`statement_timeout`)
-      // runs from its own start, while the question is still being embedded.
-      const vectorRanking: Promise<ChunkRow[]> =
-        pendingEmbedding !== null
-          ? Promise.resolve(pendingEmbedding).then((vector) => rankByVector(toPgVectorLiteral(assertEmbeddingVector(vector))))
-          : embeddingLiteral === null
-            ? Promise.resolve<ChunkRow[]>([])
-            : rankByVector(embeddingLiteral);
       const [vectorSettled, fullTextSettled] = await Promise.allSettled([
-        vectorRanking,
+        embeddingLiteral === null ? Promise.resolve<ChunkRow[]>([]) : rankByVector(embeddingLiteral),
         useFullText ? rankByFullText() : Promise.resolve<ChunkRow[]>([]),
       ]);
       if (vectorSettled.status === "rejected") throw vectorSettled.reason;
