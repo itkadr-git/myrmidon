@@ -192,6 +192,43 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     expect(row.finishedAt).not.toBeNull();
   });
 
+  // myrmidon(OPE-12347): resurrected wakes carry the incident contract — execute
+  // or close within 10 minutes, never a standing pending row.
+  it("expires a resurrection wake older than ten minutes and re-wakes the agent", async () => {
+    const issueId = await seedIssue("todo");
+    const expiredAt = new Date(Date.now() - 11 * 60_000);
+    const wakeId = await seedDeferredWake(issueId, {
+      reason: "resurrection_execution_reconciliation_required",
+      requestedAt: expiredAt, createdAt: expiredAt, updatedAt: expiredAt,
+    });
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+    const row = await wakeRow(wakeId);
+    expect(result.expired).toBe(1);
+    expect(row.status).toBe("cancelled");
+    expect(row.error).toBe("resurrection_wake_expired");
+    expect(row.finishedAt).not.toBeNull();
+    const rewakes = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.agentId, agentId),
+      eq(agentWakeupRequests.reason, "deferred_issue_execution_expired"),
+    ));
+    expect(rewakes).toHaveLength(1);
+    expect(rewakes[0]!.payload).toMatchObject({ issueId, expiredWakeId: wakeId });
+  });
+
+  it("leaves a fresh resurrection wake under ten minutes alone", async () => {
+    const issueId = await seedIssue("todo");
+    const wakeId = await seedDeferredWake(issueId, {
+      reason: "resurrection_execution_reconciliation_required",
+      requestedAt: new Date(Date.now() - 5 * 60_000),
+      createdAt: new Date(Date.now() - 5 * 60_000),
+      updatedAt: new Date(Date.now() - 5 * 60_000),
+    });
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+    expect(result.expired).toBe(0);
+    expect((await wakeRow(wakeId)).status).toBe("deferred_issue_execution");
+  });
+
   it("expires deferred wakes older than thirty minutes even when the issue has a completed historical run", async () => {
     const issueId = await seedIssue("todo");
     await seedFinishedRun(issueId);
