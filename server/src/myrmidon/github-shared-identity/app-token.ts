@@ -204,7 +204,11 @@ export async function mintGitHubAppInstallationToken(input: {
     }
   }
   const inflight = tokenInflight.get(flightKey);
-  if (inflight) return inflight;
+  // myrmidon(OPE-12446): a caller that joins an in-flight mint rides the token
+  // that flight produces — it spent no installation budget of its own, so it
+  // reports `reused: true` exactly like a cache hit and the journal records a
+  // single issue instead of one per joining caller.
+  if (inflight) return inflight.then((minted) => ({ ...minted, reused: true }));
   const mint = mintGitHubAppInstallationTokenUncached(input, requestedPermissions).finally(() => {
     if (tokenInflight.get(flightKey) === mint) tokenInflight.delete(flightKey);
   });

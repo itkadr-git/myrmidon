@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
 
 // myrmidon(OPE-12446): the credentials broker must not spend the GitHub App
 // installation budget (5000 requests/hour) on repeated requests from one run.
@@ -46,17 +47,57 @@ import { captureRunIdentity } from "../services/run-identity.js";
 import { allowsGitHubCredentialExport } from "../services/github-credential-policy.js";
 import { resolveManagedGitHubCredential } from "../services/git-credentials.js";
 import {
+  connectionGrants,
+  agents,
+  companySecrets,
+  instanceSettings,
+  toolConnections,
+} from "@myrmidon/db";
+import {
   clearGitHubOperationCredentialCache,
   resolveGitHubOperationCredentials,
 } from "../services/github-operation-credentials.js";
-import { mintGitHubAppInstallationToken } from "../myrmidon/github-shared-identity/app-token.js";
+import {
+  mintGitHubAppInstallationToken,
+  resetGitHubAppTokenCacheForTests,
+} from "../myrmidon/github-shared-identity/app-token.js";
+
+// A real RSA private key: the mint signs the installation JWT with it, so a
+// fake string would fail inside `createPrivateKey` before the (stubbed) GitHub
+// fetch is ever reached.
+const { privateKey: appPrivateKeyPem } = (() => {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  return { privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+})();
 
 describe("github credentials broker budget (OPE-12446)", () => {
+  // The freshness re-check of a cached credential walks four tables by the
+  // first selected column; a dummy without a `select` made every check throw,
+  // the cache looked dead and every request re-resolved the credential.
   const dummyDb: any = {
     update: vi.fn().mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([]),
       }),
+    }),
+    insert: vi.fn().mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockResolvedValue([]),
+      }),
+    }),
+    select: vi.fn().mockImplementation((...selections: any[]) => {
+      const first = Object.values(Object.assign({}, ...selections))[0];
+      let rows: any[] = [];
+      if (first === toolConnections.enabled) rows = [{ enabled: true, status: "active" }];
+      else if (first === connectionGrants.status) rows = [{ status: "active" }];
+      else if (first === agents.role) rows = [{ role: "agent", status: "active" }];
+      else if (first === companySecrets.id) rows = [{ id: "secret-1" }];
+      else if (first === instanceSettings.general) rows = []; // no settings row → shared identity off
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows),
+        }),
+      };
     }),
   };
 
@@ -94,6 +135,7 @@ describe("github credentials broker budget (OPE-12446)", () => {
 
   beforeEach(() => {
     clearGitHubOperationCredentialCache();
+    resetGitHubAppTokenCacheForTests();
     vi.clearAllMocks();
     stubHappyPath();
     vi.unstubAllEnvs();
@@ -101,9 +143,14 @@ describe("github credentials broker budget (OPE-12446)", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it("100 sequential requests of one run to one repository resolve the credential once", async () => {
+    // The fuse counts every request before the cache short-circuit by design,
+    // so a 100-request probe must raise its own limit — the assertion here is
+    // the single resolution, not the fuse (the fuse has its own tests below).
+    vi.stubEnv("MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE", "1000");
     for (let index = 0; index < 100; index += 1) {
       const result = await resolveGitHubOperationCredentials(dummyDb, baseInput);
       expect(result).toMatchObject({ status: "available", env: { GH_TOKEN: "token-user-1" } });
@@ -117,6 +164,7 @@ describe("github credentials broker budget (OPE-12446)", () => {
   });
 
   it("100 concurrent requests of one run to one repository join one resolution", async () => {
+    vi.stubEnv("MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE", "1000");
     // Hold the first resolution open so every concurrent request lands inside
     // the same in-flight window instead of after its completion.
     let releaseResolution: (() => void) | null = null;
@@ -137,7 +185,6 @@ describe("github credentials broker budget (OPE-12446)", () => {
     });
 
     const requests = Array.from({ length: 100 }, () => resolveGitHubOperationCredentials(dummyDb, baseInput));
-    await Promise.race([new Promise((resolve) => setTimeout(resolve, 20)), Promise.resolve()]);
     releaseResolution!();
     const results = await Promise.all(requests);
     for (const result of results) {
@@ -159,11 +206,13 @@ describe("github credentials broker budget (OPE-12446)", () => {
     } as any);
     const mintInput = {
       appId: "101",
-      privateKeyPem: "test-key-not-a-secret",
+      privateKeyPem: appPrivateKeyPem,
       installationId: "5001",
       repository: "owner/repo-a",
       fetchImpl: (async () => {
-        recordGitHubRequest("broker", { status: 201 });
+        // No recordGitHubRequest here: the real githubRequest() inside
+        // app-token.ts records the `broker` traffic itself, at the actual
+        // mint — the assertion below counts that one call.
         return new Response(
           JSON.stringify({ token: "ghs_app-installation-token", expires_at: new Date(Date.now() + 60 * 60_000).toISOString() }),
           { status: 201 },
@@ -177,8 +226,11 @@ describe("github credentials broker budget (OPE-12446)", () => {
     const results = await Promise.all(mints);
     expect(recordGitHubRequest).toHaveBeenCalledTimes(1);
     for (const result of results) {
-      expect(result).toMatchObject({ token: "ghs_app-installation-token", reused: true });
+      expect(result).toMatchObject({ token: "ghs_app-installation-token" });
     }
+    // The caller whose flight actually minted reports `reused: false`; the 99
+    // that joined the in-flight mint rode its token without spending budget.
+    expect(results.filter((result) => !result.reused)).toHaveLength(1);
   });
 
   it("a run polling above the per-minute fuse gets HTTP 429 with an actionable reason", async () => {
