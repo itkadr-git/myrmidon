@@ -66,5 +66,5 @@ export function decideStackBacklogDrafts(
       summary: summaryFor(card, whyNow),
     });
   }
-  return drafts;
+  return drafts.sort((left, right) => left.component.localeCompare(right.component));
 }
