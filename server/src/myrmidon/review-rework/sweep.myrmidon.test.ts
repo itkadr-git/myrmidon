@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  REVIEW_REWORK_ACCEPTANCE_ACTION,
   REVIEW_REWORK_BLOCKED_ACTION,
   REVIEW_REWORK_CLOSED_ACTION,
   REVIEW_REWORK_CREATED_ACTION,
@@ -93,6 +94,15 @@ class FakeStore implements ReviewReworkStore {
   }
   async closeReviewTask(input: { issueId: string; comment: string }) {
     this.closed.push(input);
+    return true;
+  }
+  reopenedAfterLoopClose = false;
+  awaited: Array<{ issueId: string; assigneeAgentId: string | null; comment: string }> = [];
+  async reopenedAfterLoopClose(_companyId: string, _issueId: string) {
+    return this.reopenedAfterLoopClose;
+  }
+  async awaitAcceptance(input: { issueId: string; companyId: string; expectStatus: string; assigneeAgentId: string | null; comment: string }) {
+    this.awaited.push({ issueId: input.issueId, assigneeAgentId: input.assigneeAgentId, comment: input.comment });
     return true;
   }
   async stampReworkFingerprint(input: { issueId: string; originFingerprint: string }) {
@@ -326,6 +336,77 @@ describe("review rework sweep", () => {
     expect(activities.map((entry) => entry.action)).toContain(REVIEW_REWORK_CLOSED_ACTION);
     // The closed review creates no rework.
     expect(store.created).toHaveLength(0);
+  });
+
+  it("OPE-12260: a task reopened by a person after the loop closed it is handed back for acceptance, not closed again", async () => {
+    const store = new FakeStore();
+    store.reopenedAfterLoopClose = true;
+    store.rows = [candidateRow(reviewTask({ status: "in_review" }))];
+    store.comments = verdictComment();
+    const { sweep, activities } = build({
+      store,
+      snapshot: { state: "merged", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-05T09:00:00Z"), { force: true });
+
+    expect(result.closed).toBe(0);
+    expect(result.awaitedAcceptance).toBe(1);
+    expect(store.closed).toHaveLength(0);
+    expect(store.awaited).toHaveLength(1);
+    expect(store.awaited[0]!.issueId).toBe("review-1");
+    expect(store.awaited[0]!.assigneeAgentId).toBe("author-agent");
+    expect(store.awaited[0]!.comment).toContain("acceptance pending");
+    expect(activities.map((entry) => entry.action)).toContain(REVIEW_REWORK_ACCEPTANCE_ACTION);
+    // The idempotence marker: a second pass sees the handoff comment and noops.
+    store.comments = [
+      ...verdictComment(),
+      { id: "c-2", body: "Code merged; acceptance pending by the review-return loop: PR acme/repo#484 is merged.", createdAt: new Date("2026-10-05T09:01:00Z") },
+    ];
+    const second = await sweep.sweep(new Date("2026-10-05T09:02:00Z"), { force: true });
+    expect(second.awaitedAcceptance).toBe(0);
+    expect(second.closed).toBe(0);
+    expect(store.awaited).toHaveLength(1);
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it("OPE-12260: a description naming a live/operator acceptance step also holds the close", async () => {
+    const store = new FakeStore();
+    store.rows = [
+      candidateRow(reviewTask({
+        status: "in_review",
+        description: "Критерий приёмки: живая приёмка на бою, шаг выполняет оператор.",
+      })),
+    ];
+    store.comments = verdictComment();
+    const { sweep } = build({
+      store,
+      snapshot: { state: "merged", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-05T09:00:00Z"), { force: true });
+
+    expect(result.closed).toBe(0);
+    expect(result.awaitedAcceptance).toBe(1);
+    expect(store.closed).toHaveLength(0);
+    expect(store.awaited).toHaveLength(1);
+  });
+
+  it("OPE-12260: an ordinary merged review still closes with no acceptance markers", async () => {
+    const store = new FakeStore();
+    store.rows = [candidateRow(reviewTask({ status: "in_review" }))];
+    store.comments = verdictComment();
+    const { sweep } = build({
+      store,
+      snapshot: { state: "merged", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-05T09:00:00Z"), { force: true });
+
+    expect(result.closed).toBe(1);
+    expect(result.awaitedAcceptance).toBe(0);
+    expect(store.closed).toHaveLength(1);
+    expect(store.awaited).toHaveLength(0);
   });
 
   it("a settled rework with a newer RETURN reopens the same task", async () => {

@@ -18,6 +18,7 @@ import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   companies,
   issueComments,
+  activityLog,
   issueWorkProducts,
   issues,
   type Db,
@@ -93,6 +94,15 @@ export interface ReviewReworkStore {
     expectStatus: string;
     comment: string;
   }): Promise<boolean>;
+  /** True only when a human/ADM reactivated an issue the loop had closed. */
+  reopenedAfterLoopClose(companyId: string, issueId: string): Promise<boolean>;
+  awaitAcceptance(input: {
+    issueId: string;
+    companyId: string;
+    expectStatus: string;
+    assigneeAgentId: string | null;
+    comment: string;
+  }): Promise<boolean>;
 }
 
 function taskFacts(row: typeof issues.$inferSelect): ReviewReworkTaskFacts {
@@ -109,6 +119,7 @@ function taskFacts(row: typeof issues.$inferSelect): ReviewReworkTaskFacts {
     companyId: row.companyId,
     identifier: row.identifier,
     title: row.title,
+    description: row.description,
     status: row.status,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
@@ -435,6 +446,54 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
         input.companyId,
         (current) => current.status === input.expectStatus,
         () => ({ status: "done", executionState: null, executionPolicy: null }),
+        input.comment,
+      );
+    },
+
+    // OPE-12260: the loop must never out-shout a person. The audit's newest
+    // terminal write decides: a done row that a human or ADM reactivated (the
+    // update actor is a user/agent, not this sweep) after the loop's own
+    // close means the close was vetoed — the loop keeps its hands off.
+    async reopenedAfterLoopClose(companyId, issueId) {
+      const rows = await db
+        .select({ actorType: activityLog.actorType, actorId: activityLog.actorId, details: activityLog.details })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, "issue.updated"),
+            or(eq(activityLog.actorType, "user"), eq(activityLog.actorType, "agent")),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
+      const row = rows[0];
+      if (!row) return false;
+      const details = (row.details ?? {}) as Record<string, unknown>;
+      // The route writes `status` plus a `_previous` block (and `reopened`,
+      // `reopenedFrom`) on every status change; anything moving off a terminal
+      // status is a reopen by a person, ADM or agent — never by this sweep
+      // (its close only ever lands on done, never leaves it).
+      const previous =
+        (details._previous as Record<string, unknown> | undefined)?.status ??
+        details.reopenedFrom ??
+        details.previousStatus;
+      const previousStatus = typeof previous === "string" ? previous : null;
+      return previousStatus === "done" || previousStatus === "cancelled";
+    },
+
+    async awaitAcceptance(input) {
+      return applyGuardedPatch(
+        input.issueId,
+        input.companyId,
+        (current) => current.status === input.expectStatus,
+        () => ({
+          status: "in_progress",
+          ...(input.assigneeAgentId ? { assigneeAgentId: input.assigneeAgentId } : {}),
+          executionPolicy: null,
+        }),
         input.comment,
       );
     },
