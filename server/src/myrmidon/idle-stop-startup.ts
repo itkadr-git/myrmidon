@@ -41,6 +41,10 @@ export function getIdleStopService(): IdleStopService | undefined {
   return idleStopService;
 }
 
+export function setIdleStopServiceForTest(service: IdleStopService | undefined): void {
+  idleStopService = service;
+}
+
 export function shutdownIdleStopService(): void {
   if (idleStopService) {
     idleStopService.stop();
