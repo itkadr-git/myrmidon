@@ -298,10 +298,14 @@ class EgressProxyHandler(BaseHTTPRequestHandler):
             self.send_error(502, "cannot reach the destination")
             return
         self._journal(bot=bot, method="CONNECT", host=host, port=port, scheme="https", result="ok")
-        self.send_response(200, "Connection Established")
-        self.end_headers()
-        self.close_connection = True
         try:
+            # The 200 answer goes inside the try: a client that disconnects
+            # between acquire and this reply must still release its cap slot
+            # (the finally below), or the slot leaks for the lifetime of the
+            # process once the client is at the cap.
+            self.send_response(200, "Connection Established")
+            self.end_headers()
+            self.close_connection = True
             _Tunnel(self.connection, upstream, idle_sec=self.proxy.config.tunnel_idle_sec).run()
         finally:
             self.proxy.tunnel_cap.release(bot)
