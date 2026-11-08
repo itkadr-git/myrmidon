@@ -1788,14 +1788,17 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
     const { sweeper } = sweeperDeps();
     vi.mocked(logger.info).mockClear();
 
-    await sweeper.sweep(new Date());
+    const result = await sweeper.sweep(new Date());
 
+    expect(result.woken).toBe(0);
+    // The diagnostic payload carries the causal breakdown of the skips; the
+    // totals (woken included) live on the sweep result, not in the log line.
     const wokeNoneLog = vi
       .mocked(logger.info)
       .mock.calls.find(([, msg]) => msg === "idle pickup considered ready assigned issues but woke none");
     expect(wokeNoneLog).toBeDefined();
     const [fields] = wokeNoneLog!;
-    expect(fields).toMatchObject({ agentsChecked: 1, considered: 1, alreadyActive: 1, woken: 0 });
+    expect(fields).toMatchObject({ agentsChecked: 1, considered: 1, alreadyActive: 1 });
   });
 
   // OPE-12445: the review lane consumes the agent's whole pass when handled;
