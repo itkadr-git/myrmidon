@@ -733,6 +733,7 @@ import {
   isNonAssigneeWorkspaceBusyRetry,
   extractWakeCommentIds,
   deriveCommentId,
+  isValidWakeCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
   createCancelStaleQueuedRun,
@@ -8069,7 +8070,7 @@ export async function buildPaperclipWakePayload(input: {
             and(
               eq(issueComments.companyId, input.companyId),
               issueId ? eq(issueComments.issueId, issueId) : undefined,
-              inArray(issueComments.id, commentIds),
+              inArray(issueComments.id, commentIds.filter(isValidWakeCommentId)),
             ),
           );
 
@@ -11061,11 +11062,14 @@ export function heartbeatService(
     if (!interrupted) {
       commentIds = await undeliveredLegacyUserCommentIds(db, companyId, issueId, wake.agentId, commentIds);
       if (!commentIds.length) return;
+      const validCommentIds = commentIds.filter(isValidWakeCommentId);
+      if (!validCommentIds.length) return;
+      const lastId = validCommentIds[validCommentIds.length - 1]!;
       // The queue itself may have begun as a system wake. The saved human
       // comment, not that wake's origin or mutable caller payload, is authority.
       const [comment] = await db.select().from(issueComments).where(and(
         eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
-        eq(issueComments.id, commentIds[commentIds.length - 1]!), eq(issueComments.authorType, "user"),
+        eq(issueComments.id, lastId), eq(issueComments.authorType, "user"),
         isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
       )).orderBy(desc(issueComments.createdAt)).limit(1);
       if (!comment?.body.trim() || !comment.authorUserId) return;

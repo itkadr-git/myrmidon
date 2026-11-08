@@ -21,6 +21,7 @@ import { persistActivity } from "./activity-log.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { isValidWakeCommentId } from "../modules/run-dispatch/domain/wake-context.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
@@ -39,9 +40,11 @@ export async function undeliveredLegacyUserCommentIds(
   db: Db, companyId: string, issueId: string, agentId: string, commentIds: string[],
 ): Promise<string[]> {
   if (!commentIds.length) return [];
+  const validIds = commentIds.filter(id => isValidWakeCommentId(id));
+  if (!validIds.length) return [];
   const comments = await db.select({ id: issueComments.id }).from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
-    inArray(issueComments.id, commentIds), eq(issueComments.authorType, "user"),
+    inArray(issueComments.id, validIds), eq(issueComments.authorType, "user"),
     isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
     sql`nullif(trim(${issueComments.body}), '') is not null`,
     sql`nullif(trim(${issueComments.authorUserId}), '') is not null`,

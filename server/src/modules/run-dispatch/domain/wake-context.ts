@@ -5,6 +5,16 @@
 // independently maintained copy in either file could silently drift out of
 // sync with the other and change only one of the two gates that read it.
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_REGEX.test(value);
+}
+
+export function isValidWakeCommentId(value: unknown): value is string {
+  return isValidUuid(value);
+}
+
 function parseObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
