@@ -312,6 +312,7 @@ export async function prepareIsolatedCodexHome(input: {
   sourceCodexHome?: string | null;
   nativeMcp?: NativeMcpLaunchBinding | null;
   apiKey?: string | null;
+  openaiBaseUrl?: string | null;
 }): Promise<void> {
   await materializeNativeRuntimeSkills(
     input.context,
@@ -320,7 +321,11 @@ export async function prepareIsolatedCodexHome(input: {
 
   const configPath = join(input.codexHome, "config.toml");
   await rm(configPath, { force: true });
+  const openaiBaseUrl = input.openaiBaseUrl?.trim();
   await writeFile(configPath, [
+    ...(openaiBaseUrl
+      ? [`openai_base_url = ${JSON.stringify(openaiBaseUrl)}`, ""]
+      : []),
     // Codex shell snapshots serialize the provider process environment. The
     // native runner injects short-lived provider and MCP bindings, so a
     // snapshot would turn ephemeral credentials into durable session state.

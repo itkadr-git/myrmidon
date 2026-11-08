@@ -461,4 +461,17 @@ describe("runtime context materialization", () => {
     });
     await expect(stat(join(symlinkCodexHome, "auth.json"))).rejects.toThrow();
   });
+
+  it("writes openai_base_url into config.toml when provided", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-base-url-"));
+    roots.push(root);
+    const codexHome = join(root, "codex-home");
+    await prepareIsolatedCodexHome({
+      context: null,
+      codexHome,
+      openaiBaseUrl: "http://127.0.0.1:4000/v1",
+    });
+    const config = await readFile(join(codexHome, "config.toml"), "utf8");
+    expect(config).toContain('openai_base_url = "http://127.0.0.1:4000/v1"');
+  });
 });
