@@ -948,10 +948,12 @@ export async function propagateReviewApprovalToPullRequest(
       reviewedHeadSha: reviewedHead ?? undefined,
     };
   }
-  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the head the verdict named is
-  // authoritative for the check run too — the check lands on the declared head
-  // only, never on a commit the reviewer did not see.
-  const checkRunHeadSha = reviewedHead;
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the guard above verified the
+  // verdict's head reference matches the current PR head, so the check run
+  // lands exactly on the head the reviewer saw. GitHub's check-run API needs
+  // the full 40-character commit SHA, so post `prDetails.headSha`, never the
+  // possibly short prefix parsed from the verdict.
+  const checkRunHeadSha = prDetails.headSha;
 
   // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): a REQUEST CHANGES decision
   // never adds the `review-approved` label or an approving review — GitHub gets
