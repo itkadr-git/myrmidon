@@ -40,6 +40,7 @@ import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel
 import { SharedMountSettingsPanel } from "@/components/myrmidon/SharedMountSettingsPanel";
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
+import { WorkspaceHygieneSettingsPanel } from "@/components/myrmidon/WorkspaceHygieneSettingsPanel"; // myrmidon(1.6.7 SETTINGS-UI, OPE-6249)
 import { BotImageRolloutSettingsPanel } from "@/components/myrmidon/BotImageRolloutSettingsPanel"; // myrmidon(BOT-ROLLOUT)
 import { AutoUpdateSettingsPanel } from "@/components/myrmidon/AutoUpdateSettingsPanel"; // myrmidon(1.7-AUTO-UPDATE-B)
 import { SessionGenerationsSettingsPanel } from "@/components/myrmidon/SessionGenerationsSettingsPanel"; // myrmidon(PERF-DIET-K)
@@ -201,6 +202,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <SharedMountSettingsPanel />
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
+      <WorkspaceHygieneSettingsPanel /> {/* myrmidon(1.6.7 SETTINGS-UI, OPE-6249) */}
       <BotImageRolloutSettingsPanel /> {/* myrmidon(BOT-ROLLOUT) */}
       <AutoUpdateSettingsPanel /> {/* myrmidon(1.7-AUTO-UPDATE-B) */}
       <SessionGenerationsSettingsPanel /> {/* myrmidon(PERF-DIET-K) */}
