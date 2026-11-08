@@ -4,7 +4,7 @@
 import { and, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
 import { agents, issueWorkProducts, heartbeatRuns, projects, type Db } from "@myrmidon/db";
 import { unprocessable } from "../../errors.js";
-import { isNoncodingRole, isDevProjectCodeIssue } from "./domain.js";
+import { buildRequiresEngineerMessage, isNoncodingRole, isDevProjectCodeIssue } from "./domain.js";
 
 export interface GuardCheckInput {
   companyId: string;
@@ -168,20 +168,22 @@ export async function assertCodeTaskNotInProgressOnNoncodingRole(
   }
 
   const roleName = assignedAgent.role ?? "non-engineer";
-  const hint = suggestedAssignee
-    ? `Assign this code task to engineer ${suggestedAssignee.name} (${suggestedAssignee.id}) or return to PR author.`
-    : "Assign this code task in in_progress to an agent with the engineer role or return to PR author.";
+  // 1.6.7 CASTE-422-HINT (OPE-12142): name the task's caste and hint the casteKey path.
+  const message = buildRequiresEngineerMessage({
+    assigneeRole: roleName,
+    casteKey: input.casteKey ?? input.issue?.casteKey ?? null,
+    projectDefaultCasteKey,
+    suggested: suggestedAssignee,
+  });
 
-  throw unprocessable(
-    `This issue requires an engineer. Cannot set or keep in_progress on non-coding role "${roleName}". Suggested assignee: ${suggestedAssignee ? `${suggestedAssignee.name} (${suggestedAssignee.id})` : "an agent with role engineer"}.`,
-    {
+  throw unprocessable(message, {
       code: "issue_requires_engineer",
       issueId: input.issue?.id ?? null,
       assigneeAgentId: targetAssigneeId,
       assigneeRole: roleName,
       suggestedAssigneeAgentId: suggestedAssignee?.id ?? null,
       suggestedAssigneeName: suggestedAssignee?.name ?? null,
-      hint,
+      hint: message,
     },
   );
 }

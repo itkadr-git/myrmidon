@@ -25,6 +25,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { companySecrets, type Db } from "@myrmidon/db";
 import type { ReviewRoutingBoardMergeMethod } from "@myrmidon/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
+import { invalidateGitHubPullRequestCache } from "../../services/github-external-object-provider.js";
 import { gitHubApiBase } from "../../services/github-fetch.js";
 import { isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
 import { secretService } from "../../services/secrets.js";
@@ -367,6 +368,8 @@ export function createGitHubBoardMergeClient(input: {
       if (response.ok) {
         const body = asRecord(await response.json().catch(() => null));
         if (body && body.merged === false) return { status: "refused", httpStatus: response.status };
+        // myrmidon(OPE-12397): the provider's cached read of this PR still says "open".
+        invalidateGitHubPullRequestCache(repository, number);
         return { status: "merged", sha: asString(body?.sha) };
       }
       if (response.status === 409) return { status: "head_moved" };

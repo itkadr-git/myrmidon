@@ -11902,6 +11902,32 @@ export function issueService(db: Db) {
           { deferMs: dbOrTx === db ? 0 : 1_000 },
         );
       }
+      // myrmidon(1.7 POST-TASK-REFLECT, OPE-12095): outbox queue post-task-reflect job on transition to done
+      if (result && (result as { status?: string | null }).status === "done") {
+        const fromStatus = existing.status;
+        const toStatus = (result as { status?: string | null }).status ?? "done";
+        try {
+          const { handleIssueStatusChange, createPostgresReflectJobRepository } = await import("../modules/issues/index.js");
+          const repo = createPostgresReflectJobRepository(dbOrTx ?? db);
+          await handleIssueStatusChange(
+            {
+              companyId: existing.companyId,
+              issueId: id,
+              fromStatus,
+              toStatus,
+              assigneeAgentId: (result as { assigneeAgentId?: string | null }).assigneeAgentId ?? existing.assigneeAgentId ?? null,
+              role: null,
+            },
+            { repository: repo },
+          );
+        } catch (reflectErr) {
+          logger.warn(
+            { err: reflectErr, issueId: id, fromStatus, toStatus },
+            "post-task-reflect job enqueue on done transition failed; caught safely",
+          );
+        }
+      }
+
       return result;
     },
 

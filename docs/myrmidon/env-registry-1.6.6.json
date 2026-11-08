@@ -41,10 +41,10 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 898,
+    "unique_names": 900,
     "secret": 108,
     "infra": 374,
-    "product": 416
+    "product": 418
   },
   "entries": [
     {
@@ -6562,6 +6562,36 @@
       "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
       "ticket_or_pr": "не требуется",
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
+    },
+    {
+      "name": "MYRMIDON_GITHUB_OBJECT_CACHE_TTL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/services/github-external-object-provider.ts:487",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; сколько секунд чтение открытого PR или issue из GitHub (OPE-12397) отдаётся из памяти доски без запроса; 0 выключает кэш",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
+      "name": "MYRMIDON_GITHUB_OBJECT_TERMINAL_TTL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/services/github-external-object-provider.ts:488",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; сколько секунд чтение влитого или закрытого PR или issue из GitHub и ответ «не найден» (OPE-12397) отдаётся из памяти доски без запроса",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env до решения владельца о настройке в UI"
     },
     {
       "name": "MYRMIDON_GITHUB_OPERATION_ACTIVE",

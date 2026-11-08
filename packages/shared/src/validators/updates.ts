@@ -138,6 +138,12 @@ export const updateSettingsSchema = z.object({
   rollback: autoRollbackSettingsSchema.optional(),
   // Flat aliases for backwards compatibility or single-field updates
   cron: maintenanceWindowCronExpressionSchema.optional(),
+  maintenanceWindow: z
+    .union([
+      maintenanceWindowCronExpressionSchema,
+      maintenanceWindowBoundsSchema,
+    ])
+    .optional(),
   durationMinutes: z.number().int().min(5).max(1440).optional(),
   timezone: timezoneSchema.optional(),
   canaryPercentage: percentageSchema.optional(),

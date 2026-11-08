@@ -5673,6 +5673,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/status-strip",
+  tags: ["sidebar"],
+  summary: "Get the UI2 header status strip for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/sidebar-badges",
   tags: ["sidebar"],
   summary: "Get sidebar badge counts",
@@ -6485,6 +6494,14 @@ for (const path of ["/api/updates/settings", "/api/updates", "/api/myrmidon/upda
   });
   registry.registerPath({
     method: "put",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "post",
     path,
     tags: ["instance"],
     summary: "Replace auto-update settings",
