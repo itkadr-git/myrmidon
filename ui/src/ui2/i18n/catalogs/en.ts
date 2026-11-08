@@ -388,6 +388,35 @@ export const en = {
           subtitle: "Channels, voice recognition and connectors",
           tabs: {
             voice: "Voice (STT)",
+            access: "Access",
+          },
+          access: {
+            modeTitle: "Channel access mode",
+            modeSubtitle: "Who may write to the company bots in the channel layer",
+            modeLabel: "Access mode",
+            modeSponsor: "Sponsor (default vendor path)",
+            modeAllowlist: "Allowlist only",
+            modeHint: "sponsor keeps the vendor guest-sponsorship path; allowlist serves only senders admitted in the list below",
+            modeOverridden: "The mode is pinned by the MYRMIDON_CHANNEL_ACCESS_MODE environment variable and cannot be changed here",
+            listTitle: "Allowed senders",
+            listEmpty: "No senders in the allowlist yet",
+            scopeCompany: "all bots",
+            scopeEndpoint: "bot",
+            revokedBadge: "Revoked",
+            revoke: "Revoke",
+            restore: "Restore",
+            addTitle: "Add a sender",
+            providerLabel: "Provider",
+            externalIdLabel: "Channel user id",
+            handleLabel: "Handle (optional)",
+            scopeLabel: "Scope",
+            endpointLabel: "Bot endpoint",
+            add: "Add",
+            saving: "Saving...",
+            loadError: "Could not load channel access settings",
+            loadErrorDetail: "The settings request failed. Check your connection and retry.",
+            retry: "Retry",
+            noCompany: "Select a company to manage channel access",
           },
           voice: {
             title: "Voice recognition (STT)",
@@ -912,7 +941,8 @@ export type Ui2Catalog = {
         },
         channels: {
           title: string; subtitle: string;
-          tabs: { voice: string };
+          tabs: { voice: string; access: string };
+          access: { modeTitle: string; modeSubtitle: string; modeLabel: string; modeSponsor: string; modeAllowlist: string; modeHint: string; modeOverridden: string; listTitle: string; listEmpty: string; scopeCompany: string; scopeEndpoint: string; revokedBadge: string; revoke: string; restore: string; addTitle: string; providerLabel: string; externalIdLabel: string; handleLabel: string; scopeLabel: string; endpointLabel: string; add: string; saving: string; loadError: string; loadErrorDetail: string; retry: string; noCompany: string };
           voice: { title: string; subtitle: string; enabled: string; enabledDesc: string; backend: string; backendDesc: string; language: string; languageDesc: string; languageAuto: string; languageRu: string; model: string; modelDesc: string; modelPlaceholder: string; diarization: string; diarizationDesc: string; maxDuration: string; maxDurationDesc: string; save: string; saving: string; saved: string; saveError: string; loadError: string; loadErrorDetail: string; retry: string };
         },
         system: {
