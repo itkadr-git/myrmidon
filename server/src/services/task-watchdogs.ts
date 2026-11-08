@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   agentWakeupRequests,
@@ -14,6 +14,7 @@ import {
   issueThreadInteractions,
   issueWatchdogs,
   issueWorkProducts,
+  activityLog,
 } from "@myrmidon/db";
 import type { IssueWatchdog, IssueWatchdogSummary } from "@myrmidon/shared";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -41,6 +42,17 @@ const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed
 // false-positive stopped-subtree review. The periodic watchdog reconciler
 // re-evaluates after the window, so a genuinely idle issue still triggers.
 const TASK_WATCHDOG_FIRST_RUN_GRACE_MS = 15_000;
+// myrmidon(OPERATOR-BUDGET / OPE-3008): when an operator deliberately parks a
+// subtree leaf (or the watchdog review itself) in `backlog`, that is a settled
+// human decision, not stalled automation. The classifier treats such leaves as
+// operator-settled instead of stopped work, and repeated watchdog wakeups for
+// the exact same stop fingerprint are held down by a cooldown so one parked
+// situation cannot burn dozens of `swarm_matched` runs per day.
+const TASK_WATCHDOG_OPERATOR_BACKLOG_STATUSES = ["backlog"] as const;
+// Same-fingerprint re-wake cooldown for reviews that keep cycling (for
+// example, a stale in_review review reopened again and again). Overridable in
+// tests via the classifier input; production sweeps use the default.
+const TASK_WATCHDOG_REWAKE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 type ActorFields = {
   agentId?: string | null;
@@ -207,6 +219,14 @@ export type TaskWatchdogClassifierInput = {
   // Such issues are never treated as "pending first run" — they have
   // demonstrably executed, so a stop is genuine rather than a snapshot race.
   completedRunIssueIds?: string[];
+  // myrmidon(OPERATOR-BUDGET / OPE-3008): included issue ids whose latest
+  // status change to `backlog` was authored by an operator decision (a human
+  // user, not an agent or the system). Such leaves are a settled human
+  // disposition: they stop counting as stopped work. Omit for legacy
+  // behavior (backlog always counts as stopped).
+  operatorBacklogIssueIds?: string[];
+  // Cooldown window (ms) for same-fingerprint re-wakes; 0/null disables it.
+  rewakeCooldownMs?: number | null;
 };
 
 type TaskWatchdogWakeupOptions = {
@@ -451,6 +471,28 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
           "A watched issue was created within the first-run grace window and has not yet completed a run; deferring evaluation until its first assignment run/wake is observable.",
         includedIssueIds: includedIds,
         pendingIssueIds,
+      };
+    }
+  }
+
+  const operatorBacklogIssueIds = new Set(input.operatorBacklogIssueIds ?? []);
+  const stoppedBacklogIssueIds = included
+    .filter((issue) => issue.status === "backlog" && operatorBacklogIssueIds.has(issue.id))
+    .map((issue) => issue.id)
+    .sort();
+  // An operator deliberately parked every non-terminal leaf. This is a
+  // settled disposition, not a stopped subtree: return before constructing a
+  // stopped fingerprint so reconcile cannot create/reopen a review or wake.
+  if (stoppedBacklogIssueIds.length > 0) {
+    const nonBacklogLeaves = included.filter((issue) =>
+      issue.status !== "backlog" && !isTerminalIssueStatus(issue.status),
+    );
+    if (nonBacklogLeaves.length === 0) {
+      return {
+        state: "operator_backlog",
+        reason: "Every non-terminal leaf was deliberately moved to backlog by an operator; watchdog intervention is not required.",
+        includedIssueIds: includedIds,
+        operatorBacklogIssueIds: stoppedBacklogIssueIds,
       };
     }
   }
