@@ -142,8 +142,9 @@ export async function databaseIdentity(q: Q): Promise<{ name: string; oid: strin
   return { name: rows[0]!.name, oid: rows[0]!.oid };
 }
 
-export async function countRows(q: Q, table: string): Promise<number> {
-  const rows = await all<{ n: number }>(q, sql.raw(`select count(*)::int as n from ${qi("public")}.${qi(table)}`));
+export async function countRows(q: Q, table: string, where?: string): Promise<number> {
+  const whereSql = where ? ` where ${where}` : "";
+  const rows = await all<{ n: number }>(q, sql.raw(`select count(*)::int as n from ${qi("public")}.${qi(table)}${whereSql}`));
   return rows[0]?.n ?? 0;
 }
 
@@ -173,6 +174,7 @@ export async function tableDigest(
   info: TableInfo,
   exclude: Set<string>,
   narrowedCols?: Set<string>,
+  where?: string,
 ): Promise<TableDigest> {
   const excluded = info.columns.filter((c) => exclude.has(c.name)).map((c) => ql(c.name));
   const strip = excluded.length > 0 ? ` - array[${excluded.join(",")}]::text[]` : "";
@@ -187,11 +189,12 @@ export async function tableDigest(
       expr = `(${expr} - array[${strippedArray}]::text[] || jsonb_build_object(${buildPairs}))`;
     }
   }
+  const whereSql = where ? ` where ${where}` : "";
   const rows = await all<{ n: number; d: string }>(
     q,
     sql.raw(
       `select count(*)::int as n, coalesce(md5(string_agg(h, ',' order by h collate "C")), 'empty') as d ` +
-        `from (select md5((${expr})::text) as h from ${qi("public")}.${qi(table)} t) s`,
+        `from (select md5((${expr})::text) as h from ${qi("public")}.${qi(table)} t${whereSql}) s`,
     ),
   );
   return { rows: rows[0]?.n ?? 0, digest: rows[0]?.d ?? "empty" };
