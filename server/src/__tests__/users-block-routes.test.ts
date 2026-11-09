@@ -310,4 +310,40 @@ describePostgres("user block API with audit (OPE-10215)", () => {
       expect(resetRes.body.passwordSetLink).toContain(resetRes.body.token);
     });
   });
+
+  describe("GET /api/users (OPE-12089)", () => {
+    it("returns paginated users with items and total, supporting second page, empty list, and role=admin", async () => {
+      const adminApp = createApp(db, admin);
+
+      // Default pagination
+      const list = await request(adminApp).get("/api/users");
+      expect(list.status).toBe(200);
+      expect(list.body).toHaveProperty("total");
+      expect(list.body).toHaveProperty("items");
+      expect(list.body).toHaveProperty("users");
+      expect(Array.isArray(list.body.items)).toBe(true);
+      expect(list.body.page).toBe(1);
+      expect(list.body.limit).toBe(20);
+
+      // Second page
+      const page2 = await request(adminApp).get("/api/users?page=2&limit=1");
+      expect(page2.status).toBe(200);
+      expect(page2.body.page).toBe(2);
+      expect(page2.body.limit).toBe(1);
+      expect(Array.isArray(page2.body.items)).toBe(true);
+
+      // Empty list for out-of-range page
+      const emptyList = await request(adminApp).get("/api/users?page=999&limit=10");
+      expect(emptyList.status).toBe(200);
+      expect(emptyList.body.items).toHaveLength(0);
+      expect(emptyList.body.users).toHaveLength(0);
+      expect(emptyList.body.total).toBeGreaterThanOrEqual(1);
+
+      // Filter role=admin
+      const adminUsers = await request(adminApp).get("/api/users?role=admin");
+      expect(adminUsers.status).toBe(200);
+      expect(Array.isArray(adminUsers.body.items)).toBe(true);
+      expect(adminUsers.body.items.every((u: { role: string }) => u.role === "instance_admin")).toBe(true);
+    });
+  });
 });
