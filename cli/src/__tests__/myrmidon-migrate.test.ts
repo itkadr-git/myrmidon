@@ -114,7 +114,7 @@ describe("myrmidon:migrate pure guards", () => {
 
   it("rejects a truncated, extended or foreign chain with the right reason", () => {
     const base = rowsOf(release("v2026.916.1"));
-    const latest = rowsOf(release("v2026.1023.0"));
+    const latest = rowsOf(release("v2026.1106.0"));
     // truncated: one short of each release
     expect(checkVendorChain(base.slice(0, -1), releases).reason).toBe("older-than-supported-release");
     for (const name of ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0", "v2026.1106.0"]) {
@@ -158,6 +158,9 @@ describe("myrmidon:migrate pure guards", () => {
   it("pins the features that only later releases have", () => {
     const index = buildVendorOnlyIndex();
     expect(index.tables.get("mcp_oauth_clients")).toBe("v2026.1012.0");
+    expect(index.tables.get("workflows")).toBe("v2026.1106.0");
+    expect(index.tables.get("muse_agent_bindings")).toBe("v2026.1106.0");
+    expect(index.columns.get("cases.workflow_id")).toBe("v2026.1106.0");
     expect(index.tables.size).toBeGreaterThan(20);
     expect(index.columns.has("agents.appearance")).toBe(false);
     expect(index.columns.has("issues.title_needs_generation")).toBe(false);
@@ -320,6 +323,60 @@ describe("myrmidon:migrate pure guards", () => {
       const accepted = checkCompatibility(analysis, target, index, { acceptUnknownSourceObjects: true });
       expect(accepted.problems).toEqual([]);
       expect(accepted.exclusions).toEqual([{ kind: "table", name: "custom_extension", reason: "unknown source table accepted by flag" }]);
+    });
+
+    it("reports v2026.1106.0 vendor-only tables and columns with descriptions and requires flag when they hold data", () => {
+      const v1106Index = buildVendorOnlyIndex();
+      const v1106Tables = [
+        "case_access_sources", "case_handoffs", "chat_slack_manager_grants", "company_observability",
+        "company_prompt_injection_prevention", "company_skill_import_budgets", "company_skill_repository_snapshots",
+        "execution_workspace_repositories", "execution_workspace_repository_access", "execution_workspace_repository_roots",
+        "execution_workspace_restore_points", "external_agent_holds", "grok_bot_dispatches", "grok_bot_routines",
+        "muse_agent_bindings", "muse_credentials", "muse_idle_receipts", "muse_input_deliveries",
+        "muse_mailbox_items", "muse_receiver_contact_buckets", "muse_runner_assignments", "muse_runner_operations",
+        "project_skill_sources", "prompt_injection_invocations", "workflows",
+      ];
+      for (const t of v1106Tables) {
+        expect(v1106Index.tables.get(t)).toBe("v2026.1106.0");
+      }
+      expect(v1106Index.columns.get("cases.workflow_id")).toBe("v2026.1106.0");
+
+      const sampleTables = [
+        table("workflows", [col("id")]),
+        table("muse_agent_bindings", [col("id")]),
+        table("cases", [col("id"), col("workflow_id")]),
+      ];
+      const analysis = analysisOf(
+        sampleTables,
+        { workflows: 5, muse_agent_bindings: 2, cases: 10 },
+        [
+          { kind: "table", table: "workflows", rows: 5, introducedIn: "v2026.1106.0" },
+          { kind: "table", table: "muse_agent_bindings", rows: 2, introducedIn: "v2026.1106.0" },
+          { kind: "column", table: "cases", column: "workflow_id", rows: 10, introducedIn: "v2026.1106.0" },
+        ],
+      );
+      const target = new Map([["cases", table("cases", [col("id")])]]);
+
+      const unaccepted = checkCompatibility(analysis, target, v1106Index);
+      expect(unaccepted.problems).toEqual([]);
+      expect(unaccepted.vendorOnly).toEqual([
+        { kind: "table", table: "workflows", rows: 5, introducedIn: "v2026.1106.0" },
+        { kind: "table", table: "muse_agent_bindings", rows: 2, introducedIn: "v2026.1106.0" },
+        { kind: "column", table: "cases", column: "workflow_id", rows: 10, introducedIn: "v2026.1106.0" },
+      ]);
+      expect(unaccepted.skippedSourceData).toEqual([
+        { table: "workflows", rows: 5, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+        { table: "muse_agent_bindings", rows: 2, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+        { table: "cases", column: "workflow_id", rows: 10, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+      ]);
+
+      const accepted = checkCompatibility(analysis, target, v1106Index, { acceptVendorOnlyData: true });
+      expect(accepted.problems).toEqual([]);
+      expect(accepted.skippedSourceData).toEqual([
+        { table: "workflows", rows: 5, vendorRelease: "v2026.1106.0", decision: "accepted" },
+        { table: "muse_agent_bindings", rows: 2, vendorRelease: "v2026.1106.0", decision: "accepted" },
+        { table: "cases", column: "workflow_id", rows: 10, vendorRelease: "v2026.1106.0", decision: "accepted" },
+      ]);
     });
   });
 
