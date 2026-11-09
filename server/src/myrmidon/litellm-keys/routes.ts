@@ -75,7 +75,7 @@ async function readPoolGroupProviders(
 }
 
 /** Applies pool provider types to the catalog copy used by the UI heuristics. */
-function withPoolProviders<T extends { modelName: string; provider: string }>(
+function withPoolProviders<T extends { modelName: string; provider: string | null }>(
   models: T[],
   poolGroups: Map<string, string>,
 ): T[] {

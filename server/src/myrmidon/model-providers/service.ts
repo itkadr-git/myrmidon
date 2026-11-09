@@ -1047,13 +1047,18 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     const nowEpoch = Math.floor(now().getTime() / 1000);
     const staleToleranceSec = 3600; // an hour of clock skew is fine
-    if (summary.nextResetAt !== null && summary.nextResetAt + staleToleranceSec < nowEpoch) {
-      summary.nextResetAt = null;
-    }
-    if (summary.nextResetText) {
-      const parsed = Math.floor(new Date(summary.nextResetText).getTime() / 1000);
+    // myrmidon(OPE-12361): recompute instead of mutating the inferred literal —
+    // a stale reset date is dropped, not shown (keeps `nextResetAt: number | null`).
+    const nextResetAt =
+      summary.nextResetAt !== null && summary.nextResetAt + staleToleranceSec < nowEpoch
+        ? null
+        : summary.nextResetAt;
+    const nextResetTextRaw = summary.nextResetText;
+    let nextResetText = nextResetTextRaw;
+    if (nextResetText) {
+      const parsed = Math.floor(new Date(nextResetText).getTime() / 1000);
       if (Number.isFinite(parsed) && parsed + staleToleranceSec < nowEpoch) {
-        summary.nextResetText = null;
+        nextResetText = null;
       }
     }
 
@@ -1062,7 +1067,11 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       providerType: provider.type,
       channels,
       signals,
-      summary,
+      summary: {
+        ...summary,
+        nextResetAt,
+        nextResetText,
+      },
     };
   }
 

@@ -1870,10 +1870,10 @@
           "single_provider": "Fallback chain for '{{model}}' relies on a single provider ({{provider}}). At least one fallback target must use a different provider for redundancy."
         },
         "order": {
-          "free_after_paid": "Free channel '{{target}}' appears after paid channels in chain for '{{model}}'. Free channels should come first.",
-          "paid_same_provider": "Paid fallback channel '{{target}}' uses the same provider ({{provider}}) as primary model '{{model}}'.",
-          "paid_same_provider_repeat": "Subsequent paid fallback channel '{{target}}' uses the same provider ({{provider}}) as an earlier paid fallback.",
-          "cheaper_after_expensive": "Cheaper channel '{{target}}' appears after more expensive channel in chain for '{{model}}'."
+          "free_after_paid": "Free channel appears after paid channels in chain for '{{model}}'. Free channels should come first.",
+          "paid_same_provider": "Paid fallback channel uses the same provider ({{provider}}) as primary model '{{model}}'.",
+          "paid_same_provider_repeat": "Subsequent paid fallback channel uses the same provider ({{provider}}) as an earlier paid fallback.",
+          "cheaper_after_expensive": "Cheaper channel appears after a more expensive channel in chain for '{{model}}'."
         }
       }
     },

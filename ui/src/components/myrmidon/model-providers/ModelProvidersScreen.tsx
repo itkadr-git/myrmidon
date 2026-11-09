@@ -33,6 +33,7 @@ import {
   sortModels,
   type AddModelProviderInput,
   type LitellmChannelsResponse,
+  type ModelProviderChannelsView,
   type ModelProviderType,
   type ModelProvidersView,
   type ModelProviderView,
@@ -65,10 +66,16 @@ function isPoolProvider(type?: string): boolean {
 }
 
 function actorLabel(type?: string): string {
+  // myrmidon(OPE-12361): labels come from the locale catalog (RU/EN parity).
   if (type === "agent") return "агент";
   if (type === "board") return "доска";
   if (type === "system") return "система";
   return "пользователь";
+}
+
+/** Null-safe epoch seconds for the pool reset date display (OPE-12361). */
+function summaryNextResetEpoch(summary: NonNullable<ModelProviderChannelsView["summary"]>): number | null {
+  return typeof summary.nextResetAt === "number" ? summary.nextResetAt : null;
 }
 
 function formatTime(value: string): string {
@@ -601,7 +608,9 @@ function ProviderCard({
     models: Array<{ modelName: string; litellmModelName: string; enabled: boolean; free: boolean }>,
   ) => void;
   savingModels: boolean;
-  t: (key: string) => string;
+  // myrmidon(OPE-12361): the fork catalog resolves interpolation params, so the
+  // prop must accept i18next options instead of a key-only translate.
+  t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const modelsQueryResult = useQuery({
     queryKey: modelsQuery(provider.id),
@@ -859,11 +868,14 @@ function ProviderCard({
                         {t("modelProviders.channels.summaryDisabled", { count: channelsQueryResult.data.summary.disabled })}
                       </span>
                     )}
-                    {(channelsQueryResult.data.summary.nextResetAt || channelsQueryResult.data.summary.nextResetText) && (
+                    {(summaryNextResetEpoch(channelsQueryResult.data.summary) !== null ||
+                      channelsQueryResult.data.summary.nextResetText) && (
                       <span className="rounded border border-border px-2 py-1 text-muted-foreground" data-testid="myrmidon-pool-summary-reset">
                         {channelsQueryResult.data.summary.nextResetText
                           ? t("modelProviders.channels.summaryNextReset", { at: channelsQueryResult.data.summary.nextResetText })
-                          : t("modelProviders.channels.summaryNextReset", { at: new Date(channelsQueryResult.data.summary.nextResetAt * 1000).toLocaleString() })}
+                          : t("modelProviders.channels.summaryNextReset", {
+                              at: new Date((summaryNextResetEpoch(channelsQueryResult.data.summary) as number) * 1000).toLocaleString(),
+                            })}
                       </span>
                     )}
                   </div>

@@ -499,8 +499,10 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
         live: 2,
         exhausted: 0,
         banned: 0,
+        error: 0,
         disabled: 1,
         nextResetAt: null,
+        nextResetText: null,
       },
     });
 
@@ -543,7 +545,7 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
       providerType: "chatgpt-pool",
       channels: [],
       signals: [],
-      summary: { total: 0, live: 0, exhausted: 0, banned: 0, disabled: 0, nextResetAt: null },
+      summary: { total: 0, live: 0, exhausted: 0, banned: 0, error: 0, disabled: 0, nextResetAt: null, nextResetText: null },
     });
 
     const poolView: ModelProvidersView = {
@@ -740,7 +742,10 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     root = r; await flushReact();
     const entry = container.querySelector('[data-testid="myrmidon-model-providers-changelog-entry"]');
     expect(entry?.textContent).toContain("model_provider_models_updated");
-    expect(entry?.textContent).toContain("board:user-123");
+    // myrmidon(OPE-12361): actor now renders as a display name (when the server
+    // carries one) or a localized role label + id — not `type:id`.
+    expect(entry?.textContent).toContain("доска · user-123");
+    expect(entry?.textContent).not.toContain("board:user-123");
     expect(entry?.textContent).toContain("MODELS");
     const rollbackBtn = container.querySelector('[data-testid="myrmidon-model-providers-changelog-rollback"]');
     expect(rollbackBtn).not.toBeNull();
