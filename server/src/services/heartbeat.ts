@@ -21175,6 +21175,11 @@ export function heartbeatService(
         externalRunId: heartbeatRuns.externalRunId,
         errorCode: heartbeatRuns.errorCode,
         cancellationCorrelationId: sql<string | null>`${heartbeatRuns.resultJson}->'executionCancellation'->>'correlationId'`,
+        // myrmidon(OPE-12484): keep the structured cancellation cause the
+        // board stamped on the run instead of deriving a board_cancelled
+        // placeholder for every terminal cancelled run.
+        cancellationSource: sql<{ code: string; endpoint?: string; actor?: string } | null>`${heartbeatRuns.resultJson}->'executionCancellation'->'source'`,
+        cancellationReason: sql<string | null>`${heartbeatRuns.resultJson}->'executionCancellation'->>'reason'`,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
@@ -29252,6 +29257,24 @@ export function heartbeatService(
           outcome = "failed";
         }
 
+        // myrmidon(OPE-12484): a cancellation that did not go through
+        // cancelRunInternal (lease expiry, run guard, an adapter abort) must
+        // still carry a structured cause instead of the board_cancelled
+        // placeholder the gateway close derives later.
+        const cancellationCause = outcome === "cancelled"
+          ? runGuardStopReason
+            ? { source: { code: "run_guard", actor: "system" }, reason: `Run stopped by guard: ${runGuardStopReason}` }
+            : executionControl.controller.signal.reason instanceof Error &&
+                /lease lost/i.test(executionControl.controller.signal.reason.message)
+              ? { source: { code: "controller_lease_lost", actor: "system" }, reason: executionControl.controller.signal.reason.message }
+              : parseObject(parseObject(latestRun?.resultJson).executionCancellation).source
+                ? {
+                    source: parseObject(parseObject(latestRun?.resultJson).executionCancellation).source as { code: string; endpoint?: string; actor?: string },
+                    reason: readNonEmptyString(parseObject(parseObject(latestRun?.resultJson).executionCancellation).reason) ?? "Run cancelled",
+                  }
+                : { source: { code: "control_plane", actor: "system" }, reason: "Run cancelled" }
+          : null;
+
         const nextSessionState = resolveNextSessionState({
           adapterType: agent.adapterType,
           codec: sessionCodec,
@@ -29422,6 +29445,17 @@ export function heartbeatService(
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
                   : {}),
+                ...(cancellationCause
+                  ? {
+                      executionCancellation: {
+                        ...parseObject(parseObject(latestRun?.resultJson).executionCancellation),
+                        state: "acknowledged",
+                        acknowledgedAt: new Date().toISOString(),
+                        correlationId: parseObject(parseObject(latestRun?.resultJson).executionCancellation).correlationId ?? randomUUID(),
+                        ...cancellationCause,
+                      },
+                    }
+                  : {}),
                 configFreshness: configFreshnessResultMetadata,
               },
               errorFamily: adapterResult.errorFamily ?? null,
@@ -29454,6 +29488,33 @@ export function heartbeatService(
           status,
           finalRunPatch,
         );
+        // myrmidon(OPE-12484): every transition into `cancelled` must leave an
+        // activity trace naming the initiator and the reason, whichever path
+        // decided the cancellation (operator cancel writes its own heartbeat
+        // activity in the route and skips this live writer).
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
+        if (cancellationCause && persistedRunWrite.run?.status === "cancelled") {
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType:
+              cancellationCause.source.actor === "board" ||
+              cancellationCause.source.code === "board_operator"
+                ? "user"
+                : "system",
+            actorId: cancellationCause.source.actor ?? "system",
+            action: "heartbeat_run.cancelled",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            details: {
+              runId: run.id,
+              agentId: run.agentId,
+              reason: cancellationCause.reason,
+              errorCode: runErrorCode,
+              source: cancellationCause.source,
+            },
+          });
+        }
         let persistedRun: typeof heartbeatRuns.$inferSelect | null =
           persistedRunWrite.run;
         if (!persistedRunWrite.updated) {
@@ -30135,6 +30196,14 @@ export function heartbeatService(
         const stopMessage = stopReason ? `Run stopped by guard: ${stopReason}` : message;
         const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
         const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
+        const cancellationFailureCause = failureOutcome === "cancelled"
+          ? stopReason
+            ? { source: { code: "run_guard", actor: "system" }, reason: stopMessage }
+            : executionControl.controller.signal.reason instanceof Error &&
+                /lease lost/i.test(executionControl.controller.signal.reason.message)
+              ? { source: { code: "controller_lease_lost", actor: "system" }, reason: executionControl.controller.signal.reason.message }
+              : { source: { code: "control_plane", actor: "system" }, reason: stopMessage }
+          : null;
         const failedRunWrite = await setRunStatusIfRunning(run.id, failureOutcome, {
           error: stopMessage,
           errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
@@ -30146,6 +30215,17 @@ export function heartbeatService(
               ...parseObject(stopSnapshot?.resultJson),
               ...(stopReason
                 ? { runGuardStopReason: stopReason, runGuardStats: runGuard.stats() }
+                : {}),
+              ...(cancellationFailureCause
+                ? {
+                    executionCancellation: {
+                      ...parseObject(parseObject(stopSnapshot?.resultJson).executionCancellation),
+                      state: "acknowledged",
+                      acknowledgedAt: new Date().toISOString(),
+                      correlationId: parseObject(parseObject(stopSnapshot?.resultJson).executionCancellation).correlationId ?? randomUUID(),
+                      ...cancellationFailureCause,
+                    },
+                  }
                 : {}),
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
@@ -30166,6 +30246,32 @@ export function heartbeatService(
           logSha256: logSummary?.sha256,
           logCompressed: logSummary?.compressed ?? false,
         });
+        // myrmidon(OPE-12484): the guard/lease abort that lands here ends the
+        // run as `cancelled` through the failure branch; record the same
+        // activity trace as the live writer path.
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
+        if (cancellationFailureCause && failedRunWrite.run?.status === "cancelled") {
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType:
+              cancellationFailureCause.source.actor === "board" ||
+              cancellationFailureCause.source.code === "board_operator"
+                ? "user"
+                : "system",
+            actorId: cancellationFailureCause.source.actor ?? "system",
+            action: "heartbeat_run.cancelled",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            details: {
+              runId: run.id,
+              agentId: run.agentId,
+              reason: cancellationFailureCause.reason,
+              errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
+              source: cancellationFailureCause.source,
+            },
+          });
+        }
         if (
           !failedRunWrite.updated &&
           !(
@@ -35281,6 +35387,29 @@ export function heartbeatService(
           level: "warn",
           message: options.eventMessage ?? "run cancelled",
           ...(options.eventPayload ? { payload: options.eventPayload } : {}),
+        });
+        // myrmidon(OPE-12484): every transition into `cancelled` must leave an
+        // activity trace naming the initiator and the reason.
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType:
+            cancellationSource.actor === "board" ||
+            cancellationSource.code === "board_operator"
+              ? "user"
+              : "system",
+          actorId: cancellationSource.actor ?? "system",
+          action: "heartbeat_run.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          details: {
+            runId: cancelled.id,
+            agentId: cancelled.agentId,
+            reason,
+            errorCode,
+            source: cancellationSource,
+          },
         });
         // myrmidon(P1): release run environment leases before promotion, like finalization
         await releaseEnvironmentLeasesForRun({
