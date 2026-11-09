@@ -2007,6 +2007,30 @@ exit 0
       assert.doesNotMatch(out, /COMPOSE-SET-ANCHOR: the block was rewritten/);
     });
 
+    it("runs the anchor sync even when only a release component changed (board image already runs, board_changed=0)", () => {
+      // The board already runs the release image (current = NEW): the window
+      // opens only for a changed component. The component rollout still writes
+      // that component's override file into the board's compose set, so the
+      // live -f label can change without a board switch — exactly the gap the
+      // review verdict flagged (the sync used to run only under
+      // `if ((board_changed))`). A diverged anchor must be rewritten here too.
+      const sb = sandbox({ current: NEW });
+      anchorFile(sb, ["docker-compose.yml", "docker-compose.myrmidon-image.yml"]);
+      const label = [
+        path.join(sb.dir, "compose", "docker-compose.yml"),
+        path.join(sb.dir, "compose", "docker-compose.myrmidon-image.yml"),
+        path.join(sb.dir, "docker-compose.myrmidon-dockergate.yml"),
+      ].join(",");
+      enable(sb, { label: labelSource(label) });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+      // the board is not restarted (no window step 6), yet the plan proves the
+      // anchor sync runs on this path too
+      assert.match(out, /board: unchanged/);
+      assert.match(out, /dockergate: <none> -> ghcr\.io\/itkadr-git\/myrmidon-dockergate@sha256:c{64}/);
+      assert.match(out, /0\.8 compose-set anchor \(OPE-7010\): the declared compose set is synced to the live -f label after the deploy/);
+    });
+
     it("rewrites the block from the live label and commits when the set diverged (the 07.10 drift)", () => {
       const sb = sandbox();
       // the anchor still lists the pre-dockergate set of two fragments

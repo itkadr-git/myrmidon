@@ -627,6 +627,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   plan "0.6 release components (${component_resolution:-none}, from the $component_source): board, ${MYR_RELEASE_COMPONENTS//,/, }, bot images; one maintenance window, all-or-nothing"
   plan "0.7 disk precheck passed (read-only): ${MYRMIDON_DEPLOY_MIN_FREE_GB:-15} GiB free on the filesystem of /var/lib/docker required before the first pull (MYRMIDON_DEPLOY_MIN_FREE_GB)"
+  if [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_FILE" ]]; then
+    plan "0.8 compose-set anchor (OPE-7010): the declared compose set is synced to the live -f label after the deploy (anchor: $MYRMIDON_COMPOSE_SET_ANCHOR_FILE)"
+  fi
   if ((board_changed)); then
     plan "board: ${previous_image:-<none>} -> $ref"
   else
@@ -932,16 +935,6 @@ if ! "$MYR_SCRIPT_DIR/verify-health.sh" --url "$HEALTH_URL" --timeout "$HEALTH_T
   exit 1
 fi
 
-# COMPOSE-SET-ANCHOR (OPE-7010, the 07.10 drift): this deploy may have changed
-# the set of compose files the board runs from (the image override, the
-# component override files written above). The declared set is kept in an
-# anchor block that a watchdog compares with the live container label; when
-# the deploy changes the set, the anchor must change in the same deploy or the
-# watchdog drifts (trigger 34121 class) and an operator registers it by hand.
-# The step is best-effort: a healthy board outranks a drifted anchor, and the
-# step never fails the deploy (the watchdog still catches the residue).
-sync_compose_set_anchor
-
 # TRACING-HEALTH: the gateway must carry the OTLP-only callback set. A legacy
 # `langfuse` callback against a v4 Langfuse server makes the gateway reject
 # about 12k events per hour while everything looks healthy, so a refusal stops
@@ -1031,6 +1024,13 @@ if ((need_window)); then
     log "deployed $ref (previous: ${previous:-<none>}, dump: ${LAST_DUMP_FILE:-<none>})"
   fi
 fi
+
+# COMPOSE-SET-ANCHOR (OPE-7010): synchronize after every deploy path, including
+# a component-only window and a no-op board path. Component rollout writes the
+# local override before this point; the live container label is therefore the
+# authoritative set to compare. The helper is best-effort and never fails a
+# healthy deploy.
+sync_compose_set_anchor
 
 # ONE-DEPLOY: the bot cards. With the window above the config phase already ran
 # inside it; without a window the whole rollout runs here. A failure is
