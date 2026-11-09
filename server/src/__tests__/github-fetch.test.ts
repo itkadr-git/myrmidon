@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   gitHubApiBase,
   isGitHubDotCom,
+  isPinnedCommitRef,
   resolveRawGitHubUrl,
 } from "../services/github-fetch.js";
 
@@ -33,5 +34,18 @@ describe("github fetch URL resolution", () => {
   it("normalizes leading slashes in file paths without touching the ref", () => {
     expect(resolveRawGitHubUrl("github.com", "acme", "skills", SHA, "/deep/path/SKILL.md"))
       .toBe(`https://raw.githubusercontent.com/acme/skills/${SHA}/deep/path/SKILL.md`);
+  });
+
+  it("identifies 40-character hexadecimal git commit SHAs as pinned refs", () => {
+    expect(isPinnedCommitRef(SHA)).toBe(true);
+    expect(isPinnedCommitRef(SHA.toUpperCase())).toBe(true);
+    expect(isPinnedCommitRef("main")).toBe(false);
+    expect(isPinnedCommitRef("v1.0.0")).toBe(false);
+    expect(isPinnedCommitRef("")).toBe(false);
+    expect(isPinnedCommitRef(null)).toBe(false);
+    expect(isPinnedCommitRef(undefined)).toBe(false);
+    expect(isPinnedCommitRef("a".repeat(39))).toBe(false);
+    expect(isPinnedCommitRef("a".repeat(41))).toBe(false);
+    expect(isPinnedCommitRef("g".repeat(40))).toBe(false);
   });
 });

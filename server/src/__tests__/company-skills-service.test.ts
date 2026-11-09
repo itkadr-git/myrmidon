@@ -250,10 +250,10 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const markdown = "---\nname: pinned\ndescription: A fixture\n---\n# Explicit pin skill\n";
     const upstream = vi.fn(async (input: string | URL) => {
       const url = String(input);
-      if (url.includes("/repos/")) throw new Error("Default branch lookup must not run for an explicit SHA source");
       if (url.includes("/commits/") && !url.includes(pinnedSha)) throw new Error("Branch resolution must not run for an explicit SHA source");
       if (url.includes("/commits/")) return Response.json({ sha: pinnedSha });
       if (url.includes("/git/trees/")) return Response.json({ tree: [{ path: "pinned/SKILL.md", type: "blob" }] });
+      if (url.includes("/repos/")) throw new Error("Default branch lookup must not run for an explicit SHA source");
       return new Response(markdown);
     });
     vi.stubGlobal("fetch", upstream);
