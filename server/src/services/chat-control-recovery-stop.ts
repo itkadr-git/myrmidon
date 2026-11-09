@@ -17,6 +17,16 @@ import {
 export const CHAT_CONTROL_RECOVERY_STOP_CODE = "chat_control_completed_source";
 export const CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE =
   "chat_control_recovery_proof_unresolved";
+// myrmidon(1.7 RETRY-UNIFIED, OPE-12226): moved here from heartbeat.ts so that
+// services/run-retry-policy.ts can classify this error without importing the
+// heartbeat service (which would create a dependency cycle).
+export class ChatControlRecoveryUnresolvedError extends Error {
+  constructor() {
+    super(
+      "Run admission could not acquire its database locks after bounded retries. No provider work started. Review database contention and send a fresh request; this attempt will not automatically retry.",
+    );
+  }
+}
 export const CHAT_CONTROL_RECOVERY_ADMISSION_KEY =
   "chatControlRecoveryAdmission";
 type AdmissionRun = Pick<

@@ -50,6 +50,19 @@ import {
   isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
+// myrmidon(1.7 RETRY-UNIFIED, OPE-12226): one classifier for run failures —
+// preflight/pre-adapter code sets, spawn-like and sandbox-provider message
+// detectors, and the interaction-continuation infrastructure predicate.
+import {
+  NON_RETRYABLE_PREFLIGHT_FAILURE_CODES,
+  PRE_ADAPTER_SETUP_FAILURE_CODES,
+  isRetryableInteractionContinuationInfrastructureFailure,
+  nonRetryablePreflightFailureCode,
+  parseSandboxProviderPluginNotReadyFailureMessage,
+} from "./run-retry-policy.js";
+// Re-exported for existing callers/tests that still import this parser from
+// heartbeat.ts; the implementation now lives in run-retry-policy.ts.
+export { parseSandboxProviderPluginNotReadyFailureMessage };
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, deliverConversationComments, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
 import { INPUT_LIMIT_CONFIG_KEY } from "@myrmidon/adapter-utils/input-limit";
@@ -511,6 +524,7 @@ import {
   CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
   CHAT_CONTROL_RECOVERY_STOP_CODE,
   CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
+  ChatControlRecoveryUnresolvedError,
   chatControlRecoveryAdmission,
   readChatControlRecoveryAdmission,
   readChatControlNativeParent,
@@ -1217,39 +1231,9 @@ const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE =
   "execution_review_participant_recovery";
 const GITHUB_PR_WORKFLOW_SKILL_KEY =
   "paperclipai/bundled/software-development/github-pr-workflow";
-const NON_RETRYABLE_PREFLIGHT_FAILURE_CODES = new Set<string>([
-  "low_trust_isolation_unavailable",
-  "low_trust_requires_isolated_workspace",
-  "low_trust_boundary_mismatch",
-  "low_trust_requires_sandbox_environment",
-  "low_trust_runtime_services_denied",
-  "chat_failed_run_retry_not_authorized",
-  CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
-]);
-// Error codes that mark a pre-dispatch setup failure. The adapter process never
-// started, so no agent could post an issue comment. The setup catch writes one
-// of these codes when a failure happens before `adapter.execute`.
-const PRE_ADAPTER_SETUP_FAILURE_CODES = new Set<string>([
-  "setup_failed",
-  CONFIGURATION_INCOMPLETE_FAILURE_CODE,
-  WORKSPACE_VALIDATION_FAILURE_CODE,
-  ...NON_RETRYABLE_PREFLIGHT_FAILURE_CODES,
-]);
-
-function nonRetryablePreflightFailureCode(error: unknown): string | null {
-  if (error instanceof ChatControlRecoveryUnresolvedError)
-    return CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE;
-  if (
-    error instanceof HttpError &&
-    error.status === 409 &&
-    parseObject(error.details).code === "chat_failed_run_retry_not_authorized"
-  ) {
-    return "chat_failed_run_retry_not_authorized";
-  }
-  if (!(error instanceof HttpError) || error.status !== 422) return null;
-  const code = readNonEmptyString(parseObject(error.details).code);
-  return code && NON_RETRYABLE_PREFLIGHT_FAILURE_CODES.has(code) ? code : null;
-}
+// myrmidon(1.7 RETRY-UNIFIED, OPE-12226): the preflight/pre-adapter failure
+// code sets and their classifier live in services/run-retry-policy.ts; this
+// file no longer owns any run-failure code set.
 
 /**
  * myrmidon(MODEL-SWITCH-SESSION): recognize context window/session size errors that should
@@ -1282,13 +1266,9 @@ export function isContextWindowError(message: string | null | undefined): boolea
     normalized.includes(signature.toLowerCase()),
   );
 }
-class ChatControlRecoveryUnresolvedError extends Error {
-  constructor() {
-    super(
-      "Run admission could not acquire its database locks after bounded retries. No provider work started. Review database contention and send a fresh request; this attempt will not automatically retry.",
-    );
-  }
-}
+// myrmidon(1.7 RETRY-UNIFIED, OPE-12226): ChatControlRecoveryUnresolvedError
+// moved to chat-control-recovery-stop.ts (imported above) so that
+// run-retry-policy.ts can classify it without a heartbeat.ts dependency.
 const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
 const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
 // Keep this in sync with local adapters that require a git workspace before launch.
@@ -1567,87 +1547,9 @@ function readTransientRecoveryContractFromRun(
     : null;
 }
 
-function isSpawnLikeFailureMessage(value: unknown) {
-  if (typeof value !== "string") return false;
-  return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
-}
-
-// A sandbox provider plugin's worker can be briefly down during its own
-// restart window (e.g. a rolling deploy of the plugin worker process). Lease
-// acquisition fails immediately in that window, but the condition is
-// transient and self-healing, so it must be treated as retryable
-// infrastructure rather than a terminal setup failure. See
-// resolveSandboxProviderPlugin's "worker_unavailable" message in
-// environment-runtime.ts (":808"), e.g. 'Sandbox provider "kubernetes" is
-// installed via plugin "acme.kubernetes-sandbox-provider", but its worker is
-// not running.'
-//
-// This is anchored on both "is installed via plugin" and "but its worker is
-// not running" so it does not also match plugin-environment-driver.ts's
-// unrelated, permanent "provider not installed" message ('Sandbox provider
-// "X" is not installed or its plugin worker is not running.'), which
-// coincidentally contains the same "worker is not running" substring but
-// describes a terminal condition that must not be retried.
-function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
-  if (typeof value !== "string") return false;
-  return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(
-    value,
-  );
-}
-
-// environment-runtime.ts's resolveSandboxProviderPlugin "not_ready" message,
-// e.g. 'Sandbox provider "kubernetes" is installed via plugin
-// "acme.kubernetes-sandbox-provider", but that plugin is currently error.'
-// The plugin row exists but its status is `error` (a failed activation),
-// `disabled` (an operator switched it off) or `upgrade_pending`. Unlike the
-// worker restart window above, nothing on the run path ever changes that
-// status: only an operator enabling the plugin, or a server boot that
-// re-activates a bundled plugin, does. Re-running the agent produces the
-// identical failure every time, so the setup catch classifies it as
-// `configuration_incomplete` (routed to a human owner) instead of a retryable
-// `setup_failed` that the scheduler would keep re-dispatching.
-const SANDBOX_PROVIDER_PLUGIN_NOT_READY_RE =
-  /sandbox provider "([^"]*)" is installed via plugin "([^"]*)", but that plugin is currently (error|disabled|upgrade_pending)\b/i;
-
-export function parseSandboxProviderPluginNotReadyFailureMessage(
-  value: unknown,
-): { provider: string; pluginKey: string; pluginStatus: string } | null {
-  if (typeof value !== "string") return null;
-  const match = SANDBOX_PROVIDER_PLUGIN_NOT_READY_RE.exec(value);
-  if (!match) return null;
-  return {
-    provider: match[1] ?? "",
-    pluginKey: match[2] ?? "",
-    pluginStatus: (match[3] ?? "").toLowerCase(),
-  };
-}
-
-function isRetryableInteractionContinuationInfrastructureFailure(
-  run: Pick<
-    typeof heartbeatRuns.$inferSelect,
-    "error" | "errorCode" | "resultJson"
-  >,
-) {
-  if (
-    run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE ||
-    run.errorCode === "process_lost"
-  ) {
-    return true;
-  }
-
-  if (run.errorCode !== "adapter_failed" && run.errorCode !== "setup_failed")
-    return false;
-
-  const resultJson = parseObject(run.resultJson);
-  return (
-    isSpawnLikeFailureMessage(run.error) ||
-    isSpawnLikeFailureMessage(resultJson.errorMessage) ||
-    isSpawnLikeFailureMessage(resultJson.message) ||
-    isSandboxProviderWorkerUnavailableFailureMessage(run.error) ||
-    isSandboxProviderWorkerUnavailableFailureMessage(resultJson.errorMessage) ||
-    isSandboxProviderWorkerUnavailableFailureMessage(resultJson.message)
-  );
-}
+// myrmidon(1.7 RETRY-UNIFIED, OPE-12226): spawn-like and sandbox-provider
+// failure message detectors, the not-ready parser and the interaction
+// continuation infrastructure predicate moved to services/run-retry-policy.ts.
 
 function mergeAdapterRecoveryMetadata(input: {
   resultJson: Record<string, unknown> | null | undefined;
