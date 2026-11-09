@@ -76,7 +76,9 @@ describe("review stage selection never picks the executor (OPE-12231)", () => {
       status: "pending",
       currentStageType: "review",
       currentParticipant: { type: "agent", agentId: reviewerAgentId },
-      returnAssignee: { type: "agent", agentId: engineerAgentId },
+      // The assignee is in the reviewer roster; safeReturnAssignee deliberately
+      // avoids recording a reviewer as the executor return destination.
+      returnAssignee: null,
     });
   });
 

@@ -923,7 +923,9 @@ function executorPrincipals(input: {
   };
   add(input.existingState?.returnAssignee ?? null);
   if (input.issue.status !== "in_review" && input.issue.status !== "blocked") {
-    add(assigneePrincipal(input.issue));
+    // A reviewer-role assignee is not an executor merely because the issue
+    // still points at them; the submitting actor is the executor here.
+    if (input.issue.assigneeAgentRole !== "reviewer") add(assigneePrincipal(input.issue));
     if (!input.allowBoardOverride) add(input.actor);
   }
   return principals;
