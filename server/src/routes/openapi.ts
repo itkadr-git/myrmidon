@@ -3432,6 +3432,24 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/{id}/stats",
+  tags: ["agents"],
+  summary: "Get agent stats",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(
+      z.object({
+        exchanges_started: z.number().int().nonnegative(),
+        exchanges_completed: z.number().int().nonnegative(),
+      }),
+    ),
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/{id}/skills",
   tags: ["agents"],
   summary: "List agent skills",
