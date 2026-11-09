@@ -30,7 +30,8 @@
     "browser_use_sessions": 1,
     "mcp_oauth_tokens": 1,
     "mcp_oauth_grants": 1,
-    "mcp_oauth_clients": 1
+    "mcp_oauth_clients": 1,
+    "resource_lifecycle_events": 10
   },
   "spotChecks": {
     "company": {

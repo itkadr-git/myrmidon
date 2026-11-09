@@ -40,6 +40,11 @@ services:
     # this container hits its own ceiling and dies visibly rather than starving
     # the whole host of pids.
     pids_limit: 2048
+    # Codex local runner sandboxing requires user namespaces (clone/unshare/mount).
+    # Enable the custom seccomp profile and unconfined AppArmor for the board container:
+    # security_opt:
+    #   - seccomp:./board/myrmidon-board-userns.json
+    #   - apparmor:unconfined
     ports:
       - "3100:3100"
     environment:

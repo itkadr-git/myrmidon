@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -43,12 +43,25 @@ type Repository = {
 
 /** The repository resolution with a stubbed `require` for the origin-remote lookup. */
 function loadRepository(options: { originUrl?: string | null; cwd?: string } = {}) {
+  const spawnCalls: string[] = [];
   const childProcess = {
-    spawnSync: () => ({ status: options.originUrl ? 0 : 1, stdout: `${options.originUrl ?? ""}\n` }),
+    spawnSync: (executable: string, _args: string[]) => {
+      spawnCalls.push(executable);
+      return { status: options.originUrl ? 0 : 1, stdout: `${options.originUrl ?? ""}\n` };
+    },
   };
   const context = vm.createContext({
     process: { cwd: () => options.cwd ?? "/work/repo" },
-    require: (name: string) => (name === "node:child_process" ? childProcess : { delimiter: ":" }),
+    spawnCalls,
+    require: (name: string) => {
+      if (name === "node:child_process") return childProcess;
+      if (name === "node:path") return {
+        delimiter: ":",
+        resolve: (value: string) => value.startsWith("/") ? value : `/work/repo/${value}`,
+        join: (directory: string, file: string) => `${directory}/${file}`,
+      };
+      return { delimiter: ":" };
+    },
     URL,
     JSON,
     RegExp,
@@ -57,9 +70,9 @@ function loadRepository(options: { originUrl?: string | null; cwd?: string } = {
     Object,
   });
   return vm.runInContext(
-    `${githubBrokerRepositoryLauncherSource()}\n({ normalizeRepository: paperclipNormalizeRepository, repositoryFromArgs: paperclipRepositoryFromArgs, repositoryFromGitArgs: paperclipRepositoryFromGitArgs, targetRepository: paperclipTargetRepository })`,
+    `${githubBrokerRepositoryLauncherSource()}\n({ normalizeRepository: paperclipNormalizeRepository, repositoryFromArgs: paperclipRepositoryFromArgs, repositoryFromGitArgs: paperclipRepositoryFromGitArgs, targetRepository: paperclipTargetRepository, spawnCalls })`,
     context,
-  ) as Repository;
+  ) as Repository & { spawnCalls: string[] };
 }
 
 /** The broker walk with a scripted fetch, to read the request body it sends. */
@@ -123,6 +136,18 @@ describe("non-container GitHub repository resolution (GITHUB-SHARED-IDENTITY)", 
     expect(repository.repositoryFromGitArgs(["clone", "https://github.com/owner-c/repo-c.git"]).repository).toBe("owner-c/repo-c");
     expect(repository.repositoryFromGitArgs(["fetch", "git@github.com:owner-d/repo-d.git"]).repository).toBe("owner-d/repo-d");
     expect(repository.repositoryFromGitArgs(["push", "https://github.com/owner-e/repo-e"]).repository).toBe("owner-e/repo-e");
+  });
+
+  it("rejects a configured git wrapper in the broker origin lookup", () => {
+    const repository = loadRepository({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const wrapper = "/work/repo/wrapper/git";
+    expect(repository.targetRepository(
+      "git",
+      ["status"],
+      { MYRMIDON_GIT_REAL: wrapper },
+      ["/usr/bin"],
+    )).toBe("owner-a/repo-a");
+    expect(repository.spawnCalls).toEqual(["/opt/paperclip/libexec/git"]);
   });
 
   it("falls back to the origin remote, honouring -C, and never to another host", () => {
@@ -313,5 +338,162 @@ process.stdout.write('token=' + (process.env.GH_TOKEN || '') + ' args=' + proces
     }
     expect(entries["user.useConfigOnly"]).toBe("true");
     expect(entries["credential.helper"]).toBe("");
+  });
+});
+
+describe("git shim recursion guard (GIT-SHIM-RECURSION)", () => {
+  // The incident (OPE-12510, adm-dev-eng-20, 09.11): on the bot image the
+  // staged launcher directory sits on a PATH whose NEXT `git` is the IMAGE'S
+  // git wrapper (/opt/paperclip/bin/git), not the real binary. The launcher's
+  // origin-remote lookup then spawned that wrapper, which intercepted the same
+  // `git config --get remote.origin.url` again, and the two shims called each
+  // other by absolute paths until the PID limit killed the container. The
+  // launcher must resolve the origin remote through the real git: an absolute
+  // MYRMIDON_GIT_REAL when it names a real binary, else the first PATH entry
+  // that is NOT a known git wrapper (the staged directory, the image wrapper,
+  // the /usr/local/bin shadow), else the image's libexec path.
+  async function stagedImageLikeRun(options: { originUrl?: string | null } = {}) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-shim-recur-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const launcherBin = path.join(root, "launcher");
+    const imageWrapperBin = path.join(root, "image-wrapper");
+    const realBin = path.join(root, "real");
+    const nodeBin = path.join(root, "node-bin");
+    const repo = path.join(root, "repo");
+    await mkdir(launcherBin, { recursive: true });
+    await mkdir(imageWrapperBin, { recursive: true });
+    await mkdir(realBin, { recursive: true });
+    await mkdir(nodeBin, { recursive: true });
+    await mkdir(repo, { recursive: true });
+    // Every staged program here carries an /usr/bin/env node shebang: the
+    // fixture PATH must keep node reachable (the bot image guarantees it), and
+    // a runner may have node only in its own tool directories.
+    await symlink(process.execPath, path.join(nodeBin, "node"));
+    await exec("git", ["init", repo]);
+    if (options.originUrl) await exec("git", ["-C", repo, "remote", "add", "origin", options.originUrl]);
+    await writeFile(path.join(launcherBin, "git"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(launcherBin, "gh"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(launcherBin, GITHUB_CREDENTIAL_HELPER_PROGRAM), githubCredentialHelperSource(), { mode: 0o700 });
+    // The image's git wrapper: re-executes itself for the very command the
+    // incident looped on (a stand-in for /opt/paperclip/bin/git, which adds
+    // --reference-if-able to clones and execs /opt/paperclip/libexec/git).
+    await writeFile(
+      path.join(imageWrapperBin, "git"),
+      `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === 'config' && args[1] === '--get' && args[2] === 'remote.origin.url') {
+  process.stderr.write('wrapper-reentry\\n');
+}
+const result = spawnSync(process.argv[1], args, { stdio: 'inherit', env: process.env });
+process.exit(result.status ?? 1);
+`,
+      { mode: 0o700 },
+    );
+    // The real git: prints a marker so the test can tell WHICH binary answered,
+    // and answers `config --get remote.origin.url` like the real one.
+    await writeFile(
+      path.join(realBin, "git"),
+      `#!/usr/bin/env node
+const { execFileSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('real-git-marker\\n'); process.exit(0); }
+const result = execFileSync('/usr/bin/git', args, { encoding: 'utf8', env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
+if (args[0] === 'config' && args[1] === '--get' && args[2] === 'remote.origin.url') process.stdout.write(result);
+`,
+      { mode: 0o700 },
+    );
+    const requests: Array<{ body: string }> = [];
+    const server: Server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        requests.push({ body });
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ status: "available", env: { GH_TOKEN: TEST_TOKEN } }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    // The PATH of a bot-image run: launcher dir first (the gateway's staged
+    // directory), then the image wrapper's directory (what /opt/paperclip/bin
+    // is on the image), then the real binaries. MYRMIDON_GIT_REAL is unset —
+    // on the image only the wrapper's own default points at libexec.
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: root,
+      PATH: `${launcherBin}${path.delimiter}${imageWrapperBin}${path.delimiter}${realBin}${path.delimiter}${nodeBin}${path.delimiter}${process.env.PATH}`,
+      PAPERCLIP_GITHUB_BROKER_URL: `http://127.0.0.1:${port}`,
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "run-capability-value",
+    };
+    delete env.MYRMIDON_GIT_REAL;
+    return { root, launcherBin, imageWrapperBin, realBin, nodeBin, repo, requests, env };
+  }
+
+  it("answers `git status` from the real binary and never re-enters the image git wrapper", async () => {
+    const { launcherBin, repo, requests, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const result = await exec(path.join(launcherBin, "git"), ["status", "--short"], { cwd: repo, env, timeout: 30_000 });
+    // The origin remote was resolved for the broker request through the real
+    // binary, so the repository is named without re-entering the wrapper.
+    expect(requests.map((request) => JSON.parse(request.body))).toEqual([{ repository: "owner-a/repo-a" }]);
+    expect(result.stderr).not.toContain("wrapper-reentry");
+  });
+
+  it("falls back to the image libexec git when MYRMIDON_GIT_REAL is unset and PATH holds only wrappers", async () => {
+    const { launcherBin, nodeBin, repo, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    // Only the launcher's own directory plus a node directory for the env
+    // shebangs: no wrapper stand-in and no real git on the fixture path, so the
+    // launcher's PATH-walk finds no candidate at all and must land on the
+    // image fallback (/opt/paperclip/libexec/git here, /usr/bin/git on the
+    // runner). /usr/bin and /bin stay OFF the path: the container's
+    // /usr/bin/git is the wrapper symlink and the runner's is the real binary,
+    // so either would blur the contract under test.
+    const wrapperOnly: NodeJS.ProcessEnv = {
+      ...env,
+      PATH: `${launcherBin}${path.delimiter}${nodeBin}`,
+    };
+    const result = await exec(path.join(launcherBin, "git"), ["--version"], { cwd: repo, env: wrapperOnly, timeout: 30_000 });
+    // The libexec fallback answered (here /opt/paperclip/libexec/git is the
+    // container's real git; on the runner the fallback is /usr/bin/git), so the
+    // output is a real `git version` line and never the stand-in's marker.
+    expect(result.stdout).toContain("git version");
+    expect(result.stdout).not.toContain("real-git-marker");
+  });
+
+  it("answers direct `git config --get remote.origin.url` through the wrapper without recursion", async () => {
+    const { launcherBin, repo, requests, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const result = await exec(path.join(launcherBin, "git"), ["config", "--get", "remote.origin.url"], { cwd: repo, env, timeout: 30_000 });
+    expect(result.stdout.trim()).toBe("https://github.com/owner-a/repo-a.git");
+    expect(result.stderr).not.toContain("wrapper-reentry");
+    // Direct invocation does not trigger broker loop
+    expect(requests.length).toBeLessThanOrEqual(1);
+  });
+
+  it("bypasses broker and spawns real git directly on re-entrant invocation (PAPERCLIP_GITHUB_OPERATION_ACTIVE=1)", async () => {
+    const { launcherBin, repo, requests, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const reentrantEnv: NodeJS.ProcessEnv = {
+      ...env,
+      PAPERCLIP_GITHUB_OPERATION_ACTIVE: "1",
+    };
+    const result = await exec(path.join(launcherBin, "git"), ["config", "--get", "remote.origin.url"], { cwd: repo, env: reentrantEnv, timeout: 30_000 });
+    expect(result.stdout.trim()).toBe("https://github.com/owner-a/repo-a.git");
+    expect(result.stderr).not.toContain("wrapper-reentry");
+    // In re-entrant mode, the broker was never called at all
+    expect(requests).toEqual([]);
+  });
+
+  it("rejects MYRMIDON_GIT_REAL when it is a symlink pointing back to the wrapper", async () => {
+    const { root, launcherBin, repo, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const symlinkWrapper = path.join(root, "symlink-wrapper");
+    await symlink(path.join(launcherBin, "git"), symlinkWrapper);
+    const symlinkEnv: NodeJS.ProcessEnv = {
+      ...env,
+      MYRMIDON_GIT_REAL: symlinkWrapper,
+    };
+    // Must resolve realpath, reject the wrapper symlink, and use fallback without recursion or timeout
+    const result = await exec(path.join(launcherBin, "git"), ["status", "--short"], { cwd: repo, env: symlinkEnv, timeout: 30_000 });
+    expect(result.stderr).not.toContain("wrapper-reentry");
   });
 });

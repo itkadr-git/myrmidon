@@ -1,14 +1,19 @@
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js";
 import { describe, expect, it } from "vitest";
 
 import {
+  checkUserNamespacesAvailable,
   codexExecutableReadOnlyRoots,
   codexNetworkReadOnlyRoots,
+  codexSandboxUnavailableError,
   createIsolatedCodexAppServerArgs,
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
+  resetUserNamespaceProbeForTests,
 } from "./codex-security-config.js";
 
 describe("Codex security configuration", () => {
@@ -224,5 +229,58 @@ describe("Codex security configuration", () => {
     expect(createIsolatedCodexAppServerArgs({})).not.toContain(
       "--dangerously-bypass-approvals-and-sandbox",
     );
+  });
+
+  it("refuses to open a Codex session with codex_sandbox_unavailable guidance when the bwrap userns probe fails", async () => {
+    const { CodexAppServerDriver } = await import("./codex-app-server-driver.js");
+    const workspace = await mkdtemp(join(tmpdir(), "codex-userns-"));
+    const bwrap = join(workspace, "bwrap");
+    await writeFile(
+      bwrap,
+      "#!/bin/sh\necho 'bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces' >&2\nexit 1\n",
+      { mode: 0o700 },
+    );
+    resetUserNamespaceProbeForTests();
+    const environment = {
+      PATH: `${workspace}:/usr/bin:/bin`,
+      PAPERCLIP_RUNNER_SANDBOX_COMMAND: bwrap,
+    };
+    expect(checkUserNamespacesAvailable(environment)).toBe(false);
+    expect(codexSandboxUnavailableError().message).toMatch(/codex_sandbox_unavailable/);
+    expect(codexSandboxUnavailableError().message).toContain("apparmor=unconfined");
+    const driver = new CodexAppServerDriver({
+      taskEnvelope: {
+        objective: "probe sandbox refusal",
+        revision: 1,
+        criteria: [{ id: "c1", requirement: "any" }],
+        constraints: [],
+      },
+      environment,
+      baseInstructions: "test",
+      includeCollaborationModeInstructions: false,
+    });
+    let opened = 0;
+    await expect(
+      driver.openSession({
+        workingDirectory: workspace,
+        runId: "run-userns-probe",
+        normalizedSessionId: "sess-userns-probe",
+      } as never).catch((error: unknown) => {
+        opened++;
+        expect((error as Error).message).toContain("codex_sandbox_unavailable");
+        throw error;
+      }),
+    ).rejects.toThrow(/codex_sandbox_unavailable/);
+    expect(opened).toBe(1);
+    resetUserNamespaceProbeForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("treats the external runner sandbox as authoritative and skips the userns probe", () => {
+    resetUserNamespaceProbeForTests();
+    expect(
+      checkUserNamespacesAvailable({ PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }),
+    ).toBe(true);
+    resetUserNamespaceProbeForTests();
   });
 });

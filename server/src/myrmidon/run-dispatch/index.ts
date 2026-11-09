@@ -254,10 +254,17 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
   ): Promise<unknown[]> => {
     const { runStartDispatch } = await loadSettings();
     if (runStartDispatch === "inline") {
+      // In a split deployment, api processes must not take the vendor start
+      // path even when the persisted setting is `inline`. They publish the
+      // wake to the worker; the default remains byte-for-byte unchanged for
+      // single-process/all deployments, where the role gate is true (or is
+      // not injected by a standalone caller).
+      if (deps.executesRuns && deps.executesRuns() !== true) {
+        await publishRemoteStart(agentId, runStartDispatch);
+        return [];
+      }
       // The vendor path, byte for byte: the dispatcher adds no gate, no extra
-      // await and no reordering in the default mode. `inline` is a mode, not a
-      // role split — a single-process deployment with the default setting must
-      // behave exactly like main, whatever the role context says.
+      // await and no reordering in the default mode.
       return deps.startNextQueuedRunForAgent(agentId, options);
     }
     // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the role gate of T1.1. In

@@ -46,6 +46,8 @@ import {
 import {
   checkCompatibility,
   checkNarrowing,
+  deterministicUuid,
+  mapLifecycleEventAction,
   parseRangeBound,
   runMigration,
   type MigrationOptions,
@@ -327,6 +329,26 @@ describe("myrmidon:migrate pure guards", () => {
       expect(accepted.exclusions).toEqual([{ kind: "table", name: "custom_extension", reason: "unknown source table accepted by flag" }]);
     });
 
+    it("allows resource_lifecycle_events without --accept-vendor-only-data when target has activity_log", () => {
+      // Empty input
+      const emptyAnalysis = analysisOf([table("resource_lifecycle_events", [col("id")])], { resource_lifecycle_events: 0 });
+      const target = new Map([["activity_log", table("activity_log", [col("id")])]]);
+      const emptyResult = checkCompatibility(emptyAnalysis, target, index);
+      expect(emptyResult.problems).toEqual([]);
+      expect(emptyResult.vendorOnly).toEqual([]);
+
+      // Populated input (10 sample rows)
+      const populatedAnalysis = analysisOf([table("resource_lifecycle_events", [col("id")])], { resource_lifecycle_events: 10 });
+      const populatedResult = checkCompatibility(populatedAnalysis, target, index);
+      expect(populatedResult.problems).toEqual([]);
+      expect(populatedResult.vendorOnly).toEqual([]);
+
+      // Target lacks activity_log
+      const missingTarget = new Map();
+      const missingResult = checkCompatibility(populatedAnalysis, missingTarget, index);
+      expect(missingResult.problems).toEqual(["table-missing-in-target:activity_log"]);
+    });
+
     it("reports v2026.1106.0 vendor-only tables and columns with descriptions and requires flag when they hold data", () => {
       const v1106Index = buildVendorOnlyIndex();
       const v1106Tables = [
@@ -379,6 +401,28 @@ describe("myrmidon:migrate pure guards", () => {
         { table: "muse_agent_bindings", rows: 2, vendorRelease: "v2026.1106.0", decision: "accepted" },
         { table: "cases", column: "workflow_id", rows: 10, vendorRelease: "v2026.1106.0", decision: "accepted" },
       ]);
+    });
+  });
+
+  describe("resource_lifecycle_events helpers", () => {
+    it("maps actions to activity_log convention", () => {
+      expect(mapLifecycleEventAction("project", "create")).toBe("project.created");
+      expect(mapLifecycleEventAction("project", "update")).toBe("project.updated");
+      expect(mapLifecycleEventAction("project", "delete")).toBe("project.deleted");
+      expect(mapLifecycleEventAction("agent", "pause")).toBe("agent.paused");
+      expect(mapLifecycleEventAction("agent", "resume")).toBe("agent.resumed");
+      expect(mapLifecycleEventAction("agent", "terminate")).toBe("agent.terminated");
+      expect(mapLifecycleEventAction("project", "custom.action")).toBe("custom.action");
+      expect(mapLifecycleEventAction("project", "archive")).toBe("project.archive");
+    });
+
+    it("produces deterministic uuid v4 formatted identifiers", () => {
+      const u1 = deterministicUuid("seed-1");
+      const u2 = deterministicUuid("seed-1");
+      const u3 = deterministicUuid("seed-2");
+      expect(u1).toBe(u2);
+      expect(u1).not.toBe(u3);
+      expect(u1).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     });
   });
 
@@ -498,6 +542,16 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     // Model a newer Paperclip source: it carries the two columns Myrmidon now preserves.
     await db.execute(sql.raw('alter table "agents" add column if not exists "appearance" jsonb'));
     await db.execute(sql.raw('alter table "issues" add column if not exists "title_needs_generation" boolean not null default false'));
+    await db.execute(sql.raw(`
+      create table if not exists "resource_lifecycle_events" (
+        "id" bigserial primary key,
+        "company_id" uuid not null,
+        "resource_type" text not null,
+        "resource_id" uuid not null,
+        "action" text not null,
+        "created_at" timestamp with time zone not null default now()
+      )
+    `));
 
     const envelope = await encryptWithKey(SOURCE_KEY, SECRET_VALUE);
     const seed = async (query: string) => db.execute(sql.raw(query));
@@ -879,4 +933,53 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
       await closeRegisteredClients(f.targetUrl);
     }
   }, T * 2);
+
+  it("migrates empty resource_lifecycle_events without --accept-vendor-only-data", async () => {
+    const f = await fixture();
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    const count = await scalar(f.targetUrl, "select count(*) from activity_log where details->>'source' = 'resource_lifecycle_events'");
+    expect(count).toBe("0");
+  }, T);
+
+  it("migrates 10 sample resource_lifecycle_events into activity_log preserving project associations and counts", async () => {
+    const f = await fixture();
+    const projectId = await scalar(f.sourceUrl, "select id::text from projects limit 1");
+    expect(projectId).toBeTruthy();
+
+    const seedSql = `
+      insert into resource_lifecycle_events (company_id, resource_type, resource_id, action, created_at)
+      values
+        ('${COMPANY_A}', 'project', '${projectId}', 'create', '2026-10-12 10:00:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:05:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:10:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:15:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:20:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:25:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:30:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:35:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:40:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'delete', '2026-10-12 10:45:00+00')
+    `;
+    await scalar(f.sourceUrl, seedSql);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+
+    const totalMapped = await scalar(f.targetUrl, "select count(*) from activity_log where details->>'source' = 'resource_lifecycle_events'");
+    expect(totalMapped).toBe("10");
+
+    const projectAssociated = await scalar(
+      f.targetUrl,
+      `select count(*) from activity_log where entity_type = 'project' and entity_id = '${projectId}' and company_id = '${COMPANY_A}' and details->>'source' = 'resource_lifecycle_events'`,
+    );
+    expect(projectAssociated).toBe("10");
+
+    const createdCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.created' and details->>'source' = 'resource_lifecycle_events'");
+    expect(createdCount).toBe("1");
+    const updatedCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.updated' and details->>'source' = 'resource_lifecycle_events'");
+    expect(updatedCount).toBe("8");
+    const deletedCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.deleted' and details->>'source' = 'resource_lifecycle_events'");
+    expect(deletedCount).toBe("1");
+  }, T);
 });
