@@ -71,6 +71,10 @@ export const REVIEW_REWORK_PAGE_SIZE = 200;
 /** Moves (create/reopen/block/unblock/close) per company per pass. */
 export const REVIEW_REWORK_MAX_MOVES_PER_PASS = 20;
 export const REVIEW_REWORK_ACTOR_ID = "review_rework_sweep";
+/** Activity-log action for a goal-judge round applied by this sweep. */
+export const GOAL_JUDGE_ROUND_APPLIED_ACTION = "review_rework.goal_judge_round";
+/** The comment marker a goal-judge round writes; a new round only starts past it. */
+export const GOAL_JUDGE_ROUND_MARKER = "[GOAL-JUDGE]";
 
 const FULL_PR_REFERENCE_PATTERN =
   /(?:https?:\/\/(?:www\.)?github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/pull)?#([1-9][0-9]*)\b/g;
@@ -137,6 +141,8 @@ export interface ReviewReworkSweepDeps {
   goalJudge?: {
     judge(input: import("../goal-judge/controller.js").GoalJudgeReviewTaskFacts): Promise<import("../goal-judge/controller.js").GoalJudgeDecision>;
   };
+  /** Per-company judge factory; model providers and secrets are company-scoped. */
+  goalJudgeFactory?: (companyId: string) => ReviewReworkSweepDeps["goalJudge"];
 }
 
 function readIntervalSec(env: NodeJS.ProcessEnv | undefined, fallback: number) {
@@ -405,6 +411,49 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       );
       if (deliveringTaskAssigneeAgentId) break;
     }
+    // Goal judge is a fail-open optional gate: disabled/unconfigured means noop,
+    // while a concrete return/escalation is applied under the same status guard
+    // as every other review-loop move. The facts deliberately use only stored
+    // issue evidence; the resolver supplies the linked PR head as the diff key.
+    const goalJudge = deps.goalJudgeFactory?.(task.companyId) ?? deps.goalJudge;
+    if (goalJudge && task.status === "in_review") {
+      const judgeDecision = await goalJudge.judge({
+        issueId: task.id,
+        companyId: task.companyId,
+        status: task.status,
+        criteria: task.description ?? task.title,
+        diff: prs.map((pr) => `${pr.prKey} @ ${pr.headSha ?? "unknown"}`).join("\n"),
+        testOutput: comments.map((comment) => comment.body).join("\n"),
+        claims: comments.at(-1)?.body ?? null,
+        headSha: prs.map((pr) => pr.headSha).filter((sha): sha is string => Boolean(sha)).join(",") || null,
+        returnAssigneeAgentId: task.returnAssigneeAgentId,
+        executionPolicy: task.executionPolicy as import("@myrmidon/shared").IssueExecutionPolicy | null,
+      });
+      if (judgeDecision.kind !== "noop" && judgeDecision.kind !== "pass") {
+        const applied = await deps.store.applyGoalJudgeDecision({
+          issueId: task.id,
+          companyId: task.companyId,
+          expectStatus: task.status,
+          patch: judgeDecision.patch ?? { status: task.status },
+          comment: judgeDecision.commentBody,
+        });
+        if (applied) {
+          await deps.logActivity({
+            companyId: task.companyId,
+            action: GOAL_JUDGE_ROUND_APPLIED_ACTION,
+            issueId: task.id,
+            details: {
+              kind: judgeDecision.kind,
+              roundsUsed: judgeDecision.roundsUsed,
+              verdict: judgeDecision.verdict,
+            },
+          });
+          return true;
+        }
+        return false;
+      }
+    }
+
     const reopenedAfterLoopClose = await deps.store.reopenedAfterLoopClose(task.companyId, task.id);
     const decision = decideReviewRework({
       task,

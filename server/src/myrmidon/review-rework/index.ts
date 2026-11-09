@@ -9,6 +9,9 @@ import { reviewReworkSettingsService } from "./settings.js";
 import { createReviewReworkSweep } from "./sweep.js";
 import { createPullRequestReviewFactsResolver } from "./resolver.js";
 import { createPgReviewReworkStore } from "./store.js";
+import { createGoalJudgeModelPort } from "../goal-judge/wiring.js";
+import { createGoalJudgeRoundController } from "../goal-judge/controller.js";
+import { goalJudgeSettingsService } from "../goal-judge/settings.js";
 
 export * from "./domain.js";
 export * from "./settings.js";
@@ -42,6 +45,7 @@ export function createReviewReworkScheduler(input: {
   const settings = reviewReworkSettingsService(input.db, {
     settings: instanceSettingsService(input.db),
   });
+  const goalJudges = new Map<string, ReturnType<typeof createGoalJudgeRoundController>>();
   const sweep = createReviewReworkSweep({
     store: createPgReviewReworkStore(input.db),
     resolvePr: createPullRequestReviewFactsResolver(input.db, { source: "review-rework" }),
@@ -49,6 +53,22 @@ export function createReviewReworkScheduler(input: {
     isUnderMaintenance: () => isInstanceUnderMaintenance(input.db),
     isLeader: input.isLeader,
     enqueueWake: (agentId, wake) => input.wakeup(agentId, wake as Record<string, unknown>),
+    // myrmidon(1.7-GOAL-JUDGE): the round controller wired to the company's
+    // model providers, secret store and the instance goal-judge switch. The
+    // judge itself stays a noop unless the instance switch is enabled.
+    goalJudgeFactory: (companyId) => {
+      let controller = goalJudges.get(companyId);
+      if (!controller) {
+        controller = createGoalJudgeRoundController({
+          settings: goalJudgeSettingsService(input.db, {
+            settings: instanceSettingsService(input.db),
+          }),
+          models: createGoalJudgeModelPort(input.db, companyId),
+        });
+        goalJudges.set(companyId, controller);
+      }
+      return controller;
+    },
     logActivity: async (entry) => {
       const { logActivity } = await import("../../services/activity-log.js");
       await logActivity(input.db, {
