@@ -2306,4 +2306,120 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "agent", agentId: ctoAgentId },
     });
   });
+
+  it("selects least-loaded review participant when multiple participants are configured", () => {
+    const rev1 = "44444444-4444-4444-8444-444444444441";
+    const rev2 = "44444444-4444-4444-8444-444444444442";
+    const multiReviewPolicy = makePolicy([
+      {
+        type: "review",
+        participants: [
+          { type: "agent", agentId: rev1 },
+          { type: "agent", agentId: rev2 },
+        ],
+      },
+    ]);
+    const candidateLoads = new Map([
+      [rev1, 5],
+      [rev2, 1], // rev2 has lower load
+    ]);
+
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        id: "issue-load-1",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeAgentRole: "engineer",
+        assigneeUserId: null,
+        executionPolicy: multiReviewPolicy,
+        executionState: null,
+      },
+      policy: multiReviewPolicy,
+      requestedStatus: "in_review",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+      candidateLoads,
+    });
+
+    expect(result.patch.assigneeAgentId).toBe(rev2);
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: rev2 },
+    });
+  });
+
+  it("excludes returnAssignee from being chosen as review participant", () => {
+    const multiReviewPolicy = makePolicy([
+      {
+        type: "review",
+        participants: [
+          { type: "agent", agentId: coderAgentId }, // coder is author/assignee
+          { type: "agent", agentId: qaAgentId },
+        ],
+      },
+    ]);
+
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        id: "issue-return-1",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeAgentRole: "engineer",
+        assigneeUserId: null,
+        executionPolicy: multiReviewPolicy,
+        executionState: null,
+      },
+      policy: multiReviewPolicy,
+      requestedStatus: "in_review",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+    });
+
+    expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      returnAssignee: { type: "agent", agentId: coderAgentId },
+    });
+  });
+
+  it("recognizes lead as reviewer role when computing returnAssignee", () => {
+    const leadAgentId = "55555555-5555-4555-8555-555555555555";
+    const policy = reviewOnlyPolicy();
+    const stageId = policy.stages[0].id;
+
+    // A lead is currently assigned as reviewer, requesting changes
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        id: "issue-lead-1",
+        companyId: "company-1",
+        status: "in_review",
+        assigneeAgentId: leadAgentId,
+        assigneeAgentRole: "lead",
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: leadAgentId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      },
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: leadAgentId },
+      commentBody: "Please fix",
+    });
+
+    // It should return to coderAgentId, NOT leadAgentId!
+    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+  });
 });
