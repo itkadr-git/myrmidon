@@ -10,6 +10,7 @@ import {
   extractReviewRemarks,
   buildGuardReturnComment,
   buildGuardReturnWakePayload,
+  buildRequiresEngineerMessage,
   decideGuardReturn,
   GUARD_RETURN_ACTIVITY_ACTION,
   type AgentSummary,
@@ -633,5 +634,35 @@ describe("1.6.6 GUARD-RETURN: alert evaluation", () => {
     expect(alertResult.firing).toBe(true);
     expect(alertResult.breachedTasks.length).toBe(1);
     expect(alertResult.breachedTasks[0].durationMs).toBeGreaterThanOrEqual(40 * 60_000);
+  });
+});
+
+describe("1.6.7 CASTE-422-HINT (OPE-12142): requires-engineer message", () => {
+  it("names the default caste engineer and the casteKey hint", () => {
+    const message = buildRequiresEngineerMessage({ assigneeRole: "lead" });
+    expect(message).toContain("This issue requires an engineer.");
+    expect(message).toContain('Task caste is "engineer".');
+    expect(message).toContain("set casteKey=lead");
+    expect(message).toContain("casteKey=infra");
+    expect(message).toContain("casteKey=devops");
+  });
+
+  it("prefers the issue caste over the project default caste", () => {
+    const message = buildRequiresEngineerMessage({
+      assigneeRole: "reviewer",
+      casteKey: "designer",
+      projectDefaultCasteKey: "engineer",
+    });
+    expect(message).toContain('Task caste is "designer".');
+  });
+
+  it("falls back to the project default caste and names the suggested assignee", () => {
+    const message = buildRequiresEngineerMessage({
+      assigneeRole: "operator",
+      projectDefaultCasteKey: "qa",
+      suggested: { id: "agent-eng-1", name: "eng-1" },
+    });
+    expect(message).toContain('Task caste is "qa".');
+    expect(message).toContain("Suggested assignee: eng-1 (agent-eng-1).");
   });
 });

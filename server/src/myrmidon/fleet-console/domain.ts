@@ -26,6 +26,12 @@ export interface FleetServerView {
   passwordSecretKey: string | null;
   description: string | null;
   enabled: boolean;
+  // myrmidon(SERVER-ONBOARD A): onboarding-facing fields.
+  role?: string | null;
+  onboardState?: string | null;
+  hostKeyFingerprint?: string | null;
+  lastCheckAt?: string | null;
+  lastCheckOk?: boolean | null;
   createdAt: string;
   updatedAt: string;
 }

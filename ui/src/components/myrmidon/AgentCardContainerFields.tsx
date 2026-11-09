@@ -299,11 +299,12 @@ export function AgentCardContainerFieldsView({
                   className={inputClass}
                   aria-label={t("area.settings-agent-card.agent-card-container-fields.idleStopMode")}
                   data-testid="myrmidon-bot-idle-stop-mode"
-                  value={card.idleStopMode === "always_on" ? "always_on" : "on_demand"}
-                  onChange={(event) => onChange({ ...card, idleStopMode: event.target.value as "always_on" | "on_demand" })}
+                  value={card.idleStopMode === "always_on" || card.idleStopMode === "off" ? card.idleStopMode : "on_demand"}
+                  onChange={(event) => onChange({ ...card, idleStopMode: event.target.value as "always_on" | "on_demand" | "off" })}
                 >
                   <option value="on_demand">{t("area.settings-agent-card.agent-card-container-fields.idleStopOnDemand")}</option>
                   <option value="always_on">{t("area.settings-agent-card.agent-card-container-fields.idleStopAlwaysOn")}</option>
+                  <option value="off">{t("area.settings-agent-card.agent-card-container-fields.idleStopOff")}</option>
                 </select>
               </Field>
               <div className="text-xs text-muted-foreground" data-testid="myrmidon-bot-idle-stop-runtime">

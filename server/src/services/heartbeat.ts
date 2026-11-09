@@ -50,7 +50,7 @@ import {
   isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
-import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
+import { AGENT_CHAT_DIRECTIVE, conversationReplay, deliverConversationComments, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
 import { INPUT_LIMIT_CONFIG_KEY } from "@myrmidon/adapter-utils/input-limit";
 import {
@@ -88,6 +88,14 @@ import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { claimRunForSiteLost } from "../myrmidon/site-lost-claim.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
+// myrmidon(GATEWAY-SLOT-RECONCILE, OPE-11888): before a gateway agent's next
+// run is admitted, stop gateway runs the board has finalized but the gateway
+// still keeps alive — a leaked max_concurrent_runs slot otherwise answers the
+// next POST /v1/runs with 429 "Too many concurrent runs".
+import {
+  reconcileGatewaySlotsOnRunStart,
+  type GatewaySlotReconcilePort,
+} from "../myrmidon/gateway-slot-reconcile.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
@@ -13900,6 +13908,15 @@ export function heartbeatService(
     if (isNativeRunnerOwnershipHeld(run)) return run;
     if (isHeartbeatRunTerminalStatus(run.status)) return run;
     if (run.status !== "running" && run.status !== "queued") return run;
+    // A queued run that still carries a scheduled retry has not started yet: it
+    // sits in the queued pool until dispatch claims it. promoteDueRetryInTx
+    // moves scheduled_retry -> queued and keeps scheduled_retry_at populated
+    // through that window. Forcing such a row to interrupted /
+    // lease_released_before_terminal burns the scheduled retry, so the wake-up
+    // is lost and the retry never runs. Leave the row for the dispatcher.
+    // A claimed run has status "running" by then, so this does not spare a
+    // genuinely live run from terminalization.
+    if (run.status === "queued" && run.scheduledRetryAt != null) return run;
 
     // Choose the terminal status that reflects the true outcome. When the issue
     // already reached a terminal status, the run reached its goal, so use the
@@ -19807,6 +19824,9 @@ export function heartbeatService(
     // created/exited container must be started before the gateway is contacted.
     // Keep this before any adapter execution so a failed start is not reported
     // as a gateway connection failure.
+    // Only a container-backed Hermes agent has an IDLE-STOP runtime. In
+    // particular, a transient retry of omp_local/codex_local must follow the
+    // same adapter dispatch path as its first attempt, without dockergate.
     const idleStopService =
       agent.adapterType === "hermes_gateway" &&
       parseObject(parseObject(agent.adapterConfig).container).enabled === true
@@ -20560,6 +20580,10 @@ export function heartbeatService(
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   async function pickupReviewForAgent(agent: { id: string; companyId: string }, excludeIssueId?: string) {
     let woken = 0;
+    // OPE-12445: the sweep's pass log reports `considered` per lane; count the
+    // review lane's own candidates so its slice of the agent's queue is not
+    // reported as zero while the lane owns the pass.
+    let considered = 0;
     const handled = await pickupNextReview({
       serialize: async (work) => {
         const [candidateExists] = await db.select({ id: issues.id }).from(issues).where(and(
@@ -20611,7 +20635,10 @@ export function heartbeatService(
         sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
         sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
         sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
-      )),
+      )).then(async (rows) => {
+        considered = rows.length;
+        return rows;
+      }),
       wake: async (candidate) => {
         if (!idleWakeBudget.tryConsume(agent.companyId)) return null;
         const result = await enqueueWakeup(agent.id, {
@@ -20627,7 +20654,7 @@ export function heartbeatService(
         return result;
       },
     }, { excludeIssueId });
-    return { handled, woken };
+    return { handled, woken, considered };
   }
 
   const idlePickupSweeper = createIdlePickupSweeper({
@@ -22358,6 +22385,53 @@ export function heartbeatService(
     )).returning({ id: agentWakeupRequests.id });
 
     const staleCutoff = new Date(now - 30 * 60_000);
+    // myrmidon(OPE-12347): resurrected wakes (reason
+    // `resurrection_execution_reconciliation_required`) carry the production
+    // incident contract: execute or close within 10 minutes. The generic
+    // 30-minute backstop below is too slow for them, so they get their own
+    // earlier expiry with the same guard set (no live run owns the issue, no
+    // executionWait / queuedCommentInterrupt marker) and the same re-wake, so
+    // an agent with work never stands behind a dead parked intent.
+    const resurrectionCutoff = new Date(now - 10 * 60_000);
+    const staleResurrections = await db.select({ wake: agentWakeupRequests }).from(agentWakeupRequests).innerJoin(companies,
+      and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active"))).where(and(
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      eq(agentWakeupRequests.reason, "resurrection_execution_reconciliation_required"),
+      isNull(agentWakeupRequests.runId),
+      sql`${agentWakeupRequests.payload}->'executionWait' is null`,
+      lt(agentWakeupRequests.requestedAt, resurrectionCutoff),
+      lt(agentWakeupRequests.createdAt, resurrectionCutoff),
+      sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+      not(exists(db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+        or(
+          sql`${heartbeatRuns.nativeIssueId}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
+          sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${agentWakeupRequests.payload}->>'issueId'`,
+        ),
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      )))),
+      not(exists(db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        inArray(issues.status, ["done", "cancelled"]),
+      )))),
+    )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
+    let expired = 0;
+    for (const row of staleResurrections) {
+      const wake = row.wake;
+      const [cancelled] = await db.update(agentWakeupRequests).set({
+        status: "cancelled", error: "resurrection_wake_expired", finishedAt: new Date(), updatedAt: new Date(),
+      }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lt(agentWakeupRequests.requestedAt, resurrectionCutoff))).returning({ id: agentWakeupRequests.id });
+      if (!cancelled) continue;
+      expired++;
+      await enqueueWakeup(wake.agentId, { source: "automation", reason: "deferred_issue_execution_expired", payload: {
+        issueId: readNonEmptyString(wake.payload?.issueId) ?? readNonEmptyString(wake.payload?.taskId),
+        expiredWakeId: wake.id,
+      } })
+        .catch(err => logger.warn({ err, wakeId: wake.id }, "failed to re-wake agent after resurrection wake expiry"));
+    }
     const staleWakes = await db.select({ wake: agentWakeupRequests }).from(agentWakeupRequests).innerJoin(companies,
       and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active"))).where(and(
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -22383,7 +22457,6 @@ export function heartbeatService(
         inArray(issues.status, ["done", "cancelled"]),
       )))),
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
-    let expired = 0;
     for (const row of staleWakes) {
       const wake = row.wake;
       const wakePayload = parseObject(wake.payload);
@@ -23514,6 +23587,45 @@ export function heartbeatService(
           );
           scheduleAdmissionResweep();
           return [];
+        }
+      }
+
+      // myrmidon(GATEWAY-SLOT-RECONCILE, OPE-11888): the queue is about to be
+      // admitted — the last moment to free gateway slots the board already
+      // finalized. Best-effort and throttled per agent; a failure here never
+      // holds the run. Only hermes_gateway agents match inside the sweep
+      // (other adapters return immediately). Queued/running runs are never
+      // stopped — the board still owns them (the reattach sweep supervises
+      // their gateway liveness), which is the "do not abort a live leased
+      // run" invariant of OPE-11888.
+      if (agent.adapterType === "hermes_gateway") {
+        const gatewaySlotPort: GatewaySlotReconcilePort = {
+          probeGatewayRun: probeRemoteGatewayRun,
+          stopGatewayRunForBoard: async (input) => {
+            const stopped = await stopRemoteGatewayRun({
+              companyId: input.companyId,
+              agentId: input.agentId,
+              runId: input.runId,
+              adapterConfig: input.adapterConfig,
+              gatewayRunId: input.gatewayRunId,
+              cancellation: input.cancellation,
+            });
+            return stopped;
+          },
+        };
+        const slotSweep = await reconcileGatewaySlotsOnRunStart(db, gatewaySlotPort, agentId);
+        if (slotSweep && slotSweep.stopped > 0) {
+          await appendRunEvent(queuedRuns[0], {
+            eventType: "gateway_slot_reconciled",
+            stream: "system",
+            level: "info",
+            message: `gateway slot reconcile before run start: freed ${slotSweep.stopped} leaked gateway slot(s)`,
+            payload: {
+              stopped: slotSweep.stopped,
+              gatewayRunIds: slotSweep.stoppedRunIds.map((r) => r.gatewayRunId),
+              reason: "freed leaked gateway slots before run start (OPE-11888)",
+            },
+          }).catch(() => undefined);
         }
       }
 
@@ -31625,6 +31737,15 @@ export function heartbeatService(
 
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
+      // A conversation comment is already committed and remains in the
+      // undelivered-comment outbox until resume. Do not manufacture a failed
+      // run (or turn the accepted POST into a 409); no receipt is written, so
+      // delivery can retry this exact comment after the pause is lifted.
+      if (invokability.reason === "paused" && wakeCommentId && issueId &&
+          opts.idempotencyKey === `conversation-comment:${wakeCommentId}` &&
+          await getIssueExecutionContext(agent.companyId, issueId).then(isConversation)) {
+        return null;
+      }
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
         await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
@@ -35396,12 +35517,10 @@ export function heartbeatService(
       actorShape?: string,
       wakeReason?: string,
       hasResult = false,
+      before?: Date,
     ): Promise<string> => {
-      const [agg] = await db
-        .select({
-          rowCount: sql<number>`count(*)::int`,
-          maxUpdatedAt: sql<string | null>`max(${heartbeatRuns.updatedAt})`,
-        })
+      const recent = db
+        .select({ updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(
           and(
@@ -35411,8 +35530,18 @@ export function heartbeatService(
               ? sql`(${heartbeatRuns.contextWakeReason} = ${wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${wakeReason})`
               : sql`true`,
             hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+            before ? lt(heartbeatRuns.createdAt, before) : sql`true`,
           ),
-        );
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(Math.max(1, Math.min(1000, limit ?? 200)))
+        .as("recent_heartbeat_runs");
+      const [agg] = await db
+        .select({
+          rowCount: sql<number>`count(*)::int`,
+          maxUpdatedAt: sql<string | null>`max(${recent.updatedAt})`,
+        })
+        .from(recent);
       return versionKeyEtag("heartbeat-runs-list", [
         companyId,
         agentId ?? "all",
@@ -35421,6 +35550,7 @@ export function heartbeatService(
         actorShape ?? "all",
         wakeReason ?? "all",
         hasResult ? "with-result" : "all-results",
+        before?.toISOString() ?? "latest",
         agg?.rowCount ?? 0,
         agg?.maxUpdatedAt ?? null,
       ]);
@@ -35429,7 +35559,7 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean } = {},
+      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean; before?: Date } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -35461,11 +35591,13 @@ export function heartbeatService(
               ? sql`(${heartbeatRuns.contextWakeReason} = ${options.wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${options.wakeReason})`
               : sql`true`,
             options.hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+            options.before ? lt(heartbeatRuns.createdAt, options.before) : sql`true`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const effectiveLimit = Math.max(1, Math.min(1000, limit ?? 200));
+      const rows = await query.limit(effectiveLimit);
       return rows.map((row) => {
         const {
           contextIssueId,
@@ -35786,6 +35918,21 @@ export function heartbeatService(
     // Its sole caller is the agent resume route.
     resumeAgentAfterPause: async (agentId: string) => {
       const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      // A paused conversation's accepted comments have no wake receipt until
+      // delivery succeeds. Resume drains that durable outbox as well as the
+      // ordinary assigned-issue queue (which excludes in_review chats).
+      const conversations = await db.select({
+        id: issues.id,
+        companyId: issues.companyId,
+        conversationAgentId: issues.conversationAgentId,
+      }).from(issues).where(and(
+        eq(issues.assigneeAgentId, agentId),
+        isNotNull(issues.conversationAgentId),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ));
+      for (const conversation of conversations) {
+        await deliverConversationComments(db, conversation, enqueueWakeup);
+      }
       // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
       // — the board matcher gives it its own ready task, else a ready task of
       // its caste (design §3.5). Respect the same instance/card switch as idle

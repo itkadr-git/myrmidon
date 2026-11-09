@@ -79,7 +79,11 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
     async interruptRunForMaintenance(runId, windowId) {
       const stopped = await heartbeat.cancelRun(runId, "Interrupted by maintenance mode; retried after maintenance ends", {
         errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE,
-        resultJson: { myrmidonMaintenance: { windowId } },
+        resultJson: {
+          myrmidonMaintenance: { windowId },
+          failedBeforeModel: true,
+          failed_before_model: true,
+        },
         eventMessage: "run interrupted by maintenance mode",
         // The retry below is the successor path; the admission gate holds it until exit.
         suppressImmediateRecovery: true,

@@ -6,6 +6,7 @@ import {
   DraftInput,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
+import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -19,10 +20,15 @@ export function OmpLocalConfigFields({
   eff,
   mark,
   hideInstructionsFile,
+  adapterType,
+  managedSandboxOnly,
+  mode,
+  models,
 }: AdapterConfigFieldsProps) {
   const { t } = useTranslation();
   if (hideInstructionsFile) return null;
   return configFieldsForSection(section, (
+    <>
     <Field label={t("area.adapters-plugins-1.omp-local.instructionsFileLabel")} hint={t("area.adapters-plugins-1.omp-local.instructionsFileHint")}>
       <div className="flex items-center gap-2">
         <DraftInput
@@ -47,5 +53,18 @@ export function OmpLocalConfigFields({
         <ChoosePathButton />
       </div>
     </Field>
+    <LocalWorkspaceRuntimeFields
+      isCreate={isCreate}
+      values={values}
+      set={set}
+      config={config}
+      mark={mark}
+      eff={eff}
+      adapterType={adapterType}
+      managedSandboxOnly={managedSandboxOnly}
+      mode={mode}
+      models={models}
+    />
+    </>
   ));
 }

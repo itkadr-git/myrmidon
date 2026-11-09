@@ -27,7 +27,7 @@ export interface BotContainerStatus {
   /** The instance switch for bot containers is on. */
   enabled: boolean;
   /** Per-agent idle-stop policy; absent on older servers. */
-  idleStopMode?: "on_demand" | "always_on";
+  idleStopMode?: "on_demand" | "always_on" | "off";
   /** Durable idle-stop runtime state; absent on older servers. */
   idleStopRuntime?: {
     /** Stopped by IDLE-STOP and waiting for the next run. */
