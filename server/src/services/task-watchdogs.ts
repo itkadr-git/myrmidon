@@ -505,6 +505,14 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     }
   }
 
+  const includedChildrenByParentId = new Map<string, string[]>();
+  for (const issue of included) {
+    if (!issue.parentId || !includedIdSet.has(issue.parentId)) continue;
+    const list = includedChildrenByParentId.get(issue.parentId) ?? [];
+    list.push(issue.id);
+    includedChildrenByParentId.set(issue.parentId, list);
+  }
+
   const operatorBacklogIssueIds = new Set(input.operatorBacklogIssueIds ?? []);
   const stoppedBacklogIssueIds = included
     .filter((issue) => issue.status === "backlog" && operatorBacklogIssueIds.has(issue.id))
@@ -515,7 +523,9 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   // stopped fingerprint so reconcile cannot create/reopen a review or wake.
   if (stoppedBacklogIssueIds.length > 0) {
     const nonBacklogLeaves = included.filter((issue) =>
-      issue.status !== "backlog" && !isTerminalIssueStatus(issue.status),
+      (includedChildrenByParentId.get(issue.id) ?? []).length === 0 &&
+      issue.status !== "backlog" &&
+      !isTerminalIssueStatus(issue.status),
     );
     if (nonBacklogLeaves.length === 0) {
       return {
@@ -525,14 +535,6 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
         operatorBacklogIssueIds: stoppedBacklogIssueIds,
       };
     }
-  }
-
-  const includedChildrenByParentId = new Map<string, string[]>();
-  for (const issue of included) {
-    if (!issue.parentId || !includedIdSet.has(issue.parentId)) continue;
-    const list = includedChildrenByParentId.get(issue.parentId) ?? [];
-    list.push(issue.id);
-    includedChildrenByParentId.set(issue.parentId, list);
   }
   const blockersByIssueId = new Map<string, string[]>();
   for (const relation of input.blockers ?? []) {
@@ -1570,11 +1572,21 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return { state: classification.state, reason: classification.reason, classification };
     }
 
-
     const existingWatchdogIssueId = watchdog.watchdogIssueId ?? (await findTaskWatchdogIssue(
       watchdog.companyId,
       sourceIssue.id,
     ))?.id ?? null;
+    const existingWatchdogIssue = existingWatchdogIssueId
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, watchdog.companyId),
+          eq(issues.id, existingWatchdogIssueId),
+          visibleIssueCondition(),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
     if (existingWatchdogIssueId && await hasLivePathForIssue(watchdog.companyId, existingWatchdogIssueId)) {
       await db
         .update(issueWatchdogs)
@@ -1587,29 +1599,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(eq(issueWatchdogs.id, watchdog.id));
       return { state: "watchdog_live" as const, classification, watchdogIssueId: existingWatchdogIssueId };
     }
-    if (rewakeCooldownActive({
-      lastTriggeredAt: watchdog.lastTriggeredAt,
-      lastObservedFingerprint: watchdog.lastObservedFingerprint,
-      stopFingerprint: classification.stopFingerprint,
-      cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
-    })) {
-      return {
-        state: "skipped" as const,
-        reason: "rewake_cooldown",
-        classification,
-      };
-    }
-    const existingWatchdogIssue = existingWatchdogIssueId
-      ? await db
-        .select()
-        .from(issues)
-        .where(and(
-          eq(issues.companyId, watchdog.companyId),
-          eq(issues.id, existingWatchdogIssueId),
-          visibleIssueCondition(),
-        ))
-        .then((rows) => rows[0] ?? null)
-      : null;
     if (await sameFingerprintWatchdogReviewIsStillOpen(existingWatchdogIssue, classification.stopFingerprint)) {
       if (
         watchdog.watchdogIssueId !== existingWatchdogIssue!.id ||
@@ -1630,6 +1619,18 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         state: "watchdog_review_open" as const,
         classification,
         watchdogIssueId: existingWatchdogIssue!.id,
+      };
+    }
+    if (existingWatchdogIssue?.originFingerprint === classification.stopFingerprint && rewakeCooldownActive({
+      lastTriggeredAt: watchdog.lastTriggeredAt,
+      lastObservedFingerprint: watchdog.lastObservedFingerprint,
+      stopFingerprint: classification.stopFingerprint,
+      cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
+    })) {
+      return {
+        state: "skipped" as const,
+        reason: "rewake_cooldown",
+        classification,
       };
     }
 
