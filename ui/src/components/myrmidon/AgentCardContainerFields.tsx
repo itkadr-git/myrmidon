@@ -188,6 +188,9 @@ export interface ConcurrencyView {
   board: string;
   /** The value the gateway was given, or why there is none to show. */
   gateway: string;
+  /** myrmidon(1.6.7 RUN-LIMITS): what the scheduler actually admits against, or
+   *  null when an older server did not say. */
+  effective: string | null;
   diverged: boolean;
   note: string | null;
   warning: string | null;
@@ -212,6 +215,14 @@ export function concurrencyView(status: BotContainerStatus | null): ConcurrencyV
         ? i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGatewayNotReported")
         : i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGateway", { value: limit.applied })
       : i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGatewayUnmanaged"),
+    effective: status.effectiveMaxConcurrentRuns == null
+      ? null
+      : i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyEffective", {
+          value: status.effectiveMaxConcurrentRuns,
+          source: i18n.t(
+            `area.settings-agent-card.agent-card-container-fields.concurrencyLimitSource.${status.effectiveMaxConcurrentRunsSource ?? "board"}`,
+          ),
+        }),
     diverged: limit?.diverged ?? false,
     note: status.gatewayConcurrencyNote,
     warning: status.gatewayConcurrencyWarning,
@@ -446,6 +457,11 @@ export function AgentCardContainerFieldsView({
               <span className="text-sm" data-testid="myrmidon-bot-container-concurrency-gateway">
                 {concurrency.gateway}
               </span>
+              {concurrency.effective && (
+                <span className="text-sm" data-testid="myrmidon-bot-container-concurrency-effective">
+                  {concurrency.effective}
+                </span>
+              )}
               {concurrency.diverged && (
                 <span
                   className="rounded-full border border-border px-2 py-0.5 text-xs text-amber-400"

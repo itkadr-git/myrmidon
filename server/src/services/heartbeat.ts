@@ -925,6 +925,12 @@ import {
   recordSwarmClaimOnCheckoutImpl,
   releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
+import {
+  effectiveAgentRunLimit,
+  effectiveAgentRunLimitSource,
+  savedAgentRunLimits,
+  type EffectiveAgentRunLimitSource,
+} from "../myrmidon/effective-run-limit.js";
 import { dbAdmissionAllowsClaim, usesDatabaseAdmission } from "../myrmidon/db-run-admission.js";
 import {
   // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share rule and the sweep order.
@@ -1528,6 +1534,7 @@ function readHeartbeatRunErrorFamily(
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
     run.errorCode === "hermes_transient_upstream" ||
+    run.errorCode === "hermes_gateway_rate_limited" ||
     run.errorCode === "codex_harness_crash" ||
     run.errorCode === "continuation_source_context_missing" ||
     run.errorCode === "controller_lease_lost" ||
@@ -18516,14 +18523,21 @@ export function heartbeatService(
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const boardLimit = normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns);
+    const limits = savedAgentRunLimits({
+      boardLimit,
+      adapterConfig: parseObject(agent.adapterConfig),
+    });
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(
-        heartbeat.maxConcurrentRuns,
-      ),
+      maxConcurrentRuns: effectiveAgentRunLimit(limits),
+      // myrmidon(1.6.7 RUN-LIMITS): which ceiling binds the effective limit
+      // above — the board, the saved gateway limit, or the container memory.
+      // Reported on held runs so a wait says its limit, not just its gate.
+      maxConcurrentRunsSource: effectiveAgentRunLimitSource(limits),
       skipTimerWhenNoActionableWork: asBoolean(
         heartbeat.skipTimerWhenNoActionableWork ??
           heartbeat.requireActionableTimerWork ??
@@ -22285,9 +22299,22 @@ export function heartbeatService(
     await writeQueuedRunWaitReason(needsReason, reason);
   }
 
+  type QueuedRunWaitDetail = {
+    limit: number;
+    limitSource: EffectiveAgentRunLimitSource;
+    running: number;
+  };
+
+  function omitQueuedRunWaitDetail(context: Record<string, unknown>) {
+    if (context.waitDetail === undefined) return context;
+    const { waitDetail: _dropped, ...rest } = context;
+    return rest;
+  }
+
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
     waitReason: QueuedRunWaitReason,
+    waitDetail?: QueuedRunWaitDetail,
   ): Promise<void> {
     if (runIds.length === 0) return;
     const rows = await db
@@ -22297,10 +22324,25 @@ export function heartbeatService(
     const at = new Date();
     for (const row of rows) {
       const context = parseObject(row.contextSnapshot);
-      if (context.waitReason === waitReason) continue;
+      if (
+        context.waitReason === waitReason &&
+        (waitDetail === undefined ||
+          (typeof context.waitDetail === "object" &&
+            context.waitDetail !== null &&
+            (context.waitDetail as Record<string, unknown>).limit === waitDetail.limit &&
+            (context.waitDetail as Record<string, unknown>).limitSource === waitDetail.limitSource &&
+            (context.waitDetail as Record<string, unknown>).running === waitDetail.running))
+      ) {
+        continue;
+      }
+      const next = waitDetail === undefined
+        // myrmidon(1.6.7 RUN-LIMITS): the detail belongs to the concurrency
+        // hold alone — any other reason (or a rewrite without numbers) drops it.
+        ? omitQueuedRunWaitDetail(context)
+        : { ...context, waitDetail: { ...waitDetail } };
       await db
         .update(heartbeatRuns)
-        .set({ contextSnapshot: { ...context, waitReason }, updatedAt: at })
+        .set({ contextSnapshot: { ...next, waitReason }, updatedAt: at })
         .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
     }
   }
@@ -22318,7 +22360,8 @@ export function heartbeatService(
       if (
         context.waitReason === undefined &&
         context.queuePosition === undefined &&
-        context.queueLength === undefined
+        context.queueLength === undefined &&
+        context.waitDetail === undefined
       ) {
         continue;
       }
@@ -22326,6 +22369,7 @@ export function heartbeatService(
         waitReason: _clearedReason,
         queuePosition: _clearedPosition,
         queueLength: _clearedLength,
+        waitDetail: _clearedDetail,
         ...rest
       } = context;
       await db
@@ -23607,11 +23651,19 @@ export function heartbeatService(
       if (queuedRuns.length === 0) return [];
 
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling holds these runs;
-      // name the wait on them.
+      // name the wait on them. myrmidon(1.6.7 RUN-LIMITS): the hold also says
+      // the effective limit and which ceiling binds it (board, gateway, or
+      // container memory), so the card can show "limit 2 (gateway)" instead of
+      // a bare "the agent's own concurrency limit is full".
       if (availableSlots <= 0) {
         await writeQueuedRunWaitReason(
           queuedRuns.map((run) => run.id),
           "agent_concurrency",
+          {
+            limit: policy.maxConcurrentRuns,
+            limitSource: policy.maxConcurrentRunsSource,
+            running: runningCount,
+          },
         );
         return [];
       }
