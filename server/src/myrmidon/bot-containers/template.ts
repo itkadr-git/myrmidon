@@ -285,10 +285,10 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
 export const BOT_HERMES_VOLUME_PATH = BOT_VOLUME_MOUNTS[0].containerPath;
 
 /**
- * myrmidon(1.6.5-BOT-DISK-H11): the bot runtime directories the whole instance
+ * myrmidon(1.6.5-BOT-DISK-H11): the bot runtime directory the whole instance
  * can share, one host copy instead of one copy per bot. On the production fleet
- * `bin` + `lazy-packages` + `lsp` are 5–7 GiB per bot (epic BOT-DISK-H, part
- * H11), and every bot of the instance runs the same ones.
+ * `bin` is ~38 MB per bot (~2.4 GB fleet-wide; re-scoped from bin+lazy-packages+lsp
+ * in OPE-12493), and every bot of the instance runs the same one.
  *
  * The host source is `settings.botDisk.sharedBotRuntimePath` (the driver adds
  * the binds from it, `readSharedBotRuntimePath`), READ-ONLY, and the mount
@@ -306,8 +306,6 @@ export interface BotRuntimeMount {
 
 export const BOT_RUNTIME_MOUNTS: readonly BotRuntimeMount[] = [
   { hostSubdir: "bin", containerPath: `${BOT_HERMES_VOLUME_PATH}/bin` },
-  { hostSubdir: "lazy-packages", containerPath: `${BOT_HERMES_VOLUME_PATH}/lazy-packages` },
-  { hostSubdir: "lsp", containerPath: `${BOT_HERMES_VOLUME_PATH}/lsp` },
 ];
 
 /**

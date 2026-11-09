@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agentWakeupRequests, agents, issues, issueThreadInteractions } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, heartbeatRunEvents, heartbeatRuns, issues, issueThreadInteractions } from "@myrmidon/db";
 import { issueRoutes } from "../routes/issues.js";
 import {
   describeEmbeddedPostgres,
@@ -15,11 +15,21 @@ import {
 describeEmbeddedPostgres("issue-thread-interaction routes acceptance (OPE-9150)", () => {
   const ctx = useEmbeddedPostgres("interaction-route-acceptance-", {
     resetEach: async (db) => {
-      await db.delete(issueThreadInteractions);
-      await db.delete(activityLog);
-      await db.delete(agentWakeupRequests);
-      await db.delete(agents);
-      await resetCompanyIssueFixtures(db);
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await db.delete(issueThreadInteractions);
+          await db.delete(activityLog);
+          await db.delete(heartbeatRunEvents);
+          await db.delete(heartbeatRuns);
+          await db.delete(agentWakeupRequests);
+          await db.delete(agents);
+          await resetCompanyIssueFixtures(db);
+          break;
+        } catch (error) {
+          if (attempt >= 4) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
     },
   });
 

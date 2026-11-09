@@ -1009,7 +1009,10 @@ jobs:
                (.name | startswith("tests (")) or
                .name == "tests (other + runner)" or
                .name == "checks" or
-               .name == "go tools (dockergate + fleetd)") and
+               .name == "go tools (dockergate + fleetd)" or
+               .name == "plugin readiness timing" or
+               .name == "Deployed migration numbers" or
+               .name == "migration guard") and
               .completed_at != null
             ) | .completed_at] | sort | last) as $test_end |
             ($test_end // ([$all[] | select(.name == "plan" and .completed_at != null) | .completed_at] | last)) as $last_pred_end |

@@ -379,7 +379,7 @@ func TestBotRuntimeRoot(t *testing.T) {
 	if got := mustParse(t, s).BotRuntimeRoot; got != "/srv/bot-runtime" {
 		t.Fatalf("botRuntimeRoot: %q", got)
 	}
-	// Absent means "no shared runtime": every bot keeps its own bin, lazy-packages and lsp.
+	// Absent means "no shared runtime": every bot keeps its own bin.
 	if got := mustParse(t, goodJSON).BotRuntimeRoot; got != "" {
 		t.Fatalf("a config without botRuntimeRoot must allow no runtime mount, got %q", got)
 	}

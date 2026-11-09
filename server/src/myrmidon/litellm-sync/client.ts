@@ -7,6 +7,7 @@
 // (its secret manager is not configured on our deployments, so `secrets/<name>`
 // references would never resolve).
 
+import { isPoolModelProviderType } from "@myrmidon/shared";
 import { unprocessable } from "../../errors.js";
 import { LitellmSyncPort, type LitellmChannelView } from "./port.js";
 /**
@@ -102,7 +103,16 @@ export interface LitellmSyncClientDeps {
 export function litellmProviderPrefix(providerType: string): string {
   // These board connectors expose OpenAI-compatible APIs. LiteLLM routes them
   // through its `openai` provider; `openai-compatible` is not a LiteLLM prefix.
-  if (providerType === "openai-compatible" || providerType === "dashscope" || providerType === "google") {
+  // The subscription pools (`chatgpt-pool`, `antigravity-pool`, `google-ai-pool`)
+  // are OpenAI-compatible routers too, and LiteLLM has no provider of those
+  // names. The board does not register pool deployments at all (the service
+  // skips them); the prefix stays right for any caller that still asks.
+  if (
+    providerType === "openai-compatible" ||
+    providerType === "dashscope" ||
+    providerType === "google" ||
+    isPoolModelProviderType(providerType)
+  ) {
     return "openai";
   }
   return providerType;
@@ -235,6 +245,7 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
         providerType: model.litellm_params?.provider || "",
         baseUrl: model.litellm_params?.api_base || null,
         credentialSecretName: extractSecretName(model.litellm_params?.api_key) || "",
+        ...(typeof model.model_info?.db_model === "boolean" ? { dbModel: model.model_info.db_model as boolean } : {}),
       }));
     },
 

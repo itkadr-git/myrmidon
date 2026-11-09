@@ -194,8 +194,8 @@ export async function readSharedPackageCachePath(db: Db): Promise<string | undef
 
 /**
  * myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime root stored right now
- * (undefined: every bot keeps its own `bin`, `lazy-packages` and `lsp`). The
- * local bot driver (the read-only binds) reads it on every create, recreate and
+ * (undefined: every bot keeps its own `bin`). The
+ * local bot driver (the read-only bind) reads it on every create, recreate and
  * drift check, so a PATCH applies on the next pass without a restart; the
  * operator's own rollout (populate the host directory, then remove the per-bot
  * copies) is described in docs/myrmidon/bot-shared-runtime.md.

@@ -15,10 +15,12 @@ function runSample(input: {
   id: string;
   status?: string;
   finishedSecondsAgo: number;
+  errorCode?: string | null;
 }) {
   return {
     id: input.id,
     status: input.status ?? "succeeded",
+    errorCode: input.errorCode ?? null,
     finishedAt: new Date(NOW.getTime() - input.finishedSecondsAgo * 1000),
   };
 }
@@ -106,6 +108,38 @@ describe("computeIssueRewakeCooldownMs", () => {
 });
 
 describe("evaluateIssueRewakeThrottle", () => {
+  it("freezes after two consecutive stale queued cancellations, even after cooldown and with a high configured threshold", () => {
+    const stale = (id: string, finishedSecondsAgo: number) => runSample({
+      id, status: "cancelled", errorCode: "queued_run_stale_timeout", finishedSecondsAgo,
+    });
+    const input = {
+      now: NOW,
+      freezeThreshold: 99,
+      runIdsWithIssueProgress: new Set<string>(),
+      hasNewIssueInputSinceLastRun: false,
+    };
+    expect(isThrottleCandidateIssueRewake({
+      reason: "queued_run_stale_timeout", wakeCommentId: null,
+      requestedByActorType: "system", forceFreshSession: false, hasExplicitResume: false,
+    })).toBe(true);
+    expect(evaluateIssueRewakeThrottle({ ...input, recentTerminalRuns: [stale("r1", 7200)] }))
+      .toEqual({ blocked: false, noProgressStreak: 0 });
+    expect(evaluateIssueRewakeThrottle({ ...input, recentTerminalRuns: [stale("r2", 3600), stale("r1", 7200)] }))
+      .toEqual({ blocked: true, frozen: true, noProgressStreak: 2,
+        frozenAt: new Date(NOW.getTime() - 3600_000) });
+    expect(evaluateIssueRewakeThrottle({ ...input,
+      recentTerminalRuns: [runSample({ id: "success", finishedSecondsAgo: 1 }), stale("r2", 3600), stale("r1", 7200)],
+    })).toEqual({ blocked: false, noProgressStreak: 1 });
+    expect(evaluateIssueRewakeThrottle({ ...input,
+      recentTerminalRuns: [stale("r3", 1), runSample({ id: "other", status: "cancelled", finishedSecondsAgo: 2 }), stale("r2", 3600)],
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
+    // Admission bookkeeping after the last stale run is not an explicit thaw.
+    expect(evaluateIssueRewakeThrottle({ ...input, hasNewIssueInputSinceLastRun: true,
+      recentTerminalRuns: [stale("r2", 3600), stale("r1", 7200)],
+    })).toEqual({ blocked: true, frozen: true, noProgressStreak: 2,
+      frozenAt: new Date(NOW.getTime() - 3600_000) });
+  });
+
   it("allows when there is no run history", () => {
     expect(
       evaluateIssueRewakeThrottle({

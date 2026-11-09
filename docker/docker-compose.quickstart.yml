@@ -16,6 +16,11 @@ services:
     # backstop if something leaks anyway — the container hits its own limit and
     # dies visibly rather than starving the host of pids.
     pids_limit: 2048
+    # Codex local runner sandboxing requires user namespaces (clone/unshare/mount).
+    # Enable the custom seccomp profile and unconfined AppArmor for the board container:
+    # security_opt:
+    #   - seccomp:./board/myrmidon-board-userns.json
+    #   - apparmor:unconfined
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
     environment:

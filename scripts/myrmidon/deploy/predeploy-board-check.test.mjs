@@ -300,6 +300,33 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(out, /did not answer .*dashboard \(curl exit 7\)/);
   });
 
+  it("a dead /api/liveness on the copy stops the deploy before the maintenance window (OPE-12211)", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "down-urls"), "http://127.0.0.1:13110/api/liveness\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /liveness probe \/api\/liveness on the copy did not answer 200/);
+    assert.match(out, /the deploy stops BEFORE the maintenance window/);
+    // The probe targets the throwaway copy on its own port, never production.
+    assert.match(calls(sb), /curl .*http:\/\/127\.0\.0\.1:13110\/api\/liveness/);
+  });
+
+  it("a non-200 /api/liveness on the copy stops the deploy too (OPE-12211)", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "http-codes"), "/api/liveness 503\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /liveness probe \/api\/liveness on the copy did not answer 200 \(got 503\)/);
+  });
+
+  it("MYRMIDON_PREDEPLOY_LIVENESS=off skips the liveness probe without a failure (OPE-12211)", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "down-urls"), "http://127.0.0.1:13110/api/liveness\n");
+    const { code, out } = run(sb, ["--digest", NEW, "--dump", sb.dump], { MYRMIDON_PREDEPLOY_LIVENESS: "off" });
+    assert.equal(code, 0, out);
+    assert.match(out, /liveness check off/);
+  });
+
   it("a 401/403 is a warning without credentials and a failure with them", () => {
     const anon = sandbox();
     fs.writeFileSync(path.join(anon.dir, "http-codes"), "attention 403\n");

@@ -190,6 +190,24 @@ describe("run retry policy: failure classification", () => {
       classification: "transient",
       reason: "transient_error_message",
     });
+    for (const errorMessage of [
+      "No deployments available",
+      "all deployments in cooldown",
+      "all deployments are in cooldown",
+      "All deployments for selected model are in cooldown",
+      "All deployments (openai/chatgpt) are in cooldown",
+      "deployments in cooldown",
+      "HTTP 429 too many requests",
+      "429 Too Many Requests",
+      "rate_limit_error",
+    ]) {
+      expect(
+        classifyRunFailureForRetry({ errorCode: "adapter_failed", errorMessage }),
+      ).toMatchObject({
+        classification: "transient",
+        reason: "transient_error_message",
+      });
+    }
   });
 
   it("evaluates isTransientFailure and isPermanentAgentFailure accurately", () => {

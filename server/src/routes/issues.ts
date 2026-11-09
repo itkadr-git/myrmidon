@@ -50,6 +50,7 @@ import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmido
 import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
+  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
 // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
@@ -103,6 +104,7 @@ import { withDefaultEscalationChain } from "../services/review-escalation-chain.
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
+import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import {
   companies,
   activityLog,
@@ -3844,7 +3846,13 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
-  const workProductsSvc = workProductService(db);
+  const workProductsSvc = workProductService(db, {
+    // myrmidon(OPE-12397): UI reads that refresh PR metadata (the
+    // `refreshPullRequests=true` routes) count into the `ui-refresh` bucket —
+    // the default provider label would attribute them to `task-pr-sync` and
+    // hide the real spend in the rate-limit log.
+    resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db, { source: "ui-refresh" }),
+  });
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
   const companySkillsSvc = companySkillService(db);
@@ -5259,7 +5267,7 @@ export function issueRoutes(
       nextAssigneeAgentId !== input.actorAgentId &&
       (executionReviewParticipants.some(
         (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
-      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
+      ) || ["reviewer", "lead"].includes((await agentsSvc.getById(String(nextAssigneeAgentId)))?.role ?? ""))
     ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
@@ -9498,7 +9506,7 @@ export function issueRoutes(
       pullRequestsCi: [] as unknown[],
     };
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const prs = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -9525,7 +9533,7 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const pullRequests = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -14559,7 +14567,6 @@ export function issueRoutes(
       transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
       // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
       if (
-        nextExecutionPolicy === null &&
         existing.assigneeAgentId &&
         (existing.status === "in_review" || updateFields.status === "in_review")
       ) {
@@ -14578,6 +14585,15 @@ export function issueRoutes(
             ? undefined
             : (updateFields.assigneeUserId as string | null),
       };
+      let candidateLoads: Map<string, number> | undefined;
+      if (
+        (updateFields.status === "in_review" || existing.status === "in_review") &&
+        nextExecutionPolicy &&
+        summarizeExecutionParticipants(nextExecutionPolicy, "review").length > 1
+      ) {
+        const routingStore = createPgReviewRoutingStore(db);
+        candidateLoads = await routingStore.loadByAgent(existing.companyId);
+      }
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -14597,6 +14613,7 @@ export function issueRoutes(
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
+        candidateLoads,
       });
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
@@ -14654,7 +14671,7 @@ export function issueRoutes(
           companyId: existing.companyId,
           issueId: existing.id,
         });
-        if (ci.state === "pending" || ci.state === "unknown") {
+        if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -15752,7 +15769,7 @@ export function issueRoutes(
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
-              if (ci.state === "pending" || ci.state === "unknown") {
+              if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
