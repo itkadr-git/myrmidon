@@ -13,7 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import * as vendorI18n from "@/i18n";
-import { UI2_LANGUAGES, type Ui2Language } from "@myrmidon/shared";
+import { UI2_LANGUAGES as SHARED_UI2_LANGUAGES, type Ui2Language } from "@myrmidon/shared";
 // (the vendor instance is read through readVendorI18nInstance below, never by
 // destructuring the namespace — see the comment on that helper)
 import { ui2LanguageApi } from "./api";
@@ -22,7 +22,14 @@ import { ru } from "./catalogs/ru";
 import { mergeCatalog, type CatalogObject } from "./catalog-upload";
 import { formatUi2Message, ui2Messages, type Ui2MessageKey } from "./locales";
 
-export { UI2_LANGUAGES };
+// myrmidon(OPE-3986): the shared constant is snapshotted into a LOCAL binding
+// before re-export. A direct `export { UI2_LANGUAGES }` of an imported binding
+// makes the vitest module-runner namespace getter return `undefined` even
+// though the binding is alive at eval time (LanguageSettingsPanel crashed at
+// `UI2_LANGUAGES.map` in CI while `Object.keys` still listed the export). A
+// locally-initialized const gets a getter over the module's own binding and
+// keeps the same public value/type.
+export const UI2_LANGUAGES: readonly Ui2Language[] = SHARED_UI2_LANGUAGES;
 export type { Ui2Language };
 
 /** The slice of the vendor i18next instance the ui2 shell touches. */
