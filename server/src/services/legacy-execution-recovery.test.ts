@@ -498,9 +498,10 @@ it("does not hold provider_garbage runs for reconciliation; ordinary failures st
   expect(legacyExecutionNeedsReconciliation({
     ...garbageRun, resultJson: {},
   })).toBe(false);
-  // Same evidence without the provider_garbage code remains a reconciliation hold.
+  // The same failure without the provider_garbage code stays a reconciliation
+  // hold: the exclusion is keyed on the errorCode, not on generic outcome text.
   expect(legacyExecutionNeedsReconciliation({
-    ...garbageRun, errorCode: "unknown_upstream_failure",
+    ...garbageRun, errorCode: "unknown_upstream_failure", resultJson: {},
   })).toBe(true);
 });
 
