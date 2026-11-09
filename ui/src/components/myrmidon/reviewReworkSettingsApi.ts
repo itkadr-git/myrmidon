@@ -21,6 +21,14 @@ export interface ReviewReworkSettingsView {
   settings: ReviewReworkSettings;
   /** The change journal, newest first. */
   journal: ReviewReworkJournalEntry[];
+  /**
+   * Where the sweep interval is in force from (OPE-12397): "settings" — the
+   * stored value the panel edits; "env" — MYRMIDON_REVIEW_REWORK_SWEEP_
+   * INTERVAL_SEC forces it and the input stays read-only.
+   */
+  sweepIntervalSource: "settings" | "env";
+  /** The forcing env name when `sweepIntervalSource` is "env", else "". */
+  sweepIntervalEnvName: string;
 }
 
 export const reviewReworkSettingsQueryKey = ["myrmidon", "review-rework", "settings"] as const;

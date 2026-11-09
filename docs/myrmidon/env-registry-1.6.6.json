@@ -41,10 +41,10 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 897,
+    "unique_names": 898,
     "secret": 108,
     "infra": 373,
-    "product": 416
+    "product": 417
   },
   "entries": [
     {
@@ -9981,6 +9981,23 @@
       "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
       "ticket_or_pr": "OPE-12397",
       "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
+      "name": "MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/myrmidon/review-rework/sweep.ts:67",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI есть: настройка Review Rework sweepIntervalSec (панель Review Rework); заданный env перекрывает сохранённую настройку (панель показывает override и блокирует ввод)",
+      "secret_ref_or_instance_setup": "не секрет; env-override настройки экземпляра (env перекрывает хранимую настройку, как у LiteLlm budget sync)",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env как аварийный override настройки доски (панель Review Rework хранит sweepIntervalSec; env перекрывает и блокирует ввод)",
+      "purpose": "fallback poll period for the review-rework sweep before the stored instance setting exists",
+      "default": "не задан (используется сохранённая настройка; изначально 300 из DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC; допустимо 60..3600)"
     },
     {
       "name": "MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS",

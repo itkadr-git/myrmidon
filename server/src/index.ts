@@ -2031,6 +2031,9 @@ async function startServerWithDatabaseTeardown(
     wakeup: ((agentId: string, options: Record<string, unknown>) =>
       backgroundHeartbeat.wakeup(agentId, options as any)),
     track: trackHeartbeatSchedulerWork,
+    // myrmidon(OPE-12397): one GitHub read per PR per pass needs one sweeper —
+    // the same "scheduler" leadership gate TASK-PR-SYNC already uses.
+    isLeader: () => !heartbeatSchedulerStopped && leaderLeaseManager.isLeader("scheduler"),
   });
   // myrmidon(1.6.6 GUARD-RETURN): code tasks of dev projects must not stall on
   // non-coding roles (reviewer, lead, operator). Automatically returns tasks with

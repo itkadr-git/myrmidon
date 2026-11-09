@@ -62,6 +62,7 @@
 | Queue priority panel (RunQueuePrioritySettingsPanel): issue-priority weights grid, starvation top weight | `MYRMIDON_RUN_PRIORITY_ISSUE_WEIGHTS`, `MYRMIDON_RUN_STARVATION_TOP_WEIGHT` |
 | Recovery policy panel (stranded auto-policy, infra-interrupt codes, settled holds, write lock) | `MYRMIDON_INFRA_INTERRUPT_CODES`, `MYRMIDON_SETTLED_HOLDS_BLOCK_EXPLICIT_WAKES`, `MYRMIDON_STRANDED_AUTOPOLICY_ENABLED`, `MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY`, `MYRMIDON_WRITE_LOCK_REQUIRES_LIVE_RUN`, `STRANDED_RECENT_PROGRESS_EXEMPTION_MS` |
 | Recovery policy panel: stale-block watchdog | `MYRMIDON_STALE_BLOCK_ENABLED`, `MYRMIDON_STALE_BLOCK_INTERVAL_SEC`, `MYRMIDON_STALE_BLOCK_SIGNAL_TTL_MS` |
+| Review-return loop panel (ReviewReworkSettingsPanel): sweep interval | `MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC` |
 | Same Chat channels panel (bridge message languages) | `MYRMIDON_TELEGRAM_DM_LANGUAGE` |
 | Skill lifecycle page: pilot agent set (SkillLifecycle.tsx) | `MYRMIDON_SKILL_PILOT_AGENTS` |
 | Swarm claim panel: advanced block (wake batch, supervisor row cap, baseline doc key) | `MYRMIDON_SWARM_IDLE_WAKE_BATCH`, `MYRMIDON_SWARM_PILOT_BASELINE_DOC`, `MYRMIDON_SWARM_SUPERVISOR_TASK_MAX` |

@@ -1,7 +1,19 @@
 import { logger } from "../middleware/logger.js";
 
 // myrmidon(OPE-11767): "board-merge" counts the requests of the board-side merge.
-export type GitHubRequestSource = "ci-resolver" | "review-recovery" | "task-pr-sync" | "broker" | "board-merge";
+// myrmidon(OPE-12397): per-reader buckets — the provider tags every read with
+// the `source` its caller declared, so the 5-minute log attributes the spend
+// (review-rework sweep, run-start context, UI-triggered refreshes, routing).
+export type GitHubRequestSource =
+  | "ci-resolver"
+  | "review-recovery"
+  | "task-pr-sync"
+  | "broker"
+  | "board-merge"
+  | "review-rework"
+  | "review-routing"
+  | "run-context"
+  | "ui-refresh";
 
 export interface GitHubRateLimitMetrics {
   remaining: number | null;
@@ -27,18 +39,24 @@ interface RateLimitState {
   sources: Record<GitHubRequestSource, number>;
 }
 
+const DEFAULT_SOURCES: Record<GitHubRequestSource, number> = {
+  "ci-resolver": 0,
+  "review-recovery": 0,
+  "task-pr-sync": 0,
+  broker: 0,
+  "board-merge": 0,
+  "review-rework": 0,
+  "review-routing": 0,
+  "run-context": 0,
+  "ui-refresh": 0,
+};
+
 const state: RateLimitState = {
   remaining: null,
   limit: null,
   windowResetEpochSeconds: null,
   rateLimitResetEpochSeconds: null,
-  sources: {
-    "ci-resolver": 0,
-    "review-recovery": 0,
-    "task-pr-sync": 0,
-    broker: 0,
-    "board-merge": 0,
-  },
+  sources: { ...DEFAULT_SOURCES },
 };
 
 export function recordGitHubRequest(
@@ -196,13 +214,7 @@ export function resetGitHubRateLimitForTests(): void {
   state.limit = null;
   state.windowResetEpochSeconds = null;
   state.rateLimitResetEpochSeconds = null;
-  state.sources = {
-    "ci-resolver": 0,
-    "review-recovery": 0,
-    "task-pr-sync": 0,
-    broker: 0,
-    "board-merge": 0,
-  };
+  state.sources = { ...DEFAULT_SOURCES };
 }
 
 export function setGitHubRateLimitForTests(resetEpochSeconds: number, remaining = 0): void {

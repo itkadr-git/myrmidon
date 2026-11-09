@@ -197,7 +197,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         const args = (params.arguments && typeof params.arguments === "object"
           ? params.arguments
           : {}) as { repository?: unknown; pullNumber?: unknown };
-        const ciResolver = createPullRequestCiResolver(db);
+        const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
 
         if (args.repository !== undefined || args.pullNumber !== undefined) {
           if (
@@ -286,7 +286,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   router.post("/runtime-tools/ci/status", async (req, res) => {
     const claims = runtimeClaims(req);
     await service.validate(claims);
-    const ciResolver = createPullRequestCiResolver(db);
+    const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
     const repository = req.body?.repository;
     const pullNumber = req.body?.pullNumber;
 
