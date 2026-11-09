@@ -58,6 +58,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { prSignalSubjectId, replaceReviewRoutingSignals, type ReviewRoutingSignal } from "./attention.js";
 import {
+  asRecord,
   buildPrRoutingTaskPatch,
   buildReviewRoutingAssignPatch,
   buildReviewRoutingReassignPatch,
@@ -269,6 +270,10 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     for (const [agentId, load] of await deps.store.loadByAgent(companyId)) {
       liveByReviewer.set(agentId, load);
     }
+    // Per-pass snapshot of the loads the moves must reduce: the wake lane
+    // bumps them afterwards, and rebalancing must judge the queues the pass
+    // started with, not the lanes' own wake bumps.
+    const initialLoads = new Map(liveByReviewer);
     const activeStageIdsByIssue = new Map(pending.map(({ row }) => {
       const policy = typeof row.executionPolicy === "object" && row.executionPolicy !== null
         ? (row.executionPolicy as Record<string, unknown>)
@@ -304,6 +309,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     const reviewersWoken = new Set<string>();
     for (const { row, review } of orderedPending) {
       if (reviewersWoken.has(review.reviewerAgentId)) continue;
+      // A reviewer with a healthy queue (above idle, within queueThreshold) is
+      // owned by the queue-offload/rebalance lanes, which wake the *new*
+      // reviewer on a move; the liveness lane nudges stale reviews sitting
+      // idle with nothing behind them or stuck behind an overloaded queue.
+      const reviewerLoad = initialLoads.get(review.reviewerAgentId) ?? 0;
+      if (reviewerLoad > 0 && reviewerLoad <= settings.queueThreshold) continue;
       try {
         const wakeState = await deps.store.reviewWakeState({
           companyId,
@@ -675,6 +686,68 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         signals.push(signal);
         result.failed += 1;
         log.warn({ err, issueId: row.id }, "review routing failed to offload an overloaded reviewer");
+      }
+    }
+
+    if (settings.rebalanceAfterMinutes > 0 && moves < REVIEW_ROUTING_MAX_MOVES_PER_PASS) {
+      const overdueIds = new Set(overdue.map((entry) => entry.row.id));
+      for (const { row, review } of pending) {
+        if (moves >= REVIEW_ROUTING_MAX_MOVES_PER_PASS) break;
+        if (overdueIds.has(row.id)) continue;
+        // The wake liveness lane owns reviews of idle reviewers: rebalancing
+        // must not duplicate its single-dispatch budget, so only a reviewer
+        // actually holding a queue is a candidate for an idle-pool handoff.
+        if ((initialLoads.get(review.reviewerAgentId) ?? 0) <= 0) continue;
+        // Escalation lives in the raw execution state: any escalation marker
+        // (reason, target, policy revision) or an exhausted round circuit
+        // breaker means ADM owns the stage.
+        const stateRecord = asRecord(row.executionState);
+        const escalatedRoundCount = typeof stateRecord?.changesRequestedCount === "number" &&
+          stateRecord.changesRequestedCount >= 3;
+        if (
+          escalatedRoundCount ||
+          stateRecord?.escalationToParticipant ||
+          stateRecord?.escalationPolicyRevision ||
+          stateRecord?.escalationReason
+        ) {
+          continue;
+        }
+
+        const routed = history.get(row.id);
+        const waitingSince = routed?.lastAt ?? row.updatedAt;
+        const waitingMinutes = Math.max(0, Math.floor((now.getTime() - waitingSince.getTime()) / 60_000));
+        if (waitingMinutes < settings.rebalanceAfterMinutes) {
+          continue;
+        }
+
+        const candidates = await pool();
+        const excluded = excludedReviewerIds(row, [
+          review.reviewerAgentId,
+          ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
+        ]);
+
+        const emptyCandidates = candidates.filter(
+          (c) => c.invokable !== false && !excluded.has(c.id) && c.load === 0,
+        );
+        if (emptyCandidates.length === 0) {
+          continue;
+        }
+
+        emptyCandidates.sort((a, b) => a.id.localeCompare(b.id));
+        const picked = emptyCandidates[0];
+
+        try {
+          const state = await rebalance(row, review.reviewerAgentId, picked, waitingMinutes);
+          if (state) {
+            moves += 1;
+            result.reassigned += 1;
+            bumpLoad(picked.id, 1);
+            bumpLoad(review.reviewerAgentId, -1);
+          }
+        } catch (err) {
+          result.failed += 1;
+          log.warn({ err, issueId: row.id }, "review routing failed to rebalance a reviewer");
+        }
       }
     }
 
@@ -1129,6 +1202,50 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     return applied;
   }
 
+  async function rebalance(
+    row: InReviewIssueRow,
+    previousReviewerId: string,
+    reviewer: ReviewerCandidate,
+    waitingMinutes: number,
+  ) {
+    const applied = await deps.store.applyPatch({
+      issueId: row.id,
+      companyId: row.companyId,
+      guard: (fresh) => readPendingAgentReview(fresh)?.reviewerAgentId === previousReviewerId,
+      build: (fresh) => buildReviewRoutingReassignPatch({ issue: fresh, newReviewerAgentId: reviewer.id }),
+    });
+    if (!applied) return null;
+    await deps.addComment(
+      row.id,
+      `Automatic review routing: this review was waiting for ${waitingMinutes} min while another member of the ` +
+        `review pool had an empty queue, so it was rebalanced to @${reviewer.id}.`,
+      {
+        presentation: notice("Review rebalanced"),
+        metadata: metadataFor({
+          "Previous reviewer": previousReviewerId,
+          "New reviewer": reviewer.id,
+          "Role": reviewer.role,
+          "Wait minutes": String(waitingMinutes),
+        }),
+      },
+    );
+    await wake(row, reviewer.id, applied.executionState, "myrmidon_review_routing_rebalance");
+    await deps.logActivity({
+      companyId: row.companyId,
+      action: REVIEW_ROUTING_REASSIGNED_ACTION,
+      issueId: row.id,
+      details: {
+        identifier: row.identifier,
+        reviewerAgentId: reviewer.id,
+        reviewerRole: reviewer.role,
+        previousReviewerAgentId: previousReviewerId,
+        rebalanced: true,
+        waitingMinutes,
+      },
+    });
+    return applied;
+  }
+
   /**
    * The change is already committed: a failed wake must not undo it. The
    * reviewer still sees the task on its own heartbeat and in its inbox.
@@ -1142,13 +1259,17 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     try {
       const stageId = typeof state?.currentStageId === "string" ? state.currentStageId : "review";
       const requestedAt = new Date().toISOString();
-      const lastWakeState = await deps.store.reviewWakeState({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId });
+      const lastWakeState = deps.store.reviewWakeState
+        ? await deps.store.reviewWakeState({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId })
+        : { attempts: 0, lastAt: null };
       if (lastWakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
         log.warn({ issueId: row.id, reviewerId, attempts: lastWakeState.attempts }, "review routing wake retry limit reached");
         return null;
       }
       const attempt = lastWakeState.attempts + 1;
-      await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at: new Date(requestedAt), attempt });
+      if (deps.store.recordReviewWake) {
+        await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at: new Date(requestedAt), attempt });
+      }
       await deps.wakeReviewer(reviewerId, {
         issueId: row.id,
         reason: "execution_review_requested",
