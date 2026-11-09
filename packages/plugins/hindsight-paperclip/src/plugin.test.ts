@@ -957,8 +957,10 @@ describe("request timeout and latency (OPE-8150)", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       const toolResult = await toolPromise;
       assert.equal(aborted, true);
-      assert.ok(toolResult.content);
-      assert.match(toolResult.content ?? "", /Memory recall failed.*(?:AbortError|abort)/i);
+      if (typeof toolResult.content !== "string") {
+        throw new TypeError("Expected hindsight_recall error content");
+      }
+      assert.match(toolResult.content, /Memory recall failed.*(?:AbortError|abort)/i);
     } finally {
       vi.useRealTimers();
     }
