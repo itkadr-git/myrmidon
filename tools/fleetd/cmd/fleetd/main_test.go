@@ -32,6 +32,9 @@ func testClientTLS() *tls.ConnectionState {
 	return &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
 }
 
+// testBoardExtraHost is the board address the test site is configured with.
+const testBoardExtraHost = "board.example.test:192.0.2.1"
+
 func testConfig() *config {
 	cfg := &config{
 		SiteId:        "myr-vm1",
@@ -45,6 +48,8 @@ func testConfig() *config {
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
 	}
+	// The board address of the site: fleetd takes it from here, not from a spec.
+	cfg.BoardExtraHost = testBoardExtraHost
 	return cfg
 }
 
@@ -137,7 +142,14 @@ func newServerWithDocker(t *testing.T) (*server, *httptest.Server, *fakeDocker) 
 	fake := &fakeDocker{containers: map[string]map[string]any{}}
 	cfg := testConfig()
 	cfg.VolumeRoot = t.TempDir()
-	socket := filepath.Join(t.TempDir(), "docker.sock")
+	// A unix socket path is limited to about 107 bytes. t.TempDir() carries the
+	// name of the test, which is too long for a subtest with a long name.
+	sockDir, err := os.MkdirTemp("", "fd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	socket := filepath.Join(sockDir, "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -284,6 +296,35 @@ func TestWriteProfileUsesIsolatedVolumeRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.cfg.VolumeRoot, key, "profile.json")); err != nil {
 		t.Fatalf("profile not written under isolated volume root: %v", err)
+	}
+}
+
+// T4 (08.11): a profile file in a new nested directory gives the bot user every
+// directory MkdirAll created on the way, not only the file's own directory, and
+// never the root of the bot volume.
+func TestWriteProfileChownsCreatedIntermediateDirs(t *testing.T) {
+	s, _ := newServer(t)
+	resetChownLog(nil)
+	defer resetChownLog(nil)
+	key := s.cfg.Bots[0].BotKey
+	rec := routeRequest(s, http.MethodPut, "/v1/bots/"+key+"/profile", fakeBearer(), `{"profile":{"botKey":"`+key+`","files":[{"path":"hermes/skills/paperclip-managed/myrmidon/SKILL.md","content":"# skill"}]}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("profile write failed: %d %s", rec.Code, rec.Body.String())
+	}
+	root, err := filepath.EvalSymlinks(filepath.Join(s.cfg.VolumeRoot, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chownMu.Lock()
+	defer chownMu.Unlock()
+	for _, rel := range []string{"hermes", "hermes/skills", "hermes/skills/paperclip-managed", "hermes/skills/paperclip-managed/myrmidon"} {
+		got, ok := chownLog[filepath.Join(root, rel)]
+		if !ok || got != [2]int{botUID, botUID} {
+			t.Fatalf("directory %s not given to the bot user: %v %v (log %v)", rel, got, ok, chownLog)
+		}
+	}
+	if _, ok := chownLog[root]; ok {
+		t.Fatalf("the bot volume root must stay as it is, got chown of %s", root)
 	}
 }
 

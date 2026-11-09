@@ -167,6 +167,13 @@ ARG CODEX_VERSION=0.157.1
 ARG OPENCODE_VERSION=1.18.32
 ARG GEMINI_CLI_VERSION=0.61.0
 ARG KIMI_CODE_VERSION=2.1.1
+# myrmidon(1.6.7 OPE-12266): the omp_local adapter runs the Oh My Pi CLI, whose
+# launcher needs Bun >= 1.3.14. Both are pinned: Bun from the release zip with a
+# SHA256 gate, omp from npm at the pinned version (`npm install -g` alone yields
+# a broken `omp` bin because the package's launcher is `#!/usr/bin/env bun`).
+ARG BUN_VERSION=1.3.14
+ARG BUN_SHA256=951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f
+ARG OMP_VERSION=18.9.2
 WORKDIR /app
 # Tool and OS layer BEFORE the app copy: it references nothing from /app, and
 # the app copy changes on every commit — ordered the other way around, this
@@ -175,10 +182,35 @@ WORKDIR /app
 RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} opencode-ai@${OPENCODE_VERSION} @google/gemini-cli@${GEMINI_CLI_VERSION} @moonshot-ai/kimi-code@${KIMI_CODE_VERSION} \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq \
+  && apt-get install -y --no-install-recommends openssh-client jq bubblewrap unzip fd-find \
+  && ln -s /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+# myrmidon(1.6.7 OPE-12266): Bun + omp for the omp_local adapter. The zip is
+# verified against the digest pinned in BUN_SHA256 and re-checked against the
+# release SHASUMS256.txt (so a silently republished zip fails the build), then
+# installed to /usr/local/bin. omp is added through Bun (`bun add --global`),
+# which honors the package's `#!/usr/bin/env bun` launcher that plain
+# `npm install -g` cannot satisfy. bubblewrap (installed above) provides the
+# bwrap sandbox the local adapters confine agent processes with.
+# BUN_INSTALL=/usr/local makes Bun place its global bins (omp) directly into
+# /usr/local/bin for all image users instead of root's ~/.bun/bin.
+ENV BUN_INSTALL=/usr/local
+RUN set -eu \
+  && curl -fsSL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
+  && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
+  && curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/SHASUMS256.txt" | grep "  bun-linux-x64.zip$" | sed "s|  bun-linux-x64.zip|  /tmp/bun.zip|" | sha256sum -c - \
+  && unzip -q /tmp/bun.zip -d /tmp/bun-extract \
+  && install -m 0755 "/tmp/bun-extract/bun-linux-x64/bun" /usr/local/bin/bun \
+  && rm -rf /tmp/bun.zip /tmp/bun-extract \
+  && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+  && test -x /usr/local/bin/omp \
+  && test -x /usr/local/bin/fd \
+  && echo "bun: $(bun --version)" \
+  && echo "omp: $(omp --version)" \
+  && echo "fd: $(fd --version)"
 
 COPY scripts/docker-entrypoint.sh scripts/myrmidon-migrate /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/myrmidon-migrate

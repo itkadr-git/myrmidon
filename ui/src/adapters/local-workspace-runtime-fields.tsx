@@ -47,9 +47,9 @@ function parseList(text: string): string[] | undefined {
 }
 
 /**
- * Sandbox and timeout settings of the local CLI adapters (claude_local, codex_local).
- * Every key here is read by the adapter at run time; the server validates the sandbox
- * keys on save and lets only an instance admin change them.
+ * Sandbox and timeout settings of the local CLI adapters (claude_local, codex_local,
+ * omp_local). Every key here is read by the adapter at run time; the server validates
+ * the sandbox keys on save and lets only an instance admin change them.
  */
 export function LocalWorkspaceRuntimeFields({
   isCreate,
@@ -62,7 +62,7 @@ export function LocalWorkspaceRuntimeFields({
   adapterType,
 }: AdapterConfigFieldsProps) {
   const { t } = useTranslation();
-  if (adapterType !== "claude_local" && adapterType !== "codex_local") return null;
+  if (adapterType !== "claude_local" && adapterType !== "codex_local" && adapterType !== "omp_local") return null;
 
   const read = (key: string): unknown =>
     isCreate ? values?.adapterSchemaValues?.[key] : eff("adapterConfig", key, config[key]);
@@ -72,7 +72,10 @@ export function LocalWorkspaceRuntimeFields({
   };
 
   const network = String(read("networkScope") ?? "");
-  const numberFields = adapterType === "claude_local"
+  // myrmidon(1.6.7 OPE-12266): omp_local reads none of these timeout keys, so it gets none.
+  const numberFields = adapterType === "omp_local"
+    ? []
+    : adapterType === "claude_local"
     ? [
         {
           key: "helloProbeTimeoutSec",

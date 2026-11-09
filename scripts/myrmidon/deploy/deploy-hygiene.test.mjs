@@ -5,7 +5,57 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
+const require = createRequire(import.meta.url);
+const { test } = require("node:test");
+
+const RETENTION_LIB = path.join(path.dirname(fileURLToPath(import.meta.url)), "lib.sh");
+
+function retentionProbe(sb, body) {
+  const result = spawnSync("bash", ["-c", `source "$1"; ${body}`, "probe", RETENTION_LIB], {
+    encoding: "utf8",
+    env: { ...process.env, DUMP_DIR: sb.dumpDir, DUMP_KEEP: "3", DUMP_MIN_BYTES: "1" },
+  });
+  return { code: result.status, out: `${result.stdout}${result.stderr}` };
+}
+
+test("predeploy retention keeps three newest dumps by mtime and leaves <=3 untouched", () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), "predeploy-retention-"));
+  const dumpDir = path.join(sb, "dumps");
+  fs.mkdirSync(dumpDir);
+  for (const [name, mtime] of [["old", 100], ["middle", 200], ["new", 300], ["newer", 400]]) {
+    const file = path.join(dumpDir, `myrmidon-${name}.dump`);
+    fs.writeFileSync(file, "data");
+    fs.utimesSync(file, mtime, mtime);
+  }
+  const { code, out } = retentionProbe({ dumpDir }, "log(){ :; }; die(){ echo \\\"$*\\\" >&2; exit 1; }; prune_dumps");
+  assert.equal(code, 0, out);
+  assert.deepEqual(fs.readdirSync(dumpDir).sort(), ["myrmidon-middle.dump", "myrmidon-new.dump", "myrmidon-newer.dump"]);
+  fs.rmSync(sb, { recursive: true, force: true });
+});
+
+test("predeploy retention does not prune after dump command failure", () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), "predeploy-retention-"));
+  const dumpDir = path.join(sb, "dumps");
+  fs.mkdirSync(dumpDir);
+  for (let i = 0; i < 4; i++) fs.writeFileSync(path.join(dumpDir, `myrmidon-${i}.dump`), "old");
+  const { code } = retentionProbe({ dumpDir }, "log(){ :; }; die(){ exit 1; }; DUMP_COMMAND=\\\"exit 1\\\"; take_dump test");
+  assert.notEqual(code, 0);
+  assert.equal(fs.readdirSync(dumpDir).length, 4);
+  fs.rmSync(sb, { recursive: true, force: true });
+});
+
+test("predeploy retention does not prune at or under limit", () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), "predeploy-retention-"));
+  const dumpDir = path.join(sb, "dumps");
+  fs.mkdirSync(dumpDir);
+  for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(dumpDir, `myrmidon-${i}.dump`), "old");
+  const { code, out } = retentionProbe({ dumpDir }, "log(){ :; }; die(){ exit 1; }; prune_dumps");
+  assert.equal(code, 0, out);
+  assert.equal(fs.readdirSync(dumpDir).length, 3);
+  fs.rmSync(sb, { recursive: true, force: true });
+});
 // DEPLOY-HYGIENE (OPE-5107, the 06.10 disk incident): one deploy of rc.3 moved
 // the root filesystem of the deploy host from 86 % to 92 % in an hour, because
 // the deploy never checked the disk could hold the images and never removed

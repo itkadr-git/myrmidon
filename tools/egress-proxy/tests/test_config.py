@@ -17,10 +17,12 @@ import unittest
 from egress_proxy.config import (
     BOTS_FILE_ENV,
     ConfigError,
+    MAX_TUNNELS_PER_CLIENT_ENV,
     MODE_ENV,
     POLICY_FILE_ENV,
     POLICY_URL_ENV,
     TUNNEL_IDLE_ENV,
+    TUNNEL_RESERVE_DESTINATIONS_ENV,
     load_bots,
     load_config,
 )
@@ -38,6 +40,8 @@ class LoadConfigTest(unittest.TestCase):
         self.assertEqual(config.policy_file, "")
         self.assertEqual(config.policy_refresh_sec, 30)
         self.assertIsNone(config.tunnel_idle_sec)
+        self.assertEqual(config.max_tunnels_per_client, 0)
+        self.assertEqual(config.tunnel_reserve_destinations, ())
 
     def test_refuses_a_mode_it_does_not_implement(self) -> None:
         for mode in ("block", "off", "deny"):
@@ -97,6 +101,35 @@ class LoadConfigTest(unittest.TestCase):
                 with self.assertRaises(ConfigError) as raised:
                     load_config({TUNNEL_IDLE_ENV: bad})
                 self.assertIn(TUNNEL_IDLE_ENV, str(raised.exception))
+
+    def test_reads_the_per_client_tunnel_cap(self) -> None:
+        self.assertEqual(load_config({}).max_tunnels_per_client, 0)
+        self.assertEqual(load_config({MAX_TUNNELS_PER_CLIENT_ENV: "64"}).max_tunnels_per_client, 64)
+        self.assertEqual(load_config({MAX_TUNNELS_PER_CLIENT_ENV: " 1 "}).max_tunnels_per_client, 1)
+
+    def test_refuses_a_tunnel_cap_it_cannot_honour(self) -> None:
+        for bad in ("not-a-number", "-1", "65536", "99999999999999999999"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ConfigError) as raised:
+                    load_config({MAX_TUNNELS_PER_CLIENT_ENV: bad})
+                self.assertIn(MAX_TUNNELS_PER_CLIENT_ENV, str(raised.exception))
+
+    def test_reads_the_tunnel_reserve_destinations(self) -> None:
+        self.assertEqual(load_config({}).tunnel_reserve_destinations, ())
+        self.assertEqual(
+            load_config({TUNNEL_RESERVE_DESTINATIONS_ENV: "api.telegram.org:443"}).tunnel_reserve_destinations,
+            ("api.telegram.org:443",),
+        )
+        self.assertEqual(
+            load_config(
+                {TUNNEL_RESERVE_DESTINATIONS_ENV: " api.telegram.org:443 , example.com:443 ,,"}
+            ).tunnel_reserve_destinations,
+            ("api.telegram.org:443", "example.com:443"),
+        )
+        self.assertEqual(
+            load_config({TUNNEL_RESERVE_DESTINATIONS_ENV: "  "}).tunnel_reserve_destinations,
+            (),
+        )
 
 
 class LoadBotsTest(unittest.TestCase):

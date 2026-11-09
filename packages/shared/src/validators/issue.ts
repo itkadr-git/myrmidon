@@ -629,6 +629,15 @@ export const issueExecutionStateSchema = z.object({
   // myrmidon(OPE-11970): PR head the last changes-requested decision was made on;
   // a repeat return on the same head does not wake the executor again.
   lastChangesRequestedHeadSha: z.string().max(128).nullable().optional(),
+  // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the formal review decision as structure
+  // (decision + head sha + PR number), written together with lastDecisionId.
+  reviewDecision: z
+    .object({
+      reviewDecision: z.enum(["approved", "changes_requested"]),
+      headSha: z.string().max(128).nullable(),
+      pullRequestNumber: z.number().int().positive().nullable(),
+    })
+    .nullish(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({

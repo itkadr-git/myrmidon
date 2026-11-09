@@ -3,6 +3,8 @@
 // myrmidon(1.7-BUDGET-CONFIG A): the limits API.
 //
 //   GET    /api/myrmidon/companies/:companyId/budget-limits                 (company access)
+//   GET    /api/myrmidon/companies/:companyId/budget-limits/config          (company access)
+//   GET    /api/myrmidon/companies/:companyId/budget-limits/config/ticket/:issueId (company access)
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/usage           (company access)
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/journal         (company access)
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/signal-only     (company access)
@@ -27,12 +29,14 @@ import type { Db } from "@myrmidon/db";
 import {
   BUDGET_LIMIT_LEVELS,
   budgetLimitUpsertSchema,
+  buildBudgetConfig,
   getBudgetLimitWarningThreshold,
   budgetLimitWarningThresholdSchema,
   budgetLimitsExportQuerySchema,
   budgetLimitsReportToCsv,
   budgetLimitsSignalOnlySchema,
   isBudgetLimitOver,
+  type BudgetConfigView,
   type BudgetLimitExportFormat,
   type BudgetLimitLevel,
   type BudgetLimitReportRow,
@@ -49,7 +53,7 @@ import {
   type BudgetLimitStore,
 } from "./store.js";
 import { computeBudgetLimitUsage } from "./usage.js";
-import { readResolvedSignalOnly, writeBudgetLimitsSignalOnly } from "./settings.js";
+import { readResolvedSignalOnly, writeBudgetLimitsSignalOnly, type BudgetLimitsSettingsService } from "./settings.js";
 
 const levelSchema = z.enum(BUDGET_LIMIT_LEVELS);
 
@@ -65,13 +69,21 @@ export interface BudgetLimitRoutesDeps {
   now?: () => Date;
   store?: BudgetLimitStore;
   computeUsage?: typeof computeBudgetLimitUsage;
+  /** Settings service override (tests); defaults to instanceSettingsService(db). */
+  settings?: BudgetLimitsSettingsService;
+  /**
+   * Issue lookup for the ticket-scoped config read (1.7-BUDGET-CONFIG-READ).
+   * Returns null when the issue does not exist in the company; the route
+   * answers 404. Defaults to a store-backed lookup over `issues`.
+   */
+  resolveIssue?: (companyId: string, issueId: string) => Promise<{ id: string } | null>;
 }
 
 export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
   const router = Router();
   const store = deps.store ?? createBudgetLimitStore({ db, now: deps.now });
   const computeUsage = deps.computeUsage ?? computeBudgetLimitUsage;
-  const settings = instanceSettingsService(db);
+  const settings = deps.settings ?? instanceSettingsService(db);
   const base = "/myrmidon/companies/:companyId/budget-limits";
 
   router.get(base, async (req, res) => {
@@ -79,6 +91,50 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
     assertCompanyAccess(req, companyId);
     const levelParam = typeof req.query.level === "string" ? asLevel(req.query.level) : undefined;
     res.json({ limits: await store.list(companyId, levelParam ?? undefined) });
+  });
+
+  // 1.7-BUDGET-CONFIG-READ: the hierarchy tree (nest → caste → foraging →
+  // ticket) with hard/soft per configured row and the default substitution
+  // for a missing level. The read is company access; a ticket-scoped read
+  // of an unknown issue answers 404 («недоступный уровень»).
+  const buildConfig = async (
+    companyId: string,
+    ticketIssueId?: string,
+  ): Promise<BudgetConfigView | { notFound: true }> => {
+    const [limits, resolved] = await Promise.all([
+      store.list(companyId),
+      readResolvedSignalOnly(settings, deps.env ?? process.env),
+    ]);
+    let ticketAvailable: boolean | undefined;
+    if (ticketIssueId) {
+      const resolvedIssue = await deps.resolveIssue?.(companyId, ticketIssueId);
+      if (resolvedIssue === null) return { notFound: true };
+      ticketAvailable = true;
+    }
+    return buildBudgetConfig({
+      companyId,
+      limits,
+      signalOnly: resolved.signalOnly,
+      signalOnlySource: resolved.source,
+      ticketIssueId: ticketIssueId ?? null,
+      ticketAvailable,
+    });
+  };
+
+  router.get(`${base}/config`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const config = await buildConfig(companyId);
+    if ("notFound" in config) { res.status(404).json({ error: "Issue not found" }); return; }
+    res.json(config);
+  });
+
+  router.get(`${base}/config/ticket/:issueId`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const config = await buildConfig(companyId, req.params.issueId as string);
+    if ("notFound" in config) { res.status(404).json({ error: "Issue not found" }); return; }
+    res.json(config);
   });
 
   router.get(`${base}/usage`, async (req, res) => {
