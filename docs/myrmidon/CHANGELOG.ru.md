@@ -953,6 +953,21 @@ OPE-5394 §5). Эта часть сдаёт протокол и таблицы; 
   worker, поэтому T3 идёт против настоящего worker (свой свободный loopback-порт)
   и проверяет, что `409 bot_containers_disabled` от worker приходит через api.
 
+### omp_local: песочница процесса и Bun+omp в образе доски (1.6.7 OMP-HARDEN, OPE-12266)
+
+- Адаптер `omp_local` поддерживает общую песочницу процесса: `filesystemScope`
+  (`workspace` по умолчанию для новых агентов), `networkScope`/`networkAllowlist`,
+  `filesystemExtraPaths`, `filesystemSandboxCommand` (по умолчанию `bwrap`).
+  Каталог сессий omp и управляемый каталог конфигурации агента монтируются на запись;
+  сконфигурированный URL API control plane остаётся доверенным. Правка ключей
+  песочницы требует админа инстанса (как у `claude_local`/`codex_local`). Bubblewrap
+  без возможности создать Linux user namespace теперь роняет запуск до старта агента.
+- Production-образ ставит закреплённый Bun 1.3.14 (zip проверяется по закреплённому
+  SHA256 и SHASUMS256.txt релиза) и omp 18.9.2 через `bun add --global`
+  (`npm install -g` даёт нерабочий лаунчер `omp`), плюс `bubblewrap`. CI-шаг образа
+  проверяет `bun --version`, `omp --version` и `bwrap --version`.
+- Документация адаптера EN/RU обновлена; фрагмент: `docs/myrmidon/changes/1-6-7-omp-local-sandbox.md`.
+
 ### BOARD-JANITOR: ежедневная уборка доски и отчёт документом (1.6.7)
 
 - Ежедневная уборка доски в 08:00 по Иркутску (00:00 UTC) и по вызову `POST /api/myrmidon/board-janitor/run`.

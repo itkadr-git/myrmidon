@@ -968,6 +968,21 @@ The board now removes orphaned heartbeat run scratch directories (`paperclip-run
   loopback port) and checks the worker's `409 bot_containers_disabled` arriving
   through the api processes.
 
+### omp_local: local process sandbox and Bun+omp in the board image (1.6.7 OMP-HARDEN, OPE-12266)
+
+- The `omp_local` adapter supports the shared local process sandbox: `filesystemScope`
+  (`workspace` by default for new agents), `networkScope`/`networkAllowlist`,
+  `filesystemExtraPaths`, `filesystemSandboxCommand` (default `bwrap`). The omp
+  session directory and the managed agent-config directory are mounted rw; the
+  configured control-plane API URL stays trusted. Editing the sandbox keys requires
+  an instance admin (same gate as `claude_local`/`codex_local`). A Bubblewrap that
+  cannot create a Linux user namespace now fails the launch before the agent starts.
+- The production image installs pinned Bun 1.3.14 (release zip verified against a
+  pinned SHA256 and the release SHASUMS256.txt) and omp 18.9.2 via `bun add --global`
+  (`npm install -g` yields a broken `omp` launcher), plus `bubblewrap`. The image CI
+  smoke test asserts `bun --version`, `omp --version` and `bwrap --version`.
+- Adapter docs EN/RU updated; fragment: `docs/myrmidon/changes/1-6-7-omp-local-sandbox.md`.
+
 ### BOARD-JANITOR: daily board hygiene routine and report (1.6.7)
 
 - Automated daily board maintenance sweep running at 08:00 Irkutsk (00:00 UTC) and on-demand via `POST /api/myrmidon/board-janitor/run`.
