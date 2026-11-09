@@ -38,7 +38,7 @@ import {
   sweepAbandonedImportTransferSpools,
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
-import { healthRoutes } from "./routes/health.js";
+import { healthRoutes, livenessRoutes } from "./routes/health.js";
 import { haRoutes } from "./routes/ha.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
@@ -1036,6 +1036,11 @@ export async function createApp(
   api.use(boardLoadRequestMiddleware());
   api.use(boardMutationGuard());
   api.use("/ha", haRoutes());
+  // BOARD-LIVENESS (OPE-12211): the no-database probe lives at /api/liveness,
+  // a sibling of /api/health (readiness). Mounted before any auth-bearing
+  // /api subtree — it reads no credentials and must answer even while the
+  // database (and therefore most of the API) is down.
+  api.use("/liveness", livenessRoutes());
   api.use(
     "/health",
     healthRoutes(db, {
