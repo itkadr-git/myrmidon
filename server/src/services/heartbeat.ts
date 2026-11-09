@@ -29488,7 +29488,7 @@ export function heartbeatService(
           await logActivity(db, {
             companyId: run.companyId,
             actorType: cancellationCause.source.actor === "board" ? "user" : "system",
-            actorId: cancellationCause.source.actor,
+            actorId: cancellationCause.source.actor ?? "system",
             action: "heartbeat_run.cancelled",
             entityType: "heartbeat_run",
             entityId: run.id,
