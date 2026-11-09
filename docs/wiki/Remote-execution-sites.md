@@ -28,7 +28,7 @@ Every request uses HTTPS with mutual TLS (mTLS) and a bearer authorization heade
 
 ## Site-agent API
 
-The contract defines 13 routes:
+The contract defines 14 routes:
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -43,8 +43,11 @@ The contract defines 13 routes:
 | `POST` | `/v1/bots/{botKey}/restart` | Restart the container gateway |
 | `POST` | `/v1/bots/{botKey}/stop` | Stop the container gateway |
 | `GET` | `/v1/bots/{botKey}/logs?tail=N` | Fetch bounded, redacted container logs |
+| `POST` | `/v1/bots/{botKey}/cleanup` | Clean up and remove container and bot data directory (also accepts `DELETE`) |
 | `POST` | `/v1/leases/claim` | Acquire or renew an execution lease with epoch fencing |
 | `POST` | `/v1/leases/release` | Release an execution lease on task completion |
+
+When an agent is terminated or deleted, the board invokes `/v1/bots/{botKey}/cleanup` (or `DELETE /v1/bots/{botKey}`) to remove the container and host data directory before modifying the database. The call is idempotent and fail-closed: if cleanup fails, termination or deletion aborts to prevent leaving orphaned containers.
 
 The health snapshot carries `siteId`, a monotonically increasing `epoch`, the
 `status`, `capacity`, the current `allocated` reservations, an optional

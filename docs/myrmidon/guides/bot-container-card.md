@@ -147,3 +147,12 @@ When the container runtime does not answer, the section shows
 **Container status unavailable: …** and the **Concurrent runs limit** block
 disappears entirely — no comparison is possible without an applied state to
 read.
+
+## Cleanup on termination and deletion
+
+When an agent is terminated (`POST /api/agents/:id/terminate`) or deleted
+(`DELETE /api/agents/:id`), Myrmidon automatically tears down the associated
+bot container and removes its data directory on the hosting runtime (local or
+remote execution site via fleetd). This lifecycle operation is fail-closed: if
+the runtime or remote site is unreachable or cleanup fails, the terminate or
+delete operation aborts to prevent leaving orphaned containers.
