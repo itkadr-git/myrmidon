@@ -15,6 +15,8 @@ import { fleetMoveStore } from "./fleet-move-store.js";
 import { fleetMoveRoutes } from "./fleet-move-routes.js";
 import { FleetMoveService, type SiteAgentClient } from "./fleet-move-service.js";
 import { siteStatusIsReachable } from "./site-health-flag.js";
+import { fleetAuditDeps } from "./fleet-audit-wiring.js";
+import { withFleetAudit } from "./fleet-audit.js";
 import { fleetReplicaStoreFromEnv } from "./fleet-replica-store.js";
 import { fleetMoveMaintenance } from "./fleet-move-maintenance.js";
 import { createSiteAgentClient, type SiteAgentMemoryClient } from "./site-agent-client.js";
@@ -251,5 +253,9 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
 
 export function myrmidonFleetMoveRoutes(db: Db, clientManager?: FleetClientManager | (() => FleetClientManager | null)): Router {
   const ctx = createFleetMoveContext(db, clientManager);
-  return fleetMoveRoutes({ service: ctx.service, botCompanyId: ctx.botCompanyId, getSiteLogs: (site, companyId, botKey, tail) => ctx.siteAgentClient(site, companyId).then((client) => client.logs(botKey, tail)) });
+  // myrmidon(fleet-site audit): move and log reads leave a row in the company's activity log.
+  return withFleetAudit(
+    fleetMoveRoutes({ service: ctx.service, botCompanyId: ctx.botCompanyId, getSiteLogs: (site, companyId, botKey, tail) => ctx.siteAgentClient(site, companyId).then((client) => client.logs(botKey, tail)) }),
+    fleetAuditDeps(db),
+  );
 }

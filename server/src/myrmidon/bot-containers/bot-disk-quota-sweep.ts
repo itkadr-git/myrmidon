@@ -35,6 +35,7 @@ import {
 } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { botKeyForAgent } from "./agent-config.js";
+import { cardFleetHost } from "./fleetd-hosts.js";
 import {
   BOT_VOLUME_ROOT_ENV,
   cardDiskQuotaMb,
@@ -45,6 +46,20 @@ import {
 import { dockergateDiskClientFromEnv, type DockergateDiskClient } from "./dockergate-disk-client.js";
 
 const MIB = 1024 * 1024;
+
+/**
+ * myrmidon(1.6.7 FLEET-SITE-ENROLL): whether the card places the bot on a remote site. The volume of
+ * such a bot is not under the board's volume root and the local dockergate does not know it
+ * (`bot_not_enrolled`), so this sweep neither measures it nor puts a quota for it. A host name that
+ * cannot be read counts as remote: the bot must not be handled as a local one by mistake.
+ */
+function runsOnRemoteSite(adapterConfig: unknown): boolean {
+  try {
+    return cardFleetHost((adapterConfig ?? {}) as { container?: unknown }) !== null;
+  } catch {
+    return true;
+  }
+}
 
 /** Author of the sweep's log lines. */
 export const BOT_DISK_QUOTA_SWEEP_ACTOR_ID = "bot_disk_quota_sweep";
@@ -169,6 +184,11 @@ export function createBotDiskQuotaSweep(deps: {
     for (const agent of rows) {
       if (now().getTime() - startedAt > maxSweepMs) break;
       result.scanned += 1;
+      if (runsOnRemoteSite(agent.adapterConfig)) {
+        // A bot that moved to a site must not keep a stale signal from before.
+        accumulated.get(agent.companyId)?.delete(agent.id);
+        continue;
+      }
       // the card override (`container.diskQuotaMb`) wins over the instance settings
       const quotaMb = cardDiskQuotaMb(agent) ?? resolveBotDiskQuotaMb(settings, agent.id, agent.role);
       if (quotaMb === null) {

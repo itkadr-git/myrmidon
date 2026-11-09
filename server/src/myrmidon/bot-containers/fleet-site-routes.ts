@@ -6,15 +6,22 @@
 //   POST   /companies/:companyId/fleet/sites          — enroll a site into myrmidon_fleet_sites
 //   DELETE /companies/:companyId/fleet/sites/:name    — remove a site
 //
-// The request carries the fleetd address (https only: fleetd serves mTLS only), and the NAME
-// of the company secret for the bearer token. The board generates its own site-CA and issues
-// client and server certificates automatically.
+// The request carries the fleetd address (https only: fleetd serves mTLS only). The board
+// generates its own site-CA, issues the client and server certificates, and generates the bearer
+// token of the site itself (a company secret named myrmidon-fleet-site-token-<site>). A caller
+// never names a secret: the board sends the token and the client certificate to the address of the
+// site, so a caller-chosen secret name would let a caller read any secret of the company.
+//
+// Enroll and delete are for the company owner only. The address of a site must be a private IPv4
+// address or a host the operator listed (fleet-site-url-policy.ts).
 
-import { X509Certificate, createHash, createPrivateKey } from "node:crypto";
+import { X509Certificate, createHash, createPrivateKey, randomBytes } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { badRequest, conflict, notFound } from "../../errors.js";
-import { assertBoard, assertCompanyAccess, assertCompanyAdmin } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { assertFleetSiteOwner } from "./fleet-site-authz.js";
+import { fleetdUrlHostProblem } from "./fleet-site-url-policy.js";
 import { parseBoardAddress } from "./fleetd-hosts.js";
 import { type FleetSite, type FleetSiteInsert } from "./site-registry.js";
 import {
@@ -27,6 +34,14 @@ import {
 } from "./site-client-pki.js";
 
 const SITE_CLIENT_SECRET_PREFIX = "myrmidon-site-client";
+/** Fixed prefix of the company secret that holds the bearer token the board generated for a site. */
+export const SITE_TOKEN_SECRET_PREFIX = "myrmidon-fleet-site-token";
+/** 32 random bytes, 64 hex characters (fleetd wants at least 32). */
+const SITE_TOKEN_BYTES = 32;
+
+export function fleetSiteTokenSecretName(siteName: string): string {
+  return `${SITE_TOKEN_SECRET_PREFIX}-${siteName}`;
+}
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 /** "local" is the board's own docker driver; a registered site must not shadow it. */
@@ -38,7 +53,6 @@ const enrollBodySchema = z
   .object({
     name: z.string().trim().regex(NAME_PATTERN, "name: lowercase letters, digits, '.', '_', '-'"),
     url: z.string().trim().min(1),
-    tokenSecret: z.string().trim().min(1),
     caCert: z.string().trim().min(1).optional(),
     /** Optional pin: sha256 of the CA certificate (hex, colons allowed), checked against caCert. */
     caFingerprint: z.string().trim().min(1).optional(),
@@ -89,12 +103,13 @@ export interface FleetSiteRoutesDeps {
   countBotsOnSite(companyId: string, name: string): Promise<number>;
   readSecret(companyId: string, name: string): Promise<string | null>;
   readSiteCa(companyId: string): Promise<SiteCaMaterial | null>;
-  secretExists(companyId: string, name: string): Promise<boolean>;
   writeSecret(companyId: string, name: string, value: string): Promise<void>;
   deleteSecret?(companyId: string, name: string): Promise<void>;
   refreshRegistry(): void;
   updateSite(companyId: string, name: string, patch: Partial<Pick<FleetSite, "clientCertNotAfter" | "clientCertFingerprint" | "certRotatedAt">>): Promise<void>;
   readClientCertificate(companyId: string, secretName: string): Promise<string | null>;
+  /** Extra hosts (names or IP literals) the operator allows as a site address; read on every request. */
+  hostAllowlist?(): readonly string[];
   log?: {
     warn?(obj: Record<string, unknown>, msg?: string): void;
     error?(obj: Record<string, unknown>, msg?: string): void;
@@ -269,11 +284,11 @@ export function startFleetSiteCertRotationScheduler(deps: FleetSiteCertRotationS
 export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
   const router = Router();
 
-  function companyOf(req: Request, admin = false): string {
+  function companyOf(req: Request, level: "access" | "owner" = "access"): string {
     assertBoard(req);
     const companyId = typeof req.params.companyId === "string" ? req.params.companyId : "";
     if (!companyId) throw badRequest("companyId required");
-    if (admin) assertCompanyAdmin(req, companyId);
+    if (level === "owner") assertFleetSiteOwner(req, companyId);
     else assertCompanyAccess(req, companyId);
     return companyId;
   }
@@ -285,8 +300,14 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
   }
 
   async function handleEnroll(req: Request, res: Response): Promise<void> {
-    const companyId = companyOf(req, true);
-    const parsed = enrollBodySchema.safeParse(req.body ?? {});
+    const companyId = companyOf(req, "owner");
+    const requestBody: unknown = req.body ?? {};
+    if (typeof requestBody === "object" && requestBody !== null && "tokenSecret" in requestBody) {
+      throw badRequest(
+        "tokenSecret is not accepted: the board generates the token of the site and returns it once, in the enroll answer (fleetd.token)",
+      );
+    }
+    const parsed = enrollBodySchema.safeParse(requestBody);
     if (!parsed.success) {
       throw badRequest(`Invalid site enrollment: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
     }
@@ -308,13 +329,12 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       throw badRequest(err instanceof Error ? err.message : "invalid site enrollment");
     }
 
+    const hostProblem = fleetdUrlHostProblem(url, deps.hostAllowlist?.() ?? []);
+    if (hostProblem) throw badRequest(hostProblem);
+
     if (body.caFingerprint) throw badRequest("caFingerprint is managed by the board site CA");
     if (body.caCert) throw badRequest("caCert is managed by the board site CA");
     if (body.clientCertSecretKey) throw badRequest("clientCertSecretKey is managed by the board");
-
-    if (!(await deps.secretExists(companyId, body.tokenSecret))) {
-      throw badRequest(`tokenSecret: company secret "${body.tokenSecret}" not found`);
-    }
 
     const caSecretName = "myrmidon-site-ca";
     let ca = await deps.readSiteCa(companyId);
@@ -340,9 +360,12 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
     const fingerprint = inspectCaCert(ca.cert).fingerprint;
     if (await deps.getSite(companyId, body.name)) throw conflict(`Site "${body.name}" is already enrolled`);
     const clientRef = `${SITE_CLIENT_SECRET_PREFIX}-${body.name}`;
+    const tokenSecret = fleetSiteTokenSecretName(body.name);
+    const token = randomBytes(SITE_TOKEN_BYTES).toString("hex");
     const client = issueSiteClientCertificate(ca, body.name);
     const server = issueSiteServerCertificate(ca, url);
     const issuedAt = new Date(client.notAfter.getTime() - SITE_CLIENT_CERT_VALIDITY_DAYS * 86_400_000);
+    await deps.writeSecret(companyId, tokenSecret, token);
     await deps.writeSecret(companyId, clientRef, JSON.stringify({ cert: client.cert, key: client.key }));
     const clientCertSecretKey = clientRef;
 
@@ -364,7 +387,7 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       companyId,
       name: body.name,
       url,
-      tokenSecret: body.tokenSecret,
+      tokenSecret,
       caCert: ca.cert,
       caCertFingerprint: fingerprint,
       clientCertSecretKey,
@@ -377,30 +400,41 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       labels: body.labels ?? {},
     });
     deps.refreshRegistry();
+    // The answer carries the server key and the token, shown once: nothing may keep a copy of it.
+    res.setHeader("Cache-Control", "no-store");
     res.status(201).json({
       site: publicSite(created),
       fleetd: {
         caCert: ca.cert,
         serverCert: server.cert,
         serverKey: server.key,
+        token,
       },
     });
   }
 
   async function handleDelete(req: Request, res: Response): Promise<void> {
-    const companyId = companyOf(req, true);
+    const companyId = companyOf(req, "owner");
     const name = typeof req.params.name === "string" ? req.params.name : "";
     if (!name) throw badRequest("name required");
+    const site = await deps.getSite(companyId, name);
+    if (!site) throw notFound(`Site "${name}" not found`);
     const bots = await deps.countBotsOnSite(companyId, name);
     if (bots > 0) {
       throw conflict(`Site "${name}" still hosts ${bots} bot(s): move them off (container.host) before removing it`);
     }
     if (!(await deps.deleteSite(companyId, name))) throw notFound(`Site "${name}" not found`);
     if (deps.deleteSecret) {
-      try {
-        await deps.deleteSecret(companyId, `${SITE_CLIENT_SECRET_PREFIX}-${name}`);
-      } catch {
-        // ignore error if secret does not exist
+      // The board removes what it made. A site enrolled before the board generated tokens keeps its
+      // own token secret: the operator made it and may use it elsewhere.
+      const owned = [`${SITE_CLIENT_SECRET_PREFIX}-${name}`];
+      if (site.tokenSecret === fleetSiteTokenSecretName(name)) owned.push(fleetSiteTokenSecretName(name));
+      for (const secretName of owned) {
+        try {
+          await deps.deleteSecret(companyId, secretName);
+        } catch {
+          // ignore error if secret does not exist
+        }
       }
     }
     res.status(204).end();

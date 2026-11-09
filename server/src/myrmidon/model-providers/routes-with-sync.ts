@@ -328,8 +328,11 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     }
   };
 
+  // Model groups as the provider screen shows them. The company-level
+  // `/litellm/channels` path is NOT served here: it belongs to the gateway
+  // deployments (litellm-channels), which app.ts mounts after this router, so
+  // a handler here would shadow it.
   router.get("/myrmidon/companies/:companyId/model-providers/litellm/channels", handleLitellmChannels);
-  router.get("/myrmidon/companies/:companyId/litellm/channels", handleLitellmChannels);
 
   router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
     const companyId = req.params.companyId as string;
