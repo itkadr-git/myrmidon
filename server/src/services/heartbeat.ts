@@ -29709,7 +29709,11 @@ export function heartbeatService(
                 recentRuns.map((recent) => {
                   const summaryVal = parseObject(recent.resultJson)?.summary;
                   const outcomeCandidate =
-                    typeof summaryVal === "string" ? summaryVal : recent.error;
+                    typeof summaryVal === "string"
+                      ? summaryVal
+                      : typeof recent.error === "string"
+                        ? recent.error
+                        : null;
                   return {
                     runId: recent.id,
                     agentId: recent.agentId,
