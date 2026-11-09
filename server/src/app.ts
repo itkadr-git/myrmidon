@@ -253,6 +253,8 @@ import {
   buildTokensTraceRoutes,
   myrmidonOnboardRoutes,
   apiPathAliasMiddleware,
+  configuredGitSkillRecord,
+  skillGitRecordRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -290,7 +292,6 @@ import { secretService } from "./services/secrets.js";
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
 // myrmidon(1.6.6 CH-CONNECTOR-D): the proactivity sweep is reached through the bridge seam.
 // myrmidon(1.6-SKILL-LIFE): company skill lifecycle (candidate/verified/deprecated, rollback)
-import { configuredGitSkillRecord, skillGitRecordRoutes } from "./myrmidon/skill-git-record/index.js";
 // myrmidon(EXT-CASE-OCR): the OCR path (PDF -> text in the bot's workspace)
 // myrmidon(1.6.6-CORPUS-D): the corpus MCP endpoint (`corpus_*` for bots)
 // myrmidon(1.6.6 ARCH-DATA): read-only architect operational data and MCP endpoint
