@@ -359,7 +359,7 @@ describe("task watchdog subtree classifier", () => {
   it("triggers a genuinely idle assigned issue once the grace window has elapsed", () => {
     const createdAt = new Date("2026-06-18T16:32:45.731Z");
     const result = classify({
-      issues: [issue({ status: "todo", createdAt })],
+      issues: [issue({ status: "in_progress", createdAt })],
       // 60s later: no run, no wake, past the grace window.
       evaluatedAt: new Date("2026-06-18T16:33:45.731Z"),
       firstRunGraceMs: 15_000,
