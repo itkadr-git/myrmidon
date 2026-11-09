@@ -76,7 +76,6 @@ export function ctoChatMasterEnabled(env: NodeJS.ProcessEnv): boolean {
   const raw = env[CTO_CHAT_ENABLED_ENV]?.trim().toLowerCase();
   if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
   if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
-  if (env !== process.env) return true;
   const saved = liveSavedSetting<boolean>("ctoChatEnabled");
   if (saved !== undefined) return saved;
   const live = liveBehaviorSetting<boolean>("ctoChatEnabled");

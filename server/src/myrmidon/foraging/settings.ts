@@ -103,12 +103,8 @@ import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live
  *    that never declares anything behaves exactly as before.
  */
 export function foragingMasterEnabled(env: NodeJS.ProcessEnv): boolean {
-  // The environment is the forced override in every caller, test or live.
   const parsed = parseForagingEnabled(env[FORAGING_ENABLED_ENV]);
   if (parsed !== null) return parsed;
-  // The live holder is process-wide state: only consult it for the real env,
-  // so a test with a custom env object stays hermetic.
-  if (env !== process.env) return true;
   const saved = liveSavedSetting<boolean>("foragingEnabled");
   if (saved !== undefined) return saved;
   const live = liveBehaviorSetting<boolean>("foragingEnabled");
