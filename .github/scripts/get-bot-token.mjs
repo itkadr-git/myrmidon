@@ -102,6 +102,11 @@ export async function resolveInstallationId(fetchInstallation, token, repo, owne
 async function main() {
   const privateKey = process.env.COMMITPERCLIP_KEY;
   if (!privateKey) {
+    const githubToken = process.env.GITHUB_TOKEN;
+    if (githubToken) {
+      process.stdout.write(githubToken);
+      return;
+    }
     console.error('ERROR: COMMITPERCLIP_KEY env var not set.');
     console.error('Add to ~/.bash_profile: export COMMITPERCLIP_KEY="$(cat ~/.config/commitperclip/private-key.pem)"');
     process.exit(1);
