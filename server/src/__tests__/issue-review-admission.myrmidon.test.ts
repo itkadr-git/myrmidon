@@ -624,18 +624,32 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
 
   it("myrmidon(OPE-12177): re-wakes with the same head dedup, a moved head wakes again, no SHA falls back", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission head-keyed dedup");
+    const authorAgentId = randomUUID();
     const reviewerAgentId = randomUUID();
-    await ctx.db.insert(agents).values({
-      id: reviewerAgentId,
-      companyId,
-      name: "Head-keyed Reviewer",
-      role: "reviewer",
-      status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Head-keyed Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
 
     const stageId = randomUUID();
     const policy = {
@@ -655,6 +669,8 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       title: "Head-keyed review admission dedup",
       status: "todo",
       priority: "medium",
+      assigneeAgentId: authorAgentId,
+      createdByAgentId: authorAgentId,
       executionPolicy: policy,
     });
     // The dedup key tail is the exact PR head kept in the work-product
@@ -704,7 +720,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     // fresh key from that new head and wakes again.
     const returnRes = await request(app)
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "in_progress", body: "REQUEST CHANGES: fix the failing check" });
+      .send({ status: "in_progress", commentBody: "REQUEST CHANGES: fix the failing check" });
     expect(returnRes.status).toBe(200);
     storedHead = "head-def";
     await ctx.db
@@ -730,7 +746,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(eq(issueWorkProducts.issueId, issueId));
     const fallbackRes = await request(app)
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "in_progress", body: "REQUEST CHANGES: still broken" });
+      .send({ status: "in_progress", commentBody: "REQUEST CHANGES: still broken" });
     expect(fallbackRes.status).toBe(200);
     const fallbackResubmit = await request(app)
       .patch(`/api/issues/${issueId}`)
