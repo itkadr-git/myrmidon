@@ -66,6 +66,10 @@ function fakeService(): ModelProviderService {
     oauthStatus: vi.fn(async () => ({ accountNumber: 1, status: "pending" })),
     oauthComplete: vi.fn(async () => ({ ok: true, accountNumber: 1 })),
     oauthRefresh: vi.fn(async () => ({ ok: true, accountNumber: 1 })),
+    addAccount: vi.fn(async () => ({ ok: true, account: {} })),
+    deleteAccount: vi.fn(async () => undefined),
+    startOAuth: vi.fn(async () => ({ authUrl: "u", state: "s", expiresIn: 1 })),
+    completeOAuth: vi.fn(async () => ({ ok: true, account: {} })),
   } as unknown as ModelProviderService;
 }
 
@@ -101,6 +105,10 @@ describe("the paths modelProvidersApi calls are routed by the server", () => {
     { name: "oauthStatus", method: "get", path: `${base}/prov-1/oauth/status?accountNumber=1`, status: 200 },
     { name: "oauthComplete", method: "post", path: `${base}/prov-1/oauth/complete`, body: { accountNumber: 1 }, status: 200 },
     { name: "oauthRefresh", method: "post", path: `${base}/prov-1/oauth/refresh`, body: { accountNumber: 1 }, status: 200 },
+    { name: "addAccount", method: "post", path: `${base}/prov-1/channels`, body: { label: "acc-1" }, status: 201 },
+    { name: "deleteAccount", method: "delete", path: `${base}/prov-1/channels/1`, status: 200 },
+    { name: "startOAuth", method: "post", path: `${base}/prov-1/oauth/start`, body: { plan: "pro" }, status: 200 },
+    { name: "completeOAuth", method: "post", path: `${base}/prov-1/oauth/complete`, body: { state: "s", code: "c" }, status: 201 },
   ];
 
   for (const c of cases) {
