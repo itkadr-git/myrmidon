@@ -8,12 +8,13 @@
 //   GET  /api/myrmidon/fleet/bots/:key/move — api-prefixed alias
 //
 // The bot key is the agent id; the company is the bot's own (read from its card), never
-// taken from the request, and the caller must have access to it.
+// taken from the request, and the caller must be an admin of it: a move changes where the bot
+// runs, and the log of a bot can hold anything the bot printed.
 
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { badRequest, conflict, notFound } from "../../errors.js";
-import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAdmin } from "../../routes/authz.js";
 import { FleetMoveError, type FleetMoveService } from "./fleet-move-service.js";
 
 const moveBodySchema = z.object({
@@ -35,7 +36,7 @@ export function fleetMoveRoutes(deps: FleetMoveRoutesDeps): Router {
     assertBoard(req);
     const companyId = await deps.botCompanyId(botKey);
     if (!companyId) throw notFound(`Bot "${botKey}" not found`);
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     return companyId;
   }
 

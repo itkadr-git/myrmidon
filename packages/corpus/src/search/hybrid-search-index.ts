@@ -19,8 +19,15 @@
 //     words. The `plainto_tsquery` alone matched nothing on natural-language questions (AND of all
 //     words): the full-text leg was dead on the production corpus (empty_rate 0.986 in the 07.11
 //     golden bench). An `ILIKE` fallback still serves short query texts and identifiers.
+//     The OR matches a large part of a big corpus, so the ranking has a cost bound (see
+//     `fullTextTimeoutMs` and `fullTextRerankPool`): its transaction sets `statement_timeout`, and a
+//     question without the substring match scores the matches with `ts_rank` alone, keeps the best
+//     `fullTextRerankPool` of them, and only then breaks the ties with `similarity`.
 // The two rankings are merged with RRF (k0 = 60, k_candidates = 100) and the top-k hits are
-// returned with their chunk and document rows.
+// returned with their chunk and document rows. Each ranking runs in its own transaction and the two
+// run side by side, so the time of a search is the longer of them, not their sum, and a cancelled
+// full-text ranking (SQLSTATE 57014) cannot abort the transaction of the vector ranking: the search
+// goes on with the vector ranking alone.
 //
 // The module talks to the database through `SqlExecutor` instead of a driver, so the query shape is
 // testable without a database and the module does not pick a driver for the product.
@@ -37,6 +44,8 @@ import { reciprocalRankFusion, type FusionParameters, DEFAULT_FUSION_PARAMETERS 
 import {
   DEFAULT_EF_SEARCH,
   DEFAULT_EXACT_SET_MAX_CHUNKS,
+  DEFAULT_FULL_TEXT_RERANK_POOL,
+  DEFAULT_FULL_TEXT_TIMEOUT_MS,
   DEFAULT_ILIKE_MAX_LENGTH,
   DEFAULT_MAX_SCAN_TUPLES,
   DEFAULT_SEARCH_LIMIT,
@@ -61,7 +70,11 @@ export interface SqlExecutor {
     text: string,
     values?: readonly unknown[],
   ): Promise<Row[]>;
-  /** Runs `run` inside one transaction, so `SET LOCAL` stays on the connection it belongs to. */
+  /**
+   * Runs `run` inside one transaction, so `SET LOCAL` stays on the connection it belongs to. Several
+   * transactions may be open at once, each on its own connection: the two rankings of a search run
+   * side by side. An executor that is bound to one connection must serialize them itself.
+   */
   withTransaction<T>(run: (transaction: SqlExecutor) => Promise<T>): Promise<T>;
 }
 
@@ -112,6 +125,43 @@ export interface PostgresSearchIndexOptions {
    * looks for enough chunks of the requested dataset (the default is `DEFAULT_MAX_SCAN_TUPLES`).
    */
   readonly maxScanTuples?: number;
+  /**
+   * `statement_timeout`, in milliseconds, of the full-text ranking (the default is
+   * `DEFAULT_FULL_TEXT_TIMEOUT_MS`). The ranking runs in its own transaction and sets the timeout with
+   * `SET LOCAL`, so it bounds nothing else. A ranking that the server cancels at the bound (SQLSTATE
+   * 57014) is dropped, and the search goes on with the vector ranking alone; `onFullTextTimeout` hears
+   * about it. A search without an embedding has no other ranking to fall back on, so it throws the
+   * cancel error instead of answering with an empty list. `0` sets no bound of its own.
+   */
+  readonly fullTextTimeoutMs?: number;
+  /**
+   * How many chunks, the best `ts_rank` first, the full-text ranking of a question without the
+   * substring match keeps before it breaks the ties with `similarity` (the default is
+   * `DEFAULT_FULL_TEXT_RERANK_POOL`). The pool is never smaller than the number of candidates the
+   * fusion takes. `0` ranks by `ts_rank` and `similarity` over every match, as before the pool existed.
+   */
+  readonly fullTextRerankPool?: number;
+  /**
+   * Called when the full-text ranking hit its time bound and the search went on with the vector ranking
+   * alone. The module has no logger of its own; the product passes one here. An error thrown by the
+   * callback is ignored, so a broken diagnostic cannot fail a search.
+   */
+  readonly onFullTextTimeout?: (event: FullTextTimeoutEvent) => void;
+}
+
+/** What `onFullTextTimeout` hears: the search whose full-text ranking was cancelled. */
+export interface FullTextTimeoutEvent {
+  readonly companyId: string;
+  /** The datasets the search named; `null` for a search of the whole company. */
+  readonly datasetIds: readonly string[] | null;
+  /** Length of the query text. The text itself stays out of diagnostics. */
+  readonly textLength: number;
+  /** Whether the ranking ran with the substring match (a short text or an identifier). */
+  readonly substringMatch: boolean;
+  /** The bound the ranking ran under, in milliseconds; `0` when the server's own bound cancelled it. */
+  readonly timeoutMs: number;
+  /** Time from the start of the ranking to the cancel, in milliseconds. */
+  readonly elapsedMs: number;
 }
 
 interface ChunkRow extends Record<string, unknown> {
@@ -225,6 +275,27 @@ function isMissingPgvectorObjects(error: unknown): boolean {
   return typeof code === "string" && MISSING_PGVECTOR_CODES.has(code);
 }
 
+/** SQLSTATE `query_canceled`: what the server raises when `statement_timeout` cancels a statement. */
+const QUERY_CANCELED_CODE = "57014";
+
+/** Largest `statement_timeout` PostgreSQL accepts, in milliseconds (a 32-bit integer). */
+const MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Whether the error is the server cancelling a statement. The SQLSTATE is read from the error and then
+ * from its `cause` chain, because a query layer may wrap the driver error (drizzle's `DrizzleQueryError`
+ * keeps it as `cause` and carries no code of its own). The first code found decides.
+ */
+function isQueryCanceled(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") return code === QUERY_CANCELED_CODE;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /**
  * Whether a pgvector version (`pg_extension.extversion`, e.g. `0.8.7`) has the HNSW iterative scan:
  * `hnsw.iterative_scan` appeared in 0.8.0. The version is read instead of the setting being tried,
@@ -257,6 +328,14 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const maxScanTuples = options.maxScanTuples ?? DEFAULT_MAX_SCAN_TUPLES;
   if (!Number.isInteger(maxScanTuples) || maxScanTuples < 1) {
     throw new RangeError("max scan tuples must be a positive integer");
+  }
+  const fullTextTimeoutMs = options.fullTextTimeoutMs ?? DEFAULT_FULL_TEXT_TIMEOUT_MS;
+  if (!Number.isInteger(fullTextTimeoutMs) || fullTextTimeoutMs < 0 || fullTextTimeoutMs > MAX_STATEMENT_TIMEOUT_MS) {
+    throw new RangeError(`full text timeout must be an integer from 0 to ${MAX_STATEMENT_TIMEOUT_MS} milliseconds`);
+  }
+  const fullTextRerankPool = options.fullTextRerankPool ?? DEFAULT_FULL_TEXT_RERANK_POOL;
+  if (!Number.isInteger(fullTextRerankPool) || fullTextRerankPool < 0) {
+    throw new RangeError("full text rerank pool must be a non-negative integer");
   }
 
   const chunks = sqlIdentifier(schema.chunksTable, "chunks table");
@@ -361,6 +440,32 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     ` limit $5`,
   ].join("\n");
 
+  // The same ranking, with the cost of `similarity` bounded. The OR of a long question matches a large
+  // part of a big corpus, and the statement above computes `similarity` — a trigram split of the whole
+  // chunk text — for every match before it sorts. Here the inner statement scores the matches with
+  // `ts_rank` alone and keeps the best `$7` (the rerank pool); only the outer statement computes
+  // `similarity`, over those rows, to break the ties of `ts_rank` and to cut the list to `$5`. When the
+  // matches fit in the pool the answer is the one of the statement above. `ts_rank` still runs for
+  // every match, which is what `statement_timeout` bounds. The statement has no substring match, so
+  // the short texts and the identifiers, which have it, keep the statement above and their answers.
+  // Same numbering as `fullTextOnlySql`, plus `$7`.
+  const fullTextBoundedSql = [
+    `select r.id, r.company_id, r.document_id, r.chunk_index, r.content,`,
+    `       r.token_count, r.metadata, r.score`,
+    `  from (`,
+    `select`,
+    chunkColumns,
+    `       ts_rank(c.${fullText}, ${fullTextQuery("$4", "$6")}) as score`,
+    scope,
+    `   and c.${fullText} @@ ${fullTextQuery("$4", "$6")}`,
+    ` order by score desc`,
+    ` limit $7`,
+    `       ) r`,
+    ` order by r.score desc,`,
+    `          similarity(r.content, $1) desc`,
+    ` limit $5`,
+  ].join("\n");
+
   const documentsSql = [
     `select d.id, d.dataset_id, d.title, d.source_uri`,
     `  from ${documents} d`,
@@ -371,6 +476,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const efSearchSql = `set local hnsw.ef_search = ${efSearch}`;
   const iterativeScanSql = `set local hnsw.iterative_scan = relaxed_order`;
   const maxScanTuplesSql = `set local hnsw.max_scan_tuples = ${maxScanTuples}`;
+  const fullTextTimeoutSql = `set local statement_timeout = ${fullTextTimeoutMs}`;
   const pgvectorVersionSql = `select extversion from pg_extension where extname = 'vector'`;
 
   // A positive answer is kept for the life of the index: pgvector is not downgraded under a running
@@ -428,10 +534,10 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         ? toPgVectorLiteral(assertEmbeddingVector(query.embedding ?? []))
         : null;
 
-      const { vectorRows, fullTextRows } = await options.sql.withTransaction(async (transaction) => {
-        let vectorRows: ChunkRow[] = [];
-        let fullTextRows: ChunkRow[] = [];
-        if (embeddingLiteral !== null) {
+      // The vector ranking has a transaction of its own, so its `SET LOCAL` settings stay on its
+      // connection and a cancelled full-text ranking cannot abort it.
+      const rankByVector = (literal: string): Promise<ChunkRow[]> =>
+        options.sql.withTransaction(async (transaction) => {
           try {
             await transaction.query(efSearchSql);
             const iterativeScan = await enableIterativeScan(transaction);
@@ -439,26 +545,35 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
             // and sort than to find in the index.
             const smallSet =
               iterativeScan && exactSetMaxChunks > 0 ? await isSmallSet(transaction, query.companyId, datasetIds) : false;
-            vectorRows = await transaction.query<ChunkRow>(smallSet ? exactSetSql : vectorSql, [
-              embeddingLiteral,
+            const rows = await transaction.query<ChunkRow>(smallSet ? exactSetSql : vectorSql, [
+              literal,
               query.companyId,
               datasetIds,
               kCandidates,
             ]);
             // The relaxed iterative scan returns rows slightly out of order; the fusion ranks by position.
-            if (iterativeScan && !smallSet) {
-              vectorRows = [...vectorRows].sort((left, right) => Number(right.score) - Number(left.score));
-            }
+            return iterativeScan && !smallSet
+              ? [...rows].sort((left, right) => Number(right.score) - Number(left.score))
+              : rows;
           } catch (error) {
             // A cluster migrated without pgvector has neither the embedding column nor the HNSW
             // setting; report that as the module's own error instead of a driver detail.
             if (isMissingPgvectorObjects(error)) throw new CorpusVectorSearchUnavailableError(error);
             throw error;
           }
-        }
-        if (useFullText) {
-          fullTextRows = useIlike
-            ? await transaction.query<ChunkRow>(fullTextSql, [
+        });
+
+      // The full-text ranking has a transaction of its own, with a time bound (`SET LOCAL
+      // statement_timeout`). A statement error aborts a PostgreSQL transaction, and the driver of the
+      // product rethrows it at the end of the transaction even when the callback caught it (see
+      // `pgvectorHasIterativeScan`), so the cancel is caught here, around the whole transaction.
+      const rankByFullText = async (): Promise<ChunkRow[]> => {
+        const startedAt = Date.now();
+        try {
+          return await options.sql.withTransaction(async (transaction) => {
+            if (fullTextTimeoutMs > 0) await transaction.query(fullTextTimeoutSql);
+            if (useIlike) {
+              return await transaction.query<ChunkRow>(fullTextSql, [
                 text,
                 query.companyId,
                 datasetIds,
@@ -466,18 +581,60 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
                 language,
                 kCandidates,
                 orQuery,
-              ])
-            : await transaction.query<ChunkRow>(fullTextOnlySql, [
+              ]);
+            }
+            if (fullTextRerankPool > 0) {
+              return await transaction.query<ChunkRow>(fullTextBoundedSql, [
                 text,
                 query.companyId,
                 datasetIds,
                 language,
                 kCandidates,
                 orQuery,
+                Math.max(kCandidates, fullTextRerankPool),
               ]);
+            }
+            return await transaction.query<ChunkRow>(fullTextOnlySql, [
+              text,
+              query.companyId,
+              datasetIds,
+              language,
+              kCandidates,
+              orQuery,
+            ]);
+          });
+        } catch (error) {
+          // Only the cancel is absorbed, and only where the vector ranking can answer in its place: a
+          // search without an embedding would return an empty list that looks like "nothing found".
+          // Any other error is the caller's.
+          if (!hasEmbedding || !isQueryCanceled(error)) throw error;
+          try {
+            options.onFullTextTimeout?.({
+              companyId: query.companyId,
+              datasetIds,
+              textLength: text.length,
+              substringMatch: useIlike,
+              timeoutMs: fullTextTimeoutMs,
+              elapsedMs: Date.now() - startedAt,
+            });
+          } catch {
+            // A broken diagnostic must not fail the search.
+          }
+          return [];
         }
-        return { vectorRows, fullTextRows };
-      });
+      };
+
+      // The rankings run side by side, so the search takes the longer of them, not their sum. Both are
+      // waited for, so no statement is left running behind a failed search; when both fail, the error of
+      // the vector ranking wins, as it did when the rankings ran one after the other.
+      const [vectorSettled, fullTextSettled] = await Promise.allSettled([
+        embeddingLiteral === null ? Promise.resolve<ChunkRow[]>([]) : rankByVector(embeddingLiteral),
+        useFullText ? rankByFullText() : Promise.resolve<ChunkRow[]>([]),
+      ]);
+      if (vectorSettled.status === "rejected") throw vectorSettled.reason;
+      if (fullTextSettled.status === "rejected") throw fullTextSettled.reason;
+      const vectorRows = vectorSettled.value;
+      const fullTextRows = fullTextSettled.value;
 
       const fused = reciprocalRankFusion(
         vectorRows.map((row) => row.id),
