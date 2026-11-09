@@ -200,11 +200,20 @@ function paperclipRepositoryFromGitArgs(args) {
   return { repository: null, cwd };
 }
 
-// The 'origin' remote of the working directory; the real git binary, never the
-// launcher itself (originalPath excludes the launcher's own directory).
+// The 'origin' remote of the working directory; never invoke a known wrapper.
+// MYRMIDON_GIT_REAL is operator-configurable, so validate it here too rather
+// than trusting the launcher to have performed the check for this code path.
+// The same wrapper paths the launcher rejects: the staged launcher directory
+// (its own git binary is the launcher), the image wrapper and its
+// /usr/local/bin shadow. The variable 'directory' below is the launcher
+// script's staged directory, set by the surrounding launcher script.
 function paperclipRealGitExecutable(env) {
+  const path = require('node:path');
   const configured = env && typeof env.MYRMIDON_GIT_REAL === 'string' ? env.MYRMIDON_GIT_REAL.trim() : '';
-  return configured || '/opt/paperclip/libexec/git';
+  const candidate = configured ? path.resolve(configured) : '';
+  const wrapperPaths = new Set(['/opt/paperclip/bin/git', '/usr/local/bin/git']);
+  if (typeof directory === 'string' && directory) wrapperPaths.add(path.join(directory, 'git'));
+  return candidate && !wrapperPaths.has(candidate) ? configured : '/opt/paperclip/libexec/git';
 }
 
 function paperclipRepositoryFromOrigin(cwd, env, originalPath) {

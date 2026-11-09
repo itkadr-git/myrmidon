@@ -43,12 +43,25 @@ type Repository = {
 
 /** The repository resolution with a stubbed `require` for the origin-remote lookup. */
 function loadRepository(options: { originUrl?: string | null; cwd?: string } = {}) {
+  const spawnCalls: string[] = [];
   const childProcess = {
-    spawnSync: (_executable: string, _args: string[]) => ({ status: options.originUrl ? 0 : 1, stdout: `${options.originUrl ?? ""}\n` }),
+    spawnSync: (executable: string, _args: string[]) => {
+      spawnCalls.push(executable);
+      return { status: options.originUrl ? 0 : 1, stdout: `${options.originUrl ?? ""}\n` };
+    },
   };
   const context = vm.createContext({
     process: { cwd: () => options.cwd ?? "/work/repo" },
-    require: (name: string) => (name === "node:child_process" ? childProcess : { delimiter: ":" }),
+    spawnCalls,
+    require: (name: string) => {
+      if (name === "node:child_process") return childProcess;
+      if (name === "node:path") return {
+        delimiter: ":",
+        resolve: (value: string) => value.startsWith("/") ? value : `/work/repo/${value}`,
+        join: (directory: string, file: string) => `${directory}/${file}`,
+      };
+      return { delimiter: ":" };
+    },
     URL,
     JSON,
     RegExp,
@@ -57,9 +70,9 @@ function loadRepository(options: { originUrl?: string | null; cwd?: string } = {
     Object,
   });
   return vm.runInContext(
-    `${githubBrokerRepositoryLauncherSource()}\n({ normalizeRepository: paperclipNormalizeRepository, repositoryFromArgs: paperclipRepositoryFromArgs, repositoryFromGitArgs: paperclipRepositoryFromGitArgs, targetRepository: paperclipTargetRepository })`,
+    `${githubBrokerRepositoryLauncherSource()}\n({ normalizeRepository: paperclipNormalizeRepository, repositoryFromArgs: paperclipRepositoryFromArgs, repositoryFromGitArgs: paperclipRepositoryFromGitArgs, targetRepository: paperclipTargetRepository, spawnCalls })`,
     context,
-  ) as Repository;
+  ) as Repository & { spawnCalls: string[] };
 }
 
 /** The broker walk with a scripted fetch, to read the request body it sends. */
@@ -123,6 +136,18 @@ describe("non-container GitHub repository resolution (GITHUB-SHARED-IDENTITY)", 
     expect(repository.repositoryFromGitArgs(["clone", "https://github.com/owner-c/repo-c.git"]).repository).toBe("owner-c/repo-c");
     expect(repository.repositoryFromGitArgs(["fetch", "git@github.com:owner-d/repo-d.git"]).repository).toBe("owner-d/repo-d");
     expect(repository.repositoryFromGitArgs(["push", "https://github.com/owner-e/repo-e"]).repository).toBe("owner-e/repo-e");
+  });
+
+  it("rejects a configured git wrapper in the broker origin lookup", () => {
+    const repository = loadRepository({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const wrapper = "/work/repo/wrapper/git";
+    expect(repository.targetRepository(
+      "git",
+      ["status"],
+      { MYRMIDON_GIT_REAL: wrapper },
+      ["/usr/bin"],
+    )).toBe("owner-a/repo-a");
+    expect(repository.spawnCalls).toEqual(["/opt/paperclip/libexec/git"]);
   });
 
   it("falls back to the origin remote, honouring -C, and never to another host", () => {
