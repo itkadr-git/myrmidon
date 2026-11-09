@@ -311,6 +311,44 @@ describe("adapter model listing", () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
 
+    it("prefers LiteLLM discovery over PAPERCLIP_ADAPTER_MODELS for hermes_gateway", async () => {
+      process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        hermes_gateway: [{ id: "fallback-env-model", label: "fallback-env-model" }],
+      });
+
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/v1/models")) {
+          return new Response(
+            JSON.stringify({
+              object: "list",
+              data: [{ id: "litellm-dynamic-model", object: "model" }],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      const models = await listAdapterModels("hermes_gateway");
+      expect(models).toEqual([{ id: "litellm-dynamic-model", label: "litellm-dynamic-model" }]);
+    });
+
+    it("falls back to PAPERCLIP_ADAPTER_MODELS when LiteLLM is unreachable", async () => {
+      process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        hermes_gateway: [{ id: "fallback-env-model", label: "fallback-env-model" }],
+      });
+
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        throw new Error("Connection refused");
+      });
+
+      const models = await listAdapterModels("hermes_gateway");
+      expect(models).toEqual([{ id: "fallback-env-model", label: "fallback-env-model" }]);
+    });
+
     it("reflects newly added model in LiteLLM without restart on refreshAdapterModels", async () => {
       process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
       let modelList = [{ id: "gpt-4o" }];
@@ -364,7 +402,7 @@ describe("adapter model listing", () => {
       delete process.env.PAPERCLIP_ADAPTER_MODELS;
     });
 
-    it("prefers declared env models over adapter discovery", async () => {
+    it("prefers declared env models over static fallback when adapter discovery is unavailable", async () => {
       process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
         opencode_local: [
           { id: "tensorix/deepseek/deepseek-chat-v3.1", label: "DeepSeek v3.1" },

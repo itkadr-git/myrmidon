@@ -1088,30 +1088,46 @@ export async function listAdapterModels(type: string, companyId?: string): Promi
     .filter((model) => model.pluginKey === type || model.provider === type || `${model.pluginKey}-plugin` === type)
     .map(({ modelId, label }) => ({ id: modelId, label }));
   if (pluginModels.length > 0) return pluginModels;
+  const adapter = findActiveServerAdapter(type);
+  if (adapter?.listModels) {
+    try {
+      const discovered = await adapter.listModels();
+      if (discovered.length > 0) return discovered;
+    } catch {
+      // Fall back to declared models or static list if dynamic discovery fails
+    }
+  }
   const declaredModels = getDeclaredAdapterModels();
   if (declaredModels && declaredModels[type]?.length) {
     return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
   }
-  const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
-  if (adapter.listModels) {
-    const discovered = await adapter.listModels();
-    if (discovered.length > 0) return discovered;
-  }
   return adapter.models ?? [];
 }
 
 export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const adapter = findActiveServerAdapter(type);
+  if (adapter?.refreshModels) {
+    try {
+      const refreshed = await adapter.refreshModels();
+      if (refreshed.length > 0) return refreshed;
+    } catch {
+      // Fall through to listModels or static fallbacks
+    }
+  }
+  if (adapter?.listModels) {
+    try {
+      const discovered = await adapter.listModels();
+      if (discovered.length > 0) return discovered;
+    } catch {
+      // Fall through to declared models or static list
+    }
+  }
+  const declaredModels = getDeclaredAdapterModels();
+  if (declaredModels && declaredModels[type]?.length) {
+    return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
+  }
   if (!adapter) return [];
-  if (adapter.refreshModels) {
-    const refreshed = await adapter.refreshModels();
-    if (refreshed.length > 0) return refreshed;
-  }
-  if (adapter.listModels) {
-    const discovered = await adapter.listModels();
-    if (discovered.length > 0) return discovered;
-  }
   return adapter.models ?? [];
 }
 
