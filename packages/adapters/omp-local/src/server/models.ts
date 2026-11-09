@@ -125,6 +125,11 @@ export function parseModelsOutput(output: string): AdapterModel[] {
   return parsed;
 }
 
+function withLiteLlmPrefix(model: AdapterModel): AdapterModel {
+  const id = model.id.startsWith("litellm/") ? model.id : `litellm/${model.id}`;
+  return { ...model, id, label: model.label && model.label !== model.id ? model.label : id };
+}
+
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
   const deduped: AdapterModel[] = [];
@@ -285,9 +290,12 @@ export async function ensureOmpModelConfiguredAndAvailable(input: {
 
   if (!models.some((entry) => entry.id === model)) {
     const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
-    throw new Error(
-      `Configured OMP model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
-    );
+    const prefixed = models.map(withLiteLlmPrefix);
+    if (!prefixed.some((entry) => entry.id === model)) {
+      throw new Error(
+        `Configured OMP model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      );
+    }
   }
 
   return models;
@@ -296,10 +304,7 @@ export async function ensureOmpModelConfiguredAndAvailable(input: {
 export async function listOmpModels(): Promise<AdapterModel[]> {
   try {
     const models = await discoverOmpModelsCached();
-    return models.map((m) => {
-      const id = m.id.startsWith("litellm/") ? m.id : `litellm/${m.id}`;
-      return { ...m, id, label: m.label && m.label !== m.id ? m.label : id };
-    });
+    return models.map(withLiteLlmPrefix);
   } catch {
     return [];
   }

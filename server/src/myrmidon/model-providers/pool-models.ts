@@ -41,15 +41,17 @@ export async function enrichWithPoolModels(
     const providerMap = new Map(providers.map((p) => [p.id, p]));
     const isOmp = adapterType === "omp_local";
 
-    const dbModelsAll = await db
-      .select({
-        providerId: modelProviderModels.providerId,
-        litellmModelName: modelProviderModels.litellmModelName,
-        enabled: modelProviderModels.enabled,
-      })
-      .from(modelProviderModels)
-      .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
-      .where(and(eq(modelProviderModels.enabled, true), eq(modelProviders.companyId, companyId)));
+    const dbModelsAll = isOmp
+      ? await db
+          .select({
+            providerId: modelProviderModels.providerId,
+            litellmModelName: modelProviderModels.litellmModelName,
+            enabled: modelProviderModels.enabled,
+          })
+          .from(modelProviderModels)
+          .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
+          .where(and(eq(modelProviderModels.enabled, true), eq(modelProviders.companyId, companyId)))
+      : [];
 
     const registryModels = new Map<string, string[]>();
     for (const m of dbModelsAll) {

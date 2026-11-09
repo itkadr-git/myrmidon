@@ -18,7 +18,7 @@ import {
 } from "../__tests__/helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
-import { assertAgentEffortAccepted } from "./agent-model-validation.js";
+import { assertAgentEffortAccepted, assertAgentModelsKnown } from "./agent-model-validation.js";
 import { effortForModel } from "./effort-policy/effort-policy.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -88,6 +88,25 @@ describe("myrmidon(BOT-TUNING-C) effort policy (pure)", () => {
     const resolved = effortForModel("model-a", "");
     expect(resolved.efforts).toContain("medium");
     expect(resolved.source).toBe("global_default");
+  });
+});
+
+describe("OPE-12464 omp_local model validation", () => {
+  it("accepts the litellm-prefixed model and suggests it for an unprefixed id", async () => {
+    const listModels = async () => [{ id: "litellm/antigravity/gemini-3.8-flash-medium" }];
+    await expect(assertAgentModelsKnown({
+      adapterType: "omp_local",
+      previousAdapterConfig: { model: "litellm/antigravity/gemini-3.8-flash-medium" },
+      nextAdapterConfig: { model: "litellm/antigravity/gemini-3.8-flash-medium" },
+      listModels,
+    })).resolves.toBeUndefined();
+
+    await expect(assertAgentModelsKnown({
+      adapterType: "omp_local",
+      previousAdapterConfig: { model: "litellm/antigravity/gemini-3.8-flash-medium" },
+      nextAdapterConfig: { model: "antigravity/gemini-3.8-flash-medium" },
+      listModels,
+    })).rejects.toThrow('try "litellm/antigravity/gemini-3.8-flash-medium"');
   });
 });
 
