@@ -137,17 +137,17 @@ On the standby host (`myr-vm1`):
    Both queries must print `1` (in recovery). Note: `pg_is_in_recovery()::text` prints `true`/`false` (and a bare boolean prints
    `t`/`f`); the tool always uses `::int` so the answer is `1`/`0`.
 
-### WAL Archive & Restore Paths (Defect 3 Note)
+### WAL Archive & Restore Paths
 
 The standby container mounts `/srv/backups/wal/myrmidon-pg` on the host to `/srv/backups/wal` inside the container:
 ```yaml
 volumes:
   - /srv/backups/wal/myrmidon-pg:/srv/backups/wal:ro
 ```
-and `docker-compose.standby.yml` configures:
+and `docker-compose.standby.yml` overrides `restore_command` on the container command line:
 `-c restore_command='cp /srv/backups/wal/%f %p'`.
 
-To ensure compatibility, `standby-ctl.mjs` sets the default container WAL archive directory (`walArchiveDir`, `boardWalArchiveDir`, `hindsightWalArchiveDir`) to `/srv/backups/wal`. In `postgresql.auto.conf`, `restore_command` references `/srv/backups/wal/%f`, matching the in-container mount point. Note that production primary runs `archive_mode = off` by default (see D7 note); WAL archiving is kept as a fallback mechanism when archives are copied or restored.
+In `standby-ctl.mjs`, `walArchiveDir`, `boardWalArchiveDir`, and `hindsightWalArchiveDir` keep the host-side default `/srv/backups/wal/myrmidon-pg` (matching the existing host directory on `vm-core` and `myr-vm1`, and used for host-mode configs and `validateDrillDir` path protection). Note that production primary runs `archive_mode = off` by default (see D7 note; no `archive_command` is configured in `postgresql.conf`/`postgresql.auto.conf`, and `/srv/backups/wal/myrmidon-pg` is empty today).
 
 ---
 

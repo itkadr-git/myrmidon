@@ -627,8 +627,8 @@ test("generateStandbyConfig includes required streaming parameters and credentia
   assert.match(cfg, /passfile=\/var\/lib\/postgresql\/data\/\.pgpass/);
   assert.doesNotMatch(cfg, /password=/);
   assert.match(cfg, /hot_standby = 'on'/);
-  assert.match(cfg, /restore_command = 'test -f \/srv\/backups\/wal\/%f && cp \/srv\/backups\/wal\/%f %p'/);
-  assert.match(cfg, /archive_cleanup_command = 'pg_archivecleanup \/srv\/backups\/wal %r'/);
+  assert.match(cfg, /restore_command = 'test -f \/srv\/backups\/wal\/myrmidon-pg\/%f && cp \/srv\/backups\/wal\/myrmidon-pg\/%f %p'/);
+  assert.match(cfg, /archive_cleanup_command = 'pg_archivecleanup \/srv\/backups\/wal\/myrmidon-pg %r'/);
 });
 
 test("generateBasebackupCommand generates slot and stream flags", () => {
