@@ -115,3 +115,62 @@ func TestAllow_A20_DockerPrefixRoute(t *testing.T) {
 	res := r.send("PUT", "/v1.45/containers/myrmidon-bot-"+r.key()+"/config/update", jsonHdr, body)
 	wantStatus(t, res, 200)
 }
+
+// A21 (OPE-12337): GET one enrolled bot's dockergate-side limits and ceilings.
+func TestAllow_A21_GetBotLimits(t *testing.T) {
+	r := newA20Rig(t)
+	r.seedMain("running")
+
+	for _, target := range []string{
+		"/myrmidon/bots/" + r.key() + "/limits",
+		"/myrmidon/config/bots/" + r.key(),
+		"/v1.45/containers/myrmidon-bot-" + r.key() + "/config/limits",
+		"/v1.45/containers/myrmidon-bot-" + r.key() + "/config/update",
+	} {
+		res := r.send("GET", target, nil, nil)
+		wantStatus(t, res, 200)
+		var resp struct {
+			OK     bool    `json:"ok"`
+			BotKey string  `json:"botKey"`
+			Memory int64   `json:"memoryMb"`
+			CPUs   float64 `json:"cpus"`
+			Pids   int64   `json:"pidsLimit"`
+		}
+		if err := json.Unmarshal(res.Body, &resp); err != nil {
+			t.Fatalf("%s: unmarshal: %v", target, err)
+		}
+		if !resp.OK || resp.BotKey != r.key() || resp.Memory != 2048 || resp.CPUs != 4 || resp.Pids != 2048 {
+			t.Errorf("%s: unexpected limits: %+v", target, resp)
+		}
+	}
+
+	// Ceiling fields are present even when unset (zero values).
+	var resp struct {
+		CeilingMemory int64   `json:"ceilingMemoryMb"`
+		CeilingCPUs   float64 `json:"ceilingCpus"`
+		CeilingPids   int64   `json:"ceilingPids"`
+	}
+	res := r.send("GET", "/myrmidon/bots/"+r.key()+"/limits", nil, nil)
+	if err := json.Unmarshal(res.Body, &resp); err != nil {
+		t.Fatalf("unmarshal ceilings: %v", err)
+	}
+	if resp.CeilingMemory < 0 || resp.CeilingCPUs < 0 || resp.CeilingPids < 0 {
+		t.Errorf("negative ceilings: %+v", resp)
+	}
+}
+
+func TestDeny_A21_BotNotEnrolled(t *testing.T) {
+	r := newA20Rig(t)
+	r.seedMain("running")
+
+	res := r.send("GET", "/myrmidon/bots/00000000-0000-0000-0000-000000000000/limits", nil, nil)
+	wantDeny(t, res, deny.BotNotEnrolled)
+}
+
+func TestDeny_A21_MethodNotAllowed(t *testing.T) {
+	r := newA20Rig(t)
+	r.seedMain("running")
+
+	res := r.send("POST", "/myrmidon/bots/"+r.key()+"/limits", jsonHdr, configUpdateBody(512, 1, 100))
+	wantDeny(t, res, deny.RouteNotAllowed)
+}
