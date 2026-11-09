@@ -746,7 +746,7 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     expect(entry?.textContent).toContain("model_provider_models_updated");
     // myrmidon(OPE-12361): actor now renders as a display name (when the server
     // carries one) or a localized role label + id — not `type:id`.
-    expect(entry?.textContent).toContain("доска · user-123");
+    expect(entry?.textContent).toContain("board · user-123");
     expect(entry?.textContent).not.toContain("board:user-123");
     expect(entry?.textContent).toContain("MODELS");
     const rollbackBtn = container.querySelector('[data-testid="myrmidon-model-providers-changelog-rollback"]');
@@ -789,7 +789,7 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
         providerType: "antigravity-pool",
         channels: [
           {
-            n: 1, label: "Acc 1", state: "active", stateRu: "Активен",
+            n: 1, label: "", state: "active", stateRu: "Активен",
             limitedUntil: null, lastOk: null, windows: { primary: null, secondary: null },
             isBanned: false, isExhausted: false,
           },
@@ -823,6 +823,7 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
 
       const text = container.textContent ?? "";
       // Russian headers and pool badges
+      expect(text).toContain("Учётка №1");
       expect(text).toContain("Тариф");
       expect(text).toContain("Действия");
       expect(text).toContain("1 живых / 2 всего");

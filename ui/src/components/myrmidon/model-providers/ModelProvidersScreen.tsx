@@ -65,17 +65,35 @@ function isPoolProvider(type?: string): boolean {
   return POOL_PROVIDER_TYPES.includes(type ?? "");
 }
 
-function actorLabel(type?: string): string {
-  // myrmidon(OPE-12361): labels come from the locale catalog (RU/EN parity).
-  if (type === "agent") return "агент";
-  if (type === "board") return "доска";
-  if (type === "system") return "система";
-  return "пользователь";
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function actorLabel(t: Translate, type?: string): string {
+  // myrmidon(OPE-12361 review): actor role names come from the locale catalog
+  // (en/ru parity) — hard-coded RU literals rendered Russian copy in the
+  // English UI ("доска · user-123" under the default locale).
+  if (type === "agent") return t("modelProviders.changeLog.actorAgent");
+  if (type === "board") return t("modelProviders.changeLog.actorBoard");
+  if (type === "system") return t("modelProviders.changeLog.actorSystem");
+  return t("modelProviders.changeLog.actorUser");
 }
 
 /** Null-safe epoch seconds for the pool reset date display (OPE-12361). */
 function summaryNextResetEpoch(summary: NonNullable<ModelProviderChannelsView["summary"]>): number | null {
   return typeof summary.nextResetAt === "number" ? summary.nextResetAt : null;
+}
+
+/** Localized display name of a pool account row (OPE-12361 review). */
+function channelDisplayName(
+  t: Translate,
+  channel: { n: number; label: string },
+): string {
+  const sentinel = /^Account #(\d+)$/.exec(channel.label.trim());
+  if (sentinel) return t("modelProviders.channels.accountFallback", { n: sentinel[1] });
+  // A connector may answer an empty label string; fall back to the localized
+  // «Учётка №N» instead of rendering a blank name (task item 3).
+  return channel.label.trim().length > 0
+    ? channel.label
+    : t("modelProviders.channels.accountFallback", { n: String(channel.n) });
 }
 
 function formatTime(value: string): string {
@@ -517,7 +535,7 @@ export function ModelProvidersScreenView({
                   <span>{formatTime(entry.at)}</span>
                   <span>·</span>
                   <span>
-                    {t("modelProviders.changeLog.actor")}: {entry.actor?.name || actorLabel(entry.actor?.type)}{!entry.actor?.name && entry.actor?.id ? ` · ${entry.actor.id}` : ""}
+                    {t("modelProviders.changeLog.actor")}: {entry.actor?.name || actorLabel(t, entry.actor?.type)}{!entry.actor?.name && entry.actor?.id ? ` · ${entry.actor.id}` : ""}
                   </span>
                   <span>·</span>
                   <span>{entry.summary}</span>
@@ -1135,9 +1153,7 @@ function ProviderCard({
                           <td className="p-2 font-mono font-medium">{ch.n}</td>
                           <td className="p-2">
                             <div className="font-medium">
-                              {/^Account #(\d+)$/.test(ch.label)
-                                ? t("modelProviders.channels.accountFallback", { n: ch.label.match(/^Account #(\d+)$/)![1] })
-                                : ch.label}
+                              {channelDisplayName(t, ch)}
                             </div>
                             {ch.email && (
                               <div className="text-xs text-muted-foreground">{ch.email}</div>

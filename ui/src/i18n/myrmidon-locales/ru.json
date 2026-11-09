@@ -1834,6 +1834,10 @@
     "changeLog": {
       "secretsRedacted": "Секреты скрыты в записях журнала",
       "actor": "Автор",
+      "actorAgent": "агент",
+      "actorBoard": "доска",
+      "actorSystem": "система",
+      "actorUser": "пользователь",
       "showDiff": "Показать дифф",
       "hideDiff": "Скрыть дифф",
       "after": "После",

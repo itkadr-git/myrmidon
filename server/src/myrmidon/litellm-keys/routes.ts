@@ -51,7 +51,7 @@ const POOL_PROVIDER_TYPES = ["chatgpt-pool", "antigravity-pool", "google-ai-pool
  * board channel registry's pool type — join model_provider_models with
  * model_providers and map litellm model names to it (OPE-12361).
  */
-async function readPoolGroupProviders(
+export async function readPoolGroupProviders(
   db: Db,
 ): Promise<Map<string, string>> {
   const map = new Map<string, string>();
@@ -75,7 +75,7 @@ async function readPoolGroupProviders(
 }
 
 /** Applies pool provider types to the catalog copy used by the UI heuristics. */
-function withPoolProviders<T extends { modelName: string; provider: string | null }>(
+export function withPoolProviders<T extends { modelName: string; provider: string | null }>(
   models: T[],
   poolGroups: Map<string, string>,
 ): T[] {
@@ -83,6 +83,28 @@ function withPoolProviders<T extends { modelName: string; provider: string | nul
     const poolType = poolGroups.get(m.modelName);
     return poolType ? { ...m, provider: poolType } : m;
   });
+}
+
+/**
+ * Catalog copy for one known model — the shape the fallback editor uses to
+ * judge provider diversity and free/paid ordering (OPE-12361). A missing cost
+ * (null) is NOT a free model: only explicit zero pricing marks a group free,
+ * so paid gateways that do not report costs (kie-gpt-6-luna) never show
+ * «Бесплатно».
+ */
+export function fallbackCatalogEntry(m: {
+  modelName: string;
+  provider: string | null;
+  inputCostPerToken: number | null;
+  outputCostPerToken: number | null;
+}) {
+  return {
+    modelName: m.modelName,
+    provider: m.provider,
+    inputCostPerToken: m.inputCostPerToken,
+    outputCostPerToken: m.outputCostPerToken,
+    isFree: m.inputCostPerToken === 0 && m.outputCostPerToken === 0,
+  };
 }
 
 /** Audit actor carrying the display name when the request has one (OPE-12361). */
@@ -231,13 +253,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     try {
       const poolGroups = await readPoolGroupProviders(db);
       const known = await listLitellmModels(db);
-      report.models = withPoolProviders(known, poolGroups).map((m) => ({
-        modelName: m.modelName,
-        provider: m.provider,
-        inputCostPerToken: m.inputCostPerToken,
-        outputCostPerToken: m.outputCostPerToken,
-        isFree: m.inputCostPerToken === 0 && m.outputCostPerToken === 0,
-      }));
+      report.models = withPoolProviders(known, poolGroups).map(fallbackCatalogEntry);
     } catch {
       // models are optional if litellmModels table is unpopulated
     }
@@ -264,16 +280,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       const poolGroups = await readPoolGroupProviders(db);
       const known = await listLitellmModels(db);
       catalog = new Map(
-        withPoolProviders(known, poolGroups).map((m) => [
-          m.modelName,
-          {
-            modelName: m.modelName,
-            provider: m.provider,
-            inputCostPerToken: m.inputCostPerToken,
-            outputCostPerToken: m.outputCostPerToken,
-            isFree: m.inputCostPerToken === 0 && m.outputCostPerToken === 0,
-          },
-        ]),
+        withPoolProviders(known, poolGroups).map((m) => [m.modelName, fallbackCatalogEntry(m)]),
       );
     } catch {
       catalog = new Map();

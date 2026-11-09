@@ -1834,6 +1834,10 @@
     "changeLog": {
       "secretsRedacted": "Secrets are redacted in log entries",
       "actor": "Author",
+      "actorAgent": "agent",
+      "actorBoard": "board",
+      "actorSystem": "system",
+      "actorUser": "user",
       "showDiff": "Show diff",
       "hideDiff": "Hide diff",
       "after": "After",

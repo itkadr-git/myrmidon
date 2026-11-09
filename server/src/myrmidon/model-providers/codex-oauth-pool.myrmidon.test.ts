@@ -197,6 +197,8 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
 
       expect(res.channels).toHaveLength(4);
       expect(res.channels[0].n).toBe(1);
+      // Empty connector labels must become the localized UI sentinel Account #1.
+      expect(res.channels[0].label).toBe("Account #1");
 
       expect(res.summary).toBeDefined();
       expect(res.summary?.total).toBe(4);
@@ -206,46 +208,37 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
       expect(res.summary?.disabled).toBe(0);
     });
 
-    it("myrmidon(OPE-12361): drops stale reset dates from pool or channels and preserves future reset dates", async () => {
+    it("myrmidon(OPE-12361): ignores stale channel windows and preserves the next future reset", async () => {
       const nowEpoch = Math.floor(Date.now() / 1000);
       const staleEpoch = nowEpoch - 86400 * 18;
       const futureEpoch = nowEpoch + 86400 * 3;
+      const laterFutureEpoch = nowEpoch + 86400 * 7;
 
-      const staleAccounts = [
+      const accounts = [
         {
           account_number: 1,
           label: "Stale Account",
           plan: "plus",
           state: "active",
-          pool: {
-            resetAt: staleEpoch,
-            resetText: "21.10.2026 23:53",
-          },
+          windows: { primary: { resets_at: staleEpoch } },
         },
-      ];
-
-      const { service: staleService } = createServiceWithCatalog(staleAccounts);
-      const staleRes = await staleService.listChannels("company-1", "prov-pool");
-      expect(staleRes.summary?.nextResetAt).toBeNull();
-      expect(staleRes.summary?.nextResetText).toBeNull();
-
-      const futureAccounts = [
         {
-          account_number: 1,
+          account_number: 2,
           label: "Future Account",
           plan: "plus",
           state: "active",
-          pool: {
-            resetAt: futureEpoch,
-            resetText: "11.11.2026 00:00",
+          windows: {
+            primary: { resets_at: laterFutureEpoch },
+            secondary: { resets_at: futureEpoch },
           },
         },
       ];
 
-      const { service: futureService } = createServiceWithCatalog(futureAccounts);
-      const futureRes = await futureService.listChannels("company-1", "prov-pool");
-      expect(futureRes.summary?.nextResetAt).toBe(futureEpoch);
-      expect(futureRes.summary?.nextResetText).toBe("11.11.2026 00:00");
+      const { service } = createServiceWithCatalog(accounts);
+      const result = await service.listChannels("company-1", "prov-pool");
+
+      expect(result.summary?.nextResetAt).toBe(futureEpoch);
+      expect(result.summary?.nextResetText).toBeNull();
     });
 
     it("maps 5-hour primary and weekly secondary limit windows correctly", async () => {

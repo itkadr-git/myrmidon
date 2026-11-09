@@ -791,7 +791,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
   function mapRawAccountToChannel(raw: any): PoolAccountChannelView {
     const n = typeof raw.n === "number" ? raw.n : Number(raw.n || raw.account_number || 0);
-    const label = typeof raw.label === "string" ? raw.label : `Account #${n}`;
+    const label =
+      typeof raw.label === "string" && raw.label.trim().length > 0
+        ? raw.label
+        : `Account #${n}`;
     const state = typeof raw.state === "string" ? raw.state : typeof raw.status === "string" ? raw.status : "unknown";
     const resetText = [raw.error, raw.message, raw.status_message, raw.statusMessage,
       ...(Array.isArray(raw.usage?.recent_errors) ? raw.usage.recent_errors.map((e: any) => e?.message) : []),
@@ -1013,20 +1016,27 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
-    // Pool-level reset info from the connector document (e.g. weekly reset of
-    // the whole subscription), preferred over per-account windows: per-account
-    // windows can carry stale limits of accounts that already rotated.
-    const poolDocument = (rawAccounts as Array<Record<string, unknown>>).find(
-      (account) => account && typeof account === "object",
-    ) as { pool?: Record<string, unknown> } | undefined;
-    const poolResetRaw = poolDocument?.pool ?? {};
-    const poolResetAtRaw = poolResetRaw.resetAt ?? poolResetRaw.nextResetAt;
-    const poolResetEpoch =
-      typeof poolResetAtRaw === "number"
-        ? poolResetAtRaw
-        : typeof poolResetAtRaw === "string"
-          ? Math.floor(new Date(poolResetAtRaw).getTime() / 1000) || null
-          : null;
+    const nowEpoch = Math.floor(now().getTime() / 1000);
+    const staleToleranceSec = 3600; // an hour of clock skew is fine
+    // myrmidon(OPE-12361 review): the pool connectors answer only
+    // { accounts: with_usage(...) } — there is no pool-level `pool.resetAt`
+    // document, so that read was dead code and production always fell through
+    // to the per-channel windows below. Compute the reset from the channel
+    // windows instead: take the earliest window that still lies in the future
+    // (ignoring banned/disabled accounts whose cached windows are stale), so a
+    // rotated cache cannot shadow the real upcoming reset of live accounts.
+    const futureChannelResets = channels
+      .filter((channel) => !channel.isBanned && !channel.isDisabled)
+      .flatMap((channel) => [
+        channel.limitedUntil,
+        channel.windows.primary?.resetsAt,
+        channel.windows.secondary?.resetsAt,
+      ])
+      .filter(
+        (value): value is number =>
+          typeof value === "number" && value + staleToleranceSec >= nowEpoch,
+      )
+      .sort((a, b) => a - b);
     const summary = {
       total: channels.length,
       live: channels.filter(
@@ -1037,58 +1047,16 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       banned: channels.filter((channel) => channel.isBanned).length,
       error: channels.filter((channel) => channel.state === "error").length,
       disabled: channels.filter((channel) => channel.isDisabled).length,
-      nextResetAt:
-        poolResetEpoch ??
-        channels
-          .flatMap((channel) => [
-            channel.limitedUntil,
-            channel.windows.primary?.resetsAt,
-            channel.windows.secondary?.resetsAt,
-          ])
-          .filter((value): value is number => typeof value === "number" && value > 0)
-          .sort((a, b) => a - b)[0] ??
-        null,
-      // OPE-12361: a reset date in the past is stale connector data (rotated
-      // cache); drop it instead of showing an outdated reset date.
-      nextResetText:
-        typeof poolResetRaw.resetText === "string" ? poolResetRaw.resetText : null,
+      nextResetAt: futureChannelResets[0] ?? null,
+      nextResetText: null as string | null,
     };
-
-    const nowEpoch = Math.floor(now().getTime() / 1000);
-    const staleToleranceSec = 3600; // an hour of clock skew is fine
-    // myrmidon(OPE-12361): recompute instead of mutating the inferred literal —
-    // a stale reset date is dropped, not shown (keeps `nextResetAt: number | null`).
-    const nextResetAt =
-      summary.nextResetAt !== null && summary.nextResetAt + staleToleranceSec < nowEpoch
-        ? null
-        : summary.nextResetAt;
-    const nextResetTextRaw = summary.nextResetText;
-    let nextResetText = nextResetTextRaw;
-    if (nextResetText) {
-      // Connector text uses day.month.year, which Date.parse does not reliably
-      // recognize. Parse this format explicitly before applying the stale guard.
-      const localReset = /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/.exec(nextResetText);
-      const parsed = localReset
-        ? Date.UTC(
-            Number(localReset[3]), Number(localReset[2]) - 1, Number(localReset[1]),
-            Number(localReset[4] ?? 0), Number(localReset[5] ?? 0),
-          ) / 1000
-        : Math.floor(new Date(nextResetText).getTime() / 1000);
-      if (Number.isFinite(parsed) && parsed + staleToleranceSec < nowEpoch) {
-        nextResetText = null;
-      }
-    }
 
     return {
       providerId: provider.id,
       providerType: provider.type,
       channels,
       signals,
-      summary: {
-        ...summary,
-        nextResetAt,
-        nextResetText,
-      },
+      summary,
     };
   }
 
@@ -1277,7 +1245,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       intervalSec,
       status: "pending",
       plan: input?.plan ?? "plus",
-      label: input?.label ?? `Account #${accountNumber}`,
+      // myrmidon(OPE-12361 review): an empty label string must fall back to the
+      // same "Account #N" sentinel the UI localizes, not render blank.
+      label:
+        typeof input?.label === "string" && input.label.trim().length > 0
+          ? input.label
+          : `Account #${accountNumber}`,
     };
     oauthSessions.set(sessionKey(companyId, providerId, accountNumber), state);
 
