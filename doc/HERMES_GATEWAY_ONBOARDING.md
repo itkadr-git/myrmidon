@@ -120,6 +120,19 @@ For `hermes_gateway` agents interacting via Telegram chat bridge:
 - **`/think` Effort Policy Validation**: Validates the chosen thinking effort level against `effortsForModel` (e.g., GLM models accept `low`, `high`, `max`). Unaccepted levels are rejected with a message listing allowed levels.
 - **Localized Refusals**: Refusals report the adapter type and reason in the user's language.
 
+### Examples
+
+- **Switching model via Telegram**:
+  ```text
+  /model
+  ```
+  The gateway replies with available models grouped by provider family, allowing you to inspect or switch models for the agent session.
+- **Configuring thinking effort**:
+  ```text
+  /think high
+  ```
+  Sets the reasoning/thinking effort level for supported models (such as GLM models that accept `low`, `high`, `max`), validating the level against model policy and applying profile overrides immediately.
+
 ## Approve And Claim
 
 After Hermes submits the join request:
