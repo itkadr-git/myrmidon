@@ -359,7 +359,7 @@ describe("task watchdog subtree classifier", () => {
   it("triggers a genuinely idle assigned issue once the grace window has elapsed", () => {
     const createdAt = new Date("2026-06-18T16:32:45.731Z");
     const result = classify({
-      issues: [issue({ status: "todo", createdAt })],
+      issues: [issue({ status: "in_progress", createdAt })],
       // 60s later: no run, no wake, past the grace window.
       evaluatedAt: new Date("2026-06-18T16:33:45.731Z"),
       firstRunGraceMs: 15_000,
@@ -386,5 +386,39 @@ describe("task watchdog subtree classifier", () => {
     });
 
     expect(result.state).toBe("not_applicable");
+  });
+
+  it("treats todo status with assignee and no blockers/interactions as live (legitimate idle disposition)", () => {
+    const result = classify({
+      issues: [
+        issue({ status: "todo", assigneeAgentId: "agent-1", assigneeUserId: null }),
+      ],
+    });
+    expect(result).toMatchObject({
+      state: "live",
+      liveIssueIds: [sourceId],
+    });
+  });
+
+  it("does not treat todo status as live if assignee is missing", () => {
+    const result = classify({
+      issues: [
+        issue({ status: "todo", assigneeAgentId: null, assigneeUserId: null }),
+      ],
+    });
+    expect(result.state).toBe("stopped");
+  });
+
+  it("does not treat todo status as live if there are blockers", () => {
+    const result = classify({
+      issues: [
+        issue({ status: "todo", assigneeAgentId: "agent-1" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
+      ],
+      blockers: [
+        { companyId, blockerIssueId: childId, blockedIssueId: sourceId },
+      ],
+    });
+    expect(result.state).toBe("stopped");
   });
 });
