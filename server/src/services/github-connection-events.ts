@@ -29,6 +29,11 @@ import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
+import {
+  extractPullRequestIssueIdentifier,
+  pullRequestWorkProductData,
+} from "../myrmidon/task-pr-sync/linking.js";
+import { workProductService } from "./work-products.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -135,6 +140,7 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       merged: payload.merged === true,
       mergedAt: isoDate(payload.mergedAt),
       updatedAt: isoDate(payload.updatedAt),
+      title: boundedString(payload.title, 1_000),
       headRef: boundedString(payload.headRef, 300),
       headSha: commitSha(payload.headSha),
       baseRef: boundedString(payload.baseRef, 300),
@@ -274,6 +280,7 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
       ...(stringValue(payload.mergeable) ? { mergeable: stringValue(payload.mergeable) } : {}),
       ...(stringValue(payload.url) ? { url: stringValue(payload.url) } : {}),
       ...(stringValue(payload.mergedAt) ? { mergedAt: stringValue(payload.mergedAt) } : {}),
+      ...(stringValue(payload.title) ? { title: stringValue(payload.title) } : {}),
       ...(stringValue(payload.headRef) ? { headRef: stringValue(payload.headRef) } : {}),
       ...(stringValue(payload.headSha) ? { headSha: stringValue(payload.headSha) } : {}),
       ...(stringValue(payload.baseRef) ? { baseRef: stringValue(payload.baseRef) } : {}),
@@ -493,9 +500,71 @@ export function githubConnectionEventService(
     });
   }
 
-  async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent) {
+  /**
+ * myrmidon(OPE-12483): the bot opens PRs through the GitHub API with a branch
+ * `bot/<KEY>` (see docker/bot-runtime/botd/lib/archive.js) and records no
+ * work-product row on the board, so the done gate sees an unlinked task as
+ * "no code" and closes it while the PR is still open. Extract the task key from
+ * the PR's branch or title and persist the pull_request work product as part of
+ * webhook application, so `task-pr-sync`, the done gate, and the review-routing
+ * merge path all observe the delivery through the normal linked surface.
+ */
+export async function linkPullRequestToIssue(
+  database: Db,
+  companyId: string,
+  snapshot: ReturnType<typeof githubSnapshotUpdate>,
+): Promise<{ linked: boolean; issueId: string | null; workProductId: string | null }> {
+  if (!snapshot) return { linked: false, issueId: null, workProductId: null };
+  const existing = await database
+    .select({ id: issueWorkProducts.id })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.provider, "github"),
+      sql`lower(${issueWorkProducts.externalId}) = lower(${snapshot.externalId})`,
+    ))
+    .limit(1);
+  if (existing.length > 0) return { linked: true, issueId: null, workProductId: existing[0]!.id };
+
+  const key = extractPullRequestIssueIdentifier({
+    headRef: snapshot.data.headRef,
+    title: snapshot.data.title ?? null,
+  });
+  if (!key) return { linked: false, issueId: null, workProductId: null };
+
+  const [issueRow] = await database
+    .select({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.identifier, key)))
+    .limit(1);
+  if (!issueRow) return { linked: false, issueId: null, workProductId: null };
+
+  const created = await workProductService(database).createForIssue(issueRow.id, companyId, pullRequestWorkProductData({
+    repository: snapshot.repository,
+    number: snapshot.number,
+    url: snapshot.data.url ?? null,
+    title: snapshot.data.title ?? null,
+    headRef: snapshot.data.headRef ?? null,
+    headSha: snapshot.data.headSha ?? null,
+    state: snapshot.state,
+    merged: snapshot.merged,
+  }));
+  if (!created) return { linked: false, issueId: issueRow.id, workProductId: null };
+  return { linked: true, issueId: issueRow.id, workProductId: created.id };
+}
+
+async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
+    // myrmidon(OPE-12483): bind bot-opened PRs (branch `bot/<KEY>` or the task
+    // key in the title) to their task before any consumer reads work products;
+    // an existing product short-circuits, so this is one cheap select per event.
+    try {
+      await linkPullRequestToIssue(database, companyId, snapshot);
+    } catch (err) {
+      logger.warn({ errorKind: "task_pr_link_failed", errorName: err instanceof Error ? err.name : typeof err, deliveryId: event.id }, "could not link a pull request to its task");
+    }
     const appliedAt = now();
     await database.update(externalObjects).set({
       statusKey: snapshot.statusKey,
