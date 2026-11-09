@@ -84,10 +84,16 @@ function toManagedUser(
   };
 }
 
+export type ListUsersResult = ManagedUser[] & {
+  users: ManagedUser[];
+  total: number;
+};
+
 export async function listUsers(
   db: Db,
   options: { page?: number; limit?: number; role?: "admin" | "instance_admin" | "member" | string } = {},
-): Promise<{ users: ManagedUser[]; total: number }> {
+): Promise<ListUsersResult> {
+  const isPaged = options.page !== undefined || options.limit !== undefined;
   const page = options.page ?? 1;
   const limit = options.limit ?? 20;
   const rows = await db
@@ -108,8 +114,8 @@ export async function listUsers(
   }
   const total = managed.length;
   const start = (page - 1) * limit;
-  const users = managed.slice(start, start + limit);
-  return { users, total };
+  const users = isPaged ? managed.slice(start, start + limit) : managed;
+  return Object.assign(users, { users, total });
 }
 
 export async function getUser(db: Db, userId: string) {
