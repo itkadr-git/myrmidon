@@ -33,6 +33,7 @@
 // is injected, so tests never touch the network.
 
 import type { Logger } from "pino";
+import { isGitHubRateLimited } from "../../services/github-rate-limit.js";
 import {
   REVIEW_REWORK_ACCEPTANCE_ACTION,
   REVIEW_REWORK_BLOCKED_ACTION,
@@ -123,6 +124,10 @@ export interface ReviewReworkSweepDeps {
     details: Record<string, unknown>;
   }) => Promise<void>;
   isUnderMaintenance?: () => Promise<boolean>;
+  /**
+   * myrmidon(OPE-12397): when rate limited, background passes must not query GitHub.
+   */
+  isRateLimited?: () => boolean;
   intervalMs?: number;
   /** Deployment fallback for the interval before the instance row stores one (OPE-12397). */
   env?: NodeJS.ProcessEnv;
@@ -677,6 +682,10 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       }
       lastSweepAtMs = now.getTime();
       if (deps.isUnderMaintenance && (await deps.isUnderMaintenance())) {
+        result.skippedPass = true;
+        return result;
+      }
+      if ((deps.isRateLimited ?? isGitHubRateLimited)()) {
         result.skippedPass = true;
         return result;
       }

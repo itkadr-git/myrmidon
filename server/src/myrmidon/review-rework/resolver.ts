@@ -62,7 +62,7 @@ export function createPullRequestReviewFactsResolver(
 ): ReviewReworkPrResolver {
   let resolverPromise: Promise<ReturnType<typeof pickResolver>> | null = null;
   const pickResolver = () =>
-    createGitHubExternalObjectProvider(db, opts).resolvers.find(
+    createGitHubExternalObjectProvider(db, { source: "review-rework", ...opts }).resolvers.find(
       (candidate) => candidate.objectType === "pull_request",
     ) ?? null;
 
