@@ -102,6 +102,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/mcp-tool-names.md](guides/mcp-tool-names.md) | Имена MCP-инструментов доски: `myrmidon*` вместо `paperclip*`, алиасы старых имён на один релиз, план снятия в 1.8 |
 | [guides/agent-instructions-revisions.md](guides/agent-instructions-revisions.md) | История ревизий инструкций агента: снимки, откат, журнал |
 | [guides/auto-resume.md](guides/auto-resume.md) | Автовозобновление агента из `error`: бэкофф 1/5/15, карточка оператору после потолка попыток, настройки |
+| [guides/deployment-cooldown-retries.md](guides/deployment-cooldown-retries.md) | Повторы при deployment cooldown и HTTP 429 (1.6.6 WAKE-5): распознавание cooldown/429, приоритет `Retry-After`, ограниченный бэкофф/джиттер/потолок, подавление немедленных пробуждений (русская версия: [guides/deployment-cooldown-retries.ru.md](guides/deployment-cooldown-retries.ru.md)) |
 | [guides/ui2-shell.md](guides/ui2-shell.md) | Оболочка Myrmidon 2.0 за флагом `enableMyrmidonUi2`: включение на инстанс и лично через `?ui=`, рамка (рейка/верхняя панель/телефонный каркас), экраны 2.0, токены и шрифты |
 | [guides/ui2-agents-fleet.md](guides/ui2-agents-fleet.md) | Экран «Флот агентов» UI-2: дерево, live-статусы, прокрутка, пустое состояние и навигация |
 | [guides/task-pr-sync.md](guides/task-pr-sync.md) | Закрытие задачи по слитым PR: проход по рабочим продуктам `pull_request`, возврат исполнителю без слияния, гейты после выката, сторож побудок |
