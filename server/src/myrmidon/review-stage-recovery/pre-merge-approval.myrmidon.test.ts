@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, beforeAll, afterAll, afterEach } from "vitest";
-import { agents, companies, createDb, issueWorkProducts, issues, issueComments } from "@myrmidon/db";
+import { agents, companies, createDb, issueWorkProducts, issues, issueComments, externalObjects } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -21,6 +21,7 @@ describeEmbeddedPostgres("pre-merge approval findApprovalPendingMergePullRequest
 
   afterEach(async () => {
     await db.delete(issueWorkProducts);
+    await db.delete(externalObjects);
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(agents);
@@ -181,5 +182,102 @@ describeEmbeddedPostgres("pre-merge approval findApprovalPendingMergePullRequest
     const result = await findApprovalPendingMergePullRequest(db, companyId, issueId);
     expect(result).not.toBeNull();
     expect(result?.url).toBe("https://github.com/itkadr-git/myrmidon/pull/105");
+  });
+
+  it("finds unlinked open pull request from externalObjects by branch bot/<KEY>", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "company-a", issuePrefix: "TEST" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-a",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TEST-99",
+      title: "Task 99",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.insert(externalObjects).values({
+      id: randomUUID(),
+      companyId,
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "itkadr-git/myrmidon#pull/2613",
+      sanitizedCanonicalUrl: "https://github.com/itkadr-git/myrmidon/pull/2613",
+      isTerminal: false,
+      data: {
+        number: 2613,
+        headRef: "bot/TEST-99",
+        url: "https://github.com/itkadr-git/myrmidon/pull/2613",
+      },
+    });
+
+    const result = await findApprovalPendingMergePullRequest(db, companyId, issueId);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe("https://github.com/itkadr-git/myrmidon/pull/2613");
+  });
+
+  it("finds unlinked open pull request from externalObjects by APPROVE PR #N comment", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "company-b", issuePrefix: "TEST" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-b",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TEST-100",
+      title: "Task 100",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "APPROVE PR #3344 abcdef12345",
+    });
+    await db.insert(externalObjects).values({
+      id: randomUUID(),
+      companyId,
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "itkadr-git/myrmidon#pull/3344",
+      sanitizedCanonicalUrl: "https://github.com/itkadr-git/myrmidon/pull/3344",
+      isTerminal: false,
+      data: {
+        number: 3344,
+        headRef: "feature/test",
+        url: "https://github.com/itkadr-git/myrmidon/pull/3344",
+      },
+    });
+
+    const result = await findApprovalPendingMergePullRequest(db, companyId, issueId);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe("https://github.com/itkadr-git/myrmidon/pull/3344");
   });
 });

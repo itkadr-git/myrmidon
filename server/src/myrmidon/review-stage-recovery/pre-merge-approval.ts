@@ -9,7 +9,7 @@
 // closes the task once the PR is merged.
 
 import { and, eq } from "drizzle-orm";
-import { issueWorkProducts, issues, issueComments, type Db } from "@myrmidon/db";
+import { issueWorkProducts, issues, issueComments, externalObjects, type Db } from "@myrmidon/db";
 import { selectOpenPullRequestWorkProduct, OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "./policy.js";
 
 export const REVIEW_APPROVAL_PENDING_MERGE_CODE = "review_approval_pending_merge";
@@ -102,6 +102,23 @@ export async function findApprovalPendingMergePullRequest(
       ),
     );
 
+  const externalPrRows = await db
+    .select({
+      id: externalObjects.id,
+      externalId: externalObjects.externalId,
+      url: externalObjects.sanitizedCanonicalUrl,
+      data: externalObjects.data,
+    })
+    .from(externalObjects)
+    .where(
+      and(
+        eq(externalObjects.companyId, companyId),
+        eq(externalObjects.providerKey, "github"),
+        eq(externalObjects.objectType, "pull_request"),
+        eq(externalObjects.isTerminal, false),
+      ),
+    );
+
   const openPrs = (Array.isArray(companyPrRows) ? companyPrRows : []).filter(
     (p) => OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES.has(p.status),
   );
@@ -116,6 +133,18 @@ export async function findApprovalPendingMergePullRequest(
     return { id: branchMatch.id, url: branchMatch.url ?? null };
   }
 
+  const unlinkedOpenPr = externalPrRows.find((p) => {
+    const data = p.data && typeof p.data === "object" && !Array.isArray(p.data)
+      ? p.data as Record<string, unknown>
+      : {};
+    const branch = typeof data.headRef === "string" ? data.headRef : "";
+    return branch === targetBranch;
+  });
+
+  if (unlinkedOpenPr) {
+    return { id: unlinkedOpenPr.id, url: unlinkedOpenPr.url ?? null };
+  }
+
   const commentRows = await db
     .select({ body: issueComments.body })
     .from(issueComments)
@@ -126,6 +155,17 @@ export async function findApprovalPendingMergePullRequest(
     const match = c.body?.match(approveRegex);
     if (match && match[1]) {
       const prNum = Number(match[1]);
+      const externalMatch = externalPrRows.find((p) => {
+        const data = p.data && typeof p.data === "object" && !Array.isArray(p.data)
+          ? p.data as Record<string, unknown>
+          : {};
+        const num = Number(data.number ?? NaN);
+        const url = typeof data.url === "string" ? data.url : p.url;
+        return num === prNum || Boolean(url && (url.endsWith(`/${prNum}`) || url.includes(`/pull/${prNum}`)));
+      });
+      if (externalMatch) {
+        return { id: externalMatch.id, url: externalMatch.url ?? null };
+      }
       const prMatch = openPrs.find((p) => {
         const meta = (p.metadata && typeof p.metadata === "object" ? p.metadata : {}) as Record<string, unknown>;
         const num = Number(meta.number ?? meta.pullRequestNumber ?? NaN);
