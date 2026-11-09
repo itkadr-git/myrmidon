@@ -73,6 +73,7 @@ export * from "../myrmidon-owner-delivery.js";
 export * from "../myrmidon-parallel-helpers.js";
 export * from "../myrmidon-pause-guard.js";
 export * from "../myrmidon-plugin-entitlement.js";
+export * from "../myrmidon-private-tasks.js";
 export * from "../myrmidon-processes.js";
 export * from "../myrmidon-product.js";
 export * from "../myrmidon-project-token-quota.js";
