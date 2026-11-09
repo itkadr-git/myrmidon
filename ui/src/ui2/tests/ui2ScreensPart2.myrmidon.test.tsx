@@ -28,7 +28,7 @@ import { matchRoutes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 import { UI2_ROUTE_TABLE, isUi2RouteElementAPlaceholder } from "../routes";
 import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
@@ -131,7 +131,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 /** Every `path="…"` of the vendor boardRoutes block in App.tsx. */
 function vendorRoutePaths(): Set<string> {
   const appSource = readFileSync(
-    fileURLToPath(new URL("../../App.tsx", import.meta.url)),
+    resolve(__dirname, "../../App.tsx"),
     "utf8",
   );
   const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
@@ -140,7 +140,7 @@ function vendorRoutePaths(): Set<string> {
 }
 
 function appSource(): string {
-  return readFileSync(fileURLToPath(new URL("../../App.tsx", import.meta.url)), "utf8");
+  return readFileSync(resolve(__dirname, "../../App.tsx"), "utf8");
 }
 
 const GUARDRAILS_PATH = "/company/settings/guardrails";
