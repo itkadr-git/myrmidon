@@ -40,6 +40,12 @@ export function legacyExecutionNeedsReconciliation(
   // bounded retry scheduler's ordinary attempt budget is exhausted.
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
+  // myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider stub reply returned with
+  // HTTP 200 never reached the model — the stub text is the whole outcome, so
+  // no provider work happened by construction. The bounded retry scheduler
+  // (paused provider_garbage retries) owns the attempt budget for these runs,
+  // the same treatment as model-unavailable below; never hold for reconciliation.
+  if (run.errorCode === "provider_garbage") return false;
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
   if (
     run.errorCode === "hermes_gateway_connect_failed" ||

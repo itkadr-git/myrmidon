@@ -52,6 +52,7 @@ export const TRANSIENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   "claude_transient_upstream",
   "hermes_transient_upstream",
   "provider_quota",
+  "provider_garbage",
   "timeout",
   "continuation_source_context_missing",
   "controller_lease_lost",

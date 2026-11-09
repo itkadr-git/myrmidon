@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   agents,
   connectionEventDeliveries,
+  heartbeatRunEvents,
   instanceSettings,
   issueComments,
   issues,
@@ -34,6 +35,12 @@ function createMockDb(fixtures: {
     receivedAt: Date;
   }>;
   latestMerged?: Array<{ mergedAt: Date | null }>;
+  garbageEvents?: Array<{
+    id: number;
+    agentId: string;
+    createdAt: Date;
+    payload: Record<string, unknown> | null;
+  }>;
 }): any {
   return {
     select: vi.fn(() => ({
@@ -68,6 +75,9 @@ function createMockDb(fixtures: {
             }
             if (table === instanceSettings) {
               return resolve(fixtures.instanceSettings ?? []);
+            }
+            if (table === heartbeatRunEvents) {
+              return resolve(fixtures.garbageEvents ?? []);
             }
             return resolve(fixtures.instanceSettings ?? []);
           },
@@ -235,5 +245,59 @@ describe("collectDevflowHealth", () => {
 
     const signals = await collectDevflowHealth(db, companyId, now);
     expect(signals.find((s) => s.metric === "noMergesMs")).toBeUndefined();
+  });
+
+  it("emits a critical providerGarbageP1 signal from a persisted burst event", async () => {
+    const db = createMockDb({
+      garbageEvents: [{
+        id: 1,
+        agentId: "agent-garbage",
+        createdAt: new Date("2026-10-27T19:59:00.000Z"),
+        payload: {
+          outcomeText: "server overloaded",
+          modelGroup: "nexus-grok-4.7",
+          runCount: 5,
+        },
+      }],
+    });
+
+    const signals = await collectDevflowHealth(db, companyId, now);
+    expect(signals.find((s) => s.metric === "providerGarbageP1")).toMatchObject({
+      subjectId: "agent-garbage",
+      severity: "critical",
+      detail: {
+        outcomeText: "server overloaded",
+        modelGroup: "nexus-grok-4.7",
+        runCount: 5,
+      },
+    });
+  });
+
+  it("does not emit providerGarbageP1 for an event outside the ten-minute window", async () => {
+    const db = createMockDb({
+      garbageEvents: [{
+        id: 2,
+        agentId: "agent-old",
+        createdAt: new Date("2026-10-27T19:49:59.000Z"),
+        payload: { outcomeText: "server overloaded", modelGroup: "nexus-grok-4.7" },
+      }],
+    });
+
+    const signals = await collectDevflowHealth(db, companyId, now);
+    expect(signals.find((s) => s.metric === "providerGarbageP1")).toBeUndefined();
+  });
+
+  it("does not emit providerGarbageP1 when the event has no outcome text", async () => {
+    const db = createMockDb({
+      garbageEvents: [{
+        id: 3,
+        agentId: "agent-empty",
+        createdAt: new Date("2026-10-27T19:59:00.000Z"),
+        payload: { modelGroup: "nexus-grok-4.7" },
+      }],
+    });
+
+    const signals = await collectDevflowHealth(db, companyId, now);
+    expect(signals.find((s) => s.metric === "providerGarbageP1")).toBeUndefined();
   });
 });
