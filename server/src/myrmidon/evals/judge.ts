@@ -81,7 +81,27 @@ export interface EvalsSettings {
   judgeModels: string[];
 }
 
-import { liveBehaviorSetting } from "../behavior-settings/live.js";
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
+
+// myrmidon(OPE-12124): the master switch in "Тонкие настройки"; unset keeps
+// the contour-declared behaviour (address + key secret decide).
+export const EVALS_ENABLED_ENV = "MYRMIDON_EVALS_ENABLED";
+
+/**
+ * The env variable is the forced override, then the value saved from the UI,
+ * then `true` — an instance that never declares anything keeps the old
+ * contour rule (an address + a key secret decide) without a restart.
+ */
+export function evalsMasterEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env[EVALS_ENABLED_ENV]?.trim().toLowerCase();
+  if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+  if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+  if (env !== process.env) return true;
+  const saved = liveSavedSetting<boolean>("evalsEnabled");
+  if (saved !== undefined) return saved;
+  const live = liveBehaviorSetting<boolean>("evalsEnabled");
+  return live !== undefined ? live : true;
+}
 
 export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSettings {
   const baseUrl = env[EVALS_BASE_URL_ENV]?.trim() || null;
@@ -90,7 +110,7 @@ export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSe
   const timeoutSec = Number.isInteger(timeoutRaw) && timeoutRaw >= 5 && timeoutRaw <= 600 ? timeoutRaw : 120;
   const judgeModels = parseJudgePriorityModels(env[EVALS_JUDGE_PRIORITY_MODELS_ENV]);
   return {
-    enabled: Boolean(baseUrl && keySecret),
+    enabled: Boolean(baseUrl && keySecret) && evalsMasterEnabled(env),
     baseUrl,
     keySecret,
     model: env[EVALS_MODEL_ENV]?.trim() || liveBehaviorSetting<string>("evalsModel") || DEFAULT_EVALS_MODEL,
@@ -104,7 +124,13 @@ export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSe
 
 /** Why the judge cannot run; names settings, never values. */
 export function evalsSettingsProblem(settings: EvalsSettings): string | null {
-  if (settings.baseUrl && settings.keySecret) return null;
+  // myrmidon(OPE-12124): a configured-but-switched-off instance reports the
+  // switch, not the contour; the contour check stays the message for an
+  // instance that never configured evals at all.
+  if (settings.baseUrl && settings.keySecret) {
+    if (!settings.enabled) return "Evals are switched off in the instance settings (evalsEnabled).";
+    return null;
+  }
   const missing = [
     settings.baseUrl ? null : EVALS_BASE_URL_ENV,
     settings.keySecret ? null : EVALS_KEY_SECRET_ENV,

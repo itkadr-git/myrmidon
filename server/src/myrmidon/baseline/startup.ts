@@ -20,6 +20,9 @@ import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmi
 import { liveSavedSetting } from "../behavior-settings/live.js";
 
 export const BASELINE_INTERVAL_ENV = "MYRMIDON_BASELINE_INTERVAL_SEC";
+// myrmidon(OPE-12124): the master switch in "Тонкие настройки"; unset keeps
+// the documented off-by-default interval behaviour (see readBaselineSettings).
+export const BASELINE_ENABLED_ENV = "MYRMIDON_BASELINE_ENABLED";
 export const BASELINE_WINDOW_DAYS = 14;
 
 const DEFAULT_INTERVAL_SEC = 86_400;
@@ -36,8 +39,23 @@ export interface BaselineSettings {
  * The setting is the switch: unset (or empty) is off. A set-but-unreadable or
  * out-of-range value keeps the job on with the daily default — a typo should
  * not silently turn a deliberate opt-in back off.
+ *
+ * myrmidon(OPE-12124): an explicit `MYRMIDON_BASELINE_ENABLED=false` (env) or
+ * a saved `baselineEnabled=false` (UI) turns the job off without a restart;
+ * the env wins over the saved value, and the default (`true`) keeps the old
+ * interval-declared behaviour.
  */
 export function readBaselineSettings(env: NodeJS.ProcessEnv): BaselineSettings {
+  const rawEnabled = env[BASELINE_ENABLED_ENV]?.trim().toLowerCase();
+  if (rawEnabled === "false" || rawEnabled === "0" || rawEnabled === "no" || rawEnabled === "off") {
+    return { enabled: false, intervalSec: DEFAULT_INTERVAL_SEC, intervalMs: DEFAULT_INTERVAL_SEC * 1000 };
+  }
+  if (env === process.env && rawEnabled === undefined) {
+    const saved = liveSavedSetting<boolean>("baselineEnabled");
+    if (saved === false) {
+      return { enabled: false, intervalSec: DEFAULT_INTERVAL_SEC, intervalMs: DEFAULT_INTERVAL_SEC * 1000 };
+    }
+  }
   const saved = env === process.env ? liveSavedSetting<number>("baseline_interval_sec") : undefined;
   const raw = saved !== undefined ? String(saved) : env[BASELINE_INTERVAL_ENV];
   if (raw === undefined || raw.trim() === "" || raw.trim() === "0") {

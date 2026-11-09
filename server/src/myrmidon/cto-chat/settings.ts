@@ -26,6 +26,9 @@ export const CTO_CHAT_MODEL_ENV = "MYRMIDON_CTO_CHAT_MODEL";
 export const CTO_CHAT_TIMEOUT_SEC_ENV = "MYRMIDON_CTO_CHAT_TIMEOUT_SEC";
 /** Cap on child tasks in one proposal; the wire contract caps it too. */
 export const CTO_CHAT_MAX_TASKS_ENV = "MYRMIDON_CTO_CHAT_MAX_TASKS";
+// myrmidon(OPE-12124): the master switch in "Тонкие настройки"; unset keeps
+// the contour-declared behaviour (address + key secret decide).
+export const CTO_CHAT_ENABLED_ENV = "MYRMIDON_CTO_CHAT_ENABLED";
 
 /** The free model the release note names for new board-side model calls. */
 export const DEFAULT_CTO_CHAT_MODEL = "dashscope-qwen-flash";
@@ -60,7 +63,25 @@ function readPositiveInt(raw: string | undefined, fallback: number, max: number)
  * documented way to leave the planner closed; everything else degrades to its
  * default instead of disabling the path.
  */
-import { liveBehaviorSetting } from "../behavior-settings/live.js";
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
+
+/**
+ * myrmidon(OPE-12124): the master switch of the planner, movable from env to
+ * "Тонкие настройки" without a restart. Precedence: the env variable is the
+ * forced override, then the value saved from the UI, then `true` — the
+ * contour rule (an address + a key secret decide) stays as before, so an
+ * instance that never declares anything behaves exactly as it did.
+ */
+export function ctoChatMasterEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env[CTO_CHAT_ENABLED_ENV]?.trim().toLowerCase();
+  if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+  if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+  if (env !== process.env) return true;
+  const saved = liveSavedSetting<boolean>("ctoChatEnabled");
+  if (saved !== undefined) return saved;
+  const live = liveBehaviorSetting<boolean>("ctoChatEnabled");
+  return live !== undefined ? live : true;
+}
 
 export function readCtoChatSettings(env: NodeJS.ProcessEnv = process.env): CtoChatSettings {
   const baseUrl = env[CTO_CHAT_BASE_URL_ENV]?.trim() || null;
@@ -73,7 +94,7 @@ export function readCtoChatSettings(env: NodeJS.ProcessEnv = process.env): CtoCh
     CTO_CHAT_ABSOLUTE_MAX_TASKS,
   );
   return {
-    enabled: Boolean(baseUrl && keySecret),
+    enabled: Boolean(baseUrl && keySecret) && ctoChatMasterEnabled(env),
     baseUrl,
     keySecret,
     model: env[CTO_CHAT_MODEL_ENV]?.trim() || liveBehaviorSetting<string>("ctoChatModel") || DEFAULT_CTO_CHAT_MODEL,
@@ -88,7 +109,13 @@ export function readCtoChatSettings(env: NodeJS.ProcessEnv = process.env): CtoCh
  * write into the journal.
  */
 export function ctoChatSettingsProblem(settings: CtoChatSettings): string | null {
-  if (settings.baseUrl && settings.keySecret) return null;
+  // myrmidon(OPE-12124): a configured-but-switched-off planner reports the
+  // switch; the contour check stays the message for an instance that never
+  // configured the planner at all.
+  if (settings.baseUrl && settings.keySecret) {
+    if (!settings.enabled) return "The board chat planner is switched off in the instance settings (ctoChatEnabled).";
+    return null;
+  }
   const missing = [
     settings.baseUrl ? null : CTO_CHAT_BASE_URL_ENV,
     settings.keySecret ? null : CTO_CHAT_KEY_SECRET_ENV,

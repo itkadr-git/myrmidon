@@ -25,6 +25,7 @@ import {
   type ForagingSettings,
   type ForagingSettingsPatch,
   type ResolvedForagingSettings,
+  parseForagingEnabled,
 } from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 import type { ForagingBudget } from "./domain.js";
@@ -63,14 +64,19 @@ export async function resolveForagingEffectiveSettings(
   const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
   const resolved = resolveForagingSettings({ stored: general[FORAGING_SETTINGS_KEY], env });
   const keySecret = env[FORAGING_KEY_SECRET_ENV]?.trim() || null;
+  // myrmidon(OPE-12124): the master switch folds into the same `enabled` the
+  // sweep tick gates on, so a UI-off applies with the next pass.
+  const masterEnabled = foragingMasterEnabled(env);
+  const settings = masterEnabled ? resolved.settings : { ...resolved.settings, enabled: false };
   return {
     ...resolved,
+    settings,
     keySecret,
-    intervalMs: resolved.settings.intervalSec * 1000,
-    minHostIntervalMs: resolved.settings.minHostIntervalSec * 1000,
+    intervalMs: settings.intervalSec * 1000,
+    minHostIntervalMs: settings.minHostIntervalSec * 1000,
     budget: {
-      maxCostCents: resolved.settings.passBudgetCents ?? 0,
-      enabled: resolved.settings.passBudgetCents !== null,
+      maxCostCents: settings.passBudgetCents ?? 0,
+      enabled: settings.passBudgetCents !== null,
     },
   };
 }
@@ -81,6 +87,32 @@ export async function resolveForagingEffectiveSettings(
  * `resolveForagingEffectiveSettings`). Kept so the reader construction and the
  * tests that pin the env reading do not duplicate the env parsing.
  */
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
+
+/**
+ * myrmidon(OPE-12124): the master switch moved to "Тонкие настройки".
+ *
+ * Precedence mirrors the registry contract (ui → env → default, resolved once
+ * in @myrmidon/shared):
+ *  - an env variable stays the forced override: it wins whenever it is set
+ *    and readable (`false` disables the sweep, any on-value keeps it on);
+ *  - otherwise a value saved from the UI wins, on or off, without a restart;
+ *  - otherwise the feature's own contour (`enabled`) decides, so an instance
+ *    that never declares anything behaves exactly as before.
+ */
+export function foragingMasterEnabled(env: NodeJS.ProcessEnv): boolean {
+  // The environment is the forced override in every caller, test or live.
+  const parsed = parseForagingEnabled(env[FORAGING_ENABLED_ENV]);
+  if (parsed !== null) return parsed;
+  // The live holder is process-wide state: only consult it for the real env,
+  // so a test with a custom env object stays hermetic.
+  if (env !== process.env) return true;
+  const saved = liveSavedSetting<boolean>("foragingEnabled");
+  if (saved !== undefined) return saved;
+  const live = liveBehaviorSetting<boolean>("foragingEnabled");
+  return live !== undefined ? live : true;
+}
+
 export function readForagingSettings(env: NodeJS.ProcessEnv = process.env): {
   enabled: boolean;
   intervalMs: number;
@@ -91,7 +123,7 @@ export function readForagingSettings(env: NodeJS.ProcessEnv = process.env): {
   const resolved = resolveForagingSettings({ env });
   const settings = resolved.settings;
   return {
-    enabled: settings.enabled,
+    enabled: settings.enabled && foragingMasterEnabled(env),
     intervalMs: settings.intervalSec * 1000,
     budget: {
       maxCostCents: settings.passBudgetCents ?? 0,
