@@ -207,7 +207,7 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
-import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests, backfillPullRequestWorkProducts } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { createStaleBlockScheduler, createDefaultEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
@@ -1959,6 +1959,13 @@ async function startServerWithDatabaseTeardown(
     const now = Date.now();
     if (now - lastClosedTaskReconcileAt < closedTaskReconcileIntervalMs) return;
     lastClosedTaskReconcileAt = now;
+    trackTaskPrSyncWork(backfillPullRequestWorkProducts({
+      db: db as any,
+    }).then((result) => {
+      if (result.linked > 0 || result.failed > 0) logger.info(result, "backfilled bot PR work products on tasks");
+    }).catch((err) => {
+      logger.warn({ errorKind: "task_pr_backfill_failed", errorName: err instanceof Error ? err.name : typeof err }, "bot PR work-product backfill failed");
+    }));
     trackTaskPrSyncWork(reconcileClosedIssuePullRequests({
       db: db as any,
       resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db as any),
