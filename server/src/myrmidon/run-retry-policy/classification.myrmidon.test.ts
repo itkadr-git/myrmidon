@@ -181,7 +181,11 @@ describe("run retry policy: failure classification", () => {
       "all deployments in cooldown",
       "all deployments are in cooldown",
       "All deployments for selected model are in cooldown",
+      "All deployments (openai/chatgpt) are in cooldown",
+      "deployments in cooldown",
       "HTTP 429 too many requests",
+      "429 Too Many Requests",
+      "rate_limit_error",
     ]) {
       expect(
         classifyRunFailureForRetry({ errorCode: "adapter_failed", errorMessage }),

@@ -234,6 +234,11 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
     expect(result.errorFamily).toBe("transient_upstream");
     // Retry-After is surfaced as the retry hint the bounded retry follows.
     expect(result.retryNotBefore).not.toBeNull();
+    const retryDate = new Date(result.retryNotBefore!).getTime();
+    expect(Number.isNaN(retryDate)).toBe(false);
+    const diffSec = Math.round((retryDate - Date.now()) / 1000);
+    expect(diffSec).toBeGreaterThanOrEqual(5);
+    expect(diffSec).toBeLessThanOrEqual(10);
   });
 
   it("stopGatewayRunForBoard posts a bounded stop for an unsupervised run", async () => {
