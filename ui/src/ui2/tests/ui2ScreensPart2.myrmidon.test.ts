@@ -9,7 +9,7 @@ import { resolveMyrmidonUi2Enabled } from "../useMyrmidonUi2Enabled";
 
 describe("myrmidon(OPE-3918) UI-2.0 screens part 2 coverage", () => {
   it("includes Server Fleet, Budgets, Guardrails, Channels/Access, and Commander screens", () => {
-    const keys = new Set(UI2_ROUTE_TABLE.map((e) => e.key));
+    const keys = new Set<string>(UI2_ROUTE_TABLE.map((e) => e.key));
     expect(keys.has("fleet")).toBe(true);
     expect(keys.has("settings-runs-queue")).toBe(true);
     expect(keys.has("settings-system")).toBe(true);
@@ -24,7 +24,7 @@ describe("myrmidon(OPE-3918) UI-2.0 screens part 2 coverage", () => {
     expect(keys.has("agents-fleet")).toBe(true);
     expect(keys.has("more")).toBe(true);
 
-    const settingsKeys = new Set(UI2_SETTINGS_SECTIONS.map((s) => s.key));
+    const settingsKeys = new Set<string>(UI2_SETTINGS_SECTIONS.map((s) => s.key));
     expect(settingsKeys.has("budgets")).toBe(true);
     expect(settingsKeys.has("access")).toBe(true);
     expect(settingsKeys.has("system")).toBe(true);
@@ -54,9 +54,9 @@ describe("myrmidon(OPE-3918) UI-2.0 screens part 2 coverage", () => {
   });
 
   it("verifies all screen-map 2.0 sections are covered across UI2 routes, sidebar and rail navigation", () => {
-    const routeKeys = new Set(UI2_ROUTE_TABLE.map((e) => e.key));
-    const sidebarKeys = new Set(UI2_SETTINGS_SECTIONS.map((s) => s.key));
-    const railPaths = new Set(UI2_NAV_GROUPS.flatMap((g) => g.items).map((i) => i.to));
+    const routeKeys = new Set<string>(UI2_ROUTE_TABLE.map((e) => e.key));
+    const sidebarKeys = new Set<string>(UI2_SETTINGS_SECTIONS.map((s) => s.key));
+    const railPaths = new Set<string>(UI2_NAV_GROUPS.flatMap((g) => g.items).map((i) => i.to));
 
     // Fleet (2.4)
     expect(routeKeys.has("fleet")).toBe(true);
