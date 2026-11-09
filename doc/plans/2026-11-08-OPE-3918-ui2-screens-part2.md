@@ -14,9 +14,11 @@ This document records the verification and completion status of OPE-3918 (UI-2.0
 ## Acceptance Criteria & Verification Table
 | Criterion | Status | Confirmation Method |
 |---|---|---|
-| All 23 design screens present in new UI | Verified | Route table in `ui/src/ui2/routes.tsx` & component mapping |
+| All 23 design screens present in new UI | Verified | Route table in `ui/src/ui2/routes.tsx` & component mapping across UI2 shell and company route tree |
 | Server Fleet with MONITORING and SERVER-ONBOARD | Verified | `Ui2Fleet` & monitor dashboard integration |
-| Budgets and Limits | Verified | `BudgetLimitsScreenContainer` |
-| Guardrails interface | Verified | `GuardrailsScreenContainer` |
-| Channels and Access | Verified | `AccessHubPage` & `CompanyAccess` |
+| Budgets and Limits | Verified | `BudgetLimitsScreenContainer` registered in settings navigation & board routes |
+| Guardrails interface | Verified | `GuardrailsScreenContainer` registered in settings navigation & board routes |
+| Channels and Access | Verified | `Ui2ChannelsSettings` & `Ui2ChannelAccessTab` & `AccessHubPage` |
 | Commander chat parity | Verified | `Ui2Commander` & `CommanderChatScreen` |
+| Disabling legacy interface | Verified | Controlled centrally via `enableMyrmidonUi2` flag in `App.tsx` |
+
