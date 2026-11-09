@@ -525,7 +525,7 @@ function principalsEqual(a: IssueExecutionStagePrincipal | null, b: IssueExecuti
   return a.type === "agent" ? a.agentId === b.agentId : a.userId === b.userId;
 }
 
-function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
+export function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
   const configured = policy?.reviewEscalationPolicy?.maxReviewRounds ?? policy?.maxReviewRounds;
   if (configured == null) return DEFAULT_MAX_REVIEW_ROUNDS;
   return typeof configured === "number" && configured > 0 ? configured : DEFAULT_MAX_REVIEW_ROUNDS;
@@ -1777,4 +1777,59 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
 
 export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
   return { patch: applyMonitorTransition(input, {}) };
+}
+
+/**
+ * myrmidon(1.7-GOAL-JUDGE): applies a goal judge review round decision to
+ * transition fields before or during a review stage transition.
+ *
+ * - return_to_executor: complete=false returns the task to in_progress with
+ *   missing criteria comment and restores returnAssignee;
+ * - escalate_to_reviewer: keeps/sets status in_review, assigns escalation participant
+ *   if available, and records the score & missing report;
+ * - pass / noop: proceeds to review stage without blocking.
+ */
+export function applyGoalJudgeDecisionToTransition(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  decision: {
+    kind: "pass" | "return_to_executor" | "escalate_to_reviewer" | "noop";
+    patch?: Record<string, unknown>;
+    commentBody?: string | null;
+  };
+}): {
+  patch: Record<string, unknown>;
+  commentBody: string | null;
+  returnedToExecutor: boolean;
+  escalated: boolean;
+} {
+  const { decision } = input;
+  if (decision.kind === "return_to_executor") {
+    return {
+      patch: {
+        status: "in_progress",
+        ...(decision.patch ?? {}),
+      },
+      commentBody: decision.commentBody ?? null,
+      returnedToExecutor: true,
+      escalated: false,
+    };
+  }
+  if (decision.kind === "escalate_to_reviewer") {
+    return {
+      patch: {
+        status: "in_review",
+        ...(decision.patch ?? {}),
+      },
+      commentBody: decision.commentBody ?? null,
+      returnedToExecutor: false,
+      escalated: true,
+    };
+  }
+  return {
+    patch: decision.patch ?? {},
+    commentBody: decision.commentBody ?? null,
+    returnedToExecutor: false,
+    escalated: false,
+  };
 }

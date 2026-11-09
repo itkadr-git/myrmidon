@@ -133,6 +133,10 @@ export interface ReviewReworkSweepDeps {
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
   log?: Pick<Logger, "info" | "warn">;
+  /** Optional goal judge review-cycle round controller. */
+  goalJudge?: {
+    judge(input: import("../goal-judge/controller.js").GoalJudgeReviewTaskFacts): Promise<import("../goal-judge/controller.js").GoalJudgeDecision>;
+  };
 }
 
 function readIntervalSec(env: NodeJS.ProcessEnv | undefined, fallback: number) {
