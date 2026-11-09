@@ -471,7 +471,21 @@
       "agents": {
         "agents": {
           "selectACompanyToView": "Выберите компанию, чтобы видеть агентов.",
-          "viewMode": "Режим просмотра"
+          "viewMode": "Режим просмотра",
+          "selectForBulk": "Выбрать «{{name}}»",
+          "clearSelection": "Снять выделение",
+          "bulkApplying": "Применение…",
+          "bulkChangeModel": "Сменить модель",
+          "bulkChangeConnection": "Сменить подключение",
+          "bulkUnchanged": "Без изменения",
+          "bulkSelectedCount": "Выбрано: {{count}}",
+          "bulkApplyConfirm": "Применить к {{count}} агенту",
+          "bulkApplyConfirm_other": "Применить к {{count}} агентам",
+          "bulkResultUpdated": "Обновлено: {{count}}",
+          "bulkResultUpdated_other": "Обновлено: {{count}}",
+          "bulkResultFailed": "Ошибок: {{count}}",
+          "bulkResultFailed_other": "Ошибок: {{count}}",
+          "bulkResultAllFailed": "Обновление не удалось"
         }
       },
       "org": {
