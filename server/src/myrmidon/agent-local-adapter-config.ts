@@ -11,7 +11,9 @@ import {
  * problem into a 422 and a security change into an instance-admin check.
  */
 
-const LOCAL_CLI_ADAPTERS = new Set(["claude_local", "codex_local"]);
+// myrmidon(1.6.7 OPE-12266): omp_local joins the local CLI adapters — the same
+// sandbox keys are validated on save and gated as security changes.
+const LOCAL_CLI_ADAPTERS = new Set(["claude_local", "codex_local", "omp_local"]);
 
 /** Sandbox and permission keys of the local CLI adapters. Changing one is a security change. */
 export const LOCAL_ADAPTER_SECURITY_KEYS = [

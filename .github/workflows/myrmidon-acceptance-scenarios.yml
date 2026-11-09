@@ -4,6 +4,12 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# One run per PR: a new push supersedes the queued/running check of the old head
+# (without this every synchronize event queued another run — 09.11: 66 queued, 15 duplicates).
+concurrency:
+  group: myrmidon-acceptance-scenarios-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   checks: write
