@@ -9,7 +9,7 @@
 // duplicating them.
 //
 // 1.6.5-BOT-DISK-H11: it also edits the shared bot runtime directory, whose
-// bin, lazy-packages and lsp subdirectories every bot mounts read-only, so the
+// bin subdirectory every bot mounts read-only, so the
 // runtime lives on the host once instead of once per bot.
 //
 // 1.6.5-BOT-DISK-H4d: the panel also shows the bot partition physically
@@ -331,8 +331,8 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
   };
   const defaultRepoUnchanged = view !== undefined && (defaultRepoDraft ?? "").trim() === (view.settings.defaultRepo ?? "");
 
-  // myrmidon(1.6.5-BOT-DISK-H11): the host directory whose bin, lazy-packages
-  // and lsp subdirectories every bot mounts read-only over its own runtime.
+  // myrmidon(1.6.5-BOT-DISK-H11): the host directory whose bin subdirectory
+  // every bot mounts read-only over its own runtime.
   const saveRuntime = useMutation({
     mutationFn: (path: string) => botDiskApi.setSharedBotRuntimePath(path === "" ? null : path),
     onSuccess: (saved) => {

@@ -85,10 +85,10 @@ of `.hermes` — stays refused, so a card can neither shadow the shared runtime
 ## The shared bot runtime (1.6.5-BOT-DISK-H, class C)
 
 When the instance setting `general.botDisk.sharedBotRuntimePath` names a host
-directory, the driver adds three read-only binds of its `bin`, `lazy-packages`
-and `lsp` subdirectories over the bot's own runtime paths — the same three
-paths, in the same real-path form as above, so one copy on the host replaces one
-copy per bot (5–7 GiB each). The board's instance settings and the operator step
+directory, the driver adds a read-only bind of its `bin`
+subdirectory over the bot's own runtime path —
+in the same real-path form as above, so one copy on the host replaces one
+copy per bot (~38 MB per bot, ~2.4 GB fleet-wide; re-scoped to bin-only in OPE-12493). The board's instance settings and the operator step
 are in
 [SETTINGS.md](SETTINGS.md#161--bot-disk-b-shared-package-cache-for-bot-containers).
 
@@ -116,7 +116,7 @@ configuration and compares the bytes. Two things changed there:
   enrolled on the dockergate side as well — and `botRuntimeRoot`, the host
   directory of the shared bot runtime;
 * a create body for a bot may now carry, after its fixed bind, only reads:
-  the cache pairs, the runtime pairs (`<botRuntimeRoot>/{bin,lazy-packages,lsp}`
+  the cache pairs, the runtime pair (`<botRuntimeRoot>/bin`
   at the path the driver really uses inside the bot's own mount, read-only) and
   an allowlisted class J mount at its real path. Anything else is denied with
   `mount_source_not_allowed` (source not enrolled, or a writable bind that is

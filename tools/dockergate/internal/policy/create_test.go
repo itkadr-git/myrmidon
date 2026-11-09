@@ -861,11 +861,9 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 	}
 	all := []string{
 		runtime + "/bin:/bot/hermes/bin:ro",
-		runtime + "/lazy-packages:/bot/hermes/lazy-packages:ro",
-		runtime + "/lsp:/bot/hermes/lsp:ro",
 	}
 
-	t.Run("the three runtime pairs under the root are accepted and kept canonical", func(t *testing.T) {
+	t.Run("the runtime pair under the root is accepted and kept canonical", func(t *testing.T) {
 		body := bodyWith(t, all...)
 		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
 		if err != nil {
@@ -883,7 +881,7 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 			t,
 			shared+":/bot/hermes/media/site:ro",
 			cache+"/pnpm:/cache/pnpm:rw",
-			all[0], all[1], all[2],
+			all[0],
 		)
 		e := withRoot(runtime, shared)
 		e.PackageCacheRoot = cache
@@ -902,7 +900,9 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 	t.Run("a pair outside the root, in another subdirectory or writable is denied", func(t *testing.T) {
 		for _, bind := range []string{
 			"/srv/elsewhere/bin:/bot/hermes/bin:ro",
-			runtime + "/sub/lsp:/bot/hermes/lsp:ro",
+			runtime + "/lazy-packages:/bot/hermes/lazy-packages:ro",
+			runtime + "/lsp:/bot/hermes/lsp:ro",
+			runtime + "/sub/bin:/bot/hermes/bin:ro",
 			runtime + "/bin:/bot/hermes/bin:rw",
 		} {
 			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
