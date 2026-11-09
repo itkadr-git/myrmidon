@@ -6,8 +6,8 @@ describe("enrichPromotedWakeContext", () => {
     const contextSnapshot: Record<string, unknown> = {
       // Normalization already dropped the canonical wake comment ids upstream
       // of this function; no wakeCommentIds field remains on the snapshot.
-      paperclipWake: { commentId: "comment-2" },
-      paperclipWakeComment: { id: "comment-2", body: "stale body" },
+      paperclipWake: { commentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e" },
+      paperclipWakeComment: { id: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e", body: "stale body" },
       paperclipTaskMarkdown: "stale markdown",
       paperclipTaskMarkdownCompact: "stale compact markdown",
       // Independent interaction continuation the promoted run must keep.
@@ -38,9 +38,9 @@ describe("enrichPromotedWakeContext", () => {
 
   it("sets the canonical id and latest-id fields when the recomputed list has entries, and still clears the stale projections", () => {
     const contextSnapshot: Record<string, unknown> = {
-      wakeCommentIds: ["comment-1"],
-      paperclipWake: { commentId: "comment-1" },
-      paperclipWakeComment: { id: "comment-1", body: "will be rebuilt" },
+      wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
+      paperclipWake: { commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d" },
+      paperclipWakeComment: { id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d", body: "will be rebuilt" },
       paperclipTaskMarkdown: "will be rebuilt",
       paperclipTaskMarkdownCompact: "will be rebuilt",
     };
@@ -53,9 +53,9 @@ describe("enrichPromotedWakeContext", () => {
       payload: {},
     });
 
-    expect(result.contextSnapshot.wakeCommentIds).toEqual(["comment-1"]);
-    expect(result.contextSnapshot.commentId).toBe("comment-1");
-    expect(result.contextSnapshot.wakeCommentId).toBe("comment-1");
+    expect(result.contextSnapshot.wakeCommentIds).toEqual(["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"]);
+    expect(result.contextSnapshot.commentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(result.contextSnapshot.wakeCommentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
     // The derived projections are cleared so the run rebuilds them from the
     // canonical ids instead of carrying forward a queue-time snapshot.
     expect(result.contextSnapshot.paperclipWake).toBeUndefined();
@@ -66,8 +66,8 @@ describe("enrichPromotedWakeContext", () => {
 
   it("adds a new id from the payload to the canonical list and clears the stale projections", () => {
     const contextSnapshot: Record<string, unknown> = {
-      wakeCommentIds: ["comment-1"],
-      paperclipWakeComment: { id: "comment-1", body: "stale body" },
+      wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
+      paperclipWakeComment: { id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d", body: "stale body" },
     };
 
     const result = enrichPromotedWakeContext({
@@ -75,19 +75,40 @@ describe("enrichPromotedWakeContext", () => {
       reason: "issue_execution_promoted",
       source: "automation",
       triggerDetail: null,
-      payload: { commentId: "comment-2" },
+      payload: { commentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e" },
     });
 
-    expect(result.contextSnapshot.wakeCommentIds).toEqual(["comment-1", "comment-2"]);
-    expect(result.contextSnapshot.commentId).toBe("comment-2");
-    expect(result.contextSnapshot.wakeCommentId).toBe("comment-2");
+    expect(result.contextSnapshot.wakeCommentIds).toEqual(["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d", "2aa92f18-06b6-4231-a2a5-bf7d7f41718e"]);
+    expect(result.contextSnapshot.commentId).toBe("2aa92f18-06b6-4231-a2a5-bf7d7f41718e");
+    expect(result.contextSnapshot.wakeCommentId).toBe("2aa92f18-06b6-4231-a2a5-bf7d7f41718e");
     expect(result.contextSnapshot.paperclipWakeComment).toBeUndefined();
+  });
+
+  it("drops a malformed payload commentId from the promoted canonical list", () => {
+    const contextSnapshot: Record<string, unknown> = {
+      wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
+    };
+
+    const result = enrichPromotedWakeContext({
+      contextSnapshot,
+      reason: "issue_execution_promoted",
+      source: "automation",
+      triggerDetail: null,
+      // OPE-12209: a malformed id in a promotion payload must never reach the
+      // uuid columns; it is dropped instead of persisted into the canonical
+      // list the next dispatch resolves against the database.
+      payload: { commentId: "abc12345" },
+    });
+
+    expect(result.contextSnapshot.wakeCommentIds).toEqual(["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"]);
+    expect(result.contextSnapshot.commentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(result.contextSnapshot.wakeCommentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
   });
 
   it("keeps the raw issue, execution-stage, and accepted-plan fields a dispatch rebuild needs, alongside the cleared text projections", () => {
     const contextSnapshot: Record<string, unknown> = {
-      wakeCommentIds: ["comment-1"],
-      paperclipWake: { commentId: "comment-1" },
+      wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
+      paperclipWake: { commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d" },
       paperclipTaskMarkdown: "stale markdown",
       paperclipTaskMarkdownCompact: "stale compact markdown",
       // Raw context a dispatch-time rebuild reads directly off the promoted
