@@ -117,7 +117,13 @@ export async function listGatewayModels(
   const env = options.env ?? process.env;
   const baseUrl = resolveGatewayBaseUrl(env);
   if (!baseUrl) {
-    return cache?.models ?? [];
+    // A missing gateway URL means the live catalog could not be consulted at
+    // all — a discovery failure, not an authoritative empty catalog. Throw so
+    // the adapter registry falls back to PAPERCLIP_ADAPTER_MODELS / declared
+    // models; an authoritative `[]` requires a successful HTTP response.
+    throw new Error(
+      "LLM gateway base URL is not configured (set MYRMIDON_LITELLM_BASE_URL or LITELLM_BASE_URL)",
+    );
   }
 
   const apiKey = resolveGatewayApiKey(env);
@@ -134,6 +140,8 @@ export async function listGatewayModels(
 }
 
 export async function refreshGatewayModels(): Promise<AdapterModel[]> {
+  // Propagates the same failure semantics as listGatewayModels: a missing URL
+  // or failed fetch throws instead of resolving to an authoritative `[]`.
   return listGatewayModels({ forceRefresh: true });
 }
 

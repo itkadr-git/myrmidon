@@ -274,7 +274,19 @@ describe("adapter model listing", () => {
   });
 
   describe("hermes_gateway LiteLLM dynamic discovery", () => {
-    it("returns empty list when LiteLLM is not configured", async () => {
+    it("falls back to PAPERCLIP_ADAPTER_MODELS when LiteLLM is not configured (no gateway URL)", async () => {
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        hermes_gateway: [{ id: "env-only-model", label: "env-only-model" }],
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const models = await listAdapterModels("hermes_gateway");
+      expect(models).toEqual([{ id: "env-only-model", label: "env-only-model" }]);
+      // No gateway URL means no discovery request was attempted at all.
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("returns an empty list when LiteLLM is not configured and no env models are declared", async () => {
       const models = await listAdapterModels("hermes_gateway");
       expect(models).toEqual([]);
     });
