@@ -196,6 +196,91 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
+  it("pins the resolved commit at import and keeps the saved pin when the branch moves between loads", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Pin persistence", issuePrefix: `T${companyId.slice(0, 6)}` });
+    let revision = "c".repeat(40);
+    const markdown = "---\nname: pinned\ndescription: A fixture\n---\n# Pinned skill\n";
+    const upstream = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/commits/")) return Response.json({ sha: revision });
+      if (url.includes("/git/trees/")) return Response.json({ tree: [{ path: "pinned/SKILL.md", type: "blob" }] });
+      if (url.endsWith("/SKILL.md")) return new Response(markdown);
+      if (url.includes("/repos/")) return Response.json({ default_branch: "main" });
+      return new Response(markdown);
+    });
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const first = await svc.importFromSource(companyId, "https://github.com/acme/pinned");
+      const skill = first.imported[0]!;
+      expect(skill.sourceRef).toBe(revision);
+      expect(skill.metadata).toMatchObject({ ref: revision, trackingRef: "main" });
+
+      // The branch moves forward on the upstream between the two loads.
+      revision = "d".repeat(40);
+
+      const firstLoadUrls = upstream.mock.calls.map(([url]) => String(url));
+      expect(firstLoadUrls.every((url) => !url.includes("/main/"))).toBe(true);
+
+      upstream.mockClear();
+      // A later load (runtime listing) must reuse the stored pin, never re-float to the branch head.
+      const runtimeEntry = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+      expect(runtimeEntry.sourceStatus).toBe("available");
+      const loadUrls = upstream.mock.calls.map(([url]) => String(url));
+      expect(loadUrls.length).toBeGreaterThan(0);
+      expect(loadUrls.every((url) => url.includes("c".repeat(40)))).toBe(true);
+      expect(loadUrls.every((url) => !url.includes("d".repeat(40)))).toBe(true);
+
+      // An explicit re-import is a user action: it re-resolves the branch and re-pins to the new head.
+      upstream.mockClear();
+      const second = await svc.importFromSource(companyId, "https://github.com/acme/pinned");
+      const repinned = second.imported[0]!;
+      expect(repinned.key).toBe(skill.key);
+      expect(repinned.sourceRef).toBe("d".repeat(40));
+      const reimportUrls = upstream.mock.calls.map(([url]) => String(url));
+      expect(reimportUrls.some((url) => url.includes("/commits/"))).toBe(true);
+      expect(reimportUrls.filter((url) => url.endsWith("/SKILL.md")).every((url) => url.includes("d".repeat(40)))).toBe(true);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("keeps an explicit SHA source pinned without branch resolution and updates only through installUpdate", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Explicit pin", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const pinnedSha = "e".repeat(40);
+    const markdown = "---\nname: pinned\ndescription: A fixture\n---\n# Explicit pin skill\n";
+    const upstream = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/commits/") && !url.includes(pinnedSha)) throw new Error("Branch resolution must not run for an explicit SHA source");
+      if (url.includes("/commits/")) return Response.json({ sha: pinnedSha });
+      if (url.includes("/git/trees/")) return Response.json({ tree: [{ path: "pinned/SKILL.md", type: "blob" }] });
+      if (url.includes("/repos/")) throw new Error("Default branch lookup must not run for an explicit SHA source");
+      return new Response(markdown);
+    });
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const first = await svc.importFromSource(companyId, `https://github.com/acme/pinned/tree/${pinnedSha}`);
+      const skill = first.imported[0]!;
+      expect(skill.sourceRef).toBe(pinnedSha);
+      expect(skill.metadata).toMatchObject({ ref: pinnedSha, trackingRef: pinnedSha });
+
+      // Update status tracks the explicit pin and reports no floating ref update target.
+      const status = await svc.updateStatus(companyId, skill.id);
+      expect(status).toMatchObject({
+        supported: true,
+        trackingRef: pinnedSha,
+        currentRef: pinnedSha,
+        latestRef: pinnedSha,
+        hasUpdate: false,
+      });
+
+      // An explicit update re-imports from the same pinned SHA, not from a moving branch.
+      const updated = await svc.installUpdate(companyId, skill.id);
+      expect(updated?.sourceRef).toBe(pinnedSha);
+      const urls = upstream.mock.calls.map(([url]) => String(url));
+      expect(urls.filter((url) => url.endsWith("/SKILL.md")).every((url) => url.includes(pinnedSha))).toBe(true);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it("observes edits to a direct local source on the next preparation", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Local cache", issuePrefix: `T${companyId.slice(0, 6)}` });
