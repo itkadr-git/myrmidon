@@ -436,6 +436,11 @@ async function main() {
       terminalOutputTtlHours: pick(g.terminalOutputTtlHours, Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS)) ?? 24,
       npmCacheCapBytes: pick(g.npmCacheCapBytes, Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES)) ?? 1024 * 1024 * 1024,
       npmCacacheQuotaBytes: pick(g.npmCacacheQuotaBytes, Number(process.env.MYRMIDON_BOTD_NPM_CACACHE_QUOTA_BYTES)) ?? 512 * 1024 * 1024,
+      // myrmidon(OPE-12110): byte ceilings for `hermes/.npm/_npx` (512 MiB) and the
+      // per-bot cargo target dir `hermes/.cache/cargo-target` (2 GiB), from the
+      // desired-state grace or env; absent/zero values fall back to the defaults.
+      npmNpxQuotaBytes: pick(g.npmNpxQuotaBytes, Number(process.env.MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES)) ?? 512 * 1024 * 1024,
+      cargoTargetQuotaBytes: pick(g.cargoTargetQuotaBytes, Number(process.env.MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES)) ?? 2 * 1024 * 1024 * 1024,
     };
     // The npm size ceiling is skipped while a run is live: an npx install the run
     // has not touched yet can still be in use.
@@ -474,6 +479,9 @@ async function main() {
         terminalOutputTtlHours: Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS) || 24,
         npmCacheCapBytes: Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES) || 1024 * 1024 * 1024,
         npmCacacheQuotaBytes: Number(process.env.MYRMIDON_BOTD_NPM_CACACHE_QUOTA_BYTES) || 512 * 1024 * 1024,
+        // myrmidon(OPE-12110): same `_npx` and cargo-target ceilings under disk pressure; absent/zero env falls back to the defaults.
+        npmNpxQuotaBytes: Number(process.env.MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES) || 512 * 1024 * 1024,
+        cargoTargetQuotaBytes: Number(process.env.MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES) || 2 * 1024 * 1024 * 1024,
       };
       const result = await hygieneMod.cleanCaches({
         now: startedAt.getTime(),

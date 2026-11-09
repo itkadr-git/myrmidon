@@ -8392,7 +8392,7 @@ export async function buildPaperclipWakePayload(input: {
   let pullRequestsCi: PullRequestCiResult[] = [];
   if (issueId) {
     try {
-      const ciResolver = createPullRequestCiResolver(input.db);
+      const ciResolver = createPullRequestCiResolver(input.db, { source: "run-context" });
       pullRequestsCi = await withCiResolveDeadline(
         ciResolver.resolveForIssue(input.companyId, issueId),
         [],

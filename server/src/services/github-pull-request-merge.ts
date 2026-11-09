@@ -105,7 +105,13 @@ export function createPullRequestMergeDetailsResolver(
   db: Db,
   opts?: GitHubExternalObjectProviderOptions,
 ): PullRequestMergeDetailsResolver {
-  const resolver = createGitHubExternalObjectProvider(db, opts).resolvers
+  const resolver = createGitHubExternalObjectProvider(
+    db,
+    // myrmidon(OPE-12397): readers without their own bucket stay under the
+    // task-PR-sync label as before; the UI-triggered refresh passes ui-refresh
+    // (see the work-products route).
+    opts ?? { source: "task-pr-sync" },
+  ).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
   return async (companyId, reference) => {

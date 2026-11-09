@@ -14,7 +14,7 @@
 // expensive per-task reads (comments, PR coordinates) happen only for
 // candidates the sweep actually processes.
 
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   companies,
   issueComments,
@@ -38,6 +38,20 @@ export interface ReworkCandidateRow {
   textParts: string[];
   /** The task's pull_request work products (non-archived). */
   products: Array<{ repo: string; number: number; url: string | null; status: string }>;
+  /**
+   * myrmidon(OPE-12397): the candidate query's `origin_kind = 'review_rework'`
+   * child EXISTS, hoisted onto the row so the sweep can skip a task with no
+   * child, no verdict and no live product before it reads comments or GitHub.
+   * `undefined` only from hand-built rows (tests): the guard then assumes
+   * present and proceeds as before.
+   */
+  childPresent?: boolean;
+  /**
+   * myrmidon(OPE-12397): the candidate query's verdict-keyword EXISTS on the
+   * task's comments, hoisted the same way; `undefined` only from hand-built
+   * rows (tests) — the guard then assumes present.
+   */
+  verdictPresent?: boolean;
 }
 
 export interface CreateReworkTaskInput {
@@ -108,6 +122,14 @@ export interface ReviewReworkStore {
     comment: string;
   }): Promise<boolean>;
 }
+
+/**
+ * myrmidon(OPE-12397): the candidate query itself computes the two cheap flags
+ * the sweep's skip-guard reads — the same child-EXISTS and verdict-keyword
+ * EXISTS it already filters on, hoisted onto the row as booleans. No extra
+ * round trips: one query, the flags ride along.
+ */
+const CANDIDATE_FLAG_PREFIX = "flag_";
 
 function taskFacts(row: typeof issues.$inferSelect): ReviewReworkTaskFacts {
   const executionState =
@@ -212,12 +234,15 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
     },
 
     async listCandidateTasks(companyId, limit) {
-      const childExists = sql`exists (
+      // myrmidon(OPE-12397): the two EXISTS the filter ORs together are also
+      // selected as booleans — the sweep's skip-guard reads them off the row
+      // without a second round trip.
+      const childExists = sql<boolean>`exists (
         select 1 from ${issues} child
         where child.parent_id = ${issues.id}
           and child.origin_kind = ${REVIEW_REWORK_ORIGIN_KIND}
       )`;
-      const verdictExists = sql`exists (
+      const verdictExists = sql<boolean>`exists (
         select 1 from ${issueComments}
         where ${issueComments.issueId} = ${issues.id}
           and ${issueComments.deletedAt} is null
@@ -230,7 +255,11 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
           and ${issueWorkProducts.status} <> 'archived'
       )`;
       const rows = await db
-        .select()
+        .select({
+          ...getTableColumns(issues),
+          childPresent: sql<boolean>`coalesce(${childExists}, false)`.as("flag_child_present"),
+          verdictPresent: sql<boolean>`coalesce(${verdictExists}, false)`.as("flag_verdict_present"),
+        })
         .from(issues)
         .where(
           and(
@@ -259,6 +288,8 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
         out.push({
           task: taskFacts(row),
           textParts: [row.title, row.description ?? ""],
+          childPresent: row.childPresent === true,
+          verdictPresent: row.verdictPresent === true,
           products: products
             // Spreading `null` yields `{ status }` with no repo — the guard
             // below must drop entries whose coordinates could not be read,

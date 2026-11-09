@@ -47,6 +47,14 @@ export const RULE_DEFAULTS = Object.freeze({
   npmCacheTtlHours: 48,
   uvCacheTtlHours: 168,
   terminalOutputTtlHours: 24,
+  // myrmidon(OPE-12110): hard ceilings, in bytes per bot, for the two caches that
+  // grew without a bound. `hermes/.npm/_npx`: each `_npx/<hash>` entry is a whole
+  // vendored package tree (an `npx` run of a vendor CLI pulls one in) and nothing
+  // capped their sum: 2.2 GB in 45 minutes on one bot. `hermes/.cache/cargo-target`:
+  // the per-bot `CARGO_TARGET_DIR`; a Rust `target/` reached 2.4 GB in a task tree.
+  // Past the ceiling the entries written longest ago go first (LRU by mtime).
+  npmNpxQuotaBytes: 512 * 1024 * 1024,
+  cargoTargetQuotaBytes: 2 * 1024 * 1024 * 1024,
   pressureScratchTtlHours: 1,
   baseIdleDays: 30,
   baseLimit: 8,
@@ -89,6 +97,8 @@ function resolveLimits(desired, settings) {
     npmCacheTtlMs: (pick(g.npmCacheTtlHours, s.npmCacheTtlHours) ?? RULE_DEFAULTS.npmCacheTtlHours) * HOUR,
     uvCacheTtlMs: (pick(g.uvCacheTtlHours, s.uvCacheTtlHours) ?? RULE_DEFAULTS.uvCacheTtlHours) * HOUR,
     terminalOutputTtlMs: (pick(g.terminalOutputTtlHours, s.terminalOutputTtlHours) ?? RULE_DEFAULTS.terminalOutputTtlHours) * HOUR,
+    npmNpxQuotaBytes: pick(g.npmNpxQuotaBytes, s.npmNpxQuotaBytes) ?? RULE_DEFAULTS.npmNpxQuotaBytes,
+    cargoTargetQuotaBytes: pick(g.cargoTargetQuotaBytes, s.cargoTargetQuotaBytes) ?? RULE_DEFAULTS.cargoTargetQuotaBytes,
     pressureScratchTtlMs:
       (pick(s.pressureScratchTtlHours) ?? RULE_DEFAULTS.pressureScratchTtlHours) * HOUR,
     baseIdleMs: (pick(s.baseIdleDays) ?? RULE_DEFAULTS.baseIdleDays) * DAY,

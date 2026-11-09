@@ -205,8 +205,12 @@ directories are exactly its single `/bot` mount (BOT-DISK-D), so:
   cache only, never the store; the paths and the method are the `pnpmStoreDir` and
   `pnpmImportMethod` settings, see
   [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
-- `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `cargo` writes its target dir into
-  the checked-out workspace;
+- `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `CARGO_TARGET_DIR` directs `cargo`
+  artifacts to `/data/hermes/.cache/cargo-target` (OPE-12105), outside the task working tree.
+  botd keeps that directory under a per-bot byte quota (`cargoTargetQuotaBytes`, 2 GiB) and
+  evicts whole profile dirs, least recently written first (OPE-12110); the same pass caps
+  `hermes/.npm/_npx` at `npmNpxQuotaBytes` (512 MiB), see
+  [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
 - Go's build cache defaults under `$HOME` (`/data/hermes`), the durable volume.
 
 **PATH never holds a writable volume.** The dev stage assembles `PATH` from `/opt` and
