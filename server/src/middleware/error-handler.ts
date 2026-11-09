@@ -224,6 +224,13 @@ export function errorHandler(
             typeof responseDetails?.grantId === "string"
               ? { grantId: responseDetails.grantId }
               : {}),
+            // myrmidon(TASK-CARD-READINESS-3): a structured violations list is
+            // the renderable "what to fix" of a validation denial (the task-card
+            // gate 422). Surface it at the top level, mirroring the OPE-12142
+            // caste-hint fields above; clients and tests read body.violations.
+            ...(Array.isArray(responseDetails?.violations)
+              ? { violations: responseDetails.violations }
+              : {}),
             ...(!redactedSkillPolicyDenial &&
             !workspaceRepairPreconditionFailure &&
             responseDetailsValue
