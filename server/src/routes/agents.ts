@@ -303,7 +303,7 @@ import {
 } from "../services/native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 // myrmidon(1.6.4-BOT-CONTAINER-CARD): a container block without enabled/limits is refused on save
-import { botContainerCardSaveProblem, botKeyForAgent } from "../myrmidon/bot-containers/agent-config.js";
+import { botContainerCardSaveProblem } from "../myrmidon/bot-containers/agent-config.js";
 import {
   botResourceCeilingProblem,
   readBotResourceCeilings,
