@@ -71,7 +71,7 @@ describe("RunQueueWaitLine", () => {
 
   it("fills a missing rank from the part A endpoint", async () => {
     mockGet.mockResolvedValueOnce({
-      position: { runId: "run-1", position: 5, queueLength: 9, waitReason: "priority", queuedAt: null },
+      position: { runId: "run-1", position: 5, queueLength: 9, waitReason: "priority", queuedAt: null, waitDetail: null },
     });
     await render(<RunQueueWaitLine runId="run-1" metadata={{ waitReason: "priority" }} />);
     expect(mockGet).toHaveBeenCalledWith("/myrmidon/run-queue/position?runId=run-1");
@@ -82,6 +82,21 @@ describe("RunQueueWaitLine", () => {
     mockGet.mockResolvedValueOnce(null); // part A endpoint not deployed
     await render(<RunQueueWaitLine runId="run-2" metadata={{ waitReason: "host_memory" }} />);
     expect(line()).toBe("waiting: the host free-memory floor is closed");
+  });
+
+  it("myrmidon(1.6.7 RUN-LIMITS): a concurrency hold names its effective limit and binding ceiling", async () => {
+    await render(
+      <RunQueueWaitLine
+        runId="run-5"
+        metadata={{
+          waitReason: "agent_concurrency",
+          waitDetail: { limit: 2, limitSource: "gateway", running: 2 },
+        }}
+      />,
+    );
+    expect(line()).toBe(
+      "waiting: the agent's own concurrency limit is full — limit 2 (gateway)",
+    );
   });
 
   it("renders nothing when neither source answers (pre-part-A world)", async () => {

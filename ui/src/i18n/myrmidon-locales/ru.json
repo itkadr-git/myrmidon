@@ -1259,6 +1259,13 @@
       "only": "Позиция в очереди {{position}}"
     },
     "waiting": "ожидание: {{reason}}",
+    "waitDetailLimit": "лимит {{limit}}{{source}}",
+    "waitDetailRunning": "выполняется {{running}}",
+    "limitSource": {
+      "board": " (доска)",
+      "gateway": " (шлюз)",
+      "memory": " (память)"
+    },
     "waitReason": {
       "global_cap": "потолок одновременных прогонов заполнен",
       "start_ramp": "разгон стартов ограничивает запуски",

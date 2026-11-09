@@ -30,8 +30,33 @@ export function runQueuePositionFromMetadata(
   const queueLength = typeof custom.queueLength === "number" ? custom.queueLength : null;
   const waitReason = typeof custom.waitReason === "string" ? custom.waitReason : null;
   const queuedAt = typeof custom.queuedAt === "string" ? custom.queuedAt : null;
-  if (position === null && queueLength === null && waitReason === null) return null;
-  return { runId, position, queueLength, waitReason, queuedAt };
+  // myrmidon(1.6.7 RUN-LIMITS): the concurrency hold names its numbers — the
+  // effective limit, which ceiling binds it (board/gateway/memory) and how many
+  // runs are already consuming it. Absent on older servers.
+  const waitDetailRaw = custom.waitDetail;
+  const waitDetail =
+    waitDetailRaw && typeof waitDetailRaw === "object" && !Array.isArray(waitDetailRaw)
+      ? {
+          limit: typeof (waitDetailRaw as Record<string, unknown>).limit === "number"
+            ? ((waitDetailRaw as Record<string, unknown>).limit as number)
+            : null,
+          limitSource: typeof (waitDetailRaw as Record<string, unknown>).limitSource === "string"
+            ? ((waitDetailRaw as Record<string, unknown>).limitSource as string)
+            : null,
+          running: typeof (waitDetailRaw as Record<string, unknown>).running === "number"
+            ? ((waitDetailRaw as Record<string, unknown>).running as number)
+            : null,
+        }
+      : null;
+  if (
+    position === null &&
+    queueLength === null &&
+    waitReason === null &&
+    waitDetail === null
+  ) {
+    return null;
+  }
+  return { runId, position, queueLength, waitReason, queuedAt, waitDetail };
 }
 
 /** Merge metadata over the served position: metadata wins per field. */
@@ -46,6 +71,7 @@ export function mergeRunQueuePosition(
       queueLength: fromMetadata.queueLength ?? served.queueLength,
       waitReason: fromMetadata.waitReason ?? served.waitReason,
       queuedAt: fromMetadata.queuedAt ?? served.queuedAt,
+      waitDetail: fromMetadata.waitDetail ?? served.waitDetail,
     };
   }
   return fromMetadata ?? served ?? null;
