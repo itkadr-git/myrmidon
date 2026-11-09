@@ -29484,6 +29484,8 @@ export function heartbeatService(
         // activity trace naming the initiator and the reason, whichever path
         // decided the cancellation (operator cancel writes its own heartbeat
         // activity in the route and skips this live writer).
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
         if (cancellationCause && persistedRunWrite.run?.status === "cancelled") {
           await logActivity(db, {
             companyId: run.companyId,
@@ -29496,9 +29498,9 @@ export function heartbeatService(
             action: "heartbeat_run.cancelled",
             entityType: "heartbeat_run",
             entityId: run.id,
-            agentId: run.agentId,
-            runId: run.id,
             details: {
+              runId: run.id,
+              agentId: run.agentId,
               reason: cancellationCause.reason,
               errorCode: runErrorCode,
               source: cancellationCause.source,
@@ -30239,6 +30241,8 @@ export function heartbeatService(
         // myrmidon(OPE-12484): the guard/lease abort that lands here ends the
         // run as `cancelled` through the failure branch; record the same
         // activity trace as the live writer path.
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
         if (cancellationFailureCause && failedRunWrite.run?.status === "cancelled") {
           await logActivity(db, {
             companyId: run.companyId,
@@ -30251,9 +30255,9 @@ export function heartbeatService(
             action: "heartbeat_run.cancelled",
             entityType: "heartbeat_run",
             entityId: run.id,
-            agentId: run.agentId,
-            runId: run.id,
             details: {
+              runId: run.id,
+              agentId: run.agentId,
               reason: cancellationFailureCause.reason,
               errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
               source: cancellationFailureCause.source,
@@ -35376,6 +35380,8 @@ export function heartbeatService(
         });
         // myrmidon(OPE-12484): every transition into `cancelled` must leave an
         // activity trace naming the initiator and the reason.
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
         await logActivity(db, {
           companyId: cancelled.companyId,
           actorType:
@@ -35387,9 +35393,9 @@ export function heartbeatService(
           action: "heartbeat_run.cancelled",
           entityType: "heartbeat_run",
           entityId: cancelled.id,
-          agentId: cancelled.agentId,
-          runId: cancelled.id,
           details: {
+            runId: cancelled.id,
+            agentId: cancelled.agentId,
             reason,
             errorCode,
             source: cancellationSource,

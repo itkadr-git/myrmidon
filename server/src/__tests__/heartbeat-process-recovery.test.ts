@@ -8359,7 +8359,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "idle",
       runStatus: "queued",
     });
-    mockAdapterExecute.mockImplementationOnce(async () => {
+    mockAdapterExecute.mockImplementationOnce(async (input: any) => {
+      await input?.onCancellationReady?.();
       const leaseError = new Error("Legacy controller lease lost");
       leaseError.name = "ControllerLeaseLost";
       const control = adapterExecutionControls.get(runId);
@@ -8377,6 +8378,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     await heartbeat.drainActiveRunExecutions().catch(() => undefined);
+    await waitForRunToSettle(heartbeat, runId, 5_000);
 
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("cancelled");
