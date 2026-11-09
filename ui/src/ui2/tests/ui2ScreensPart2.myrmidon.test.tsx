@@ -220,9 +220,11 @@ describe("myrmidon(OPE-3918) UI-2.0 screens part 2 — screen-map §2.19 coverag
     expect(routeKeys.has("more")).toBe(true);
     expect(phoneTabs.has("/more")).toBe(true);
     expect(railPaths.has("/company/settings")).toBe(true);
-    // Sizes: 17 families on the surfaces above, plus the ru twins, the Nav
-    // piece and PhoneMore — the 23 boards of the mockup.
-    expect(routeKeys.size).toBe(16);
+    // Sizes: 15 route entries (the in-app screen families outside the
+    // settings hub), 11 settings sections, 5 rail groups, 6 phone tabs —
+    // together they cover the 17 mockup families; + ru twins, the Nav
+    // piece and PhoneMore = the 23 boards of the mockup.
+    expect(routeKeys.size).toBe(15);
     expect(UI2_SETTINGS_SECTIONS.length).toBe(11);
     expect(UI2_NAV_GROUPS.length).toBe(5);
     expect(UI2_PHONE_TABS.length).toBe(6);
