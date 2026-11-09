@@ -1,6 +1,6 @@
 # Миграция с Paperclip на Myrmidon
 
-> English version: [migration-from-paperclip.md](migration-from-paperclip.md)
+> English version: [Migration-from-Paperclip](Migration-from-Paperclip)
 
 Команда `myrmidon:migrate` копирует один экземпляр Paperclip (базу, файлы и секреты) в чистую
 установку Myrmidon. Она никогда не меняет источник: пишет только в пустую цель, которую создаёт
