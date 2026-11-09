@@ -91,6 +91,7 @@ export { myrmidonLitellmWorkersRoutes } from "./litellm-workers/routes.js"; // m
 export { myrmidonLitellmChannelsRoutes } from "./litellm-channels/index.js"; // myrmidon(1.6.7 OPE-9854)
 export { agentInstructionsRevisionsRoutes } from "./agent-instructions-revisions/index.js"; // myrmidon(H2)
 export { myrmidonFleetConsoleRoutes } from "./fleet-console/index.js"; // myrmidon(SC1)
+export { myrmidonOnboardRoutes } from "./server-onboard/index.js"; // myrmidon(SC1)
 export { myrmidonFleetSiteRoutes } from "./bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
 export { myrmidonFleetSiteManageRoutes } from "./bot-containers/fleet-site-manage-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T8)
 export { myrmidonFleetMoveRoutes } from "./bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
