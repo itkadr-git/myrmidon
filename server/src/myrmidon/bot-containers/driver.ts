@@ -218,6 +218,11 @@ export interface BotContainerDriver {
   restart(botKey: string): Promise<void>;
   stop(botKey: string): Promise<void>;
   /**
+   * myrmidon(OPE-12477): cleans up and removes the bot container and its host data directory
+   * when an agent is terminated or deleted. Must be idempotent (succeeds if already missing).
+   */
+  cleanup(botKey: string): Promise<void>;
+  /**
    * myrmidon(IDLE-STOP): stops an idle bot's container and records that the stop was
    * IDLE-STOP's (`BotContainerStatus.idleStopped`), so the wake path and the reconciler
    * can tell it from an operator's stop. Optional: a driver that cannot (fleetd) leaves

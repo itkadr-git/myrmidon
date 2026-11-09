@@ -182,6 +182,10 @@ export function fleetRoutingDriver(
       const driver = await driverFor(deps, agentOf(botKey));
       await driver.stop(botKey);
     },
+    async cleanup(botKey: string): Promise<void> {
+      const driver = await driverFor(deps, agentOf(botKey));
+      await driver.cleanup(botKey);
+    },
     async stopIdle(botKey: string): Promise<void> {
       const driver = await driverFor(deps, agentOf(botKey));
       if (!driver.stopIdle) throw new Error(IDLE_STOP_UNSUPPORTED_MESSAGE);
