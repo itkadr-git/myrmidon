@@ -1,6 +1,6 @@
 // server/src/auth/users-admin-a-plugin.ts
 //
-// myrmidon(1.7 USERS-ADMIN-UI A): the Better Auth half of admin-managed users.
+// myrmidon(1.7 USERS-ADMIN-UI A / OPE-12119): the Better Auth half of admin-managed users.
 //
 // Three behaviors, all live-read per request (no restart):
 //

@@ -9,6 +9,10 @@ export function gitHubApiBase(hostname: string) {
   return isGitHubDotCom(hostname) ? "https://api.github.com" : `https://${hostname}/api/v3`;
 }
 
+export function isPinnedCommitRef(value: string | null | undefined): boolean {
+  return Boolean(value && /^[0-9a-f]{40}$/i.test(value.trim()));
+}
+
 export function resolveRawGitHubUrl(hostname: string, owner: string, repo: string, ref: string, filePath: string) {
   const p = filePath.replace(/^\/+/, "");
   return isGitHubDotCom(hostname)

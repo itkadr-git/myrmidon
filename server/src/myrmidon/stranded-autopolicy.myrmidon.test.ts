@@ -20,6 +20,7 @@ import {
   readStrandedAutoPolicyEnabled,
   readStrandedAutoRetriesPerDay,
   resolveActiveManagerAgentId,
+  resolveStrandedDispositionOwnerAgentId,
   isPendingCiForOpenPr,
 } from "./stranded-autopolicy.js";
 
@@ -669,6 +670,54 @@ describe("buildStrandedAutoPolicyRetryIdempotencyKey", () => {
   });
 });
 
+describe("OPE-12265: stranded disposition owner", () => {
+  const agent = (id: string, reportsTo: string | null, role = "engineer") => ({
+    id,
+    companyId: "company-a",
+    role,
+    reportsTo,
+    status: "idle",
+  });
+
+  it("skips a reviewer and selects the nearest lead in the reportsTo chain", () => {
+    expect(
+      resolveStrandedDispositionOwnerAgentId({
+        assigneeAgentId: "engineer",
+        companyId: "company-a",
+        agents: [
+          agent("engineer", "reviewer"),
+          agent("reviewer", "lead", "reviewer"),
+          agent("lead", "adm", "lead"),
+          agent("adm", null, "operator"),
+        ],
+        fallbackAgentId: "adm",
+      }),
+    ).toBe("lead");
+  });
+
+  it("selects a direct lead", () => {
+    expect(
+      resolveStrandedDispositionOwnerAgentId({
+        assigneeAgentId: "engineer",
+        companyId: "company-a",
+        agents: [agent("engineer", "lead"), agent("lead", "adm", "manager")],
+        fallbackAgentId: "adm",
+      }),
+    ).toBe("lead");
+  });
+
+  it("falls back to the operator when no lead or manager exists", () => {
+    expect(
+      resolveStrandedDispositionOwnerAgentId({
+        assigneeAgentId: "engineer",
+        companyId: "company-a",
+        agents: [agent("engineer", "reviewer"), agent("reviewer", "adm", "reviewer")],
+        fallbackAgentId: "adm",
+      }),
+    ).toBe("adm");
+  });
+});
+
 describe("OPE-9072: escalation chain target and workflow-safe blocked disposition", () => {
   const exhausted = { attemptsInWindow: 2, maxAttemptsPerDay: 2 };
 
@@ -682,8 +731,13 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
 
   it("with a workflow the issue is blocked with an agent owner instead of a vendor board card", () => {
     expect(
-      decideStrandedAutoPolicy({ ...exhausted, managerAgentId: "mgr-1", hasExecutionWorkflow: true }),
-    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "mgr-1", ...exhausted });
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: "reviewer-1",
+        dispositionOwnerAgentId: "lead-1",
+        hasExecutionWorkflow: true,
+      }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "lead-1", ...exhausted });
     expect(
       decideStrandedAutoPolicy({ ...exhausted, managerAgentId: null, escalationAgentId: "adm-1", hasExecutionWorkflow: true }),
     ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });

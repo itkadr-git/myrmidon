@@ -51,6 +51,7 @@ function paperclipBrokerCandidateUrls(env) {
   };
   push(env.MYRMIDON_BOT_BOARD_URL);
   push(env.PAPERCLIP_GITHUB_BROKER_URL);
+  push(env.MYRMIDON_API_URL);
   push(env.PAPERCLIP_API_URL);
   push(env.PAPERCLIP_RUNTIME_API_URL);
   let extra = [];
@@ -80,12 +81,12 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
         response = await fetch(url, {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(Math.min(requestTimeoutMs, remaining)),
           headers: {
-            authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
+            authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.MYRMIDON_API_KEY || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
             'x-myrmidon-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
             'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
-            ...(env.PAPERCLIP_RUN_ID ? {
-              'x-paperclip-run-id': env.PAPERCLIP_RUN_ID,
-              'x-myrmidon-run-id': env.PAPERCLIP_RUN_ID,
+            ...((env.MYRMIDON_RUN_ID || env.PAPERCLIP_RUN_ID) ? {
+              'x-paperclip-run-id': env.MYRMIDON_RUN_ID || env.PAPERCLIP_RUN_ID,
+              'x-myrmidon-run-id': env.MYRMIDON_RUN_ID || env.PAPERCLIP_RUN_ID,
             } : {}),
             'content-type': 'application/json',
           },

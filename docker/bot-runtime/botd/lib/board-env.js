@@ -25,5 +25,30 @@ export function boardEnv(env, name) {
 
 /** Every non-empty value the board key has in `env`, under either name (for redaction). */
 export function boardKeyValues(env) {
+  if (!env || typeof env !== "object") return [];
   return ["MYRMIDON_API_KEY", "PAPERCLIP_API_KEY"].map((name) => env[name]).filter((v) => typeof v === "string" && v !== "");
+}
+
+/**
+ * Replaces every occurrence of any configured board key with "[redacted]".
+ * Accepts either (text, env) or (env, text).
+ *
+ * @param {string | unknown} textOrEnv
+ * @param {Record<string, string | undefined> | unknown} [envOrText]
+ * @returns {string}
+ */
+export function redact(textOrEnv, envOrText) {
+  let text;
+  let env;
+  if (typeof textOrEnv === "object" && textOrEnv !== null) {
+    env = textOrEnv;
+    text = envOrText;
+  } else {
+    text = textOrEnv;
+    env = envOrText;
+  }
+  let out = String(text ?? "");
+  if (!env || typeof env !== "object") return out;
+  for (const key of boardKeyValues(env)) out = out.split(key).join("[redacted]");
+  return out;
 }

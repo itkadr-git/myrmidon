@@ -150,6 +150,20 @@ describe("fleet site bots, patch, drain and resume", () => {
     await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({ capacity: { maxCpus: 1, maxMemoryMb: 1, maxBots: 61 } }).expect(400);
   });
 
+  it("patches the network profile (privateNetwork, tunnel) on top of the stored profile", async () => {
+    const { app, deps } = harness();
+    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({ privateNetwork: true }).expect(200);
+    expect(deps.updateSite).toHaveBeenCalledWith(COMPANY_A, "myr-vm1", {
+      profile: { gatewayPortStart: 18700, gatewayPortEnd: 18759, privateNetwork: true },
+    });
+    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({ tunnel: false }).expect(200);
+    expect(deps.updateSite).toHaveBeenLastCalledWith(COMPANY_A, "myr-vm1", {
+      profile: { gatewayPortStart: 18700, gatewayPortEnd: 18759, tunnel: false },
+    });
+    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({ privateNetwork: "yes" }).expect(400);
+    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).set("x-test-actor", "member").send({ privateNetwork: true }).expect(403);
+  });
+
   it("drains an active site as the operator's drain", async () => {
     const { app, deps } = harness();
     const res = await request(app).post(`/myrmidon/fleet/sites/myr-vm1/drain${q}`).expect(200);

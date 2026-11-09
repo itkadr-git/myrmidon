@@ -307,6 +307,12 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /HOME=\/data\/hermes/);
   });
 
+  it("keeps Cargo build output in the durable per-agent cache, not a workspace", () => {
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+    assert.match(runtimeStage, /^\s*CARGO_TARGET_DIR=\/data\/hermes\/\.cache\/cargo-target(?:\s|$)/m);
+    assert.doesNotMatch(runtimeStage, /^\s*CARGO_TARGET_DIR=\/(?:workspace|scratch)(?:\/|\s|$)/m);
+  });
+
   it("strips the clone's .git history before the runtime stage copies /opt/hermes-src", () => {
     const builderStageEnd = dockerfile.indexOf("FROM python:3.13-slim AS runtime");
     assert.ok(builderStageEnd > 0, "expected a runtime stage after the builder stage");

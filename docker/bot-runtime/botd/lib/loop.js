@@ -24,9 +24,11 @@
 //        { deferred } means the path was left exactly where it is (a foreign owner);
 //        it is reported as skipped with a `deferred: <class>` detail, not as an error
 //   retention (optional)      -> ({startedAt}) after the actions of a pass: archive age/quota retention
-//   cooldown (optional)       -> { recent(path, op): boolean, record(path, op, result) }
+//   cooldown (optional)       -> { recent(path, op): boolean, deferredRecent?(path, op): boolean,
+//                                  record(path, op, result) }
 //        the rhythm of the rules: an op already attempted on a path inside the
-//        window is skipped silently — no log line, no report row
+//        window is skipped silently — no log line, no report row; a deferred
+//        foreign-owner result has its own, day-long window (cache.js DEFERRED_TTL_MS)
 //   report.build(parts) / report.send(report) -> { ok, nextReportSec }
 //   writeDiskState(state)     -> writes /data/hermes/.myrmidon/disk-state.json
 //
@@ -146,10 +148,12 @@ export function createLoop(deps) {
       results.push({ at: at(), action: "skip", path: action.path, result: "skipped", detail: detail("no executor for this op") });
       return;
     }
-    // A foreign-owner failure must be retried after repair; do not suppress the
-    // next attempt behind the ordinary successful-action cooldown.
-    const foreignUidRecent = cooldown && cooldown.recent(action.path, action.op);
-    if (foreignUidRecent && !cooldown.deferredRecent?.(action.path, action.op)) {
+    // The rhythm gate: any recorded attempt on (path, op) skips silently —
+    // ok/error inside the ordinary TTL, a deferred foreign-owner failure inside
+    // its day-long window (cooldown.deferredRecent). A repaired workspace is
+    // picked up on the next attempt after the window; a permanently foreign
+    // one costs one attempt a day, not one per pass.
+    if (cooldown && (cooldown.recent(action.path, action.op) || cooldown.deferredRecent?.(action.path, action.op))) {
       tally.silent += 1;
       return;
     }

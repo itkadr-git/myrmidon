@@ -120,6 +120,17 @@ const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   currentParticipant: null,
 };
 
+// myrmidon(UNBLOCK-OWNER-WAKE): agent ids recorded as the owner of an issue's block.
+export function blockOwnerAgentIds(blockerMetadata: unknown, unblockDescriptor: unknown): string[] {
+  const ids: string[] = [];
+  for (const holder of [blockerMetadata, unblockDescriptor]) {
+    const owner = parseObject(holder).owner;
+    const agentId = readNonEmptyString(parseObject(owner).agentId);
+    if (agentId && !ids.includes(agentId)) ids.push(agentId);
+  }
+  return ids;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -510,6 +521,8 @@ export function createPostgresRunDispatchAdapter(
         checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
         hiddenAt: issues.hiddenAt,
+        blockerMetadata: issues.blockerMetadata,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -610,6 +623,18 @@ export function createPostgresRunDispatchAdapter(
         })),
     );
 
+    // myrmidon(UNBLOCK-OWNER-WAKE): `issue_unblock_requested` wakes the owner of the
+    // block (stranded disposition, routable blocked) to resolve it; that owner is
+    // usually not the assignee. Bound to the automation wake reason, the issue still
+    // being blocked and the run's agent being the recorded block owner.
+    const isUnblockOwnerWake = Boolean(
+      issue &&
+        issue.status === "blocked" &&
+        input.invocationSource === "automation" &&
+        wakeReason === "issue_unblock_requested" &&
+        blockOwnerAgentIds(issue.blockerMetadata, issue.unblockDescriptor).includes(input.agentId),
+    );
+
     // myrmidon(OPE-11948): an automatic continuation wake — the system's own
     // `issue_continuation_needed`, not a person's comment, a resume request or
     // an interaction answer (a card a person resolved keeps its own rules) — is
@@ -655,6 +680,7 @@ export function createPostgresRunDispatchAdapter(
       isAuthorizedSourceScopedRecovery,
       isProductiveContinuationRecovery,
       isRunGuardStopNeedsInputWake,
+      isUnblockOwnerWake,
       isAutomaticContinuationWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
@@ -933,6 +959,8 @@ export function createPostgresRunDispatchAdapter(
             timeoutConfigured: false,
             timeoutSource: "stale_queued_run_gate",
             timeoutFired: false,
+            failedBeforeModel: true,
+            failed_before_model: true,
           },
           updatedAt: now,
         })
@@ -983,12 +1011,33 @@ export function createPostgresRunDispatchAdapter(
           );
           const replayBlocked =
             parseObject(evidence.automaticRecovery).replay === "blocked";
+          // The parked intent must carry the issue scope: every serving path
+          // (release drain, stranded-wake reconcile, terminal cleanup) reads
+          // `payload ->> 'issueId'`. A resurrection without it could never be
+          // served or cleaned up, so it is not created at all.
+          const wakeIssueId =
+            readNonEmptyString((payload as Record<string, unknown> | null)?.issueId) ?? issueId;
 
           if (
             originalWakeup &&
             (originalWakeup.resurrectionCount ?? 0) < 1 &&
-            !replayBlocked
+            !replayBlocked &&
+            wakeIssueId
           ) {
+            // myrmidon(WAKE-STALL-ROOT-A): park as ordinary deferred queue
+            // input — `deferred_issue_execution` scoped by
+            // `payload ->> 'issueId'`, WITHOUT an `executionWait` marker. A
+            // bare `pending` row is read by no scheduler, so the wake
+            // stranded and the agent idled; an `executionWait` row is
+            // intentionally exempt from the stranded-wake reconcile and
+            // would strand again once the hold clears. Unmarked, the row is
+            // served by the existing bounded paths: the release drain
+            // promotes it through full admission once the lock is free, the
+            // stranded-wake reconcile cancels it on a terminal task or
+            // expires it after 30 minutes and re-wakes the agent. A hold
+            // that re-appears at promotion time skips this row terminally
+            // (its resurrection_count is already 1), so the loop stays
+            // bounded.
             await tx
               .insert(agentWakeupRequests)
               .values({
@@ -998,8 +1047,11 @@ export function createPostgresRunDispatchAdapter(
                 source: originalWakeup.source,
                 triggerDetail: originalWakeup.triggerDetail,
                 reason: "resurrection_execution_reconciliation_required",
-                payload: originalWakeup.payload,
-                status: "pending",
+                payload: {
+                  ...(payload as Record<string, unknown> | null),
+                  issueId: wakeIssueId,
+                },
+                status: "deferred_issue_execution",
                 requestedByActorType: originalWakeup.requestedByActorType,
                 requestedByActorId: originalWakeup.requestedByActorId,
                 idempotencyKey: `${originalWakeup.idempotencyKey ?? originalWakeup.id}:resurrection:${randomUUID()}`,

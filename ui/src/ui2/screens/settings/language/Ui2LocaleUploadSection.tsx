@@ -5,7 +5,7 @@
 // (matched, missing, extra keys, coverage %) and live client-side catalog application
 // without restarting the application.
 
-import { useState, useId, useMemo, type ChangeEvent } from "react";
+import { useState, useId, useMemo, useEffect, useCallback, type ChangeEvent } from "react";
 import {
   parseCatalogJson,
   validateCatalogStructure,
@@ -18,6 +18,7 @@ import {
   type CatalogKeyDiffItem,
 } from "../../../i18n/catalog-validator";
 import { localeUploadApi } from "../../../i18n/api";
+import type { StoredCustomLocaleSummary } from "@myrmidon/shared";
 
 type DiffFilterTab = "all" | "matched" | "missing" | "extra";
 
@@ -125,6 +126,47 @@ export function Ui2LocaleUploadSection() {
     }
   };
 
+  // myrmidon(1.7 LOCALE-UPLOAD UI, OPE-12118): the stored versions list and
+  // the active custom locale. The slice contract (OPE-12146-class) is mocked
+  // in the component tests until the server slice lands.
+  const [versions, setVersions] = useState<StoredCustomLocaleSummary[]>([]);
+  const [activeLocale, setActiveLocale] = useState<string | null>(null);
+  const [activatingLocale, setActivatingLocale] = useState<string | null>(null);
+  const [activationError, setActivationError] = useState<string | null>(null);
+
+  const refreshVersions = useCallback(async () => {
+    try {
+      const wire = await localeUploadApi.listVersions();
+      setVersions(wire.locales ?? []);
+      setActiveLocale(wire.activeLocale ?? null);
+      setActivationError(null);
+    } catch {
+      // Slice contract not available yet: keep the panel usable upload-first.
+      setVersions([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshVersions();
+  }, [refreshVersions]);
+
+  const handleActivate = useCallback(
+    async (target: string) => {
+      setActivatingLocale(target);
+      setActivationError(null);
+      try {
+        const wire = await localeUploadApi.activate(target);
+        applyCustomCatalog(target, wire.catalog ?? {}, true);
+        setActiveLocale(target);
+      } catch {
+        setActivationError(target);
+      } finally {
+        setActivatingLocale(null);
+      }
+    },
+    [applyCustomCatalog],
+  );
+
   const handleApply = async () => {
     const effectiveLocale = targetLocale.trim().toLowerCase();
     if (!effectiveLocale || !candidateCatalog || !validationResult?.valid) return;
@@ -142,6 +184,9 @@ export function Ui2LocaleUploadSection() {
 
       applyCustomCatalog(effectiveLocale, candidateCatalog, true);
       setAppliedLocale(effectiveLocale);
+      // myrmidon(1.7 LOCALE-UPLOAD UI, OPE-12118): the versions list now
+      // includes the freshly uploaded version; ignore mock-server failures.
+      void refreshVersions();
     } finally {
       setApplying(false);
     }
@@ -165,6 +210,80 @@ export function Ui2LocaleUploadSection() {
       <p className="text-xs text-muted-foreground">
         {t("ui2.settings.language.upload.subtitle")}
       </p>
+
+      {versions.length > 0 && (
+        <div
+          className="rounded-md border border-border bg-card p-3"
+          data-testid="locale-versions-block"
+        >
+          <h4 className="mb-2 text-xs font-semibold text-foreground">
+            {t("ui2.settings.language.upload.versionsTitle")}
+          </h4>
+          <table className="w-full text-left text-xs" data-testid="locale-versions-table">
+            <thead className="bg-muted text-muted-foreground">
+              <tr>
+                <th className="p-2">{t("ui2.settings.language.upload.versionsLocaleHeader")}</th>
+                <th className="p-2">{t("ui2.settings.language.upload.versionsVersionHeader")}</th>
+                <th className="p-2">{t("ui2.settings.language.upload.versionsKeysHeader")}</th>
+                <th className="p-2">{t("ui2.settings.language.upload.versionsActionHeader")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {versions.map((item) => {
+                const isActive = activeLocale === item.locale;
+                return (
+                  <tr
+                    key={`${item.locale}@${item.version}`}
+                    data-testid="locale-version-row"
+                    data-locale={item.locale}
+                    className={isActive ? "bg-primary/5" : "hover:bg-muted/40"}
+                  >
+                    <td className="p-2 font-mono">
+                      {item.locale}
+                      {isActive && (
+                        <span
+                          className="ml-2 rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground"
+                          data-testid="locale-active-badge"
+                        >
+                          {t("ui2.settings.language.upload.activeBadge")}
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-2" data-testid="locale-version-number">
+                      v{item.version}
+                    </td>
+                    <td className="p-2">{item.keyCount}</td>
+                    <td className="p-2">
+                      <button
+                        type="button"
+                        data-testid={`activate-locale-button-${item.locale}`}
+                        disabled={isActive || activatingLocale === item.locale}
+                        onClick={() => void handleActivate(item.locale)}
+                        className="rounded bg-primary px-2 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                      >
+                        {isActive
+                          ? t("ui2.settings.language.upload.activeBadge")
+                          : activatingLocale === item.locale
+                            ? t("ui2.settings.language.upload.activating")
+                            : t("ui2.settings.language.upload.makeActive")}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {activationError && (
+            <div
+              className="mt-2 rounded bg-red-50 p-2 text-xs text-red-800"
+              data-testid="locale-activation-error"
+              role="alert"
+            >
+              {t("ui2.settings.language.upload.activationError")}: <code>{activationError}</code>
+            </div>
+          )}
+        </div>
+      )}
 
       {appliedLocale && (
         <div

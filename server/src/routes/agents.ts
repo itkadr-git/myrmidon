@@ -2714,6 +2714,20 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  // myrmidon(1.6.7 OMP-HARDEN, OPE-12266): new omp_local agents get the workspace
+  // filesystem sandbox by default. Create/hire only — never on the update path,
+  // so legacy omp agents (config without filesystemScope, unsandboxed) keep their
+  // behavior even when another config key is patched. Applied after the security
+  // gate (both create paths gate the raw pre-default config), so the form default
+  // is not treated as a sandbox change; an explicit filesystemScope always wins.
+  function applyOmpLocalCreateDefaults(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (adapterType !== "omp_local" || adapterConfig.filesystemScope !== undefined) return adapterConfig;
+    return { ...adapterConfig, filesystemScope: "workspace" };
+  }
+
   // myrmidon(1.6.6 OPE-11239): sandbox and permission keys of the local CLI adapters are
   // security settings; changing one needs an instance admin (rules: myrmidon/agent-local-adapter-config.ts).
   function assertLocalAdapterSecurityChangeAllowed(
@@ -2722,9 +2736,16 @@ export function agentRoutes(
     previousAdapterConfig: Record<string, unknown> | null | undefined,
     nextAdapterConfig: Record<string, unknown> | null | undefined,
   ) {
+    // myrmidon(1.6.7 OPE-12266): omp_local has no permission defaults of its own.
+    // On create (previous === null) the declared default filesystemScope=workspace
+    // is the form's baseline, so submitting it is not a change; on edits there are
+    // no defaults and every explicit sandbox key is compared directly, so removing
+    // an existing workspace scope still needs an instance admin.
     const adapterDefaults: Record<string, unknown> = adapterType === "claude_local"
       ? { dangerouslySkipPermissions: true }
-      : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
+      : adapterType === "omp_local"
+        ? (previousAdapterConfig == null ? { filesystemScope: "workspace" } : {})
+        : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
     if (localAdapterSecurityConfigChanged(adapterType, previousAdapterConfig, nextAdapterConfig, adapterDefaults)) {
       assertInstanceAdmin(req);
     }
@@ -4687,9 +4708,12 @@ function getActorIdentityPart(req: Request): string {
       req,
       companyId,
       hireInput.adapterType,
-      applyCreateDefaultsByAdapterType(
+      applyOmpLocalCreateDefaults(
         hireInput.adapterType,
-        rawHireAdapterConfig,
+        applyCreateDefaultsByAdapterType(
+          hireInput.adapterType,
+          rawHireAdapterConfig,
+        ),
       ),
       hireInput.runtimeConfig,
     );
@@ -4990,9 +5014,12 @@ function getActorIdentityPart(req: Request): string {
       companyId,
       agentId,
       createInput.adapterType,
-      applyCreateDefaultsByAdapterType(
+      applyOmpLocalCreateDefaults(
         createInput.adapterType,
-        rawCreateAdapterConfig,
+        applyCreateDefaultsByAdapterType(
+          createInput.adapterType,
+          rawCreateAdapterConfig,
+        ),
       ),
     );
     assertLocalAdapterSecurityChangeAllowed(req, createInput.adapterType, null, rawCreateAdapterConfig);
@@ -7280,8 +7307,18 @@ function getActorIdentityPart(req: Request): string {
     assertCompanyAccess(req, companyId);
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
-    const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const rawLimit = req.query.limit;
+    if (rawLimit !== undefined && (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit) || !Number.isSafeInteger(Number(rawLimit)) || Number(rawLimit) < 1)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
+      return;
+    }
+    const limit = Math.min(1000, rawLimit === undefined ? 200 : Number(rawLimit));
+    const rawBefore = req.query.before;
+    if (rawBefore !== undefined && (typeof rawBefore !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(rawBefore) || !Number.isFinite(Date.parse(rawBefore)) || new Date(rawBefore).toISOString() !== new Date(Date.parse(rawBefore)).toISOString())) {
+      res.status(400).json({ error: "before must be an ISO timestamp" });
+      return;
+    }
+    const before = rawBefore === undefined ? undefined : new Date(rawBefore);
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
     const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
@@ -7295,11 +7332,21 @@ function getActorIdentityPart(req: Request): string {
     ]);
     // Compute the validator before fetching and redacting the response body.
     const vk = (wakeReason !== undefined || hasResult)
-      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult)
-      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult, before)
+      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, undefined, false, before);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult, before });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
+    // Cursor pagination: when the page is exactly `limit` rows, expose the
+    // createdAt of the last row so clients can fetch the next page with
+    // ?before=<cursor>. Array shape is unchanged for existing callers.
+    if (redactedRuns.length >= limit) {
+      const last = redactedRuns[redactedRuns.length - 1] as { createdAt?: string | Date | null };
+      const createdAt = last?.createdAt;
+      if (createdAt) {
+        res.setHeader("X-Next-Cursor", new Date(createdAt).toISOString());
+      }
+    }
     res.json(redactedRuns);
   });
 

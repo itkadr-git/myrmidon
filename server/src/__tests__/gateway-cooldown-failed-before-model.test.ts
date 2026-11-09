@@ -575,6 +575,67 @@ describeEmbedded("OPE-9476: production heartbeat daily cap exclusion for failedB
     });
   });
 
+  it("excludes queue-timeout and maintenance cancellations from observed daily runs", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(1);
+    const now = new Date();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(), companyId, agentId, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "cancelled", createdAt: now,
+        startedAt: now, finishedAt: now, contextSnapshot: {},
+        errorCode: "queued_run_stale_timeout",
+        resultJson: { failedBeforeModel: true },
+      },
+      {
+        id: randomUUID(), companyId, agentId, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "cancelled", createdAt: now,
+        startedAt: now, finishedAt: now, contextSnapshot: {},
+        errorCode: "myrmidon_maintenance_interrupted",
+        resultJson: { failed_before_model: true },
+      },
+    ]);
+
+    // No counted runs: admission must remain open at a limit of one.
+    await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual" });
+    const [firstRequest] = await db.select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(firstRequest).toBeTruthy();
+    expect(firstRequest?.reason).not.toBe("heartbeat.daily_run_limit");
+  });
+
+  it("reports observed=1 with a real run plus both pre-model cancellation reasons", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(1);
+    const now = new Date();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(), companyId, agentId, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "succeeded", createdAt: now,
+        startedAt: now, finishedAt: now, contextSnapshot: {}, resultJson: {},
+      },
+      {
+        id: randomUUID(), companyId, agentId, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "cancelled", createdAt: now,
+        startedAt: now, finishedAt: now, contextSnapshot: {},
+        errorCode: "queued_run_stale_timeout", resultJson: { failedBeforeModel: true },
+      },
+      {
+        id: randomUUID(), companyId, agentId, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "cancelled", createdAt: now,
+        startedAt: now, finishedAt: now, contextSnapshot: {},
+        errorCode: "myrmidon_maintenance_interrupted", resultJson: { failed_before_model: true },
+      },
+    ]);
+
+    const blocked = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual" });
+    expect(blocked).toMatchObject({ kind: "skipped" });
+    const [request] = await db.select({ payload: agentWakeupRequests.payload, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(request).toMatchObject({
+      reason: "heartbeat.daily_run_limit",
+      payload: { heartbeatSkip: { observed: 1, limit: 1 } },
+    });
+  });
+
   it("aggregates failedBeforeModel runs from real postgres database", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent(10);
 

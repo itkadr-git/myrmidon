@@ -38,7 +38,7 @@ describe("Paperclip Migration Verification Suite (Multi-Release)", () => {
   });
 
   describe("Registry releases fixture verification", () => {
-    it("covers all 5 supported releases in the registry", () => {
+    it("covers all supported releases in the registry", () => {
       const tags = SUPPORTED_RELEASES.map((r) => r.tag);
       assert.deepEqual(tags, [
         "v2026.916.0",
@@ -46,6 +46,7 @@ describe("Paperclip Migration Verification Suite (Multi-Release)", () => {
         "v2026.1001.0",
         "v2026.1005.0",
         "v2026.1012.0",
+        "v2026.1023.0",
       ]);
     });
 
@@ -81,21 +82,21 @@ describe("Paperclip Migration Verification Suite (Multi-Release)", () => {
           assert.ok(seedText.includes(`INSERT INTO "issue_attachments"`));
         });
 
-        if (rel.tag === "v2026.1001.0" || rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0") {
+        if (rel.tag === "v2026.1001.0" || rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0" || rel.tag === "v2026.1023.0") {
           it(`seeds rows into vendor gap tables for ${rel.tag} (e.g. chat_github_reviews)`, () => {
             const seedText = fs.readFileSync(seedPath, "utf8");
             assert.ok(seedText.includes(`INSERT INTO "chat_github_reviews"`));
           });
         }
 
-        if (rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0") {
+        if (rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0" || rel.tag === "v2026.1023.0") {
           it(`seeds rows into browser_use_runs for ${rel.tag}`, () => {
             const seedText = fs.readFileSync(seedPath, "utf8");
             assert.ok(seedText.includes(`INSERT INTO "browser_use_runs"`));
           });
         }
 
-        if (rel.tag === "v2026.1012.0") {
+        if (rel.tag === "v2026.1012.0" || rel.tag === "v2026.1023.0") {
           it(`seeds rows into mcp_oauth_tokens for ${rel.tag}`, () => {
             const seedText = fs.readFileSync(seedPath, "utf8");
             assert.ok(seedText.includes(`INSERT INTO "mcp_oauth_tokens"`));
@@ -140,8 +141,8 @@ describe("Paperclip Migration Verification Suite (Multi-Release)", () => {
       assert.ok(allTables.includes("mcp_oauth_tokens"));
     });
 
-    it("verifies 1001.0 and 1005.0 gap tables against their respective DDLs", () => {
-      for (const tag of ["v2026.1001.0", "v2026.1005.0"]) {
+    it("verifies 1001.0, 1005.0 and 1023.0 gap tables against their respective DDLs", () => {
+      for (const tag of ["v2026.1001.0", "v2026.1005.0", "v2026.1023.0"]) {
         const schemaPath = path.join(FIXTURES_DIR, `schema-paperclip-${tag}.sql`);
         const schemaText = fs.readFileSync(schemaPath, "utf8");
         const rel = SUPPORTED_RELEASES.find((r) => r.tag === tag);

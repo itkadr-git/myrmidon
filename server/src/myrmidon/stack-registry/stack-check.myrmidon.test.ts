@@ -2,6 +2,7 @@
 // sources, the patch-closed rule over the compare API, the attention cards and
 // the route permissions. No live network: the JSON port is injected.
 
+import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -27,24 +28,35 @@ import {
   type StackHttpResponse,
 } from "./releases.js";
 import { readStackCheckIntervalSec, readStackGithubToken } from "./settings.js";
+import {
+  DEFAULT_OSV_API_BASE,
+  OSV_QUERY_BATCH_PATH,
+  buildOsvBatchPayload,
+  extractVulnIdAndCve,
+  extractVulnSeverity,
+  parseOsvBatchResponse,
+  parseOsvVulnerabilities,
+  queryOsvAdvisories,
+} from "./advisory.js";
 import { seedStackDocument, type StackDocument, type StackLocalState } from "./domain.js";
 import { readStackDocument, writeStackDocument } from "./store.js";
 import { stackRegistryRoutes } from "./routes.js";
+import type { StackBacklogDraft } from "./backlog-draft.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 const NOW = () => new Date("2026-10-02T03:00:00.000Z");
 
-type RouteValue = StackHttpResponse | ((url: string) => StackHttpResponse);
+type RouteValue = StackHttpResponse | ((url: string, options?: unknown) => StackHttpResponse);
 
 /** A JSON port that answers by URL substring; anything else is 404. */
 function fakePort(routes: Record<string, RouteValue>): StackFetchJson {
-  return async (url) => {
+  return async (url, options) => {
     const key = Object.keys(routes).find((candidate) => url.includes(candidate));
     if (!key) return { status: 404, json: null };
     const value = routes[key]!;
-    return typeof value === "function" ? value(url) : value;
+    return typeof value === "function" ? value(url, options) : value;
   };
 }
 
@@ -220,6 +232,149 @@ describe("stack attention cards", () => {
   });
 });
 
+describe("OSV advisory integration", () => {
+  it("builds OSV batch query payload correctly", () => {
+    const payload = buildOsvBatchPayload([
+      { componentName: "litellm", package: { name: "litellm", ecosystem: "PyPI" }, version: "1.50.0" },
+      { componentName: "langfuse", package: { name: "langfuse", ecosystem: "npm" }, version: "3.2.0" },
+    ]);
+    expect(payload.queries).toEqual([
+      { package: { name: "litellm", ecosystem: "PyPI" }, version: "1.50.0" },
+      { package: { name: "langfuse", ecosystem: "npm" }, version: "3.2.0" },
+    ]);
+  });
+
+  it("extracts vulnerability id, cve alias, and severity", () => {
+    const vulnGhsa = {
+      id: "GHSA-xxxx-yyyy-zzzz",
+      aliases: ["CVE-2026-99999", "OSV-2026-123"],
+      database_specific: { severity: "HIGH" },
+    };
+    const { id, cveId } = extractVulnIdAndCve(vulnGhsa);
+    expect(id).toBe("CVE-2026-99999");
+    expect(cveId).toBe("CVE-2026-99999");
+    expect(extractVulnSeverity(vulnGhsa)).toBe("HIGH");
+
+    const vulnCveDirect = {
+      id: "CVE-2026-11111",
+      severity: "CRITICAL",
+    };
+    const parsedDirect = extractVulnIdAndCve(vulnCveDirect);
+    expect(parsedDirect.id).toBe("CVE-2026-11111");
+    expect(parsedDirect.cveId).toBe("CVE-2026-11111");
+    expect(extractVulnSeverity(vulnCveDirect)).toBe("CRITICAL");
+
+    const vulnNoCve = {
+      id: "GHSA-abcd-1234",
+      aliases: ["PYSEC-2026-1"],
+      severity: [{ score: "8.5" }],
+    };
+    const parsedNoCve = extractVulnIdAndCve(vulnNoCve);
+    expect(parsedNoCve.id).toBe("GHSA-abcd-1234");
+    expect(parsedNoCve.cveId).toBeNull();
+    expect(extractVulnSeverity(vulnNoCve)).toBe("HIGH");
+  });
+
+  it("parses OSV vulnerabilities list and batch response", () => {
+    const queries = [
+      { componentName: "litellm", package: { name: "litellm", ecosystem: "PyPI" }, version: "1.50.0" },
+      { componentName: "clean-pkg", package: { name: "clean-pkg" }, version: "1.0.0" },
+    ];
+    const rawBatchJson = {
+      results: [
+        {
+          vulns: [
+            {
+              id: "GHSA-1234-5678",
+              aliases: ["CVE-2026-54321"],
+              severity: "CRITICAL",
+              summary: "Remote code execution in litellm proxy",
+            },
+          ],
+        },
+        {
+          vulns: [],
+        },
+      ],
+    };
+
+    const map = parseOsvBatchResponse(queries, rawBatchJson);
+    expect(map.size).toBe(1);
+    expect(map.has("litellm")).toBe(true);
+    expect(map.has("clean-pkg")).toBe(false);
+
+    const litellmVulns = map.get("litellm")!;
+    expect(litellmVulns).toHaveLength(1);
+    expect(litellmVulns[0]).toEqual({
+      id: "CVE-2026-54321",
+      cveId: "CVE-2026-54321",
+      severity: "CRITICAL",
+      summary: "Remote code execution in litellm proxy",
+    });
+  });
+
+  it("marks component with known CVE and leaves clean component without mark", async () => {
+    const queries = [
+      { componentName: "litellm", package: { name: "litellm", ecosystem: "PyPI" }, version: "1.50.0" },
+      { componentName: "langfuse", package: { name: "langfuse", ecosystem: "npm" }, version: "3.2.0" },
+    ];
+    const port = fakePort({
+      [OSV_QUERY_BATCH_PATH]: {
+        status: 200,
+        json: {
+          results: [
+            {
+              vulns: [
+                {
+                  id: "GHSA-litellm-cve",
+                  aliases: ["CVE-2026-7777"],
+                  severity: "HIGH",
+                  summary: "SSRF vulnerability in litellm",
+                },
+              ],
+            },
+            {
+              // clean package (no vulns)
+            },
+          ],
+        },
+      },
+    });
+
+    const res = await queryOsvAdvisories(queries, port);
+    expect(res.size).toBe(1);
+    expect(res.get("litellm")).toEqual([
+      {
+        id: "CVE-2026-7777",
+        cveId: "CVE-2026-7777",
+        severity: "HIGH",
+        summary: "SSRF vulnerability in litellm",
+      },
+    ]);
+    expect(res.has("langfuse")).toBe(false);
+  });
+
+  it("degrades gracefully without failing when OSV source is unavailable (500, network error)", async () => {
+    const queries = [
+      { componentName: "litellm", package: { name: "litellm", ecosystem: "PyPI" }, version: "1.50.0" },
+    ];
+
+    // HTTP 500 error
+    const serverErrorPort = fakePort({
+      [OSV_QUERY_BATCH_PATH]: { status: 500, json: { error: "internal server error" } },
+    });
+    const errorMap = await queryOsvAdvisories(queries, serverErrorPort);
+    expect(errorMap.size).toBe(0);
+
+    // Network / transport throw
+    const throwingPort: StackFetchJson = async () => {
+      throw new Error("DNS lookup failed");
+    };
+    const throwMap = await queryOsvAdvisories(queries, throwingPort);
+    expect(throwMap.size).toBe(0);
+  });
+});
+
 describeEmbeddedPostgres("stack release check", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -378,5 +533,112 @@ describeEmbeddedPostgres("stack release check", () => {
     if (saved === undefined) delete process.env.MYRMIDON_STACK_CHECK_INTERVAL_SEC;
     else process.env.MYRMIDON_STACK_CHECK_INTERVAL_SEC = saved;
     expect(calls).toBe(0);
+  });
+
+  it("marks components with known CVEs in checkStackReleases and preserves clean components", async () => {
+    await writeStackDocument(
+      db,
+      documentWithLocal({
+        litellm: { version: "ghcr.io/berriai/litellm:v1.50.0" },
+        langfuse: { version: "langfuse/langfuse:3.0.0" },
+      }),
+    );
+    const port = fakePort({
+      "repos/BerriAI/litellm/releases": {
+        status: 200,
+        json: [{ tag_name: "v1.52.0", published_at: "2026-10-01T00:00:00Z", body: "release" }],
+      },
+      "repos/langfuse/langfuse/releases": {
+        status: 200,
+        json: [{ tag_name: "3.2.0", published_at: "2026-10-01T00:00:00Z", body: "release" }],
+      },
+      [OSV_QUERY_BATCH_PATH]: {
+        status: 200,
+        json: {
+          results: [
+            {
+              // litellm query result (index 0)
+              vulns: [
+                {
+                  id: "GHSA-litellm-proxy-cve",
+                  aliases: ["CVE-2026-8888"],
+                  severity: "CRITICAL",
+                  summary: "Privilege escalation in LiteLLM proxy",
+                },
+              ],
+            },
+            {
+              // langfuse query result (index 1) - clean, no vulns
+              vulns: [],
+            },
+          ],
+        },
+      },
+    });
+
+    const doc = await checkStackReleases(db, { fetchJson: port, now: NOW });
+    const litellm = doc.components.find((c) => c.name === "litellm")!;
+    expect(litellm.vulnerabilities).toBeDefined();
+    expect(litellm.vulnerabilities).toHaveLength(1);
+    expect(litellm.vulnerabilities![0]).toMatchObject({
+      id: "CVE-2026-8888",
+      cveId: "CVE-2026-8888",
+      severity: "CRITICAL",
+    });
+
+    const langfuse = doc.components.find((c) => c.name === "langfuse")!;
+    expect(langfuse.vulnerabilities).toBeUndefined();
+  });
+
+  it("degrades advisory lookup when OSV is 500 or unreachable without failing the release check", async () => {
+    await writeStackDocument(
+      db,
+      documentWithLocal({
+        litellm: { version: "ghcr.io/berriai/litellm:v1.50.0" },
+      }),
+    );
+    const port = fakePort({
+      "repos/BerriAI/litellm/releases": {
+        status: 200,
+        json: [{ tag_name: "v1.52.0", published_at: "2026-10-01T00:00:00Z", body: "release" }],
+      },
+      [OSV_QUERY_BATCH_PATH]: {
+        status: 500,
+        json: { error: "OSV down" },
+      },
+    });
+
+    const doc = await checkStackReleases(db, { fetchJson: port, now: NOW });
+    const litellm = doc.components.find((c) => c.name === "litellm")!;
+    expect(litellm.upstreamState?.latest).toBe("v1.52.0");
+    expect(litellm.vulnerabilities).toBeUndefined();
+  });
+
+  it("creates backlog draft tasks when releases lag or carry security notes, respecting deduplication", async () => {
+    const drafts: Array<{ companyId: string; draft: StackBacklogDraft }> = [];
+    const port = fakePort({
+      "repos/langfuse/langfuse/releases": { status: 200, json: langfuseReleases() },
+      "repos/NousResearch/hermes-agent/releases": {
+        status: 200,
+        json: [{ tag_name: "v2026.10.1", published_at: "2026-10-01T00:00:00Z", body: null }],
+      },
+    });
+    const baseDoc = documentWithLocal({ langfuse: { version: "langfuse/langfuse:3.0.0" } });
+    await writeStackDocument(db, baseDoc);
+
+    const companyId = randomUUID();
+    const { companies } = await import("@myrmidon/db");
+    await db.insert(companies).values({ id: companyId, name: "Test Co", issuePrefix: "TC" }).onConflictDoNothing();
+
+    await checkStackReleases(db, {
+      fetchJson: port,
+      now: NOW,
+      createDraft: async (cid, draft) => {
+        drafts.push({ companyId: cid, draft });
+      },
+    });
+
+    expect(drafts.length).toBeGreaterThan(0);
+    expect(drafts.some((d) => d.draft.component === "langfuse")).toBe(true);
   });
 });

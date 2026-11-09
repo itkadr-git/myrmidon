@@ -304,15 +304,19 @@ describe("board merge: what it must not merge", () => {
     expect((await t.merger.sweepCompany(COMPANY, t.settings, at(0))).merged).toBe(1);
   });
 
-  it("an approval is never carried to a new head: the verdict names another commit", async () => {
+  it("an approval is never carried to a new head: the verdict names another commit, the task goes back to resubmit", async () => {
     const t = setup(
       [approved(32, { verdict: `APPROVE PR #32 ${OTHER_HEAD}` })],
       { 32: { facts: facts(), checks: "success" } },
     );
     const result = await t.merger.sweepCompany(COMPANY, t.settings, at(0));
-    expect(result).toMatchObject({ merged: 0, returned: 0 });
+    // myrmidon(HEAD-MOVED-RETURN): never merged, and no longer a silent wait — returned to the implementer.
+    expect(result).toMatchObject({ merged: 0, returned: 1 });
     expect(t.calls.merge).toEqual([]);
     expect(t.calls.readChecks).toEqual([]);
+    expect(t.activities).toContainEqual(
+      expect.objectContaining({ details: expect.objectContaining({ reason: "head_moved", headSha: HEAD }) }),
+    );
   });
 
   it("a verdict that names no head covers no head", async () => {
