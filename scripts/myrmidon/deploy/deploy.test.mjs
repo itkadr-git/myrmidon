@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -369,7 +369,7 @@ const sbCanonical = (render) => render(UNIT_TEMPLATE);
 function pathWithoutGit(sb) {
   const tools = path.join(sb.dir, "tools");
   fs.mkdirSync(tools, { recursive: true });
-  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk", "mkdir"]) {
+  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk", "mkdir", "flock"]) {
     const found = process.env.PATH.split(":")
       .map((d) => path.join(d, name))
       .find((f) => fs.existsSync(f));
@@ -818,7 +818,8 @@ describe("deploy.sh: only CI images from the registry", () => {
     assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
     assert.equal(maintenance(sb), "");
     assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
-    assert.ok(!fs.existsSync(path.join(sb.dir, "state")));
+    // the lock attempt may create the state dir + deploy.lock, but must remove them again on exit
+    assert.ok(!fs.existsSync(path.join(sb.dir, "state", "deploy.lock")));
   }
 
   function assertRefused(sb, args, pattern) {
@@ -1606,7 +1607,8 @@ describe("deploy.sh: one boot path (BOOT-PATH)", () => {
     assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
     assert.equal(maintenance(sb), "");
     assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
-    assert.ok(!fs.existsSync(path.join(sb.dir, "state")));
+    // the lock attempt may create the state dir + deploy.lock, but must remove them again on exit
+    assert.ok(!fs.existsSync(path.join(sb.dir, "state", "deploy.lock")));
   }
 
   it("refuses when the boot unit does not exist", () => {
@@ -1959,5 +1961,176 @@ exit 0
       assert.match(apply, new RegExp(`ALTER TABLE ${table} `));
       assert.match(fs.readFileSync(path.join(schemaDir, `${table}.ts`), "utf8"), new RegExp(`pgTable\\(\\s*\\n?\\s*"${table}"`));
     }
+  });
+});
+
+describe("deploy.sh: deploy lock against parallel runs (OPE-12335)", () => {
+  it("two parallel deploy runs: second exits immediately with code 42 and reports first holder PID and version", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+
+    const holder = spawn("bash", ["-c", `
+      exec 200<>"$1"
+      flock -n 200
+      printf '54321 2026-11-08T12:00:00Z 1.6.3\\n' > "$1"
+      echo READY
+      read line
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+
+    try {
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 42, out);
+      assert.match(out, /another deploy is already running/);
+      assert.match(out, /54321/);
+      assert.match(out, /1\.6\.3/);
+    } finally {
+      holder.stdin.write("\n");
+      await new Promise((resolve) => holder.on("exit", resolve));
+    }
+  });
+
+  it("--dry-run does not acquire the lock but warns when another deploy holds it", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+
+    const holder = spawn("bash", ["-c", `
+      exec 200<>"$1"
+      flock -n 200
+      printf '65432 2026-11-08T12:00:00Z 1.6.3\\n' > "$1"
+      echo READY
+      read line
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+
+    try {
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+      assert.match(out, /WARNING: another deploy is currently running/);
+      assert.match(out, /65432/);
+      assert.match(out, /1\.6\.3/);
+    } finally {
+      holder.stdin.write("\n");
+      await new Promise((resolve) => holder.on("exit", resolve));
+    }
+  });
+
+  it("with MYRMIDON_DEPLOY_LOCK_WAIT_SEC, the second deploy waits and proceeds once the lock is released", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+
+    const holder = spawn("bash", ["-c", `
+      exec 200<>"$1"
+      flock -n 200
+      printf '76543 2026-11-08T12:00:00Z 1.6.3\\n' > "$1"
+      echo READY
+      sleep 0.5
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], null, {
+      MYRMIDON_DEPLOY_LOCK_WAIT_SEC: "5",
+    });
+    assert.equal(code, 0, out);
+    await new Promise((resolve) => holder.on("exit", resolve));
+    assert.match(out, /image check passed|Plan:|deploy scripts at/);
+  });
+
+  it("with MYRMIDON_DEPLOY_LOCK_WAIT_SEC, fails with 42 if lock remains held after timeout", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+
+    const holder = spawn("bash", ["-c", `
+      exec 200<>"$1"
+      flock -n 200
+      printf '98765 2026-11-08T12:00:00Z 1.6.3\\n' > "$1"
+      echo READY
+      sleep 5
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+
+    try {
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], null, {
+        MYRMIDON_DEPLOY_LOCK_WAIT_SEC: "1",
+      });
+      assert.equal(code, 42, out);
+      assert.match(out, /after waiting 1s/);
+      assert.match(out, /98765/);
+    } finally {
+      holder.kill("SIGTERM");
+      await new Promise((resolve) => holder.on("exit", resolve));
+    }
+  });
+
+  it("releases the lock on SIGTERM so subsequent runs succeed", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+
+    // Spawn a process that acquires the deploy lock via lib.sh and waits (interruptible by signals)
+    const proc = spawn("bash", ["-c", `
+    source "$1"
+    acquire_deploy_lock "$2" 0 0 ""
+    echo LOCKED
+    sleep 10 & wait $!
+    `, "_", path.join(HERE, "lib.sh"), lockFile], { stdio: ["pipe", "pipe", "pipe"] });
+
+    await new Promise((resolve) => {
+      proc.stdout.on("data", (d) => {
+        if (d.toString().includes("LOCKED")) resolve();
+      });
+    });
+
+    assert.ok(fs.existsSync(lockFile), "deploy lock must exist while running");
+
+    // Send SIGTERM to simulate killed deploy process
+    proc.kill("SIGTERM");
+    await new Promise((resolve) => proc.on("exit", resolve));
+
+    // Lock must be released and removed by the TERM trap
+    assert.ok(!fs.existsSync(lockFile), "deploy lock must be cleaned up on SIGTERM");
+
+    // A subsequent deploy run can immediately acquire the lock
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /another deploy is currently running/);
+  });
+
+  it("releases the lock on error so subsequent runs succeed", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+
+    // First run fails during preflight
+    const first = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(first.code, 0);
+    assert.ok(!fs.existsSync(lockFile), "lock file must be cleaned up on failure");
+
+    // Second run is not blocked by a lingering lock (fails with same compose config error, not lock error 42)
+    const second = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(second.code, 42);
+    assert.doesNotMatch(second.out, /another deploy is already running/);
   });
 });
