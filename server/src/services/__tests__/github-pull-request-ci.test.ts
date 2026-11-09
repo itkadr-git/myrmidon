@@ -728,6 +728,71 @@ describe("createPullRequestCiResolver", () => {
     );
   });
 
+  it("renders live pullRequestsCi over stale wakePayload when provided", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-12534",
+        title: "Reviewer CI test",
+        status: "in_review",
+        workMode: "standard",
+      },
+      wakePayload: {
+        pullRequestsCi: [
+          {
+            repository: "itkadr-git/myrmidon",
+            pullNumber: 2800,
+            headSha: "head-sha-123",
+            headRef: "bot/OPE-12534",
+            status: "completed",
+            conclusion: "failure",
+            summary: "failure (1 failed, 1 passed)",
+            authoritative: true,
+            checkedAt: "2026-11-09T18:00:00Z",
+            completedAt: "2026-11-09T18:00:00Z",
+            totalRuns: 2,
+            successfulRuns: 1,
+            failedRuns: 1,
+            failedJobs: [
+              {
+                id: 3,
+                name: "main-green",
+                conclusion: "failure",
+                url: "https://example.com/job/3",
+                completedAt: "2026-11-09T18:00:00Z",
+              },
+            ],
+            runs: [],
+          },
+        ],
+      },
+      pullRequestsCi: [
+        {
+          repository: "itkadr-git/myrmidon",
+          pullNumber: 2800,
+          headSha: "head-sha-123",
+          headRef: "bot/OPE-12534",
+          status: "completed",
+          conclusion: "success",
+          summary: "success (2/2 passed)",
+          authoritative: true,
+          checkedAt: "2026-11-09T18:30:00Z",
+          completedAt: "2026-11-09T18:30:00Z",
+          totalRuns: 2,
+          successfulRuns: 2,
+          failedRuns: 0,
+          failedJobs: [],
+          optionalFailedJobs: [],
+          runs: [],
+        },
+      ],
+    });
+
+    expect(markdown).toContain("- CI Result: SUCCESS (success (2/2 passed))");
+    expect(markdown).toContain("Checked at: 2026-11-09T18:30:00Z");
+    expect(markdown).not.toContain("CI Result: FAILURE");
+  });
+
   it("handles fetch network failure or timeout as non-authoritative unavailable without throwing", async () => {
     const mockDb = { select: vi.fn() };
     const mockFetch = vi.fn().mockRejectedValue(new Error("fetch timeout / abort"));
