@@ -43,6 +43,10 @@ export type {
   CancelStaleQueuedRunOutcome,
 } from "./application/types.js";
 export { RunDispatchApplicationError } from "./application/types.js";
+// myrmidon(OPE-11947): when a queued run began to wait, and its SQL twin for the sweep.
+export { queuedRunWaitingSince } from "./domain/queued-run-age.js";
+export { queuedRunWaitedAtLeastSql } from "./adapters/queued-run-age.js";
+export { createCancelStaleQueuedRun } from "./application/use-cases.js";
 
 export type RunDispatchDeps = {
   /** Overrides the Postgres adapter; a test builds its module against a fake instead. */

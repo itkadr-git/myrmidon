@@ -203,6 +203,10 @@ const SAFE_ENVIRONMENT_KEYS = [
   "LC_ALL",
   "NO_PROXY",
   "NODE_EXTRA_CA_CERTS",
+  // The OpenAI-compatible endpoint of the built-in provider (an LLM gateway such
+  // as LiteLLM). An address, not a credential; without it a configured API key
+  // goes to api.openai.com.
+  "OPENAI_BASE_URL",
   "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PATH",
   "PATHEXT",

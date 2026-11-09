@@ -188,6 +188,30 @@ describe("archiveThenRemove: a broken nested .git is not a repository", { skip: 
     assert.match(spawnSync("tar", ["-tf", e.dirTar], { encoding: "utf8" }).stdout, /src\.txt/);
   });
 
+  it("a repository archive permission failure is classified as foreign-uid with the index owner", () => {
+    const dir = path.join(ws, "OPE-4436");
+    const repo = path.join(dir, "repo");
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".git", "index"), "locked", { mode: 0o600 });
+    const indexUid = fs.lstatSync(path.join(repo, ".git", "index")).uid;
+    const archiveMod = {
+      archive: () => ({ ok: false, reason: "git diff HEAD failed (128): fatal: .git/index: index file open failed: Permission denied" }),
+      archiveTree: () => ({ ok: true, entry: { key: "OPE-4436", dirTar: "/archive/tree.tar" } }),
+    };
+    assert.throws(
+      () => archiveThenRemove({ path: repo, key: "OPE-4436" }, {
+        archiveMod,
+        isGit: (p) => fs.existsSync(path.join(p, ".git")),
+        isRepo: () => true,
+        nestedGit: () => [],
+        remove: () => { throw new Error("must not remove after archive failure"); },
+        archiveRoot,
+      }),
+      (err) => err.deferred === "foreign-uid" && err.uid === indexUid && /Permission denied/.test(err.message),
+    );
+  });
+
   it("a real repository whose bundle fails is still not removed", () => {
     const dir = path.join(ws, "OPE-4435");
     const repo = path.join(dir, "repo");

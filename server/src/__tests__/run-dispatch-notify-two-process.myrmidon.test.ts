@@ -359,18 +359,20 @@ describeEmbeddedPostgres("run start dispatch, notify mode: two processes, one da
 
   it("a lost NOTIFY (bus subscription down) is carried by the worker resweep", async () => {
     const { companyId, agentId } = await seedAgent();
+
+    // Construct the worker before enqueueing the run. This makes the test's
+    // lost-NOTIFY window explicit: startup recovery cannot race the run into
+    // execution before the resweep under test.
+    const worker = heartbeatService(db, {
+      runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
+      executesRuns: true,
+    });
     const runId = await seedQueuedRun(companyId, agentId);
 
     // No bus at all on the worker: the listener is not there, the run waits in
     // the queue. The resweep of part A — the correctness carrier of the
     // design — lifts it.
-    const worker = heartbeatService(db, {
-      runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
-      executesRuns: true,
-    });
-
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
       const [still] = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)

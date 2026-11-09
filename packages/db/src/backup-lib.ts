@@ -1086,12 +1086,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         character_maximum_length: number | null;
         numeric_precision: number | null;
         numeric_scale: number | null;
+        formatted_type: string | null;
       }[]>`
-        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
-               character_maximum_length, numeric_precision, numeric_scale
-        FROM information_schema.columns
-        WHERE table_schema = ${schema_name} AND table_name = ${tablename}
-        ORDER BY ordinal_position
+        SELECT c.column_name, c.data_type, c.udt_schema, c.udt_name, c.is_nullable, c.column_default,
+               c.character_maximum_length, c.numeric_precision, c.numeric_scale,
+               format_type(a.atttypid, a.atttypmod) AS formatted_type
+        FROM information_schema.columns c
+        LEFT JOIN pg_namespace ns ON ns.nspname = c.table_schema
+        LEFT JOIN pg_class cls ON cls.relnamespace = ns.oid AND cls.relname = c.table_name
+        LEFT JOIN pg_attribute a ON a.attrelid = cls.oid AND a.attname = c.column_name AND a.attnum > 0 AND NOT a.attisdropped
+        WHERE c.table_schema = ${schema_name} AND c.table_name = ${tablename}
+        ORDER BY c.ordinal_position
       `;
 
       emit(`-- Table: ${schema_name}.${tablename}`);
@@ -1101,12 +1106,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       for (const col of columns) {
         let typeStr: string;
         if (col.data_type === "USER-DEFINED") {
-          typeStr = quoteQualifiedName(col.udt_schema, col.udt_name);
+          const modifier = col.formatted_type?.match(/\([^)]+\)$/)?.[0] ?? "";
+          typeStr = `${quoteQualifiedName(col.udt_schema, col.udt_name)}${modifier}`;
         } else if (col.data_type === "ARRAY") {
           const elementType = col.udt_name.replace(/^_/, "");
-          typeStr = col.udt_schema === "pg_catalog"
-            ? `${elementType}[]`
-            : `${quoteQualifiedName(col.udt_schema, elementType)}[]`;
+          const match = col.formatted_type ? col.formatted_type.match(/\(([^)]+)\)\[\]$/) : null;
+          const elementStr = col.udt_schema === "pg_catalog"
+            ? elementType
+            : (match
+                ? `${quoteQualifiedName(col.udt_schema, elementType)}(${match[1]})`
+                : quoteQualifiedName(col.udt_schema, elementType));
+          typeStr = `${elementStr}[]`;
         } else if (col.data_type === "character varying") {
           typeStr = col.character_maximum_length
             ? `varchar(${col.character_maximum_length})`

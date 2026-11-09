@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,20 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
+)
+
+const (
+	// minCpus is the smallest CPU limit a spec may ask for. Docker takes
+	// NanoCpus as an integer, so a value below 1e-9 CPUs becomes 0, and 0 means
+	// "no limit". 0.01 CPUs is far above that and far below any real bot.
+	minCpus = 0.01
+	// minGatewayPort and maxGatewayPort bound the host port a spec may ask for:
+	// no privileged ports, and only ports that exist.
+	minGatewayPort = 1024
+	maxGatewayPort = 65535
+	// maxMarkerBytes is the largest applied marker fleetd reads.
+	maxMarkerBytes = 64 * 1024
 )
 
 func (s *server) validateCreate(sp spec) error {
@@ -26,12 +41,27 @@ func (s *server) validateCreate(sp spec) error {
 	if sp.MemoryMb <= 0 || sp.Cpus <= 0 || sp.PidsLimit <= 0 {
 		return errForbidden("limits_invalid")
 	}
+	// Written so that a NaN fails too.
+	if !(sp.Cpus >= minCpus) {
+		return errForbidden("spec_invalid")
+	}
 	b := s.enrollment(sp.BotKey)
 	if b == nil || sp.MemoryMb > b.MaxMemoryMb || sp.Cpus > b.MaxCpus || sp.PidsLimit > b.MaxPids {
 		return errForbidden("limits_exceeded")
 	}
+	if sp.GatewayPort != 0 && (sp.GatewayPort < minGatewayPort || sp.GatewayPort > maxGatewayPort) {
+		return errForbidden("spec_invalid")
+	}
+	// The board address of a site is a property of the site: fleetd takes it
+	// from its own configuration and never from the spec.
+	if sp.BoardExtraHost != "" && sp.BoardExtraHost != s.cfg.BoardExtraHost {
+		return errForbidden("spec_invalid")
+	}
 	for _, mount := range sp.Mounts {
-		if !mount.ReadOnly {
+		if mount.ReadOnly {
+			continue
+		}
+		if _, ok := writableMountSource(mount.Source, s.cfg.WritableMountRoots); !ok {
 			return errForbidden("mount_not_allowed")
 		}
 	}
@@ -51,17 +81,27 @@ func errForbidden(reason string) error {
 
 func errConflict(reason string) error { return &apiError{status: http.StatusConflict, reason: reason} }
 
-func (s *server) imageAllowed(image string) bool {
-	if !strings.Contains(image, "@sha256:") {
+// isImageAllowed verifies that the image specifies a non-empty sha256 digest and matches
+// either an exact allowed entry or an allowed pattern ending with '*' (e.g. 'repo@sha256:*').
+func isImageAllowed(image string, allowedImages []string) bool {
+	if len(allowedImages) == 0 {
 		return false
 	}
-	for _, allowed := range s.cfg.Images {
-		prefix, _, ok := strings.Cut(allowed, "*")
-		if (ok && strings.HasPrefix(image, prefix)) || (!ok && image == allowed) {
+	repo, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || repo == "" || digest == "" || strings.ContainsAny(image, " 	\r\n") {
+		return false
+	}
+	for _, allowed := range allowedImages {
+		prefix, _, hasWildcard := strings.Cut(allowed, "*")
+		if (hasWildcard && strings.HasPrefix(image, prefix)) || (!hasWildcard && image == allowed) {
 			return true
 		}
 	}
 	return false
+}
+
+func (s *server) imageAllowed(image string) bool {
+	return isImageAllowed(image, s.cfg.Images)
 }
 
 // botVolumes are the per-bot directories under volumeRoot/<botKey> that the
@@ -73,10 +113,49 @@ var botVolumes = []struct{ suffix, containerPath string }{
 	{"scratch", "/scratch"},
 }
 
+// pathWithin reports whether path is dir or lies below it. Both must be
+// absolute; a relative one is never within.
+func pathWithin(dir, path string) bool {
+	if !filepath.IsAbs(dir) || !filepath.IsAbs(path) {
+		return false
+	}
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// writableMountSource decides whether a mount may be read-write. It may only
+// when its source, with every symlink resolved, lies inside one of the
+// configured writable roots (also resolved). It returns the resolved path,
+// which is the one to bind, so a symlink in the source itself is not in the
+// bind. Docker still resolves the path again when the container starts: the
+// operator must not nest one writable source below another (see the guide). A
+// source that does not exist, or whose resolved path cannot be written into a
+// bind safely, is refused, and so is every source when no root is configured.
+func writableMountSource(source string, roots []string) (string, bool) {
+	if len(roots) == 0 || !filepath.IsAbs(source) {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(source)
+	if err != nil || strings.ContainsAny(resolved, ":,") {
+		return "", false
+	}
+	for _, root := range roots {
+		realRoot, err := filepath.EvalSymlinks(root)
+		if err != nil || realRoot == string(filepath.Separator) {
+			continue
+		}
+		if pathWithin(realRoot, resolved) {
+			return resolved, true
+		}
+	}
+	return "", false
+}
+
 // binds returns the Docker bind list for a container: the bot's own volume
 // directories (read-write, so the profile written by writeProfile reaches the
-// container) and the extra mounts, which are always read-only. It has no side
-// effects: drift checks call it too.
+// container) and the extra mounts. An extra mount is read-only, unless it asks
+// for read-write and its source is inside a writable root (see
+// writableMountSource). It has no side effects: drift checks call it too.
 func (s *server) binds(sp spec) ([]string, error) {
 	if s.cfg.VolumeRoot == "" {
 		return nil, errForbidden("volume_root_not_configured")
@@ -87,10 +166,15 @@ func (s *server) binds(sp spec) ([]string, error) {
 		binds = append(binds, filepath.Join(root, v.suffix)+":"+v.containerPath)
 	}
 	for _, mount := range sp.Mounts {
-		if !mount.ReadOnly {
+		if mount.ReadOnly {
+			binds = append(binds, mount.Source+":"+mount.Destination+":ro")
+			continue
+		}
+		source, ok := writableMountSource(mount.Source, s.cfg.WritableMountRoots)
+		if !ok {
 			return nil, errForbidden("mount_not_allowed")
 		}
-		binds = append(binds, mount.Source+":"+mount.Destination+":ro")
+		binds = append(binds, source+":"+mount.Destination+":rw")
 	}
 	return binds, nil
 }
@@ -226,9 +310,6 @@ func (s *server) applyGatewayPort(sp *spec) error {
 		return err
 	}
 	sp.GatewayPort = p
-	if sp.BoardExtraHost == "" {
-		sp.BoardExtraHost = s.cfg.BoardExtraHost
-	}
 	return nil
 }
 
@@ -325,8 +406,50 @@ func (s *server) writeProfileFile(realRoot string, f profileFile) error {
 		return e
 	}
 	_ = os.Chown(tmpName, botUID, botUID) // best effort: fleetd may run unprivileged
-	_ = os.Chown(dir, botUID, botUID)
+	chownDirsUp(realRoot, realDir)
 	return os.Rename(tmpName, target)
+}
+
+// chownDirsUp gives the bot user every directory from dir up to, but not
+// including, realRoot (the root of the bot volume stays as the volume rules
+// require). MkdirAll creates the missing intermediate directories as the
+// fleetd user, so chowning only the file's own directory left e.g.
+// hermes/skills and hermes/skills/paperclip-managed root-owned with mode 0700,
+// and the bot could not read its managed skills ("Permission denied:
+// /data/hermes/skills/paperclip-managed", T4 canary on myr-vm1, 08.11).
+// Best effort like the file chown above: fleetd may run unprivileged.
+func chownDirsUp(realRoot, dir string) {
+	for d := dir; ; d = filepath.Dir(d) {
+		rel, err := filepath.Rel(realRoot, d)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+			return
+		}
+		_ = lchown(d, botUID, botUID)
+	}
+}
+
+// readMarker reads the applied marker without trusting the path. The bot owns
+// the directory the marker lives in, and fleetd runs as root, so the file may
+// be anything: a symlink to /dev/zero or to a root-only file, or a FIFO that
+// blocks the open and then the read. The file is opened without following a
+// final symlink and without blocking, must be a regular file by fstat on the
+// open descriptor (no gap between check and read), and at most maxMarkerBytes
+// are read. Anything else is "no marker".
+func readMarker(path string) ([]byte, bool) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxMarkerBytes+1))
+	if err != nil || len(raw) > maxMarkerBytes {
+		return nil, false
+	}
+	return raw, true
 }
 
 // fillApplied sets the applied profile hashes of a status from the marker.
@@ -336,8 +459,8 @@ func (s *server) fillApplied(st *botStatus) {
 	if st.State == "missing" || s.cfg.VolumeRoot == "" || !validBotKey(st.BotKey) {
 		return
 	}
-	raw, err := os.ReadFile(filepath.Join(s.cfg.VolumeRoot, st.BotKey, markerRelativePath))
-	if err != nil || len(raw) > 64*1024 {
+	raw, ok := readMarker(filepath.Join(s.cfg.VolumeRoot, st.BotKey, markerRelativePath))
+	if !ok {
 		return
 	}
 	// The marker lives on a volume the bot can write: it is data, not trusted state.

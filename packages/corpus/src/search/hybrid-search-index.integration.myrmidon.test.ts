@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { installPgvectorIntoEmbeddedCluster } from "../test-pgvector.js";
-import { createPostgresSearchIndex, type SqlExecutor } from "./hybrid-search-index.js";
+import { createPostgresSearchIndex, pgvectorHasIterativeScan, type SqlExecutor } from "./hybrid-search-index.js";
 import {
   PROBE_FTS_LANGUAGE,
   PROBE_SEARCH_INDEX_SCHEMA,
@@ -46,6 +46,15 @@ const DATASET_ID = "bbbbbbbb-0000-0000-0000-0000000000d1";
 const NO_MATCH_TEXT = "zzzqqq nonexistent wording";
 const OTHER_DATASET_ID = "bbbbbbbb-0000-0000-0000-0000000000d2";
 const FOREIGN_CHUNK_ID = "eeeeeeee-0000-0000-0000-000000000001";
+// A dataset of the same company that holds a few dozen chunks: the HNSW scan, cut by company only,
+// has to walk far to find them, so the exact ranking over its own chunks is the way to rank it.
+const SMALL_DATASET_ID = "bbbbbbbb-0000-0000-0000-0000000000d3";
+const SMALL_DATASET_CHUNKS = 30;
+const SMALL_INDEX_BASE = 3_000_000;
+// The product reads a dataset of up to 10 000 chunks exactly. The stand's main dataset (2 000 chunks, or
+// 10^5 with CORPUS_SEARCH_PERF_CHUNKS) has to go through the HNSW index like a production dataset, so
+// the suite lowers the threshold between that dataset and the 30-chunk one.
+const STAND_EXACT_SET_MAX_CHUNKS = 500;
 
 const schema = PROBE_SEARCH_INDEX_SCHEMA;
 
@@ -101,12 +110,23 @@ async function resolveSearchStand(): Promise<SearchStand | null> {
       return null;
     }
 
-    const database = await embedded.startEmbeddedPostgresTestDatabase("corpus-search-test-");
-    return {
-      dsn: database.connectionString,
-      label: "the embedded PostgreSQL 18 test cluster",
-      release: () => database.cleanup(),
-    };
+    try {
+      const database = await embedded.startEmbeddedPostgresTestDatabase("corpus-search-test-");
+      return {
+        dsn: database.connectionString,
+        label: "the embedded PostgreSQL 18 test cluster",
+        release: async () => {
+          try {
+            await database.cleanup();
+          } finally {
+            await staged.cleanup();
+          }
+        },
+      };
+    } catch (error) {
+      await staged.cleanup().catch(() => {});
+      throw error;
+    }
   } catch (error) {
     skipReason = `the embedded PostgreSQL test cluster could not be started: ${String(error)}`;
     return null;
@@ -123,6 +143,12 @@ if (stand === null) {
 } else {
   console.log(`[corpus] hybrid search integration suite runs against ${stand.label}`);
 }
+
+afterAll(async () => {
+  if (stand) {
+    await stand.release().catch(() => {});
+  }
+});
 
 type PgClient = ReturnType<typeof postgres>;
 
@@ -279,6 +305,69 @@ async function seedStand(client: PgClient): Promise<StandChunk[]> {
   return chunks;
 }
 
+/** Chunks of the small dataset; each is its own document, so the diversification keeps every one. */
+async function seedSmallDataset(client: PgClient): Promise<StandChunk[]> {
+  const random = createRandom(31_415);
+  const small: StandChunk[] = [];
+  for (let position = 0; position < SMALL_DATASET_CHUNKS; position += 1) {
+    const index = SMALL_INDEX_BASE + position;
+    // The first note carries identifiers: file names and codes are what the substring match is kept for.
+    const content =
+      position === 0
+        ? "Small dataset note 0. Settings live in litellm_proxy_config.yaml and docker-compose-override.yml, see rq002_is_camp_chef_explorer."
+        : `Small dataset note ${position}.`;
+    const chunk = { id: chunkId(index), vector: randomVector(random), content };
+    small.push(chunk);
+    await client.unsafe(
+      `insert into ${schema.documentsTable} (id, company_id, dataset_id, title, source_uri, status) values ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, $6::text)`,
+      [documentId(index), COMPANY_ID, SMALL_DATASET_ID, `Small ${position}`, `file:///small-${position}.pdf`, "ready"] as Parameters<
+        PgClient["unsafe"]
+      >[1],
+    );
+    await client.unsafe(
+      `insert into ${schema.chunksTable} (id, company_id, dataset_id, document_id, chunk_index, content, content_tsv, embedding, token_count, metadata) values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::integer, $6::text, ${probeContentTsVector("$7")}, $8::vector, $9::integer, $10::jsonb)`,
+      [
+        chunk.id,
+        COMPANY_ID,
+        SMALL_DATASET_ID,
+        documentId(index),
+        0,
+        chunk.content,
+        chunk.content,
+        toPgVectorLiteral(chunk.vector),
+        4,
+        JSON.stringify({ pageNumber: 1 }),
+      ] as Parameters<PgClient["unsafe"]>[1],
+    );
+  }
+  return small;
+}
+
+/** Cosine order of the chunks for a query vector (all vectors are L2-normalized), nearest first. */
+function exactOrder(candidates: readonly StandChunk[], vector: readonly number[]): string[] {
+  const dot = (left: readonly number[], right: readonly number[]) => left.reduce((sum, value, at) => sum + value * right[at], 0);
+  return [...candidates]
+    .map((chunk) => ({ id: chunk.id, similarity: dot(chunk.vector, vector) }))
+    .sort((left, right) => right.similarity - left.similarity)
+    .map((entry) => entry.id);
+}
+
+/**
+ * An executor that behaves as a cluster with pgvector before 0.8: the extension version it reports is
+ * 0.7.4, and the iterative scan setting, which that version refuses, must never be sent.
+ */
+function withPgvectorBefore08(base: SqlExecutor): SqlExecutor {
+  const wrap = (inner: SqlExecutor): SqlExecutor => ({
+    query: async <Row extends Record<string, unknown>>(text: string, values?: readonly unknown[]) => {
+      if (/pg_extension/.test(text)) return [{ extversion: "0.7.4" }] as unknown as Row[];
+      if (/hnsw\.iterative_scan/.test(text)) throw new Error("pgvector 0.7 would refuse hnsw.iterative_scan");
+      return inner.query<Row>(text, values);
+    },
+    withTransaction: (run) => inner.withTransaction((transaction) => run(wrap(transaction))),
+  });
+  return wrap(base);
+}
+
 const suite = describe.skipIf(stand === null);
 
 suite("hybrid search over postgres with the vector extension", () => {
@@ -288,6 +377,7 @@ suite("hybrid search over postgres with the vector extension", () => {
   let executor: SqlExecutor;
   let index: ReturnType<typeof createPostgresSearchIndex>;
   let chunks: StandChunk[];
+  let smallChunks: StandChunk[];
   let recorded: RecordedQuery[];
 
   beforeAll(async () => {
@@ -295,9 +385,15 @@ suite("hybrid search over postgres with the vector extension", () => {
     await client.unsafe(`create extension if not exists vector`);
     await client.unsafe(`create extension if not exists pg_trgm`);
     chunks = await seedStand(client);
+    smallChunks = await seedSmallDataset(client);
     recorded = [];
     executor = executorFromClient(client, (query) => recorded.push(query));
-    index = createPostgresSearchIndex({ sql: executor, schema, ftsLanguage: FTS_LANGUAGE });
+    index = createPostgresSearchIndex({
+      sql: executor,
+      schema,
+      ftsLanguage: FTS_LANGUAGE,
+      exactSetMaxChunks: STAND_EXACT_SET_MAX_CHUNKS,
+    });
   });
 
   afterAll(async () => {
@@ -340,6 +436,209 @@ suite("hybrid search over postgres with the vector extension", () => {
     expect(hits.length).toBeGreaterThan(0);
     for (const hit of hits) expect(hit.chunk.datasetId).toBe(DATASET_ID);
     expect(hits.map((hit) => hit.chunk.id)).not.toContain(FOREIGN_CHUNK_ID);
+  });
+
+  const isExactStatement = (query: RecordedQuery) => /<=>/.test(query.text) && /\) \+ 0/.test(query.text);
+  const isIndexStatement = (query: RecordedQuery) => /<=>/.test(query.text) && !isExactStatement(query);
+  const isIterativeScanSetting = (query: RecordedQuery) => /set local hnsw\.iterative_scan = relaxed_order/.test(query.text);
+
+  it("returns the nearest chunks of a large dataset from the index with the iterative scan, without the exact ranking", async () => {
+    recorded.length = 0;
+    const source = chunks[411];
+    const hits = await index.search({
+      companyId: COMPANY_ID,
+      datasetIds: [DATASET_ID],
+      text: NO_MATCH_TEXT,
+      embedding: source.vector,
+      limit: 10,
+    });
+
+    expect(hits[0]?.chunk.id).toBe(source.id);
+    for (const hit of hits) expect(hit.chunk.datasetId).toBe(DATASET_ID);
+    expect(recorded.filter(isIterativeScanSetting)).toHaveLength(1);
+    expect(recorded.filter(isIndexStatement)).toHaveLength(1);
+    expect(recorded.filter(isExactStatement)).toHaveLength(0);
+    const exact = exactOrder(chunks, source.vector).slice(0, 10);
+    expect(hits.map((hit) => hit.chunk.id).filter((id) => exact.includes(id)).length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("ranks a small dataset exactly, over its own chunks, without the index", async () => {
+    recorded.length = 0;
+    const source = smallChunks[7];
+    const noise = createRandom(99);
+    const vector = l2Normalize(source.vector.map((value) => value + (noise() - 0.5) * 0.05));
+    const hits = await index.search({
+      companyId: COMPANY_ID,
+      datasetIds: [SMALL_DATASET_ID],
+      text: NO_MATCH_TEXT,
+      embedding: vector,
+      limit: 10,
+    });
+
+    // The dataset holds 30 chunks, far below exactSetMaxChunks: the size probe sent it straight to the
+    // exact statement, and the answer is the exact cosine order of the dataset.
+    expect(recorded.filter(isIndexStatement)).toHaveLength(0);
+    expect(recorded.filter(isExactStatement)).toHaveLength(1);
+    expect(hits.map((hit) => hit.chunk.id)).toEqual(exactOrder(smallChunks, vector).slice(0, 10));
+    for (const hit of hits) expect(hit.chunk.datasetId).toBe(SMALL_DATASET_ID);
+  });
+
+  it("ranks a company of up to exactSetMaxChunks chunks exactly when the search names no dataset", async () => {
+    // The stand holds about 2 000 chunks: below this threshold the company is small.
+    const smallCompany = createPostgresSearchIndex({
+      sql: executor,
+      schema,
+      ftsLanguage: FTS_LANGUAGE,
+      exactSetMaxChunks: 5_000,
+    });
+    recorded.length = 0;
+    const source = chunks[1203];
+    const hits = await smallCompany.search({ companyId: COMPANY_ID, text: NO_MATCH_TEXT, embedding: source.vector, limit: 5 });
+
+    expect(recorded.filter(isExactStatement)).toHaveLength(1);
+    expect(recorded.filter(isIndexStatement)).toHaveLength(0);
+    expect(hits[0]?.chunk.id).toBe(source.id);
+    expect(hits.map((hit) => hit.chunk.id)).toEqual(exactOrder([...chunks, ...smallChunks], source.vector).slice(0, 5));
+  });
+
+  it("finds the chunk a question names by a number the OR of significant words drops", async () => {
+    // "97" is shorter than the 4 characters of a significant word, and every chunk holds `document` and
+    // `number`: only the question taken as a whole, every word mandatory, singles the chunk out.
+    const hits = await index.search({ companyId: COMPANY_ID, datasetId: DATASET_ID, text: "the document number 97", limit: 5 });
+
+    expect(hits[0]?.chunk.id).toBe(chunkId(97));
+  });
+
+  it("keeps what the question as a whole finds, next to the OR of its words", async () => {
+    // The text of a chunk, word for word, as the hybrid recall test asks it: the chunk is in the full-text
+    // leg at rank 1, whatever the many chunks that share all its words but the number.
+    for (const position of [97, 391, 1009, 1500]) {
+      const hits = await index.search({ companyId: COMPANY_ID, datasetId: DATASET_ID, text: chunkContent(position), limit: 5 });
+      expect(hits[0]?.fusion.fullTextRank).toBe(1);
+      expect(hits[0]?.chunk.id).toBe(chunkId(position));
+    }
+  });
+
+  it("with exactSetMaxChunks 0 sends the small dataset through the iterative scan, and never ranks exactly", async () => {
+    const indexOnly = createPostgresSearchIndex({
+      sql: executor,
+      schema,
+      ftsLanguage: FTS_LANGUAGE,
+      exactSetMaxChunks: 0,
+    });
+    recorded.length = 0;
+    const source = smallChunks[7];
+    const hits = await indexOnly.search({
+      companyId: COMPANY_ID,
+      datasetIds: [SMALL_DATASET_ID],
+      text: NO_MATCH_TEXT,
+      embedding: source.vector,
+      limit: 10,
+    });
+
+    // No size probe and no exact statement: the scan returns what it finds of a dataset that holds 30
+    // chunks of 2 000, and what it returns belongs to the dataset, the source chunk first.
+    expect(recorded.filter(isIterativeScanSetting)).toHaveLength(1);
+    expect(recorded.filter(isIndexStatement)).toHaveLength(1);
+    expect(recorded.filter(isExactStatement)).toHaveLength(0);
+    expect(hits[0]?.chunk.id).toBe(source.id);
+    for (const hit of hits) expect(hit.chunk.datasetId).toBe(SMALL_DATASET_ID);
+  });
+
+  it("keeps the chunks of other datasets out of a dataset search whatever the scan visits", async () => {
+    const source = smallChunks[3];
+    const hits = await index.search({
+      companyId: COMPANY_ID,
+      datasetIds: [DATASET_ID],
+      text: NO_MATCH_TEXT,
+      embedding: source.vector,
+      limit: 10,
+    });
+
+    expect(hits.length).toBeGreaterThan(0);
+    for (const hit of hits) expect(hit.chunk.datasetId).toBe(DATASET_ID);
+    expect(hits.map((hit) => hit.chunk.id)).not.toContain(source.id);
+  });
+
+  it("searches the whole company through the iterative scan, with no dataset filter and no exact ranking", async () => {
+    recorded.length = 0;
+    const source = chunks[1203];
+    const hits = await index.search({ companyId: COMPANY_ID, text: NO_MATCH_TEXT, embedding: source.vector, limit: 5 });
+
+    expect(hits[0]?.chunk.id).toBe(source.id);
+    expect(recorded.filter(isIndexStatement)).toHaveLength(1);
+    expect(recorded.filter(isExactStatement)).toHaveLength(0);
+  });
+
+  it("reports a pgvector with the iterative scan, and uses it", async () => {
+    const [{ extversion }] = await client.unsafe(`select extversion from pg_extension where extname = 'vector'`);
+    expect(pgvectorHasIterativeScan(extversion)).toBe(true);
+    recorded.length = 0;
+    await index.search({ companyId: COMPANY_ID, datasetId: DATASET_ID, text: NO_MATCH_TEXT, embedding: chunks[5].vector, limit: 3 });
+    expect(recorded.some((query) => /set local hnsw\.iterative_scan = relaxed_order/.test(query.text))).toBe(true);
+  });
+
+  it("uses the plain statement where pgvector is older than 0.8, and the transaction goes through", async () => {
+    const oldPgvector = createPostgresSearchIndex({
+      sql: withPgvectorBefore08(executor),
+      schema,
+      ftsLanguage: FTS_LANGUAGE,
+    });
+    recorded.length = 0;
+    const source = chunks[777];
+    const hits = await oldPgvector.search({
+      companyId: COMPANY_ID,
+      datasetIds: [DATASET_ID],
+      text: NO_MATCH_TEXT,
+      embedding: source.vector,
+      limit: 5,
+    });
+
+    expect(recorded.filter(isExactStatement)).toHaveLength(0);
+    expect(recorded.some((query) => /hnsw\.iterative_scan/.test(query.text))).toBe(false);
+    expect(hits[0]?.chunk.id).toBe(source.id);
+    for (const hit of hits) expect(hit.chunk.datasetId).toBe(DATASET_ID);
+  });
+
+  it("finds an identifier of 20 and more characters through the ilike match, which the tsvector does not", async () => {
+    const withoutIlike = createPostgresSearchIndex({
+      sql: executor,
+      schema,
+      ftsLanguage: FTS_LANGUAGE,
+      ilikeMaxLength: 0,
+    });
+    // File names are one lexeme in the tsvector, so the name without its extension is not in it.
+    for (const [identifier, tsvectorMisses] of [
+      ["litellm_proxy_config", true],
+      ["docker-compose-override", true],
+      ["rq002_is_camp_chef_explorer", false],
+    ] as const) {
+      expect(identifier.length).toBeGreaterThanOrEqual(20);
+      recorded.length = 0;
+      const hits = await index.search({ companyId: COMPANY_ID, datasetIds: [SMALL_DATASET_ID], text: identifier, limit: 5 });
+      expect(recorded.filter((query) => /ts_rank/.test(query.text) && /ilike/.test(query.text))).toHaveLength(1);
+      expect(hits.map((hit) => hit.chunk.id)).toEqual([smallChunks[0].id]);
+
+      if (tsvectorMisses) {
+        const missed = await withoutIlike.search({ companyId: COMPANY_ID, datasetIds: [SMALL_DATASET_ID], text: identifier, limit: 5 });
+        expect(missed).toEqual([]);
+      }
+    }
+  });
+
+  it("leaves a long question to the tsvector: no substring match, same answer", async () => {
+    recorded.length = 0;
+    const hits = await index.search({
+      companyId: COMPANY_ID,
+      datasetId: DATASET_ID,
+      text: "unique marker number 3 in the corpus text for the hybrid search check",
+      limit: 5,
+    });
+
+    const statements = recorded.filter((query) => /ts_rank/.test(query.text));
+    expect(statements).toHaveLength(1);
+    expect(statements[0].text).not.toMatch(/ilike/);
+    expect(hits.length).toBeGreaterThan(0);
   });
 
   it("finds the synthetic neighbours with recall@5 above the baseline", async () => {
@@ -458,7 +757,7 @@ suite("hybrid search over postgres with the vector extension", () => {
     const statements = recorded
       .map((query) => query.text.trim())
       .filter((text) => text.toLowerCase().startsWith("select"));
-    expect(statements.length).toBeGreaterThanOrEqual(2);
+    expect(statements.length).toBeGreaterThanOrEqual(3);
 
     for (const statement of statements) {
       const plan = await client.unsafe(

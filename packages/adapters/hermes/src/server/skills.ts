@@ -130,7 +130,7 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
   // myrmidon(H1): list skills from the agent's own profile when HERMES_HOME is set
   const { skillsHome: hermesSkillsHome, locationLabel } = resolveHermesSkillsHome(config);
 
-  // 1. Scan Paperclip-managed skills (bundled with the adapter)
+  // 1. Scan Myrmidon-managed skills (bundled with the adapter)
   const paperclipEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkills = resolveLegacyPaperclipDesiredSkillNames(config, paperclipEntries);
   const desiredSet = new Set(desiredSkills);
@@ -144,7 +144,7 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
   const entries: AdapterSkillEntry[] = [];
   const warnings: string[] = [];
 
-  // Paperclip-managed skills
+  // Myrmidon-managed skills
   for (const entry of paperclipEntries) {
     const desired = desiredSet.has(entry.key);
     entries.push({
@@ -253,7 +253,7 @@ export async function verifyHermesPaperclipSkillLinks(
   for (const key of desiredSkills) {
     const entry = availableByKey.get(key);
     if (!entry) {
-      problems.push(`"${key}" has no Paperclip-managed source to link`);
+      problems.push(`"${key}" has no Myrmidon-managed source to link`);
       continue;
     }
     if (isPaperclipSkillSourceMissing(entry)) {
@@ -267,7 +267,7 @@ export async function verifyHermesPaperclipSkillLinks(
       continue;
     }
     if (!dirent.isSymbolicLink()) {
-      problems.push(`"${key}" at ${target} is not a Paperclip-managed link`);
+      problems.push(`"${key}" at ${target} is not a Myrmidon-managed link`);
       continue;
     }
     const destination = await readSkillLinkDestination(target);

@@ -12,7 +12,7 @@ import { DEFAULT_ROOT_FANOUT_LIMIT } from "./evaluate-alert.js";
 export function blockerRootFanoutAlertLimitFromSettings(
   generalRow: unknown,
 ): number {
-  const parsed = instanceGeneralSettingsSchema.safeParse(generalRow ?? {});
+  const parsed = instanceGeneralSettingsSchema.strip().safeParse(generalRow ?? {});
   if (!parsed.success) return DEFAULT_ROOT_FANOUT_LIMIT;
   const limit = parsed.data.blockerRootFanoutAlertLimit;
   return typeof limit === "number" && Number.isInteger(limit) && limit >= 1

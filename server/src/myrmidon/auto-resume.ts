@@ -1,9 +1,17 @@
-import { and, eq, gte, sql } from "drizzle-orm";
-import { activityLog, agents, companies, type Db } from "@myrmidon/db";
+import { and, desc, eq, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { activityLog, agents, companies, heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this sweep obeys, so the switch can be changed without a restart.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
+import { liveAutoResumeSettings } from "./runs-queue-settings/live.js";
+// myrmidon(OPE-11947): a run the model pool could not answer is retried by its
+// own long policy; auto-resume must not wake the agent's work in the meantime.
+import {
+  MODEL_UNAVAILABLE_RETRY_MAX_DELAY_MS,
+  computeModelUnavailableRetryDelayMs,
+  isModelUnavailableRun,
+} from "./run-retry-policy/model-unavailable.js";
 
 /**
  * AUTO-RESUME (Myrmidon 1.4).
@@ -23,9 +31,38 @@ import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/s
  * State lives in the existing `agents.metadata` JSON column under the key
  * `myrmidon_auto_resume` (no migration, no new table): the failed-resume
  * counter of the current streak, when the streak last failed, when the next
- * resume is due, and when the module gave up. An agent record change after the
- * give-up point (`agents.updated_at` becomes newer than `exhaustedAt`) is how
- * an operator action re-arms the streak.
+ * resume is due, and when the module gave up.
+ *
+ * Three cases differ from the ordinary backoff:
+ *  - An agent in `error` with the reason "контейнер не поднят" (1.6.6: its runs
+ *    could not reach the gateway, the retries ran out; 07.11 an idle-stopped
+ *    container left adm-devops in error for 4.5 h) is not skipped any more: the
+ *    sweep first starts the bot container through the board's own path
+ *    (`IdleStopService.ensureStartedAndHealthy` = the driver's start, waiting
+ *    for healthy), and only a healthy container is followed by the ordinary
+ *    resume. A start that fails is retried no sooner than 15 minutes later, 4
+ *    attempts in all; then the module gives up with the same operator card as
+ *    any other give-up (`agent.auto_resume_exhausted`, critical
+ *    `agent_error_alert`). Each attempt is written to the state before the
+ *    start (`containerStartFailures`), so a crash or an overlapping pass cannot
+ *    repeat it, and a successful start replaces the whole state with the resume
+ *    state, which counts towards the ordinary cap (a container that starts and
+ *    still refuses the gateway cannot loop for ever).
+ *  - (OPE-11947) An agent whose last finished run is model-unavailable (`resultJson.model_unavailable`:
+ *    the model pool is out of quota or down) is resumed on the long model-unavailable
+ *    schedule, not the 1/5/15 min one: 30 min, 1 h, 2 h, 4 h, then every 6 h after
+ *    that run finished (`computeModelUnavailableRetryDelayMs`). A resume wakes
+ *    every task the agent is stranded on and each new run fails on the same quota
+ *    again, so it must not be quick; but the quota resets some day, so these
+ *    resumes never count towards the attempt cap and never give up. The agent is
+ *    back within 6 h of the reset. The series counter lives in the same state
+ *    (`modelUnavailableResumes`) and starts over once the last run is not
+ *    model-unavailable: the ordinary backoff and the cap apply again.
+ *  - A give-up is re-armed only by an operator action: an `agent.resumed`,
+ *    `agent.updated` or `agent.error_cleared` activity row written by a user
+ *    for this agent after `exhaustedAt`. A bare `agents.updated_at` change is
+ *    not an operator action, because runs and status changes move it too; it
+ *    used to re-arm the streak a few minutes after every give-up.
  */
 
 export const AUTO_RESUME_ENABLED_ENV = "MYRMIDON_AUTO_RESUME_ENABLED";
@@ -44,16 +81,40 @@ export const MIN_AUTO_RESUME_INTERVAL_SEC = 10;
 /** A streak whose last failure is older than this is treated as a new episode. */
 export const DEFAULT_AUTO_RESUME_WINDOW_MS = 60 * 60 * 1000;
 
+/**
+ * myrmidon(1.6.6 AUTO-RESUME container): the `errorReason` that `finalizeAgentStatus` /
+ * `scheduleBoundedRetryForRun` (services/heartbeat.ts) write when the gateway connect
+ * retries of a run ran out, i.e. the bot container is not up.
+ */
+export const AUTO_RESUME_CONTAINER_NOT_STARTED_REASON = "контейнер не поднят";
+/** A failed container start is retried no sooner than this after the previous attempt. */
+export const AUTO_RESUME_CONTAINER_START_RETRY_MS = 15 * 60 * 1000;
+/** Container start attempts in one series before the module gives up and raises the operator card. */
+export const AUTO_RESUME_CONTAINER_START_MAX_ATTEMPTS = 4;
+/** A series whose last attempt is older than two retry steps is a new episode (the counter is stale). */
+const AUTO_RESUME_CONTAINER_START_SERIES_WINDOW_MS = 2 * AUTO_RESUME_CONTAINER_START_RETRY_MS;
+/** Activity-log action for one failed container start (the board will retry, or give up after the cap). */
+export const AUTO_RESUME_CONTAINER_START_FAILED_ACTIVITY_ACTION = "agent.auto_resume_container_start_failed";
+
 /** Key of the state object inside `agents.metadata`. */
 export const AUTO_RESUME_METADATA_KEY = "myrmidon_auto_resume";
 /** Activity-log action for one automatic resume (part E reads this for the 24 h metric). */
 export const AUTO_RESUME_ACTIVITY_ACTION = "agent.auto_resume_issued";
 /** Activity-log action for giving up on an agent after the attempt cap. */
 export const AUTO_RESUME_EXHAUSTED_ACTIVITY_ACTION = "agent.auto_resume_exhausted";
+/**
+ * Activity-log actions (written by `routes/agents.ts` with `actor_type = 'user'`,
+ * entity `agent`) that count as an operator acting on an agent after a give-up.
+ * The same `agent.updated` is also written by the system (`actor_type = 'system'`),
+ * so the actor type is part of the match.
+ */
+export const AUTO_RESUME_OPERATOR_ACTIVITY_ACTIONS: readonly string[] = [
+  "agent.resumed",
+  "agent.updated",
+  "agent.error_cleared",
+];
 
 const AUTO_RESUME_ACTOR_ID = "auto_resume";
-
-const DISABLED_VALUES = new Set(["0", "false", "off", "no"]);
 
 export interface AutoResumeSettings {
   enabled: boolean;
@@ -64,45 +125,25 @@ export interface AutoResumeSettings {
   failureWindowMs: number;
 }
 
-function parsePositiveInt(raw: string | undefined, fallback: number, min = 1): number {
-  const value = raw?.trim();
-  if (!value || !/^\d+$/.test(value)) return fallback;
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < min) return fallback;
-  return parsed;
-}
-
-function parseBackoff(raw: string | undefined): number[] {
-  const value = raw?.trim();
-  if (!value) return [...DEFAULT_AUTO_RESUME_BACKOFF_MS];
-  const parsed = value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => (/^\d+$/.test(part) ? Number(part) : NaN))
-    .filter((part) => Number.isSafeInteger(part) && part > 0);
-  return parsed.length > 0 ? parsed : [...DEFAULT_AUTO_RESUME_BACKOFF_MS];
-}
-
 /**
  * The feature ships enabled (a defect fix per CONVENTIONS.md §8): an unset or
  * unrecognized value keeps it on. Only an explicit off value disables it.
+ * OPE-4096: resolves live (UI value → env forced override → default on).
  */
 export function readAutoResumeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[AUTO_RESUME_ENABLED_ENV]?.trim().toLowerCase();
-  return !raw || !DISABLED_VALUES.has(raw);
+  return liveAutoResumeSettings(env).enabled;
 }
 
 export function readAutoResumeSettings(env: NodeJS.ProcessEnv = process.env): AutoResumeSettings {
+  // OPE-4096: resolve live (UI value → env forced override → default) so a
+  // settings-page save applies without a restart; an explicit env value wins.
+  const live = liveAutoResumeSettings(env);
   return {
-    enabled: readAutoResumeEnabled(env),
-    backoffMs: parseBackoff(env[AUTO_RESUME_BACKOFF_MS_ENV]),
-    maxAttempts: parsePositiveInt(env[AUTO_RESUME_MAX_ATTEMPTS_ENV], DEFAULT_AUTO_RESUME_MAX_ATTEMPTS),
-    intervalSec: Math.max(
-      MIN_AUTO_RESUME_INTERVAL_SEC,
-      parsePositiveInt(env[AUTO_RESUME_INTERVAL_SEC_ENV], DEFAULT_AUTO_RESUME_INTERVAL_SEC),
-    ),
-    failureWindowMs: parsePositiveInt(env[AUTO_RESUME_WINDOW_MS_ENV], DEFAULT_AUTO_RESUME_WINDOW_MS),
+    enabled: live.enabled,
+    backoffMs: live.backoffMs,
+    maxAttempts: live.maxAttempts,
+    intervalSec: Math.max(MIN_AUTO_RESUME_INTERVAL_SEC, live.intervalSec),
+    failureWindowMs: live.windowMs,
   };
 }
 
@@ -124,6 +165,19 @@ export interface AutoResumeState {
   exhaustedAt: string | null;
   /** ISO timestamp of the last automatic resume. */
   lastResumeAt: string | null;
+  /**
+   * myrmidon(OPE-11947): resumes issued in the current model-unavailable series
+   * (absent or 0: no series). They do not count towards the attempt cap.
+   */
+  modelUnavailableResumes?: number;
+  /**
+   * myrmidon(1.6.6 AUTO-RESUME container): container starts tried in the current
+   * "контейнер не поднят" series, written before each start. A successful start
+   * replaces the whole state by the resume state, which drops this field.
+   */
+  containerStartFailures?: number;
+  /** ISO time of the last container start attempt of that series. */
+  lastContainerStartAt?: string;
 }
 
 function readIsoString(value: unknown): string | null {
@@ -149,6 +203,20 @@ export function readAutoResumeState(metadata: unknown): AutoResumeState | null {
     nextAttemptAt: readIsoString(value.nextAttemptAt),
     exhaustedAt: readIsoString(value.exhaustedAt),
     lastResumeAt: readIsoString(value.lastResumeAt),
+    ...(typeof value.modelUnavailableResumes === "number" &&
+    Number.isFinite(value.modelUnavailableResumes) &&
+    value.modelUnavailableResumes > 0
+      ? { modelUnavailableResumes: Math.floor(value.modelUnavailableResumes) }
+      : {}),
+    ...(typeof value.containerStartFailures === "number" &&
+    Number.isFinite(value.containerStartFailures) &&
+    value.containerStartFailures > 0 &&
+    readIsoString(value.lastContainerStartAt)
+      ? {
+          containerStartFailures: Math.floor(value.containerStartFailures),
+          lastContainerStartAt: readIsoString(value.lastContainerStartAt)!,
+        }
+      : {}),
   };
 }
 
@@ -182,17 +250,24 @@ export function readAutoResumeAttentionState(metadata: unknown): AutoResumeAtten
   return { exhausted: Boolean(state.exhaustedAt), failures: state.failures, exhaustedAt: state.exhaustedAt };
 }
 
-export type AutoResumeDecisionAction = "skip" | "resume" | "exhaust";
+export type AutoResumeDecisionAction = "skip" | "resume" | "exhaust" | "start_container";
 
 export interface AutoResumeDecision {
   action: AutoResumeDecisionAction;
   reason: string;
   /** State to persist. Equals the incoming state when nothing changes. */
   nextState: AutoResumeState | null;
+  /**
+   * myrmidon(1.6.6 AUTO-RESUME container): only for `start_container`. `nextState` is the
+   * attempt, recorded before the start as a failure; this is the state of the ordinary
+   * resume that replaces it once the container is up and healthy.
+   */
+  stateAfterStart?: AutoResumeState;
 }
 
 export interface AutoResumePolicyAgent {
   status: string;
+  errorReason?: string | null;
   /** `agents.updated_at`: the agent error entry (or the last operator/system touch). */
   updatedAt: Date;
 }
@@ -208,8 +283,29 @@ export function decideAutoResume(params: {
   now: Date;
   invokable: boolean;
   underMaintenance: boolean;
+  /**
+   * myrmidon(OPE-11947): the agent's last finished run is model-unavailable
+   * (`isModelUnavailableRun`); the agent returns on the long model-unavailable
+   * schedule, outside the attempt cap.
+   */
+  lastRunModelUnavailable?: boolean;
+  /** When that last finished run ended; the long schedule counts from it. */
+  lastRunFinishedAt?: Date | null;
+  /**
+   * When an operator last resumed, updated or cleared this agent (a user
+   * activity row), or null. Only an action after `exhaustedAt` re-arms a give-up.
+   */
+  lastOperatorActionAt?: Date | null;
+  /**
+   * myrmidon(1.6.6 AUTO-RESUME container): the sweep can start a bot container
+   * (`AutoResumeSweeperDeps.startContainer`). Without it the reason "контейнер не
+   * поднят" is skipped as before.
+   */
+  canStartContainer?: boolean;
 }): AutoResumeDecision {
   const { agent, settings, now, invokable, underMaintenance } = params;
+  const lastRunModelUnavailable = params.lastRunModelUnavailable ?? false;
+  const lastOperatorActionAt = params.lastOperatorActionAt ?? null;
   let state = params.state;
 
   if (!settings.enabled) return { action: "skip", reason: "disabled", nextState: state };
@@ -219,11 +315,76 @@ export function decideAutoResume(params: {
   if (!invokable) return { action: "skip", reason: "not_invokable", nextState: state };
   if (underMaintenance) return { action: "skip", reason: "maintenance", nextState: state };
 
-  // Re-arm after an operator acted: the record changed after we gave up, so
-  // this is a new episode and the attempt counter starts over.
+  // The gateway connect retries ran out and the agent was marked "контейнер не
+  // поднят": resuming it onto a stopped container would only fail again, so the
+  // container is started first (decideContainerStart); with no way to start one
+  // the agent waits for the operator, as before.
+  if (agent.errorReason === AUTO_RESUME_CONTAINER_NOT_STARTED_REASON) {
+    if (!params.canStartContainer) {
+      return { action: "skip", reason: "container_not_started", nextState: state };
+    }
+    return decideContainerStart({
+      agent,
+      state,
+      settings,
+      now,
+      lastOperatorActionAt: params.lastOperatorActionAt ?? null,
+    });
+  }
+
+  // myrmidon(OPE-11947): the model pool could not answer the last run. Resuming
+  // wakes every task the agent is stranded on, and each new run fails on the
+  // same quota, so the agent returns on the long model-unavailable schedule
+  // (30 min, 1 h, 2 h, 4 h, then every 6 h after that run ended). These resumes
+  // are outside the attempt cap and never give up: the quota resets some day.
+  let modelUnavailableResumes = state?.modelUnavailableResumes ?? 0;
+  if (lastRunModelUnavailable) {
+    const lastRunFinishedAtMs = (params.lastRunFinishedAt ?? agent.updatedAt).getTime();
+    const lastResumeAtMs = state?.lastResumeAt ? Date.parse(state.lastResumeAt) : Number.NaN;
+    // A series continues only while the failing run followed the last resume
+    // closely; a run that ended much later, after a healthy stretch, starts over.
+    if (
+      modelUnavailableResumes > 0 &&
+      Number.isFinite(lastResumeAtMs) &&
+      lastRunFinishedAtMs - lastResumeAtMs > MODEL_UNAVAILABLE_RETRY_MAX_DELAY_MS
+    ) {
+      modelUnavailableResumes = 0;
+    }
+    // Never sooner than one step after the last resume either, whatever the run's age.
+    const baseMs =
+      modelUnavailableResumes > 0 && Number.isFinite(lastResumeAtMs)
+        ? Math.max(lastRunFinishedAtMs, lastResumeAtMs)
+        : lastRunFinishedAtMs;
+    const dueAtMs = baseMs + computeModelUnavailableRetryDelayMs(modelUnavailableResumes + 1);
+    if (now.getTime() < dueAtMs) {
+      return { action: "skip", reason: "model_unavailable_wait", nextState: state };
+    }
+    const nextResumes = modelUnavailableResumes + 1;
+    return {
+      action: "resume",
+      reason: "model_unavailable_due",
+      nextState: {
+        // The ordinary streak is not touched by the quota: it starts clean once the model is back.
+        failures: 0,
+        lastFailureAt: now.toISOString(),
+        nextAttemptAt: null,
+        exhaustedAt: null,
+        lastResumeAt: now.toISOString(),
+        modelUnavailableResumes: nextResumes,
+      },
+    };
+  }
+  // The last run is not model-unavailable (the model is back, or the error is another one):
+  // the series is over and the ordinary 1/5/15 min backoff with its cap applies again.
+  if (modelUnavailableResumes > 0) state = null;
+
+  // Re-arm after an operator acted: a resume, update or error clear by a user
+  // after we gave up is a new episode and the attempt counter starts over.
+  // `agents.updated_at` is deliberately not read: runs and status changes move
+  // it, which re-armed a give-up a few minutes after it was written.
   if (state?.exhaustedAt) {
     const exhaustedAtMs = Date.parse(state.exhaustedAt);
-    if (Number.isFinite(exhaustedAtMs) && agent.updatedAt.getTime() > exhaustedAtMs + 1_000) {
+    if (Number.isFinite(exhaustedAtMs) && lastOperatorActionAt && lastOperatorActionAt.getTime() > exhaustedAtMs) {
       state = null;
     }
   }
@@ -273,6 +434,100 @@ export function decideAutoResume(params: {
   };
 }
 
+/**
+ * myrmidon(1.6.6 AUTO-RESUME container): the policy for an agent in `error` with the reason
+ * "контейнер не поднят". Pure, like `decideAutoResume`.
+ *
+ *  - The first start is tried at once: the run retries that ended in this error are spent.
+ *  - A start that failed is retried no sooner than 15 minutes after the previous attempt, 4
+ *    attempts in all; then `exhaust`, which raises the ordinary operator card.
+ *  - After a healthy start the agent is resumed like any other (`stateAfterStart`); such a
+ *    resume counts in the ordinary streak, so a container that starts and still refuses the
+ *    gateway ends in the ordinary give-up as well.
+ *  - A give-up is re-armed only by an operator action, exactly as in the ordinary path.
+ */
+function decideContainerStart(params: {
+  agent: AutoResumePolicyAgent;
+  state: AutoResumeState | null;
+  settings: AutoResumeSettings;
+  now: Date;
+  lastOperatorActionAt: Date | null;
+}): AutoResumeDecision {
+  const { agent, settings, now, lastOperatorActionAt } = params;
+  const nowMs = now.getTime();
+  let state = params.state;
+
+  if (state?.exhaustedAt) {
+    const exhaustedAtMs = Date.parse(state.exhaustedAt);
+    if (Number.isFinite(exhaustedAtMs) && lastOperatorActionAt && lastOperatorActionAt.getTime() > exhaustedAtMs) {
+      state = null;
+    }
+  }
+  if (state?.exhaustedAt) return { action: "skip", reason: "exhausted", nextState: state };
+
+  // Resumes after a healthy start that failed again: the ordinary streak and its cap.
+  const lastResumeAtMs = state?.lastResumeAt ? Date.parse(state.lastResumeAt) : Number.NaN;
+  const streakFailures =
+    state && Number.isFinite(lastResumeAtMs) && nowMs - lastResumeAtMs <= settings.failureWindowMs ? state.failures : 0;
+  if (streakFailures >= settings.maxAttempts) {
+    return {
+      action: "exhaust",
+      reason: "max_attempts",
+      nextState: {
+        failures: streakFailures,
+        lastFailureAt: state?.lastFailureAt ?? agent.updatedAt.toISOString(),
+        nextAttemptAt: state?.nextAttemptAt ?? null,
+        exhaustedAt: now.toISOString(),
+        lastResumeAt: state?.lastResumeAt ?? null,
+      },
+    };
+  }
+
+  const lastStartAtMs = state?.lastContainerStartAt ? Date.parse(state.lastContainerStartAt) : Number.NaN;
+  const seriesAlive =
+    Number.isFinite(lastStartAtMs) && nowMs - lastStartAtMs <= AUTO_RESUME_CONTAINER_START_SERIES_WINDOW_MS;
+  const startFailures = seriesAlive ? (state?.containerStartFailures ?? 0) : 0;
+  if (startFailures >= AUTO_RESUME_CONTAINER_START_MAX_ATTEMPTS) {
+    return {
+      action: "exhaust",
+      reason: "container_start_failed",
+      nextState: {
+        // The card says "gave up after N attempt(s)": N is the container starts tried.
+        failures: startFailures,
+        lastFailureAt: state?.lastFailureAt ?? now.toISOString(),
+        nextAttemptAt: null,
+        exhaustedAt: now.toISOString(),
+        lastResumeAt: state?.lastResumeAt ?? null,
+      },
+    };
+  }
+  if (startFailures > 0 && nowMs < lastStartAtMs + AUTO_RESUME_CONTAINER_START_RETRY_MS) {
+    return { action: "skip", reason: "container_start_wait", nextState: state };
+  }
+
+  return {
+    action: "start_container",
+    reason: "container_not_started",
+    // Written before the start, as a failure: a crash or an overlapping pass must not repeat it.
+    nextState: {
+      failures: streakFailures,
+      lastFailureAt: now.toISOString(),
+      nextAttemptAt: new Date(nowMs + AUTO_RESUME_CONTAINER_START_RETRY_MS).toISOString(),
+      exhaustedAt: null,
+      lastResumeAt: state?.lastResumeAt ?? null,
+      containerStartFailures: startFailures + 1,
+      lastContainerStartAt: now.toISOString(),
+    },
+    stateAfterStart: {
+      failures: streakFailures + 1,
+      lastFailureAt: now.toISOString(),
+      nextAttemptAt: new Date(nowMs + backoffForAttempt(settings.backoffMs, streakFailures + 1)).toISOString(),
+      exhaustedAt: null,
+      lastResumeAt: now.toISOString(),
+    },
+  };
+}
+
 export interface AutoResumeActivityInput {
   companyId: string;
   actorType: "system";
@@ -307,6 +562,14 @@ export interface AutoResumeSweeperDeps {
    * (unit tests that predate the settings area) means the environment decides.
    */
   readLiveness?: () => Promise<ResolvedTeamLiveness>;
+  /**
+   * myrmidon(1.6.6 AUTO-RESUME container): starts the agent's bot container through the
+   * board's own path and resolves once it is running and healthy; throws otherwise (the
+   * wiring uses `IdleStopService.ensureStartedAndHealthy`, the same call that starts an
+   * idle-stopped container before a run). Absent: an agent whose reason is "контейнер не
+   * поднят" is skipped as before.
+   */
+  startContainer?: (agentId: string) => Promise<void>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -368,10 +631,21 @@ async function claimAutoResume(db: Db, agent: AutoResumeAgentRow, nextState: Aut
 
 /**
  * Marks the agent as given up: writes `exhaustedAt` and deliberately leaves
- * `updated_at` untouched, because the re-arm rule compares a later operator
- * touch against that timestamp.
+ * `updated_at` untouched, so the give-up does not look like a fresh error entry.
  */
 async function markAutoResumeExhausted(
+  db: Db,
+  agent: AutoResumeAgentRow,
+  nextState: AutoResumeState,
+): Promise<boolean> {
+  return writeAutoResumeStateKeepingUpdatedAt(db, agent, nextState);
+}
+
+/**
+ * Writes the state of an agent that stays in `error`, leaving `updated_at` untouched (it is
+ * the error entry the ordinary backoff counts from). Only an agent still in `error` is written.
+ */
+async function writeAutoResumeStateKeepingUpdatedAt(
   db: Db,
   agent: AutoResumeAgentRow,
   nextState: AutoResumeState,
@@ -382,6 +656,78 @@ async function markAutoResumeExhausted(
     .where(and(eq(agents.id, agent.id), eq(agents.status, "error")))
     .returning({ id: agents.id });
   return Boolean(rows[0]);
+}
+
+/**
+ * myrmidon(1.6.6 AUTO-RESUME container): the agent's row as the sweep reads it, fetched again
+ * after a container start, which can take minutes (the metadata may have moved meanwhile).
+ */
+async function readAutoResumeAgentRow(db: Db, agentId: string): Promise<AutoResumeAgentRow | null> {
+  const rows = (await db
+    .select({
+      id: agents.id,
+      companyId: agents.companyId,
+      name: agents.name,
+      reportsTo: agents.reportsTo,
+      status: agents.status,
+      errorReason: agents.errorReason,
+      updatedAt: agents.updatedAt,
+      metadata: agents.metadata,
+      adapterConfig: agents.adapterConfig,
+    })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1)) as AutoResumeAgentRow[];
+  return rows[0] ?? null;
+}
+
+/**
+ * myrmidon(OPE-11947): whether the agent's last finished run is model-unavailable,
+ * and when it ended. Newest run by creation time (the company/agent/created index), skipping runs
+ * that have not finished (queued, running, a scheduled retry waiting its time).
+ */
+async function readLastRunModelUnavailable(
+  db: Db,
+  agent: AutoResumeAgentRow,
+): Promise<{ modelUnavailable: boolean; finishedAt: Date | null }> {
+  const rows = await db
+    .select({ resultJson: heartbeatRuns.resultJson, finishedAt: heartbeatRuns.finishedAt })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, agent.companyId),
+        eq(heartbeatRuns.agentId, agent.id),
+        isNotNull(heartbeatRuns.finishedAt),
+      ),
+    )
+    .orderBy(desc(heartbeatRuns.createdAt))
+    .limit(1);
+  const last = rows[0];
+  return { modelUnavailable: last ? isModelUnavailableRun(last) : false, finishedAt: last?.finishedAt ?? null };
+}
+
+/**
+ * myrmidon(OPE-11947): the newest operator action on this agent after `since`
+ * (a user's `agent.resumed` / `agent.updated` / `agent.error_cleared` row), or
+ * null. `entity_id` is the agent acted on; `agent_id` would be the acting agent.
+ */
+async function readLastOperatorActionAt(db: Db, agent: AutoResumeAgentRow, since: Date): Promise<Date | null> {
+  const rows = await db
+    .select({ createdAt: activityLog.createdAt })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.entityType, "agent"),
+        eq(activityLog.entityId, agent.id),
+        eq(activityLog.companyId, agent.companyId),
+        eq(activityLog.actorType, "user"),
+        inArray(activityLog.action, [...AUTO_RESUME_OPERATOR_ACTIVITY_ACTIONS]),
+        gt(activityLog.createdAt, since),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(1);
+  return rows[0]?.createdAt ?? null;
 }
 
 export interface AutoResumeSweeper {
@@ -434,6 +780,97 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
         .where(and(eq(companies.status, "active"), eq(agents.status, "error")))) as AutoResumeAgentRow[];
 
       const result = emptyAutoResumeResult();
+
+      // The wake chain and the activity row of one automatic resume, after the agent
+      // was claimed (flipped to idle); shared by the ordinary resume and by the resume
+      // that follows a healthy container start.
+      const finishResume = async (
+        agent: AutoResumeAgentRow,
+        nextState: AutoResumeState,
+        extraDetails: Record<string, unknown>,
+      ): Promise<void> => {
+        try {
+          await deps.resumeWake(agent.id);
+        } catch (err) {
+          // Best-effort: the agent is already back to idle; the next tick sees
+          // it as idle and stops, and a stranded wake is retried by the other
+          // resume paths (pause-drain, stranded recovery).
+          logger.warn({ err, agentId: agent.id }, "auto-resume wake failed after an automatic resume");
+        }
+        result.resumed += 1;
+        result.agentIds.push(agent.id);
+        await deps.logActivity?.({
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: AUTO_RESUME_ACTOR_ID,
+          agentId: agent.id,
+          runId: null,
+          action: AUTO_RESUME_ACTIVITY_ACTION,
+          entityType: "agent",
+          entityId: agent.id,
+          details: {
+            attempt: nextState.failures,
+            errorReason: agent.errorReason,
+            nextAttemptAt: nextState.nextAttemptAt,
+            ...extraDetails,
+          },
+        });
+      };
+
+      // myrmidon(1.6.6 AUTO-RESUME container): one attempt to bring the bot container up
+      // for an agent left in "контейнер не поднят", then the ordinary resume. The attempt
+      // is written first (a failure until proven otherwise), so a crash or an overlapping
+      // pass cannot repeat it; a start can take minutes, so these run beside the other agents.
+      const startContainerAndResume = async (agent: AutoResumeAgentRow, decision: AutoResumeDecision): Promise<void> => {
+        const attemptState = decision.nextState!;
+        const attempt = attemptState.containerStartFailures ?? 1;
+        try {
+          if (!(await writeAutoResumeStateKeepingUpdatedAt(deps.db, agent, attemptState))) {
+            result.skipped += 1;
+            return;
+          }
+          try {
+            await deps.startContainer!(agent.id);
+          } catch (err) {
+            logger.warn({ err, agentId: agent.id, attempt }, "auto-resume: the bot container did not start");
+            await deps.logActivity?.({
+              companyId: agent.companyId,
+              actorType: "system",
+              actorId: AUTO_RESUME_ACTOR_ID,
+              agentId: agent.id,
+              runId: null,
+              action: AUTO_RESUME_CONTAINER_START_FAILED_ACTIVITY_ACTION,
+              entityType: "agent",
+              entityId: agent.id,
+              details: {
+                attempt,
+                maxAttempts: AUTO_RESUME_CONTAINER_START_MAX_ATTEMPTS,
+                nextAttemptAt: attempt >= AUTO_RESUME_CONTAINER_START_MAX_ATTEMPTS ? null : attemptState.nextAttemptAt,
+                error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+              },
+            });
+            result.skipped += 1;
+            return;
+          }
+          // The container is up and healthy. The start could take minutes: read the row
+          // again, and resume only an agent that still sits in `error`.
+          const fresh = await readAutoResumeAgentRow(deps.db, agent.id);
+          if (!fresh || fresh.status !== "error") {
+            result.skipped += 1;
+            return;
+          }
+          if (!(await claimAutoResume(deps.db, fresh, decision.stateAfterStart!, now))) {
+            result.skipped += 1;
+            return;
+          }
+          await finishResume(fresh, decision.stateAfterStart!, { containerStarted: true, containerStartAttempt: attempt });
+        } catch (err) {
+          logger.warn({ err, agentId: agent.id }, "auto-resume: container start pass failed");
+          result.skipped += 1;
+        }
+      };
+      const containerStarts: Promise<void>[] = [];
+
       for (const agent of rows) {
         result.agentsChecked += 1;
         // myrmidon(TEAM-LIVENESS-SETTINGS): this agent's own switch. A card that
@@ -445,13 +882,29 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
         }
         const invokable = await deps.isAgentInvokable(agent);
         const underMaintenance = await deps.isAgentUnderMaintenance(agent.id);
+        const state = readAutoResumeState(agent.metadata);
+        // myrmidon(OPE-11947): the two facts the policy reads from the database.
+        const lastRun = await readLastRunModelUnavailable(deps.db, agent);
+        const exhaustedAt = state?.exhaustedAt ? new Date(state.exhaustedAt) : null;
+        const lastOperatorActionAt =
+          exhaustedAt && Number.isFinite(exhaustedAt.getTime())
+            ? await readLastOperatorActionAt(deps.db, agent, exhaustedAt)
+            : null;
         const decision = decideAutoResume({
-          agent: { status: agent.status, updatedAt: agent.updatedAt },
-          state: readAutoResumeState(agent.metadata),
+          agent: {
+            status: agent.status,
+            errorReason: agent.errorReason,
+            updatedAt: agent.updatedAt,
+          },
+          state,
           settings,
           now,
           invokable,
           underMaintenance,
+          lastRunModelUnavailable: lastRun.modelUnavailable,
+          lastRunFinishedAt: lastRun.finishedAt,
+          lastOperatorActionAt,
+          canStartContainer: Boolean(deps.startContainer),
         });
 
         if (decision.action === "skip") {
@@ -484,37 +937,27 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
           continue;
         }
 
+        if (decision.action === "start_container") {
+          containerStarts.push(startContainerAndResume(agent, decision));
+          continue;
+        }
+
         const claimed = await claimAutoResume(deps.db, agent, decision.nextState!, now);
         if (!claimed) {
           result.skipped += 1;
           continue;
         }
-        try {
-          await deps.resumeWake(agent.id);
-        } catch (err) {
-          // Best-effort: the agent is already back to idle; the next tick sees
-          // it as idle and stops, and a stranded wake is retried by the other
-          // resume paths (pause-drain, stranded recovery).
-          logger.warn({ err, agentId: agent.id }, "auto-resume wake failed after an automatic resume");
-        }
-        result.resumed += 1;
-        result.agentIds.push(agent.id);
-        await deps.logActivity?.({
-          companyId: agent.companyId,
-          actorType: "system",
-          actorId: AUTO_RESUME_ACTOR_ID,
-          agentId: agent.id,
-          runId: null,
-          action: AUTO_RESUME_ACTIVITY_ACTION,
-          entityType: "agent",
-          entityId: agent.id,
-          details: {
-            attempt: decision.nextState!.failures,
-            errorReason: agent.errorReason,
-            nextAttemptAt: decision.nextState!.nextAttemptAt,
-          },
-        });
+        await finishResume(
+          agent,
+          decision.nextState!,
+          // myrmidon(OPE-11947): a long-schedule resume is not an attempt of the capped streak.
+          decision.reason === "model_unavailable_due"
+            ? { modelUnavailable: true, modelUnavailableResumes: decision.nextState!.modelUnavailableResumes }
+            : {},
+        );
       }
+      // The container starts ran beside the loop above; the pass ends when they have.
+      await Promise.all(containerStarts);
 
       if (result.resumed > 0 || result.exhausted > 0) {
         logger.warn(

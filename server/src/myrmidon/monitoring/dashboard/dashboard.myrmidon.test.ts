@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDashboardView,
+  buildOomFleetSummary,
   buildSelfcheckView,
   dashboardHostQueries,
   defaultRunbookKey,
@@ -426,6 +427,30 @@ describe("monitoring dashboard clients (myrmidon 1.6.6 MONITORING C)", () => {
     expect(requests.find(({ body }) => body.method === "host.get")?.body).not.toHaveProperty("auth");
   });
 });
+
+describe("buildOomFleetSummary", () => {
+  it("aggregates recent events by agent and role", async () => {
+    const now = new Date("2026-11-01T12:00:00.000Z");
+    const rows = [{ agentId: "a1", agentName: "Builder", role: "engineer", count: 4 }];
+    let selectCalls = 0;
+    const select = () => {
+      const queryIndex = selectCalls++;
+      if (queryIndex === 0) {
+        return {
+          from: () => ({
+            innerJoin: () => ({ where: () => ({ groupBy: () => ({ orderBy: async () => rows }) }) }),
+          }),
+        };
+      }
+      return { from: () => ({ where: () => [{ count: 1 }] }) };
+    };
+    const result = await buildOomFleetSummary({ select } as never, "company-1", now);
+    expect(result).toMatchObject({ windowStartedAt: "2026-10-31T12:00:00.000Z", total24h: 4, previous24h: 1, increaseAlert: true });
+    expect(result.byAgent).toEqual([{ agentId: "a1", agentName: "Builder", role: "engineer", count: 4 }]);
+    expect(result.byRole).toEqual([{ role: "engineer", count: 4 }]);
+  });
+});
+
 
 describe("dashboard PromQL (myrmidon 1.6.6 MONITORING C)", () => {
   it("host queries embed the job selector", () => {

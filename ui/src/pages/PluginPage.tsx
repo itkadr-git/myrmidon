@@ -10,6 +10,7 @@ import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   PluginSlotMount,
+  ensurePluginContributionLoaded,
   resolveRouteSidebarSlot,
   type ResolvedPluginSlot,
 } from "@/plugins/slots";
@@ -60,6 +61,13 @@ export function PluginPage() {
     queryFn: () => pluginsApi.listUiContributions(),
     enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath),
   });
+  useEffect(() => {
+    if (!contributions || !resolvedCompanyId || (!pluginId && !pluginRoutePath)) return;
+    const matched = pluginId
+      ? contributions.find((contribution) => contribution.pluginId === pluginId)
+      : contributions.find((contribution) => contribution.slots.some((slot) => slot.type === "page" && slot.routePath === pluginRoutePath));
+    if (matched) void ensurePluginContributionLoaded(matched);
+  }, [contributions, resolvedCompanyId, pluginId, pluginRoutePath]);
 
   const pageSlot = useMemo(() => {
     if (!contributions) return null;

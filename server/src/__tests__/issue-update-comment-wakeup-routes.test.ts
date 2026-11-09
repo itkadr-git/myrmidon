@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const PREVIOUS_AGENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -45,6 +45,21 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockRunnerGoalService = vi.hoisted(() => ({
   projection: vi.fn(async () => null),
   act: vi.fn(),
+}));
+
+// The unit harness has no database: an agent-authored PATCH asks for a settled
+// replay hold (board-only in practice), which would read through db.select.
+vi.mock("../services/cross-issue-influence-limit.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/cross-issue-influence-limit.js")>()),
+  observeCrossIssueInfluence: vi.fn(async () => null),
+}));
+vi.mock("../services/task-watchdog-scope.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/task-watchdog-scope.js")>()),
+  resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+}));
+vi.mock("../myrmidon/settled-holds/human-unblock.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../myrmidon/settled-holds/human-unblock.js")>()),
+  issueHasSettledReplayHold: vi.fn(async () => false),
 }));
 
 vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
@@ -201,7 +216,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(agentActor?: { agentId: string; runId?: string | null }) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -209,14 +224,23 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      runId: req.header("x-paperclip-run-id") ?? null,
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = agentActor
+      ? {
+          type: "agent",
+          agentId: agentActor.agentId,
+          companyId: "company-1",
+          keyId: "key-1",
+          source: "agent_key",
+          runId: agentActor.runId ?? null,
+        }
+      : {
+          type: "board",
+          userId: "local-board",
+          companyIds: ["company-1"],
+          source: "local_implicit",
+          runId: req.header("x-paperclip-run-id") ?? null,
+          isInstanceAdmin: false,
+        };
     next();
   });
   app.use("/api", issueRoutes({
@@ -248,12 +272,24 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue update comment wakeups", () => {
-  beforeEach(() => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockAccessDecide.mockImplementation(async (input) => ({ allowed: true, action: input.action, reason: "allow_explicit_grant", explanation: "Allowed by test grant." }));
     mockPauseGate.mockResolvedValue(null);
@@ -937,5 +973,152 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  // myrmidon(1.6.6 OPE-12049, TOKEN-BURN H): the assignee's own PATCH, made from
+  // its run on this very task, does not wake that assignee. 07.11: the adm bot
+  // released a task, assigned it to itself and woke itself with
+  // "issue_assigned" ten times an hour. Any other writer still wakes it.
+  describe("assignee's own PATCH does not wake the assignee", () => {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+    const OTHER_TASK_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    const runOf = (agentId: string, issueId: string) => ({
+      id: SOURCE_RUN_ID,
+      companyId: "company-1",
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    function selfAssignScenario() {
+      const existing = makeIssue({ assigneeAgentId: null, assigneeUserId: null, status: "todo" });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockResolvedValue(
+        makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "todo" }),
+      );
+      return existing;
+    }
+
+    function backlogScenario() {
+      const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "backlog" });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockResolvedValue({ ...existing, status: "todo" });
+      return existing;
+    }
+
+    it("does not wake an agent that assigns the task to itself from its run on that task", async () => {
+      const existing = selfAssignScenario();
+      mockHeartbeatService.getRun.mockResolvedValue(runOf(ASSIGNEE_AGENT_ID, existing.id));
+
+      const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
+        .patch(`/api/issues/${existing.id}`)
+        .send({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("does not wake an agent that moves its own task out of backlog from its run on that task", async () => {
+      const existing = backlogScenario();
+      mockHeartbeatService.getRun.mockResolvedValue(runOf(ASSIGNEE_AGENT_ID, existing.id));
+
+      const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
+        .patch(`/api/issues/${existing.id}`)
+        .send({ status: "todo" });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("still wakes the assignee when its run belongs to a different task", async () => {
+      const existing = selfAssignScenario();
+      mockHeartbeatService.getRun.mockResolvedValue(runOf(ASSIGNEE_AGENT_ID, OTHER_TASK_ID));
+
+      const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
+        .patch(`/api/issues/${existing.id}`)
+        .send({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ASSIGNEE_AGENT_ID,
+        expect.objectContaining({ reason: "issue_assigned", requestedByActorType: "agent" }),
+      );
+    });
+
+    it("still wakes the assignee when the run cannot be matched to the task", async () => {
+      const existing = backlogScenario();
+      mockHeartbeatService.getRun.mockRejectedValue(new Error("run lookup failed"));
+
+      const res = await request(await createApp({ agentId: ASSIGNEE_AGENT_ID, runId: SOURCE_RUN_ID }))
+        .patch(`/api/issues/${existing.id}`)
+        .send({ status: "todo" });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ASSIGNEE_AGENT_ID,
+        expect.objectContaining({ reason: "issue_status_changed" }),
+      );
+    });
+
+    it("still wakes the new assignee when a different agent assigns the task", async () => {
+      const existing = selfAssignScenario();
+      mockHeartbeatService.getRun.mockResolvedValue(runOf(PREVIOUS_AGENT_ID, existing.id));
+
+      const res = await request(await createApp({ agentId: PREVIOUS_AGENT_ID, runId: SOURCE_RUN_ID }))
+        .patch(`/api/issues/${existing.id}`)
+        .send({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ASSIGNEE_AGENT_ID,
+        expect.objectContaining({
+          source: "assignment",
+          reason: "issue_assigned",
+          requestedByActorType: "agent",
+          requestedByActorId: PREVIOUS_AGENT_ID,
+        }),
+      );
+    });
+
+    it("still wakes the new assignee when a board user assigns the task", async () => {
+      const existing = selfAssignScenario();
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${existing.id}`)
+        .send({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ASSIGNEE_AGENT_ID,
+        expect.objectContaining({
+          reason: "issue_assigned",
+          requestedByActorType: "user",
+        }),
+      );
+    });
+
+    it("still wakes the assignee when a board user moves its task out of backlog", async () => {
+      const existing = backlogScenario();
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${existing.id}`)
+        .send({ status: "todo" });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ASSIGNEE_AGENT_ID,
+        expect.objectContaining({ reason: "issue_status_changed" }),
+      );
+    });
   });
 });

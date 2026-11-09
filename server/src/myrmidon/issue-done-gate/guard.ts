@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { conflict } from "../../errors.js";
+import { logger } from "../../middleware/logger.js";
 import {
   createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
@@ -45,6 +46,28 @@ function noAccess(product: GateProduct, url?: string | null): never {
   });
 }
 
+function blockUnreachable(
+  product: GateProduct,
+  url?: string | null,
+  baseRef?: string | null,
+  defaultBranch?: string | null,
+): never {
+  const link = url ?? product.url ?? "the linked pull request";
+  const def = defaultBranch ?? "main";
+  throw conflict(
+    `Cannot mark this task done: PR ${link} was merged into ${baseRef ?? "a non-main branch"}, but its merge commit is not reachable from ${def} or rel/*. Код не дошёл до основной ветки.`,
+    {
+      code: ISSUE_DONE_PULL_REQUEST_GATE,
+      reason: "merge_commit_unreachable",
+      workProductId: product.id,
+      pullRequestUrl: url ?? product.url,
+      baseRef: baseRef ?? null,
+      defaultBranch: def,
+      retryable: true,
+    },
+  );
+}
+
 function block(product: GateProduct, url?: string | null): never {
   const link = url ?? product.url ?? "the linked pull request";
   throw conflict(`Cannot mark this task done until ${link} is merged. If the PR was closed without merging, link a verified replacement and retry.`, {
@@ -87,23 +110,97 @@ export async function inspectIssueDonePullRequests(
         const replacement = extractGitHubPullRequestReferences([metadata.replacementPullRequestUrl])[0];
         if (replacement) {
           const replacementDetails = await resolve(companyId, replacement);
+          const replacementState = replacementDetails.workProductState ?? "unknown";
+          if (replacementState === "merged" || replacementState === "closed") {
+            try {
+              await db.update(issueWorkProducts).set({
+                status: replacementState,
+                metadata: { ...metadata, state: replacementState, draft: false },
+              }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
+            } catch (err) {
+              logger.warn(
+                { errorKind: "issue_done_pr_state_persist_failed", errorName: err instanceof Error ? err.name : typeof err, workProductId: product.id },
+                "could not persist replacement pull-request state during done validation",
+              );
+            }
+          }
+          const refreshedProduct = {
+            ...product,
+            status: replacementState,
+            metadata: { ...metadata, state: replacementState, draft: false },
+          };
           return {
-            product,
-            state: replacementDetails.workProductState === "merged" ? "merged" as const : "closed" as const,
-            url: product.url,
+            product: refreshedProduct,
+            state: replacementState === "merged" ? "merged" as const : "closed" as const,
+            url: refreshedProduct.url,
           };
         }
       }
+      const state = details.workProductState ?? "unknown";
+      const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+        ? product.metadata as Record<string, unknown>
+        : {};
+      const baseRef = details.baseRef ?? null;
+      const defaultBranch = details.defaultBranch ?? "main";
+      const isDelivering = !baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/");
+      const mergeCommitReachable = isDelivering ? true : (details.mergeCommitReachable ?? false);
+      if (state === "merged" || state === "closed") {
+        try {
+          await db.update(issueWorkProducts).set({
+            status: state,
+            metadata: {
+              ...metadata,
+              state,
+              draft: false,
+              ...(details.baseRef !== undefined ? { baseRef: details.baseRef } : {}),
+              ...(details.defaultBranch !== undefined ? { defaultBranch: details.defaultBranch } : {}),
+              ...(details.mergeCommitSha !== undefined ? { mergeCommitSha: details.mergeCommitSha } : {}),
+              ...(details.mergeCommitReachable !== undefined ? { mergeCommitReachable: details.mergeCommitReachable } : {}),
+            },
+          }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
+        } catch (err) {
+          logger.warn(
+            { errorKind: "issue_done_pr_state_persist_failed", errorName: err instanceof Error ? err.name : typeof err, workProductId: product.id },
+            "could not persist pull-request state during done validation",
+          );
+        }
+      }
+      const refreshedProduct = {
+        ...product,
+        status: state,
+        metadata: {
+          ...metadata,
+          state,
+          draft: false,
+          ...(details.baseRef !== undefined ? { baseRef: details.baseRef } : {}),
+          ...(details.defaultBranch !== undefined ? { defaultBranch: details.defaultBranch } : {}),
+          ...(details.mergeCommitSha !== undefined ? { mergeCommitSha: details.mergeCommitSha } : {}),
+          ...(details.mergeCommitReachable !== undefined ? { mergeCommitReachable: details.mergeCommitReachable } : {}),
+        },
+      };
       return {
-        product,
-        state: details.workProductState ?? "unknown",
-        url: product.url,
+        product: refreshedProduct,
+        state,
+        url: refreshedProduct.url,
+        baseRef,
+        defaultBranch,
+        mergeCommitSha: details.mergeCommitSha ?? null,
+        mergeCommitReachable,
         ...(details.access === "denied" ? { accessDenied: true as const } : {}),
       };
-    } catch {
+    } catch (err) {
+      logger.warn(
+        { errorKind: "issue_done_pr_lookup_failed", errorName: err instanceof Error ? err.name : typeof err, workProductId: product.id },
+        "could not resolve pull-request state during done validation",
+      );
       return { product, state: "unknown" as const, url: product.url };
     }
   }));
+  const merged = states.some(({ state }) => state === "merged");
+  const closed = states.filter(({ state }) => state === "closed");
+  if (merged && closed.length > 0) {
+    return states.filter(({ state }) => state !== "closed");
+  }
   return states;
 }
 
@@ -113,21 +210,53 @@ export async function assertIssueCanBeDone(db: Db, companyId: string, issueId: s
 
 export function assertIssueDonePullRequestsSettled(states: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>) {
   for (const entry of states) {
-    if (entry.state === "superseded" || entry.state === "merged") continue;
+    if (entry.state === "superseded") continue;
+    if (entry.state === "merged") {
+      if ("mergeCommitReachable" in entry && entry.mergeCommitReachable === false) {
+        blockUnreachable(entry.product, entry.url, entry.baseRef, entry.defaultBranch);
+      }
+      continue;
+    }
     if ("accessDenied" in entry && entry.accessDenied && entry.state === "unknown") noAccess(entry.product, entry.url);
     block(entry.product, entry.url);
   }
 }
 
 export function assertStoredIssueDonePullRequestsSettled(products: GateProduct[]) {
-  for (const product of products) {
-    if (product.status === "archived" || product.status === "merged") continue;
+  const pullRequests = products.filter((product) => product.type === "pull_request");
+  const hasMerged = pullRequests.some((product) => product.status === "merged");
+  for (const product of pullRequests) {
+    if (product.status === "archived") continue;
+    if (product.status === "merged") {
+      const meta = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+        ? product.metadata as Record<string, unknown>
+        : {};
+      const baseRef = typeof meta.baseRef === "string" ? meta.baseRef : null;
+      const defaultBranch = typeof meta.defaultBranch === "string" ? meta.defaultBranch : "main";
+      const isDelivering = !baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/");
+      const mergeCommitReachable = meta.mergeCommitReachable !== undefined
+        ? meta.mergeCommitReachable === true
+        : isDelivering;
+      if (!mergeCommitReachable) {
+        blockUnreachable(product, product.url, baseRef, defaultBranch);
+      }
+      continue;
+    }
+    // A closed PR is settled when another linked PR is already merged; an
+    // open/draft product must still block completion in that mixed set.
+    if (hasMerged && product.status === "closed") continue;
     block(product);
   }
 }
 
 /** A short serialized validation/write window prevents a PR being attached between check and close. */
-export async function assertIssueDoneSnapshotUnchanged(tx: Db, companyId: string, issueId: string, snapshot: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>) {
+export async function assertIssueDoneSnapshotUnchanged(
+  tx: Db,
+  companyId: string,
+  issueId: string,
+  snapshot: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>,
+  liveSnapshot?: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>,
+) {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-done-gate:${issueId}`}, 0))`);
   const currentIssue = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
   if (!currentIssue || currentIssue.companyId !== companyId) {
@@ -148,14 +277,15 @@ export async function assertIssueDoneSnapshotUnchanged(tx: Db, companyId: string
     eq(issueWorkProducts.issueId, issueId),
     eq(issueWorkProducts.type, "pull_request"),
   ));
-  if (current.length !== snapshot.length || current.some((item) => {
-    const old = snapshot.find((candidate) => candidate.product.id === item.id)?.product;
-    return !old || old.status !== item.status || old.url !== item.url || JSON.stringify(old.metadata) !== JSON.stringify(item.metadata);
+  const validatedSnapshot = liveSnapshot ?? snapshot;
+  if (current.length !== validatedSnapshot.length || current.some((item) => {
+    const currentState = validatedSnapshot.find((candidate) => candidate.product.id === item.id);
+    return !currentState || currentState.product.url !== item.url || JSON.stringify(currentState.product.metadata) !== JSON.stringify(item.metadata);
   })) {
-    throw conflict("Pull request work products changed during completion validation. Retry marking the task done.", {
+    throw conflict("Pull request links changed during completion validation. Retry marking the task done.", {
       code: ISSUE_DONE_PULL_REQUEST_GATE,
       retryable: true,
     });
   }
-  assertIssueDonePullRequestsSettled(snapshot);
+  assertIssueDonePullRequestsSettled(validatedSnapshot);
 }

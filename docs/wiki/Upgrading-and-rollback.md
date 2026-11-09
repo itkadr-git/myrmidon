@@ -8,10 +8,10 @@ On a server installed with the one-line command, updating is the same
 command again:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.12/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.18/install.sh | sudo bash
 ```
 
-The current published candidate is 1.6.6-rc.12. The installer is available
+The current published candidate is 1.6.6-rc.18. The installer is available
 from release 1.6.5 onward; `releases/latest/download/install.sh` follows the
 latest stable release, so use the exact RC tag to install a candidate. The
 installer resolves the release, **dumps the database before anything changes**, switches to it and
@@ -70,7 +70,13 @@ What the deploy does, in order:
    changed components, the dockergate config and the board back together
    (`MYRMIDON_COMPONENT_AUTO_ROLLBACK=1`, default). Bot cards switch in
    batches of at most 5, each bot only while its agent is paused or idle —
-   a run is never interrupted.
+   a run is never interrupted. Applying an image is asynchronous: the rollout
+   waits for the apply job and then confirms the container on the release
+   image. A refused apply (409), a busy bot, a timeout or a succeeded job
+   whose container stayed behind are all *deferred*, not failures — the
+   periodic sweep completes them. A failed or deferred bot never stops the
+   run: every remaining bot is reached, and the run ends `WARNING` when bots
+   stayed deferred and `DEGRADED` only when at least one actually failed.
 
 The deploy also manages the PostgreSQL server settings (since 1.6.5,
 DB-TUNING): the declarative source lives in the repository

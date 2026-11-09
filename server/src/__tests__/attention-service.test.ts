@@ -773,7 +773,7 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(12);
+    expect(feed.totalCount).toBe(13);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
@@ -786,6 +786,7 @@ describeEmbeddedPostgres("attention service", () => {
       budget_alert: 2,
       agent_error_alert: 1,
       replay_blocked: 1,
+      execution_hold: 1,
     });
     const replayCard = feed.items.find((item) => item.sourceKind === "replay_blocked");
     expect(replayCard).toMatchObject({
@@ -795,6 +796,14 @@ describeEmbeddedPostgres("attention service", () => {
       whyNow: expect.stringContaining("board operator"),
     });
     expect(replayCard?.subject.metadata?.dueAt).toBe("2026-07-10T12:00:00.000Z");
+    const executionHoldCard = feed.items.find((item) => item.sourceKind === "execution_hold");
+    expect(executionHoldCard).toMatchObject({
+      sourceKind: "execution_hold",
+      subject: expect.objectContaining({
+        kind: "company",
+        metadata: { heldCount: 1 },
+      }),
+    });
     expect(feed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
       "approval",
       "issue_thread_interaction",
@@ -805,6 +814,7 @@ describeEmbeddedPostgres("attention service", () => {
       "failed_run",
       "budget_alert",
       "agent_error_alert",
+      "execution_hold",
     ]));
     for (const item of feed.items) {
       expect(item.dedupKey).toBeTruthy();

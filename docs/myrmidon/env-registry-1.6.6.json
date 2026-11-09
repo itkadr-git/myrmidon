@@ -41,10 +41,10 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 893,
+    "unique_names": 902,
     "secret": 108,
-    "infra": 373,
-    "product": 412
+    "infra": 374,
+    "product": 420
   },
   "entries": [
     {
@@ -6441,6 +6441,21 @@
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
     },
     {
+      "name": "MYRMIDON_GITHUB_API_BASE",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/release-reconciliation/config.ts:17",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; базовый адрес GitHub API для клиента сверки релизов (STACK-UPDATES-B), по умолчанию публичный GitHub API",
+      "secret_ref_or_instance_setup": "не секрет; сетевой адрес установки (env установки экземпляра)",
+      "ticket_or_pr": "OPE-12044",
+      "decision": "остаётся в env установки экземпляра (deployment topology)"
+    },
+    {
       "name": "MYRMIDON_GITHUB_AUTH_MODE",
       "aliases": [
         "PAPERCLIP_GITHUB_AUTH_MODE"
@@ -6547,6 +6562,36 @@
       "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
       "ticket_or_pr": "не требуется",
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
+    },
+    {
+      "name": "MYRMIDON_GITHUB_OBJECT_CACHE_TTL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/services/github-external-object-provider.ts:487",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; сколько секунд чтение открытого PR или issue из GitHub (OPE-12397) отдаётся из памяти доски без запроса; 0 выключает кэш",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
+      "name": "MYRMIDON_GITHUB_OBJECT_TERMINAL_TTL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/services/github-external-object-provider.ts:488",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; сколько секунд чтение влитого или закрытого PR или issue из GitHub и ответ «не найден» (OPE-12397) отдаётся из памяти доски без запроса",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env до решения владельца о настройке в UI"
     },
     {
       "name": "MYRMIDON_GITHUB_OPERATION_ACTIVE",
@@ -9858,6 +9903,36 @@
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
     },
     {
+      "name": "MYRMIDON_RELEASE_RECONCILIATION_INTERVAL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/release-reconciliation/config.ts:20",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; период запуска сверки релизов (STACK-UPDATES-B), по умолчанию сутки",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12044",
+      "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
+      "name": "MYRMIDON_RELEASE_TASK_COMPANY_ID",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/release-reconciliation/config.ts:21",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; компания, в которой сверка релизов (STACK-UPDATES-B) создаёт черновик задачи при расхождении тегов",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12044",
+      "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
       "name": "MYRMIDON_RELEASE_VENDOR_SHARE_STATE",
       "aliases": [],
       "in_main_code": false,
@@ -9921,6 +9996,36 @@
       "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
       "ticket_or_pr": "не требуется",
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
+    },
+    {
+      "name": "MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/review-stage-recovery/github-ci.ts:177",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; сколько секунд вердикт CI головы PR и список упавших проверок (OPE-12397) отдаются из памяти доски без запроса после завершения CI головы; 0 вместе со второй переменной выключает кэш",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
+      "name": "MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/review-stage-recovery/github-ci.ts:176",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; сколько секунд голова PR и ещё не окончательный вердикт CI (OPE-12397) отдаются из памяти доски без запроса; 0 вместе со второй переменной выключает кэш",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12397",
+      "decision": "оставить в env до решения владельца о настройке в UI"
     },
     {
       "name": "MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS",
@@ -12941,6 +13046,21 @@
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
     },
     {
+      "name": "MYRMIDON_VENDOR_GITHUB_REPO",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/release-reconciliation/config.ts:16",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; цель сверки релизов (STACK-UPDATES-B): owner/repo вендорского репозитория, чей последний тег сверяется с текущим релизом",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра (вендорский репозиторий)",
+      "ticket_or_pr": "OPE-12044",
+      "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
       "name": "MYRMIDON_VENDOR_SHARE_THRESHOLD",
       "aliases": [],
       "in_main_code": false,
@@ -12954,6 +13074,21 @@
       "ticket_or_pr": "зонтик OPE-6249; отдельного тикета нет",
       "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
+    },
+    {
+      "name": "MYRMIDON_VENDOR_TAG",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/release-reconciliation/config.ts:18",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; явное переопределение последнего вендорского тега (STACK-UPDATES-B): тесты и ручная проверка расхождения без сети",
+      "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
+      "ticket_or_pr": "OPE-12044",
+      "decision": "оставить в env до решения владельца о настройке в UI"
     },
     {
       "name": "MYRMIDON_VERIFIED_RUNTIME_EXECUTABLE",

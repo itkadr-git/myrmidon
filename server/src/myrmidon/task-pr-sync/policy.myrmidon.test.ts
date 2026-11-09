@@ -50,6 +50,14 @@ describe("task PR sync policy", () => {
     });
   });
 
+  it.each(["todo", "backlog", "blocked"] as const)("does not auto-close a merged PR while task is %s", (issueStatus) => {
+    expect(decideTaskPrSync(facts({ issueStatus }))).toEqual({ kind: "noop", reason: "inactive_issue" });
+  });
+
+  it.each(["todo", "backlog", "blocked"] as const)("keeps the open-gate reason for a %s task", (issueStatus) => {
+    expect(decideTaskPrSync(facts({ issueStatus, openPostDeployGate: true }))).toEqual({ kind: "noop", reason: "post_deploy_gate_open" });
+  });
+
   it("does nothing while a PR is still open", () => {
     const decision = decideTaskPrSync(facts({ prs: [pr({ state: "open" })] }));
     expect(decision).toEqual({ kind: "noop", reason: "pr_still_open" });
@@ -160,5 +168,123 @@ describe("task PR sync policy", () => {
     expect(settlePendingForProducts([closed])).toBe(false);
     expect(settlePendingForProducts([superseded])).toBe(false);
     expect(settlePendingForProducts([{ type: "document", status: "merged" }])).toBe(false);
+  });
+
+  it("returns return_conflict when an issue in in_review has an open PR with mergeable=CONFLICTING", () => {
+    const decision = decideTaskPrSync(
+      facts({
+        issueStatus: "in_review",
+        prs: [pr({ state: "open", mergeable: "CONFLICTING" })],
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "return_conflict",
+      conflictPrRefs: ["company-a/example.com#1"],
+    });
+  });
+
+  it("does not return return_conflict when issue is already in_progress", () => {
+    const decision = decideTaskPrSync(
+      facts({
+        issueStatus: "in_progress",
+        prs: [pr({ state: "open", mergeable: "CONFLICTING" })],
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop", reason: "pr_still_open" });
+  });
+
+  it("does not return return_conflict when issue is in a terminal state", () => {
+    const decision = decideTaskPrSync(
+      facts({
+        issueStatus: "done",
+        prs: [pr({ state: "open", mergeable: "CONFLICTING" })],
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop", reason: "terminal_issue" });
+  });
+
+  it("does not settle the task when merged PR has base bot/x", () => {
+    const decision = decideTaskPrSync(
+      facts({
+        prs: [pr({ baseRef: "bot/x" })],
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "non_main_base",
+      baseRef: "bot/x",
+      prRefs: ["company-a/example.com#1"],
+      mergedSha: "sha-1",
+    });
+  });
+
+  it("settles the task when merged PR has base main", () => {
+    const decision = decideTaskPrSync(
+      facts({
+        prs: [pr({ baseRef: "main" })],
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "settle_done",
+      mergedSha: "sha-1",
+      prRefs: ["company-a/example.com#1"],
+    });
+  });
+
+  it("settles the task when merged PR has base rel/1.6.7 for release task", () => {
+    const decision = decideTaskPrSync(
+      facts({
+        issueTitle: "1.6.7 PR-SYNC: fix release issue",
+        prs: [pr({ baseRef: "rel/1.6.7" })],
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "settle_done",
+      mergedSha: "sha-1",
+      prRefs: ["company-a/example.com#1"],
+    });
+  });
+
+  it("does not settle the task when merged PR has base rel/1.6.7 on a non-release task", () => {
+    const decision = decideTaskPrSync(
+      facts({
+        issueTitle: "Fix typo in button",
+        prs: [pr({ baseRef: "rel/1.6.7" })],
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "non_main_base",
+      baseRef: "rel/1.6.7",
+      prRefs: ["company-a/example.com#1"],
+      mergedSha: "sha-1",
+    });
+  });
+
+  it("warns about foreign bot base when an open PR has base bot/*", () => {
+    const decision = decideTaskPrSync(
+      facts({
+        issueStatus: "in_review",
+        prs: [pr({ state: "open", baseRef: "bot/OPE-9334" })],
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "warn_foreign_bot_base",
+      baseRef: "bot/OPE-9334",
+      prRefs: ["company-a/example.com#1"],
+    });
+  });
+
+  it("settlePendingForProducts ignores merged PRs targeting bot/* base", () => {
+    const botBasePr = {
+      type: "pull_request",
+      status: "merged",
+      metadata: { baseRef: "bot/x" },
+    };
+    const mainBasePr = {
+      type: "pull_request",
+      status: "merged",
+      metadata: { baseRef: "main" },
+    };
+    expect(settlePendingForProducts([botBasePr])).toBe(false);
+    expect(settlePendingForProducts([mainBasePr])).toBe(true);
   });
 });

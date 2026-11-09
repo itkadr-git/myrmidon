@@ -91,7 +91,10 @@
         "moreTasks_other": "{{count}} more tasks",
         "pendingCount": "{{count}} pending",
         "advancedPermissionsNeedExtension": "Core Myrmidon keeps enforcing organization boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.",
-        "pluginExtensionsUnavailable": "Plugin extensions unavailable: {{message}}"
+        "pluginExtensionsUnavailable": "Plugin extensions unavailable: {{message}}",
+        "inboxAccess": "Inbox access",
+        "memberInboxAgentAccess": "Member inbox agent access",
+        "manageWhichAgentsMayArchive": "Manage which agents may archive this member's inbox items. Requires permission to manage user access."
       },
       "company-environments": {
         "browserTerminal": "Browser terminal",
@@ -951,6 +954,18 @@
         "detectExternalUrlsInIssues": "Detect external URLs in issues and show resolved status for pull requests, tickets, and other referenced work objects.",
         "enableIsolatedWorkspaces": "Enable Isolated Workspaces",
         "showExecutionWorkspaceControlsIn": "Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing task runs.",
+        "workspaceBranchReconcileForward": "Workspace branch forward reconciliation",
+        "workspaceBranchReconcileForwardDescription": "Allow clean execution workspaces to reconcile a diverged recorded branch forward when it is an ancestor of the checked-out branch, or the recorded branch no longer exists.",
+        "workspaceBranchReconcileForwardNote": "Kill switch: turning off prevents automatic forward reconciliation on subsequent runs; branch mismatches fail containment instead. Existing reconciliations are not undone.",
+        "toggleWorkspaceBranchReconcileForward": "Toggle workspace branch forward reconciliation",
+        "workspaceDirtyQuarantineRepair": "Dirty workspace quarantine repair",
+        "workspaceDirtyQuarantineRepairDescription": "Allow recovery to quarantine a dirty worktree on a rescue branch before restoring its recorded branch, only when claimant and safety checks pass.",
+        "workspaceDirtyQuarantineRepairNote": "Kill switch: turning off prevents automatic dirty quarantine repair on subsequent runs; dirty branch mismatches fail containment instead. Existing rescue branches remain.",
+        "toggleWorkspaceDirtyQuarantineRepair": "Toggle dirty workspace quarantine repair",
+        "sandboxDuplexBridge": "Sandbox duplex bridge",
+        "sandboxDuplexBridgeDescription": "Allow runs to use the sandbox duplex command-stream bridge when the provider grants the capability.",
+        "sandboxDuplexBridgeNote": "Availability depends on the sandbox provider. Turning off keeps the file bridge for subsequent runs; this switch does not grant duplex capability.",
+        "toggleSandboxDuplexBridge": "Toggle sandbox duplex bridge",
         "useIsolatedWorkspacesByDefault": "Use Isolated Workspaces By Default",
         "treatAProjectThatHas": "Treat a project that has no execution workspace policy of its own as if it selected isolated workspaces, so its tasks get a per-task worktree instead of sharing the project checkout. A project that carries its own policy keeps it.",
         "experimentalFileViewer": "Experimental File Viewer",
@@ -965,6 +980,9 @@
         "enableTheExperimentalSharedStatus": "Enable the experimental shared status-card board and its gated API. Existing card data is kept when this is disabled.",
         "streamlinedUi": "Streamlined UI",
         "useTheSimplifiedMainSidebar": "Use the simplified main sidebar, shared Tasks and Inbox presentation, focused task detail layout, and contextual navigation across Agents, Routines, Skills, and Settings.",
+        "pipelines": "Pipelines",
+        "pipelinesDescription": "Show pipeline definitions and pipeline-driven case production. Turning this off hides pipeline navigation; existing data is kept.",
+        "togglePipelines": "Toggle pipelines experimental setting",
         "summaries": "Summaries",
         "showSummarizerGeneratedStatusSlots": "Show Summarizer-generated status slots on project and workspace pages, with on-demand refresh and revision history. Existing summary data is kept when this is disabled.",
         "myrmidonDeveloperMode": "Myrmidon Developer Mode",
@@ -1039,7 +1057,8 @@
         "topicLogDisplay": "log display",
         "topicKeyboardShortcuts": "keyboard shortcuts",
         "topicBackupRetention": "backup retention",
-        "topicDataSharing": "data sharing"
+        "topicDataSharing": "data sharing",
+        "secretReferencesLink": "Manage secret references in Secrets"
       },
       "pipeline-settings": {
         "alreadyAvailableOnChildItems": "Already available on child items",

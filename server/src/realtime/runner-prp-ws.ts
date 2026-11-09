@@ -40,7 +40,8 @@ interface RunnerPrpUpgradeRequest extends IncomingMessage {
 
 const registrations = new Map<string, RegisteredAuthority>();
 const currentLiveAuthorities = new Map<string, CurrentLiveAuthority>();
-let loopbackOrigin: string | null = null;
+let runnerConnectionServer: Server | null = null;
+let configuredTestOrigin: string | null = null;
 
 function liveAuthorityKey(input: {
   readonly companyId: string;
@@ -70,19 +71,19 @@ function rejectUpgrade(
 
 export function setupRunnerPrpWebSocketServer(
   server: Server,
-  options: { readonly apiUrl: string },
+  options?: { readonly apiUrl: string },
 ): void {
-  const apiUrl = new URL(options.apiUrl);
-  if (!["http:", "https:"].includes(apiUrl.protocol)) {
-    throw new Error("runner_prp_websocket_api_url_invalid");
+  runnerConnectionServer = server;
+  // Retain unbound test fixtures; production derives the URL from the bound socket.
+  if (options) {
+    const apiUrl = new URL(options.apiUrl);
+    if (!["http:", "https:"].includes(apiUrl.protocol)) {
+      throw new Error("runner_prp_websocket_api_url_invalid");
+    }
+    configuredTestOrigin = `${apiUrl.protocol === "https:" ? "wss:" : "ws:"}//${apiUrl.host}`;
+  } else {
+    configuredTestOrigin = null;
   }
-  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
-  apiUrl.username = "";
-  apiUrl.password = "";
-  apiUrl.pathname = "";
-  apiUrl.search = "";
-  apiUrl.hash = "";
-  loopbackOrigin = apiUrl.toString().replace(/\/$/, "");
   server.on(
     "upgrade",
     (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -121,9 +122,13 @@ export async function registerRunnerPrpAuthority(input: {
   readonly runId: string;
   readonly authority: DurablePrpControlPlane;
 }): Promise<{ readonly connectUrl: string; release(): Promise<void> }> {
-  if (loopbackOrigin === null) {
+  const address = runnerConnectionServer?.address();
+  if ((!address || typeof address === "string") && configuredTestOrigin === null) {
     throw new Error("runner_prp_websocket_server_not_configured");
   }
+  const connectOrigin = address && typeof address !== "string"
+    ? `ws://127.0.0.1:${address.port}`
+    : configuredTestOrigin!;
   if (!UUID_PATTERN.test(input.runId) || input.companyId.length === 0) {
     throw new Error("runner_prp_authority_binding_invalid");
   }
@@ -154,7 +159,7 @@ export async function registerRunnerPrpAuthority(input: {
     });
   }
   return {
-    connectUrl: `${loopbackOrigin}${CONNECT_PATH_PREFIX}${input.runId}`,
+    connectUrl: `${connectOrigin}${CONNECT_PATH_PREFIX}${input.runId}`,
     release: async () => {
       if (registrations.get(input.runId)?.generation === generation) {
         registrations.delete(input.runId);
@@ -320,6 +325,7 @@ export const runnerPrpWebSocketInternals = {
   resetForTests(): void {
     registrations.clear();
     currentLiveAuthorities.clear();
-    loopbackOrigin = null;
+    runnerConnectionServer = null;
+    configuredTestOrigin = null;
   },
 };

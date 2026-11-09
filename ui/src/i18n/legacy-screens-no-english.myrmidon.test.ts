@@ -11,6 +11,7 @@ import { collectForkMessages } from "./myrmidon-i18n";
 import { flattenCatalog } from "./catalog-utils";
 
 const UI_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = join(UI_ROOT, "../..");
 
 const SCREENS = [
   "pages/Issues.tsx",
@@ -29,6 +30,8 @@ const SCREENS = [
   "components/myrmidon/budget-limits/BudgetLimitsScreen.tsx",
   "components/myrmidon/budget-limits/BudgetLimitsScreenContainer.tsx",
   "components/access/CompanySettingsNav.tsx",
+  "components/Sidebar.tsx",
+  "components/myrmidon/MaintenanceBanner.tsx",
 ];
 
 // myrmidon(OPE-8950): per-area guard lists. Every extraction PR adds its own
@@ -103,9 +106,90 @@ describe("legacy screens carry no English literals", () => {
 
 // guarded/*.txt: the stronger rule (multi-line JSX text, {"..."} literals,
 // alt/aria/title/label/placeholder/tooltip attributes with any letter).
+
 describe("guarded files carry no English literals", () => {
   it("guarded lists name only .tsx files under ui/src", () => {
     expect(guardedFromLists.filter((rel) => !rel.endsWith(".tsx") || rel.startsWith("/") || rel.includes(".."))).toEqual([]);
+  });
+
+  it("scans all shipped and example plugin UI entry files", () => {
+    const pluginsDir = join(REPO_ROOT, "packages/plugins");
+    const pluginUiFiles = readdirSync(pluginsDir, { recursive: true })
+      .filter((path): path is string => typeof path === "string" && /^((examples\/[^/]+)|([^/]+))\/src\/ui\/.*\.tsx?$/.test(path))
+      .map((path) => join(pluginsDir, path))
+      .filter((path) => !path.includes("/sdk/src/ui/"));
+    expect(pluginUiFiles.length).toBeGreaterThan(0);
+    const expectedLegacyEnglishFiles = new Set([
+      "plugin-llm-wiki/src/ui/app.tsx",
+      "plugin-workspace-diff/src/ui/index.tsx",
+      "examples/plugin-authoring-smoke-example/src/ui/index.tsx",
+      "examples/plugin-file-browser-example/src/ui/index.tsx",
+      "examples/plugin-hello-world-example/src/ui/index.tsx",
+      "examples/plugin-kitchen-sink-example/src/ui/AsciiArtAnimation.tsx",
+      "examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "examples/plugin-orchestration-smoke-example/src/ui/index.tsx",
+    ]);
+    const offenders = pluginUiFiles.flatMap((path) =>
+      findEnglishLiterals(readFileSync(path, "utf8")).map((o) => `${path}:line ${o.line}: ${o.kind} "${o.text}"`),
+    );
+    const allowlistedOffenders = offenders.filter((item) =>
+      [...expectedLegacyEnglishFiles].some((file) => item.includes(`/packages/plugins/${file}:`)),
+    );
+    expect(
+      offenders.filter((item) => !allowlistedOffenders.includes(item)),
+      "expected no hard-coded English UI copy outside the explicit legacy allowlist",
+    ).toEqual([]);
+    expect(allowlistedOffenders.length).toBeGreaterThan(0);
+  });
+
+  it("verifies web application UI source scope and enforces zero English copy in target web screens", () => {
+    // In Myrmidon, web application UI sources reside in ui/src (React + Vite).
+    // The upstream specification referenced web/ and ui plugins; here ui/src is the web root.
+    expect(existsSync(UI_ROOT), "expected web UI directory ui/src to exist").toBe(true);
+
+    // Target web screens and navigation components from OPE-9606 must carry 0 unlocalized English literals
+    const targetWebScreens = [
+      "pages/SwarmSupervisor.tsx",
+      "pages/Foraging.tsx",
+      "components/Sidebar.tsx",
+      "components/myrmidon/MaintenanceBanner.tsx",
+    ];
+    for (const rel of targetWebScreens) {
+      const fullPath = join(UI_ROOT, rel);
+      expect(existsSync(fullPath), `target web screen ${rel} must exist`).toBe(true);
+      const offenders = findEnglishLiterals(readFileSync(fullPath, "utf8"));
+      expect(offenders, `expected 0 unlocalized English JSX literals in web screen ${rel}`).toEqual([]);
+    }
+
+    // When an additional web application root (web/) exists in the tree, scan it as well
+    const webRoot = join(REPO_ROOT, "web");
+    if (existsSync(webRoot)) {
+      const webFiles = readdirSync(webRoot, { recursive: true })
+        .filter((path): path is string => typeof path === "string" && /\.(?:tsx|jsx)$/.test(path))
+        .map((path) => join(webRoot, path));
+      const offenders = webFiles.flatMap((path) =>
+        findEnglishLiterals(readFileSync(path, "utf8")).map((o) => `${path}:line ${o.line}: ${o.kind} "${o.text}"`),
+      );
+      expect(offenders, "expected no hard-coded English UI copy in web files").toEqual([]);
+    }
+
+    // Behavioral verification: ensure scanner correctly flags visible unlocalized JSX in web UI files
+    const webSampleUntranslated = '<div className="container"><h1>Dashboard Overview</h1><input placeholder="Search records" /></div>';
+    const webSampleTranslated = '<div className="container"><h1>{t("dashboard.title")}</h1><input placeholder={t("dashboard.search")} /></div>';
+    expect(findEnglishLiterals(webSampleUntranslated)).toEqual([
+      { line: 1, kind: "text", text: "Dashboard Overview" },
+      { line: 1, kind: "attr", text: 'placeholder="Search records"' },
+    ]);
+    expect(findEnglishLiterals(webSampleTranslated)).toEqual([]);
+  });
+
+  it("detects a deliberately untranslated plugin or web JSX string and attribute", () => {
+    expect(findEnglishLiterals('<button>Intentionally untranslated</button>')).toEqual([
+      { line: 1, kind: "text", text: "Intentionally untranslated" },
+    ]);
+    expect(findEnglishLiterals('<input aria-label="Unlocalized action" />')).toEqual([
+      { line: 1, kind: "attr", text: 'aria-label="Unlocalized action"' },
+    ]);
   });
 
   it("the scanner skips attribute values that are only a URL or path", () => {
@@ -114,6 +198,7 @@ describe("guarded files carry no English literals", () => {
     ).map((o) => `${o.kind}:${o.text}`);
     expect(found).toEqual(['attr:placeholder="Paste https://example.com here"']);
   });
+
   it("the scanner skips ternary code fragments between JSX tags", () => {
     const found = findEnglishLiterals(
       '<div>\n  <p>Ready</p>\n</div>\n    : repair ? repair.canReconnect ? <Step />\n    : <p>Not ready yet</p>',

@@ -1,3 +1,4 @@
+import { enrichWithPoolModels } from "../myrmidon/model-providers/pool-models.js";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
@@ -10,16 +11,17 @@ import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@myrmidon/adapter-utils";
-import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
+import { executionProjectionForRun, executionProjectionsForRuns, sanitizeExecutionProjectionForActor } from "../services/execution-projection.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
 import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
+import { getCompanyEmptyRunStats } from "../services/empty-run.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@myrmidon/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { toolConnections } from "@myrmidon/db";
 import { sha256Digest } from "../services/feedback-redaction.js";
@@ -84,6 +86,11 @@ import { readCompanyBaseSkillKeysPort } from "../services/company-base-skill-key
 import { validate } from "../middleware/validate.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
+  filterAgentListItems,
+  normalizeAgentListFilters,
+  type AgentListFilters,
+} from "../services/agents-filters.js";
+import {
   agentService,
   agentInstructionsService,
   accessService,
@@ -118,6 +125,11 @@ import { resolveEnvironmentExecutionTarget } from "../services/environment-execu
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
+import {
+  hermesGatewayConfigProblem,
+  localAdapterConfigProblem,
+  localAdapterSecurityConfigChanged,
+} from "../myrmidon/agent-local-adapter-config.js"; // myrmidon(1.6.6 OPE-11239)
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
@@ -2087,17 +2099,41 @@ export function agentRoutes(
     payload: Record<string, unknown> | null | undefined,
   ) {
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
-    if (!issueId) {
-      return {
-        status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
-        issueId: null,
-        executionRunId: null,
-        executionAgentId: null,
-        executionAgentName: null,
-      };
-    }
+    const skippedRequest = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, agent.companyId),
+        eq(agentWakeupRequests.agentId, agent.id),
+        eq(agentWakeupRequests.status, "skipped"),
+        ...(issueId
+          ? [sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`]
+          : []),
+      ))
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const skipDetails = skippedRequest?.payload && typeof skippedRequest.payload === "object"
+      ? (skippedRequest.payload as Record<string, unknown>).heartbeatSkip
+      : null;
+    const reason = skippedRequest?.reason ??
+      (skipDetails && typeof skipDetails === "object" && typeof (skipDetails as Record<string, unknown>).reason === "string"
+        ? (skipDetails as Record<string, unknown>).reason
+        : null);
+    const detailText = skipDetails && typeof skipDetails === "object"
+      ? (skipDetails as Record<string, unknown>).reason
+      : null;
+    const responseBase = {
+      status: "skipped" as const,
+      reason: typeof reason === "string" ? reason : "wakeup_skipped",
+      message: typeof detailText === "string" ? detailText : "Wakeup was skipped.",
+      issueId,
+      executionRunId: null,
+      executionAgentId: null,
+      executionAgentName: null,
+      ...(skipDetails && typeof skipDetails === "object" ? { details: skipDetails } : {}),
+    };
+    if (!issueId) return responseBase;
 
     const issue = await db
       .select({
@@ -2110,46 +2146,25 @@ export function agentRoutes(
 
     const blocker = issue ? await getExecutionBlocker(db, agent.companyId, issueId) : null;
     if (blocker) return {
-      status: "skipped" as const, reason: "execution_reconciliation_required",
-      message: blocker.nextAction, issueId,
-      executionRunId: blocker.runId, executionAgentId: blocker.agentId, executionAgentName: null,
+      ...responseBase, reason: "execution_reconciliation_required",
+      message: blocker.nextAction,
+      executionRunId: blocker.runId, executionAgentId: blocker.agentId,
     };
-
-    if (!issue?.executionRunId) {
-      return {
-        status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
-        issueId,
-        executionRunId: null,
-        executionAgentId: null,
-        executionAgentName: null,
-      };
-    }
+    if (!issue?.executionRunId) return responseBase;
 
     const executionRun = await heartbeat.getRun(issue.executionRunId);
-    if (!executionRun || (executionRun.status !== "queued" && executionRun.status !== "running")) {
-      return {
-        status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
-        issueId,
-        executionRunId: issue.executionRunId,
-        executionAgentId: null,
-        executionAgentName: null,
-      };
-    }
+    if (!executionRun || (executionRun.status !== "queued" && executionRun.status !== "running")) return {
+      ...responseBase, executionRunId: issue.executionRunId,
+    };
 
     const executionAgent = await svc.getById(executionRun.agentId);
     const executionAgentName = executionAgent?.name ?? null;
-
     return {
-      status: "skipped" as const,
+      ...responseBase,
       reason: "issue_execution_deferred",
       message: executionAgentName
         ? `Wakeup was deferred because this issue is already being executed by ${executionAgentName}.`
         : "Wakeup was deferred because this issue already has an active execution run.",
-      issueId,
       executionRunId: executionRun.id,
       executionAgentId: executionRun.agentId,
       executionAgentName,
@@ -2699,6 +2714,43 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  // myrmidon(1.6.7 OMP-HARDEN, OPE-12266): new omp_local agents get the workspace
+  // filesystem sandbox by default. Create/hire only — never on the update path,
+  // so legacy omp agents (config without filesystemScope, unsandboxed) keep their
+  // behavior even when another config key is patched. Applied after the security
+  // gate (both create paths gate the raw pre-default config), so the form default
+  // is not treated as a sandbox change; an explicit filesystemScope always wins.
+  function applyOmpLocalCreateDefaults(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (adapterType !== "omp_local" || adapterConfig.filesystemScope !== undefined) return adapterConfig;
+    return { ...adapterConfig, filesystemScope: "workspace" };
+  }
+
+  // myrmidon(1.6.6 OPE-11239): sandbox and permission keys of the local CLI adapters are
+  // security settings; changing one needs an instance admin (rules: myrmidon/agent-local-adapter-config.ts).
+  function assertLocalAdapterSecurityChangeAllowed(
+    req: Request,
+    adapterType: string | null | undefined,
+    previousAdapterConfig: Record<string, unknown> | null | undefined,
+    nextAdapterConfig: Record<string, unknown> | null | undefined,
+  ) {
+    // myrmidon(1.6.7 OPE-12266): omp_local has no permission defaults of its own.
+    // On create (previous === null) the declared default filesystemScope=workspace
+    // is the form's baseline, so submitting it is not a change; on edits there are
+    // no defaults and every explicit sandbox key is compared directly, so removing
+    // an existing workspace scope still needs an instance admin.
+    const adapterDefaults: Record<string, unknown> = adapterType === "claude_local"
+      ? { dangerouslySkipPermissions: true }
+      : adapterType === "omp_local"
+        ? (previousAdapterConfig == null ? { filesystemScope: "workspace" } : {})
+        : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
+    if (localAdapterSecurityConfigChanged(adapterType, previousAdapterConfig, nextAdapterConfig, adapterDefaults)) {
+      assertInstanceAdmin(req);
+    }
+  }
+
   async function assertAdapterConfigConstraints(
     companyId: string,
     adapterType: string | null | undefined,
@@ -2707,6 +2759,10 @@ export function agentRoutes(
     // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
     const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
+    const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
+    if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
+    const gatewayProblem = hermesGatewayConfigProblem(adapterType, adapterConfig);
+    if (gatewayProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${gatewayProblem}`);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -3381,9 +3437,10 @@ export function agentRoutes(
       res.json(requireServerAdapter(modelAdapterType).models ?? []);
       return;
     }
-    const models = refresh
+    const rawModels = refresh
       ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType);
+      : await listAdapterModels(modelAdapterType, companyId);
+    const models = await enrichWithPoolModels(db, companyId, rawModels);
     res.json(models);
   });
 
@@ -4133,7 +4190,10 @@ function getActorIdentityPart(req: Request): string {
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const unsupportedQueryParams = Object.keys(req.query).sort();
+    const SUPPORTED_AGENT_LIST_QUERY_PARAMS = new Set(["q", "status", "role", "reportsTo"]);
+    const unsupportedQueryParams = Object.keys(req.query)
+      .filter((param) => !SUPPORTED_AGENT_LIST_QUERY_PARAMS.has(param))
+      .sort();
     if (unsupportedQueryParams.length > 0) {
       res.status(400).json({
         error: `Unsupported query parameter${unsupportedQueryParams.length === 1 ? "" : "s"}: ${unsupportedQueryParams.join(", ")}`,
@@ -4159,15 +4219,29 @@ function getActorIdentityPart(req: Request): string {
         : null,
       canReadConfigs,
     ]);
+
+    const filters: AgentListFilters = {
+      q: asNonEmptyString(req.query.q) ?? undefined,
+      status: typeof req.query.status === "string" || Array.isArray(req.query.status)
+        ? (req.query.status as string | string[])
+        : undefined,
+      role: asNonEmptyString(req.query.role) ?? undefined,
+      reportsTo: asNonEmptyString(req.query.reportsTo) ?? undefined,
+    };
+    const normalizedFilters = normalizeAgentListFilters(filters);
+
     // Compute the validator before the response query so a matching ETag
     // avoids hydrating and filtering the full agent list.
-    const vk = await svc.listSummariesVersionKey(companyId, actorShape);
+    const vk = normalizedFilters
+      ? await svc.listSummariesVersionKey(companyId, actorShape, JSON.stringify(normalizedFilters))
+      : await svc.listSummariesVersionKey(companyId, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
     const sourceRows = await svc.listSummaries(companyId);
     const result = await filterAgentsForActor(req, sourceRows);
+    const filteredRows = normalizedFilters ? filterAgentListItems(result, normalizedFilters) : result;
     const responseRows = canReadConfigs
-      ? result
-      : result.map((agent) => redactAgentListItemForRestrictedView(agent));
+      ? filteredRows
+      : filteredRows.map((agent) => redactAgentListItemForRestrictedView(agent));
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
     // adapterConfig (so no per-row env redaction is needed any more) and the
     // model column travels as the SQL-computed `adapterModel`; the full
@@ -4355,7 +4429,12 @@ function getActorIdentityPart(req: Request): string {
         goalId: issue.goalId,
         parentId: issue.parentId,
         updatedAt: issue.updatedAt,
-        activeRun: issue.activeRun,
+        activeRun: issue.activeRun && req.actor?.type === "agent" && issue.activeRun.execution
+          ? {
+              ...issue.activeRun,
+              execution: sanitizeExecutionProjectionForActor(issue.activeRun.execution, req.actor) ?? undefined,
+            }
+          : issue.activeRun,
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
@@ -4379,7 +4458,13 @@ function getActorIdentityPart(req: Request): string {
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
 
-    res.json(rows);
+    res.json(rows.map((row: any) => row.activeRun && req.actor?.type === "agent" && row.activeRun.execution ? {
+      ...row,
+      activeRun: {
+        ...row.activeRun,
+        execution: sanitizeExecutionProjectionForActor(row.activeRun.execution, req.actor) ?? undefined,
+      },
+    } : row));
   });
 
   router.get("/agents/:id", async (req, res) => {
@@ -4617,14 +4702,18 @@ function getActorIdentityPart(req: Request): string {
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertInheritProcessEnvChangeAllowed(req, { companyId, agentId: null, previousAdapterConfig: null, nextAdapterConfig: rawHireAdapterConfig }); // myrmidon(S4)
+    assertLocalAdapterSecurityChangeAllowed(req, hireInput.adapterType, null, rawHireAdapterConfig); // myrmidon(1.6.6 OPE-11239)
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
       companyId,
       hireInput.adapterType,
-      applyCreateDefaultsByAdapterType(
+      applyOmpLocalCreateDefaults(
         hireInput.adapterType,
-        rawHireAdapterConfig,
+        applyCreateDefaultsByAdapterType(
+          hireInput.adapterType,
+          rawHireAdapterConfig,
+        ),
       ),
       hireInput.runtimeConfig,
     );
@@ -4925,11 +5014,15 @@ function getActorIdentityPart(req: Request): string {
       companyId,
       agentId,
       createInput.adapterType,
-      applyCreateDefaultsByAdapterType(
+      applyOmpLocalCreateDefaults(
         createInput.adapterType,
-        rawCreateAdapterConfig,
+        applyCreateDefaultsByAdapterType(
+          createInput.adapterType,
+          rawCreateAdapterConfig,
+        ),
       ),
     );
+    assertLocalAdapterSecurityChangeAllowed(req, createInput.adapterType, null, rawCreateAdapterConfig);
     assertExternalInstructionsAdmin(req, {
       id: agentId,
       companyId,
@@ -5053,6 +5146,47 @@ function getActorIdentityPart(req: Request): string {
     // check below. The gate applies only when the request carries `boardAdmin`,
     // so ordinary permission updates keep their existing behavior.
     const requestedBoardAdmin = req.body.boardAdmin as boolean | undefined;
+    // myrmidon(1.6.6 SETTINGS-UI / OPE-11237): modifying agent authorizationPolicy requires
+    // explicit users:manage_permissions and prohibits agents from modifying their own policy.
+    const requestedAuthPolicy = req.body.authorizationPolicy as Record<string, unknown> | null | undefined;
+    if (requestedAuthPolicy !== undefined) {
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId) {
+          res.status(403).json({ error: "Agent authentication required" });
+          return;
+        }
+        if (req.actor.agentId === existing.id) {
+          res.status(403).json({ error: "An agent cannot modify its own authorization policy" });
+          return;
+        }
+        if (
+          !(await access.hasPermission(
+            existing.companyId,
+            "agent",
+            req.actor.agentId,
+            "users:manage_permissions",
+          ))
+        ) {
+          res.status(403).json({ error: "Missing users:manage_permissions grant" });
+          return;
+        }
+      } else {
+        if (!hasCompanyAccess(req, existing.companyId)) throw notFound("Agent not found");
+        assertCompanyAccess(req, existing.companyId);
+        const isLocalImplicitActor =
+          req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+        if (!isLocalImplicitActor) {
+          const allowed = await access.canUser(
+            existing.companyId,
+            req.actor.userId,
+            "users:manage_permissions",
+          );
+          if (!allowed) {
+            throw forbidden("Missing users:manage_permissions permission for the company");
+          }
+        }
+      }
+    }
     // myrmidon(1.6.5-F-23): the off-run self-secret toggle is board-only.
     if (req.body.offRunSecretRead !== undefined && req.actor.type !== "board") {
       res.status(403).json({ error: "Only board actors can manage off-run secret read grants" });
@@ -5712,13 +5846,19 @@ function getActorIdentityPart(req: Request): string {
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      assertLocalAdapterSecurityChangeAllowed(
+        req,
+        requestedAdapterType,
+        asRecord(existing.adapterConfig),
+        normalizedEffectiveAdapterConfig,
+      );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
         adapterConfig: patchData.adapterConfig,
       });
       // myrmidon(S4): admin-only inheritProcessEnv, unknown models are rejected
-      await assertMyrmidonAgentConfigChange(req, existing, requestedAdapterType, patchData.adapterConfig as Record<string, unknown>);
+      await assertMyrmidonAgentConfigChange(req, existing, requestedAdapterType, patchData.adapterConfig as Record<string, unknown>, { db });
     }
     if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
     const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
@@ -5770,6 +5910,20 @@ function getActorIdentityPart(req: Request): string {
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    if (typeof patchData.budgetMonthlyCents === "number") {
+      const actorUserId = req.actor.type === "agent" ? null : (req.actor.userId ?? null);
+      await budgets.upsertPolicy(
+        agent.companyId,
+        {
+          scopeType: "agent",
+          scopeId: agent.id,
+          amount: patchData.budgetMonthlyCents,
+          windowKind: "calendar_month_utc",
+        },
+        actorUserId,
+      );
     }
 
     await logActivity(db, {
@@ -6367,6 +6521,11 @@ function getActorIdentityPart(req: Request): string {
             : [],
         ),
       );
+      if (issueId) {
+        const issue = await issueService(db).getById(issueId);
+        if (!issue || issue.companyId !== agent.companyId) throw notFound("Task not found");
+        wakePayload.eventRevision = issue.updatedAt.toISOString();
+      }
     }
     // myrmidon(WAKE-BIND): a wake must always carry its task. Accept the
     // documented top-level issueId, and for a manual wake with no issue at all
@@ -6399,6 +6558,15 @@ function getActorIdentityPart(req: Request): string {
     if (typeof req.body.idempotencyKey === "string" && req.body.idempotencyKey.startsWith(CHAT_INBOUND_WAKE_KEY_PREFIX)) {
       throw unprocessable(`idempotencyKey must not start with "${CHAT_INBOUND_WAKE_KEY_PREFIX}"`);
     }
+    const issueId =
+      typeof wakePayload?.issueId === "string" ? wakePayload.issueId :
+      typeof wakePayload?.taskId === "string" ? wakePayload.taskId : null;
+    if (issueId) {
+      const issue = await issueService(db).getById(issueId);
+      if (issue?.companyId === agent.companyId) {
+        wakePayload = { ...(wakePayload ?? {}), eventRevision: issue.updatedAt.toISOString() };
+      }
+    }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
@@ -6430,7 +6598,25 @@ function getActorIdentityPart(req: Request): string {
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent, wakePayload));
+      const skipped = await opts.skippedResponse(agent, wakePayload);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: id,
+        runId: null,
+        action: "heartbeat.wakeup_skipped",
+        entityType: "agent",
+        entityId: id,
+        details: {
+          issueId: typeof wakePayload?.issueId === "string" ? wakePayload.issueId : null,
+          reason: typeof skipped === "object" && skipped !== null && "reason" in skipped ? skipped.reason : "wakeup_skipped",
+          message: typeof skipped === "object" && skipped !== null && "message" in skipped ? skipped.message : null,
+          details: typeof skipped === "object" && skipped !== null && "details" in skipped ? skipped.details : null,
+        },
+      });
+      res.status(202).json(skipped);
       return;
     }
 
@@ -7121,9 +7307,21 @@ function getActorIdentityPart(req: Request): string {
     assertCompanyAccess(req, companyId);
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
-    const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const rawLimit = req.query.limit;
+    if (rawLimit !== undefined && (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit) || !Number.isSafeInteger(Number(rawLimit)) || Number(rawLimit) < 1)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
+      return;
+    }
+    const limit = Math.min(1000, rawLimit === undefined ? 200 : Number(rawLimit));
+    const rawBefore = req.query.before;
+    if (rawBefore !== undefined && (typeof rawBefore !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(rawBefore) || !Number.isFinite(Date.parse(rawBefore)) || new Date(rawBefore).toISOString() !== new Date(Date.parse(rawBefore)).toISOString())) {
+      res.status(400).json({ error: "before must be an ISO timestamp" });
+      return;
+    }
+    const before = rawBefore === undefined ? undefined : new Date(rawBefore);
     const summary = req.query.summary === "true" || req.query.summary === "1";
+    const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
+    const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
 
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
@@ -7133,11 +7331,46 @@ function getActorIdentityPart(req: Request): string {
         : null,
     ]);
     // Compute the validator before fetching and redacting the response body.
-    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+    const vk = (wakeReason !== undefined || hasResult)
+      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult, before)
+      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, undefined, false, before);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult, before });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
+    // Cursor pagination: when the page is exactly `limit` rows, expose the
+    // createdAt of the last row so clients can fetch the next page with
+    // ?before=<cursor>. Array shape is unchanged for existing callers.
+    if (redactedRuns.length >= limit) {
+      const last = redactedRuns[redactedRuns.length - 1] as { createdAt?: string | Date | null };
+      const createdAt = last?.createdAt;
+      if (createdAt) {
+        res.setHeader("X-Next-Cursor", new Date(createdAt).toISOString());
+      }
+    }
     res.json(redactedRuns);
+  });
+
+  // 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10096)
+  router.get("/companies/:companyId/reports/empty-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
+  });
+
+  router.get("/companies/:companyId/agents/:agentId/empty-run-stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
   });
 
   router.get("/companies/:companyId/external-sessions", async (req, res) => {
@@ -7292,7 +7525,7 @@ function getActorIdentityPart(req: Request): string {
       const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
       res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => ({
         ...heartbeat.decorateActiveRunStatus(run),
-        execution: projections.get(run.id) ?? null,
+        execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       })))));
       return;
@@ -7301,7 +7534,7 @@ function getActorIdentityPart(req: Request): string {
     const projections = await executionProjectionsForRuns(db, companyId, liveRuns.map(run => run.id));
     res.json(await runRedactions.redactForRuns(companyId, await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run),
-        execution: projections.get(run.id) ?? null,
+        execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     })))));
   });
@@ -7328,6 +7561,7 @@ function getActorIdentityPart(req: Request): string {
     // copy; a payload that differs from it is left untouched.
     const singleContinuationRun = {
       ...decoratedRun,
+      queuedReason: decoratedRun.queuedReason ?? null,
       contextSnapshot: withoutDuplicateExecutionContinuation(
         decoratedRun.contextSnapshot,
       ),
@@ -7336,7 +7570,7 @@ function getActorIdentityPart(req: Request): string {
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...singleContinuationRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...singleContinuationRun, execution: sanitizeExecutionProjectionForActor(await executionProjectionForRun(db, run.companyId, run.id), req.actor), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     ));
@@ -7918,7 +8152,7 @@ function getActorIdentityPart(req: Request): string {
     const projections = await executionProjectionsForRuns(db, issue.companyId, liveRuns.map(run => run.id));
     res.json(await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
-      execution: projections.get(run.id) ?? null,
+      execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     }))));
   });
@@ -7930,7 +8164,9 @@ function getActorIdentityPart(req: Request): string {
       eq(heartbeatRuns.companyId, issue.companyId),
       sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
     )).orderBy(sql`case when ${heartbeatRuns.id} = ${issue.executionRunId} then 0 when ${heartbeatRuns.status} = 'running' then 1 else 2 end`, desc(heartbeatRuns.createdAt)).limit(1);
-    res.json(run ? { runId: run.id, agentId: run.agentId, recoveryAction: await issueRecoveryActionService(db).getActiveForIssue(issue.companyId, issue.id), execution: await executionProjectionForRun(db, issue.companyId, run.id) } : null);
+    const rawExecution = run ? await executionProjectionForRun(db, issue.companyId, run.id) : null;
+    const execution = sanitizeExecutionProjectionForActor(rawExecution, req.actor);
+    res.json(run ? { runId: run.id, agentId: run.agentId, recoveryAction: await issueRecoveryActionService(db).getActiveForIssue(issue.companyId, issue.id), execution } : null);
   });
 
   router.get("/issues/:issueId/active-run", async (req, res) => {
@@ -7975,9 +8211,10 @@ function getActorIdentityPart(req: Request): string {
     }
 
     const decoratedRun = heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id });
+    const rawExecution = await executionProjectionForRun(db, issue.companyId, run.id);
     res.json({
       ...decoratedRun,
-      execution: await executionProjectionForRun(db, issue.companyId, run.id),
+      execution: sanitizeExecutionProjectionForActor(rawExecution, req.actor),
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,

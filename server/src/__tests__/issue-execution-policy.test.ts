@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, mayNeedDefaultEscalationChain, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, mayNeedDefaultEscalationChain, normalizeIssueExecutionPolicy, safeNormalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@myrmidon/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -35,6 +35,33 @@ function approvalOnlyPolicy() {
 }
 
 describe("normalizeIssueExecutionPolicy", () => {
+  it("normalizes legacy mode=sequential to normal and preserves stages and monitor", () => {
+    const result = normalizeIssueExecutionPolicy({
+      mode: "sequential",
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", notes: "test monitor" },
+    });
+    expect(result?.mode).toBe("normal");
+    expect(result?.stages).toHaveLength(1);
+    expect(result?.stages[0].participants[0].agentId).toBe(qaAgentId);
+    expect(result?.monitor?.notes).toBe("test monitor");
+    expect(result?.monitor?.nextCheckAt).toBe("2026-04-11T12:30:00.000Z");
+  });
+
+  it("safeNormalizeIssueExecutionPolicy normalizes legacy mode=sequential without throwing", () => {
+    const result = safeNormalizeIssueExecutionPolicy({
+      mode: "sequential",
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+    });
+    expect(result?.mode).toBe("normal");
+  });
+
+  it("safeNormalizeIssueExecutionPolicy returns null on invalid policy without throwing", () => {
+    expect(safeNormalizeIssueExecutionPolicy({ mode: "nonexistent_mode", stages: [{ type: "invalid" }] })).toBeNull();
+    expect(safeNormalizeIssueExecutionPolicy(null)).toBeNull();
+    expect(safeNormalizeIssueExecutionPolicy(undefined)).toBeNull();
+  });
+
   it("returns null for null/undefined input", () => {
     expect(normalizeIssueExecutionPolicy(null)).toBeNull();
     expect(normalizeIssueExecutionPolicy(undefined)).toBeNull();
@@ -2193,6 +2220,52 @@ describe("review round circuit breaker", () => {
     // coder is the executor (returnAssignee), cto is the holder: next is lead.
     expect(result.patch.assigneeAgentId).toBe(leadAgentId);
     expect(result.patch.assigneeUserId).toBeNull();
+  });
+
+  it("routes review return to a live replacement when the persisted return assignee was terminated", () => {
+    const issue = {
+      ...reviewPendingIssue(
+        { assigneeAgentId: qaAgentId },
+        { currentParticipant: { type: "agent", agentId: qaAgentId }, returnAssignee: { type: "agent", agentId: coderAgentId } },
+      ),
+      terminatedReturnAssigneeAgentId: coderAgentId,
+      fallbackReturnAssigneeAgentId: leadAgentId,
+    };
+    const result = applyIssueExecutionPolicyTransition({
+      issue,
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Approved after executor termination",
+    });
+
+    expect(result.patch.status).toBe("in_progress");
+    expect(result.patch.assigneeAgentId).toBe(leadAgentId);
+    expect(result.patch.executionState).toMatchObject({
+      returnAssignee: { type: "agent", agentId: leadAgentId },
+    });
+  });
+
+  it("does not replace a live return assignee when no termination marker matches", () => {
+    const issue = {
+      ...reviewPendingIssue(
+        { assigneeAgentId: qaAgentId },
+        { currentParticipant: { type: "agent", agentId: qaAgentId }, returnAssignee: { type: "agent", agentId: coderAgentId } },
+      ),
+      terminatedReturnAssigneeAgentId: leadAgentId,
+      fallbackReturnAssigneeAgentId: leadAgentId,
+    };
+    const result = applyIssueExecutionPolicyTransition({
+      issue,
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Approved",
+    });
+
+    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
   });
 
   it("raises a recovery card, not a human hand-off, when the senior chain is empty", () => {

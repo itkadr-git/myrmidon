@@ -127,6 +127,12 @@ describe("swarm claim settings", () => {
 });
 
 describe("swarm active task ceiling", () => {
+  it("defaults the automatic assignment cap to two tasks per agent", () => {
+    expect(DEFAULT_SWARM_MAX_ACTIVE_TASKS).toBe(2);
+    expect(swarmActiveTaskLimitReached(1, { maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS })).toBe(false);
+    expect(swarmActiveTaskLimitReached(2, { maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS })).toBe(true);
+  });
+
   it("is reached at the ceiling and off when the setting is null", () => {
     expect(swarmActiveTaskLimitReached(2, { maxActiveTasks: 3 })).toBe(false);
     expect(swarmActiveTaskLimitReached(3, { maxActiveTasks: 3 })).toBe(true);
@@ -529,5 +535,24 @@ describe("swarm names shared with the supervisor part", () => {
         hasDirectReports: true,
       } as unknown as Parameters<typeof resolveSwarmQueueEligibility>[0]),
     ).toEqual({ eligible: true, source: "caste" });
+  });
+
+  it("resolves capacityPolicy defaults to disabled and respects env override", () => {
+    const def = resolveSwarmClaimSettings();
+    expect(def.settings.capacityPolicy?.enabled).toBe(false);
+    expect(def.sources.capacityPolicy).toBe("default");
+
+    const envOn = resolveSwarmClaimSettings({
+      env: { MYRMIDON_CAPACITY_POLICY_ENABLED: "1" },
+    });
+    expect(envOn.settings.capacityPolicy?.enabled).toBe(true);
+    expect(envOn.sources.capacityPolicy).toBe("env");
+
+    const envOff = resolveSwarmClaimSettings({
+      stored: { ...def.settings, capacityPolicy: { ...def.settings.capacityPolicy!, enabled: true } },
+      env: { MYRMIDON_CAPACITY_POLICY_ENABLED: "0" },
+    });
+    expect(envOff.settings.capacityPolicy?.enabled).toBe(false);
+    expect(envOff.sources.capacityPolicy).toBe("env");
   });
 });

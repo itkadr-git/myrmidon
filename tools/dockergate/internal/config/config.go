@@ -56,7 +56,18 @@ type Bot struct {
 	// at most one of them at a time and only one that is listed here: its own
 	// scope instance, never a sibling's. Empty (the default): the bot is never
 	// a member of a shared instance.
-	ScopeInstances []string `json:"scopeInstances"`
+	ScopeInstances []string `json:"scopeInstances,omitempty"`
+	// Ceiling fields if platform limits are configured explicitly per bot.
+	CeilingMemoryMB int64   `json:"ceilingMemoryMb,omitempty"`
+	CeilingCPUs     float64 `json:"ceilingCpus,omitempty"`
+	CeilingPids     int64   `json:"ceilingPids,omitempty"`
+}
+
+// PlatformLimits are optional hard limits across all bots on the platform.
+type PlatformLimits struct {
+	MaxMemoryMB int64   `json:"maxMemoryMb,omitempty"`
+	MaxCPUs     float64 `json:"maxCpus,omitempty"`
+	MaxPids     int64   `json:"maxPids,omitempty"`
 }
 
 // Limits are the limits and timeouts of section 11.1 and the rates of 9.2.
@@ -166,10 +177,19 @@ type Config struct {
 	// A bot may bind only an instance listed in its own scopeInstances. Empty
 	// (the default) means "<volumeRoot>/.scopes" ("." can never begin a bot
 	// key, so the name cannot collide with a bot's directory).
-	ScopeRoot string `json:"scopeRoot"`
-	Bots      []Bot  `json:"bots"`
-	Limits    Limits `json:"limits"`
-	StatsFile string `json:"statsFile"`
+	ScopeRoot      string          `json:"scopeRoot"`
+	Bots           []Bot           `json:"bots"`
+	Limits         Limits          `json:"limits"`
+	StatsFile      string          `json:"statsFile"`
+	PlatformLimits *PlatformLimits `json:"platformLimits,omitempty"`
+	// LimitsOverrideFile is the file the A20 ceilings updates write (the
+	// mutable per-bot limits), when the main config file itself is mounted
+	// read-only into the container (OPE-12383). Empty (the default) keeps the
+	// old behaviour: the update rewrites the main config file. The file lives
+	// in the writable state directory of the container and holds only the
+	// per-bot entries the board has applied; everything else (images, the
+	// caller shape, the ceilings) stays operator-owned in the main file.
+	LimitsOverrideFile string `json:"limitsOverrideFile,omitempty"`
 }
 
 // ScopeInstanceRe is the name of a shared scope instance directory:
@@ -209,6 +229,9 @@ func Parse(data []byte) (*Config, string, error) {
 	if cfg.Caller != nil && cfg.Caller.Mode == "" {
 		cfg.Caller.Mode = ModeContainerMainProcess
 	}
+	if cfg.PlatformLimits == nil {
+		cfg.PlatformLimits = &PlatformLimits{}
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, "", err
 	}
@@ -223,6 +246,33 @@ func Load(path string) (*Config, string, error) {
 		return nil, "", fmt.Errorf("config: %w", err)
 	}
 	return Parse(data)
+}
+
+// LoadForRuntime reads the main configuration file, applies the limits-override
+// file on top of it (when "limitsOverrideFile" is configured) and returns the
+// effective configuration with the hash of the MAIN file (the hash the deploy
+// and the stats report). A missing override file is no override at all; an
+// invalid or unverifiable one refuses the load: the override must never become
+// a way around the checks of the main configuration (OPE-12383).
+func LoadForRuntime(mainPath string) (*Config, string, error) {
+	cfg, hash, err := Load(mainPath)
+	if err != nil {
+		return nil, "", err
+	}
+	if cfg.LimitsOverrideFile == "" {
+		return cfg, hash, nil
+	}
+	bots, err := LoadLimitsOverride(cfg.LimitsOverrideFile)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := ApplyLimitsOverride(cfg, bots); err != nil {
+		return nil, "", err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, "", fmt.Errorf("config: merged with limits override: %w", err)
+	}
+	return cfg, hash, nil
 }
 
 func absPath(name, p string) error {
@@ -242,6 +292,11 @@ func (c *Config) Validate() error {
 	}
 	if err := absPath("statsFile", c.StatsFile); err != nil {
 		return err
+	}
+	if c.LimitsOverrideFile != "" {
+		if err := absPath("limitsOverrideFile", c.LimitsOverrideFile); err != nil {
+			return err
+		}
 	}
 	if c.APIVersion != SupportedAPIVersion {
 		return fmt.Errorf("config: apiVersion must be %q", SupportedAPIVersion)
@@ -345,6 +400,20 @@ func (c *Config) Validate() error {
 			return errors.New("config: duplicate botKey in bots")
 		}
 		keys[b.BotKey] = true
+		if b.CeilingMemoryMB < 0 || b.CeilingCPUs < 0 || b.CeilingPids < 0 {
+			return errors.New("config: bot ceilings must not be negative")
+		}
+		if b.CeilingMemoryMB > 0 && b.CeilingMemoryMB < b.MaxMemoryMB ||
+			b.CeilingCPUs > 0 && b.CeilingCPUs < b.MaxCPUs ||
+			b.CeilingPids > 0 && b.CeilingPids < b.MaxPids {
+			return errors.New("config: bot limits exceed configured ceilings")
+		}
+		if c.PlatformLimits != nil &&
+			(c.PlatformLimits.MaxMemoryMB > 0 && b.MaxMemoryMB > c.PlatformLimits.MaxMemoryMB ||
+				c.PlatformLimits.MaxCPUs > 0 && b.MaxCPUs > c.PlatformLimits.MaxCPUs ||
+				c.PlatformLimits.MaxPids > 0 && b.MaxPids > c.PlatformLimits.MaxPids) {
+			return errors.New("config: bot limits exceed platform limits")
+		}
 		if b.MaxMemoryMB <= 0 || b.MaxPids <= 0 || !(b.MaxCPUs > 0) {
 			return errors.New("config: the ceilings of a bot must be greater than zero")
 		}
@@ -357,6 +426,18 @@ func (c *Config) Validate() error {
 				return errors.New("config: duplicate entry in bots[].scopeInstances")
 			}
 			seenInstances[inst] = true
+		}
+	}
+	if c.PlatformLimits != nil {
+		if c.PlatformLimits.MaxMemoryMB < 0 || c.PlatformLimits.MaxCPUs < 0 || c.PlatformLimits.MaxPids < 0 {
+			return errors.New("config: platform limits must not be negative")
+		}
+		for _, b := range c.Bots {
+			if c.PlatformLimits.MaxMemoryMB > 0 && b.MaxMemoryMB > c.PlatformLimits.MaxMemoryMB ||
+				c.PlatformLimits.MaxCPUs > 0 && b.MaxCPUs > c.PlatformLimits.MaxCPUs ||
+				c.PlatformLimits.MaxPids > 0 && b.MaxPids > c.PlatformLimits.MaxPids {
+				return errors.New("config: bot limits exceed platform limits")
+			}
 		}
 	}
 	return c.Limits.validate()
@@ -389,4 +470,85 @@ func (c *Config) Bot(botKey string) (Bot, bool) {
 		}
 	}
 	return Bot{}, false
+}
+
+// CeilingsFor returns the platform limits for a given bot.
+func (c *Config) CeilingsFor(botKey string) (maxMem int64, maxCPUs float64, maxPids int64, ok bool) {
+	b, found := c.Bot(botKey)
+	if !found {
+		return 0, 0, 0, false
+	}
+	if b.CeilingMemoryMB > 0 {
+		maxMem = b.CeilingMemoryMB
+	}
+	if b.CeilingCPUs > 0 {
+		maxCPUs = b.CeilingCPUs
+	}
+	if b.CeilingPids > 0 {
+		maxPids = b.CeilingPids
+	}
+	if c.PlatformLimits != nil {
+		if c.PlatformLimits.MaxMemoryMB > 0 && (maxMem <= 0 || c.PlatformLimits.MaxMemoryMB < maxMem) {
+			maxMem = c.PlatformLimits.MaxMemoryMB
+		}
+		if c.PlatformLimits.MaxCPUs > 0 && (maxCPUs <= 0 || c.PlatformLimits.MaxCPUs < maxCPUs) {
+			maxCPUs = c.PlatformLimits.MaxCPUs
+		}
+		if c.PlatformLimits.MaxPids > 0 && (maxPids <= 0 || c.PlatformLimits.MaxPids < maxPids) {
+			maxPids = c.PlatformLimits.MaxPids
+		}
+	}
+	if maxMem <= 0 {
+		maxMem = b.MaxMemoryMB
+	}
+	if maxCPUs <= 0 {
+		maxCPUs = b.MaxCPUs
+	}
+	if maxPids <= 0 {
+		maxPids = b.MaxPids
+	}
+	return maxMem, maxCPUs, maxPids, true
+}
+
+func CeilingsForTest(c *Config, botKey string) (int64, float64, int64, bool) {
+	return c.CeilingsFor(botKey)
+}
+
+// Clone returns a deep copy of the configuration.
+func (c *Config) Clone() *Config {
+	cp := *c
+	if c.Caller != nil {
+		callerCopy := *c.Caller
+		if c.Caller.ContainerLabels != nil {
+			callerCopy.ContainerLabels = make(map[string]string, len(c.Caller.ContainerLabels))
+			for k, v := range c.Caller.ContainerLabels {
+				callerCopy.ContainerLabels[k] = v
+			}
+		}
+		if c.Caller.Argv != nil {
+			callerCopy.Argv = append([]string(nil), c.Caller.Argv...)
+		}
+		cp.Caller = &callerCopy
+	}
+	if c.Images != nil {
+		cp.Images = append([]string(nil), c.Images...)
+	}
+	if c.MountSources != nil {
+		cp.MountSources = append([]string(nil), c.MountSources...)
+	}
+	if c.Bots != nil {
+		cp.Bots = make([]Bot, len(c.Bots))
+		for i, b := range c.Bots {
+			bCopy := b
+			if b.ScopeInstances != nil {
+				bCopy.ScopeInstances = append([]string(nil), b.ScopeInstances...)
+			}
+			cp.Bots[i] = bCopy
+		}
+	}
+	if c.PlatformLimits != nil {
+		pl := *c.PlatformLimits
+		cp.PlatformLimits = &pl
+	}
+	return &cp
 }

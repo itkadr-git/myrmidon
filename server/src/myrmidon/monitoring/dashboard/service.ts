@@ -12,6 +12,7 @@ import {
   emptyDashboardView,
   type ContainerReading,
   type DashboardView,
+  type OomFleetSummary,
   type HostReading,
   type LiteLlmReading,
   type SourceStatus,
@@ -21,6 +22,12 @@ import type { MonitoringConnectionSettings } from "./settings.js";
 import type { VmClient } from "./vm.js";
 import type { ZabbixReadClient } from "./zabbix.js";
 import { DASHBOARD_ZABBIX_ITEM_KEYS, mapZabbixHostName } from "./zabbix.js";
+import { collectBlockerRootMetrics } from "../metrics/blocker-roots.js";
+import { collectBlockedMetrics } from "../metrics/blocked.js";
+import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
+import { blockerRootFanoutAlertLimitFromSettings } from "../../../services/blocker-graph/fanout-limit.js";
+import { activityLog, agents, companies, instanceSettings, type Db } from "@myrmidon/db";
+import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 
 export interface DashboardServiceDeps {
   settings: MonitoringConnectionSettings;
@@ -29,6 +36,32 @@ export interface DashboardServiceDeps {
   /** Present only when zabbixUrl is configured. */
   zabbix?: ZabbixReadClient | null;
   now?: () => Date;
+  db?: Db;
+}
+
+async function buildBlockerPanels(db: Db): Promise<import("./domain.js").BlockerDashboardData> {
+  const [companyRows, settings] = await Promise.all([
+    db.select({ id: companies.id }).from(companies),
+    db.select({ general: instanceSettings.general }).from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")).limit(1),
+  ]);
+  const limit = blockerRootFanoutAlertLimitFromSettings(settings[0]?.general);
+  const roots = await collectBlockerRootMetrics(db, { fanoutLimit: limit });
+  let blockedAgeSeconds: number | null = null;
+  let missingFields: number | null = null;
+  for (const company of companyRows) {
+    const groups = await collectBlockedMetrics((id) => loadBlockedGraph(db, id), company.id);
+    for (const group of groups) {
+      blockedAgeSeconds = Math.max(blockedAgeSeconds ?? 0, group.ageSeconds.max ?? 0);
+      missingFields = (missingFields ?? 0) + group.missingFields.reason + group.missingFields.owner + group.missingFields.nextCheckAt;
+    }
+  }
+  return {
+    blockedAgeSeconds,
+    rootFanout: roots.companies.flatMap((company) => company.roots.map((root) => ({ root: root.root, fanout: root.fanout }))),
+    missingFields,
+    terminal: roots.companies.reduce((sum, company) => sum + company.terminalCount, 0),
+    fanoutLimit: limit,
+  };
 }
 
 /** PromQL templates of the host readings (job selector interpolated). */
@@ -75,6 +108,25 @@ export function defaultRunbookKey(host: HostReading): string | null {
   if (worst >= 90) return "host-saturation";
   if ((host.diskPercent ?? 0) >= 85) return "host-disk-pressure";
   return null;
+}
+
+export async function buildOomFleetSummary(db: Db, companyId: string, at = new Date()): Promise<OomFleetSummary> {
+  const currentStart = new Date(at.getTime() - 24 * 60 * 60 * 1000);
+  const previousStart = new Date(at.getTime() - 48 * 60 * 60 * 1000);
+  const [currentRows, previousRows] = await Promise.all([
+    db.select({ agentId: activityLog.agentId, agentName: agents.name, role: agents.role, count: sql<number>`count(*)::int` })
+      .from(activityLog).innerJoin(agents, and(eq(activityLog.agentId, agents.id), eq(agents.companyId, companyId)))
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.container_oom"), eq(activityLog.entityType, "container_oom"), gte(activityLog.createdAt, currentStart), lt(activityLog.createdAt, at)))
+      .groupBy(activityLog.agentId, agents.name, agents.role).orderBy(desc(sql`count(*)`)),
+    db.select({ count: sql<number>`count(*)::int` }).from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.container_oom"), eq(activityLog.entityType, "container_oom"), gte(activityLog.createdAt, previousStart), lt(activityLog.createdAt, currentStart))),
+  ]);
+  const byAgent = currentRows.map((row) => ({ agentId: row.agentId ?? "unknown", agentName: row.agentName, role: row.role, count: row.count }));
+  const roles = new Map<string, number>();
+  for (const row of byAgent) roles.set(row.role ?? "unknown", (roles.get(row.role ?? "unknown") ?? 0) + row.count);
+  const total24h = byAgent.reduce((sum, row) => sum + row.count, 0);
+  const previous24h = previousRows[0]?.count ?? 0;
+  return { windowStartedAt: currentStart.toISOString(), total24h, previous24h, increaseAlert: total24h > previous24h, byAgent, byRole: [...roles].map(([role, count]) => ({ role, count })).sort((a, b) => b.count - a.count) };
 }
 
 export async function buildDashboardView(deps: DashboardServiceDeps): Promise<DashboardView> {
@@ -248,6 +300,13 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
   view.containers = containers;
   view.litellm = litellm;
   view.vps = vps;
+  if (deps.db) {
+    try {
+      view.blockerPanels = await buildBlockerPanels(deps.db);
+    } catch {
+      view.blockerPanels = null;
+    }
+  }
   view.ok = sources.some((s) => s.ok) && sources.filter((s) => s.error !== "not_configured").every((s) => s.ok);
   return view;
 }

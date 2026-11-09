@@ -31,6 +31,25 @@ export function deriveResponsibleUser(
  * UI can show a "via <agent>" affordance. Agent-only creators fall back to the
  * agent, and routine executions (no `createdBy*`) surface the responsible user.
  */
+export type ResponsibleActor =
+  | { kind: "agent"; id: string }
+  | { kind: "user"; id: string };
+
+export function deriveResponsibleActor(
+  issue: Pick<Issue, "responsibleAgentId" | "responsibleUserId" | "createdByUserId">,
+): ResponsibleActor | null {
+  if (issue.responsibleAgentId) {
+    return { kind: "agent", id: issue.responsibleAgentId };
+  }
+  if (issue.responsibleUserId) {
+    return { kind: "user", id: issue.responsibleUserId };
+  }
+  if (issue.createdByUserId) {
+    return { kind: "user", id: issue.createdByUserId };
+  }
+  return null;
+}
+
 export type OriginatingActor =
   | { kind: "user"; id: string; viaAgentId?: string }
   | { kind: "agent"; id: string };

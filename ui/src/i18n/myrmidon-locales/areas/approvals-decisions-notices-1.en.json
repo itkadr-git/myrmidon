@@ -310,6 +310,7 @@
           "empty_model_catalog": "Model catalog",
           "queue_stall": "Queue stall",
           "codex_pool_alert": "Codex pool alert",
+          "litellm_budget": "LLM key budget",
           "issue_monitor_overdue": "Overdue issue monitor"
         }
       }

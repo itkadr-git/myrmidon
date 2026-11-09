@@ -60,17 +60,56 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
       item({ slug: "loop-b", title: "Loop B", parentSlug: "loop-a" }),
     ]);
 
-    const root = tree.find((node) => node.item.slug === "root");
-    expect(root?.depth).toBe(0);
+    const space = tree.find((node) => node.item.spaceKey === "wiki");
+    const root = space?.children.find((node) => node.item.slug === "root");
+    expect(root?.depth).toBe(1);
     expect(root?.children.map((node) => node.item.slug)).toEqual(["child-a", "child-b"]);
     expect(root?.children[0]?.children.map((node) => node.item.slug)).toEqual(["grand"]);
-    expect(root?.children[0]?.children[0]?.depth).toBe(2);
+    expect(root?.children[0]?.children[0]?.depth).toBe(3);
 
-    // A parent chain that loops back is a root instead of a hung walk.
-    expect(tree.map((node) => node.item.slug).sort()).toContain("loop-a");
+    // A parent chain that loops back remains visible without attaching into a cycle.
+    expect(space?.children.map((node) => node.item.slug).sort()).toEqual(["loop-a", "loop-b", "root"]);
+    expect(space?.children.find((node) => node.item.slug === "loop-a")?.children).toEqual([]);
+    expect(space?.children.find((node) => node.item.slug === "loop-b")?.children).toEqual([]);
     const flattened = flattenKnowledgeTree(tree);
-    expect(flattened.length).toBe(6);
+    expect(flattened.length).toBe(7);
   });
+
+  it("nests slash-path pages into inferred folders and de-duplicates space/slug", () => {
+    const tree = buildKnowledgeTree([
+      item({ spaceKey: "docs", slug: "guides/index", title: "Guide index" }),
+      item({ spaceKey: "docs", slug: "guides/setup", title: "Setup" }),
+      item({ spaceKey: "docs", slug: "guides", title: "Guides" }),
+      item({ spaceKey: "docs", slug: "guides/index", title: "Guide index duplicate" }),
+      item({ spaceKey: "other", slug: "guides/index", title: "Other index" }),
+    ]);
+    const flattened = flattenKnowledgeTree(tree);
+    const guides = flattened.find((node) => node.item.spaceKey === "docs" && node.item.slug === "guides");
+    expect(guides?.children.map((node) => node.item.slug).sort()).toEqual(["guides/index", "guides/setup"]);
+    expect(flattened.filter((node) => node.item.spaceKey === "docs" && node.item.slug === "guides/index")).toHaveLength(1);
+    expect(flattened.find((node) => node.item.spaceKey === "docs" && node.item.slug === "guides/index")?.item.title).toBe("Guide index duplicate");
+  });
+
+  it("honors explicit parentSlug even when children arrive first and isolates spaces", () => {
+    const tree = buildKnowledgeTree([
+      item({ spaceKey: "docs", slug: "child", title: "Child", parentSlug: "parent" }),
+      item({ spaceKey: "docs", slug: "parent", title: "Parent" }),
+      item({ spaceKey: "other", slug: "child", title: "Other child", parentSlug: "parent" }),
+    ]);
+    const docs = tree.find((node) => node.item.spaceKey === "docs");
+    const parent = docs?.children.find((node) => node.item.slug === "parent");
+    expect(parent?.children.map((node) => node.item.slug)).toEqual(["child"]);
+    expect(tree.find((node) => node.item.spaceKey === "other")?.children.map((node) => node.item.slug)).toEqual(["child"]);
+  });
+
+  it("catalogs visible UI labels and status text in English and Russian", () => {
+    expect(ui2Messages.en["ui2.knowledge.sources.title"]).toBe("Sources");
+    expect(ui2Messages.ru["ui2.knowledge.sources.title"]).toBe("Источники");
+    expect(ui2Messages.ru["ui2.knowledge.item.status.pending_review"]).toBe("Требует одобрения");
+    expect(ui2Messages.ru["ui2.knowledge.item.updated"]).toContain("Обновлено");
+    expect(ui2Messages.ru["ui2.knowledge.item.reviewDue"]).toContain("пересмотреть");
+  });
+
 
   it("builds a wide tree within the 300 ms budget of §6 K-4", () => {
     const items: KnowledgeItemSummary[] = [];
@@ -86,9 +125,37 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
     const started = Date.now();
     const tree = buildKnowledgeTree(items);
     const elapsed = Date.now() - started;
-    expect(tree.length).toBe(20);
-    expect(flattenKnowledgeTree(tree).length).toBe(2000);
+    expect(tree.length).toBe(1);
+    expect(flattenKnowledgeTree(tree).length).toBe(2001);
     expect(elapsed).toBeLessThan(KNOWLEDGE_TREE_BUDGET_MS);
+  });
+
+  it("disambiguates identical titles with folder/path and groups by folder (OPE-9762)", () => {
+    const tree = buildKnowledgeTree([
+      item({ slug: "product/overview", spaceKey: "product", title: "Overview" }),
+      item({ slug: "decisions/overview", spaceKey: "decisions", title: "Overview" }),
+      item({ slug: "rules/guidelines", spaceKey: "rules", title: "Guidelines" }),
+      item({ slug: "product/features", spaceKey: "product", title: "Features" }),
+    ]);
+
+    const flat = flattenKnowledgeTree(tree);
+
+    // Check duplicate titles are disambiguated so there are no indistinguishable duplicates
+    const productOverview = flat.find((n) => n.item.slug === "product/overview");
+    const decisionsOverview = flat.find((n) => n.item.slug === "decisions/overview");
+    const uniqueGuidelines = flat.find((n) => n.item.slug === "rules/guidelines");
+
+    expect(productOverview?.displayLabel).toBe("Overview (product)");
+    expect(decisionsOverview?.displayLabel).toBe("Overview (decisions)");
+    expect(uniqueGuidelines?.displayLabel).toBe("Guidelines");
+
+    // Check that spaces are grouped in order: decisions, product, rules
+    const spaceOrder = tree.map((n) => n.item.spaceKey);
+    expect(spaceOrder).toEqual(["decisions", "product", "rules"]);
+
+    // Check that items inside spaces retain their folder grouping
+    const itemFolderOrder = flat.filter((n) => !n.item.id.startsWith("folder:") && !n.item.id.startsWith("space:")).map((n) => n.folder);
+    expect(itemFolderOrder).toEqual(["decisions", "product", "product", "rules"]);
   });
 });
 
