@@ -1550,6 +1550,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // setup test checks the round-trip proof, instead of relying on the
     // current drain timing.
     await vi.waitFor(async () => {
+      // The scheduler may have handed the publication to its endpoint worker
+      // between the initial drain and this assertion. Join another drain on
+      // each retry so the setup proof observes the durable outbox state, not
+      // the scheduler's transient hand-off window.
+      await service.processPendingPublications();
       const publication = await db
         .select({
           id: chatPublications.id,
