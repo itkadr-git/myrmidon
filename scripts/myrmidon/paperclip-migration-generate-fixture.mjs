@@ -7,6 +7,7 @@
 //   - v2026.1001.0
 //   - v2026.1005.0
 //   - v2026.1012.0
+//   - v2026.1023.0
 
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -145,6 +146,147 @@ export const SUPPORTED_RELEASES = [
       "mcp_oauth_clients.registration_source_hash",
       "mcp_oauth_requests.requested_company_id",
       "mcp_oauth_clients.grant_types",
+    ],
+  },
+  {
+    tag: "v2026.1023.0",
+    sha: "1b4c803816e82b0265c8422e1a804327a7ed8c54",
+    lastMigration: "0333_normal_wild_pack",
+    migrationCount: 332,
+    extraTables: [
+      "accounting_runtime_baselines",
+      "agent_commentary",
+      "agent_identity_keys",
+      "agent_instruction_heads",
+      "agent_instruction_revisions",
+      "agent_instruction_working_copies",
+      "ai_connection_pools",
+      "ai_connection_router_cursors",
+      "ai_connection_task_pins",
+      "ai_subscription_connections",
+      "ai_subscription_prices",
+      "ai_subscriptions",
+      "billing_invoice_lines",
+      "billing_invoices",
+      "browser_use_browsers",
+      "browser_use_runs",
+      "browser_use_sessions",
+      "browser_use_settings",
+      "budget_reservations",
+      "chat_completion_deliveries",
+      "chat_github_configurations",
+      "chat_github_registrations",
+      "chat_github_reviews",
+      "chat_slack_registrations",
+      "chat_task_handoffs",
+      "chat_voice_callbacks",
+      "chat_voice_inbound_calls",
+      "chat_voice_phone_lines",
+      "chat_voice_replies",
+      "chat_voice_reports",
+      "chat_voice_sessions",
+      "chat_voice_tool_calls",
+      "company_decision_models",
+      "company_fast_responses",
+      "company_skill_source_entries",
+      "company_skill_sources",
+      "cost_adjustments",
+      "decision_invocations",
+      "dot_agent_bindings",
+      "dot_mailbox_items",
+      "dot_runner_assignments",
+      "dot_runner_operations",
+      "fast_response_requests",
+      "issue_access_grants",
+      "mcp_attachment_uploads",
+      "mcp_event_admissions",
+      "mcp_event_deliveries",
+      "mcp_event_subscriptions",
+      "mcp_file_tickets",
+      "mcp_mutation_receipts",
+      "mcp_oauth_clients",
+      "mcp_oauth_device_requests",
+      "mcp_oauth_grants",
+      "mcp_oauth_metadata_admissions",
+      "mcp_oauth_requests",
+      "mcp_oauth_tokens",
+      "plugin_lifecycle_acknowledgments",
+      "project_access_members",
+      "provider_billing_snapshots",
+      "resource_lifecycle_events",
+      "routine_webhook_test_receipts",
+      "run_usage_receipts",
+      "runner_api_response_reservations",
+      "tool_connection_app_snapshots",
+      "tool_connection_app_syncs",
+      "user_company_preferences"
+    ],
+    extraColumns: [
+      "agents.lifecycle_error",
+      "agents.lifecycle_holds",
+      "agents.lifecycle_operation",
+      "agents.lifecycle_required_plugin_ids",
+      "agents.lifecycle_state",
+      "agents.lifecycle_version",
+      "agents.spend_month_utc",
+      "browser_use_runs.recovery_cursor",
+      "budget_policies.enforcement_delivered_version",
+      "budget_policies.enforcement_version",
+      "budget_policies.reservation_cents",
+      "budget_policies.unpriced_usage_policy",
+      "budget_reservations.decision_invocation_id",
+      "budget_reservations.fast_response_request_id",
+      "chat_conversations.communication_guidance",
+      "chat_endpoints.communication_instructions",
+      "chat_endpoints.require_at_mention",
+      "chat_github_registrations.app_name",
+      "chat_github_registrations.handoff",
+      "chat_github_registrations.owner_login",
+      "chat_github_registrations.owner_type",
+      "chat_voice_inbound_calls.intake_issue_id",
+      "chat_voice_phone_lines.guest_intake",
+      "chat_voice_phone_lines.low_trust_environment_id",
+      "companies.spend_month_utc",
+      "company_secrets.ai_session_epoch",
+      "company_skill_source_entries.inspection",
+      "cost_events.idempotency_key",
+      "cost_events.pricing_provenance",
+      "cost_events.provider_request_id",
+      "cost_events.receipt_hash",
+      "cost_events.reported_cost_cents",
+      "cost_events.responsible_user_id",
+      "cost_events.subscription_id",
+      "cost_events.usage_kind",
+      "finance_events.idempotency_key",
+      "finance_events.receipt_hash",
+      "heartbeat_runs.accounting_attempt_count",
+      "heartbeat_runs.accounting_last_attempt_at",
+      "heartbeat_runs.accounting_last_error",
+      "heartbeat_runs.accounting_projection_version",
+      "heartbeat_runs.cost_accounted_at",
+      "heartbeat_runs.cost_accounting_pending",
+      "heartbeat_runs.issue_id",
+      "heartbeat_runs.scope_kind",
+      "issue_comments.fast_response_request_id",
+      "issue_comments.origin",
+      "issues.privacy_parent_issue_id",
+      "issues.privacy_root_issue_id",
+      "issues.visibility",
+      "mcp_event_deliveries.mailbox_item_id",
+      "mcp_event_subscriptions.binding_id",
+      "mcp_oauth_clients.grant_types",
+      "mcp_oauth_clients.registration_source_hash",
+      "mcp_oauth_grants.agent_id",
+      "mcp_oauth_grants.purpose",
+      "mcp_oauth_requests.requested_company_id",
+      "projects.personal_owner_user_id",
+      "projects.visibility",
+      "routine_triggers.archived",
+      "routine_triggers.last_webhook_delivery",
+      "routine_triggers.setup_pending",
+      "tool_connection_app_snapshots.error_at",
+      "tool_connections.agent_instructions",
+      "user.keyboard_shortcuts"
     ],
   },
 ];
@@ -346,7 +488,12 @@ ON CONFLICT ("id") DO NOTHING;
 export function generateVendorGapsSeedSql(releaseTag) {
   let sql = "";
 
-  if (releaseTag === "v2026.1001.0" || releaseTag === "v2026.1005.0" || releaseTag === "v2026.1012.0") {
+  if (
+    releaseTag === "v2026.1001.0" ||
+    releaseTag === "v2026.1005.0" ||
+    releaseTag === "v2026.1012.0" ||
+    releaseTag === "v2026.1023.0"
+  ) {
     // 1001.0+: chat_endpoints + chat_github_reviews
     sql += `
 -- Vendor-only table: chat_github_reviews (present in 1001.0+)
@@ -385,7 +532,7 @@ INSERT INTO "chat_github_reviews" (
 `;
   }
 
-  if (releaseTag === "v2026.1005.0" || releaseTag === "v2026.1012.0") {
+  if (releaseTag === "v2026.1005.0" || releaseTag === "v2026.1012.0" || releaseTag === "v2026.1023.0") {
     // 1005.0+: browser_use_sessions + browser_use_runs
     sql += `
 -- Vendor-only table: browser_use_runs (present in 1005.0+)
@@ -414,7 +561,7 @@ INSERT INTO "browser_use_runs" (
 `;
   }
 
-  if (releaseTag === "v2026.1012.0") {
+  if (releaseTag === "v2026.1012.0" || releaseTag === "v2026.1023.0") {
     // 1012.0+: mcp_oauth_clients + mcp_oauth_grants + mcp_oauth_tokens
     sql += `
 -- Vendor-only table: mcp_oauth_tokens (present in 1012.0+)
@@ -486,7 +633,7 @@ export function generateAllFixtures() {
   fs.mkdirSync(FIXTURES_DIR, { recursive: true });
 
   const files = generateStorageFiles();
-  const canonicalPath = path.join(FIXTURES_DIR, "schema-paperclip-v2026.1012.0.sql");
+  const canonicalPath = path.join(FIXTURES_DIR, "schema-paperclip-v2026.1023.0.sql");
   if (!fs.existsSync(canonicalPath)) {
     throw new Error(`Canonical schema file missing at ${canonicalPath}`);
   }
@@ -519,14 +666,14 @@ export function generateAllFixtures() {
 
     // 3. Manifest
     const vendorGapCounts = {};
-    if (rel.tag === "v2026.1001.0" || rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0") {
+    if (rel.tag === "v2026.1001.0" || rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0" || rel.tag === "v2026.1023.0") {
       vendorGapCounts.chat_github_reviews = 1;
     }
-    if (rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0") {
+    if (rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0" || rel.tag === "v2026.1023.0") {
       vendorGapCounts.browser_use_runs = 1;
       vendorGapCounts.browser_use_sessions = 1;
     }
-    if (rel.tag === "v2026.1012.0") {
+    if (rel.tag === "v2026.1012.0" || rel.tag === "v2026.1023.0") {
       vendorGapCounts.mcp_oauth_tokens = 1;
       vendorGapCounts.mcp_oauth_grants = 1;
       vendorGapCounts.mcp_oauth_clients = 1;
@@ -602,8 +749,8 @@ export function generateAllFixtures() {
     fs.writeFileSync(manifestPathRel, JSON.stringify(manifest, null, 2) + "\n", "utf8");
     fs.writeFileSync(manifestPathRoot, JSON.stringify(manifest, null, 2) + "\n", "utf8");
 
-    // Default root manifest points to the latest release (v2026.1012.0)
-    if (rel.tag === "v2026.1012.0") {
+    // Default root manifest points to the latest release (v2026.1023.0)
+    if (rel.tag === "v2026.1023.0") {
       fs.writeFileSync(path.join(FIXTURES_DIR, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
       fs.writeFileSync(
         path.join(FIXTURES_DIR, "vendor-release.json"),
@@ -611,7 +758,7 @@ export function generateAllFixtures() {
           {
             ...rel,
             compatibilityStatus: "supported_with_vendor_only_reporting",
-            summary: "Paperclip v2026.1012.0 is supported by myrmidon:migrate with vendor gap exclusions.",
+            summary: "Paperclip v2026.1023.0 is supported by myrmidon:migrate with vendor gap exclusions.",
           },
           null,
           2

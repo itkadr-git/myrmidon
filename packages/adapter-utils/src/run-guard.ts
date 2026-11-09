@@ -47,6 +47,12 @@ export function isRunGuardStopReason(value: unknown): value is RunGuardStopReaso
 export interface RunGuardDecision {
   stop: boolean;
   reason?: RunGuardStopReason;
+  hint?: {
+    reason: "repeated_tool_call" | "model_call_limit";
+    tool?: string;
+    repeatCount?: number;
+    modelCalls?: number;
+  };
 }
 
 export interface RunGuardOptions {
@@ -210,6 +216,7 @@ export class RunGuard {
   private readOnlyStreak = 0;
   private readonly readCallCounts = new Map<string, number>();
   private stoppedReason: RunGuardStopReason | null = null;
+  private readonly hintedReasons = new Set<"repeated_tool_call" | "model_call_limit">();
 
   constructor(options: RunGuardOptions = {}) {
     const isCode = isCodeRole(options.role ?? options.agentRole);
@@ -228,7 +235,16 @@ export class RunGuard {
 
   modelCall(): RunGuardDecision {
     if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
-    if (this.modelCalls >= this.modelCallLimit) return this.stop("model_call_limit");
+    if (this.modelCalls >= this.modelCallLimit) {
+      const decision = this.writeCalls === 0
+        ? this.hintBeforeStop({ reason: "model_call_limit", modelCalls: this.modelCalls })
+        : this.stop("model_call_limit");
+      if (!decision.stop) {
+        this.lastEventAt = this.now();
+        this.scheduleIdleWatch();
+      }
+      return decision;
+    }
     this.modelCalls += 1;
     this.lastEventAt = this.now();
     this.scheduleIdleWatch();
@@ -289,6 +305,12 @@ export class RunGuard {
       : { stop: false };
   }
 
+  private hintBeforeStop(hint: NonNullable<RunGuardDecision["hint"]>): RunGuardDecision {
+    if (this.hintedReasons.has(hint.reason)) return this.stop(hint.reason);
+    this.hintedReasons.add(hint.reason);
+    return { stop: false, hint };
+  }
+
   stop(reason: RunGuardStopReason): RunGuardDecision {
     this.stoppedReason ??= reason;
     this.clearIdleWatch();
@@ -331,7 +353,9 @@ export class RunGuard {
    * read-only calls (reset by any write) and repeats of the same read-only call
    * (reset by any write); stops the run with `repeated_tool_call` at the
    * configured repeat limit or `no_progress_exploration` at the configured
-   * streak. Also refreshes the idle deadline, like `event()`.
+   * streak. myrmidon(OPE-12189): the first `repeated_tool_call` trip hands back
+   * a hint (`{stop:false, hint}`) instead of stopping; a second trip of the same
+   * reason stops the run. Also refreshes the idle deadline, like `event()`.
    *
    * `args` is only hashed (with the tool name) and inspected for the shell
    * command of the terminal tool; nothing is retained.
@@ -356,7 +380,12 @@ export class RunGuard {
       }
       const seen = (this.readCallCounts.get(signature) ?? 0) + 1;
       this.readCallCounts.set(signature, seen);
-      if (seen >= this.repeatedToolCallLimit) return this.stop("repeated_tool_call");
+      if (seen >= this.repeatedToolCallLimit) {
+        if (this.hintedReasons.has("repeated_tool_call")) return this.stop("repeated_tool_call");
+        const decision = this.hintBeforeStop({ reason: "repeated_tool_call", tool: name, repeatCount: seen });
+        this.event();
+        return decision;
+      }
     }
     if (this.noProgressLimit > 0 && this.readOnlyStreak >= this.noProgressLimit) {
       return this.stop("no_progress_exploration");

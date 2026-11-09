@@ -191,6 +191,15 @@
       "expectedMockState": "operation_result"
     },
     {
+      "id": "skill:skills/paperclip/references/tasks-blockers-approvals.md:65",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/tasks-blockers-approvals.md#L65:engineer-gate-422-naming-the-caste-and-re-casting-the-task",
+      "heading": "Engineer gate 422: naming the caste and re-casting the task",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
       "id": "skill:skills/paperclip/references/interactions-and-decisions.md:3",
       "kind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/interactions-and-decisions.md#L3:issue-thread-interactions",

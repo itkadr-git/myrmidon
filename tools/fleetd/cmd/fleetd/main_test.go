@@ -32,18 +32,24 @@ func testClientTLS() *tls.ConnectionState {
 	return &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
 }
 
+// testBoardExtraHost is the board address the test site is configured with.
+const testBoardExtraHost = "board.example.test:192.0.2.1"
+
 func testConfig() *config {
 	cfg := &config{
-		SiteId:  "myr-vm1",
-		Epoch:   1,
-		Listen:  "127.0.0.1:0",
-		Token:   fakeBearer(),
-		Network: "net-a",
-		Images:  []string{"example.com/bot@sha256:aa"},
+		SiteId:        "myr-vm1",
+		Epoch:         1,
+		Listen:        "127.0.0.1:0",
+		Token:         fakeBearer(),
+		Network:       "net-a",
+		GatewayBindIP: "127.0.0.1",
+		Images:        []string{"example.com/bot@sha256:aa"},
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
 	}
+	// The board address of the site: fleetd takes it from here, not from a spec.
+	cfg.BoardExtraHost = testBoardExtraHost
 	return cfg
 }
 
@@ -136,7 +142,14 @@ func newServerWithDocker(t *testing.T) (*server, *httptest.Server, *fakeDocker) 
 	fake := &fakeDocker{containers: map[string]map[string]any{}}
 	cfg := testConfig()
 	cfg.VolumeRoot = t.TempDir()
-	socket := filepath.Join(t.TempDir(), "docker.sock")
+	// A unix socket path is limited to about 107 bytes. t.TempDir() carries the
+	// name of the test, which is too long for a subtest with a long name.
+	sockDir, err := os.MkdirTemp("", "fd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	socket := filepath.Join(sockDir, "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -286,6 +299,35 @@ func TestWriteProfileUsesIsolatedVolumeRoot(t *testing.T) {
 	}
 }
 
+// T4 (08.11): a profile file in a new nested directory gives the bot user every
+// directory MkdirAll created on the way, not only the file's own directory, and
+// never the root of the bot volume.
+func TestWriteProfileChownsCreatedIntermediateDirs(t *testing.T) {
+	s, _ := newServer(t)
+	resetChownLog(nil)
+	defer resetChownLog(nil)
+	key := s.cfg.Bots[0].BotKey
+	rec := routeRequest(s, http.MethodPut, "/v1/bots/"+key+"/profile", fakeBearer(), `{"profile":{"botKey":"`+key+`","files":[{"path":"hermes/skills/paperclip-managed/myrmidon/SKILL.md","content":"# skill"}]}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("profile write failed: %d %s", rec.Code, rec.Body.String())
+	}
+	root, err := filepath.EvalSymlinks(filepath.Join(s.cfg.VolumeRoot, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chownMu.Lock()
+	defer chownMu.Unlock()
+	for _, rel := range []string{"hermes", "hermes/skills", "hermes/skills/paperclip-managed", "hermes/skills/paperclip-managed/myrmidon"} {
+		got, ok := chownLog[filepath.Join(root, rel)]
+		if !ok || got != [2]int{botUID, botUID} {
+			t.Fatalf("directory %s not given to the bot user: %v %v (log %v)", rel, got, ok, chownLog)
+		}
+	}
+	if _, ok := chownLog[root]; ok {
+		t.Fatalf("the bot volume root must stay as it is, got chown of %s", root)
+	}
+}
+
 func TestMountPolicy(t *testing.T) {
 	if err := validateMounts([]mountSpec{{Source: "/srv/bots", Destination: "/data", ReadOnly: true}}, []string{"/srv/bots"}); err != nil {
 		t.Fatalf("allowed mount rejected: %v", err)
@@ -411,6 +453,180 @@ func TestValidateConfig(t *testing.T) {
 	bad.Bots[0].BotKey = "-leading-dash-"
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "botKey") {
 		t.Fatalf("bad key accepted: %v", err)
+	}
+}
+
+func TestValidateGatewayBindIPTable(t *testing.T) {
+	tests := []struct {
+		name        string
+		portStart   int
+		portEnd     int
+		bindIP      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:      "valid IPv4 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "127.0.0.1",
+			wantErr:   false,
+		},
+		{
+			name:      "valid alternate IPv4 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "127.0.0.2",
+			wantErr:   false,
+		},
+		{
+			name:      "valid IPv6 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "::1",
+			wantErr:   false,
+		},
+		{
+			name:      "valid remote site interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "192.0.2.10",
+			wantErr:   false,
+		},
+		{
+			name:      "valid alternate remote site interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "198.51.100.10",
+			wantErr:   false,
+		},
+		{
+			name:      "valid non-loopback IPv6 interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "2001:db8::1",
+			wantErr:   false,
+		},
+		{
+			name:        "missing gatewayBindIp when port range configured",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "whitespace gatewayBindIp when port range configured",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "   ",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "invalid IP format",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "not-an-ip",
+			wantErr:     true,
+			errContains: "not a valid IP address",
+		},
+		{
+			name:        "0.0.0.0 rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "0.0.0.0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        ":: rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "::",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "0:0:0:0:0:0:0:0 rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "0:0:0:0:0:0:0:0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "only portStart set without gatewayBindIp",
+			portStart:   18700,
+			portEnd:     0,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "only portEnd set without gatewayBindIp",
+			portStart:   0,
+			portEnd:     18799,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:      "no port range and empty bind IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "",
+			wantErr:   false,
+		},
+		{
+			name:      "no port range and loopback bind IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "127.0.0.1",
+			wantErr:   false,
+		},
+		{
+			name:      "no port range and remote site interface IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "192.0.2.10",
+			wantErr:   false,
+		},
+		{
+			name:        "no port range but 0.0.0.0 rejected as unspecified",
+			portStart:   0,
+			portEnd:     0,
+			bindIP:      "0.0.0.0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "no port range but :: rejected as unspecified",
+			portStart:   0,
+			portEnd:     0,
+			bindIP:      "::",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.GatewayPortStart = tt.portStart
+			cfg.GatewayPortEnd = tt.portEnd
+			cfg.GatewayBindIP = tt.bindIP
+
+			err := validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && tt.errContains != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("validate() error = %v, want containing %q", err, tt.errContains)
+				}
+			}
+		})
 	}
 }
 
@@ -585,6 +801,24 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.cfg.VolumeRoot, key, "hermes")); err != nil {
 		t.Fatalf("volume directory not prepared: %v", err)
+	}
+}
+
+func TestCreateFailsClosedWhenGatewayBindIPIsEmpty(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	s.cfg.GatewayPortStart, s.cfg.GatewayPortEnd = 18801, 18810
+	s.cfg.GatewayBindIP = ""
+	s.docker.gatewayBindIP = ""
+	key := s.cfg.Bots[0].BotKey
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "gateway_bind_ip_required") {
+		t.Fatalf("expected gateway_bind_ip_required in body, got: %s", rec.Body.String())
+	}
+	if _, ok := fake.containers["fleet-"+key]; ok {
+		t.Fatalf("container must not be created when gatewayBindIP is empty")
 	}
 }
 

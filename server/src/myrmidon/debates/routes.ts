@@ -324,12 +324,12 @@ export function debateServiceForDb(db: Db, env: NodeJS.ProcessEnv = process.env)
         issueId: input.issueId,
         key: input.key,
         title: input.title,
-        format: "markdown",
+        format: input.format ?? "markdown",
         body: input.body,
         createdByAgentId: input.actorAgentId,
         createdByUserId: input.actorUserId,
         createdByRunId: input.runId,
-        changeSummary: "Asymmetric debate run (DEBATE-ASYM A)",
+        changeSummary: input.changeSummary ?? "Asymmetric debate run (DEBATE-ASYM A)",
       });
     },
     recordCost: async (input) => {

@@ -221,9 +221,15 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
  `GET /api/myrmidon/bot-container/apply/:applyId` every
  `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC` (default 4 s) until the job reports
  `succeeded` or `failed`, for at most `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC` (default
- 300 s). A success is then confirmed with `GET /api/myrmidon/bot-container/status`; a
- timeout counts the bot as deferred instead of applied, and the plain synchronous apply
- response is still accepted. The success confirm reads `GET /api/myrmidon/bot-container/status`. When the switch loop ends, the rollout verifies the FACT for
+ 300 s). A success is then confirmed with `GET /api/myrmidon/bot-container/status` — the
+ job reports `succeeded` even when the reconciler deferred the pass (a busy bot), so a
+ succeeded job whose container is not on the release image counts as deferred, not applied.
+ An apply refused with 409 (`bot_container_not_applicable` — the agent went running between
+ the status read and the apply) is deferred, not failed, and a timeout counts the bot as
+ deferred (exit 2) as well; the plain synchronous apply response is still accepted. A failed
+ or deferred bot never interrupts the run: the loop reaches every remaining bot, and the run
+ ends `WARNING` when bots stayed deferred and `DEGRADED` only when at least one actually
+ failed. When the switch loop ends, the rollout verifies the FACT for
  every tracking bot: the card's image (`adapterConfig.container.image`) against the running
  container's image
  (`GET /api/myrmidon/agents/:id/bot-container/status`, the same board API the script
@@ -461,7 +467,11 @@ Order:
    reference goes to `$STATE_DIR/previous-image` (so the first switch from a vendor image
    works too), the fork digest also to `$STATE_DIR/previous-digest`.
 3. A database dump by `DUMP_COMMAND` into `DUMP_DIR`. If the file is missing or smaller than
-   `DUMP_MIN_BYTES`, the deploy refuses and the image does not change.
+   `DUMP_MIN_BYTES`, the deploy refuses and the image does not change. Only after the dump
+   passes both checks, retention removes older `myrmidon-*.dump` files so that the newest
+   `DUMP_KEEP` (default 3) by filesystem modification time remain. Listing or deletion errors
+   abort the deploy before maintenance/image changes; a failed dump or size gate never prunes.
+   Restore and rollback policy is unchanged.
 4. Entering maintenance mode (`MAINTENANCE_MODE`):
    - `api` — `POST /api/myrmidon/maintenance` per the contract of
      [design/maintenance-mode.md](design/maintenance-mode.md), section 7 (track 5, R3).

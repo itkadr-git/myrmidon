@@ -935,8 +935,9 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 #     (see README.md). pnpm 10 itself still COPIES when the kernel refuses the
 #     clone, so the guards are the build-time check below and the start-time
 #     reflink self-check in entrypoint.sh (BOT-DISK-D, BOT-DISK-H8b);
-#   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt and cargo writes its
-#     target dir into the checked-out workspace, never into the image;
+#   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt; cargo writes its
+#     build output to CARGO_TARGET_DIR=/data/hermes/.cache/cargo-target — the
+#     durable bot volume, never a checked-out workspace (see the ENV below);
 #   - Go's build cache defaults under $HOME (/data/hermes) — the durable volume.
 # PATH is assembled from /opt and /usr only — never a writable volume.
 # myrmidon(G1) CONTAINER-GITHUB-WRITE: /opt/paperclip/bin is prepended so the
@@ -963,7 +964,8 @@ ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo
     npm_config_store_dir=/workspace/.pnpm-store \
     npm_config_package_import_method=clone \
     GOTOOLCHAIN=local \
-    GOFLAGS=-mod=mod
+    GOFLAGS=-mod=mod \
+    CARGO_TARGET_DIR=/data/hermes/.cache/cargo-target
 
 USER 10001:10001
 

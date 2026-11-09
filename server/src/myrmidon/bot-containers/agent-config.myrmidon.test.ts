@@ -277,6 +277,17 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
     expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: false, image: "x" } })).toBeNull();
   });
 
+  it("accepts idleStopMode off as well as always_on and on_demand (OPE-12291)", () => {
+    for (const mode of ["on_demand", "always_on", "off"] as const) {
+      expect(
+        botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, idleStopMode: mode } }, {}),
+      ).toBeNull();
+    }
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, idleStopMode: "sometimes" } }, {}),
+    ).toContain("idleStopMode must be always_on, on_demand or off");
+  });
+
   it("refuses a block without `enabled`, naming the field", () => {
     const problem = botContainerCardSaveProblem("hermes_gateway", { container: { image: "x" } });
     expect(problem).toContain("container.enabled must be true or false");

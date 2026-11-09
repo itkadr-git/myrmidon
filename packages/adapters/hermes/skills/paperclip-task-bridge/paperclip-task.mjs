@@ -103,10 +103,10 @@ function normalizeApiBaseUrl(raw) {
 }
 
 function getConfig() {
-  const apiKey = process.env.PAPERCLIP_BRIDGE_API_KEY?.trim() || process.env.PAPERCLIP_API_KEY?.trim();
+  const apiKey = process.env.PAPERCLIP_BRIDGE_API_KEY?.trim() || process.env.MYRMIDON_API_KEY?.trim() || process.env.PAPERCLIP_API_KEY?.trim();
   if (!apiKey) throw new UsageError("PAPERCLIP_BRIDGE_API_KEY is required");
   return {
-    apiBaseUrl: normalizeApiBaseUrl(process.env.PAPERCLIP_API_URL),
+    apiBaseUrl: normalizeApiBaseUrl(process.env.MYRMIDON_API_URL || process.env.PAPERCLIP_API_URL),
     apiKey,
     runId: process.env.PAPERCLIP_RUN_ID?.trim() || null,
     companyId: process.env.PAPERCLIP_COMPANY_ID?.trim() || null,
