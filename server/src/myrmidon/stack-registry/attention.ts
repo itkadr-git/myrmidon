@@ -44,11 +44,12 @@ export function stackComponentNeedsAttention(component: StackDocument["component
   if (!upstream || !upstream.latest) return false;
   const behind = upstream.behindBy != null && upstream.behindBy >= 1;
   const newLatest = upstream.previousLatest != null && upstream.previousLatest !== upstream.latest;
+  const hasSecurity = upstream.notes?.hasSecurity === true;
   // STACK-WATCH-LIVE: keep the card alive while the local version is unknown
   // but upstream has a latest — the component cannot prove it is up to date,
   // so the honest state is "needs attention" until a version pins it down.
   const unknownLocal = upstream.behindBy == null;
-  return behind || newLatest || unknownLocal;
+  return behind || newLatest || unknownLocal || hasSecurity;
 }
 
 /**

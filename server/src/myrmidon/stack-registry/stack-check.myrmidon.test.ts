@@ -955,7 +955,7 @@ describe("stack lag escalation (STACK-WATCH-LIVE)", () => {
             firstSeenAt: "2026-10-01T03:00:00.000Z",
             previousLatest: "3.2.0",
             behindBy: 0,
-            notes: { hasSecurity: true, summary: "CVE-2026-1234" },
+            notes: { lines: ["3.2.0 — security fix: CVE-2026-1234"], truncated: false, hasSecurity: true },
             error: null,
             staleSince: null,
           },
