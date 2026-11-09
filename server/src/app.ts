@@ -244,6 +244,7 @@ import {
   startDenyListPuller,
   createPluginProviderModelSync,
   localeUploadRoutes,
+  localeModuleRoutes,
   myrmidonHindsightModelsRoutes,
   configureCorpusAdapters,
   createCorpusShadowSearch,
@@ -1342,6 +1343,7 @@ export async function createApp(
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
   api.use(localeUploadRoutes(db)); // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure validator
+  api.use(localeModuleRoutes(db)); // myrmidon(1.7 LOCALE-UPLOAD, OPE-12117): /api/locale upload+current
   // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
   // Telegram DM — read by board members, changed by instance admins.
   api.use(myrmidonBridgeLanguageRoutes(db));
