@@ -233,6 +233,62 @@ describe("github credentials broker budget (OPE-12446)", () => {
     expect(results.filter((result) => !result.reused)).toHaveLength(1);
   });
 
+  it("concurrent requests for the same (App, repository) with different installationIds do not share flight or token", async () => {
+    let gateRelease: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      gateRelease = resolve;
+    });
+
+    const fetchImpl: typeof fetch = (async (info: RequestInfo | URL) => {
+      const href = String(info);
+      await gate;
+      if (href.includes("/installations/5001/access_tokens")) {
+        return new Response(
+          JSON.stringify({ token: "token-for-inst-5001", expires_at: new Date(Date.now() + 60 * 60_000).toISOString() }),
+          { status: 201 },
+        );
+      }
+      if (href.includes("/installations/5002/access_tokens")) {
+        return new Response(
+          JSON.stringify({ token: "token-for-inst-5002", expires_at: new Date(Date.now() + 60 * 60_000).toISOString() }),
+          { status: 201 },
+        );
+      }
+      throw new Error(`Unexpected request: ${href}`);
+    }) as typeof fetch;
+
+    const req1 = mintGitHubAppInstallationToken({
+      appId: "101",
+      privateKeyPem: appPrivateKeyPem,
+      installationId: "5001",
+      repository: "owner/repo-a",
+      fetchImpl,
+    });
+    const req2 = mintGitHubAppInstallationToken({
+      appId: "101",
+      privateKeyPem: appPrivateKeyPem,
+      installationId: "5002",
+      repository: "owner/repo-a",
+      fetchImpl,
+    });
+
+    gateRelease!();
+    const [res1, res2] = await Promise.all([req1, req2]);
+
+    expect(res1).toMatchObject({
+      token: "token-for-inst-5001",
+      installationId: "5001",
+      reused: false,
+    });
+    expect(res2).toMatchObject({
+      token: "token-for-inst-5002",
+      installationId: "5002",
+      reused: false,
+    });
+    // Distinct installations mint distinct tokens; single-flight does not coalesce them
+    expect(recordGitHubRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("a run polling above the per-minute fuse gets HTTP 429 with an actionable reason", async () => {
     vi.stubEnv("MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE", "5");
     // Cache hit or miss does not matter: the fuse counts every request before
