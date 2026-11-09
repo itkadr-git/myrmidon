@@ -1,4 +1,5 @@
 import { resolve, isAbsolute, join, dirname, delimiter } from "node:path";
+import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 
@@ -76,6 +77,71 @@ export const CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE =
 
 export function codexNetworkAccess(source: NodeJS.ProcessEnv = process.env): boolean {
   return source.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled";
+}
+
+/**
+ * The Codex Linux sandbox (`bwrap`) needs unprivileged user namespaces. When the
+ * host kernel or container seccomp/AppArmor profile denies `clone`/`unshare`,
+ * every Codex thread/start dies with an opaque bwrap namespace error instead of
+ * a diagnosable run failure. Probe the exact helper once per process and let the
+ * caller refuse session startup with `codex_sandbox_unavailable` plus operator
+ * guidance. The probe itself runs inside the bwrap sandbox (no writes, no
+ * network), so a passing probe proves only sandbox availability.
+ */
+export const CODEX_SANDBOX_UNAVAILABLE = "codex_sandbox_unavailable";
+
+export function codexSandboxUnavailableError(): Error {
+  const error = new Error(
+    `${CODEX_SANDBOX_UNAVAILABLE}: the Codex sandbox (bwrap) cannot create a user namespace in this environment. ` +
+      "Unprivileged user namespaces are required for the native runner's Codex sandbox (it must not be disabled: " +
+      "without it Codex reads board-container secrets). Fix the board container runtime, then retry the run: " +
+      'run the container with `--security-opt seccomp=<path to myrmidon-board-userns.json>` and ' +
+      "`--security-opt apparmor=unconfined` (docker-default AppArmor denies the mount operations bwrap needs), " +
+      "and make sure the kernel allows unprivileged user namespaces " +
+      "(check sysctl kernel.apparmor_restrict_unprivileged_userns and user.max_user_namespaces).",
+  );
+  error.name = "CodexSandboxUnavailableError";
+  return error;
+}
+
+let userNamespaceProbe: boolean | null = null;
+
+function probeCodexSandboxOnce(command: string): boolean {
+  if (process.platform !== "linux") return true;
+  try {
+    execFileSync(command, ["--unshare-user", "--", "true"], {
+      timeout: 10_000,
+      stdio: "ignore",
+      env: { ...process.env, CODEX_SANDBOX_PROBE: "1" },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Probe whether the Codex fs sandbox helper can actually create a user
+ * namespace before a thread is started against it. The result is cached for the
+ * process: a kernel or container profile does not change mid-run, and a session
+ * must not pay a second helper spawn after a terminal refusal.
+ */
+export function checkUserNamespacesAvailable(
+  source: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (usesExternalRunnerSandbox(source)) return true;
+  if (process.platform !== "linux") return true;
+  if (userNamespaceProbe === null) {
+    userNamespaceProbe = probeCodexSandboxOnce(
+      source.PAPERCLIP_RUNNER_SANDBOX_COMMAND?.trim() || "bwrap",
+    );
+  }
+  return userNamespaceProbe;
+}
+
+/** Test hook: reset the cached namespace probe between scenarios. */
+export function resetUserNamespaceProbeForTests(): void {
+  userNamespaceProbe = null;
 }
 
 function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write: string[] } {
