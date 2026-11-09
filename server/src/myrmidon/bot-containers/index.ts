@@ -866,4 +866,4 @@ export {
   type BotContainerItemStatus,
   type BotContainerStatusResponse,
 } from "./routes.js";
-export { type BotContainerLimits, type BotContainerStatus } from "./driver.js";
+export { type BotContainerLimits } from "./driver.js";

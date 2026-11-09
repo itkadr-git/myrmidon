@@ -571,6 +571,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
             })(),
             idleStopRuntime: null,
             profileUpdatePendingSince: null,
+            limits: null,
           };
         }
       },
