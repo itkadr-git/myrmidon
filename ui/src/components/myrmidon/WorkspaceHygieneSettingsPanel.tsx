@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { i18n, useTranslation } from "@/i18n";
 import {
+  describeWorkspaceHygieneError,
   describeWorkspaceHygieneSource,
   workspaceHygieneSettingsApi,
   workspaceHygieneSettingsQueryKey,
@@ -110,7 +111,10 @@ export function WorkspaceHygieneSettingsPanelView({
       </div>
 
       {error ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div
+          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          data-testid="workspace-hygiene-save-error"
+        >
           {error}
         </div>
       ) : null}
@@ -234,7 +238,12 @@ export function WorkspaceHygieneSettingsPanel() {
     mutationFn: workspaceHygieneSettingsApi.update,
     onMutate: () => setError(null),
     onError: (err) =>
-      setError(err instanceof Error ? err.message : i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.saveFailed")),
+      setError(
+        describeWorkspaceHygieneError(
+          err,
+          i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.saveFailed"),
+        ),
+      ),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: workspaceHygieneSettingsQueryKey });
@@ -243,10 +252,11 @@ export function WorkspaceHygieneSettingsPanel() {
 
   if (query.error) {
     return (
-      <div className="text-sm text-destructive">
-        {query.error instanceof Error
-          ? query.error.message
-          : t("area.settings-bots-host-2.workspace-hygiene-settings-panel.loadFailed")}
+      <div className="text-sm text-destructive" data-testid="workspace-hygiene-load-error">
+        {describeWorkspaceHygieneError(
+          query.error,
+          t("area.settings-bots-host-2.workspace-hygiene-settings-panel.loadFailed"),
+        )}
       </div>
     );
   }
