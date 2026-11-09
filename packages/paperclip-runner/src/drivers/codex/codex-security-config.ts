@@ -144,6 +144,15 @@ export function resetUserNamespaceProbeForTests(): void {
   userNamespaceProbe = null;
 }
 
+/**
+ * Test hook: preset the cached namespace probe. The package test setup passes it,
+ * so driver tests against a fake app-server do not spawn the host `bwrap` (CI
+ * hosts deny unprivileged user namespaces); the probe tests reset it first.
+ */
+export function setUserNamespaceProbeForTests(available: boolean | null): void {
+  userNamespaceProbe = available;
+}
+
 function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write: string[] } {
   const read: string[] = [];
   const write: string[] = [];

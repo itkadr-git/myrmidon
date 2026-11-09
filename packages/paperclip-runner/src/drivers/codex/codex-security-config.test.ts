@@ -246,7 +246,7 @@ describe("Codex security configuration", () => {
       PAPERCLIP_RUNNER_SANDBOX_COMMAND: bwrap,
     };
     expect(checkUserNamespacesAvailable(environment)).toBe(false);
-    expect(() => codexSandboxUnavailableError()).toThrow(/codex_sandbox_unavailable/);
+    expect(codexSandboxUnavailableError().message).toMatch(/codex_sandbox_unavailable/);
     expect(codexSandboxUnavailableError().message).toContain("apparmor=unconfined");
     const driver = new CodexAppServerDriver({
       taskEnvelope: {
