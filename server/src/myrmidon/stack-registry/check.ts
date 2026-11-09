@@ -1,11 +1,14 @@
 // Stack registry (SUA, part B): the release check.
 //
 // For every component with a GitHub release source the checker reads the
-// anonymous release/tag list, records the latest upstream release, how many
-// releases we are behind (when our version appears in that feed), the notable
-// release-note lines and — for components with carried deltas — whether the
-// upstream range already contains the fix commits (GitHub compare API). The
-// result is written back into the stack cache (document schema version 2).
+// release/tag list — authenticated when possible: the operator's
+// stack.github_token instance secret first, then a strictly read-only token
+// minted from the board's own GitHub App (see github-app.ts) — and records
+// the latest upstream release, how many releases we are behind (when our
+// version appears in that feed), the notable release-note lines and — for
+// components with carried deltas — whether the upstream range already
+// contains the fix commits (GitHub compare API). The result is written back
+// into the stack cache (document schema version 2).
 //
 // The same function backs both triggers: the daily/manual `POST
 // /api/myrmidon/stack/check` and the interval sweep mounted from the server
@@ -29,6 +32,7 @@ import {
   type StackUpstreamState,
 } from "./domain.js";
 import {
+  STACK_GITHUB_API_BASE,
   compareContainsFix,
   countBehind,
   extractReleaseNotes,
@@ -45,6 +49,7 @@ import { osvJsonPort, queryOsvAdvisories, type StackAdvisoryQuery } from "./advi
 import { decideStackBacklogDrafts, type StackBacklogDraft } from "./backlog-draft.js";
 import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import { readStackDocument, writeStackDocument } from "./store.js";
+import { resolveStackCheckGitHubAppToken } from "./github-app.js";
 import { collectStackLocal, type CollectStackLocalOptions } from "./collector.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
@@ -58,7 +63,10 @@ export interface StackCheckOptions {
   fetchJson?: StackFetchJson;
   perPage?: number;
   noteLimit?: number;
-  /** Delay before one retry on 403/429/5xx; 0 disables the retry. */
+  /**
+   * Delay before one retry on 403/429/5xx; 0 disables the retry. Defaults to
+   * STACK_CHECK_RETRY_DELAY_MS; tests pass 0 to keep retrying synchronous.
+   */
   retryDelayMs?: number;
   /**
    * Local-state collection options for the pre-check refresh. Pass `false` to
@@ -70,6 +78,11 @@ export interface StackCheckOptions {
   lagThreshold?: number;
   createDraft?: (companyId: string, draft: StackBacklogDraft) => Promise<void>;
   findOpenComponents?: (companyId: string) => Promise<string[]>;
+  /**
+   * Test seam: the fetch implementation the GitHub App token mint uses.
+   * Production defaults to globalThis.fetch (the board calls GitHub itself).
+   */
+  githubAppFetchImpl?: typeof fetch;
 }
 
 function readOnlyUpstream(previous: StackUpstreamState | null, checkedAt: string, error: string): StackUpstreamState {
@@ -204,17 +217,66 @@ async function checkComponent(
 }
 
 /**
+ * Build the JSON port of one release check:
+ *
+ *   1. an injected port wins (tests, the route's fake mode);
+ *   2. the `stack.github_token` instance secret / MYRMIDON_STACK_GITHUB_TOKEN
+ *      when the operator set one;
+ *   3. a strictly read-only token minted from the board's own GitHub App
+ *      (the STACK-WATCH-LIVE fallback): an App entry serves the check when it
+ *      grants the `system` role for the component repository. The first
+ *      component that mints one reuses the port — the token is cached by the
+ *      mint itself until five minutes before expiry. No matching entry, an
+ *      ambiguity, or a failed mint all answer anonymous: the check's own
+ *      403/429/5xx retry and stale marking remain the signal.
+ */
+async function buildStackGithubPort(db: Db, options: StackCheckOptions): Promise<StackFetchJson> {
+  if (options.fetchJson) return options.fetchJson;
+  const githubFetchImpl = options.githubAppFetchImpl;
+  const instanceToken = (await resolveOptionalInstanceSecret("stack.github_token", "stack-registry")) ?? undefined;
+  if (instanceToken) return githubJsonPort({ token: instanceToken, fetchImpl: githubFetchImpl });
+  let shared: StackFetchJson | null = null;
+  return async (url, fetchOptions) => {
+    const repo = extractGithubApiRepo(url);
+    if (!repo) return githubJsonPort({ fetchImpl: githubFetchImpl })(url, fetchOptions);
+    const resolveRepoToken = async (): Promise<string | undefined> => {
+      const resolution = await resolveStackCheckGitHubAppToken(db, repo, {
+        fetchImpl: githubFetchImpl,
+      });
+      if (resolution.kind !== "issued") return undefined;
+      shared = githubJsonPort({ token: resolution.token, fetchImpl: githubFetchImpl });
+      return resolution.token;
+    };
+    const bearer = shared ? undefined : await resolveRepoToken();
+    const port = shared ?? githubJsonPort({ fetchImpl: githubFetchImpl });
+    const res = await port(url, fetchOptions);
+    // A minted token the API rejects: do not ride it for the rest of the
+    // check — finish the request anonymously. A 403 stays as-is: anonymous is
+    // strictly worse there (the shared-IP budget is spent), and the check's
+    // own retry-then-stale marking is the signal.
+    if (bearer !== undefined && res.status === 401) {
+      shared = null;
+      return githubJsonPort({ fetchImpl: githubFetchImpl })(url, fetchOptions);
+    }
+    return res;
+  };
+}
+
+/** The `owner/repo` of a github.com REST URL, null for anything else. */
+export function extractGithubApiRepo(url: string): string | null {
+  if (!url.startsWith(STACK_GITHUB_API_BASE)) return null;
+  const m = /^\/repos\/([^/?#]+)\/([^/?#]+)(?:\/|$)/.exec(url.slice(STACK_GITHUB_API_BASE.length));
+  return m ? `${decodeURIComponent(m[1]!)}/${decodeURIComponent(m[2]!)}` : null;
+}
+
+/**
  * Run one release check over the cached document and write the result back.
  * Throws a probe error when the network is unreachable; the caller keeps the
  * previous cache.
  */
 export async function checkStackReleases(db: Db, options: StackCheckOptions = {}): Promise<StackDocument> {
   const checkedAt = (options.now ?? (() => new Date()))().toISOString();
-  const port =
-    options.fetchJson ??
-    githubJsonPort({
-      token: (await resolveOptionalInstanceSecret("stack.github_token", "stack-registry")) ?? undefined,
-    });
+  const port = await buildStackGithubPort(db, options);
   // STACK-WATCH-LIVE: the check itself refreshes the local side first, so the
   // sweep needs no manual "refresh" and lag is measured against live versions.
   const stored = await readStackDocument(db);

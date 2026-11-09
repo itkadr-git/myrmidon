@@ -150,7 +150,25 @@ async function probeDockerImages(
   return states;
 }
 
-const HTTP_VERSION_REQUEST_TIMEOUT_MS = 10_000;
+// STACK-WATCH-LIVE: the probe budget is five seconds — a slow component
+// endpoint must not delay the sweep; an unreachable endpoint is an honest
+// per-component unknown.
+const HTTP_VERSION_REQUEST_TIMEOUT_MS = 5_000;
+
+/**
+ * The endpoint each http-version component is probed on, relative to the base
+ * URL the operator binds through MYRMIDON_STACK_HTTP_<NAME> (the documented
+ * contract: one GET <base>/<endpoint> returning JSON with a `version` field).
+ */
+const HTTP_VERSION_ENDPOINT_PATHS: Record<string, string> = {
+  hindsight: "/version",
+  litellm: "/version",
+  langfuse: "/api/public/health",
+};
+
+function httpVersionEndpointFor(seedName: string): string {
+  return HTTP_VERSION_ENDPOINT_PATHS[seedName] ?? "/version";
+}
 
 interface HttpJsonResponse {
   status: number;
@@ -226,6 +244,11 @@ async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot
     states.unknownReason = `http endpoint env ${envName} must be http(s)`;
     return states;
   }
+  // The documented value is a base URL: one GET <base>/<endpoint> (hindsight
+  // and LiteLLM /version, Langfuse /api/public/health). A value that already
+  // names the endpoint path keeps working unchanged.
+  const endpoint = httpVersionEndpointFor(seed.name);
+  if (!url.pathname || url.pathname === "/") url.pathname = endpoint;
   let res: HttpJsonResponse;
   try {
     res = await httpJsonRequest(url);

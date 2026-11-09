@@ -30,9 +30,12 @@ export interface StackFetchOptions {
 
 export type StackFetchJson = (url: string, options?: StackFetchOptions) => Promise<StackHttpResponse>;
 
-export function githubJsonPort(options: { timeoutMs?: number; token?: string } = {}): StackFetchJson {
+export function githubJsonPort(
+  options: { timeoutMs?: number; token?: string; fetchImpl?: typeof fetch } = {},
+): StackFetchJson {
   const timeoutMs = options.timeoutMs ?? STACK_HTTP_TIMEOUT_MS;
   const token = options.token?.trim() || null;
+  const fetchFn = options.fetchImpl ?? globalThis.fetch;
   return async (url, fetchOptions) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -43,7 +46,7 @@ export function githubJsonPort(options: { timeoutMs?: number; token?: string } =
         ...(fetchOptions?.headers ?? {}),
       };
       if (token) headers.authorization = `Bearer ${token}`;
-      const res = await fetch(url, {
+      const res = await fetchFn(url, {
         method: fetchOptions?.method ?? (fetchOptions?.body ? "POST" : "GET"),
         headers,
         body: fetchOptions?.body,

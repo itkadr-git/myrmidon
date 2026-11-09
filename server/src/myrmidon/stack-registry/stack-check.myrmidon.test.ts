@@ -638,6 +638,29 @@ describeEmbeddedPostgres("stack release check", () => {
     }
   });
 
+  it("http-version probe appends the documented endpoint to a bare base URL (Langfuse health path)", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ version: "3.2.0" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const saved = process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
+    process.env.MYRMIDON_STACK_HTTP_LANGFUSE = "http://langfuse.local:3000";
+    try {
+      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } }, images: fakeImages({}) });
+      const langfuse = doc.components.find((c) => c.name === "langfuse")!;
+      expect(seen).toEqual(["http://langfuse.local:3000/api/public/health"]);
+      expect(langfuse.local.version).toBe("3.2.0");
+      expect(langfuse.local.runningOn).toBe("http://langfuse.local:3000");
+      expect(langfuse.local.unknownReason).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (saved === undefined) delete process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
+      else process.env.MYRMIDON_STACK_HTTP_LANGFUSE = saved;
+    }
+  });
+
   it("http-version probe reports an honest unknown when the env binding is missing", async () => {
     const saved = process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
     delete process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
