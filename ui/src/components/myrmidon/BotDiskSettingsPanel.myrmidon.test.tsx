@@ -86,6 +86,19 @@ describe("BotDiskSettingsPanel lifecycle section", () => {
     expect(empty.querySelector('[data-testid="bot-disk-bots"] tbody')?.children.length).toBe(0);
   });
 
+  it("shows the translated instance-admin message when a non-admin gets the 403", async () => {
+    // myrmidon(1.6.7 SETTINGS-GENERAL-CRASH): the 403 used to leave the section on "no data".
+    const forbidden = Object.assign(new Error("Instance admin access required"), { status: 403 });
+    stub(forbidden, forbidden);
+    await i18n.changeLanguage("ru");
+    const panel = renderPanel(reportAt);
+    await settle();
+    expect(panel.querySelector('[data-testid="bot-disk-lifecycle-forbidden"]')?.textContent).toBe(
+      "Нужны права администратора экземпляра",
+    );
+    expect(panel.querySelector('[data-testid="bot-disk-lifecycle-empty"]')).toBeNull();
+  });
+
   it("shows partition, quota/used, E/G/X counts, archives, report age and image per bot", async () => {
     stub(dockergateDiskFixture, { reports: [diskReportFixture] });
     const container = renderPanel(reportAt + 5 * 60 * 1000, { "ABC-101": "in_progress" });

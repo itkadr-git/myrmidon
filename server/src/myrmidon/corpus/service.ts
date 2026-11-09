@@ -54,6 +54,7 @@ import {
   type CorpusUrlFetcher,
 } from "./source-fetch.js";
 import { refreshSourceDocuments } from "./source.js";
+import { CORPUS_STEP_TIMINGS_SAMPLE_ENV, createStepTimingsSampler, readStepTimingsSample } from "./step-timings.js";
 
 /** `instance.corpus.settings_updated` — the audit action of a settings change. */
 export const CORPUS_SETTINGS_ACTION = "instance.corpus.settings_updated";
@@ -239,6 +240,9 @@ function toDocument(record: CorpusDocumentRecord): CorpusDocument {
 function toJob(record: CorpusJobRecord): CorpusParseJob {
   return { ...record };
 }
+
+// One counter for the whole process: every N-th REST search writes its step timings on the info log.
+const searchTimingsSampler = createStepTimingsSampler();
 
 let corpusTransitionQueue: Promise<void> = Promise.resolve();
 
@@ -857,10 +861,13 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
       // One company-scoped title query; do not load jobs/chunks for search hits.
       const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
       const documentNames = await ports.store.getDocumentNames(companyId, documentIds);
-      logger.debug(
-        { companyId, datasetId, mode, limit, hits: hits.length, settingsMs, datasetMs, embedderCheckMs, indexMs, documentNamesMs: Math.round(performance.now() - namesStarted) },
-        "corpus search: handler step timings",
-      );
+      // OPE-12272: info for one search in N (see step-timings.ts), debug for the rest.
+      const timings = { companyId, datasetId, mode, limit, hits: hits.length, settingsMs, datasetMs, embedderCheckMs, indexMs, documentNamesMs: Math.round(performance.now() - namesStarted) };
+      if (searchTimingsSampler.next(readStepTimingsSample(env[CORPUS_STEP_TIMINGS_SAMPLE_ENV]))) {
+        logger.info(timings, "corpus search: handler step timings");
+      } else {
+        logger.debug(timings, "corpus search: handler step timings");
+      }
       return {
         datasetId,
         query,

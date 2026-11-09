@@ -16,6 +16,7 @@
     "agents": 2,
     "instance_settings": 1,
     "company_skills": 2,
+    "tool_applications": 2,
     "tool_connections": 2,
     "connection_grants": 1,
     "heartbeat_runs": 2,

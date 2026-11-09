@@ -118,4 +118,23 @@ describe("readContainerBotKeys", () => {
     const db = { select: () => ({ from: () => ({ where: async () => rows }) }) };
     expect(await readContainerBotKeys(db as never)).toEqual([KEY_A]);
   });
+
+  // myrmidon(1.6.7 FLEET-SITE-ENROLL): a bot placed on a remote site is not under the local dockergate,
+  // which refuses every call about it with bot_not_enrolled.
+  it("leaves out the bots placed on a remote site, and any card whose host cannot be read", async () => {
+    const container = { enabled: true, image: "i", memoryMb: 1, cpus: 1, pidsLimit: 1 };
+    const KEY_D = "22222222-3333-4444-5555-666666666666";
+    const KEY_E = "33333333-4444-5555-6666-777777777777";
+    const KEY_F = "44444444-5555-6666-7777-888888888888";
+    const rows = [
+      { id: KEY_A, adapterType: "hermes_gateway", adapterConfig: { container } },
+      { id: KEY_B, adapterType: "hermes_gateway", adapterConfig: { container: { ...container, host: "site-a" } } },
+      { id: KEY_C, adapterType: "hermes_gateway", adapterConfig: { container: { ...container, host: null } } },
+      { id: KEY_D, adapterType: "hermes_gateway", adapterConfig: { container: { ...container, host: "Not A Host" } } },
+      { id: KEY_E, adapterType: "hermes_gateway", adapterConfig: { container: { ...container, host: "local" } } },
+      { id: KEY_F, adapterType: "hermes_gateway", adapterConfig: { container: { ...container, host: "site-b", hostPinned: true } } },
+    ];
+    const db = { select: () => ({ from: () => ({ where: async () => rows }) }) };
+    expect(await readContainerBotKeys(db as never)).toEqual([KEY_A, KEY_C]);
+  });
 });

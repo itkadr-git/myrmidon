@@ -47,6 +47,7 @@ import { writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAN
 import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@myrmidon/shared";
 import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
+import { HERMES_CONFIG_FILE, HERMES_ENV_FILE } from "./profile-files.js";
 import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
 
 // ---------------------------------------------------------------------------
@@ -1489,8 +1490,8 @@ export function compileHermesProfileDetailed(input: HermesProfileInput): Compile
   const skillFiles = buildSkillFiles(input.skills, warnings);
 
   const restartFiles = [
-    file("hermes/config.yaml", configYaml, { secret: hasMcpServerHeaders(input.mcpServers) }),
-    file("hermes/.env", envFile, { secret: true }),
+    file(HERMES_CONFIG_FILE, configYaml, { secret: hasMcpServerHeaders(input.mcpServers) }),
+    file(HERMES_ENV_FILE, envFile, { secret: true }),
     file("hermes/hindsight/config.json", hindsightConfigJson, { secret: false }),
   ];
 

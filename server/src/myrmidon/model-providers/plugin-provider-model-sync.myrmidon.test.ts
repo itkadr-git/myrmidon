@@ -53,6 +53,8 @@ vi.mock("../litellm-sync/client.js", () => ({
     unregisterModel: async (name: string) => {
       unregisteredModels.push(name);
     },
+    // The service registers a model only when the gateway lacks it.
+    listRegisteredModels: async () => [],
   }),
 }));
 
