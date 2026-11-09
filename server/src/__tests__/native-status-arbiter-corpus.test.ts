@@ -69,6 +69,7 @@ import * as activityLog from "../services/activity-log.js";
 import { dismissObsoleteNativePolicyReviews } from "../services/native-runtime/obsolete-policy-reviews.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { logger } from "../middleware/logger.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 type Fixture = {
@@ -2249,11 +2250,13 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     const first = await seedPolicyReview();
     const second = await seedPolicyReview();
     const runIds = [first.runId, second.runId];
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("injected cleanup failure"));
     try {
       await expect(dismissObsoleteNativePolicyReviews(db, runIds)).resolves.toBeUndefined();
     } finally {
       transaction.mockRestore();
+      warn.mockRestore();
     }
     const statuses = await Promise.all([first, second].map(async (seeded) => {
       const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
@@ -2270,6 +2273,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
   it("keeps committed cleanup and continues publication after a live event fails", async () => {
     const first = await seedPolicyReview();
     const second = await seedPolicyReview();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const publish = vi.spyOn(activityLog, "publishActivity").mockImplementationOnce(() => {
       throw new Error("injected live publication failure");
     });
@@ -2284,11 +2288,13 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }
     } finally {
       publish.mockRestore();
+      warn.mockRestore();
     }
   });
 
   it("continues native finalization when the obsolete-card lookup fails", async () => {
     const seeded = await seedPolicyReview({ genuine: true });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const select = vi.spyOn(db, "select").mockImplementationOnce(() => {
       throw new Error("injected cleanup lookup failure");
     });
@@ -2298,6 +2304,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect(reconciled[0]!.phase).toBe("committed");
     } finally {
       select.mockRestore();
+      warn.mockRestore();
     }
   });
 
