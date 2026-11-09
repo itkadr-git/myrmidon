@@ -678,9 +678,12 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     // resolver stub only serves the admission gate and confirms the head.
     let storedHead = "head-abc";
     await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: storedHead });
+    // 1.6.7 (OPE-12177): the route rejects REQUEST CHANGES when CI is not complete or
+    // unavailable. With headSha = null (no SHA), the stub returns not_configured so the
+    // review admission verdict is allowed through.
     const routes = (db: any, storage: any) => issueRoutes(db, storage, {
       resolveReviewPullRequestCi: async () => ({
-        state: "complete" as const,
+        state: (storedHead ? "complete" : "not_configured") as const,
         pullRequestUrl: "https://github.com/acme/app/pull/7",
         headSha: storedHead,
       }),
@@ -749,6 +752,12 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .patch(`/api/issues/${issueId}`)
       .send({ status: "in_progress", comment: "REQUEST CHANGES: still broken" });
     expect(fallbackRes.status).toBe(200);
+    if (fallbackRes.status !== 200) {
+      console.error("DEBUG fallback return rejection:", {
+        status: fallbackRes.status,
+        body: fallbackRes.body,
+      });
+    }
     const fallbackResubmit = await request(app)
       .patch(`/api/issues/${issueId}`)
       .send({ status: "in_review", executionPolicy: policy });

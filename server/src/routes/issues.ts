@@ -14097,19 +14097,23 @@ export function issueRoutes(
       const stageState = existing.executionState as Record<string, unknown> | null;
       const stageParticipant = stageState?.currentParticipant as Record<string, unknown> | null | undefined;
       const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
-      const stageHandBackAssigneeId =
+      const stageHandsBack =
         stageState?.status === "pending" &&
         (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
         normalizedAssigneeAgentId === undefined &&
         targetStatus === "in_progress" &&
         stageParticipant?.type === "agent" &&
         typeof stageParticipant?.agentId === "string" &&
-        stageParticipant.agentId === existing.assigneeAgentId &&
+        stageParticipant.agentId === existing.assigneeAgentId;
+      const stageHandBackAssigneeId =
+        stageHandsBack &&
         stageReturnAssignee?.type === "agent" &&
         typeof stageReturnAssignee?.agentId === "string"
           ? stageReturnAssignee.agentId
           : null;
-      const targetAssigneeAgentId = stageHandBackAssigneeId ?? requestedAssigneeAgentId;
+      const targetAssigneeAgentId = stageHandsBack
+        ? stageHandBackAssigneeId
+        : requestedAssigneeAgentId;
       const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
         normalizedAssigneeAgentId !== existing.assigneeAgentId;
