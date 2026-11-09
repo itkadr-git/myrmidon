@@ -64,6 +64,11 @@ this ticket, so repeated wakes of one ticket do not repeat the same search;
 run-start recall off. An absent or unknown value reads as `new-issue`. The
 `hindsight_recall` tool still searches on demand, regardless of this field.
 
+Request timeout for API calls to Hindsight (recall and retain) is governed by
+`requestTimeoutMs` (default `60000`, 60 seconds, increased from 15 seconds to
+tolerate bank latencies under CPU contention). Health checks retain a dedicated
+5-second timeout.
+
 ## What the tab offers
 
 - **Entry list.** Fifty entries per page, **Newer** / **Older** paging. Each
