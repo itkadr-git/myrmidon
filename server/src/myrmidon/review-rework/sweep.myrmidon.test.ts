@@ -550,7 +550,7 @@ describe("review rework sweep", () => {
   // stored setting (the env override wins only as the deployment fallback).
   describe("one GitHub read per pull request per pass (OPE-12397)", () => {
     const PASS_AT = new Date("2026-10-04T17:00:00Z");
-    const snapshot = { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null };
+    const snapshot: ReviewReworkPrSnapshot = { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null };
 
     it("reads one PR once even when the task names it twice", async () => {
       const store = new FakeStore();

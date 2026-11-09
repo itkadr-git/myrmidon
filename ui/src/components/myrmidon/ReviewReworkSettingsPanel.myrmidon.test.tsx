@@ -196,6 +196,6 @@ describe("ReviewReworkSettingsPanelView", () => {
     });
     const input = container.querySelector("[data-testid='review-rework-interval']") as HTMLInputElement;
     expect(input.disabled).toBe(true);
-    expect(container.textContent).toContain("MYRMIDON_REWORK_SWEEP_INTERVAL_SEC");
+    expect(container.textContent).toContain("MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC");
   });
 });
