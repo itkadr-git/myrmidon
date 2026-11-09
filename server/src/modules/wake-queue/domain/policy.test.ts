@@ -30,6 +30,7 @@ const basePreDrainFacts: PreDrainFacts = {
   assigneeAgentMatchesRunAgent: true,
   legacyExecutionNeedsReconciliation: false,
   executionCancellationAcknowledged: false,
+  executionCancellationUnstartedOperatorStop: false,
 };
 
 describe("decidePreDrain", () => {
@@ -91,6 +92,11 @@ describe("decidePreDrain", () => {
     {
       name: "released: an acknowledged execution cancellation",
       facts: { ...basePreDrainFacts, executionCancellationAcknowledged: true },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: an operator stop of a run that never started",
+      facts: { ...basePreDrainFacts, executionCancellationUnstartedOperatorStop: true },
       expected: { kind: "released" },
     },
     {

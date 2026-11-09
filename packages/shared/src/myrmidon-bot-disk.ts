@@ -388,10 +388,13 @@ export const BOT_DISK_DEFAULT_GIT_MIRROR_REPOS: readonly string[] = Object.freez
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the agent roles (`agents.role`) whose bots get the
- * shared package cache and the git mirror mounts. Every other bot (marketing,
- * support, ...) gets no cache mount, so enabling the cache does not recreate it.
+ * shared package cache and the git mirror mounts. `lead` is in the default scope
+ * (OPE-12384): a lead bot runs the same devbuild/build toolchain on the same
+ * repositories as the engineers it reviews, so it needs the same caches. Every
+ * other bot (marketing, support, ...) gets no cache mount, so enabling the cache
+ * does not recreate it.
  */
-export const BOT_DISK_DEFAULT_SHARED_CACHE_ROLES: readonly string[] = ["engineer", "reviewer", "devops", "release", "qa"];
+export const BOT_DISK_DEFAULT_SHARED_CACHE_ROLES: readonly string[] = ["engineer", "lead", "reviewer", "devops", "release", "qa"];
 export const BOT_DISK_MAX_SHARED_CACHE_ROLES = 50;
 
 const sharedCacheRolesSchema = z
@@ -889,10 +892,10 @@ export const BOT_DISK_WORKSPACE_LIFECYCLE_KEYS = [
 export interface BotDiskLayout {
   sharedPackageCachePath?: string;
   /**
-   * myrmidon(1.6.5-BOT-DISK-H11): the host directory whose `bin`,
-   * `lazy-packages` and `lsp` subdirectories every bot mounts READ-ONLY over
-   * its own (absent: every bot keeps its own, the 1.6.4 behaviour). Populated
-   * by the operator once; see docs/myrmidon/bot-shared-runtime.md.
+   * myrmidon(1.6.5-BOT-DISK-H11): the host directory whose `bin` subdirectory
+   * every bot mounts READ-ONLY over its own (absent: every bot keeps its own,
+   * the 1.6.4 behaviour; re-scoped to bin-only in OPE-12493). Populated
+   * by the operator once; see docs/myrmidon/bot-extra-mounts.md.
    */
   sharedBotRuntimePath?: string;
   gitMirrorRepos: string[];
@@ -966,7 +969,7 @@ export function resolveSharedPackageCachePath(stored: unknown): string | undefin
 /**
  * myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime root in force, from the
  * stored `general.botDisk` (undefined: no shared runtime — every bot keeps its
- * own `bin`, `lazy-packages` and `lsp`). Not role-gated, unlike the package
+ * own `bin`). Not role-gated, unlike the package
  * cache: the runtime is the same for every bot of the instance, so one setting
  * applies to all of them (BOT-DISK-H11 in the epic design).
  */

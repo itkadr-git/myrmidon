@@ -36,6 +36,9 @@ describe("shared export surface snapshot (OPE-9341)", () => {
     expect(shared.ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY).toBe("acceptance-scenarios");
     expect(shared.acceptanceScenarioSchema).toBeDefined();
     expect(shared.acceptanceScenariosDocumentSchema).toBeDefined();
+    expect(shared.runOutcomeContractSchema).toBeDefined();
+    expect(shared.runOutcomeValueSchema).toBeDefined();
+    expect(shared.runStopKindSchema).toBeDefined();
   });
 
   it("exports key Myrmidon domain contracts through the myrmidon barrel", () => {
@@ -48,6 +51,9 @@ describe("shared export surface snapshot (OPE-9341)", () => {
     expect(myrmidon.ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY).toBe("acceptance-scenarios");
     expect(myrmidon.acceptanceScenarioSchema).toBeDefined();
     expect(myrmidon.acceptanceScenariosDocumentSchema).toBeDefined();
+    expect(myrmidon.runOutcomeContractSchema).toBeDefined();
+    expect(myrmidon.runOutcomeValueSchema).toBeDefined();
+    expect(myrmidon.runStopKindSchema).toBeDefined();
   });
 
   it("functional execution of exported contracts works as expected", () => {

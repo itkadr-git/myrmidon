@@ -42,6 +42,15 @@ export const MIN_QUEUED_RESWEEP_SEC = 5;
 /** Ceiling of `queuedResweepSec`: above this the NOTIFY fallback is slower than the 5 min tick. */
 export const MAX_QUEUED_RESWEEP_SEC = 3600;
 
+/**
+ * OPE-12291: the floor of `queuedRunStaleAfterSec`. A run queued behind a cold
+ * container start must survive the worst-case wake (image pull + health wait,
+ * observed in the field at 3–7 minutes); below this floor a queued run expires
+ * before the container can possibly take it, burning the daily run limit on
+ * retries that never reach the model.
+ */
+export const MIN_QUEUED_RUN_STALE_AFTER_SEC = 300;
+
 /** The singleton row of `instance_settings` (see instance-settings.ts). */
 const DEFAULT_SINGLETON_KEY = "default";
 
@@ -89,7 +98,7 @@ function resolveIntervalSec(raw: unknown): number {
 function resolveStaleAfterSec(raw: unknown): number {
   const numeric = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : Number.NaN;
   if (!Number.isFinite(numeric)) return DEFAULT_QUEUED_RUN_STALE_AFTER_SEC;
-  return Math.max(60, Math.min(604800, Math.round(numeric)));
+  return Math.max(MIN_QUEUED_RUN_STALE_AFTER_SEC, Math.min(604800, Math.round(numeric)));
 }
 
 /**

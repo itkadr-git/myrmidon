@@ -332,8 +332,11 @@ describe("myrmidon(1.7-DEBATE-ASYM-B): running from a caste's task", () => {
     const criticSystems = h.systems.filter((entry) => entry.role === "critic");
     expect(criticSystems.length).toBeGreaterThan(0);
     expect(criticSystems.every((entry) => entry.system.includes("check the legal claims"))).toBe(true);
-    expect(h.documents[0].key).toBe(DEBATE_RESULT_DOCUMENT_KEY);
-    expect(h.documents[0].body).toContain("Caste: **marketing**");
+    // The protocol document is written first and grows per replica; the result
+    // document carries the verdict.
+    const resultDoc = h.documents.find((d) => d.key === DEBATE_RESULT_DOCUMENT_KEY)!;
+    expect(resultDoc).toBeTruthy();
+    expect(resultDoc.body).toContain("Caste: **marketing**");
     const completion = h.activities.find((entry) => entry.details && (entry.details as Record<string, unknown>).casteKey === "marketing");
     expect(completion).toBeTruthy();
   });
@@ -366,7 +369,9 @@ describe("myrmidon(1.7-DEBATE-ASYM-B): running from a caste's task", () => {
     const result = await debateService(h.deps).run({ companyId: COMPANY, issueId: ISSUE }, actor);
     expect(result.outcome.casteKey).toBeNull();
     expect(result.outcome.customPrompts).toEqual([]);
-    expect(h.documents[0].body).not.toContain("Caste:");
+    const resultDoc = h.documents.find((d) => d.key === DEBATE_RESULT_DOCUMENT_KEY)!;
+    expect(resultDoc).toBeTruthy();
+    expect(resultDoc.body).not.toContain("Caste:");
     expect(h.writes).toBe(0);
   });
 

@@ -451,5 +451,64 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
 
       expect(skippedWith(await wakeRequests(ctx.agentId), "continuation_cap_reached")).toHaveLength(0);
     });
+
+    // Vendor #15584 & #15847 (OPE-12206): a chain of continuations where each run
+    // only produces the assignee's own comment (including empty comments or repeated
+    // status-quo text) does not reset the counter and is capped after 3 continuations.
+    it("vendor #15584+#15847: assignee's own comments (including empty comments) between continuations never reset the counter and are capped", async () => {
+      const ctx = await seedCompanyAgentIssue("in_progress");
+      const { companyId, agentId, issueId } = ctx;
+
+      // First continuation run 50 minutes ago
+      await seedContinuationRun({ ...ctx, minutesAgo: 50 });
+      // Assignee posted an empty comment or status update
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "",
+        createdAt: minutesAgo(45),
+      });
+
+      // Second continuation run 40 minutes ago
+      await seedContinuationRun({ ...ctx, minutesAgo: 40 });
+      // Assignee posted another comment without substantive external change
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "still working on this",
+        createdAt: minutesAgo(35),
+      });
+
+      // Third continuation run 30 minutes ago
+      await seedContinuationRun({ ...ctx, minutesAgo: 30 });
+      // Assignee posted yet another comment
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "",
+        createdAt: minutesAgo(20),
+      });
+
+      // 4th continuation attempt must be capped and park the issue as blocked
+      expect(await continuationWake(agentId, issueId)).toBeNull();
+
+      expect(await runCount(agentId)).toBe(3);
+      const capSkips = skippedWith(await wakeRequests(agentId), "continuation_cap_reached");
+      expect(capSkips).toHaveLength(1);
+      expect(capSkips[0]).toMatchObject({ reason: "issue_rewake_throttled" });
+      expect(capSkips[0]!.payload).toMatchObject({
+        heartbeatSkip: { consecutiveContinuations: 3, maxContinuations: 3 },
+      });
+
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue?.status).toBe("blocked");
+      expect(issue?.blockerMetadata).toMatchObject({ blockReason: "human_decision" });
+    });
   });
 });

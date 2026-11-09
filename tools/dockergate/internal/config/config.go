@@ -168,7 +168,7 @@ type Config struct {
 	// BotRuntimeRoot is the host directory of the shared bot runtime of the
 	// bots (myrmidon 1.6.5-BOT-DISK-H11, the board's instance setting of the
 	// same path). Under it, and only there, a bot may mount the fixed runtime
-	// subdirectories read-only at their fixed mount points
+	// subdirectory read-only at its fixed mount point
 	// (policy.BotRuntimeMounts). Empty or missing (the default) allows none.
 	BotRuntimeRoot string `json:"botRuntimeRoot"`
 	// ScopeRoot is the host directory of shared isolation-scope instances
@@ -182,6 +182,14 @@ type Config struct {
 	Limits         Limits          `json:"limits"`
 	StatsFile      string          `json:"statsFile"`
 	PlatformLimits *PlatformLimits `json:"platformLimits,omitempty"`
+	// LimitsOverrideFile is the file the A20 ceilings updates write (the
+	// mutable per-bot limits), when the main config file itself is mounted
+	// read-only into the container (OPE-12383). Empty (the default) keeps the
+	// old behaviour: the update rewrites the main config file. The file lives
+	// in the writable state directory of the container and holds only the
+	// per-bot entries the board has applied; everything else (images, the
+	// caller shape, the ceilings) stays operator-owned in the main file.
+	LimitsOverrideFile string `json:"limitsOverrideFile,omitempty"`
 }
 
 // ScopeInstanceRe is the name of a shared scope instance directory:
@@ -240,6 +248,33 @@ func Load(path string) (*Config, string, error) {
 	return Parse(data)
 }
 
+// LoadForRuntime reads the main configuration file, applies the limits-override
+// file on top of it (when "limitsOverrideFile" is configured) and returns the
+// effective configuration with the hash of the MAIN file (the hash the deploy
+// and the stats report). A missing override file is no override at all; an
+// invalid or unverifiable one refuses the load: the override must never become
+// a way around the checks of the main configuration (OPE-12383).
+func LoadForRuntime(mainPath string) (*Config, string, error) {
+	cfg, hash, err := Load(mainPath)
+	if err != nil {
+		return nil, "", err
+	}
+	if cfg.LimitsOverrideFile == "" {
+		return cfg, hash, nil
+	}
+	bots, err := LoadLimitsOverride(cfg.LimitsOverrideFile)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := ApplyLimitsOverride(cfg, bots); err != nil {
+		return nil, "", err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, "", fmt.Errorf("config: merged with limits override: %w", err)
+	}
+	return cfg, hash, nil
+}
+
 func absPath(name, p string) error {
 	if !strings.HasPrefix(p, "/") || strings.Contains(p, "\x00") {
 		return fmt.Errorf("config: %s must be an absolute path", name)
@@ -257,6 +292,11 @@ func (c *Config) Validate() error {
 	}
 	if err := absPath("statsFile", c.StatsFile); err != nil {
 		return err
+	}
+	if c.LimitsOverrideFile != "" {
+		if err := absPath("limitsOverrideFile", c.LimitsOverrideFile); err != nil {
+			return err
+		}
 	}
 	if c.APIVersion != SupportedAPIVersion {
 		return fmt.Errorf("config: apiVersion must be %q", SupportedAPIVersion)

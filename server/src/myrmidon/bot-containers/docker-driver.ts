@@ -337,9 +337,9 @@ export interface DockerDriverOptions {
   /**
    * myrmidon(1.6.5-BOT-DISK-H11): the host directory the instance shares the bot
    * runtime from (`general.botDisk.sharedBotRuntimePath`), read with the cache
-   * path on every create, recreate and drift check. Set adds three READ-ONLY
-   * binds (`<root>/bin`, `<root>/lazy-packages`, `<root>/lsp`) over the bot's
-   * own runtime paths, so the instance keeps one copy instead of one per bot.
+   * path on every create, recreate and drift check. Set adds a READ-ONLY
+   * bind (`<root>/bin`) over the bot's own runtime path, so the instance
+   * keeps one copy instead of one per bot (re-scoped in OPE-12493).
    * Absent: every bot keeps its own.
    */
   readSharedBotRuntimePath?: (botKey: string) => Promise<string | undefined>;
@@ -1165,6 +1165,8 @@ interface DockerHttpResponse {
   headers: Record<string, string>;
 }
 
+export type { DockerHttpResponse };
+
 function dockerRequest(
   socketPath: string,
   opts: { method: string; path: string; body?: Buffer; headers?: Record<string, string>; timeoutMs?: number },
@@ -1199,7 +1201,10 @@ function dockerRequest(
   });
 }
 
-function describeFailure(what: string, res: DockerHttpResponse): Error {
+/** describeFailure turns a failed Docker API answer into the error the
+ *  driver's callers see (the board's log and the reconcile activity record).
+ *  Exported for the tests of the reason-code mapping (OPE-12383). */
+export function describeFailure(what: string, res: DockerHttpResponse): Error {
   const raw = res.body.toString("utf8");
   try {
     const parsed = JSON.parse(raw);
@@ -1209,6 +1214,15 @@ function describeFailure(what: string, res: DockerHttpResponse): Error {
         const code = match[1];
         if (code === "limit_exceeds_ceiling") {
           return new Error(`${what} failed: requested resource limits exceed platform ceiling (dockergate: denied limit_exceeds_ceiling)`);
+        }
+        // OPE-12383: the update is valid but dockergate cannot persist it — the
+        // config file (or the limits-override file) sits on a read-only mount.
+        // A clear operator-facing fault, not a 502 upstream error to retry.
+        if (code === "config_read_only") {
+          return new Error(
+            `${what} failed: resource ceilings cannot be changed — dockergate's configuration is on a read-only mount ` +
+              `(dockergate: denied config_read_only); give dockergate a writable limits-override file or remount its config directory read-write`,
+          );
         }
       }
     }

@@ -2711,6 +2711,34 @@
       "when": 1762400000000,
       "tag": "0462_pull_request_work_product_url_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 463,
+      "version": "7",
+      "when": 1762400000001,
+      "tag": "0463_reconcile_stuck_resurrection_wakes",
+      "breakpoints": true
+    },
+    {
+      "idx": 464,
+      "version": "7",
+      "when": 1794090617091,
+      "tag": "0464_sticky_sabra",
+      "breakpoints": true
+    },
+    {
+      "idx": 466,
+      "version": "7",
+      "when": 1794175196510,
+      "tag": "0466_slim_thunderbolt_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 467,
+      "version": "7",
+      "when": 1794185558199,
+      "tag": "0467_loose_thundra",
+      "breakpoints": true
     }
   ]
 }

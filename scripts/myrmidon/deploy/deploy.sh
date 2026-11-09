@@ -83,9 +83,13 @@
 # one at a time, never interrupting a run), and the superseded bot images
 # leave the list. Gated by MYRMIDON_BOT_IMAGE_ROLLOUT (default 1 when the
 # board has bot containers configured; 0 restores the manual path).
-# Last, a post-deploy smoke (bot-apply-smoke.sh) waits for at least one bot
-# container to re-apply; failing that within its window the deploy reports
-# DEGRADED and prints the rollback commands. Then the DEPLOY-HYGIENE image
+# Last, a post-deploy smoke (bot-apply-smoke.sh) waits for the bot fleet to be
+# healthy: with the bot rollout on at least one bot container must re-apply;
+# without it (MYRMIDON_BOT_IMAGE_ROLLOUT=0) the already-running gateways are
+# verified instead (no re-apply can happen). Containers stopped before the
+# deploy began and IDLE-STOP Exited(143) stops are not crashes
+# (DEPLOY-SMOKE-FALSE, 08.11). Failing that within its window the deploy
+# reports DEGRADED and prints the rollback commands. Then the DEPLOY-HYGIENE image
 # retention removes the component images older than MYRMIDON_DEPLOY_IMAGE_KEEP
 # previous releases (an image any container uses is never removed; a cleanup
 # failure is a WARNING, not a failed deploy).
@@ -649,7 +653,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     if ((urgent)); then
       plan "urgent: steps 3 and 3b skipped; no database dump or PREDEPLOY-DB-CHECK; rollback relies on the VM's nightly backup (reason: $urgent_reason)"
     else
-      plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes)"
+      plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes); keep newest $DUMP_KEEP validated dumps by modification time"
       if ((board_changed)) && [[ "${MYRMIDON_PREDEPLOY_CHECK:-1}" == "1" ]]; then
         plan "3b. prove the image on a copy of the production database BEFORE the window (PREDEPLOY-DB-CHECK, predeploy-board-check.sh): own Postgres restored from the dump, own network, the NEW dockergate next to it; wait for status ok and walk the attention list and the main APIs; a failure stops the deploy here, production untouched"
       elif ((board_changed)); then
@@ -1038,9 +1042,13 @@ else
   log "WARNING: MYRMIDON_BOT_IMAGE_ROLLOUT=0: the bot images of this release did not roll out with the board; move the bots by hand (this split is the 03.10 incident)"
 fi
 
-# RELEASE-GATE: post-deploy smoke. Within MYR_SMOKE_TIMEOUT_SEC at least one
-# bot container must re-apply; otherwise the deploy is DEGRADED with the
-# rollback commands. Skipped only when explicitly disabled or unconfigured
+# RELEASE-GATE: post-deploy smoke. Within MYR_SMOKE_TIMEOUT_SEC the fleet must
+# be healthy: with the bot rollout on, at least one bot container must
+# re-apply; with MYRMIDON_BOT_IMAGE_ROLLOUT=0 no bot re-applies by design and
+# the smoke verifies the already-running gateways instead. DEPLOY-SMOKE-FALSE
+# (08.11): containers stopped before the deploy began and IDLE-STOP Exited(143)
+# stops are not crashes. Otherwise the deploy is DEGRADED with the rollback
+# commands. Skipped only when explicitly disabled or unconfigured
 # (no company): an unconfigured smoke on a bot fleet is itself reported.
 if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
   if [[ -z "$MYR_SMOKE_COMPANY" ]]; then
@@ -1051,8 +1059,18 @@ if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
     [[ -n "$MYR_SMOKE_AGENT" ]] && smoke_args+=(--agent "$MYR_SMOKE_AGENT")
     [[ -n "$HEALTH_TOKEN_FILE" ]] && smoke_args+=(--token-file "$HEALTH_TOKEN_FILE")
     [[ -f "$MYR_BOT_SUMMARY" ]] && smoke_args+=(--summary "$MYR_BOT_SUMMARY")
+    [[ -n "$deploy_started_at" ]] && smoke_args+=(--deploy-started-at "$deploy_started_at")
+    if [[ "$MYR_BOT_ROLLOUT_ENABLED" != "1" ]]; then
+      # DEPLOY-SMOKE-FALSE: without the rollout no bot re-applies; the smoke
+      # judges the fleet's health, not the re-apply that cannot happen.
+      smoke_args+=(--no-bot-rollout)
+    fi
     if ! "$MYR_SCRIPT_DIR/bot-apply-smoke.sh" "${smoke_args[@]}"; then
-      log "DEPLOYED-DEGRADED: no bot container re-applied within ${MYR_SMOKE_TIMEOUT_SEC}s (bot gateways failed post-deploy health check)"
+      if [[ "$MYR_BOT_ROLLOUT_ENABLED" != "1" ]]; then
+        log "DEPLOYED-DEGRADED: bot gateways failed post-deploy health check within ${MYR_SMOKE_TIMEOUT_SEC}s (no bot rollout: the already-running gateways had to pass; see the smoke output above)"
+      else
+        log "DEPLOYED-DEGRADED: no bot container re-applied within ${MYR_SMOKE_TIMEOUT_SEC}s (bot gateways failed post-deploy health check)"
+      fi
       log "Roll back the board with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
       log "Roll back a component with: $MYR_SCRIPT_DIR/rollback-component.sh --config $config --component <dockergate|fleetd>"
       exit 1

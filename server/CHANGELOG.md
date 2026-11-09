@@ -4,8 +4,11 @@
 
 ### Patch Changes
 
+- Stranded assigned-issue recovery now routes workflow-blocked disposition escalations to the nearest invokable lead or manager in the assignee's `reportsTo` chain, skipping reviewer agents and falling back to the board operator when no lead exists. The wake asks the owner for a fresh first-step directive, a task split, or closure.
+
 - Bound full-tree workspace Git scans with process-wide concurrency, queue, timeout, cancellation, coalescing, and short-lived changed-file caching. Saturated or timed-out changed-file requests now return a retryable degraded response, and hidden file-browser panels no longer initiate scans.
 - Corpus search: one company-scoped title lookup and dataset existence check instead of full document reads with chunks and jobs per hit (OPE-12272); the search handler and the search index log their step durations on the debug log.
+- Add regression coverage for vendor issues #15584 and #15847 (OPE-12206): verifying that consecutive continuations consisting only of comments by the assignee agent (including empty comments) are capped after 3 continuations and do not reset the continuation counter without external input.
 
 ## 0.3.1
 

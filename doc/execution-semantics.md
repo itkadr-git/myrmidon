@@ -850,6 +850,8 @@ Detached process cleanup is operational hygiene, not source issue liveness. Clea
 
 ## 13. Auto-Recover vs Explicit Recovery vs Human Escalation
 
+For stranded assigned work that already has an execution workflow, automatic recovery blocks the issue and wakes an owner for a disposition. The owner is resolved separately from review routing: walk the assignee's `reportsTo` chain to the nearest invokable agent whose role is `lead` or `manager`, skipping reviewer agents. If no such ancestor exists, the board operator (`adm`) owns the escalation. The wake must request a fresh directive with its first step, a split into subtasks, or closure; a review-only handoff does not resolve the stranded block.
+
 Paperclip uses three different recovery outcomes, depending on how much it can safely infer.
 
 ### Auto-Recover

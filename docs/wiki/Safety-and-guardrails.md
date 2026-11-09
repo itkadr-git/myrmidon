@@ -42,6 +42,17 @@ heuristic scan sets a `flagged` marker when the score crosses the threshold
 (`MYRMIDON_GUARDRAILS_INJECTION_SCORE`, default 0.6). The layer flags; it
 does not block.
 
+## Redaction modes
+
+The guardrails API also redacts detected entities instead of just flagging
+them: `POST /api/myrmidon/guardrails/redact` accepts `reversible`
+(originals stored in the service database with an expiry, a `redactionId`
+comes back), `irreversible` (tokens only, nothing persisted) and `flag`
+(text unchanged, detected spans returned) modes, and
+`POST /api/myrmidon/guardrails/restore` puts the originals back until they
+expire. See the [redaction modes guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.md)
+([Russian](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.ru.md)).
+
 ## Emergency stop
 
 An operator pause lets the agent's active runs finish (drained pause). For
@@ -74,4 +85,5 @@ Starting with Myrmidon 1.7, execution safety guardrails and container fleet boun
 - [Autonomy matrix: pause, resume, wake enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-pause-wake-enforcement.md)
 - [Autonomy matrix: delete enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-delete-enforcement.md)
 - [Emergency stop for drained-pause runs](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/emergency-stop.md)
+- [Redaction modes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.md)
 - Matrix storage and API: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), sections «AUTONOMY-MATRIX» and «GUARDRAILS»

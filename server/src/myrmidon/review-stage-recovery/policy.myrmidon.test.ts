@@ -6,7 +6,10 @@ import {
   countStalledReviewDeferrals,
   isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
+  decideReviewAdmission,
+  pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
+  pullRequestHeadFinalCheckConclusion,
   selectOpenPullRequestWorkProduct,
 } from "./policy.js";
 import {
@@ -160,6 +163,49 @@ describe("pullRequestHeadCiStateFromChecks", () => {
   });
 });
 
+describe("pullRequestHeadCiStateFromAllChecks", () => {
+  const done = (name: string, conclusion: string) => ({ name, status: "completed", conclusion });
+
+  it("is complete when every check of the head has completed, whatever the conclusions", () => {
+    // OPE-12048: BastionPrime/wellboard PR #43 — six lanes, no aggregate `CI result` check.
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [
+          done("build (x86_64)", "success"),
+          done("lint-and-test", "success"),
+          done("build (mipsel_24kc)", "failure"),
+        ],
+      }),
+    ).toBe("complete");
+  });
+
+  it("is pending while any check is queued, in progress or waiting", () => {
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "in_progress", conclusion: null }],
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "queued", conclusion: null }],
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "waiting", conclusion: null }],
+      }),
+    ).toBe("pending");
+  });
+
+  it("is pending while CI has not started at all", () => {
+    expect(pullRequestHeadCiStateFromAllChecks({ checkRuns: [] })).toBe("pending");
+  });
+
+  it("is unknown when the read failed", () => {
+    expect(pullRequestHeadCiStateFromAllChecks({ checkRuns: null })).toBe("unknown");
+  });
+});
+
 describe("selectOpenPullRequestWorkProduct", () => {
   it("prefers the open primary pull request and ignores merged, closed and archived ones", () => {
     const products = [
@@ -217,5 +263,48 @@ describe("maintenance-interrupted reviewer run (OPE-12201)", () => {
       { details: { stageId: "s1", kind: "decision_retry" } },
     ];
     expect(countStalledReviewDeferrals(rows, "s1")).toEqual({ ciWaits: 0, decisionRetries: 1 });
+  });
+});
+
+describe("pullRequestHeadFinalCheckConclusion", () => {
+  const done = (conclusion: string) => ({ name: "CI result", status: "completed", conclusion });
+
+  it("returns the conclusion of the completed final check", () => {
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [done("success")] })).toBe("success");
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [done("failure")] })).toBe("failure");
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [{ name: "checks", status: "completed", conclusion: "failure" }, done("success")] })).toBe("success");
+  });
+
+  it("ignores superseded runs and non-verdict conclusions", () => {
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [done("cancelled"), done("success")] })).toBe("success");
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [{ name: "CI result", status: "queued" }] })).toBeNull();
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [{ name: "CI result", status: "completed" }] })).toBeNull();
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [] })).toBeNull();
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: null })).toBeNull();
+  });
+});
+
+describe("decideReviewAdmission (OPE-12176)", () => {
+  it("admits the reviewer when the exact head CI is green", () => {
+    expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "green", critical: false })).toBe("admit");
+  });
+
+  it("waits for the fix (wait_red) when the exact head CI finished with a failed check", () => {
+    expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "red", critical: false })).toBe(
+      "wait_red",
+    );
+  });
+
+  it("waits for CI (wait_for_ci) while the head CI is pending or unreadable", () => {
+    expect(decideReviewAdmission({ ci: "pending", headFinalCheck: "unknown", critical: false })).toBe("wait_for_ci");
+    expect(decideReviewAdmission({ ci: "unknown", headFinalCheck: "unknown", critical: false })).toBe("wait_for_ci");
+  });
+
+  it("waits for CI (wait_for_ci) when CI completed but check runs could not be read (unknown)", () => {
+    expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "unknown", critical: false })).toBe("wait_for_ci");
+  });
+
+  it("admits a critical issue's reviewer even when the exact head CI is red", () => {
+    expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "red", critical: true })).toBe("admit");
   });
 });
