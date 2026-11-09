@@ -29706,16 +29706,19 @@ export function heartbeatService(
                 }
               }
               const hits = detectProviderGarbageGroups(
-                recentRuns.map((recent) => ({
-                  runId: recent.id,
-                  agentId: recent.agentId,
-                  modelGroup: agentModelGroups.get(recent.agentId) ?? null,
-                  finishedAt: recent.finishedAt ?? new Date(),
-                  outcomeText:
-                    normalizeProviderGarbageOutcomeText(
-                      readNonEmptyString(parseObject(recent.resultJson)?.summary),
-                    ) || recent.error || "",
-                })),
+                recentRuns.map((recent) => {
+                  const summaryVal = parseObject(recent.resultJson)?.summary;
+                  const outcomeCandidate =
+                    typeof summaryVal === "string" ? summaryVal : recent.error;
+                  return {
+                    runId: recent.id,
+                    agentId: recent.agentId,
+                    modelGroup: agentModelGroups.get(recent.agentId) ?? null,
+                    finishedAt: recent.finishedAt ?? new Date(),
+                    outcomeText:
+                      normalizeProviderGarbageOutcomeText(outcomeCandidate) || "",
+                  };
+                }),
                 {
                   windowMs: settings.windowMs,
                   distinctAgents: settings.distinctAgents,
