@@ -500,10 +500,12 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       };
     },
 
+    // myrmidon(OPE-10084 fix): the JSON participant id is text and assignee_agent_id is uuid; without
+    // the cast Postgres refuses the coalesce and the review PATCH transaction fails with 500.
     async loadByAgent(companyId) {
       const stageRows = await db
         .select({
-          agentId: sql<string>`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId})`,
+          agentId: sql<string>`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId}::text)`,
           count: sql<number>`count(*)::int`,
         })
         .from(issues)
@@ -517,10 +519,10 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
             sql`${issues.executionState} ->> 'escalationToParticipant' is null`,
             sql`${issues.executionState} ->> 'escalationPolicyRevision' is null`,
             sql`${issues.executionState} ->> 'escalationReason' is null`,
-            sql`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId}) is not null`,
+            sql`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId}::text) is not null`,
           ),
         )
-        .groupBy(sql`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId})`);
+        .groupBy(sql`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId}::text)`);
 
       const runRows = await db
         .select({

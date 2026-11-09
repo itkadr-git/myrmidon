@@ -1,4 +1,5 @@
 [
+  "api.use(apiPathAliasMiddleware())",
   "api.use(createPluginReadinessRouter(pluginReadiness))",
   "api.use(boardLoadRequestMiddleware())",
   "api.use(boardMutationGuard())",

@@ -221,6 +221,7 @@ import {
   myrmidonArchitectDataRoutes,
   myrmidonSttRoutes,
   myrmidonGitHubSharedIdentityRoutes,
+  myrmidonGitHubAppWebhookRoutes,
   createTelegramVoiceSttWiring,
   myrmidonVoiceMeetingProtocolRoutes,
   myrmidonEvalsRoutes,
@@ -251,6 +252,7 @@ import {
   createCorpusShadowSearch,
   buildTokensTraceRoutes,
   myrmidonOnboardRoutes,
+  apiPathAliasMiddleware,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -1003,6 +1005,11 @@ export async function createApp(
   const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
   app.use(emailWebhookRoutes(emailChannels));
   app.use(chatWebhookRoutes(chatChannels));
+  // myrmidon(GITHUB-APP-WEBHOOK): our own GitHub App's CI / pull-request events.
+  // Public like the provider ingress above: GitHub's HMAC signature is the
+  // credential. The event service is created after the app (it carries the
+  // wakeups), so the route reaches it through `app.locals`, set at startup.
+  app.use(myrmidonGitHubAppWebhookRoutes(db, { ingest: () => app.locals.githubConnectionEvents ?? null }));
   // myrmidon(1.7 WEBHOOK-INTAKE): Public webhook intake route (/api/intake/:source)
   app.use(intakeRoutes());
   // myrmidon(EXTCASE-B): the extension's one board-less endpoint (the pairing code
@@ -1040,6 +1047,11 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  // myrmidon(1.7-RB-PATH): the pre-rebrand surface /api/paperclip/* keeps
+  // working for one release as a transparent alias of /api/myrmidon/* —
+  // same handlers, same contract, no redirect. First, so guards below see
+  // the canonical path.
+  api.use(apiPathAliasMiddleware());
   api.use(createPluginReadinessRouter(pluginReadiness));
   // myrmidon(1.6.6 PROCS-0.3A): tags every /api request with the http_route
   // lane and journals it on finish. First on purpose — a request rejected by a

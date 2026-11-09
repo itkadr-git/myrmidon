@@ -379,6 +379,14 @@ export const createModelProviderSchema = z
     expiresAt: z.string().datetime().optional().nullable(),
     packageName: z.string().trim().max(160).optional().nullable(),
     rpmLimit: z.number().int().positive().optional().nullable(),
+    /**
+     * Optional LiteLLM model names by the provider's own model name
+     * (`{"kimi-for-coding": "kimi/kimi-for-coding"}`). A model without an entry
+     * keeps the default `<type>/<model name>`.
+     */
+    litellmModelNames: z
+      .record(z.string().trim().min(1).max(512), z.string().trim().min(1).max(512))
+      .optional(),
   })
   .superRefine((value, ctx) => {
     if (value.type === "openai-compatible" && !value.baseUrl) {
@@ -403,7 +411,12 @@ export const patchModelProviderSchema = z.object({
 });
 export type PatchModelProviderInput = z.infer<typeof patchModelProviderSchema>;
 
-/** POST /providers/{id}/models body: the per-model enable/disable switches. */
+/**
+ * POST /providers/{id}/models body: the per-model switches. `litellmModelName`
+ * renames the model in the gateway registry (default `<type>/<model name>`); the
+ * model must be disabled while it is renamed, so the gateway never keeps a
+ * registration under a name the board no longer knows.
+ */
 export const setModelProviderModelsSchema = z.object({
   models: z
     .array(
@@ -411,6 +424,7 @@ export const setModelProviderModelsSchema = z.object({
         modelName: z.string().trim().min(1).max(512),
         enabled: z.boolean().optional(),
         free: z.boolean().optional(),
+        litellmModelName: z.string().trim().min(1).max(512).optional(),
       }),
     )
     .max(500),

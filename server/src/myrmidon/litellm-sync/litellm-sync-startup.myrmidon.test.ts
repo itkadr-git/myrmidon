@@ -49,6 +49,7 @@ function portsWith(overrides: Partial<LitellmReconcilePorts>): LitellmReconcileP
   return {
     listCompanyIds: async () => ["company-a"],
     readAdminKey: async () => "admin-value",
+    resolveCredential: async () => null,
     reportAgentAllowlists: vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] })),
     log: recordingLog(),
     ...overrides,

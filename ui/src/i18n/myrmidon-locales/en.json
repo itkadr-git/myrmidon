@@ -846,6 +846,7 @@
     "sourceStackUpdate": "Stack update"
   },
   "settings": {
+    "instanceAdminRequired": "Instance admin access required",
     "companyBreadcrumb": "Company",
     "title": "Settings",
     "general": "General",
@@ -1223,6 +1224,11 @@
     "ageSeconds": "{{count}} s"
   },
   "runQueue": {
+    "behaviorLoadFailed": "Failed to load the Runs & Queue settings.",
+    "behaviorBadShape": "The server returned the settings in an unexpected format, so this panel cannot show them.",
+    "behaviorSaveFailed": "Saving the setting failed.",
+    "behaviorInvalid": "Enter a valid value; nothing was saved.",
+    "behaviorEmpty": "This server does not serve any Runs & Queue settings yet.",
     "priorityTitle": "Run queue priority",
     "priorityDescription": "When the admission ceilings are closed, queued runs start in priority order: review, release and current-release work first. Weights apply on the next admission pass — saving needs no server restart.",
     "notServed": "This server does not expose queue priority settings yet (the feature arrives with a release update); nothing here is saved.",
@@ -1530,6 +1536,23 @@
     }
   },
   "swarmClaim": {
+    "scent": {
+      "title": "Task scent (classifier model)",
+      "description": "The board scores each unassigned task against the agent castes with a cheap classifier model (the scent). Pick the LiteLLM model alias and, if needed, the secret that holds its API key. Applies without a restart.",
+      "loading": "Loading the scent settings...",
+      "model": {
+        "label": "Classifier model",
+        "customMode": "Enter manually",
+        "selectMode": "Pick from the list",
+        "help": "The LiteLLM gateway alias of the cheap model that classifies tasks."
+      },
+      "secret": {
+        "label": "API key secret",
+        "defaultOption": "Gateway default key",
+        "help": "The company secret that holds the key for this model. Leave the default to use the gateway's own key."
+      },
+      "save": "Save scent settings"
+    },
     "title": "Self-organization (swarm)",
     "intro": "The board itself matches a free agent to each unassigned task by caste and scent, and wakes that agent on its own task. Every value applies without a restart — the server re-reads these settings on each claim and sweep tick. Turning the swarm off releases the live leases immediately; assignees are not touched. Environment variables stay forced overrides; each field shows whether the saved value or the override is in force.",
     "enableLabel": "Enable the swarm",
