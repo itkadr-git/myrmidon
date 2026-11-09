@@ -24,7 +24,7 @@ export interface StackLagTask {
   title: string;
   description: string;
   priority: "high" | "medium";
-  status: "todo";
+  status: "backlog";
   idempotencyKey: string;
   originKind: "manual";
 }
@@ -50,7 +50,7 @@ export function buildStackLagTask(card: StackAttentionCard, now: Date): StackLag
     title: `[stack] ${card.component}: отставание от ${card.latest}`,
     description,
     priority: card.severity === "high" ? "high" : "medium",
-    status: "todo",
+    status: "backlog",
     idempotencyKey: stackLagTaskIdempotencyKey(card.component),
     originKind: "manual",
   };

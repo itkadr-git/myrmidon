@@ -863,10 +863,77 @@ describe("stack lag escalation (STACK-WATCH-LIVE)", () => {
     const task = buildStackLagTask(card, new Date("2026-11-08T12:00:00.000Z"));
     expect(task.idempotencyKey).toBe("stack-lag:hindsight");
     expect(task.priority).toBe("medium");
-    expect(task.status).toBe("todo");
+    expect(task.status).toBe("backlog");
     expect(task.title).toContain("hindsight");
     expect(task.description).toContain("1.1.0");
     expect(task.description).toContain("v1.2.0");
+  });
+
+  it("задача отставания создаётся в backlog и без исполнителя", async () => {
+    const card: StackAttentionCard = {
+      component: "hindsight",
+      title: "hindsight v1.2.0",
+      latest: "v1.2.0",
+      ourVersion: "1.1.0",
+      behindBy: 1,
+      severity: "medium",
+      whyNow: "Upstream release v1.2.0 is 1 release(s) ahead.",
+      summaryExcerpt: null,
+      dedupKey: "stack:hindsight:v1.2.0",
+      activityAt: "2026-11-03T18:59:00.000Z",
+      patchState: null,
+      staleSince: null,
+      metadata: {},
+    };
+    const task = buildStackLagTask(card, new Date("2026-11-08T12:00:00.000Z"));
+    expect(task.status).toBe("backlog");
+    expect((task as Record<string, unknown>).assigneeAgentId).toBeUndefined();
+    expect((task as Record<string, unknown>).assigneeId).toBeUndefined();
+    expect((task as Record<string, unknown>).assigneeUserId).toBeUndefined();
+    expect((task as Record<string, unknown>).projectId).toBeUndefined();
+
+    let createdPayload: Record<string, unknown> | null = null;
+    const doc = documentWithLocal({
+      hindsight: { version: "1.1.0" },
+    });
+    const components = doc.components.map((c) =>
+      c.name === "hindsight"
+        ? {
+            ...c,
+            upstreamState: {
+              checkedAt: "2026-10-02T03:00:00.000Z",
+              latest: "v1.2.0",
+              latestPublishedAt: null,
+              firstSeenAt: "2026-10-01T03:00:00.000Z",
+              previousLatest: "1.1.0",
+              behindBy: 1,
+              notes: null,
+              error: null,
+              staleSince: null,
+            },
+          }
+        : c,
+    );
+    const mockIssueSvc = {
+      create: async (_companyId: string, data: unknown) => {
+        createdPayload = data as Record<string, unknown>;
+        return { id: "issue-created-1" };
+      },
+    };
+    await fileStackLagTasks(
+      {} as any,
+      "company-1",
+      { ...doc, components },
+      new Date("2026-10-02T03:00:00.000Z"),
+      undefined,
+      mockIssueSvc,
+    );
+    expect(createdPayload).not.toBeNull();
+    expect(createdPayload!.status).toBe("backlog");
+    expect(createdPayload!.assigneeAgentId).toBeUndefined();
+    expect(createdPayload!.assigneeUserId).toBeUndefined();
+    expect(createdPayload!.assigneeId).toBeUndefined();
+    expect(createdPayload!.projectId).toBeUndefined();
   });
 
   it("marks a security-flagged card as high priority", () => {
