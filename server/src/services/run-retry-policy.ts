@@ -173,8 +173,13 @@ export function classifyRunFailure(
   const errorMessage =
     readNonEmptyString(input.errorMessage) ??
     (typeof input.error === "string" ? readNonEmptyString(input.error) : null);
+  const resultJson = parseObject(input.resultJson);
+  const resultMessage =
+    readNonEmptyString(resultJson.errorMessage) ??
+    readNonEmptyString(resultJson.message);
 
-  // 1. Non-retryable preflight failure codes
+  // Non-retryable preflight failure codes are definitive: they were terminal
+  // regardless of any accompanying message, so they keep top priority.
   if (errorCode && NON_RETRYABLE_PREFLIGHT_FAILURE_CODES.has(errorCode)) {
     return {
       retryable: false,
@@ -183,7 +188,50 @@ export function classifyRunFailure(
     };
   }
 
-  // 2. Pre-adapter setup failure codes (e.g. configuration_incomplete, workspace_validation_failed, setup_failed)
+  // A plugin in a terminal non-ready state cannot recover by retrying the run.
+  if (errorMessage && parseSandboxProviderPluginNotReadyFailureMessage(errorMessage)) {
+    return {
+      retryable: false,
+      reason: "sandbox_provider_plugin_not_ready",
+      backoffHint: null,
+    };
+  }
+
+  // Native finalization persists this phase when the provider session can be
+  // resumed. Preserve that durable retry classification independently of the
+  // adapter error code that accompanied the failed attempt.
+  if (input.phase === "retryable_failure") {
+    return {
+      retryable: true,
+      reason: "native_retryable_failure_phase",
+      backoffHint: 30_000,
+    };
+  }
+
+  // These transient infrastructure messages were historically retryable even
+  // when no normalized error code was available to the caller.
+  if (
+    isSpawnLikeFailureMessage(errorMessage) ||
+    isSpawnLikeFailureMessage(resultMessage)
+  ) {
+    return {
+      retryable: true,
+      reason: "spawn_like_transient_failure",
+      backoffHint: 30_000,
+    };
+  }
+  if (
+    isSandboxProviderWorkerUnavailableFailureMessage(errorMessage) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(resultMessage)
+  ) {
+    return {
+      retryable: true,
+      reason: "sandbox_provider_worker_unavailable",
+      backoffHint: 30_000,
+    };
+  }
+
+  // Pre-adapter setup failure codes (e.g. configuration_incomplete, workspace_validation_failed, setup_failed)
   if (errorCode && PRE_ADAPTER_SETUP_FAILURE_CODES.has(errorCode)) {
     // If it's a spawn-like failure or sandbox worker unavailable in setup, it is retryable infra
     if (
@@ -208,7 +256,7 @@ export function classifyRunFailure(
     };
   }
 
-  // 3. Generic process_lost
+  // Generic process_lost
   if (errorCode === "process_lost") {
     return {
       retryable: true,
@@ -217,7 +265,7 @@ export function classifyRunFailure(
     };
   }
 
-  // 4. Infrastructure interaction continuation failures
+  // Infrastructure interaction continuation failures
   if (
     isRetryableInteractionContinuationInfrastructureFailure({
       error: input.error,
