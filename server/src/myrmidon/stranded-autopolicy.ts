@@ -33,7 +33,16 @@
 //     untouched: the issue is set `blocked` with complete `blockerMetadata` and
 //     an agent-owned `unblockDescriptor`, and the target gets one idempotent
 //     wake (`disposition_blocked`).
-//  4. Only an empty chain (or a paused assignee) falls back to the vendor's
+//  4. (OPE-12265) The owner of a `disposition_blocked` escalation is the
+//     nearest invokable lead/manager in the assignee's `reports_to` chain
+//     (`resolveStrandedDispositionOwnerAgentId` below), not the direct
+//     reviewer: in teams where an engineer reports to a reviewer caste agent,
+//     the reviewer never picked up these recovery blocks and the issue sat
+//     stranded for hours. If the chain has no lead/manager at all, the
+//     operator fallback (`adm`, as before) owns it. The escalation comment
+//     names what the owner must decide: a fresh directive with the first
+//     step, a split into subtasks, or closure.
+//  5. Only an empty chain (or a paused assignee) falls back to the vendor's
 //     own board escalation unchanged (`vendor_default`).
 //
 // A `paused` assignee is exempt from all of the above: pausing is not
@@ -172,6 +181,13 @@ export function decideStrandedAutoPolicy(input: {
    */
   escalationAgentId?: string | null;
   /**
+   * The nearest invokable lead/manager in the assignee's `reportsTo` chain.
+   * Reviewers are intentionally skipped: they review work but do not own
+   * stranded recovery decisions. If no such ancestor exists, the caller's
+   * operator fallback (normally `adm`) is used.
+   */
+  dispositionOwnerAgentId?: string | null;
+  /**
    * OPE-9072: the issue carries an execution policy, monitor or non-idle
    * execution state (`issueHasExistingExecutionWorkflow`). Such an issue is
    * never taken over; it is blocked with an agent owner instead.
@@ -226,9 +242,14 @@ export function decideStrandedAutoPolicy(input: {
       input.targetIsAdm ||
       input.requireAgentDisposition)
   ) {
+    // OPE-12265: the owner of a disposition_blocked escalation is the nearest
+    // lead/manager, never the assignee's direct reviewer (the reviewer
+    // reports-to edge is a review-routing edge, not an ownership edge).
+    // Without a lead the operator fallback (`adm`) owns it, as before.
+    // Computed inside the guard: `targetAgentId` is narrowed to `string` here.
     return {
       kind: "disposition_blocked",
-      ownerAgentId: targetAgentId,
+      ownerAgentId: input.dispositionOwnerAgentId ?? targetAgentId,
       attemptsInWindow: input.attemptsInWindow,
       maxAttemptsPerDay: input.maxAttemptsPerDay,
     };
@@ -242,6 +263,82 @@ export function decideStrandedAutoPolicy(input: {
     };
   }
   return { kind: "vendor_default", attemptsInWindow: input.attemptsInWindow, maxAttemptsPerDay: input.maxAttemptsPerDay };
+}
+
+export interface StrandedDispositionOwnerRef {
+  id: string;
+  companyId: string;
+  role: string;
+  reportsTo: string | null;
+  status: string;
+  pausedAt?: Date | string | null;
+}
+
+const STRANDED_DISPOSITION_OWNER_ROLES = new Set(["lead", "manager"]);
+
+/** Pure: find the nearest invokable lead/manager above the stranded assignee. */
+export function resolveStrandedDispositionOwnerAgentId(input: {
+  assigneeAgentId: string;
+  companyId: string;
+  agents: StrandedDispositionOwnerRef[];
+  fallbackAgentId: string | null;
+}): string | null {
+  const byId = new Map(input.agents.map((agent) => [agent.id, agent]));
+  const seen = new Set<string>();
+  let cursor = byId.get(input.assigneeAgentId)?.reportsTo ?? null;
+  for (let depth = 0; cursor && depth < 32 && !seen.has(cursor); depth += 1) {
+    seen.add(cursor);
+    const candidate = byId.get(cursor);
+    if (
+      candidate &&
+      candidate.companyId === input.companyId &&
+      STRANDED_DISPOSITION_OWNER_ROLES.has(candidate.role.trim().toLowerCase()) &&
+      isAgentStatusInvokable(candidate.status) &&
+      !candidate.pausedAt
+    ) {
+      return candidate.id;
+    }
+    cursor = candidate?.reportsTo ?? null;
+  }
+  return input.fallbackAgentId;
+}
+
+export async function findStrandedDispositionOwnerAgentId(
+  db: Db,
+  issue: { companyId: string; assigneeAgentId: string | null },
+): Promise<string | null> {
+  if (!issue.assigneeAgentId) return null;
+  const rows = await db
+    .select({
+      id: agents.id,
+      companyId: agents.companyId,
+      role: agents.role,
+      name: agents.name,
+      reportsTo: agents.reportsTo,
+      status: agents.status,
+      pausedAt: agents.pausedAt,
+    })
+    .from(agents)
+    .where(eq(agents.companyId, issue.companyId));
+  // OPE-12265: no lead/manager anywhere in the assignee's chain — the board
+  // operator bot `adm` owns the escalation (same root-agent rule as the
+  // default escalation chain: no `reportsTo`, name `adm`), invokable only.
+  const owner = resolveStrandedDispositionOwnerAgentId({
+    assigneeAgentId: issue.assigneeAgentId,
+    companyId: issue.companyId,
+    agents: rows,
+    fallbackAgentId: null,
+  });
+  if (owner) return owner;
+  const adm = rows.find(
+    (row) =>
+      row.companyId === issue.companyId &&
+      row.reportsTo == null &&
+      row.name.trim().toLowerCase() === "adm" &&
+      isAgentStatusInvokable(row.status) &&
+      !row.pausedAt,
+  );
+  return adm?.id ?? null;
 }
 
 export interface StrandedAutoPolicyAssigneeRef {
@@ -622,7 +719,8 @@ export async function findEscalationChainAgentId(
 }
 
 export const STRANDED_DISPOSITION_WAKE_SOURCE = "myrmidon.stranded_disposition_blocked";
-export const STRANDED_DISPOSITION_ACTION = "Assign a final status to this issue (done, in_review, blocked with a blocker, or todo with a reason)";
+export const STRANDED_DISPOSITION_ACTION =
+  "Assign a final status to this issue (done, in_review, blocked with a blocker, or todo with a reason), provide a fresh directive with the first step, break it down, or close it";
 export const STRANDED_DISPOSITION_ESCALATION_POLICY = "stranded_disposition_chain_v1";
 export const STRANDED_DISPOSITION_NEXT_CHECK_MS = 4 * 60 * 60 * 1000;
 export const STRANDED_DISPOSITION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -678,7 +776,9 @@ export function buildStrandedDispositionBlockedComment(input: {
     `${productPossessive("automatic policy")} could not get a final status from the assignee: ${input.attemptsInWindow} ` +
       `automatic continuation attempt(s) within 24 hours (cause \`${input.cause}\`, limit ${input.maxAttemptsPerDay} per day).`,
     "The issue carries its own execution workflow, so it was not taken over and the assignee is unchanged. " +
-      "It is now `blocked` and owned by a senior agent, who is asked to assign the final status.",
+      "It is now `blocked` and owned by the nearest lead or, when no lead exists, the board operator.",
+    "What the owner must do here: give the issue a fresh directive with the first step, split it into subtasks, " +
+      "or close it — a plain review is not enough; a reviewer cannot resolve this block.",
   ].join("\n");
 }
 

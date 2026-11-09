@@ -47,6 +47,8 @@ import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
 import type { OwnerActiveChannelSettings } from "../myrmidon-owner-active-channel.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
+// myrmidon(1.7-GOAL-JUDGE): the goal-achievement judge settings stored in the same general settings row
+import type { GoalJudgeSettings } from "../myrmidon-goal-judge.js";
 // myrmidon(F16): the issue-list agent defaults shape stored in the general row.
 import type { IssueListAgentDefaultsSettings } from "../myrmidon-issue-list-agent-defaults.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
@@ -396,6 +398,14 @@ export interface InstanceGeneralSettings {
    * `swarmClaimJournal`.
    */
   reviewReworkJournal?: unknown[];
+  /**
+   * myrmidon(1.7-GOAL-JUDGE): the goal-achievement judge model and master switch.
+   */
+  goalJudge?: GoalJudgeSettings;
+  /**
+   * myrmidon(1.7-GOAL-JUDGE): the change journal of the goal judge settings, newest first.
+   */
+  goalJudgeJournal?: unknown[];
   /**
    * myrmidon(1.6.6 MONITORING D): the alert-recovery knobs — `holdMinutes`
    * (how long an alert must stay resolved before its task closes by itself)

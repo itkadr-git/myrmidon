@@ -72,6 +72,18 @@ function fakeDedupStore(): AlertDedupStore & { entries: Map<string, DedupEntry> 
       }
       return removed;
     },
+    async findOpen(companyId, source, criteria) {
+      for (const entry of entries.values()) {
+        if (entry.companyId !== companyId || entry.issueStatus !== "open") continue;
+        if (criteria.fingerprint && entry.id === `${source}:${criteria.fingerprint}`) {
+          return entry;
+        }
+        if (criteria.alertname && entry.alertname === criteria.alertname) {
+          return entry;
+        }
+      }
+      return null;
+    },
   };
 }
 

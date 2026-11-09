@@ -360,3 +360,13 @@ export {
   type ReflectJobRow,
   type NewReflectJobRow,
 } from "./reflect_jobs.js";
+// myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093): append-only payment webhook event log.
+export {
+  billingEvents,
+  BILLING_EVENT_STATUSES,
+  type BillingEventStatus,
+  BILLING_EVENT_TYPES,
+  type BillingEventType,
+  type BillingEventRow,
+  type NewBillingEventRow,
+} from "./billing_events.js";

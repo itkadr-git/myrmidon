@@ -19804,7 +19804,14 @@ export function heartbeatService(
     // created/exited container must be started before the gateway is contacted.
     // Keep this before any adapter execution so a failed start is not reported
     // as a gateway connection failure.
-    const idleStopService = getIdleStopService();
+    // Only a container-backed Hermes agent has an IDLE-STOP runtime. In
+    // particular, a transient retry of omp_local/codex_local must follow the
+    // same adapter dispatch path as its first attempt, without dockergate.
+    const idleStopService =
+      agent.adapterType === "hermes_gateway" &&
+      parseObject(parseObject(agent.adapterConfig).container).enabled === true
+        ? getIdleStopService()
+        : null;
     if (idleStopService) {
       try {
         await idleStopService.ensureStartedAndHealthy(claimed.agentId);
@@ -22351,6 +22358,53 @@ export function heartbeatService(
     )).returning({ id: agentWakeupRequests.id });
 
     const staleCutoff = new Date(now - 30 * 60_000);
+    // myrmidon(OPE-12347): resurrected wakes (reason
+    // `resurrection_execution_reconciliation_required`) carry the production
+    // incident contract: execute or close within 10 minutes. The generic
+    // 30-minute backstop below is too slow for them, so they get their own
+    // earlier expiry with the same guard set (no live run owns the issue, no
+    // executionWait / queuedCommentInterrupt marker) and the same re-wake, so
+    // an agent with work never stands behind a dead parked intent.
+    const resurrectionCutoff = new Date(now - 10 * 60_000);
+    const staleResurrections = await db.select({ wake: agentWakeupRequests }).from(agentWakeupRequests).innerJoin(companies,
+      and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active"))).where(and(
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      eq(agentWakeupRequests.reason, "resurrection_execution_reconciliation_required"),
+      isNull(agentWakeupRequests.runId),
+      sql`${agentWakeupRequests.payload}->'executionWait' is null`,
+      lt(agentWakeupRequests.requestedAt, resurrectionCutoff),
+      lt(agentWakeupRequests.createdAt, resurrectionCutoff),
+      sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+      not(exists(db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+        or(
+          sql`${heartbeatRuns.nativeIssueId}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
+          sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${agentWakeupRequests.payload}->>'issueId'`,
+        ),
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      )))),
+      not(exists(db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        inArray(issues.status, ["done", "cancelled"]),
+      )))),
+    )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
+    let expired = 0;
+    for (const row of staleResurrections) {
+      const wake = row.wake;
+      const [cancelled] = await db.update(agentWakeupRequests).set({
+        status: "cancelled", error: "resurrection_wake_expired", finishedAt: new Date(), updatedAt: new Date(),
+      }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lt(agentWakeupRequests.requestedAt, resurrectionCutoff))).returning({ id: agentWakeupRequests.id });
+      if (!cancelled) continue;
+      expired++;
+      await enqueueWakeup(wake.agentId, { source: "automation", reason: "deferred_issue_execution_expired", payload: {
+        issueId: readNonEmptyString(wake.payload?.issueId) ?? readNonEmptyString(wake.payload?.taskId),
+        expiredWakeId: wake.id,
+      } })
+        .catch(err => logger.warn({ err, wakeId: wake.id }, "failed to re-wake agent after resurrection wake expiry"));
+    }
     const staleWakes = await db.select({ wake: agentWakeupRequests }).from(agentWakeupRequests).innerJoin(companies,
       and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active"))).where(and(
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -22376,7 +22430,6 @@ export function heartbeatService(
         inArray(issues.status, ["done", "cancelled"]),
       )))),
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
-    let expired = 0;
     for (const row of staleWakes) {
       const wake = row.wake;
       const wakePayload = parseObject(wake.payload);
@@ -35398,12 +35451,10 @@ export function heartbeatService(
       actorShape?: string,
       wakeReason?: string,
       hasResult = false,
+      before?: Date,
     ): Promise<string> => {
-      const [agg] = await db
-        .select({
-          rowCount: sql<number>`count(*)::int`,
-          maxUpdatedAt: sql<string | null>`max(${heartbeatRuns.updatedAt})`,
-        })
+      const recent = db
+        .select({ updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(
           and(
@@ -35413,8 +35464,18 @@ export function heartbeatService(
               ? sql`(${heartbeatRuns.contextWakeReason} = ${wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${wakeReason})`
               : sql`true`,
             hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+            before ? lt(heartbeatRuns.createdAt, before) : sql`true`,
           ),
-        );
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(Math.max(1, Math.min(1000, limit ?? 200)))
+        .as("recent_heartbeat_runs");
+      const [agg] = await db
+        .select({
+          rowCount: sql<number>`count(*)::int`,
+          maxUpdatedAt: sql<string | null>`max(${recent.updatedAt})`,
+        })
+        .from(recent);
       return versionKeyEtag("heartbeat-runs-list", [
         companyId,
         agentId ?? "all",
@@ -35423,6 +35484,7 @@ export function heartbeatService(
         actorShape ?? "all",
         wakeReason ?? "all",
         hasResult ? "with-result" : "all-results",
+        before?.toISOString() ?? "latest",
         agg?.rowCount ?? 0,
         agg?.maxUpdatedAt ?? null,
       ]);
@@ -35431,7 +35493,7 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean } = {},
+      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean; before?: Date } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -35463,11 +35525,13 @@ export function heartbeatService(
               ? sql`(${heartbeatRuns.contextWakeReason} = ${options.wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${options.wakeReason})`
               : sql`true`,
             options.hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+            options.before ? lt(heartbeatRuns.createdAt, options.before) : sql`true`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const effectiveLimit = Math.max(1, Math.min(1000, limit ?? 200));
+      const rows = await query.limit(effectiveLimit);
       return rows.map((row) => {
         const {
           contextIssueId,

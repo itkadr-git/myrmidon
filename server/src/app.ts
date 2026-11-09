@@ -138,6 +138,7 @@ import {
   bindModelProviderPluginLifecycle,
   myrmidonAgentExchangeRoutes,
   myrmidonAgentExchangeFeedRoutes,
+  myrmidonBillingWebhookRoutes,
   myrmidonBaselineRoutes,
   myrmidonBotEgressRoutes,
   myrmidonBotCanaryRoutes,
@@ -177,6 +178,7 @@ import {
   myrmidonOwnerDeliveryRoutes,
   reviewRoutingRoutes,
   reviewReworkRoutes,
+  goalJudgeRoutes,
   pluginEntitlementRoutes,
   licensingInstallIdRoutes,
   myrmidonLitellmBudgetSyncRoutes,
@@ -1253,6 +1255,7 @@ export async function createApp(
   api.use(myrmidonLitellmAuditRoutes(db)); // myrmidon(OPE-9857): LiteLLM settings audit log and safe rollback
   api.use(myrmidonAgentExchangeRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards
   api.use(myrmidonAgentExchangeFeedRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-B): owner feed + «to skill» candidate
+  api.use(myrmidonBillingWebhookRoutes(db)); // myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093): payment webhook event log
   api.use(myrmidonBaselineRoutes(db)); // myrmidon(1.6-BASELINE): cycle/review/return/blocked/run/cost metrics
   api.use(myrmidonBotEgressRoutes(db)); // myrmidon(EGRESS-B)
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
@@ -1297,6 +1300,7 @@ export async function createApp(
   api.use(myrmidonOwnerDeliveryRoutes(db)); // myrmidon(1.6.5-OWNER-DM-FILTER): GET/PATCH /api/myrmidon/owner-delivery
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
+  api.use(goalJudgeRoutes(db)); // myrmidon(1.7 GOAL-JUDGE): GET/PATCH /api/myrmidon/goal-judge
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
   api.use(licensingInstallIdRoutes(installIdProviderFor(db))); // myrmidon(LIC-ID-1): instance install ID
   api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
