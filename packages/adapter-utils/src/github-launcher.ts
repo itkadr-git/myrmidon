@@ -16,13 +16,79 @@ const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
+const gitWrapperPaths = new Set([
+  directory,
+  '/opt/paperclip/bin',
+  '/usr/local/bin',
+].map(p => { try { return fs.realpathSync(path.join(p, 'git')); } catch { return ''; } }).filter(Boolean));
+async function realGitExecutable() {
+  const configured = process.env.MYRMIDON_GIT_REAL;
+  if (configured) {
+    try {
+      const resolved = fs.realpathSync(path.resolve(configured));
+      if (!gitWrapperPaths.has(resolved)) return configured;
+    } catch {}
+  }
+  for (const dir of originalPath) {
+    const candidate = path.join(dir, 'git');
+    try {
+      if (!fs.statSync(candidate).isFile() || fs.accessSync(candidate, fs.constants.X_OK) !== undefined) continue;
+      if (gitWrapperPaths.has(fs.realpathSync(candidate))) continue;
+      // The incident (OPE-12510): a PATH git that re-executes this launcher on
+      // the origin-remote lookup loops the two shims until the PID limit kills
+      // the bot. A candidate must answer the incident command on its own
+      // (real git answers it; mocks that delegate pass; a re-executing wrapper
+      // fails) before it is trusted for the real command.
+      if (process.env.PAPERCLIP_GIT_PROBE_ACTIVE === '1') return candidate;
+      const probeEnv = { ...process.env, PAPERCLIP_GIT_PROBE_ACTIVE: '1', PAPERCLIP_GITHUB_OPERATION_ACTIVE: '1' };
+      const probe = spawn(candidate, ['config', '--get', 'remote.origin.url'], {
+        cwd: process.cwd(), env: probeEnv, stdio: ['ignore', 'ignore', 'ignore'],
+        // No spawn timeout here: it would signal only the direct child and
+        // orphan a looping candidate's descendants. The group kill below is
+        // the single owner of the probe deadline.
+        detached: true,
+      });
+      const pid = probe.pid;
+      let settled = false;
+      const verdict = new Promise((resolve) => {
+        probe.once('exit', (code) => { settled = true; resolve(code === 0 || code === 1); });
+        probe.once('error', () => { settled = true; resolve(false); });
+      });
+      const timer = setTimeout(() => {
+        if (settled || !pid) return;
+        try { process.kill(-pid, 'SIGKILL'); } catch { try { probe.kill('SIGKILL'); } catch {} }
+      }, 3000);
+      const safe = await verdict;
+      clearTimeout(timer);
+      if (!safe) continue;
+      return candidate;
+    } catch { continue; }
+  }
+  for (const candidate of ['/opt/paperclip/libexec/git', '/usr/bin/git']) {
+    try {
+      if (fs.statSync(candidate).isFile() && fs.accessSync(candidate, fs.constants.X_OK) === undefined) return candidate;
+    } catch {}
+  }
+  return '/opt/paperclip/libexec/git';
+}
+// Resolved once per invocation; the origin-remote lookup inside the broker
+// helpers reuses this answer so the probe never runs twice.
+const resolvedRealGit = { value: undefined };
+async function resolveRealGit() {
+  if (resolvedRealGit.value === undefined) resolvedRealGit.value = await realGitExecutable();
+  return resolvedRealGit.value;
+}
+let executable;
+if (program !== 'git') executable = originalPath.map(p => path.join(p, program)).find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
-if (!['git', 'gh'].includes(program) || !executable) {
+if (!['git', 'gh'].includes(program) || (program !== 'git' && !executable)) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
   process.exit(127);
 }
+// Re-entry guard: when already inside a wrapper/operation, never re-enter
+// broker resolution or nested wrapper logic. Run the real binary directly.
+const isReentrant = process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE === '1';
 ${githubBrokerCandidatesLauncherSource()}
 ${githubBrokerRepositoryLauncherSource()}
 function isPrCreate(args) {
@@ -69,6 +135,7 @@ function sanitizePrCreateBase(args) {
 }
 
 async function main() {
+  if (program === 'git') executable = await resolveRealGit();
   let env = { ...process.env };
   const diagnostic = (code) => {
     process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
@@ -158,6 +225,7 @@ async function main() {
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
   env.PATH = originalPath.join(path.delimiter);
+  env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = '1';
   // Nested shell aliases must not reload the parent launcher profile and
   // recapture a newer identity. All ordinary descendants stay in this operation.
   env.ZDOTDIR = configDirectory;
@@ -172,7 +240,17 @@ async function main() {
   child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
 }
-main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+if (isReentrant && program === 'git') {
+  // A nested invocation must bypass repository detection and the broker.
+  resolveRealGit().then((resolved) => {
+    const child = spawn(resolved, process.argv.slice(2), { env: process.env, stdio: 'inherit' });
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
+    child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
+    child.once('exit', (code) => { process.exitCode = code === null ? 128 : code; });
+  });
+} else {
+  main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+}
 `;
 }
 

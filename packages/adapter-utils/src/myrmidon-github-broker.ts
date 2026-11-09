@@ -318,13 +318,46 @@ function paperclipRepositoryFromGitArgs(args) {
   return { repository: null, cwd };
 }
 
-// The 'origin' remote of the working directory; the real git binary, never the
-// launcher itself (originalPath excludes the launcher's own directory).
+// The 'origin' remote of the working directory; never invoke a known wrapper.
+// MYRMIDON_GIT_REAL is operator-configurable, so validate it here too rather
+// than trusting the launcher to have performed the check for this code path.
+// The same wrapper paths the launcher rejects: the staged launcher directory
+// (its own git binary is the launcher), the image wrapper and its
+// /usr/local/bin shadow. The launcher resolves the real git once — with the
+// re-entry probe for unknown PATH entries — and stashes the answer in
+// 'resolvedRealGit'; this lookup reuses exactly that binary. The variable
+// 'directory' below is the launcher script's staged directory, set by the
+// surrounding launcher script.
+function paperclipRealGitExecutable(env) {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  if (typeof resolvedRealGit !== 'undefined' && resolvedRealGit && resolvedRealGit.value) return resolvedRealGit.value;
+  const configured = env && typeof env.MYRMIDON_GIT_REAL === 'string' ? env.MYRMIDON_GIT_REAL.trim() : '';
+  const wrapperPaths = new Set(['/opt/paperclip/bin/git', '/usr/local/bin/git'].map(p => {
+    try { return fs.realpathSync(p); } catch { return p; }
+  }));
+  if (typeof directory === 'string' && directory) {
+    const staged = path.join(directory, 'git');
+    try { wrapperPaths.add(fs.realpathSync(staged)); } catch { wrapperPaths.add(staged); }
+  }
+  if (configured) {
+    try {
+      const candidate = fs.realpathSync(path.resolve(configured));
+      if (!wrapperPaths.has(candidate)) return configured;
+    } catch {}
+  }
+  return '/opt/paperclip/libexec/git';
+}
+
 function paperclipRepositoryFromOrigin(cwd, env, originalPath) {
   try {
     const cp = require('node:child_process');
-    const result = cp.spawnSync('git', ['config', '--get', 'remote.origin.url'], {
-      cwd, env: Object.assign({}, env, { PATH: originalPath.join(require('node:path').delimiter) }),
+    const childEnv = Object.assign({}, env, {
+      PATH: originalPath.join(require('node:path').delimiter),
+      PAPERCLIP_GITHUB_OPERATION_ACTIVE: '1',
+    });
+    const result = cp.spawnSync(paperclipRealGitExecutable(env), ['config', '--get', 'remote.origin.url'], {
+      cwd, env: childEnv,
       encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
     });
     return result.status === 0 ? paperclipNormalizeRepository(result.stdout) : null;
