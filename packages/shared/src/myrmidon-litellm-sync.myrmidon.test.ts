@@ -178,6 +178,7 @@ describe("myrmidon(M2-B) fallback topology", () => {
       catalog,
     );
     expect(singleProvider.valid).toBe(false);
+    expect(singleProvider.reason).toBe("single_provider");
     expect(singleProvider.error).toContain("relies on a single provider");
 
     const diverse = validateFallbackDiversity(
@@ -207,6 +208,7 @@ describe("myrmidon(M2-B) fallback topology", () => {
       catalog,
     );
     expect(invalidOrder.valid).toBe(false);
+    expect(invalidOrder.reason).toBe("free_after_paid");
     expect(invalidOrder.warning).toContain("Free channel 'free-model' appears after paid channels");
 
     // Paid fallback on the same provider as primary model is forbidden
@@ -215,6 +217,7 @@ describe("myrmidon(M2-B) fallback topology", () => {
       catalog,
     );
     expect(sameProviderOrder.valid).toBe(false);
+    expect(sameProviderOrder.reason).toBe("paid_same_provider");
     expect(sameProviderOrder.error).toContain("uses the same provider (openai) as primary model");
 
     // Subsequent paid fallback on the same provider as an earlier paid fallback is forbidden
@@ -223,6 +226,7 @@ describe("myrmidon(M2-B) fallback topology", () => {
       catalog,
     );
     expect(repeatProviderOrder.valid).toBe(false);
+    expect(repeatProviderOrder.reason).toBe("paid_same_provider_repeat");
     expect(repeatProviderOrder.error).toContain("uses the same provider (anthropic) as an earlier paid fallback");
   });
 

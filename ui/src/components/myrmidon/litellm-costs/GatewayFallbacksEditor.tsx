@@ -296,11 +296,11 @@ export function GatewayFallbacksEditor({
           // Pool-backed groups are subscription channels: the LiteLLM catalog
           // carries the generic "openai" prefix for them, so the paid/single-
           // provider heuristics misfire. Their real provider is the pool type.
-          const diversity = isPoolChain
-            ? { valid: true, providers: [] as string[], error: undefined }
+          const diversity: { valid: boolean; error?: string; providers: string[]; reason?: string } = isPoolChain
+            ? { valid: true, providers: [] as string[], error: undefined, reason: undefined }
             : validateFallbackDiversity(chain, modelCatalog);
-          const orderValidation = isPoolChain
-            ? { valid: true as const, warning: undefined }
+          const orderValidation: { valid: boolean; error?: string; warning?: string; reason?: string } = isPoolChain
+            ? { valid: true, warning: undefined, reason: undefined }
             : validateFallbackOrder(chain, modelCatalog);
 
           return (
