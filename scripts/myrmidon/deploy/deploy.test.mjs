@@ -2252,11 +2252,12 @@ describe("deploy.sh: deploy lock against parallel runs (OPE-12335)", () => {
       });
     });
 
-    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"], null, {
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], null, {
       MYRMIDON_DEPLOY_LOCK_WAIT_SEC: "5",
     });
     assert.equal(code, 0, out);
     await new Promise((resolve) => holder.on("exit", resolve));
+    assert.match(out, /image check passed|Plan:|deploy scripts at/);
   });
 
   it("with MYRMIDON_DEPLOY_LOCK_WAIT_SEC, fails with 42 if lock remains held after timeout", async () => {
