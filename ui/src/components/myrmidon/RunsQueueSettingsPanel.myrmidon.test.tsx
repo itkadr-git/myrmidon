@@ -101,9 +101,10 @@ function setInputValue(input: HTMLInputElement, value: string) {
   });
 }
 
-function blurInput(element: HTMLElement) {
+function blurInput(element: HTMLInputElement) {
   act(() => {
-    element.dispatchEvent(new Event("blur", { bubbles: true }));
+    element.focus();
+    element.blur();
   });
 }
 
