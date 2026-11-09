@@ -190,8 +190,8 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
     });
     try {
       const driver = fleetdBotContainerDriver(config);
-      await driver.cleanup("bot-a");
-      await driver.cleanup("bot/a");
+      await driver.cleanup!("bot-a");
+      await driver.cleanup!("bot/a");
       expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
         "POST /v1/bots/bot-a/cleanup",
         "POST /v1/bots/bot%2Fa/cleanup",
@@ -208,8 +208,8 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
     });
     try {
       const driver = fleetdBotContainerDriver(config);
-      await expect(driver.cleanup("bot-a")).rejects.toBeInstanceOf(FleetdDriverError);
-      await expect(driver.cleanup("bot-a")).rejects.toThrow(/failed to remove container/);
+      await expect(driver.cleanup!("bot-a")).rejects.toBeInstanceOf(FleetdDriverError);
+      await expect(driver.cleanup!("bot-a")).rejects.toThrow(/failed to remove container/);
     } finally {
       server.close();
     }

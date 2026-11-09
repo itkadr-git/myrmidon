@@ -358,7 +358,7 @@ describe("myrmidon(IDLE-STOP) fleet routing — optional driver methods", () => 
     it("a bot on a site goes to that site's cleanup (OPE-12477)", async () => {
       const fleetA = fullRecordingDriver("fleet-a");
       const { local, routed } = twoHosts(fleetA);
-      await routed.cleanup("bot-fleet");
+      await routed.cleanup!("bot-fleet");
       expect(fleetA.calls).toEqual(["fleet-a:cleanup:bot-fleet"]);
       expect(local.calls).toEqual([]);
     });
@@ -367,7 +367,7 @@ describe("myrmidon(IDLE-STOP) fleet routing — optional driver methods", () => 
       const fleetA = plainDriver("fleet-a");
       delete (fleetA as Partial<Recording>).cleanup;
       const { local, routed } = twoHosts(fleetA);
-      await expect(routed.cleanup("bot-fleet")).rejects.toThrow(CLEANUP_UNSUPPORTED_MESSAGE);
+      await expect(routed.cleanup!("bot-fleet")).rejects.toThrow(CLEANUP_UNSUPPORTED_MESSAGE);
       expect(fleetA.calls).toEqual([]);
       expect(local.calls).toEqual([]);
     });
