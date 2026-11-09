@@ -960,7 +960,7 @@ function ProviderCard({
 
                   <div>
                     <label className="text-[11px] font-medium text-muted-foreground">
-                      {t("modelProviders.channels.accountLabel") || "Метка (Label)"}
+                      {t("modelProviders.channels.accountLabel") || "Метка"}
                     </label>
                     <Input
                       value={accountLabel}

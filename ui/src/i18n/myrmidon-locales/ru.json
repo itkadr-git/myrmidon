@@ -1820,7 +1820,7 @@
       "oauthRefresh": "Обновить",
       "addAccount": "Подключить аккаунт Codex (OAuth)",
       "connectCodexOAuth": "Подключение аккаунта Codex по OAuth",
-      "accountLabel": "Метка (Label)",
+      "accountLabel": "Метка",
       "accountEmail": "Email (опционально)",
       "delete": "Удалить",
       "accountFallback": "Учётка №{{n}}",
