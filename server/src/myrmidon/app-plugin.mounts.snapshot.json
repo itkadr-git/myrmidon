@@ -142,6 +142,7 @@
   "api.use(myrmidonLitellmChannelsRoutes(db))",
   "api.use(agentInstructionsRevisionsRoutes(db))",
   "api.use(myrmidonFleetConsoleRoutes(db))",
+  "api.use(myrmidonOnboardRoutes(db))",
   "api.use(myrmidonFleetMoveRoutes(db, opts.fleetClientManager))",
   "api.use(myrmidonFleetSiteRoutes(db))",
   "api.use(siteHealthRoutes(db))",
