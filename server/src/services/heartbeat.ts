@@ -7761,6 +7761,11 @@ export async function resolveExternalChatWakeProvider(input: {
     return null;
   }
 
+  const validCommentIds = commentIds.filter(isValidWakeCommentId);
+  if (validCommentIds.length === 0) {
+    return null;
+  }
+
   const links = await input.db
     .select({
       commentId: chatMessageLinks.commentId,
@@ -7786,7 +7791,7 @@ export async function resolveExternalChatWakeProvider(input: {
       and(
         eq(chatMessageLinks.companyId, input.companyId),
         eq(chatMessageLinks.direction, "inbound"),
-        inArray(chatMessageLinks.commentId, commentIds),
+        inArray(chatMessageLinks.commentId, validCommentIds),
         eq(chatConversations.issueId, input.issueId),
         inArray(chatConversations.state, ["active", "waiting"]),
         eq(chatEndpoints.provider, provider),
@@ -19612,6 +19617,52 @@ export function heartbeatService(
                   ? { kind: "claimed" as const, run: claimedRun }
                   : { kind: "stale" as const, run: null };
               }
+              const validAuthoritativeIds = authoritativeIds.filter(isValidWakeCommentId);
+              if (validAuthoritativeIds.length === 0) {
+                // If every queued comment ID was malformed, treat them as discarded
+                // so the queue does not choke on invalid UUIDs.
+                const reason = "Queued messages contained invalid comment identifiers";
+                const [cancelled] = await tx
+                  .update(heartbeatRuns)
+                  .set({
+                    status: "cancelled",
+                    finishedAt: claimedAt,
+                    error: reason,
+                    errorCode: "queued_comment_discarded",
+                    updatedAt: claimedAt,
+                  })
+                  .where(
+                    and(
+                      eq(heartbeatRuns.id, lockedRun.id),
+                      eq(heartbeatRuns.status, "queued"),
+                    ),
+                  )
+                  .returning();
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    status: "cancelled",
+                    finishedAt: claimedAt,
+                    error: reason,
+                    updatedAt: claimedAt,
+                  })
+                  .where(eq(agentWakeupRequests.id, wake.id));
+                await tx
+                  .update(issues)
+                  .set({
+                    executionRunId: null,
+                    executionAgentNameKey: null,
+                    executionLockedAt: null,
+                    updatedAt: claimedAt,
+                  })
+                  .where(
+                    and(
+                      eq(issues.id, issueId),
+                      eq(issues.executionRunId, lockedRun.id),
+                    ),
+                  );
+                return { kind: "stale" as const, run: cancelled ?? null };
+              }
               const commentRows = await tx
                 .select({
                   id: issueComments.id,
@@ -19622,10 +19673,10 @@ export function heartbeatService(
                   and(
                     eq(issueComments.companyId, run.companyId),
                     eq(issueComments.issueId, issueId),
-                    inArray(issueComments.id, authoritativeIds),
+                    inArray(issueComments.id, validAuthoritativeIds),
                   ),
                 );
-              const liveIds = authoritativeIds.filter((commentId) => {
+              const liveIds = validAuthoritativeIds.filter((commentId) => {
                 const comment = commentRows.find((row) => row.id === commentId);
                 return Boolean(comment && !comment.deletedAt);
               });
@@ -32452,27 +32503,28 @@ export function heartbeatService(
           // flag; here the flag is computed from the comment row itself,
           // so the wake only passes when the live comment really is a
           // person's mention of this agent.
+          const candidateCommentId = wakeCommentId && isValidWakeCommentId(wakeCommentId) ? wakeCommentId : null;
           const userCommentMentionsWokenAgentFlag =
-            wakeCommentId &&
+            candidateCommentId &&
             opts.requestedByActorType === "user" &&
             opts.requestedByActorId
               ? await userCommentMentionsWokenAgent(tx as unknown as Db, {
                   companyId: issue.companyId,
                   issueId: issue.id,
                   agentId,
-                  commentId: wakeCommentId,
+                  commentId: candidateCommentId,
                   requestedByActorType: opts.requestedByActorType,
                   requestedByActorId: opts.requestedByActorId,
                 })
               : false;
           const wakeBypassesSettledHold = (bypassesSettledHold({
-            source, triggerDetail, reason, commentId: wakeCommentId ?? null,
+            source, triggerDetail, reason, commentId: candidateCommentId,
             requestedByActorType: opts.requestedByActorType ?? null,
             userCommentMentionsWokenAgent: userCommentMentionsWokenAgentFlag,
           }) || chatOwnerMessage) && Boolean(opts.requestedByActorId);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
-            { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null,
+            { conversationResetCommentId: opts.requestedByActorType === "user" ? candidateCommentId : null,
               // myrmidon(L2): an explicitly authorized wake ignores a settled
               // "do not replay" hold.
               explicitWake: wakeBypassesSettledHold },
@@ -32482,7 +32534,7 @@ export function heartbeatService(
           if (executionBlocker && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
-            reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
+            reason, commentId: candidateCommentId, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
             dryRun: true,
@@ -33984,10 +34036,11 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
+          const safeContinuationCommentId = wakeCommentId && isValidWakeCommentId(wakeCommentId) ? wakeCommentId : null;
           const explicitContinuation = await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
-            reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
+            reason, commentId: safeContinuationCommentId, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
           });
@@ -33996,7 +34049,7 @@ export function heartbeatService(
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
-          } else if (chatOwnerMessage && opts.requestedByActorId && wakeCommentId) {
+          } else if (chatOwnerMessage && opts.requestedByActorId && safeContinuationCommentId) {
             // myrmidon(CHAT-HOLD): lift the chat's settled hold with this
             // successor run, record it in the activity log, and return a chat
             // the recovery moved to `blocked` to `todo`.
@@ -34005,7 +34058,7 @@ export function heartbeatService(
               issueStatus: issue.status,
               successorRunId: explicitContinuationRunId,
               requestedByActorId: opts.requestedByActorId,
-              commentId: wakeCommentId,
+              commentId: safeContinuationCommentId,
             });
           } else if (wakeBypassesSettledHold && opts.requestedByActorId) {
             // myrmidon(L2, round 1 fix): an explicit wake with no message of

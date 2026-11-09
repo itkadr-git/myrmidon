@@ -58,7 +58,7 @@ export async function undeliveredLegacyUserCommentIds(
     // native identity/process metadata is not proof that its prompt was sent.
     // Admission separately verifies process termination before a new turn.
     sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null)`,
-    or(...commentIds.map(id => or(
+    or(...validIds.map(id => or(
       sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
       sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,
     ))),
@@ -69,7 +69,7 @@ export async function undeliveredLegacyUserCommentIds(
       for (const id of context.wakeCommentIds) if (typeof id === "string") valid.delete(id);
     }
   }
-  return commentIds.filter(id => valid.has(id));
+  return validIds.filter(id => valid.has(id));
 }
 
 /** Called under the issue lock, in the transaction that creates the new turn.
