@@ -266,7 +266,7 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
       err.body = { error: { message, code: 429 } };
       const result = errorResult(err);
       expect(result.errorFamily).toBe("provider_quota");
-      expect(result.resultJson.cooldown).toBe(true);
+      expect(result.resultJson?.cooldown).toBe(true);
       expect(result.retryNotBefore).not.toBeNull();
       const retryDate = new Date(result.retryNotBefore!).getTime();
       expect(Number.isNaN(retryDate)).toBe(false);
@@ -284,7 +284,7 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
     err.body = { error: { message: "gateway busy", code: 429 } };
     const result = errorResult(err);
     expect(result.errorFamily).toBe("transient_upstream");
-    expect(result.resultJson.cooldown).toBeUndefined();
+    expect(result.resultJson?.cooldown).toBeUndefined();
   });
 
   it("stopGatewayRunForBoard posts a bounded stop for an unsupervised run", async () => {

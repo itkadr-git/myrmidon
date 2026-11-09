@@ -2487,6 +2487,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         errorCode: "hermes_gateway_rate_limited",
         errorFamily: "transient_upstream",
         retryNotBefore: retryAfterDate.toISOString(),
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
       },
     });
 
@@ -2514,6 +2515,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         status: "failed",
         errorCode: "hermes_gateway_rate_limited",
         errorFamily: "transient_upstream",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
       },
     });
 
