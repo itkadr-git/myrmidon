@@ -2710,7 +2710,10 @@ export function resolvePnpmInstallInvocation(
   return { command: "pnpm", argsPrefix: [] };
 }
 
-function installDependenciesBestEffort(targetPath: string): void {
+export function installDependenciesBestEffort(targetPath: string): void {
+  if (!existsSync(path.resolve(targetPath, "package.json"))) {
+    return;
+  }
   const installSpinner = p.spinner();
   installSpinner.start("Installing dependencies...");
   const pnpm = resolvePnpmInstallInvocation();
