@@ -12,6 +12,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setLanguage } from "@/i18n";
 import { ModelProvidersScreenView } from "./ModelProvidersScreen";
 import {
   modelProvidersApi,
@@ -754,6 +755,95 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     expect(confirmBtn).not.toBeNull();
     await act(async () => confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onRollback).toHaveBeenCalledWith("audit-1");
+  });
+
+  describe("myrmidon(OPE-12361): Russian locale strings and pool counters", () => {
+    beforeEach(() => {
+      setLanguage("ru");
+    });
+
+    afterEach(() => {
+      setLanguage("en");
+    });
+
+    it("renders table headers, pool status badges, counters, and no OAuth button on antigravity pool in Russian", async () => {
+      const antiView: ModelProvidersView = {
+        providers: [
+          {
+            id: "prov-antigravity",
+            type: "antigravity-pool",
+            name: "Antigravity Pool",
+            baseUrl: "https://antigravity.test",
+            hasKey: true,
+            free: true,
+            createdAt: "2026-10-01T10:00:00.000Z",
+            updatedAt: "2026-10-02T12:00:00.000Z",
+          },
+        ],
+        changeLog: [],
+      };
+
+      const channelsData = {
+        providerId: "prov-antigravity",
+        providerType: "antigravity-pool",
+        channels: [
+          {
+            n: 1,
+            label: "Acc 1",
+            state: "active" as const,
+            stateRu: "Активен",
+            windows: { primary: { usedPct: 10 } },
+          },
+          {
+            n: 2,
+            label: "Acc 2",
+            state: "error" as const,
+            stateRu: "Ошибка",
+            error: "TOS violation",
+            windows: { primary: { usedPct: 0 } },
+          },
+        ],
+        summary: {
+          total: 2,
+          live: 1,
+          exhausted: 0,
+          disabled: 0,
+          error: 1,
+          nextResetAt: null,
+          nextResetText: null,
+        },
+        signals: [
+          {
+            role: "editor",
+            level: "warn" as const,
+            reason: "low_live_ratio",
+            message: "Only 1 live account remaining",
+          },
+        ],
+      };
+
+      const { root: r } = render({
+        view: antiView,
+        channelsData,
+      });
+      root = r;
+      await flushReact();
+
+      const text = container.textContent ?? "";
+      // Russian headers and pool badges
+      expect(text).toContain("Тариф");
+      expect(text).toContain("Действия");
+      expect(text).toContain("1 активно / 2 всего");
+      expect(text).toContain("1 в ошибке");
+      // Antigravity pool MUST NOT show Codex OAuth Login button
+      expect(text).not.toContain("Codex OAuth Login");
+      expect(text).not.toContain("Войти через Codex OAuth");
+      // Signals should be rendered in Russian
+      expect(text).toContain("Мало активных учёток в пуле");
+      // No raw unparsed keys
+      expect(text).not.toContain("modelProviders.channels.plan");
+      expect(text).not.toContain("modelProviders.channels.actions");
+    });
   });
 
 });
