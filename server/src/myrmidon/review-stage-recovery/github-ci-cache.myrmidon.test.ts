@@ -71,10 +71,12 @@ function openPull(sha: string): Handler {
   return () => json({ state: "open", head: { sha } });
 }
 
-const completedFinalCheck: Handler = () =>
-  json({ check_runs: [{ name: "CI result", head_sha: "abc123", status: "completed", conclusion: "success" }] });
-const queuedFinalCheck: Handler = () =>
-  json({ check_runs: [{ name: "CI result", head_sha: "def456", status: "queued", conclusion: null }] });
+function completedFinalCheck(sha = "abc123"): Response {
+  return json({ check_runs: [{ name: "CI result", head_sha: sha, status: "completed", conclusion: "success" }] });
+}
+function queuedFinalCheck(sha = "def456"): Response {
+  return json({ check_runs: [{ name: "CI result", head_sha: sha, status: "queued", conclusion: null }] });
+}
 
 /** A PR whose head `abc123` has a finished CI. */
 function completeGithub() {
@@ -137,7 +139,7 @@ describe("resolvePullRequestHeadCi: read cache", () => {
     let finished = false;
     const fetch = githubFetch({
       [pullPath(8)]: openPull("def456"),
-      [finalCheckPath("def456")]: () => (finished ? completedFinalCheck() : queuedFinalCheck()),
+      [finalCheckPath("def456")]: () => (finished ? completedFinalCheck("def456") : queuedFinalCheck("def456")),
     });
 
     const pending = await readCi(fetch, 8);
