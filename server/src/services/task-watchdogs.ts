@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   agentWakeupRequests,
@@ -14,6 +14,7 @@ import {
   issueThreadInteractions,
   issueWatchdogs,
   issueWorkProducts,
+  activityLog,
 } from "@myrmidon/db";
 import type { IssueWatchdog, IssueWatchdogSummary } from "@myrmidon/shared";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -41,6 +42,17 @@ const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed
 // false-positive stopped-subtree review. The periodic watchdog reconciler
 // re-evaluates after the window, so a genuinely idle issue still triggers.
 const TASK_WATCHDOG_FIRST_RUN_GRACE_MS = 15_000;
+// myrmidon(OPERATOR-BUDGET / OPE-3008): when an operator deliberately parks a
+// subtree leaf (or the watchdog review itself) in `backlog`, that is a settled
+// human decision, not stalled automation. The classifier treats such leaves as
+// operator-settled instead of stopped work, and repeated watchdog wakeups for
+// the exact same stop fingerprint are held down by a cooldown so one parked
+// situation cannot burn dozens of `swarm_matched` runs per day.
+const TASK_WATCHDOG_OPERATOR_BACKLOG_STATUSES = ["backlog"] as const;
+// Same-fingerprint re-wake cooldown for reviews that keep cycling (for
+// example, a stale in_review review reopened again and again). Overridable in
+// tests via the classifier input; production sweeps use the default.
+export const TASK_WATCHDOG_REWAKE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 type ActorFields = {
   agentId?: string | null;
@@ -69,6 +81,7 @@ export type TaskWatchdogClassifierIssue = Pick<
   | "assigneeUserId"
   | "originKind"
   | "updatedAt"
+  | "createdByUserId"
 > & {
   // Optional so existing callers/tests that do not care about the first-run
   // grace window keep working; the pending-first-run guard is skipped when
@@ -186,6 +199,12 @@ export type TaskWatchdogClassifierResult =
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
     stopSnapshot: TaskWatchdogStopSnapshot;
     pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
+  }
+  | {
+    state: "operator_backlog";
+    reason: string;
+    includedIssueIds: string[];
+    operatorBacklogIssueIds: string[];
   };
 
 export type TaskWatchdogClassifierInput = {
@@ -207,6 +226,14 @@ export type TaskWatchdogClassifierInput = {
   // Such issues are never treated as "pending first run" — they have
   // demonstrably executed, so a stop is genuine rather than a snapshot race.
   completedRunIssueIds?: string[];
+  // myrmidon(OPERATOR-BUDGET / OPE-3008): included issue ids whose latest
+  // status change to `backlog` was authored by an operator decision (a human
+  // user, not an agent or the system). Such leaves are a settled human
+  // disposition: they stop counting as stopped work. Omit for legacy
+  // behavior (backlog always counts as stopped).
+  operatorBacklogIssueIds?: string[];
+  // Cooldown window (ms) for same-fingerprint re-wakes; 0/null disables it.
+  rewakeCooldownMs?: number | null;
 };
 
 type TaskWatchdogWakeupOptions = {
@@ -283,6 +310,29 @@ function toEpochMs(value: Date | string | null | undefined): number | null {
   if (value == null) return null;
   const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
   return Number.isFinite(ms) ? ms : null;
+}
+
+// myrmidon(OPERATOR-BUDGET / OPE-3008): a watchdog that already woke for the
+// exact same stop fingerprint must not wake again inside the cooldown window —
+// one situation = one review wake, not dozens of `swarm_matched` runs a day.
+// Exported pure so unit tests can pin the decision without an embedded
+// Postgres scheduler run. Only a same-fingerprint re-wake inside the window
+// counts; a changed fingerprint, a never-triggered watchdog, or a disabled
+// cooldown (<= 0) all allow the wake.
+export function rewakeCooldownActive(params: {
+  lastTriggeredAt: Date | string | null | undefined;
+  lastObservedFingerprint: string | null | undefined;
+  stopFingerprint: string;
+  cooldownMs: number | null | undefined;
+  nowMs?: number;
+}): boolean {
+  const cooldownMs = params.cooldownMs ?? 0;
+  if (cooldownMs <= 0) return false;
+  if (params.lastObservedFingerprint !== params.stopFingerprint) return false;
+  const lastTriggeredMs = toEpochMs(params.lastTriggeredAt);
+  if (lastTriggeredMs == null) return false;
+  const nowMs = params.nowMs ?? Date.now();
+  return nowMs - lastTriggeredMs < cooldownMs;
 }
 
 function pathIssueIds(paths: TaskWatchdogClassifierPath[] | undefined, companyId: string) {
@@ -462,6 +512,30 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     list.push(issue.id);
     includedChildrenByParentId.set(issue.parentId, list);
   }
+
+  const operatorBacklogIssueIds = new Set(input.operatorBacklogIssueIds ?? []);
+  const stoppedBacklogIssueIds = included
+    .filter((issue) => issue.status === "backlog" && operatorBacklogIssueIds.has(issue.id))
+    .map((issue) => issue.id)
+    .sort();
+  // An operator deliberately parked every non-terminal leaf. This is a
+  // settled disposition, not a stopped subtree: return before constructing a
+  // stopped fingerprint so reconcile cannot create/reopen a review or wake.
+  if (stoppedBacklogIssueIds.length > 0) {
+    const nonBacklogLeaves = included.filter((issue) =>
+      (includedChildrenByParentId.get(issue.id) ?? []).length === 0 &&
+      issue.status !== "backlog" &&
+      !isTerminalIssueStatus(issue.status),
+    );
+    if (nonBacklogLeaves.length === 0) {
+      return {
+        state: "operator_backlog",
+        reason: "Every non-terminal leaf was deliberately moved to backlog by an operator; watchdog intervention is not required.",
+        includedIssueIds: includedIds,
+        operatorBacklogIssueIds: stoppedBacklogIssueIds,
+      };
+    }
+  }
   const blockersByIssueId = new Map<string, string[]>();
   for (const relation of input.blockers ?? []) {
     if (relation.companyId !== input.watchdog.companyId) continue;
@@ -506,6 +580,14 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestDocumentAt: optionalIso(issue.latestDocumentAt),
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
     }));
+  if (hasLegitimateIdleDisposition(leaves)) {
+    return {
+      state: "live",
+      reason: "All leaf issues have a legitimate idle disposition (todo + assignee + clean lease + empty blockers/interactions).",
+      includedIssueIds: includedIds,
+      liveIssueIds: leaves.map((leaf) => leaf.issueId),
+    };
+  }
   const materialLeaves = leaves.map(materialLeaf);
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
@@ -614,6 +696,16 @@ function stopFingerprintFromText(value: string | null | undefined) {
 
 function reviewedFingerprintForWatchdogIssue(issue: Pick<IssueRow, "originFingerprint" | "description">) {
   return normalizeStopFingerprint(issue.originFingerprint) ?? stopFingerprintFromText(issue.description);
+}
+
+function hasLegitimateIdleDisposition(leaves: TaskWatchdogStoppedLeaf[]) {
+  return leaves.length > 0 && leaves.every((leaf) =>
+    leaf.status === "todo" &&
+    Boolean(leaf.assigneeAgentId || leaf.assigneeUserId) &&
+    leaf.blockerIssueIds.length === 0 &&
+    leaf.pendingInteractionIds.length === 0 &&
+    leaf.pendingApprovalIds.length === 0
+  );
 }
 
 function taskWatchdogWakeIdempotencyKey(watchdogId: string, stopFingerprint: string) {
@@ -880,6 +972,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           origin_kind,
           updated_at,
           created_at,
+          created_by_agent_id,
+          created_by_user_id,
           0 AS depth
         FROM issues
         WHERE company_id = ${companyId}
@@ -899,6 +993,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           child.origin_kind,
           child.updated_at,
           child.created_at,
+          child.created_by_agent_id,
+          child.created_by_user_id,
           watched_issues.depth + 1
         FROM issues child
         JOIN watched_issues ON child.parent_id = watched_issues.id
@@ -919,7 +1015,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         assignee_user_id AS "assigneeUserId",
         origin_kind AS "originKind",
         updated_at AS "updatedAt",
-        created_at AS "createdAt"
+        created_at AS "createdAt",
+        created_by_agent_id AS "createdByAgentId",
+        created_by_user_id AS "createdByUserId"
       FROM watched_issues
     `);
 
@@ -954,6 +1052,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       commentActivityRows,
       documentActivityRows,
       workProductActivityRows,
+      operatorActivityRows,
     ] = await Promise.all([
       db
         .select({
@@ -1078,10 +1177,24 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueWorkProducts.issueId, subtreeIssueIds),
         ))
         .groupBy(issueWorkProducts.issueId),
+      db
+        .select({ entityId: activityLog.entityId })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          inArray(activityLog.entityId, subtreeIssueIds),
+          eq(activityLog.actorType, "user"),
+        )),
     ]);
     const latestCommentByIssueId = new Map(commentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestDocumentByIssueId = new Map(documentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestWorkProductByIssueId = new Map(workProductActivityRows.map((row) => [row.issueId, row.latestAt]));
+    const operatorActivityIssueIds = new Set(operatorActivityRows.map((row) => row.entityId));
+    const operatorBacklogIssueIds = issueRows
+      .filter((issue) => issue.status === "backlog" && (issue.createdByUserId != null || operatorActivityIssueIds.has(issue.id)))
+      .map((issue) => issue.id)
+      .sort();
 
     const evaluatedAt = new Date();
     const evaluatedAtMs = evaluatedAt.getTime();
@@ -1126,6 +1239,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       evaluatedAt,
       firstRunGraceMs: TASK_WATCHDOG_FIRST_RUN_GRACE_MS,
       completedRunIssueIds,
+      operatorBacklogIssueIds,
+      rewakeCooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
     } satisfies TaskWatchdogClassifierInput;
   }
 
@@ -1461,6 +1576,17 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       watchdog.companyId,
       sourceIssue.id,
     ))?.id ?? null;
+    const existingWatchdogIssue = existingWatchdogIssueId
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, watchdog.companyId),
+          eq(issues.id, existingWatchdogIssueId),
+          visibleIssueCondition(),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
     if (existingWatchdogIssueId && await hasLivePathForIssue(watchdog.companyId, existingWatchdogIssueId)) {
       await db
         .update(issueWatchdogs)
@@ -1473,17 +1599,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(eq(issueWatchdogs.id, watchdog.id));
       return { state: "watchdog_live" as const, classification, watchdogIssueId: existingWatchdogIssueId };
     }
-    const existingWatchdogIssue = existingWatchdogIssueId
-      ? await db
-        .select()
-        .from(issues)
-        .where(and(
-          eq(issues.companyId, watchdog.companyId),
-          eq(issues.id, existingWatchdogIssueId),
-          visibleIssueCondition(),
-        ))
-        .then((rows) => rows[0] ?? null)
-      : null;
     if (await sameFingerprintWatchdogReviewIsStillOpen(existingWatchdogIssue, classification.stopFingerprint)) {
       if (
         watchdog.watchdogIssueId !== existingWatchdogIssue!.id ||
@@ -1504,6 +1619,19 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         state: "watchdog_review_open" as const,
         classification,
         watchdogIssueId: existingWatchdogIssue!.id,
+      };
+    }
+    const lastTriggeredFingerprint = existingWatchdogIssue?.originFingerprint ?? watchdog.lastObservedFingerprint;
+    if (rewakeCooldownActive({
+      lastTriggeredAt: watchdog.lastTriggeredAt,
+      lastObservedFingerprint: lastTriggeredFingerprint,
+      stopFingerprint: classification.stopFingerprint,
+      cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
+    })) {
+      return {
+        state: "skipped" as const,
+        reason: "rewake_cooldown",
+        classification,
       };
     }
 

@@ -32,6 +32,9 @@ func testClientTLS() *tls.ConnectionState {
 	return &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
 }
 
+// testBoardExtraHost is the board address the test site is configured with.
+const testBoardExtraHost = "board.example.test:192.0.2.1"
+
 func testConfig() *config {
 	cfg := &config{
 		SiteId:        "myr-vm1",
@@ -45,6 +48,8 @@ func testConfig() *config {
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
 	}
+	// The board address of the site: fleetd takes it from here, not from a spec.
+	cfg.BoardExtraHost = testBoardExtraHost
 	return cfg
 }
 
@@ -137,7 +142,14 @@ func newServerWithDocker(t *testing.T) (*server, *httptest.Server, *fakeDocker) 
 	fake := &fakeDocker{containers: map[string]map[string]any{}}
 	cfg := testConfig()
 	cfg.VolumeRoot = t.TempDir()
-	socket := filepath.Join(t.TempDir(), "docker.sock")
+	// A unix socket path is limited to about 107 bytes. t.TempDir() carries the
+	// name of the test, which is too long for a subtest with a long name.
+	sockDir, err := os.MkdirTemp("", "fd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	socket := filepath.Join(sockDir, "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)

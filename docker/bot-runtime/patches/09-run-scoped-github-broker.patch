@@ -1,5 +1,5 @@
 diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
-index fc389b3..ae87615 100644
+index fc389b3..cadf8bf 100644
 --- a/gateway/platforms/api_server_runs.py
 +++ b/gateway/platforms/api_server_runs.py
 @@ -453,6 +453,12 @@ class _RunLaunch:
@@ -72,10 +72,10 @@ index fc389b3..ae87615 100644
              # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
              session_tokens = self._bind_api_server_session(
 diff --git a/tools/environments/local.py b/tools/environments/local.py
-index 89a06ee..48607c0 100644
+index 89a06ee..7c99cea 100644
 --- a/tools/environments/local.py
 +++ b/tools/environments/local.py
-@@ -238,6 +238,29 @@ def _inject_session_context_env(env: dict) -> None:
+@@ -238,6 +238,42 @@ def _inject_session_context_env(env: dict) -> None:
              env[var_name] = "" if value is None else str(value)
          elif _engaged:
              env.pop(var_name, None)
@@ -90,6 +90,19 @@ index 89a06ee..48607c0 100644
 +    bound = github_broker_bound()
 +    if bound:
 +        env.update(github_broker_env())
++        # myrmidon(G1): name this run's credential-cache directory so
++        # the helpers reuse a still-valid token instead of minting one per
++        # git/gh call. Derived from this run's scratch root, which is already
++        # unique per run and cleaned up with the run: entries never outlive
++        # the run on disk.
++        cache_root = "/".join(
++            part for part in (
++                os.environ.get("PAPERCLIP_RUN_SCRATCH_DIR", "")
++                or os.environ.get("PAPERCLIP_SCRATCH_DIR", "")
++            ).strip().split("/") if part
++        )
++        if cache_root:
++            env["PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR"] = "/" + cache_root
 +        # A broker capability is present, so managed GitHub credentials are in
 +        # charge: blank any inherited card/profile token (GH_TOKEN/GITHUB_TOKEN
 +        # plus the other keys the board's launcher blanks) so a dead or stale

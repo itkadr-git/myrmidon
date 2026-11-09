@@ -90,6 +90,14 @@ import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { claimRunForSiteLost } from "../myrmidon/site-lost-claim.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
+// myrmidon(GATEWAY-SLOT-RECONCILE, OPE-11888): before a gateway agent's next
+// run is admitted, stop gateway runs the board has finalized but the gateway
+// still keeps alive — a leaked max_concurrent_runs slot otherwise answers the
+// next POST /v1/runs with 429 "Too many concurrent runs".
+import {
+  reconcileGatewaySlotsOnRunStart,
+  type GatewaySlotReconcilePort,
+} from "../myrmidon/gateway-slot-reconcile.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
@@ -8386,7 +8394,7 @@ export async function buildPaperclipWakePayload(input: {
   let pullRequestsCi: PullRequestCiResult[] = [];
   if (issueId) {
     try {
-      const ciResolver = createPullRequestCiResolver(input.db);
+      const ciResolver = createPullRequestCiResolver(input.db, { source: "run-context" });
       pullRequestsCi = await withCiResolveDeadline(
         ciResolver.resolveForIssue(input.companyId, issueId),
         [],
@@ -13901,6 +13909,15 @@ export function heartbeatService(
     if (isNativeRunnerOwnershipHeld(run)) return run;
     if (isHeartbeatRunTerminalStatus(run.status)) return run;
     if (run.status !== "running" && run.status !== "queued") return run;
+    // A queued run that still carries a scheduled retry has not started yet: it
+    // sits in the queued pool until dispatch claims it. promoteDueRetryInTx
+    // moves scheduled_retry -> queued and keeps scheduled_retry_at populated
+    // through that window. Forcing such a row to interrupted /
+    // lease_released_before_terminal burns the scheduled retry, so the wake-up
+    // is lost and the retry never runs. Leave the row for the dispatcher.
+    // A claimed run has status "running" by then, so this does not spare a
+    // genuinely live run from terminalization.
+    if (run.status === "queued" && run.scheduledRetryAt != null) return run;
 
     // Choose the terminal status that reflects the true outcome. When the issue
     // already reached a terminal status, the run reached its goal, so use the
@@ -20564,6 +20581,10 @@ export function heartbeatService(
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   async function pickupReviewForAgent(agent: { id: string; companyId: string }, excludeIssueId?: string) {
     let woken = 0;
+    // OPE-12445: the sweep's pass log reports `considered` per lane; count the
+    // review lane's own candidates so its slice of the agent's queue is not
+    // reported as zero while the lane owns the pass.
+    let considered = 0;
     const handled = await pickupNextReview({
       serialize: async (work) => {
         const [candidateExists] = await db.select({ id: issues.id }).from(issues).where(and(
@@ -20615,7 +20636,10 @@ export function heartbeatService(
         sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
         sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
         sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
-      )),
+      )).then(async (rows) => {
+        considered = rows.length;
+        return rows;
+      }),
       wake: async (candidate) => {
         if (!idleWakeBudget.tryConsume(agent.companyId)) return null;
         const result = await enqueueWakeup(agent.id, {
@@ -20631,7 +20655,7 @@ export function heartbeatService(
         return result;
       },
     }, { excludeIssueId });
-    return { handled, woken };
+    return { handled, woken, considered };
   }
 
   const idlePickupSweeper = createIdlePickupSweeper({
@@ -23564,6 +23588,45 @@ export function heartbeatService(
           );
           scheduleAdmissionResweep();
           return [];
+        }
+      }
+
+      // myrmidon(GATEWAY-SLOT-RECONCILE, OPE-11888): the queue is about to be
+      // admitted — the last moment to free gateway slots the board already
+      // finalized. Best-effort and throttled per agent; a failure here never
+      // holds the run. Only hermes_gateway agents match inside the sweep
+      // (other adapters return immediately). Queued/running runs are never
+      // stopped — the board still owns them (the reattach sweep supervises
+      // their gateway liveness), which is the "do not abort a live leased
+      // run" invariant of OPE-11888.
+      if (agent.adapterType === "hermes_gateway") {
+        const gatewaySlotPort: GatewaySlotReconcilePort = {
+          probeGatewayRun: probeRemoteGatewayRun,
+          stopGatewayRunForBoard: async (input) => {
+            const stopped = await stopRemoteGatewayRun({
+              companyId: input.companyId,
+              agentId: input.agentId,
+              runId: input.runId,
+              adapterConfig: input.adapterConfig,
+              gatewayRunId: input.gatewayRunId,
+              cancellation: input.cancellation,
+            });
+            return stopped;
+          },
+        };
+        const slotSweep = await reconcileGatewaySlotsOnRunStart(db, gatewaySlotPort, agentId);
+        if (slotSweep && slotSweep.stopped > 0) {
+          await appendRunEvent(queuedRuns[0], {
+            eventType: "gateway_slot_reconciled",
+            stream: "system",
+            level: "info",
+            message: `gateway slot reconcile before run start: freed ${slotSweep.stopped} leaked gateway slot(s)`,
+            payload: {
+              stopped: slotSweep.stopped,
+              gatewayRunIds: slotSweep.stoppedRunIds.map((r) => r.gatewayRunId),
+              reason: "freed leaked gateway slots before run start (OPE-11888)",
+            },
+          }).catch(() => undefined);
         }
       }
 
@@ -33571,6 +33634,7 @@ export function heartbeatService(
               .select({
                 id: heartbeatRuns.id,
                 status: heartbeatRuns.status,
+                errorCode: heartbeatRuns.errorCode,
                 finishedAt: heartbeatRuns.finishedAt,
                 contextSnapshot: heartbeatRuns.contextSnapshot,
                 stdoutExcerpt: heartbeatRuns.stdoutExcerpt,

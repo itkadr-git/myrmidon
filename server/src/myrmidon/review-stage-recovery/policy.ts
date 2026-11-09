@@ -284,19 +284,27 @@ export function pullRequestHeadCiStateFromAllChecks(input: {
 
 /**
  * CI state of one head commit from its check runs. CI of the head is finished
- * only when the final `CI result` check exists and is completed: the other
- * checks are ignored, so a failed `checks` or `freeze` with `typecheck` and
+ * only when the final `CI result` check exists, belongs to exactly this head
+ * (`head_sha` of the record matches) and is completed: the other checks are
+ * ignored, so a failed `checks` or `freeze` with `typecheck` and
  * `tests` still queued is not a finished CI. A missing check list means the
  * read failed: "unknown".
+ *
+ * OPE-12175: the gate that starts a reviewer and the dedup key both work on
+ * the exact head SHA, so a completed `CI result` left over from a superseded
+ * head must never open the review. Records without `head_sha` (or with a
+ * different one) are treated as not belonging to this head.
  */
 export function pullRequestHeadFinalCheckConclusion(input: {
   checkRuns: readonly unknown[] | null;
+  headSha?: string;
 }): string | null {
   if (!input.checkRuns) return null;
   for (const entry of input.checkRuns) {
     if (!entry || typeof entry !== "object") continue;
     const run = entry as Record<string, unknown>;
     if (run.name !== REVIEW_CI_FINAL_CHECK_NAME || run.status !== FINISHED_CHECK_RUN_STATUS) continue;
+    if (input.headSha && run.head_sha !== input.headSha) continue;
     if (typeof run.conclusion !== "string" || NOT_A_VERDICT_CONCLUSIONS.has(run.conclusion)) continue;
     return run.conclusion;
   }
@@ -305,12 +313,14 @@ export function pullRequestHeadFinalCheckConclusion(input: {
 
 export function pullRequestHeadCiStateFromChecks(input: {
   checkRuns: readonly unknown[] | null;
+  headSha: string;
 }): "pending" | "complete" | "unknown" {
   if (!input.checkRuns) return "unknown";
   const finished = input.checkRuns.some((entry) => {
     if (!entry || typeof entry !== "object") return false;
     const run = entry as Record<string, unknown>;
     if (run.name !== REVIEW_CI_FINAL_CHECK_NAME) return false;
+    if (run.head_sha !== input.headSha) return false;
     if (run.status !== FINISHED_CHECK_RUN_STATUS) return false;
     return !(typeof run.conclusion === "string" && NOT_A_VERDICT_CONCLUSIONS.has(run.conclusion));
   });

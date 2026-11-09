@@ -2714,6 +2714,20 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  // myrmidon(1.6.7 OMP-HARDEN, OPE-12266): new omp_local agents get the workspace
+  // filesystem sandbox by default. Create/hire only — never on the update path,
+  // so legacy omp agents (config without filesystemScope, unsandboxed) keep their
+  // behavior even when another config key is patched. Applied after the security
+  // gate (both create paths gate the raw pre-default config), so the form default
+  // is not treated as a sandbox change; an explicit filesystemScope always wins.
+  function applyOmpLocalCreateDefaults(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (adapterType !== "omp_local" || adapterConfig.filesystemScope !== undefined) return adapterConfig;
+    return { ...adapterConfig, filesystemScope: "workspace" };
+  }
+
   // myrmidon(1.6.6 OPE-11239): sandbox and permission keys of the local CLI adapters are
   // security settings; changing one needs an instance admin (rules: myrmidon/agent-local-adapter-config.ts).
   function assertLocalAdapterSecurityChangeAllowed(
@@ -2722,9 +2736,16 @@ export function agentRoutes(
     previousAdapterConfig: Record<string, unknown> | null | undefined,
     nextAdapterConfig: Record<string, unknown> | null | undefined,
   ) {
+    // myrmidon(1.6.7 OPE-12266): omp_local has no permission defaults of its own.
+    // On create (previous === null) the declared default filesystemScope=workspace
+    // is the form's baseline, so submitting it is not a change; on edits there are
+    // no defaults and every explicit sandbox key is compared directly, so removing
+    // an existing workspace scope still needs an instance admin.
     const adapterDefaults: Record<string, unknown> = adapterType === "claude_local"
       ? { dangerouslySkipPermissions: true }
-      : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
+      : adapterType === "omp_local"
+        ? (previousAdapterConfig == null ? { filesystemScope: "workspace" } : {})
+        : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
     if (localAdapterSecurityConfigChanged(adapterType, previousAdapterConfig, nextAdapterConfig, adapterDefaults)) {
       assertInstanceAdmin(req);
     }
@@ -4687,9 +4708,12 @@ function getActorIdentityPart(req: Request): string {
       req,
       companyId,
       hireInput.adapterType,
-      applyCreateDefaultsByAdapterType(
+      applyOmpLocalCreateDefaults(
         hireInput.adapterType,
-        rawHireAdapterConfig,
+        applyCreateDefaultsByAdapterType(
+          hireInput.adapterType,
+          rawHireAdapterConfig,
+        ),
       ),
       hireInput.runtimeConfig,
     );
@@ -4990,9 +5014,12 @@ function getActorIdentityPart(req: Request): string {
       companyId,
       agentId,
       createInput.adapterType,
-      applyCreateDefaultsByAdapterType(
+      applyOmpLocalCreateDefaults(
         createInput.adapterType,
-        rawCreateAdapterConfig,
+        applyCreateDefaultsByAdapterType(
+          createInput.adapterType,
+          rawCreateAdapterConfig,
+        ),
       ),
     );
     assertLocalAdapterSecurityChangeAllowed(req, createInput.adapterType, null, rawCreateAdapterConfig);

@@ -293,6 +293,8 @@ async function readHeadCi(input: {
   if (hostedCi === false) return settledHeadCi({ state: "not_configured" });
   // Only the final check is asked for; `filter=all` keeps the check runs of earlier workflow
   // runs of the same head too, which the policy then discards when they were cancelled/skipped.
+  // OPE-12175: the policy additionally requires the record's head_sha to match the current
+  // head, so a completed `CI result` of a superseded head is never a verdict.
   const checkRunsUrl =
     `${apiBase}/repos/${repository}/commits/${encodeURIComponent(headSha)}/check-runs` +
     `?check_name=${encodeURIComponent(REVIEW_CI_FINAL_CHECK_NAME)}&filter=all&per_page=100`;
@@ -300,9 +302,9 @@ async function readHeadCi(input: {
   if (!checkRuns.ok) return checkRuns;
   const runs = asRecord(checkRuns.json)?.check_runs;
   if (!Array.isArray(runs)) return { ok: false, reason: "check_runs:unreadable_payload" };
-  const stateFromFinalCheck = pullRequestHeadCiStateFromChecks({ checkRuns: runs });
+  const stateFromFinalCheck = pullRequestHeadCiStateFromChecks({ checkRuns: runs, headSha });
   if (stateFromFinalCheck === "complete") {
-    return settledHeadCi({ state: "complete", finalCheckConclusion: pullRequestHeadFinalCheckConclusion({ checkRuns: runs }) });
+    return settledHeadCi({ state: "complete", finalCheckConclusion: pullRequestHeadFinalCheckConclusion({ checkRuns: runs, headSha }) });
   }
   // myrmidon(OPE-12048): a repository without the aggregate `CI result` check
   // (any third-party workflow, e.g. plain build/test lanes) never completes the
@@ -310,7 +312,10 @@ async function readHeadCi(input: {
   // no run of that name at all, read the latest run of every check and decide
   // from the whole head. A run named `CI result` that exists but is queued or
   // in progress keeps the aggregate-check semantics: pending.
-  const hasFinalCheckRun = runs.some((entry) => asRecord(entry)?.name === REVIEW_CI_FINAL_CHECK_NAME);
+  const hasFinalCheckRun = runs.some((entry) => {
+    const record = asRecord(entry);
+    return record?.name === REVIEW_CI_FINAL_CHECK_NAME && (!record.head_sha || record.head_sha === headSha);
+  });
   if (hasFinalCheckRun) return settledHeadCi({ state: stateFromFinalCheck });
   const allRunsUrl =
     `${apiBase}/repos/${repository}/commits/${encodeURIComponent(headSha)}/check-runs` +

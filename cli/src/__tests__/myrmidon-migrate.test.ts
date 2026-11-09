@@ -27,7 +27,7 @@ import {
   type VendorOnlyIndex,
   type VendorRelease,
 } from "../commands/myrmidon-migrate-vendor-chain.js";
-import type { ColumnInfo, TableInfo } from "../commands/myrmidon-migrate-db.js";
+import { introspectTables, tableDigest, type ColumnInfo, type TableInfo } from "../commands/myrmidon-migrate-db.js";
 import {
   copyManifest,
   inventoryDirectory,
@@ -45,6 +45,8 @@ import {
 } from "../commands/myrmidon-migrate-secrets.js";
 import {
   checkCompatibility,
+  checkNarrowing,
+  parseRangeBound,
   runMigration,
   type MigrationOptions,
 } from "../commands/myrmidon-migrate.js";
@@ -81,6 +83,7 @@ describe("myrmidon:migrate pure guards", () => {
     ["v2026.1005.0", 292, "0293_broad_rattler"],
     ["v2026.1012.0", 304, "0305_chubby_vin_gonzales"],
     ["v2026.1023.0", 332, "0333_normal_wild_pack"],
+    ["v2026.1106.0", 373, "0374_rare_wolfpack"],
   ];
 
   it("lists the supported Paperclip releases with their pinned chains", () => {
@@ -94,6 +97,7 @@ describe("myrmidon:migrate pure guards", () => {
     expect(release("v2026.1005.0").chain.slice(0, 282)).toEqual(release("v2026.1001.0").chain);
     expect(release("v2026.1012.0").chain.slice(0, 292)).toEqual(release("v2026.1005.0").chain);
     expect(release("v2026.1023.0").chain.slice(0, 304)).toEqual(release("v2026.1012.0").chain);
+    expect(release("v2026.1106.0").chain.slice(0, 332)).toEqual(release("v2026.1023.0").chain);
   });
 
   it.each(SUPPORTED)("accepts exactly the chain of %s and reports its canonical release", (name, length) => {
@@ -112,10 +116,10 @@ describe("myrmidon:migrate pure guards", () => {
 
   it("rejects a truncated, extended or foreign chain with the right reason", () => {
     const base = rowsOf(release("v2026.916.1"));
-    const latest = rowsOf(release("v2026.1023.0"));
+    const latest = rowsOf(release("v2026.1106.0"));
     // truncated: one short of each release
     expect(checkVendorChain(base.slice(0, -1), releases).reason).toBe("older-than-supported-release");
-    for (const name of ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0"]) {
+    for (const name of ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0", "v2026.1106.0"]) {
       const check = checkVendorChain(rowsOf(release(name)).slice(0, -1), releases);
       expect(check.reason).toBe("older-than-supported-release");
       expect(check.vendorRelease).toBe(name);
@@ -125,7 +129,7 @@ describe("myrmidon:migrate pure guards", () => {
     // extended past the newest supported release
     const newer = checkVendorChain([...latest, { hash: "x" }], releases);
     expect(newer.reason).toBe("newer-than-supported-release");
-    expect(newer.detail).toContain("v2026.1023.0");
+    expect(newer.detail).toContain("v2026.1106.0");
     expect(checkVendorChain([...base, { hash: "x" }], releases).reason).toBe("newer-than-supported-release");
     // a foreign hash anywhere, including the last row of every release
     for (const r of releases) {
@@ -156,6 +160,9 @@ describe("myrmidon:migrate pure guards", () => {
   it("pins the features that only later releases have", () => {
     const index = buildVendorOnlyIndex();
     expect(index.tables.get("mcp_oauth_clients")).toBe("v2026.1012.0");
+    expect(index.tables.get("workflows")).toBe("v2026.1106.0");
+    expect(index.tables.get("muse_agent_bindings")).toBe("v2026.1106.0");
+    expect(index.columns.get("cases.workflow_id")).toBe("v2026.1106.0");
     expect(index.tables.size).toBeGreaterThan(20);
     expect(index.columns.has("agents.appearance")).toBe(false);
     expect(index.columns.has("issues.title_needs_generation")).toBe(false);
@@ -319,6 +326,60 @@ describe("myrmidon:migrate pure guards", () => {
       expect(accepted.problems).toEqual([]);
       expect(accepted.exclusions).toEqual([{ kind: "table", name: "custom_extension", reason: "unknown source table accepted by flag" }]);
     });
+
+    it("reports v2026.1106.0 vendor-only tables and columns with descriptions and requires flag when they hold data", () => {
+      const v1106Index = buildVendorOnlyIndex();
+      const v1106Tables = [
+        "case_access_sources", "case_handoffs", "chat_slack_manager_grants", "company_observability",
+        "company_prompt_injection_prevention", "company_skill_import_budgets", "company_skill_repository_snapshots",
+        "execution_workspace_repositories", "execution_workspace_repository_access", "execution_workspace_repository_roots",
+        "execution_workspace_restore_points", "external_agent_holds", "grok_bot_dispatches", "grok_bot_routines",
+        "muse_agent_bindings", "muse_credentials", "muse_idle_receipts", "muse_input_deliveries",
+        "muse_mailbox_items", "muse_receiver_contact_buckets", "muse_runner_assignments", "muse_runner_operations",
+        "project_skill_sources", "prompt_injection_invocations", "workflows",
+      ];
+      for (const t of v1106Tables) {
+        expect(v1106Index.tables.get(t)).toBe("v2026.1106.0");
+      }
+      expect(v1106Index.columns.get("cases.workflow_id")).toBe("v2026.1106.0");
+
+      const sampleTables = [
+        table("workflows", [col("id")]),
+        table("muse_agent_bindings", [col("id")]),
+        table("cases", [col("id"), col("workflow_id")]),
+      ];
+      const analysis = analysisOf(
+        sampleTables,
+        { workflows: 5, muse_agent_bindings: 2, cases: 10 },
+        [
+          { kind: "table", table: "workflows", rows: 5, introducedIn: "v2026.1106.0" },
+          { kind: "table", table: "muse_agent_bindings", rows: 2, introducedIn: "v2026.1106.0" },
+          { kind: "column", table: "cases", column: "workflow_id", rows: 10, introducedIn: "v2026.1106.0" },
+        ],
+      );
+      const target = new Map([["cases", table("cases", [col("id")])]]);
+
+      const unaccepted = checkCompatibility(analysis, target, v1106Index);
+      expect(unaccepted.problems).toEqual([]);
+      expect(unaccepted.vendorOnly).toEqual([
+        { kind: "table", table: "workflows", rows: 5, introducedIn: "v2026.1106.0" },
+        { kind: "table", table: "muse_agent_bindings", rows: 2, introducedIn: "v2026.1106.0" },
+        { kind: "column", table: "cases", column: "workflow_id", rows: 10, introducedIn: "v2026.1106.0" },
+      ]);
+      expect(unaccepted.skippedSourceData).toEqual([
+        { table: "workflows", rows: 5, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+        { table: "muse_agent_bindings", rows: 2, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+        { table: "cases", column: "workflow_id", rows: 10, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+      ]);
+
+      const accepted = checkCompatibility(analysis, target, v1106Index, { acceptVendorOnlyData: true });
+      expect(accepted.problems).toEqual([]);
+      expect(accepted.skippedSourceData).toEqual([
+        { table: "workflows", rows: 5, vendorRelease: "v2026.1106.0", decision: "accepted" },
+        { table: "muse_agent_bindings", rows: 2, vendorRelease: "v2026.1106.0", decision: "accepted" },
+        { table: "cases", column: "workflow_id", rows: 10, vendorRelease: "v2026.1106.0", decision: "accepted" },
+      ]);
+    });
   });
 
   it("guards object keys and manifest paths against traversal", () => {
@@ -362,6 +423,18 @@ describe("myrmidon:migrate pure guards", () => {
     expect(await plaintextHash(SOURCE_KEY, collectEnvelopes(nested)[0]!)).toBe(sha256Hex(SECRET_VALUE));
     await expect(plaintextHash(WRONG_KEY, collectEnvelopes(nested)[0]!)).rejects.toThrow();
     expect(redact("postgres://u:hunter2@h/db failed", ["postgres://u:hunter2@h/db", "hunter2"])).toBe("[redacted] failed");
+  });
+  it("parses range bounds exactly with directional rounding for bounds checking", () => {
+    expect(parseRangeBound("0.0000000", "lo")).toBe(0n);
+    expect(parseRangeBound("0.0000000", "hi")).toBe(0n);
+    expect(parseRangeBound("100", "lo")).toBe(100n);
+    expect(parseRangeBound("100", "hi")).toBe(100n);
+    expect(parseRangeBound("0.5", "hi")).toBe(1n);
+    expect(parseRangeBound("0.5", "lo")).toBe(0n);
+    expect(parseRangeBound("-0.5", "lo")).toBe(-1n);
+    expect(parseRangeBound("-0.5", "hi")).toBe(0n);
+    expect(parseRangeBound("2147483647.1", "hi")).toBe(2147483648n);
+    expect(parseRangeBound("-2147483648.1", "lo")).toBe(-2147483649n);
   });
 });
 
@@ -749,4 +822,61 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     expect(text).not.toContain(WRONG_KEY);
     expect(text).not.toContain(secretUrl);
   }, T);
+  it("migrates integral numeric values (0.0000000 -> 0) into integer target and preserves bigints", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.0000000'::numeric where id = '${COMPANY_A}'`);
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '12345.0000000'::numeric where id = '${COMPANY_B}'`);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    expect(result.verification.countsAndContentMatch).toBe(true);
+
+    const valA = await scalar(f.targetUrl, `select spent_monthly_cents::text from companies where id = '${COMPANY_A}'`);
+    const valB = await scalar(f.targetUrl, `select spent_monthly_cents::text from companies where id = '${COMPANY_B}'`);
+    expect(valA).toBe("0");
+    expect(valB).toBe("12345");
+  }, T * 2);
+
+  it("fails closed when numeric source column going to integer target contains non-integer value (0.5)", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.5'::numeric where id = '${COMPANY_A}'`);
+
+    await expect(runMigration(f.options)).rejects.toThrow(/value-not-integer-in-target:companies\.spent_monthly_cents/);
+    // The schema is applied before the narrowing check; no data may be copied.
+    expect(await scalar(f.targetUrl, "select count(*) from companies")).toBe("0");
+    expect(existsSync(f.targetDir)).toBe(false);
+  }, T * 2);
+
+  it("catches differing values in digest comparison for narrowed columns", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.0000000'::numeric where id = '${COMPANY_A}'`);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    expect(result.verification.countsAndContentMatch).toBe(true);
+
+    const srcDb = createDb(f.sourceUrl);
+    const tgtDb = createDb(f.targetUrl);
+    try {
+      const srcTables = await introspectTables(srcDb);
+      const tgtTables = await introspectTables(tgtDb);
+      const compSrc = srcTables.get("companies")!;
+      const compTgt = tgtTables.get("companies")!;
+
+      const srcDigest = await tableDigest(srcDb, "companies", compSrc, new Set(), new Set(["spent_monthly_cents"]));
+      const tgtDigest = await tableDigest(tgtDb, "companies", compTgt, new Set());
+      expect(srcDigest.digest).toBe(tgtDigest.digest);
+
+      // Tamper with the integer value in the target table
+      await tgtDb.execute(sql.raw(`update "companies" set "spent_monthly_cents" = 999 where id = '${COMPANY_A}'`));
+      const tamperedDigest = await tableDigest(tgtDb, "companies", compTgt, new Set());
+      expect(srcDigest.digest).not.toBe(tamperedDigest.digest);
+    } finally {
+      await closeRegisteredClients(f.sourceUrl);
+      await closeRegisteredClients(f.targetUrl);
+    }
+  }, T * 2);
 });

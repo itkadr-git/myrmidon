@@ -1,6 +1,6 @@
 # Migrating from Paperclip to Myrmidon
 
-> Russian version: [migration-from-paperclip.ru.md](migration-from-paperclip.ru.md)
+> Russian version: [Migration-from-Paperclip.ru](Migration-from-Paperclip.ru)
 
 The `myrmidon:migrate` command copies one Paperclip instance (database, files and secrets) into a
 clean Myrmidon installation. It never changes the source: it writes only to the empty target that

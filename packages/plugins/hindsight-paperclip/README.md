@@ -52,6 +52,7 @@ upstream are removed: every agent must resolve through the sources above.
 | --- | --- |
 | `hindsightApiUrl` | Hindsight API base URL (required) |
 | `hindsightApiKeyRef` | secret ref for the API key (self-hosted: leave empty) |
+| `requestTimeoutMs` | request timeout in ms for recall/retain (default `60000`; health checks use fixed 5000 ms) |
 | `recallBudget` | `low` / `mid` / `high` (default `mid`) |
 | `autoRetain` | retain a run's comments as one digest when the run finishes (default `true`) |
 | `recallOnRunStart` | `always` / `new-issue` (default) / `never` — run-start recall policy |

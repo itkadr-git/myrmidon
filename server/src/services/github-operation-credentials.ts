@@ -1,5 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { isUuidLike } from "@myrmidon/shared";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import {
   connectionGrants,
   issues,
@@ -10,7 +11,7 @@ import {
   companySecrets,
   type Db,
 } from "@myrmidon/db";
-import { forbidden } from "../errors.js";
+import { forbidden, tooManyRequests } from "../errors.js";
 import { captureRunIdentity } from "./run-identity.js";
 import {
   buildGitAuthInvocation,
@@ -115,9 +116,60 @@ interface CachedGitHubCredentialEntry {
 }
 
 const githubCredentialCache = new Map<string, CachedGitHubCredentialEntry>();
+// myrmidon(OPE-12446): single-flight coalescing. A burst of concurrent
+// credential requests for the same (company, agent, run, context, repository)
+// joins one in-flight resolution instead of each missing the not-yet-populated
+// cache and minting its own token: the observed runaway (852 requests in 10
+// minutes) was a request queue outpacing one mint, not distinct resolutions.
+const githubCredentialInflight = new Map<string, Promise<CachedGitHubCredentialResult>>();
+
+// myrmidon(OPE-12446): a per-run fuse. A run hammering the credentials
+// endpoint above N requests per minute gets 429 with an actionable message —
+// a client must hold the issued token until it expires, not request one per
+// git/gh invocation. The default is far above any healthy loop.
+const GITHUB_CREDENTIALS_FUSE_WINDOW_MS = 60_000;
+// myrmidon(OPE-12446): 60/min is far above any healthy client (a client that
+// holds its token needs a handful per minute) and below the observed runaway
+// (~85/min sustained), so the fuse actually trips on the pathological pattern.
+const GITHUB_CREDENTIALS_FUSE_DEFAULT_PER_MINUTE = 60;
+const githubCredentialsFuseWindows = new Map<string, number[]>();
+
+// myrmidon(OPE-12446): the limit is configurable for operators; the canonical
+// spelling is MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE with the legacy
+// Paperclip spelling accepted as an alias (readProductEnvFrom).
+function githubCredentialsFuseLimit(): number {
+  const raw = Number(readProductEnvFrom(process.env, "GITHUB_CREDENTIALS_FUSE_PER_MINUTE"));
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : GITHUB_CREDENTIALS_FUSE_DEFAULT_PER_MINUTE;
+}
+
+function enforceGitHubCredentialsFuse(companyId: string, runId: string): void {
+  const key = `${companyId}:${runId}`;
+  const now = Date.now();
+  const window = (githubCredentialsFuseWindows.get(key) ?? []).filter(
+    (timestamp) => now - timestamp < GITHUB_CREDENTIALS_FUSE_WINDOW_MS,
+  );
+  const limit = githubCredentialsFuseLimit();
+  if (window.length >= limit) {
+    githubCredentialsFuseWindows.set(key, window);
+    throw tooManyRequests(
+      `Too many GitHub credential requests from this run: over ${limit} per minute. Cache the issued token until it expires instead of requesting one per git/gh call.`,
+    );
+  }
+  window.push(now);
+  githubCredentialsFuseWindows.set(key, window);
+  if (githubCredentialsFuseWindows.size > 2000) {
+    for (const [staleKey, timestamps] of githubCredentialsFuseWindows) {
+      if (timestamps.every((timestamp) => now - timestamp >= GITHUB_CREDENTIALS_FUSE_WINDOW_MS)) {
+        githubCredentialsFuseWindows.delete(staleKey);
+      }
+    }
+  }
+}
 
 export function clearGitHubOperationCredentialCache(): void {
   githubCredentialCache.clear();
+  githubCredentialInflight.clear();
+  githubCredentialsFuseWindows.clear();
 }
 
 onResetGitHubAppTokenCache(clearGitHubOperationCredentialCache);
@@ -206,27 +258,29 @@ export async function resolveGitHubOperationCredentials(
   const { run, context } = await captureRunIdentity(db, input);
   if (!context) throw forbidden("This run predates managed GitHub credentials");
 
-  let summary: GitHubCredentialSummary;
-  let env: Record<string, string> = {};
+  // myrmidon(OPE-12446): the per-run fuse counts every credentials request,
+  // before any cache short-circuit — a client must hold its token, not poll.
+  enforceGitHubCredentialsFuse(input.companyId, input.runId);
+
   // A sponsored guest's responsible person is an internal accountability field,
   // not authorization to export that person's (or a dedicated bot's) token.
   // Re-read every policy source for each operation, including a run's retained
   // boundary after task policy edits. Deny before touching the credential store.
   const denial = await allowsGitHubCredentialExport(db, run);
   if (!denial.allowed) {
-    summary = {
+    const deniedSummary: GitHubCredentialSummary = {
       status: "unavailable",
       reason: denial.reason ?? GENERIC_DENIAL.reason,
     };
     await db
       .update(runIdentityContexts)
-      .set({ github: summary })
+      .set({ github: deniedSummary })
       .where(eq(runIdentityContexts.id, context.id));
     return {
       identityContextId: context.id,
       revision: context.revision,
-      ...summary,
-      env,
+      ...deniedSummary,
+      env: {} as Record<string, string>,
     };
   }
 
@@ -250,6 +304,32 @@ export async function resolveGitHubOperationCredentials(
   } else if (cached) {
     githubCredentialCache.delete(cacheKey);
   }
+  // myrmidon(OPE-12446): single-flight. Concurrent requests with the same key
+  // join one in-flight resolution; everyone gets the same token, the broker
+  // counter grows only for real resolutions, and no duplicate mint races.
+  const inflight = githubCredentialInflight.get(cacheKey);
+  if (inflight) return inflight;
+  const resolution = resolveGitHubOperationCredentialsUncached(db, input, run, context, cacheKey).finally(() => {
+    if (githubCredentialInflight.get(cacheKey) === resolution) githubCredentialInflight.delete(cacheKey);
+  });
+  githubCredentialInflight.set(cacheKey, resolution);
+  return resolution;
+}
+
+async function resolveGitHubOperationCredentialsUncached(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    repository?: string | null;
+  },
+  run: Awaited<ReturnType<typeof captureRunIdentity>>["run"],
+  context: NonNullable<Awaited<ReturnType<typeof captureRunIdentity>>["context"]>,
+  cacheKey: string,
+) {
+  let summary: GitHubCredentialSummary;
+  let env: Record<string, string> = {};
   try {
     const resolved = await resolveManagedGitHubCredential(
       db,

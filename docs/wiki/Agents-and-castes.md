@@ -88,12 +88,68 @@ nothing is lost. The
 [autonomy matrix](Safety-and-guardrails) controls whether an agent may
 change instructions at all or only with an approval.
 
+## Agent Settings (typed adapter controls)
+
+The **Configuration** tab of the agent card shows typed controls for the
+agent's adapter instead of raw `adapterConfig` JSON
+([agent settings UI](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-6-6-ope-11239-adapter-config-ui.md)):
+
+- **Hermes gateway** — status poll interval, run-create timeout, liveness by
+  gateway events, raw debug events, runtime MCP URL rewrite and internal base
+  URL, and central session history (switch, Hindsight URL, bank ID, turns to
+  restore). The central history API key has no field in the form: credentials
+  are never typed into it.
+- **Claude / Codex local** — filesystem sandbox (workspace scope, extra paths;
+  a path followed by `(rw)` is writable), network sandbox (deny or allowlist),
+  the Claude hello-probe timeout and the cleanup grace after the final result,
+  the Codex output inactivity timeout. Host paths are hidden under the
+  managed-sandbox-only policy. These keys are validated on save with the same
+  parsers the run path uses, because the adapters silently ignore bad values;
+  changing a sandbox or permission key needs an instance admin (also on agent
+  create and hire). The create form's permission defaults are not a change.
+- **OMP local** — filesystem sandbox (workspace scope, extra paths) and
+  network sandbox (deny or allowlist) using Bubblewrap, with the create form
+  defaulting to workspace filesystem scope. The adapter reads no timeout
+  keys. Sandbox keys are validated on save and editing them requires an
+  instance admin, same as Claude / Codex local.
+- **Hermes local** — a switch for including the configured MCP servers; the
+  values set on the create form (toolsets, sandbox, timeouts) are stored, and
+  comma-separated sandbox lists are honoured at run time.
+- **OpenClaw gateway** — client ID, mode and version, with the adapter
+  defaults shown as placeholders.
+
 ## Memory
 
 The agent card's **Memory** tab lists the entries of the agent's memory bank
 — the same bank the agent's memory tooling writes to during runs. From the
 tab an operator can list entries, export the whole bank as JSON, remove a
 single entry or clear the bank.
+
+## Per-role tool defaults
+
+Every tool schema is sent on every model call, so unused tools cost tokens on
+each request. The fleet cuts them two ways
+([role tool diet](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/token-burn-k-role-tool-diet.md)):
+
+- the fleet list `MYRMIDON_BOT_DISABLED_TOOLS` always holds `clarify` (the
+  bots run behind the Hermes API server, which wires no clarify callback) and
+  `skill_manage` (unused; while it is present Hermes also adds its prompt
+  guidance to the system prompt);
+- on top of it, role defaults resolved from the agent's role (caste key) and
+  card — never from the bot's name — drop more: the developer roles
+  (`engineer`, `reviewer`, `release` by default, configurable with
+  `MYRMIDON_BOT_DEVELOPER_ROLES`) lose the built-in `memory` tool and the
+  Hindsight tools (the `memory` toolset is written to
+  `agent.disabled_toolsets`), the web tools, the browser tools and the
+  image/media tools; every other role loses the browser and image/media tools.
+
+A card is never overridden against its will: a group stays when the card
+lists its toolset in `toolsets` (`memory`, `web`, `browser`, `browser-use`,
+`browser-cdp`, `image_gen`, …), the card key `keepTools` re-enables a group or
+a single tool (`["memory", "skill_manage"]`), and the card's own
+`disabledTools` list still replaces every default list. Both switches
+(`MYRMIDON_BOT_ROLE_TOOL_DIET`, `MYRMIDON_BOT_DEVELOPER_ROLES`) are read on
+every profile build; a change restarts the affected bot containers.
 
 ## Recovery instead of babysitting
 
@@ -106,6 +162,13 @@ The board watches its agents and repairs what breaks:
   minutes by default) is interrupted, its task goes back to `todo` and the
   assignee is woken — the board does not wait for a hard timeout to notice
   a stuck run.
+
+## Lifecycle: termination vs deletion and financial history
+
+Agent lifecycle includes pause, resume, clear error, termination, and deletion:
+
+- **Termination** (`POST /api/agents/:id/terminate`): Permanently deactivates an agent. Heartbeats are disabled, but the agent's historical records, tasks, run logs, and financial records are preserved for auditing.
+- **Deletion** (`DELETE /api/agents/:id`): Completely removes an agent record. To guarantee financial history integrity and auditability, an agent with recorded expenses (`cost_events`) cannot be deleted: the API returns `HTTP 409 Conflict` with code `agent_has_cost_events` and message instructing to terminate the agent instead. Similarly, if any other records in the database still reference the agent, foreign-key violations return `HTTP 409 Conflict` with code `agent_referenced` instead of a 500 error.
 
 ## The OMP runtime image
 

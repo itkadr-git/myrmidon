@@ -463,7 +463,21 @@
       "agents": {
         "agents": {
           "selectACompanyToView": "Select a company to view agents.",
-          "viewMode": "View mode"
+          "viewMode": "View mode",
+          "selectForBulk": "Select {{name}}",
+          "clearSelection": "Clear selection",
+          "bulkApplying": "Applying…",
+          "bulkChangeModel": "Change model",
+          "bulkChangeConnection": "Change connection",
+          "bulkUnchanged": "No change",
+          "bulkSelectedCount": "{{count}} selected",
+          "bulkApplyConfirm": "Apply to {{count}} agent",
+          "bulkApplyConfirm_other": "Apply to {{count}} agents",
+          "bulkResultUpdated": "{{count}} updated",
+          "bulkResultUpdated_other": "{{count}} updated",
+          "bulkResultFailed": "{{count}} failed",
+          "bulkResultFailed_other": "{{count}} failed",
+          "bulkResultAllFailed": "Update failed"
         }
       },
       "org": {

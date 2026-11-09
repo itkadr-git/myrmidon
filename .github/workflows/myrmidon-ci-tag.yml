@@ -348,6 +348,7 @@ jobs:
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      GITLEAKS_ASSET_ID: "378332058" # gitleaks_8.30.1_linux_x64.tar.gz
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -422,13 +423,15 @@ jobs:
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE: ${{ steps.range.outputs.base }}
           HEAD: ${{ steps.range.outputs.head }}
         run: |
           set -euo pipefail
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            -o "$RUNNER_TEMP/$archive" "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/${GITLEAKS_ASSET_ID}"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
@@ -595,15 +598,19 @@ jobs:
     steps:
       - name: Ensure gh and jq (self-hosted runners may lack them)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
           if ! command -v jq >/dev/null; then
-            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$bin/jq" https://api.github.com/repos/jqlang/jq/releases/assets/140520984
             chmod +x "$bin/jq"
           fi
           if ! command -v gh >/dev/null; then
-            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+            tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
             cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
           fi
           echo "$bin" >> "$GITHUB_PATH"
