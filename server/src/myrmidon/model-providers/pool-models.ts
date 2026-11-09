@@ -30,6 +30,7 @@ export async function enrichWithPoolModels(
   companyId: string,
   baseModels: AdapterModel[],
   customService?: PoolAccountChannelProvider,
+  adapterType?: string,
 ): Promise<AdapterModel[]> {
   try {
     const providers = await db
@@ -37,7 +38,59 @@ export async function enrichWithPoolModels(
       .from(modelProviders)
       .where(eq(modelProviders.companyId, companyId));
 
+    const providerMap = new Map(providers.map((p) => [p.id, p]));
+    const isOmp = adapterType === "omp_local";
+
+    const dbModelsAll = await db
+      .select({
+        providerId: modelProviderModels.providerId,
+        litellmModelName: modelProviderModels.litellmModelName,
+        enabled: modelProviderModels.enabled,
+      })
+      .from(modelProviderModels)
+      .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
+      .where(and(eq(modelProviderModels.enabled, true), eq(modelProviders.companyId, companyId)));
+
+    const registryModels = new Map<string, string[]>();
+    for (const m of dbModelsAll) {
+      const p = providerMap.get(m.providerId);
+      const isPool = p && (p.type === "chatgpt-pool" || getModelProviderConnector(p.type)?.supportsChannels === true);
+      let modelId = m.litellmModelName;
+      if (isOmp) {
+        if (!modelId.startsWith("litellm/")) {
+          modelId = `litellm/${modelId}`;
+        }
+      }
+      let set = registryModels.get(modelId);
+      if (!set) {
+        set = [];
+        registryModels.set(modelId, set);
+      }
+      if (p && !isPool) {
+        set.push(p.name);
+      }
+    }
+
     if (!providers || providers.length === 0) {
+      if (isOmp && registryModels.size > 0) {
+        const result: AdapterModel[] = [];
+        const seen = new Set<string>();
+        for (const m of baseModels) {
+          result.push(m);
+          seen.add(m.id);
+        }
+        for (const [modelId, accounts] of registryModels.entries()) {
+          if (!seen.has(modelId)) {
+            result.push({
+              id: modelId,
+              label: modelId,
+              accounts: accounts.length > 0 ? accounts : undefined,
+            });
+            seen.add(modelId);
+          }
+        }
+        return result;
+      }
       return baseModels;
     }
 
@@ -93,7 +146,7 @@ export async function enrichWithPoolModels(
                   ),
                 );
               if (dbModels.length > 0) {
-                fallbackModels = dbModels.map((m) => m.modelName);
+                fallbackModels = dbModels.map((m) => m.litellmModelName);
               } else if (
                 connector?.defaultModels &&
                 connector.defaultModels.length > 0
@@ -109,8 +162,11 @@ export async function enrichWithPoolModels(
           }
 
           const accountLabel = ch.label || `Account #${ch.n}`;
-          for (const modelId of accountModels) {
+          for (let modelId of accountModels) {
             if (!modelId) continue;
+            if (isOmp && !modelId.startsWith("litellm/")) {
+              modelId = `litellm/${modelId}`;
+            }
             let set = poolModelAccounts.get(modelId);
             if (!set) {
               set = new Set<string>();
@@ -128,6 +184,20 @@ export async function enrichWithPoolModels(
       }
     }
 
+    // Also add registry non-pool models if isOmp
+    if (isOmp) {
+      for (const [modelId, accounts] of registryModels.entries()) {
+        let set = poolModelAccounts.get(modelId);
+        if (!set) {
+          set = new Set<string>();
+          poolModelAccounts.set(modelId, set);
+        }
+        for (const acc of accounts) {
+          set.add(acc);
+        }
+      }
+    }
+
     if (poolModelAccounts.size === 0) {
       return baseModels;
     }
@@ -136,7 +206,11 @@ export async function enrichWithPoolModels(
     const seen = new Set<string>();
 
     for (const m of baseModels) {
-      const accountsSet = poolModelAccounts.get(m.id);
+      let modelId = m.id;
+      if (isOmp && !modelId.startsWith("litellm/")) {
+        modelId = `litellm/${modelId}`;
+      }
+      const accountsSet = poolModelAccounts.get(modelId) ?? poolModelAccounts.get(m.id);
       const mergedAccounts = Array.from(
         new Set([
           ...(m.accounts ?? []),
@@ -145,8 +219,11 @@ export async function enrichWithPoolModels(
       );
       result.push({
         ...m,
+        id: modelId,
+        label: m.label && m.label !== m.id ? m.label : modelId,
         accounts: mergedAccounts.length > 0 ? mergedAccounts : undefined,
       });
+      seen.add(modelId);
       seen.add(m.id);
     }
 

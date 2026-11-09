@@ -295,7 +295,11 @@ export async function ensureOmpModelConfiguredAndAvailable(input: {
 
 export async function listOmpModels(): Promise<AdapterModel[]> {
   try {
-    return await discoverOmpModelsCached();
+    const models = await discoverOmpModelsCached();
+    return models.map((m) => {
+      const id = m.id.startsWith("litellm/") ? m.id : `litellm/${m.id}`;
+      return { ...m, id, label: m.label && m.label !== m.id ? m.label : id };
+    });
   } catch {
     return [];
   }

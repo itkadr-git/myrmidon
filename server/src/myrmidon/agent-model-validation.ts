@@ -125,7 +125,7 @@ export async function assertAgentModelsKnown(input: {
   try {
     const baseKnown = await (input.listModels ?? listAdapterModels)(input.adapterType);
     known = input.companyId && input.db
-      ? await enrichWithPoolModels(input.db, input.companyId, baseKnown as any)
+      ? await enrichWithPoolModels(input.db, input.companyId, baseKnown as any, undefined, input.adapterType)
       : baseKnown;
   } catch (err) {
     // Model discovery failing must not make every agent uneditable.
@@ -136,10 +136,15 @@ export async function assertAgentModelsKnown(input: {
   const knownIds = new Set(known.map((model) => model.id));
   const unknown = changed.filter((entry) => !knownIds.has(entry.model));
   if (unknown.length === 0) return;
+  const suggestion = input.adapterType === "omp_local"
+    ? unknown.map((entry) => {
+        const m = entry.model;
+        const fixed = m.startsWith("litellm/") ? m : `litellm/${m}`;
+        return `${entry.field}="${m}" (try "${fixed}")`;
+      }).join(", ")
+    : unknown.map((entry) => `${entry.field}="${entry.model}"`).join(", ");
   throw unprocessable(
-    `Unknown model for adapter ${input.adapterType}: ${unknown
-      .map((entry) => `${entry.field}="${entry.model}"`)
-      .join(", ")}. Choose a model from the adapter model list.`,
+    `Unknown model for adapter ${input.adapterType}: ${suggestion}. Choose a model from the adapter model list.`,
     { code: "unknown_model", adapterType: input.adapterType, unknownModels: unknown },
   );
 }
