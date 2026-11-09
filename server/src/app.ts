@@ -21,7 +21,6 @@ import {
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler, brandHeadersMiddleware } from "./middleware/index.js";
-import { apiPathAliasMiddleware } from "./myrmidon/api-path-aliases.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardKeyScopeMiddleware } from "./middleware/board-key-scope.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
@@ -252,6 +251,7 @@ import {
   createCorpusShadowSearch,
   buildTokensTraceRoutes,
   myrmidonOnboardRoutes,
+  apiPathAliasMiddleware,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
