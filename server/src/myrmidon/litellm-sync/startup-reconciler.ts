@@ -16,6 +16,12 @@
 // is skipped with one log line per process: the board runs without a gateway,
 // nothing is dialled by default and the secret NAME is never sent as a key.
 // The admin key VALUE is resolved per company through the secret store.
+//
+// The agent key allowlists are only CHECKED at startup: the pass runs as a
+// dry run and logs how many keys it would change and which model names it would
+// add or remove. It sends nothing. Applying it adds every enabled registry
+// model to every restricted key, so it is an explicit admin action
+// (`POST .../litellm/keys/allowlist-sync?apply=true`), never a boot side effect.
 
 import type { Db } from "@myrmidon/db";
 import { companies } from "@myrmidon/db";
@@ -27,14 +33,18 @@ import { createLitellmSyncClient } from "./client.js";
 import { createLitellmSyncService } from "./service.js";
 import { defaultAgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 import { updateAgentAllowlistsForCompany } from "./agent-allowlist-handler.js";
+import { summarizeAllowlistResult } from "./allowlist-report.js";
 import { withCompanySyncGuard } from "./lock.js";
 
 export interface LitellmReconcilePorts {
   listCompanyIds(db: Db): Promise<string[]>;
   /** Resolves the admin key VALUE for one company; null when the store has no value. */
   readAdminKey(db: Db, companyId: string, secretName: string): Promise<string | null>;
-  /** Re-applies the company's enabled-model allowlist to the agent gateway keys. */
-  refreshAgentAllowlists(db: Db, companyId: string, env: NodeJS.ProcessEnv): Promise<unknown>;
+  /**
+   * Checks the company's enabled-model allowlist against the agent gateway
+   * keys and reports the differences. Must NOT change any key.
+   */
+  reportAgentAllowlists(db: Db, companyId: string, env: NodeJS.ProcessEnv): Promise<unknown>;
   log: {
     info(fields: object, message: string): void;
     warn(fields: object, message: string): void;
@@ -52,8 +62,16 @@ const defaultPorts: LitellmReconcilePorts = {
     if (!row) return null;
     return secrets.resolveSecretValue(companyId, row.id, "latest");
   },
-  async refreshAgentAllowlists(db, companyId, env) {
-    return updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId);
+  async reportAgentAllowlists(db, companyId, env) {
+    return updateAgentAllowlistsForCompany(
+      db,
+      defaultAgentGatewayKeyDeps(db, env),
+      companyId,
+      [],
+      [],
+      false,
+      { apply: false },
+    );
   },
   log: logger,
 };
@@ -108,10 +126,10 @@ export async function startLitellmModelReconciliation(
           litellmAdminKey: adminKey,
         });
         await createLitellmSyncService({ db, litellm: client }).reconcileWithLitellm(companyId);
-        const allowlists = await ports.refreshAgentAllowlists(db, companyId, env);
+        const allowlists = await ports.reportAgentAllowlists(db, companyId, env);
         ports.log.info(
-          { companyId, ...((allowlists ?? {}) as object) },
-          "litellm agent key allowlists re-applied at startup",
+          { companyId, ...summarizeAllowlistResult(allowlists as Parameters<typeof summarizeAllowlistResult>[0]) },
+          "litellm agent key allowlists checked at startup (dry run, nothing applied)",
         );
       });
     } catch (err) {
