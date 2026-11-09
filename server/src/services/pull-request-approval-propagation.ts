@@ -17,8 +17,20 @@ import {
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { gitHubApiBase } from "./github-fetch.js";
 import { logger } from "../middleware/logger.js";
+// myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the board's public origin for
+// the check run's `details_url`. Same env-only resolution as the chat-bridge
+// links (issueService takes no options to thread config through).
+import { resolveBoardPublicBaseUrl } from "../myrmidon/agent-chat-bridge/links.js";
 
 export const REVIEW_APPROVED_LABEL = "review-approved";
+
+/**
+ * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): name of the check run the board
+ * writes on the PR head commit when a formal review decision is reached, so
+ * the review state is visible in GitHub's checks UI without reading the board.
+ * Part D (separate) grants the App the `checks:write` permission.
+ */
+export const BOARD_REVIEW_CHECK_RUN_NAME = "Board review";
 
 export const PR_APPROVAL_ACTIVITY_PROPAGATED = "myrmidon.pr_approval.propagated";
 export const PR_APPROVAL_ACTIVITY_SKIPPED = "myrmidon.pr_approval.skipped";
@@ -195,6 +207,33 @@ export interface GitHubApprovalClient {
     body?: string;
     token: string;
   }): Promise<{ id?: number | string; skipped?: boolean }>;
+  /**
+   * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): writes the board's own check
+   * run on the head commit. `conclusion` is "success" for an approval and
+   * "failure" for changes requested. Implementations may be absent — the
+   * propagation keeps working without the check run.
+   */
+  createCheckRun?(input: {
+    repository: string;
+    headSha: string;
+    name: string;
+    conclusion: "success" | "failure";
+    detailsUrl?: string;
+    title: string;
+    summary: string;
+    token: string;
+  }): Promise<{ id?: number | string }>;
+  /**
+   * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): lists the board's check runs
+   * on the head commit, for idempotency of repeated decisions on the same
+   * head. Implementations may be absent.
+   */
+  listCheckRuns?(input: {
+    repository: string;
+    headSha: string;
+    name: string;
+    token: string;
+  }): Promise<Array<{ id: number | string; conclusion: string | null }>>;
   listReviews?(input: {
     repository: string;
     number: number;
@@ -322,6 +361,56 @@ export function createDefaultGitHubApprovalClient(
         };
       });
     },
+
+    // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the board's check run on the
+    // PR head commit. Requires the App installation to hold `checks:write`;
+    // GitHub answers 403 (or 404) without it and the caller degrades to warn.
+    async createCheckRun({ repository, headSha, name, conclusion, detailsUrl, title, summary, token }) {
+      const res = await fetchFn(`${apiBase}/repos/${repository}/check-runs`, {
+        method: "POST",
+        headers: {
+          ...ghHeaders(token),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name,
+          head_sha: headSha,
+          status: "completed",
+          conclusion,
+          details_url: detailsUrl,
+          output: { title, summary },
+        }),
+      });
+      if (!res.ok) {
+        const error = new Error(`GitHub createCheckRun failed with HTTP ${res.status}`);
+        (error as { status?: number }).status = res.status;
+        throw error;
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      return { id: data.id as number | string | undefined };
+    },
+
+    // `filter=latest` is enough here: the idempotency check only asks whether
+    // the named check has any (completed) run on this exact commit.
+    async listCheckRuns({ repository, headSha, name, token }) {
+      const res = await fetchFn(
+        `${apiBase}/repos/${repository}/commits/${encodeURIComponent(headSha)}/check-runs` +
+          `?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`,
+        { headers: ghHeaders(token) },
+      );
+      if (!res.ok) {
+        return [];
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      const runs = Array.isArray(data.check_runs) ? data.check_runs : [];
+      return runs.map((item) => {
+        const record = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+        return {
+          id: record.id as number | string,
+          conclusion: typeof record.conclusion === "string" ? record.conclusion : null,
+        };
+      });
+    },
   };
 }
 
@@ -432,6 +521,10 @@ export interface PropagateReviewApprovalResult {
   reviewedHeadSha?: string;
   labelAdded?: boolean;
   reviewSubmitted?: boolean;
+  /** myrmidon(OPE-12182): the Board review check run was written on the head. */
+  checkRunCreated?: boolean;
+  /** myrmidon(OPE-12182): the check run write failed (e.g. no checks:write). */
+  checkRunFailed?: boolean;
 }
 
 export interface PropagateReviewApprovalDeps {
@@ -439,6 +532,115 @@ export interface PropagateReviewApprovalDeps {
   client?: GitHubApprovalClient;
   tokenProvider?: (companyId: string, repository?: string, identity?: { agentId?: string | null; runId?: string | null; issueId?: string | null }) => Promise<string | null>;
   retryOptions?: RetryOptions;
+  /**
+   * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): board origin for the check
+   * run's `details_url` (e.g. `https://board.example.com`); the run then links
+   * to `/issues/<id>`. Null/undefined leaves `details_url` out.
+   */
+  boardBaseUrl?: string | null;
+}
+
+/**
+ * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): writes the board's own check run
+ * ("Board review") on the reviewed head commit — `success` after an approval,
+ * `failure` after a changes-requested decision — with `details_url` pointing at
+ * the board issue.
+ *
+ * Degradation: the permission is part D; until the App installation holds
+ * `checks:write`, GitHub answers 403/404. That is warned and journalled as
+ * `myrmidon.pr_approval.failed` (reason `check_run_failed`), never raised —
+ * the review itself already succeeded and the propagation must not fail the
+ * review flow because of a missing permission. Network/transport errors
+ * (`executeWithRetry` exhaustion) degrade the same way.
+ *
+ * Idempotency: when the client can list check runs, an existing run of the
+ * same name on the same head skips the POST, so a repeated APPROVE of one head
+ * never accumulates duplicate "Board review" runs on that commit.
+ */
+async function upsertBoardReviewCheckRun(
+  deps: PropagateReviewApprovalDeps,
+  input: PropagateReviewApprovalInput,
+  boardBaseUrl: string | null | undefined,
+  client: GitHubApprovalClient,
+  tokenProvider: NonNullable<PropagateReviewApprovalDeps["tokenProvider"]>,
+  repository: string,
+  headSha: string,
+  reviewDecision: "approved" | "changes_requested",
+): Promise<{ created: boolean; failed: boolean; skippedDuplicate: boolean }> {
+  if (typeof client.createCheckRun !== "function") return { created: false, failed: false, skippedDuplicate: false };
+
+  const token = await tokenProvider(input.companyId, repository, {
+    agentId: input.actor?.agentId ?? null,
+    runId: input.actor?.runId ?? null,
+    issueId: input.issueId ?? null,
+  });
+  if (!token) {
+    logger.warn({ repository, headSha }, "board review check run skipped: no GitHub token");
+    return { created: false, failed: false, skippedDuplicate: false };
+  }
+
+  const desiredConclusion = reviewDecision === "approved" ? "success" : "failure";
+  try {
+    if (typeof client.listCheckRuns === "function") {
+      const existing = await executeWithRetry(
+        () => client.listCheckRuns!({ repository, headSha, name: BOARD_REVIEW_CHECK_RUN_NAME, token }),
+        deps.retryOptions,
+      );
+      if (existing.some((run) => run.conclusion === desiredConclusion)) {
+        return { created: false, failed: false, skippedDuplicate: true };
+      }
+    }
+
+    const summary = reviewDecision === "approved"
+      ? "Review decision: APPROVE. The formal board review approved the pull request head."
+      : "Review decision: REQUEST CHANGES. The formal board review requested changes on the pull request head.";
+    const detailsUrl = input.issueId && boardBaseUrl
+      ? new URL(`/issues/${input.issueId}`, boardBaseUrl).toString()
+      : undefined;
+
+    await executeWithRetry(
+      () =>
+        client.createCheckRun!({
+          repository,
+          headSha,
+          name: BOARD_REVIEW_CHECK_RUN_NAME,
+          conclusion: desiredConclusion,
+          detailsUrl,
+          title: `Board review: ${reviewDecision === "approved" ? "approved" : "changes requested"}`,
+          summary,
+          token,
+        }),
+      deps.retryOptions,
+    );
+    return { created: true, failed: false, skippedDuplicate: false };
+  } catch (err) {
+    logger.warn({ err, repository, headSha, name: BOARD_REVIEW_CHECK_RUN_NAME }, "failed to create the Board review check run");
+    if (input.issueId) {
+      await logActivity(deps.db, {
+        companyId: input.companyId,
+        actorType: input.actor?.actorType ?? "system",
+        actorId: input.actor?.actorId ?? "system",
+        agentId: input.actor?.agentId ?? null,
+        runId: input.actor?.runId ?? null,
+        action: PR_APPROVAL_ACTIVITY_FAILED,
+        entityType: "issue",
+        entityId: input.issueId,
+        details: {
+          repository,
+          headSha,
+          name: BOARD_REVIEW_CHECK_RUN_NAME,
+          reason: "check_run_failed",
+          error: err instanceof Error ? err.message : String(err),
+        },
+      }).catch(() => {});
+    }
+    return { created: false, failed: true, skippedDuplicate: false };
+  }
+}
+
+/** Flat `checkRunCreated`/`checkRunFailed` fields for a propagation result. */
+function checkRunFields(outcome: { created: boolean; failed: boolean }): Pick<PropagateReviewApprovalResult, "checkRunCreated" | "checkRunFailed"> {
+  return { checkRunCreated: outcome.created, checkRunFailed: outcome.failed };
 }
 
 /**
@@ -450,6 +652,7 @@ export async function propagateReviewApprovalToPullRequest(
 ): Promise<PropagateReviewApprovalResult> {
   const client = deps.client ?? createDefaultGitHubApprovalClient();
   const tokenProvider = deps.tokenProvider ?? ((c, r, identity) => resolveGitHubTokenForApproval(deps.db, c, r, identity));
+  const boardBaseUrl = deps.boardBaseUrl ?? resolveBoardPublicBaseUrl();
 
   // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): an explicit structured record
   // wins; a record may also arrive via the issue's execution state when the
@@ -457,11 +660,20 @@ export async function propagateReviewApprovalToPullRequest(
   // legacy text parsing below stays as the fallback for old tickets.
   const verdictRecord = input.verdictRecord ?? null;
 
-  // Requirement 3: Negative path verification
+  // Negative path verification
   const isNonApproval = verdictRecord
     ? verdictRecord.reviewDecision !== "approved"
     : (input.decisionOutcome != null && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) ||
       (input.verdictBody != null && NON_APPROVAL_VERDICT_PATTERN.test(input.verdictBody));
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): a REQUEST CHANGES decision
+  // still lands on GitHub — as the same check run with `conclusion: failure`
+  // on the current head — so the checks UI shows a red "Board review" instead
+  // of a stale green one. Everything past the decision below is therefore
+  // shared; only the check-run conclusion differs. `reviewDecision` names the
+  // formal outcome the check mirrors ("approved" | "changes_requested").
+  const reviewDecision: "approved" | "changes_requested" = isNonApproval
+    ? "changes_requested"
+    : "approved";
   if (isNonApproval) {
     if (input.issueId) {
       await logActivity(deps.db, {
@@ -479,7 +691,6 @@ export async function propagateReviewApprovalToPullRequest(
         },
       }).catch(() => {});
     }
-    return { success: false, action: "skipped", reason: "non_approval" };
   }
 
   // Determine target PR coordinates and reviewed head. The structured record's
@@ -572,6 +783,17 @@ export async function propagateReviewApprovalToPullRequest(
 
   if (!targetRepo || !targetNumber) {
     return { success: false, action: "skipped", reason: "no_linked_pr" };
+  }
+
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): a non-approval decision
+  // without an explicitly declared head (input field, structured verdict
+  // record) stays a silent legacy skip with no GitHub calls — the text-parsed
+  // fallback heads of old RETURN tickets are not check-run material. Only a
+  // formal decision that names the head it judged continues past the head
+  // guard below and lands the red "Board review" check there.
+  const explicitReviewedHead = input.reviewedHeadSha ?? input.headSha ?? verdictRecord?.headSha ?? null;
+  if (isNonApproval && !explicitReviewedHead) {
+    return { success: false, action: "skipped", reason: "non_approval" };
   }
 
   // Requirement 5: Authorization check
@@ -726,6 +948,30 @@ export async function propagateReviewApprovalToPullRequest(
       reviewedHeadSha: reviewedHead ?? undefined,
     };
   }
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the guard above verified the
+  // verdict's head reference matches the current PR head, so the check run
+  // lands exactly on the head the reviewer saw. GitHub's check-run API needs
+  // the full 40-character commit SHA, so post `prDetails.headSha`, never the
+  // possibly short prefix parsed from the verdict.
+  const checkRunHeadSha = prDetails.headSha;
+
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): a REQUEST CHANGES decision
+  // never adds the `review-approved` label or an approving review — GitHub gets
+  // only the red "Board review" check run (conclusion: failure) on the reviewed
+  // head, so the checks UI shows the rejection instead of a stale green check.
+  if (reviewDecision === "changes_requested") {
+    const upsertOutcome = await upsertBoardReviewCheckRun(deps, input, boardBaseUrl, client, tokenProvider, targetRepo, checkRunHeadSha, reviewDecision);
+    return {
+      success: !upsertOutcome.failed,
+      action: "skipped",
+      reason: "non_approval",
+      repository: targetRepo,
+      pullRequestNumber: targetNumber,
+      currentHeadSha: prDetails.headSha,
+      reviewedHeadSha: reviewedHead ?? prDetails.headSha,
+      ...(checkRunFields(upsertOutcome)),
+    };
+  }
 
   // Requirement 4: Idempotency & Recovery
   const alreadyLabeled = prDetails.labels.includes(REVIEW_APPROVED_LABEL);
@@ -791,6 +1037,7 @@ export async function propagateReviewApprovalToPullRequest(
 
   // If already labeled, and either client cannot inspect reviews or an approving review is already present: complete no-op
   if (alreadyLabeled && !labelReseated && (!canCheckReviews || alreadyHasApprovedReview)) {
+    const upsertOutcome = await upsertBoardReviewCheckRun(deps, input, boardBaseUrl, client, tokenProvider, targetRepo, checkRunHeadSha, reviewDecision);
     return {
       success: true,
       action: "noop",
@@ -799,6 +1046,7 @@ export async function propagateReviewApprovalToPullRequest(
       pullRequestNumber: targetNumber,
       currentHeadSha: prDetails.headSha,
       reviewedHeadSha: reviewedHead ?? prDetails.headSha,
+      ...(checkRunFields(upsertOutcome)),
     };
   }
 
@@ -866,6 +1114,7 @@ export async function propagateReviewApprovalToPullRequest(
   }
 
   // Requirement 5: Audit trail in activity log
+  const upsertOutcome = await upsertBoardReviewCheckRun(deps, input, boardBaseUrl, client, tokenProvider, targetRepo, checkRunHeadSha, reviewDecision);
   if (input.issueId) {
     await logActivity(deps.db, {
       companyId: input.companyId,
@@ -883,6 +1132,8 @@ export async function propagateReviewApprovalToPullRequest(
         reviewedHeadSha: reviewedHead ?? prDetails.headSha,
         labelAdded,
         reviewSubmitted,
+        checkRunCreated: upsertOutcome.created,
+        checkRunFailed: upsertOutcome.failed,
       },
     }).catch(() => {});
   }
@@ -896,6 +1147,7 @@ export async function propagateReviewApprovalToPullRequest(
     reviewedHeadSha: reviewedHead ?? prDetails.headSha,
     labelAdded,
     reviewSubmitted,
+    ...(checkRunFields(upsertOutcome)),
   };
 }
 
