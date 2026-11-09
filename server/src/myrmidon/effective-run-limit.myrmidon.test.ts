@@ -51,7 +51,7 @@ describe("savedAgentRunLimits", () => {
   it("treats missing, zero, and junk ceilings as unknown so they clamp nothing", () => {
     for (const adapterConfig of [
       {},
-      { container: { enabled: true, memoryMb: 1024 } },
+      { container: { enabled: true } },
       { container: { memoryMb: 0, maxConcurrentRuns: 0 } },
       { container: { memoryMb: "big", maxConcurrentRuns: "many" } },
       null,

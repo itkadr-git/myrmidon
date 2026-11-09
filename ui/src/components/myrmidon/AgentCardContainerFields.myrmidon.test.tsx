@@ -439,13 +439,14 @@ describe("myrmidon(CONCURRENCY-SYNC) limit block", () => {
   });
 
   it("shows the effective ceiling the scheduler admits against (1.6.7 RUN-LIMITS)", () => {
-    const effective = concurrencyView({
-      ...STATUS,
-      effectiveMaxConcurrentRuns: 1,
-      effectiveMaxConcurrentRunsSource: "memory",
+    renderView({
+      status: {
+        ...STATUS,
+        effectiveMaxConcurrentRuns: 1,
+        effectiveMaxConcurrentRunsSource: "memory",
+      },
     });
-    expect(effective?.effective).toBe("Effective: 1 (limited by the container memory)");
-    expect(document.body.textContent).toContain("Effective: 1 (limited by the container memory)");
+    expect(text("concurrency-effective")).toBe("Effective: 1 (limited by the container memory)");
 
     const byGateway = concurrencyView({
       ...STATUS,
