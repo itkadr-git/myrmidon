@@ -105,4 +105,4 @@
 интервал по умолчанию — 15 минут, срок хранения — 36 часов. Оба значения
 читаются при старте. Число и объём удалений, а также оставшийся объём
 доступны на `/metrics`. Подробнее — в
-[журнале изменений](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-6-6-tmp-hygiene-run-scratch-sweeper.md).
+[журнале изменений](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.ru.md).

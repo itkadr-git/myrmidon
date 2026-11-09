@@ -102,4 +102,4 @@ run-marker file older than the configured TTL; unmarked directories are left
 alone. The first sweep runs at startup; the interval defaults to 15 minutes
 and the TTL to 36 hours. Both are read at startup. Removal counts, bytes, and
 remaining volume are exposed on `/metrics`. See the
-[changelog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-6-6-tmp-hygiene-run-scratch-sweeper.md).
+[changelog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.md).
