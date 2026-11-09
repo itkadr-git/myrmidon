@@ -301,7 +301,11 @@ import {
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 // myrmidon(1.6.4-BOT-CONTAINER-CARD): a container block without enabled/limits is refused on save
 import { botContainerCardSaveProblem, botKeyForAgent } from "../myrmidon/bot-containers/agent-config.js";
-import { botResourceCeilingProblem, readBotResourceCeilings } from "../myrmidon/bot-containers/resource-ceilings.js";
+import {
+  type BotResourceCeilings,
+  botResourceCeilingProblem,
+  readBotResourceCeilings,
+} from "../myrmidon/bot-containers/resource-ceilings.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
