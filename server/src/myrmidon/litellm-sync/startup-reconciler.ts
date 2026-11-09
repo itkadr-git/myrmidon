@@ -51,6 +51,14 @@ export interface LitellmReconcilePorts {
   };
 }
 
+/** One company secret by name -> its latest value; null when the company has no such secret. */
+async function readCompanySecretValue(db: Db, companyId: string, secretName: string): Promise<string | null> {
+  const secrets = secretService(db);
+  const row = await secrets.getByName(companyId, secretName);
+  if (!row) return null;
+  return secrets.resolveSecretValue(companyId, row.id, "latest");
+}
+
 const defaultPorts: LitellmReconcilePorts = {
   async listCompanyIds(db) {
     const rows = await db.select({ id: companies.id }).from(companies).where(isNotNull(companies.id));

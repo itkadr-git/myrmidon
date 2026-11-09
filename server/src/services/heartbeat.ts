@@ -20693,7 +20693,13 @@ export function heartbeatService(
   const autoResumeSweeper = createAutoResumeSweeper({
     db,
     readLiveness: teamLivenessRead,
-    resumeWake: (agentId) => pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId),
+    resumeWake: (agentId) =>
+      pauseResumeWakeAgent(
+        // myrmidon(OPE-12274): through the dispatcher — the role gate decides
+        // whether this process promotes the queued run or publishes the wake.
+        { db, startNextQueuedRunForAgent: (id) => runStartDispatcher.dispatchRunStart(id), enqueueWakeup },
+        agentId,
+      ),
     logActivity: async (input) => {
       await logActivity(db, {
         companyId: input.companyId,

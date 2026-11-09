@@ -54,6 +54,7 @@ import {
   type CorpusUrlFetcher,
 } from "./source-fetch.js";
 import { refreshSourceDocuments } from "./source.js";
+import { CORPUS_STEP_TIMINGS_SAMPLE_ENV, createStepTimingsSampler, readStepTimingsSample } from "./step-timings.js";
 
 /** `instance.corpus.settings_updated` — the audit action of a settings change. */
 export const CORPUS_SETTINGS_ACTION = "instance.corpus.settings_updated";
@@ -239,6 +240,9 @@ function toDocument(record: CorpusDocumentRecord): CorpusDocument {
 function toJob(record: CorpusJobRecord): CorpusParseJob {
   return { ...record };
 }
+
+// One counter for the whole process: every N-th REST search writes its step timings on the info log.
+const searchTimingsSampler = createStepTimingsSampler();
 
 let corpusTransitionQueue: Promise<void> = Promise.resolve();
 

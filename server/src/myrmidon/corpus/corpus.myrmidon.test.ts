@@ -167,6 +167,11 @@ function corpusHarness(
       async listDatasets(companyId) {
         return [...state.datasets.values()].filter((row) => row.companyId === companyId);
       },
+      async listDatasetNames(companyId) {
+        return [...state.datasets.values()]
+          .filter((row) => row.companyId === companyId)
+          .map((row) => ({ id: row.id, name: row.name }));
+      },
       async getDataset(companyId, datasetId) {
         return datasetOf(companyId, datasetId);
       },
@@ -1074,6 +1079,37 @@ describe("corpus API: upload, parse and search", () => {
     // The counters the screen reads follow the same rows.
     const stats = (await request(app).get(`${companyPath()}/stats`)).body.stats;
     expect(stats).toMatchObject({ datasets: 1, documents: 1, ready: 1, pending: 0, failed: 0, chunks: 1, bytes: 12 });
+  });
+
+  // OPE-12272: a REST search checks the dataset by id (`hasDataset`) and reads the names of its hits in one
+  // query. It must not run `listDatasets`, which counts the documents and chunks of every dataset.
+  it("searches without listing the datasets with their counters, and its answer does not change", async () => {
+    const h = enabled();
+    h.seedDataset();
+    const app = h.app();
+    const uploaded = await upload(app);
+    await h.worker.sweep();
+    const listDatasets = h.ports.store.listDatasets;
+    let listed = 0;
+    h.ports.store.listDatasets = async (companyId) => {
+      listed += 1;
+      return listDatasets(companyId);
+    };
+
+    const found = await request(app)
+      .post(`${companyPath()}/datasets/${DATASET_ID}/search`)
+      .send({ query: "corpus" });
+
+    expect(found.status).toBe(200);
+    expect(listed).toBe(0);
+    expect(found.body).toMatchObject({ datasetId: DATASET_ID, query: "corpus", mode: "hybrid", limit: 5 });
+    expect(found.body.hits).toHaveLength(1);
+    expect(found.body.hits[0]).toMatchObject({ text: "hello corpus", score: 0.9, documentName: "notes.txt", documentId: uploaded.body.document.id });
+
+    // The listing that does count is still there for the screen.
+    const datasets = await request(app).get(`${companyPath()}/datasets`);
+    expect(datasets.status).toBe(200);
+    expect(listed).toBe(1);
   });
 
   it("retries a failed parse and gives up on the last attempt", async () => {

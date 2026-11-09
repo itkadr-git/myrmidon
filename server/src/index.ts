@@ -1336,7 +1336,11 @@ async function startServerWithDatabaseTeardown(
   let startupListenerBound = false;
   try {
   // myrmidon(OPE-11755): runnerd is local; bind its URL to the actual listening socket.
-  if (processRoleProfile.role === "all") {
+  // myrmidon(OPE-12274): `executesRuns` roles own runnerd registrations (worker in
+  // single mode serves the public port itself), so the PRP upgrade handler must
+  // live on the primary listener there too — in worker mode `openWorkerLoopbackListener`
+  // opens nothing and `runner_prp_websocket_server_not_configured` fired on every session.
+  if (processRoleProfile.executesRuns || processRoleProfile.role === "all") {
     setupRunnerPrpWebSocketServer(server);
   }
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {

@@ -6,8 +6,21 @@
 // model set: when models are enabled/disabled in the provider registry (or
 // reconciled at startup), every agent key that exists is updated through the
 // gateway's `/key/update` with `models` — the allowlist the key may call.
-// `/key/update` with the alias but no `key` field keeps the installed value,
-// so an agent's stored secret never needs a rotation to change its allowlist.
+// `/key/update` is a merge patch, so an agent's stored secret never needs a
+// rotation to change its allowlist.
+//
+// Where an agent's key is found (first hit wins):
+//  1. the card's env binding `adapter_config.env.MYRMIDON_LLM_API_KEY` (or the
+//     env name `MYRMIDON_LITELLM_AGENT_KEY_ENV` names) — a `secret_ref` to the
+//     company secret that carries the key the bot authenticates with;
+//  2. the card's `apiKey` binding, a `secret_ref` too, when the card has no env
+//     binding;
+//  3. the board-managed secret `llm-gateway-key-<name>-<id>` that
+//     `createAgentGatewayKey` writes (addressed by its alias, as before).
+// Bindings 1 and 2 are followed to the secret VALUE; the gateway is addressed
+// by its sha256 (`/key/update` `key`): LiteLLM v1.104.1 reads a `key` that does
+// not start with "sk-" as an already-hashed token, and the board's keys are
+// 64 hex characters, so only the hash is correct for every key shape.
 //
 // Rules this module keeps:
 //  - The admin key is a company secret NAME in the env
@@ -27,6 +40,7 @@
 //    enabled registry model to every restricted key, which can widen a curated
 //    list, so it is never a side effect.
 
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { agents, modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { agentKeySecretName, DISABLED_MODEL_SENTINEL, readGatewayKeySettings } from "@myrmidon/shared";
@@ -175,7 +189,7 @@ export async function updateAgentAllowlistsForCompany(
     return skip("gateway-port-without-allowlist-support");
   }
   const companyAgents = await db
-    .select({ id: agents.id, name: agents.name })
+    .select({ id: agents.id, name: agents.name, adapterConfig: agents.adapterConfig })
     .from(agents)
     .where(eq(agents.companyId, companyId));
 
@@ -184,12 +198,18 @@ export async function updateAgentAllowlistsForCompany(
   const skipped: string[] = [];
   const report = emptyReport();
   for (const agent of companyAgents) {
-    const alias = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
-    // An agent without a managed key yet has no allowlist to update; creating
-    // keys is M2-B's job (the board), not this pass's.
-    const secretId = await agentGatewayKeys.findSecretId(companyId, alias);
-    if (!secretId) {
-      skipped.push(`agent-without-key:${agent.id}`);
+    let found: Awaited<ReturnType<typeof resolveAgentKeyRef>>;
+    try {
+      found = await resolveAgentKeyRef(agentGatewayKeys, companyId, agent, settings.agentKeyEnv);
+    } catch {
+      // A secret store hiccup on one agent never stops the pass; the value is
+      // never part of any error text.
+      skipped.push(`key-lookup-failed:${agent.id}`);
+      continue;
+    }
+    const { ref } = found;
+    if (!ref) {
+      skipped.push(found.bindingUnresolved ? `key-binding-unresolved:${agent.id}` : `agent-without-key:${agent.id}`);
       continue;
     }
     attempted += 1;
@@ -198,7 +218,7 @@ export async function updateAgentAllowlistsForCompany(
         skipped.push(`gateway-port-without-key-info:${agent.id}`);
         continue;
       }
-      const keyInfo = await gateway.getKeyInfo({ alias });
+      const keyInfo = await gateway.getKeyInfo(keyAddress(ref));
       if (!keyInfo) {
         skipped.push(`alias-unknown-to-gateway:${agent.id}`);
         continue;
@@ -267,7 +287,7 @@ export async function updateAgentGatewayKeyWithAllowlist(
   allowlist: { models: string[] },
 ): Promise<{ secretName: string; applied: boolean }> {
   const rows = await agentGatewayKeys.db
-    .select({ id: agents.id, name: agents.name })
+    .select({ id: agents.id, name: agents.name, adapterConfig: agents.adapterConfig })
     .from(agents)
     .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
     .limit(1);
@@ -297,8 +317,11 @@ export async function updateAgentGatewayKeyWithAllowlist(
     throw unprocessable("gateway port cannot update key allowlists", { code: "gateway_allowlist_unsupported" });
   }
 
+  // The card's key binding, when it has one, addresses the key by hash; else
+  // the derived alias, as before.
+  const { ref } = await resolveAgentKeyRef(agentGatewayKeys, input.companyId, agent, settings.agentKeyEnv);
   const applied = await gateway.setKeyAllowedModels({
-    alias,
+    ...(ref ? keyAddress(ref) : { alias }),
     // Same live-verified hazard as the company pass: models: [] REMOVES the
     // gateway's restrictions instead of denying everything (LiteLLM v1.103.2),
     // so an empty request is translated into the unregistered sentinel.

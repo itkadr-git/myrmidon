@@ -41,7 +41,10 @@ const hostProfileInput: HermesProfileInput = {
 };
 describe("T3 regressions against production profile, placement, routing and drift helpers", () => {
   it("parses the synthetic T3 host fixture", () => {
-    expect(parseFleetHosts(JSON.stringify([T3_A_FIXTURE])).get("t3-a")).toMatchObject({ name: "t3-a", url: T3_A_FIXTURE.url, llmBaseUrl: T3_A_FIXTURE.llmBaseUrl, mcpEndpoints: T3_A_FIXTURE.mcpEndpoints });
+    // Plain http in MYRMIDON_FLEET_HOSTS is accepted for a private IP literal only, and the fixture's example.test names are DNS names.
+    const privateFixture = { ...T3_A_FIXTURE, url: "http://10.0.3.10:9100", hindsightUrl: "http://10.0.3.11:8890", llmBaseUrl: "http://10.0.3.12:4000" };
+    expect(parseFleetHosts(JSON.stringify([privateFixture])).get("t3-a")).toMatchObject({ name: "t3-a", url: privateFixture.url, llmBaseUrl: privateFixture.llmBaseUrl, mcpEndpoints: T3_A_FIXTURE.mcpEndpoints });
+    expect(() => parseFleetHosts(JSON.stringify([T3_A_FIXTURE]))).toThrow(/private IP address/);
   });
   it("preserves no-host local compatibility", () => {
     const local = { hindsightUrl: "http://local-hindsight", llmBaseUrl: "http://local-llm", volumeRoot: "/local", network: "local-net", imageAllowlist: [], boardHost: "board-local" };

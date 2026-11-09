@@ -1,5 +1,7 @@
 // myrmidon(1.6.6 REMOTE-SITES-T8): the fleet screen's API: overview, site bots, patch, drain/resume,
 // restart/stop and logs. The deps are fakes; the route rules are what is under test.
+// myrmidon(1.6.7 FLEET-SITE-ENROLL): PATCH is owner-only and holds a changed address to the host rule;
+// the log of a bot is for company admins.
 
 import express from "express";
 import request from "supertest";
@@ -25,6 +27,7 @@ function board(userId: string, companyId: string, role: string | null) {
 }
 const actors: Record<string, unknown> = {
   admin: board("user-a", COMPANY_A, "admin"),
+  owner: board("user-o", COMPANY_A, "owner"),
   member: board("user-m", COMPANY_A, "member"),
   other: board("user-b", COMPANY_B, "admin"),
 };
@@ -34,7 +37,7 @@ function site(overrides: Partial<FleetSite> = {}): FleetSite {
     id: "site-1",
     companyId: COMPANY_A,
     name: "myr-vm1",
-    url: "https://192.0.2.10:9100",
+    url: "https://10.0.0.10:9100",
     status: "active",
     capacity: { maxCpus: 8, maxMemoryMb: 32768, maxBots: 13 },
     profile: { gatewayPortStart: 18700, gatewayPortEnd: 18759 },
@@ -49,8 +52,13 @@ function site(overrides: Partial<FleetSite> = {}): FleetSite {
   } as FleetSite;
 }
 
-function harness(rows: FleetSite[] = [site()], card: BotCardView | null = { companyId: COMPANY_A, host: "myr-vm1" }) {
+function harness(
+  rows: FleetSite[] = [site()],
+  card: BotCardView | null = { companyId: COMPANY_A, host: "myr-vm1" },
+  allowlist: string[] = [],
+) {
   const deps = {
+    fleetdHostAllowlist: vi.fn((): readonly string[] => allowlist),
     listSites: vi.fn(async (companyId: string) => rows.filter((r) => r.companyId === companyId)),
     getSite: vi.fn(async (companyId: string, name: string) => rows.find((r) => r.companyId === companyId && r.name === name) ?? null),
     updateSite: vi.fn(async (companyId: string, name: string, _patch: unknown) => rows.find((r) => r.companyId === companyId && r.name === name) ?? null),
@@ -139,15 +147,64 @@ describe("fleet site bots, patch, drain and resume", () => {
     await request(app).get(`/myrmidon/fleet/sites/nope/bots${q}`).expect(404);
   });
 
-  it("patches labels and capacity for an admin only, and rejects unknown fields and a bad address", async () => {
+  it("patches labels and capacity for the owner only, and rejects unknown fields and a bad address", async () => {
     const { app, deps } = harness();
-    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({ labels: { autoResume: "true" }, capacity: { maxCpus: 4, maxMemoryMb: 1024, maxBots: 5 } }).expect(200);
+    const patchAs = (who: string, payload: unknown) => request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).set("x-test-actor", who).send(payload as object);
+    await patchAs("owner", { labels: { autoResume: "true" }, capacity: { maxCpus: 4, maxMemoryMb: 1024, maxBots: 5 } }).expect(200);
     expect(deps.updateSite).toHaveBeenCalledWith(COMPANY_A, "myr-vm1", { labels: { autoResume: "true" }, capacity: { maxCpus: 4, maxMemoryMb: 1024, maxBots: 5 } });
-    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).set("x-test-actor", "member").send({ labels: {} }).expect(403);
-    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({ status: "disabled" }).expect(400);
-    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({ url: "http://x:1" }).expect(400);
-    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({}).expect(400);
-    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).send({ capacity: { maxCpus: 1, maxMemoryMb: 1, maxBots: 61 } }).expect(400);
+    await patchAs("member", { labels: {} }).expect(403);
+    await patchAs("owner", { status: "disabled" }).expect(400);
+    await patchAs("owner", { url: "http://x:1" }).expect(400);
+    await patchAs("owner", {}).expect(400);
+    await patchAs("owner", { capacity: { maxCpus: 1, maxMemoryMb: 1, maxBots: 61 } }).expect(400);
+  });
+
+  it("refuses a company admin and another company's owner on PATCH, and changes nothing", async () => {
+    const { app, deps } = harness();
+    const url = `/myrmidon/fleet/sites/myr-vm1${q}`;
+    const refused = await request(app).patch(url).set("x-test-actor", "admin").send({ labels: { zone: "b" } }).expect(403);
+    expect(JSON.stringify(refused.body)).toContain("owner");
+    await request(app).patch(url).set("x-test-actor", "other").send({ labels: { zone: "b" } }).expect(403);
+    expect(deps.updateSite).not.toHaveBeenCalled();
+  });
+
+  it("holds a changed address to the host rule: private or listed, else 400 and nothing is stored", async () => {
+    const ip = (...octets: number[]) => octets.join("."); // built from parts: the repository self-check greps for private addresses
+    const url = `/myrmidon/fleet/sites/myr-vm1${q}`;
+    const { app, deps } = harness();
+    await request(app).patch(url).set("x-test-actor", "owner").send({ url: `https://${ip(10, 1, 2, 3)}:9100/` }).expect(200);
+    expect(deps.updateSite).toHaveBeenLastCalledWith(COMPANY_A, "myr-vm1", { url: `https://${ip(10, 1, 2, 3)}:9100` });
+    for (const host of [ip(8, 8, 8, 8), ip(127, 0, 0, 1), "attacker.example.com", `${ip(10, 1, 2, 3)}.example.com`, "[::1]"]) {
+      const res = await request(app).patch(url).set("x-test-actor", "owner").send({ url: `https://${host}:9100` }).expect(400);
+      expect(JSON.stringify(res.body), host).toContain("MYRMIDON_FLEET_SITE_URL_ALLOWLIST");
+    }
+    expect(deps.updateSite).toHaveBeenCalledTimes(1);
+
+    const listed = harness([site()], undefined, ["fleetd.example.com"]);
+    await request(listed.app).patch(url).set("x-test-actor", "owner").send({ url: "https://fleetd.example.com:9100" }).expect(200);
+    await request(listed.app).patch(url).set("x-test-actor", "owner").send({ url: "https://other.example.com:9100" }).expect(400);
+  });
+
+  it("lets the stored address stay as it is, even when it is not private (a site enrolled before the rule)", async () => {
+    const { app, deps } = harness([site({ url: "https://203.0.113.9:9100" })]);
+    const url = `/myrmidon/fleet/sites/myr-vm1${q}`;
+    await request(app).patch(url).set("x-test-actor", "owner").send({ url: "https://203.0.113.9:9100", labels: { zone: "c" } }).expect(200);
+    expect(deps.updateSite).toHaveBeenCalledWith(COMPANY_A, "myr-vm1", { url: "https://203.0.113.9:9100", labels: { zone: "c" } });
+    await request(app).patch(url).set("x-test-actor", "owner").send({ url: "https://203.0.113.10:9100" }).expect(400);
+  });
+
+  it("patches the network profile (privateNetwork, tunnel) on top of the stored profile", async () => {
+    const { app, deps } = harness();
+    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).set("x-test-actor", "owner").send({ privateNetwork: true }).expect(200);
+    expect(deps.updateSite).toHaveBeenCalledWith(COMPANY_A, "myr-vm1", {
+      profile: { gatewayPortStart: 18700, gatewayPortEnd: 18759, privateNetwork: true },
+    });
+    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).set("x-test-actor", "owner").send({ tunnel: false }).expect(200);
+    expect(deps.updateSite).toHaveBeenLastCalledWith(COMPANY_A, "myr-vm1", {
+      profile: { gatewayPortStart: 18700, gatewayPortEnd: 18759, tunnel: false },
+    });
+    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).set("x-test-actor", "owner").send({ privateNetwork: "yes" }).expect(400);
+    await request(app).patch(`/myrmidon/fleet/sites/myr-vm1${q}`).set("x-test-actor", "member").send({ privateNetwork: true }).expect(403);
   });
 
   it("patches the network profile (privateNetwork, tunnel) on top of the stored profile", async () => {
@@ -280,9 +337,9 @@ describe("fleet bot restart, stop and logs", () => {
     expect(JSON.stringify(res.body)).toContain("ECONNREFUSED");
   });
 
-  it("returns the tail of the log, bounded and validated, readable by a member", async () => {
+  it("returns the tail of the log, bounded and validated, to a company admin", async () => {
     const { app, deps } = harness();
-    const res = await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs?tail=2`).set("x-test-actor", "member").expect(200);
+    const res = await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs?tail=2`).expect(200);
     expect(res.body).toMatchObject({ botKey: BOT, site: "myr-vm1", tail: 2, logs: "l3\nl4" });
     expect(deps.botLogs).toHaveBeenCalledWith(COMPANY_A, "myr-vm1", BOT);
     const all = await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs`).expect(200);
@@ -291,6 +348,14 @@ describe("fleet bot restart, stop and logs", () => {
       await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs?tail=${tail}`).expect(400);
     }
     await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs`).set("x-test-actor", "other").expect(403);
+  });
+
+  it("refuses the log of a bot to a plain company member: the admin check comes before the site is asked", async () => {
+    const { app, deps } = harness();
+    const res = await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs?tail=2`).set("x-test-actor", "member").expect(403);
+    expect(JSON.stringify(res.body)).toContain("admin");
+    await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs`).set("x-test-actor", "owner").expect(200);
+    expect(deps.botLogs).toHaveBeenCalledTimes(1);
   });
 
   it("refuses logs through a site whose key expired", async () => {

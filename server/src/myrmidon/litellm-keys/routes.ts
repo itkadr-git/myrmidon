@@ -30,7 +30,8 @@ import {
   type AgentGatewayKeyDeps,
 } from "./agent-keys.js";
 import { readGatewayFallbackTopology, updateGatewayFallbackTopology } from "./fallback-cycles.js";
-import { listLitellmModels } from "../litellm-costs/litellm-costs.js";
+import { listLitellmModels, type LitellmModelView } from "../litellm-costs/litellm-costs.js";
+import { GATEWAY_NOT_CONFIGURED_CODE } from "../litellm-sync/config-client.js";
 import type { FallbackChain, KnownModelInfo } from "@myrmidon/shared";
 import { readCompanyKeyBudgets } from "./key-budget-adapter.js";
 import { createLiteLlmAuditService } from "../litellm-audit/service.js";
@@ -40,6 +41,33 @@ import { withCompanySyncGuard } from "../litellm-sync/lock.js";
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
   env?: NodeJS.ProcessEnv;
+  /**
+   * The model catalog the fallback checks read. Absent: the latest rows of the
+   * cost sweep's catalog.
+   */
+  listModels?: () => Promise<LitellmModelView[]>;
+}
+
+/**
+ * The fallback topology of a request body: a list of `{model, targets}`.
+ * Anything else is a 400 — an absent list must never read as "clear every
+ * chain", because the write replaces the gateway's whole list.
+ */
+function readChainsBody(body: unknown): FallbackChain[] {
+  const raw = (body as { chains?: unknown } | null | undefined)?.chains;
+  if (!Array.isArray(raw)) throw badRequest("chains must be a list of {model, targets} entries");
+  return raw.map((entry, index) => {
+    const model = (entry as { model?: unknown } | null)?.model;
+    const targets = (entry as { targets?: unknown } | null)?.targets;
+    if (
+      typeof model !== "string" ||
+      !Array.isArray(targets) ||
+      targets.some((target) => typeof target !== "string")
+    ) {
+      throw badRequest(`chains[${index}] must have a model name and a list of target names`);
+    }
+    return { model, targets: targets as string[] };
+  });
 }
 
 export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
@@ -50,6 +78,20 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   const disabled = (res: Response) => {
     res.status(503).json({ error: "LLM gateway key management is not enabled", enabled: false });
   };
+  /**
+   * The fallback endpoints answer the same 503 with a code and the names of
+   * the missing settings, so the screen can say what to set.
+   */
+  const gatewayNotConfigured = (res: Response, current: GatewayKeySettings) => {
+    const missing = missingGatewayEnv(current);
+    res.status(503).json({
+      error: `LLM gateway fallback management is not enabled: set ${missing.join(" and ")}`,
+      code: GATEWAY_NOT_CONFIGURED_CODE,
+      enabled: false,
+      missing,
+    });
+  };
+  const listCatalog = input.listModels ?? (() => listLitellmModels(db));
 
   router.get("/myrmidon/companies/:companyId/litellm/keys", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -223,12 +265,12 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     assertCompanyAccess(req, companyId);
     const current = settings();
     if (!current.canManageKeys || !current.baseUrl) {
-      disabled(res);
+      gatewayNotConfigured(res, current);
       return;
     }
-    const report = await readGatewayFallbackTopology({ ...input.deps, db }, { companyId, settings: current });
+    const report = await readGatewayFallbackTopology(input.deps, { companyId, settings: current });
     try {
-      const known = await listLitellmModels(db);
+      const known = await listCatalog();
       report.models = known.map((m) => ({
         modelName: m.modelName,
         provider: m.provider,
@@ -243,8 +285,10 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   });
 
   /**
-   * Updates the gateway's fallback topology via LiteLLM /config/update.
-   * Enforces that fallbacks are acyclic and do not rely on a single provider.
+   * Replaces the gateway's fallback topology through LiteLLM /config/update,
+   * with the whole list. Refuses loops, empty chains, unknown model groups and
+   * an order that breaks the free-first, cheaper-first policy. A fallback
+   * inside one provider is allowed and comes back as a warning.
    */
   router.put("/myrmidon/companies/:companyId/litellm/fallbacks", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -252,14 +296,14 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     assertBoard(req);
     const current = settings();
     if (!current.canManageKeys || !current.baseUrl) {
-      disabled(res);
+      gatewayNotConfigured(res, current);
       return;
     }
 
-    const chains = (req.body?.chains ?? []) as FallbackChain[];
+    const chains = readChainsBody(req.body);
     let catalog: Map<string, KnownModelInfo> | undefined;
     try {
-      const known = await listLitellmModels(db);
+      const known = await listCatalog();
       catalog = new Map(
         known.map((m) => [
           m.modelName,
@@ -276,7 +320,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       catalog = new Map();
     }
 
-    const updated = await updateGatewayFallbackTopology({ ...input.deps, db }, {
+    const updated = await updateGatewayFallbackTopology(input.deps, {
       companyId,
       settings: current,
       chains,

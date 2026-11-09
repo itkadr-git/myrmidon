@@ -83,42 +83,55 @@ function sourceFields(row: { sourceUri: string | null; contentHash: string | nul
 }
 
 // Port objects are created per request; keep the bounded query cache across requests.
-const queryVectors = new Map<string, { expiresAt: number; value: Promise<number[]> }>();
+const queryVectors = createQueryVectorCache();
+// The resolved embedder key outlives the per-request port objects too (see `createEmbedderKeyResolver`).
+const embedderKeys = createEmbedderKeyCache();
+// One counter per kind of timing line: every N-th search writes its step timings on the info log.
+const indexTimingsSampler = createStepTimingsSampler();
+const mcpTimingsSampler = createStepTimingsSampler();
 
 export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Config): CorpusPorts {
   const { settings } = context;
   const store = new PostgresCorpusStore(db as never);
   const queue = new PostgresWorkQueue(db as never);
   const blobs = new LocalBlobStore(path.join(config.storageLocalDiskBaseDir, "corpus"));
+  // OPE-12272: one cheap read finds the embedder secret; its key is resolved through the secrets service
+  // (several reads and an access-event write) only when the cached one is older than the TTL.
+  const embedderKeyResolver = createEmbedderKeyResolver({
+    cache: embedderKeys,
+    findSecret: (companyId) =>
+      db
+        .select({ id: companySecrets.id, latestVersion: companySecrets.latestVersion })
+        .from(companySecrets)
+        .where(
+          and(
+            eq(companySecrets.companyId, companyId),
+            eq(companySecrets.scope, "company"),
+            eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"),
+            eq(companySecrets.status, "active"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+    resolveValue: (companyId, secretId) =>
+      secretService(db).resolveSecretValue(companyId, secretId, "latest", { accessContext: { consumerType: "system", consumerId: "myrmidon-corpus" } }),
+  });
+  const embedderNotConfigured = () =>
+    new CorpusRequestError(
+      422,
+      "corpus_embedder_not_configured",
+      "the corpus embedder is not configured for this company: missing secret MYRMIDON_CORPUS_EMBEDDER_API_KEY",
+      {
+        hint: "Configure the active company secret MYRMIDON_CORPUS_EMBEDDER_API_KEY or set embedderBaseUrl.",
+      },
+    );
   const checkEmbedderConfigured = async (companyId: string, baseUrl: string | null): Promise<void> => {
     if (baseUrl) return;
-    const secretRow = await db
-      .select()
-      .from(companySecrets)
-      .where(
-        and(
-          eq(companySecrets.companyId, companyId),
-          eq(companySecrets.scope, "company"),
-          eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"),
-          eq(companySecrets.status, "active"),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-    if (!secretRow) {
-      throw new CorpusRequestError(
-        422,
-        "corpus_embedder_not_configured",
-        "the corpus embedder is not configured for this company: missing secret MYRMIDON_CORPUS_EMBEDDER_API_KEY",
-        {
-          hint: "Configure the active company secret MYRMIDON_CORPUS_EMBEDDER_API_KEY or set embedderBaseUrl.",
-        },
-      );
-    }
+    if (!(await embedderKeyResolver.findSecret(companyId))) throw embedderNotConfigured();
   };
+  const embedKeyTtlMs = readCacheTtlMs(context.env[CORPUS_EMBED_KEY_CACHE_TTL_ENV], DEFAULT_EMBED_KEY_CACHE_TTL_SEC);
   const embedder = async (companyId: string, baseUrl: string | null, model: string, dimensions: number, input: string[], signal?: AbortSignal): Promise<number[][]> => {
-    await checkEmbedderConfigured(companyId, baseUrl);
-    const secretRow = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"), eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"), eq(companySecrets.status, "active"))).then((rows) => rows[0] ?? null);
-    const apiKey = secretRow ? await secretService(db).resolveSecretValue(companyId, secretRow.id, "latest", { accessContext: { consumerType: "system", consumerId: "myrmidon-corpus" } }) : undefined;
+    const { present, apiKey } = await embedderKeyResolver.resolve(companyId, embedKeyTtlMs);
+    if (!baseUrl && !present) throw embedderNotConfigured();
     const endpoint = baseUrl ?? context.env.MYRMIDON_LLM_GATEWAY_BASE_URL ?? "http://127.0.0.1:3000/v1";
     // The key is resolved once per call; the batches below reuse it.
     const isTransientError = (err: unknown): boolean => {
@@ -167,21 +180,21 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     };
     return embedInBatches({ input, batchSize: CORPUS_EMBED_BATCH_SIZE, embedBatch });
   };
-  const searchIndex = createPostgresSearchIndex({ sql: createSqlExecutor(db) });
+  const searchIndex = createPostgresSearchIndex({
+    sql: createSqlExecutor(db),
+    // The full-text ranking has a time bound. When it is cancelled, the search answers from the vector
+    // ranking alone; say so, because that answer is weaker than a hybrid one.
+    onFullTextTimeout: (event) =>
+      logger.warn(event, "corpus search: the full-text ranking hit its time bound; the vector ranking answered alone"),
+  });
   // Share identical in-flight queries and retain only a small, short-lived set of vectors.
   const queryVector = (input: { companyId: string; query: string; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }): Promise<number[]> => {
-    const key = JSON.stringify([input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.query]);
-    const now = Date.now();
-    const cached = queryVectors.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
-    if (cached) queryVectors.delete(key);
-    const value = embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, [input.query]).then((vectors) => vectors[0]!);
-    queryVectors.set(key, { value, expiresAt: now + 60_000 });
-    void value.catch(() => {
-      if (queryVectors.get(key)?.value === value) queryVectors.delete(key);
-    });
-    while (queryVectors.size > 128) queryVectors.delete(queryVectors.keys().next().value!);
-    return value;
+    const key = queryVectorKey(input);
+    // OPE-12272: the TTL is a setting (default 10 min, 0 = off); the key holds the model and the exact text.
+    const ttlMs = readCacheTtlMs(context.env[CORPUS_QUERY_EMBED_CACHE_TTL_ENV], DEFAULT_QUERY_EMBED_CACHE_TTL_SEC);
+    return queryVectors.get(key, ttlMs, () =>
+      embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, [input.query]).then((vectors) => vectors[0]!),
+    );
   };
   const index = {
     assertEmbedderConfigured: checkEmbedderConfigured,
@@ -219,12 +232,12 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
   };
   const datasetRecord = async (companyId: string, row: Awaited<ReturnType<typeof store.getDataset>>): Promise<CorpusDatasetRecord | null> => {
     if (!row) return null;
-    const [docs, stats, chunks] = await Promise.all([
-      store.listDocuments({ companyId, datasetId: row.id }),
+    // OPE-12272: the document count is the sum of the per-status counts; do not load every document row to count them.
+    const [stats, chunks] = await Promise.all([
       db.select({ status: corpusDocuments.status, value: count() }).from(corpusDocuments).where(and(eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.datasetId, row.id))).groupBy(corpusDocuments.status),
       db.select({ value: count() }).from(corpusChunks).innerJoin(corpusDocuments, eq(corpusChunks.documentId, corpusDocuments.id)).where(and(eq(corpusChunks.companyId, companyId), eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.datasetId, row.id))),
     ]);
-    return { id: row.id, companyId, name: row.name, description: row.description, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), documentCount: docs.length, readyCount: countValue(stats.find((x) => x.status === "ready")), failedCount: countValue(stats.find((x) => x.status === "failed")), chunkCount: countValue(chunks[0]) };
+    return { id: row.id, companyId, name: row.name, description: row.description, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), documentCount: stats.reduce((sum, item) => sum + countValue(item), 0), readyCount: countValue(stats.find((x) => x.status === "ready")), failedCount: countValue(stats.find((x) => x.status === "failed")), chunkCount: countValue(chunks[0]) };
   };
   const getDocument = async (companyId: string, id: string) => documentRecord(companyId, await store.getDocument(companyId, id));
   const getDataset = async (companyId: string, id: string) => datasetRecord(companyId, await store.getDataset(companyId, id));
@@ -233,7 +246,9 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     const doc = await getDocument(companyId, row.documentId);
     return { id: row.id, companyId, datasetId: doc?.datasetId ?? "", documentId: row.documentId, state: row.status === "pending" ? "queued" : row.status, attempts: row.attempts, maxAttempts: row.maxAttempts, lastError: row.lastError, createdAt: row.createdAt.toISOString(), updatedAt: row.createdAt.toISOString() };
   };
-  return {
+  // OPE-12272: `listDatasets` counts documents and chunks of every dataset; serve it from a short-lived cache
+  // that any write through these ports drops. A search does not use it (see `listDatasetNames`).
+  return withDatasetListCache({
     store: {
       async listDatasets(companyId) { const rows = await store.listDatasets(companyId); const mapped: CorpusDatasetRecord[] = []; for (const item of rows) { const record = await datasetRecord(companyId, item); if (record) mapped.push(record); } return mapped; },
       getDataset,
@@ -426,7 +441,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       },
     },
     index,
-  };
+  }, { ttlMs: readCacheTtlMs(context.env[CORPUS_DATASET_LIST_CACHE_TTL_ENV], DEFAULT_DATASET_LIST_CACHE_TTL_SEC) });
 }
 
 export function createCorpusMcpProvider(readSettings: (companyId: string) => Promise<CorpusSettings>, createPorts: (context: CorpusPortContext) => CorpusPorts): CorpusMcpPortProvider {
@@ -439,10 +454,16 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
     };
     return {
       async search(request) {
+        const startedAt = performance.now();
         const current = await resolve();
         if (!current) throw new Error("corpus_disabled");
         const { settings, ports } = current;
-        const datasets = await ports.store.listDatasets(companyId);
+        const settingsMs = Math.round(performance.now() - startedAt);
+        // OPE-12272: a search needs only the ids and names of the datasets. `listDatasets` also counts the
+        // documents and chunks of every dataset (seconds on a large corpus) and is for `corpus_list_datasets`.
+        const namesStarted = performance.now();
+        const datasets = await ports.store.listDatasetNames(companyId);
+        const datasetNamesMs = Math.round(performance.now() - namesStarted);
         const datasetMap = new Map<string, string>(); // id -> id and name -> id
         for (const d of datasets) {
           datasetMap.set(d.id, d.id);
@@ -463,6 +484,7 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
           targetIds = datasets.map((d) => d.id);
         }
 
+        const indexStarted = performance.now();
         const hits = await ports.index.search({
           companyId,
           datasetIds: targetIds,
@@ -509,7 +531,8 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         if (!current) throw new Error("corpus_disabled");
         const { ports } = current;
         const document = await ports.store.getDocument(companyId, documentId); if (!document) throw new Error("document not found");
-        const dataset = await ports.store.getDataset(companyId, document.datasetId);
+        // Only the name of the dataset is shown; `getDataset` would count all its documents and chunks.
+        const dataset = (await ports.store.listDatasetNames(companyId)).find((item) => item.id === document.datasetId);
         // A document can exist without a stored blob (e.g. created but never
         // uploaded, or the blob key was cleared). Asking for text of such a
         // document must not crash on "corpus blob: empty key" (OPE-12028).
@@ -526,7 +549,7 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         const current = await resolve();
         if (!current) throw new Error("corpus_disabled");
         const { ports } = current;
-        const datasets = await ports.store.listDatasets(companyId);
+        const datasets = await ports.store.listDatasetNames(companyId);
         const allowed = new Set(datasets.map((d) => d.id));
         const rows = datasetId ? (allowed.has(datasetId) ? await ports.store.listDocuments(companyId, datasetId, { offset, limit }) : []) : (await Promise.all(datasets.map((d) => ports.store.listDocuments(companyId, d.id)))).flat().slice(offset, offset + limit);
         return { dataset: datasetId ? (() => { const d = datasets.find((item) => item.id === datasetId); return d ? { id: d.id, name: d.name } : null; })() : null, documents: rows.map((d) => ({ id: d.id, name: d.filename, datasetId: d.datasetId, status: d.status, chunks: d.chunkCount, createdAt: d.createdAt })), offset, limit };

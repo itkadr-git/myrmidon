@@ -34,15 +34,29 @@ const settings: CorpusSettings = {
   searchTopK: 5,
 };
 
+/** What the store and the index were asked for, so a test can pin the hot path of a search (OPE-12272). */
+interface PortSpy {
+  listDatasets: number;
+  getDataset: number;
+  indexSearch: Array<{ datasetIds?: string[]; mode: string }>;
+}
+
+const newSpy = (): PortSpy => ({ listDatasets: 0, getDataset: 0, indexSearch: [] });
+
+const OTHER_DATASET_ID = "ds-cooking";
+
 function makePorts(overrides: {
   blobRef?: string;
   blobBytes?: Uint8Array;
+  spy?: PortSpy;
 } = {}): CorpusPorts {
   const blobRef = overrides.blobRef ?? "";
   const blobBytes = overrides.blobBytes ?? new Uint8Array();
+  const spy = overrides.spy ?? newSpy();
   return {
     store: {
       async listDatasets() {
+        spy.listDatasets += 1;
         return [{
           id: DATASET_ID,
           companyId: COMPANY_ID,
@@ -124,7 +138,8 @@ function makePorts(overrides: {
     index: {
       async indexDocument() { return 1; },
       async deleteDocument() {},
-      async search() {
+      async search(input: { datasetIds?: string[]; mode: string }) {
+        spy.indexSearch.push({ datasetIds: input.datasetIds, mode: input.mode });
         return [{
           chunkId: "chunk-1",
           documentId: DOCUMENT_ID,
@@ -196,5 +211,101 @@ describe("createCorpusMcpProvider (OPE-12028)", () => {
     const tools = await provider(COMPANY_ID);
     const view = await tools!.getDocument({ documentId: DOCUMENT_ID, includeText: false });
     expect(view.text).toBeNull();
+  });
+});
+
+// OPE-12272: the hot path of corpus_search resolves dataset names from the light list. The call that
+// counts the documents and chunks of every dataset (`listDatasets`) belongs to corpus_list_datasets.
+describe("createCorpusMcpProvider: the search hot path does not count datasets (OPE-12272)", () => {
+  const provider = (spy: PortSpy) => createCorpusMcpProvider(async () => settings, () => makePorts({ spy }));
+
+  it("search never calls listDatasets, with no dataset filter", async () => {
+    const spy = newSpy();
+    const tools = await provider(spy)(COMPANY_ID);
+
+    const result = await tools!.search({ query: "weber grill", datasets: [], topK: 5, minScore: null });
+
+    expect(spy.listDatasets).toBe(0);
+    expect(spy.getDataset).toBe(0);
+    // No filter means every dataset of the company, in the order of the list.
+    expect(spy.indexSearch).toEqual([{ datasetIds: [DATASET_ID, OTHER_DATASET_ID], mode: "hybrid" }]);
+    expect(result.datasets).toEqual([DATASET_ID, OTHER_DATASET_ID]);
+    expect(result.hits).toHaveLength(1);
+  });
+
+  it("search never calls listDatasets, and resolves a dataset by name or by id", async () => {
+    const spy = newSpy();
+    const tools = await provider(spy)(COMPANY_ID);
+
+    const byName = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: null });
+    const byId = await tools!.search({ query: "weber grill", datasets: [DATASET_ID, "bbq-craft"], topK: 5, minScore: null });
+
+    expect(spy.listDatasets).toBe(0);
+    expect(spy.indexSearch.map((call) => call.datasetIds)).toEqual([[DATASET_ID], [DATASET_ID]]);
+    // The hit names its dataset, as before.
+    expect(byName.hits[0]!.document.datasetName).toBe("bbq-craft");
+    expect(byId.datasets).toEqual([DATASET_ID]);
+  });
+
+  it("search with a dataset that does not exist answers with no hits and does not touch the index", async () => {
+    const spy = newSpy();
+    const tools = await provider(spy)(COMPANY_ID);
+
+    const result = await tools!.search({ query: "weber grill", datasets: ["no-such-dataset"], topK: 3, minScore: null });
+
+    expect(result).toEqual({ query: "weber grill", datasets: [], topK: 3, hits: [] });
+    expect(spy.indexSearch).toHaveLength(0);
+    expect(spy.listDatasets).toBe(0);
+  });
+
+  it("search keeps its answer: the same hit, the same score, the min-score floor", async () => {
+    const tools = await provider(newSpy())(COMPANY_ID);
+
+    const result = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: null });
+    expect(result).toEqual({
+      query: "weber grill",
+      datasets: [DATASET_ID],
+      topK: 5,
+      hits: [{
+        chunkId: "chunk-1",
+        document: { id: DOCUMENT_ID, name: DOCUMENT_NAME, datasetId: DATASET_ID, datasetName: "bbq-craft", url: null },
+        ordinal: 0,
+        text: "Grill temperature and timing advice from Weber.",
+        score: 0.95,
+      }],
+    });
+
+    const filtered = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: 0.99 });
+    expect(filtered.hits).toHaveLength(0);
+  });
+
+  it("get_document and list_documents name the dataset without counting it", async () => {
+    const spy = newSpy();
+    const tools = await provider(spy)(COMPANY_ID);
+
+    const view = await tools!.getDocument({ documentId: DOCUMENT_ID, includeText: false });
+    const page = await tools!.listDocuments({ datasetId: DATASET_ID, offset: 0, limit: 10 });
+
+    expect(view.document.datasetName).toBe("bbq-craft");
+    expect(page.dataset).toEqual({ id: DATASET_ID, name: "bbq-craft" });
+    expect(spy.listDatasets).toBe(0);
+    expect(spy.getDataset).toBe(0);
+  });
+
+  it("list_datasets still reports the counters, from the store's full list", async () => {
+    const spy = newSpy();
+    const tools = await provider(spy)(COMPANY_ID);
+
+    const list = await tools!.listDatasets();
+
+    expect(spy.listDatasets).toBe(1);
+    expect(list).toEqual([{
+      id: DATASET_ID,
+      name: "bbq-craft",
+      documents: 1,
+      readyDocuments: 1,
+      chunks: 1,
+      updatedAt: "2026-11-07T00:00:00.000Z",
+    }]);
   });
 });

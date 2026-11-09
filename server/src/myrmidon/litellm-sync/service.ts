@@ -37,6 +37,12 @@ export interface LitellmSyncServiceDeps {
   resolveCredential?: (companyId: string, secretName: string) => Promise<string | null>;
 }
 
+/** Trailing-slash and whitespace insensitive api_base comparison; absent and empty are equal. */
+function sameBaseUrl(a: string | null | undefined, b: string | null | undefined): boolean {
+  const normalize = (value: string | null | undefined) => (value ?? "").trim().replace(/\/+$/, "");
+  return normalize(a) === normalize(b);
+}
+
 export interface SyncTrigger {
   /** Called when a model is registered in LiteLLM */
   onModelRegistered?(litellmModelName: string): Promise<void> | void;
@@ -45,6 +51,27 @@ export interface SyncTrigger {
 }
 
 export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?: SyncTrigger) {
+  /**
+   * Registers a deployment unless the gateway already holds one under the same
+   * group name and api_base (a repeated enable, a replay after a partial
+   * failure, a deployment added by hand): `/model/new` always APPENDS, so a
+   * blind second call would put two deployments behind one name.
+   * Returns whether a deployment was created.
+   */
+  async function registerIfAbsent(
+    input: Parameters<LitellmSyncPort["registerModel"]>[0],
+  ): Promise<boolean> {
+    const registered = await deps.litellm.listRegisteredModels();
+    const present = registered.some(
+      (registration) =>
+        registration.litellmModelName === input.litellmModelName &&
+        sameBaseUrl(registration.baseUrl, input.baseUrl),
+    );
+    if (present) return false;
+    await deps.litellm.registerModel(input);
+    return true;
+  }
+
   /**
    * Synchronize a single model based on its enabled state.
    */
@@ -104,8 +131,9 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
         throw new Error(`Provider ${providerId} credential could not be resolved`);
       }
 
-      await deps.litellm.registerModel({
+      await registerIfAbsent({
         litellmModelName: model.litellmModelName,
+        ...(model.modelName ? { providerModel: model.modelName } : {}),
         providerType: provider.type,
         baseUrl: provider.baseUrl,
         credentialValue,
@@ -113,7 +141,20 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
 
       await trigger?.onModelRegistered?.(model.litellmModelName);
     } else {
-      await deps.litellm.unregisterModel(model.litellmModelName);
+      // Only the deployments of THIS provider's endpoint: a deployment the
+      // board does not own under the same group name stays.
+      const providerRecords = await deps.db
+        .select()
+        .from(modelProviders)
+        .where(eq(modelProviders.id, providerId))
+        .limit(1);
+      const provider = providerRecords[0];
+      if (provider && isPoolModelProviderType(provider.type)) return;
+      if (provider) {
+        await deps.litellm.unregisterModel(model.litellmModelName, { baseUrl: provider.baseUrl });
+      } else {
+        await deps.litellm.unregisterModel(model.litellmModelName);
+      }
       await trigger?.onModelUnregistered?.(model.litellmModelName);
     }
   }
@@ -234,6 +275,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
           }
           await deps.litellm.registerModel({
             litellmModelName: model.litellmModelName,
+            ...(model.modelName ? { providerModel: model.modelName } : {}),
             providerType: model.provider.type,
             baseUrl: model.provider.baseUrl,
             credentialValue,
@@ -325,13 +367,21 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     for (const model of models) {
       const input = {
         litellmModelName: model.litellmModelName,
+        ...(model.modelName ? { providerModel: model.modelName } : {}),
         providerType: provider.type,
         baseUrl: provider.baseUrl,
         credentialValue,
       };
-      const deployments = registered.filter(
+      // A group may hold several channels on different endpoints (that is what
+      // an api_base is for): only this provider's own endpoint is rotated.
+      // Without an exact match a single deployment under the name is taken as
+      // the provider's own (its endpoint was edited since); several, none of
+      // them ours, are other channels and stay untouched.
+      const sameName = registered.filter(
         (r) => r.litellmModelName === model.litellmModelName && r.modelId,
       );
+      const sameEndpoint = sameName.filter((r) => sameBaseUrl(r.baseUrl, provider.baseUrl));
+      const deployments = sameEndpoint.length > 0 ? sameEndpoint : sameName.length === 1 ? sameName : [];
       if (deployments.length === 0) {
         // Not present in the gateway yet: nothing to update, register it.
         await deps.litellm.registerModel(input);
@@ -400,21 +450,35 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
 
   return {
     registerPluginModel: async (input: {
+      /** The company that owns the credential secret; required to resolve its value. */
+      companyId?: string;
       modelName: string;
       providerType: string;
       baseUrl: string;
       credentialSecretName: string;
       additionalConfig?: Record<string, unknown>;
     }) => {
-      await deps.litellm.registerModel({
+      // The gateway cannot resolve a secret NAME: with a resolver the value is
+      // read on the board and sent; an unresolved credential is an error, not
+      // an empty key.
+      let credentialValue: string | null = null;
+      if (deps.resolveCredential && input.companyId) {
+        credentialValue = await deps.resolveCredential(input.companyId, input.credentialSecretName);
+        if (!credentialValue) {
+          throw new Error(`Plugin model ${input.modelName} credential could not be resolved`);
+        }
+      }
+      await registerIfAbsent({
         litellmModelName: input.modelName,
         providerType: input.providerType,
         baseUrl: input.baseUrl,
         credentialSecretName: input.credentialSecretName,
+        ...(credentialValue ? { credentialValue } : {}),
         additionalConfig: input.additionalConfig,
       });
     },
-    unregisterModel: (modelName: string) => deps.litellm.unregisterModel(modelName),
+    unregisterModel: (modelName: string, match?: { baseUrl?: string | null }) =>
+      match ? deps.litellm.unregisterModel(modelName, match) : deps.litellm.unregisterModel(modelName),
     syncModel,
     syncProviderModels,
     handleModelEnableDisable,

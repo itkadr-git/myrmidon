@@ -11,7 +11,7 @@
 //   POST  /myrmidon/fleet/sites/:name/resume?companyId= lifts a drain (admin)
 //   POST  /myrmidon/fleet/bots/:key/restart             restart the bot's container on its site (admin)
 //   POST  /myrmidon/fleet/bots/:key/stop                stop it (admin)
-//   GET   /myrmidon/fleet/bots/:key/logs?tail=          the tail of the container log through the site-agent
+//   GET   /myrmidon/fleet/bots/:key/logs?tail=          the tail of the container log through the site-agent (admin)
 //
 // Every call that reaches a site (restart, stop, logs, resume) is refused while the board's
 // client certificate for that site has expired, and the refusal is logged as an alert: an
@@ -21,9 +21,12 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { z } from "zod";
 import { HttpError, badRequest, conflict, notFound } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, assertCompanyAdmin } from "../../routes/authz.js";
+import { assertFleetSiteOwner } from "./fleet-site-authz.js";
+import { fleetdUrlHostProblem } from "./fleet-site-url-policy.js";
 import { normalizeFleetdUrl } from "./fleet-site-routes.js";
 import { siteBadge, type FleetSiteBadge } from "./site-health-routes.js";
 import type { FleetSite, FleetSiteUpdate } from "./site-registry.js";
+import { isPrivateUrl } from "./private-address.js";
 
 const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/;
 const DEFAULT_TAIL = 100;
@@ -49,6 +52,43 @@ const patchBodySchema = z
     tunnel: z.boolean().optional(),
   })
   .strict();
+
+export type SitePatchBody = z.infer<typeof patchBodySchema>;
+
+/**
+ * The gateway port range after the request: the end(s) sent over the stored one(s); null when the
+ * request does not touch the range. A range needs both ends, in order.
+ */
+function patchedPortRange(site: FleetSite, body: SitePatchBody): { start: number; end: number } | null {
+  if (body.gatewayPortStart === undefined && body.gatewayPortEnd === undefined) return null;
+  const start = body.gatewayPortStart ?? site.profile.gatewayPortStart;
+  const end = body.gatewayPortEnd ?? site.profile.gatewayPortEnd;
+  if (start === undefined || end === undefined) {
+    throw badRequest("gatewayPortStart and gatewayPortEnd: send both ends, the site has no stored range to complete");
+  }
+  if (start > end) throw badRequest(`gatewayPortStart (${start}) is above gatewayPortEnd (${end})`);
+  return { start, end };
+}
+
+/**
+ * myrmidon(fleet-site audit): privateNetwork / tunnel are an operator's claim that the link to the site
+ * is private. They open plain http to the site's bot gateways, so the claim is taken only for a private
+ * IP address of the site (RFC 1918, RFC 6598 shared address space, loopback), and a site that carries
+ * it cannot be moved to another kind of address. The adapter checks the address again at connect time.
+ */
+export function assertPrivateAddressRules(site: FleetSite, body: SitePatchBody, patch: FleetSiteUpdate): void {
+  const address = patch.url ?? site.url;
+  const marksPrivate = body.privateNetwork === true || body.tunnel === true;
+  const profile = patch.profile ?? site.profile;
+  const keepsFlag = profile.privateNetwork === true || profile.tunnel === true;
+  if (!marksPrivate && !(body.url !== undefined && keepsFlag)) return;
+  if (isPrivateUrl(address)) return;
+  throw badRequest(
+    marksPrivate
+      ? `${body.privateNetwork === true ? "privateNetwork" : "tunnel"}: the site address is not a private IP address (RFC 1918, RFC 6598 shared address space or loopback); plain-http gateways are allowed on a private network only`
+      : "url: the site is marked private, so its address must be a private IP address (RFC 1918, RFC 6598 shared address space or loopback); clear privateNetwork and tunnel in the same request to use another address",
+  );
+}
 
 /** What the board knows about the load on one site; a field is null when it could not be read. */
 export interface SiteLoad {
@@ -102,6 +142,8 @@ export interface FleetSiteManageDeps {
   readClientCertNotAfter?(site: FleetSite): Promise<Date | null>;
   /** Writes the freshly read end of validity back to the registry row (best effort, for other readers). */
   storeClientCertNotAfter?(site: FleetSite, notAfter: Date): Promise<void>;
+  /** Extra hosts (names or IP literals) the operator allows as a site address; read on every address change. */
+  fleetdHostAllowlist?(): readonly string[];
   now?: () => number;
   log?: { warn?(fields: Record<string, unknown>, message: string): void; info?(fields: Record<string, unknown>, message: string): void };
 }
@@ -163,11 +205,12 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
     return current;
   }
 
-  function companyFromQuery(req: Request, admin: boolean): string {
+  function companyFromQuery(req: Request, level: "access" | "admin" | "owner"): string {
     assertBoard(req);
     const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
     if (!companyId) throw badRequest("companyId is required");
-    if (admin) assertCompanyAdmin(req, companyId);
+    if (level === "owner") assertFleetSiteOwner(req, companyId);
+    else if (level === "admin") assertCompanyAdmin(req, companyId);
     else assertCompanyAccess(req, companyId);
     return companyId;
   }
@@ -190,7 +233,7 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleOverview(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, false);
+    const companyId = companyFromQuery(req, "access");
     const sites = await Promise.all((await deps.listSites(companyId)).map((site) => fresh(site)));
     const rows: SiteOverviewRow[] = await Promise.all(
       sites.map(async (site) => {
@@ -224,13 +267,13 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleBots(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, false);
+    const companyId = companyFromQuery(req, "access");
     const site = await requireSite(companyId, siteName(req));
     res.json({ site: site.name, bots: await deps.listSiteBots(companyId, site.name) });
   }
 
   async function handlePatch(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, true);
+    const companyId = companyFromQuery(req, "owner");
     const site = await requireSite(companyId, siteName(req));
     const parsed = patchBodySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -245,11 +288,17 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
       } catch (err) {
         throw badRequest(err instanceof Error ? err.message : "invalid url");
       }
+      // The board sends the site's token and client certificate to this address. An address the site
+      // already has is not a new destination, so only a change is held to the host rule.
+      if (patch.url !== undefined && patch.url !== site.url) {
+        const hostProblem = fleetdUrlHostProblem(patch.url, deps.fleetdHostAllowlist?.() ?? []);
+        if (hostProblem) throw badRequest(hostProblem);
+      }
     }
     if (body.labels !== undefined) patch.labels = body.labels;
     if (body.capacity !== undefined) {
-      const start = site.profile.gatewayPortStart;
-      const end = site.profile.gatewayPortEnd;
+      const start = body.gatewayPortStart ?? site.profile.gatewayPortStart;
+      const end = body.gatewayPortEnd ?? site.profile.gatewayPortEnd;
       if (body.capacity.maxBots !== undefined && start !== undefined && end !== undefined && body.capacity.maxBots > end - start + 1) {
         throw badRequest(`capacity.maxBots (${body.capacity.maxBots}) exceeds the gateway port range (${end - start + 1} ports)`);
       }
@@ -268,7 +317,7 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleDrain(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, true);
+    const companyId = companyFromQuery(req, "admin");
     const site = await requireSite(companyId, siteName(req));
     if (site.status === "draining") {
       // Already out of placement. An operator's press makes the drain theirs: the monitor must not lift it.
@@ -285,7 +334,7 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleResume(req: Request, res: Response): Promise<void> {
-    const companyId = companyFromQuery(req, true);
+    const companyId = companyFromQuery(req, "admin");
     const site = await requireSite(companyId, siteName(req));
     if (site.status === "active") {
       res.json({ ok: true, site: site.name, status: "active", changed: false });
@@ -335,7 +384,8 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   }
 
   async function handleLogs(req: Request, res: Response): Promise<void> {
-    const { botKey, companyId, site } = await botContext(req, false);
+    // The log of a bot can hold anything the bot printed: company admins only, like restart and stop.
+    const { botKey, companyId, site } = await botContext(req, true);
     const rawTail = typeof req.query.tail === "string" ? req.query.tail.trim() : "";
     let tail = DEFAULT_TAIL;
     if (rawTail) {
