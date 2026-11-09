@@ -17,7 +17,9 @@ permissions:
 
 jobs:
   check-acceptance-scenarios:
-    runs-on: ubuntu-latest
+    # 09.11: one light job per PR push; on the shared cloud pool these were ~30 of ~100 queued jobs and held the
+    # release PRs' CI back. Light runners like the other quick gates.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - name: Checkout base branch (never PR code)
