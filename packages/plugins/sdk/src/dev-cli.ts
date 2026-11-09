@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import path from "node:path";
 import { startPluginDevServer } from "./dev-server.js";
 
@@ -32,7 +33,7 @@ async function main() {
   });
 
   // eslint-disable-next-line no-console
-  console.log(`Paperclip plugin dev server listening at ${server.url}`);
+  console.log(`${PRODUCT_NAME} plugin dev server listening at ${server.url}`);
 
   const shutdown = async () => {
     await server.close();
