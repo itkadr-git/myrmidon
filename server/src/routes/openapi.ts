@@ -1715,7 +1715,9 @@ function applyDocumentFixups(document: any): any {
       if (
         key === "GET /api/admin-assistant/cluster-health" ||
         key === "GET /api/admin-assistant/health" ||
-        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health"
+        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health" ||
+        key === "GET /api/admin-assistant/stuck-runs" ||
+        key === "GET /api/companies/{companyId}/admin-assistant/stuck-runs"
       ) {
         operation["x-paperclip-authorization"] = {
           actor: "board_or_agent",
@@ -5644,6 +5646,42 @@ registry.registerPath({
     "hiding the error. The payload is marked with dry_run=true and credential-shaped values are redacted.",
   request: {
     query: z.object({}).optional(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/admin-assistant/stuck-runs",
+  tags: ["admin-assistant"],
+  summary: "Get stuck runs diagnostics for a company",
+  description:
+    "Detects in_progress tasks and heartbeat runs whose silence exceeds the configured timeout, " +
+    "and returns actionable recovery recommendations.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      timeoutMs: z.string().optional(),
+      timeoutSeconds: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/stuck-runs",
+  tags: ["admin-assistant"],
+  summary: "Get stuck runs diagnostics",
+  description:
+    "Detects in_progress tasks and heartbeat runs whose silence exceeds the configured timeout, " +
+    "and returns actionable recovery recommendations. When companyId query is omitted, requires instance admin.",
+  request: {
+    query: z.object({
+      companyId: z.string().optional(),
+      timeoutMs: z.string().optional(),
+      timeoutSeconds: z.string().optional(),
+    }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
