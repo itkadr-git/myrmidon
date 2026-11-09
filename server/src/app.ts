@@ -21,6 +21,7 @@ import {
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler, brandHeadersMiddleware } from "./middleware/index.js";
+import { apiPathAliasMiddleware } from "./myrmidon/api-path-aliases.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardKeyScopeMiddleware } from "./middleware/board-key-scope.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
@@ -1040,6 +1041,11 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  // myrmidon(1.7-RB-PATH): the pre-rebrand surface /api/paperclip/* keeps
+  // working for one release as a transparent alias of /api/myrmidon/* —
+  // same handlers, same contract, no redirect. First, so guards below see
+  // the canonical path.
+  api.use(apiPathAliasMiddleware());
   api.use(createPluginReadinessRouter(pluginReadiness));
   // myrmidon(1.6.6 PROCS-0.3A): tags every /api request with the http_route
   // lane and journals it on finish. First on purpose — a request rejected by a
