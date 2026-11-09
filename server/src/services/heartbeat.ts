@@ -13899,6 +13899,15 @@ export function heartbeatService(
     if (isNativeRunnerOwnershipHeld(run)) return run;
     if (isHeartbeatRunTerminalStatus(run.status)) return run;
     if (run.status !== "running" && run.status !== "queued") return run;
+    // A queued run that still carries a scheduled retry has not started yet: it
+    // sits in the queued pool until dispatch claims it. promoteDueRetryInTx
+    // moves scheduled_retry -> queued and keeps scheduled_retry_at populated
+    // through that window. Forcing such a row to interrupted /
+    // lease_released_before_terminal burns the scheduled retry, so the wake-up
+    // is lost and the retry never runs. Leave the row for the dispatcher.
+    // A claimed run has status "running" by then, so this does not spare a
+    // genuinely live run from terminalization.
+    if (run.status === "queued" && run.scheduledRetryAt != null) return run;
 
     // Choose the terminal status that reflects the true outcome. When the issue
     // already reached a terminal status, the run reached its goal, so use the
