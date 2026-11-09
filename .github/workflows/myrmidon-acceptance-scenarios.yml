@@ -4,6 +4,12 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# One run per PR: a new push supersedes the queued/running check of the old head
+# (without this every synchronize event queued another run — 09.11: 66 queued, 15 duplicates).
+concurrency:
+  group: myrmidon-acceptance-scenarios-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   checks: write
@@ -23,15 +29,6 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
         with:
           node-version: '20'
-
-      - name: Generate bot token
-        id: token
-        run: |
-          TOKEN=$(node .github/scripts/get-bot-token.mjs)
-          echo "::add-mask::$TOKEN"
-          echo "value=$TOKEN" >> $GITHUB_OUTPUT
-        env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
 
       - name: Run acceptance scenarios check
         run: |
@@ -142,7 +139,8 @@ jobs:
             });
           '
         env:
-          GH_TOKEN: ${{ steps.token.outputs.value }}
+          # The job token reads the PR (pull-requests: read); the upstream COMMITPERCLIP bot key does not exist in this repo.
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
