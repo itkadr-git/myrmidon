@@ -397,23 +397,27 @@ the intended check is "the board boots on the restored data, `/healthz` is ready
 ## 9. Automated Watchdog & RPO Monitoring (Сторож RPO и слота)
 
 ### EN: Automated Standby Watchdog
-To prevent silent replication lag or invalid replication slot states (such as `wal_status = lost`), the platform monitoring or product cron must execute `check-lag` every 5 minutes:
+To prevent silent replication lag or invalid replication slot states (such as `wal_status = lost` or `wal_status = unreserved`), the platform monitoring or product cron executes `check-lag` every 5 minutes:
 ```bash
-scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900
+scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900 --json
 ```
-**P1 Alerting Rules**:
-Raise an immediate P1 alert if:
+**Exit Code & Failure Rules**:
+The command exits with `0` only if all targets succeed and satisfy `rpoOk = true`. It exits with `1` (non-zero) and reports failure when:
 1. `rpoOk` is `false` (time lag or byte lag exceeds 15 minutes / 900 seconds).
 2. The primary is unreachable (`primary_unreachable` or connection failure).
-3. The replication slot `wal_status` on `vm-core` is NOT `reserved` or `extended` (e.g. `lost`, `dropped`, or missing).
+3. The replication slot `wal_status` on `vm-core` is NOT `reserved` or `extended` (e.g. `unreserved`, `lost`, or missing).
+
+When the exit code is non-zero (`1`), monitoring raises an immediate P1 alert.
 
 ### RU: Автоматический сторож репликации и мониторинг RPO
-Для предотвращения скрытого отставания реплики или инвалидации слота репликации (`wal_status = lost`) штатный механизм мониторинга или встроенный cron продукта должен выполнять проверку каждые 5 минут:
+Для предотвращения скрытого отставания реплики или недействительного состояния слота репликации (`wal_status = lost` или `wal_status = unreserved`) штатный механизм мониторинга или встроенный cron продукта выполняет проверку каждые 5 минут:
 ```bash
-scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900
+scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900 --json
 ```
-**Правила тревоги P1**:
-Аварийная тревога P1 поднимается немедленно, если:
+**Код выхода и критерии сбоя**:
+Команда завершается с кодом `0` только тогда, когда все цели успешны и `rpoOk = true`. Команда завершается с ненулевым кодом `1` при следующих условиях:
 1. `rpoOk` равен `false` (временное или байтовое отставание превышает 15 минут / 900 секунд).
 2. Основная база недоступна (`primary_unreachable` или ошибка соединения).
-3. Статус WAL слота (`wal_status`) на `vm-core` НЕ равен `reserved` или `extended` (например, `lost`, `dropped` или слот отсутствует).
+3. Статус WAL слота (`wal_status`) на `vm-core` НЕ равен `reserved` или `extended` (например, `unreserved`, `lost` или слот отсутствует).
+
+При ненулевом коде выхода (`1`) мониторинг поднимает аварийную тревогу P1.

@@ -1870,15 +1870,23 @@ export function checkLag(target = "all", options = {}, deps = {}) {
       const maxSlotWalBytes =
         Number.isFinite(maxSettingMb) && maxSettingMb > 0 ? maxSettingMb * 1024 * 1024 : null;
 
-      if (slotWalStatus === "missing" || slotWalStatus === "lost") {
+      if (slotWalStatus !== "reserved" && slotWalStatus !== "extended") {
+        const rpoStatus =
+          slotWalStatus === "missing"
+            ? "slot_missing"
+            : slotWalStatus === "lost"
+              ? "slot_wal_lost"
+              : slotWalStatus === "unreserved"
+                ? "slot_wal_unreserved"
+                : `slot_wal_${slotWalStatus}`;
         return {
           target,
           success: false,
           rpoOk: false,
           role: "standby",
           inRecovery: true,
-          rpoStatus: slotWalStatus === "missing" ? "slot_missing" : "slot_wal_lost",
-          error: `Replication slot '${replSlot}' is ${slotWalStatus}: standby cannot keep up and retention is unsafe`,
+          rpoStatus,
+          error: `Replication slot '${replSlot}' wal_status is '${slotWalStatus}' (expected 'reserved' or 'extended'): standby cannot keep up and retention is unsafe`,
           byteLag: null,
           timeLagSeconds: null,
         };

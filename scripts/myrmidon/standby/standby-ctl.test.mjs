@@ -103,7 +103,7 @@ function makeWorld(over = {}) {
     primaryLsn: "1/2000000",
     primarySystemId: "729374172937",
     standbySystemId: "729374172937",
-    slotRow: "streaming|1048576|6144",
+    slotRow: "reserved|1048576|6144",
     composeStopNoop: false,
     dockerStopFails: false,
     standbyInRecovery: true,
@@ -538,7 +538,7 @@ test("setupStandby creates physical replication slot before basebackup", () => {
   assert.match(dbOf(slotCall.args), /^replication=database dbname=paperclip/);
 });
 
-test("checkLag reports slot retention and fails closed on lost slot WAL", () => {
+test("checkLag reports slot retention and fails closed on non-reserved/extended slot WAL", () => {
   // Slot WAL lost -> fail closed
   const lostSlotMock = (cmd, args) => {
     const sql = args[args.indexOf("-c") + 1] || "";
@@ -555,15 +555,36 @@ test("checkLag reports slot retention and fails closed on lost slot WAL", () => 
   };
   const lostRes = checkLag("board", { pgRunner: "host" }, { runner: lostSlotMock });
   assert.equal(lostRes.success, false);
+  assert.equal(lostRes.rpoOk, false);
   assert.equal(lostRes.rpoStatus, "slot_wal_lost");
   assert.match(lostRes.error, /standby_board_slot/);
 
-  // Healthy slot retention -> success with slot info surfaced
+  // Slot WAL unreserved -> fail closed (rpoOk=false)
+  const unreservedSlotMock = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (cmd === "psql") {
+      if (sql.includes("pg_replication_slots")) {
+        return { exitCode: 0, stdout: "unreserved|5000000|2048\n", stderr: "" };
+      }
+      if (sql.includes("IDENTIFY_SYSTEM")) {
+        return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "1 | 1/1000 | 1/1000 | 2026-10-30 10:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+  const unreservedRes = checkLag("board", { pgRunner: "host" }, { runner: unreservedSlotMock });
+  assert.equal(unreservedRes.success, false);
+  assert.equal(unreservedRes.rpoOk, false);
+  assert.equal(unreservedRes.rpoStatus, "slot_wal_unreserved");
+  assert.match(unreservedRes.error, /expected 'reserved' or 'extended'/);
+
+  // Healthy slot retention (reserved) -> success with slot info surfaced
   const healthySlotMock = (cmd, args) => {
     const sql = args[args.indexOf("-c") + 1] || "";
     if (cmd === "psql") {
       if (sql.includes("pg_replication_slots")) {
-        return { exitCode: 0, stdout: "streaming|1048576|2048\n", stderr: "" };
+        return { exitCode: 0, stdout: "reserved|1048576|2048\n", stderr: "" };
       }
       if (sql.includes("IDENTIFY_SYSTEM")) {
         return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
@@ -574,9 +595,29 @@ test("checkLag reports slot retention and fails closed on lost slot WAL", () => 
   };
   const okRes = checkLag("board", { pgRunner: "host" }, { runner: healthySlotMock });
   assert.equal(okRes.success, true);
-  assert.equal(okRes.slotWalStatus, "streaming");
+  assert.equal(okRes.rpoOk, true);
+  assert.equal(okRes.slotWalStatus, "reserved");
   assert.equal(okRes.slotRetainedBytes, 1048576);
   assert.equal(okRes.slotRetentionWarn, false);
+
+  // Extended slot retention -> also acceptable as healthy
+  const extendedSlotMock = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (cmd === "psql") {
+      if (sql.includes("pg_replication_slots")) {
+        return { exitCode: 0, stdout: "extended|2097152|2048\n", stderr: "" };
+      }
+      if (sql.includes("IDENTIFY_SYSTEM")) {
+        return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "1 | 1/1000 | 1/1000 | 2026-10-30 10:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+  const extRes = checkLag("board", { pgRunner: "host" }, { runner: extendedSlotMock });
+  assert.equal(extRes.success, true);
+  assert.equal(extRes.rpoOk, true);
+  assert.equal(extRes.slotWalStatus, "extended");
 });
 
 test("generateStandbyConfig includes required streaming parameters and credentials via passfile", () => {
@@ -664,6 +705,9 @@ test("checkLag measures primary-to-standby lag and handles fail-closed errors", 
     const sql = args[args.indexOf("-c") + 1] || "";
     if (sql.includes("IDENTIFY_SYSTEM")) {
       return { exitCode: 0, stdout: "729374172937|1|1/2000000|\n", stderr: "" };
+    }
+    if (sql.includes("wal_status") || sql.includes("pg_replication_slots")) {
+      return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
     }
     return {
       exitCode: 0,
@@ -1025,6 +1069,10 @@ test("checkLag respects unified custom standbyPort and primaryPort on single clu
   const calls = [];
   const mockRunner = (cmd, args) => {
     calls.push({ cmd, args });
+    const sql = args.find((a) => typeof a === "string" && a.includes("wal_status")) || "";
+    if (sql.includes("wal_status")) {
+      return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
+    }
     if (cmd === "psql") {
       return {
         exitCode: 0,
@@ -1240,6 +1288,10 @@ test("checkLag uses createPgRunner — docker mode wraps psql in docker exec", (
   const mockRunner = (cmd, args) => {
     calls.push({ cmd, args });
     if (cmd === "docker") {
+      const sql = args.find((a) => typeof a === "string" && a.includes("wal_status")) || "";
+      if (sql.includes("wal_status")) {
+        return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
+      }
       // docker exec calls: simulate success with standby output
       return { exitCode: 0, stdout: "1|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
     }
@@ -1262,6 +1314,10 @@ test("checkLag uses createPgRunner — host mode passes psql directly", () => {
   const calls = [];
   const mockRunner = (cmd, args) => {
     calls.push({ cmd, args });
+    const sql = args.find((a) => typeof a === "string" && (a.includes("SELECT") || a.includes("IDENTIFY_SYSTEM"))) || "";
+    if (sql.includes("wal_status") || sql.includes("pg_replication_slots")) {
+      return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
+    }
     if (cmd === "psql") {
       return { exitCode: 0, stdout: "1|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
     }
@@ -1287,6 +1343,10 @@ test("checkLag primary LSN uses replication protocol (IDENTIFY_SYSTEM)", () => {
       const isIdentify = args.includes("IDENTIFY_SYSTEM;");
       if (isIdentify) {
         return { exitCode: 0, stdout: "729374172937|1|0/2000|\n", stderr: "" };
+      }
+      const sql = args.find((a) => typeof a === "string" && a.includes("wal_status")) || "";
+      if (sql.includes("wal_status")) {
+        return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
       }
       return { exitCode: 0, stdout: "1|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
     }
@@ -1317,6 +1377,10 @@ test("checkLag standby query goes to container port 5432 via docker exec", () =>
       const isIdentify = args.includes("IDENTIFY_SYSTEM;");
       if (isIdentify) {
         return { exitCode: 0, stdout: "729374172937|1|0/2000|\n", stderr: "" };
+      }
+      const sql = args.find((a) => typeof a === "string" && a.includes("wal_status")) || "";
+      if (sql.includes("wal_status")) {
+        return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
       }
       return { exitCode: 0, stdout: "1|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
     }
