@@ -546,6 +546,23 @@
         "path": "hermes_state_maintenance.py",
         "upstreamMarker": "disk_usage|SQLITE_TMPDIR|vacuum_defer"
       }
+    },
+    {
+      "id": "31-terminal-foreground-execution-test",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/31-terminal-foreground-execution-test.patch",
+      "files": [
+        "tests/tools/test_process_heartbeat.py"
+      ],
+      "reason": "The foreground default regression must execute a harmless local shell command through the Hermes terminal handler and assert stdout and exit status; notification=true must still return the clear foreground-only error.",
+      "dropCondition": "Upstream heartbeat tests execute the foreground heartbeat=60, notify=false command and assert its output and exit status, and assert notification=true remains rejected.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "tests/tools/test_process_heartbeat.py",
+        "upstreamMarker": "heartbeat-regression"
+      }
     }
   ]
 }

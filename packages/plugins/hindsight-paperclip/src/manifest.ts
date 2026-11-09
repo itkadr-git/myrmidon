@@ -58,6 +58,13 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Hindsight API Key (secret ref)",
         description: "Name of the Paperclip secret holding your Hindsight Cloud API key. Leave empty for self-hosted.",
       },
+      requestTimeoutMs: {
+        type: "number",
+        title: "Request Timeout (ms)",
+        description:
+          "Timeout in milliseconds for Hindsight API requests (recall, retain). Health check uses a fixed 5-second timeout. Defaults to 60000 (60s).",
+        default: 60000,
+      },
       recallBudget: {
         type: "string",
         title: "Recall Budget",

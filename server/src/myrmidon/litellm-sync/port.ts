@@ -99,6 +99,12 @@ export interface LitellmSyncPort {
     baseUrl: string | null;
     /** The credential secret name reference. */
     credentialSecretName: string;
+    /**
+     * True when the deployment lives in the gateway database (added through
+     * the admin API), false when it comes from the gateway config file.
+     * Absent when the gateway does not say.
+     */
+    dbModel?: boolean;
   }>>;
 
   /**

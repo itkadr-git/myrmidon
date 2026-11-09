@@ -17,6 +17,7 @@ import {
   formatUtcTime,
   resetGitHubRateLimitForTests,
 } from "./github-rate-limit.js";
+import type { GitHubRequestSource } from "./github-rate-limit.js";
 
 export interface PullRequestCiJob {
   id: number;
@@ -453,6 +454,21 @@ export const CI_CACHE_COMPLETED_TTL_MS = 30 * 60 * 1000; // 30m for completed CI
 export const CI_CACHE_INCOMPLETE_TTL_MS = 60 * 1000; // 60s for incomplete CI
 export const PR_HEAD_CACHE_TTL_MS = 60 * 1000; // 60s for PR head
 
+// myrmidon(OPE-12397): `resolveForIssue` runs on every wake payload build; a
+// task (or its comment history) naming dozens of PRs must not multiply into
+// dozens of GitHub reads per run start. The task's own live PR work products
+// are the primary signal; anything beyond the cap is dropped, oldest link last.
+export const CI_RESOLVE_FOR_ISSUE_MAX_REFS = 10;
+
+/** PR work products whose state can no longer change (their reads never return). */
+export const TERMINAL_PULL_REQUEST_PRODUCT_STATUSES = new Set([
+  "merged",
+  "closed",
+  "abandoned",
+  "cancelled",
+  "canceled",
+]);
+
 interface CacheEntry {
   expiresAt: number;
   result: PullRequestCiResult;
@@ -503,9 +519,13 @@ export async function withCiResolveDeadline<T>(
 
 export function createPullRequestCiResolver(
   db: Db,
-  options: PullRequestCiResolverOptions = {},
+  options: PullRequestCiResolverOptions & { source?: GitHubRequestSource } = {},
 ): PullRequestCiResolver {
-  const rawFetch = options.fetch ?? fetch;
+  // myrmidon(OPE-12397): `run-context` for run-start / wake-payload builds
+  // (heartbeat), `ui-refresh` for UI-triggered calls (routes); the historical
+  // default keeps the pre-OPE-12397 label for callers without a bucket.
+  const { source = "run-context", ...resolverOptions } = options;
+  const rawFetch = resolverOptions.fetch ?? fetch;
   const fetchImpl: FetchLike = (input, init) => {
     const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
     const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
@@ -522,6 +542,7 @@ export function createPullRequestCiResolver(
       fetch: fetchImpl,
       tokenProvider,
       secretNames,
+      source,
     });
 
   return {
@@ -912,16 +933,27 @@ export function createPullRequestCiResolver(
         }
       };
 
-      // 1. Work products for this issue
-      const products = await db
-        .select()
-        .from(issueWorkProducts)
-        .where(
-          and(
-            eq(issueWorkProducts.companyId, companyId),
-            eq(issueWorkProducts.issueId, issueId),
-          ),
-        );
+      // 1. Work products for this issue. myrmidon(OPE-12397): only live PR
+      // products — a merged/closed PR cannot change its CI, and re-reading it
+      // on every wake burned the rate budget; terminal products keep their
+      // stored metadata.
+      const products = (
+        await db
+          .select()
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, companyId),
+              eq(issueWorkProducts.issueId, issueId),
+            ),
+          )
+      ).filter((product) => {
+        if (product.type !== "pull_request") return false;
+        const status = typeof product.status === "string" ? product.status.toLowerCase() : "";
+        if (TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(status)) return false;
+        const metaState = (product.metadata as Record<string, unknown> | null)?.state;
+        return !(typeof metaState === "string" && TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(metaState.toLowerCase()));
+      });
 
       for (const product of products) {
         const candidateTexts: unknown[] = [product.url, product.title];
@@ -1011,7 +1043,12 @@ export function createPullRequestCiResolver(
       }
 
       const results: PullRequestCiResult[] = [];
-      for (const reference of references.values()) {
+      // myrmidon(OPE-12397): a ceiling on the GitHub reads one wake build
+      // spends — the task's own products come first in insertion order, then
+      // description, comments and children; beyond the cap, older references
+      // (duplicates aside) are dropped.
+      const cappedReferences = [...references.values()].slice(0, CI_RESOLVE_FOR_ISSUE_MAX_REFS);
+      for (const reference of cappedReferences) {
         try {
           const result = await this.resolveForPullRequest(companyId, reference);
           results.push(result);

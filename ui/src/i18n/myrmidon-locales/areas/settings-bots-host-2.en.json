@@ -161,7 +161,11 @@
         "nothingMeasured": "Nothing measured yet — the sweep fills these numbers on its tick.",
         "loading": "Loading workspace hygiene settings...",
         "saveFailed": "Saving the workspace hygiene quotas failed.",
-        "loadFailed": "Failed to load workspace hygiene settings."
+        "loadFailed": "Failed to load workspace hygiene settings.",
+        "sourceSettings": "Saved here",
+        "sourceEnv": "Environment override",
+        "sourceDefault": "Default",
+        "forbidden": "Instance admin rights are required."
       },
       "tracing-health-card": {
         "title": "LLM tracing",

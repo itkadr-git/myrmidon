@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { classifyTaskWatchdogSubtree, type TaskWatchdogClassifierIssue } from "../services/task-watchdogs.ts";
+import {
+  TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
+  classifyTaskWatchdogSubtree,
+  rewakeCooldownActive,
+  type TaskWatchdogClassifierIssue,
+} from "../services/task-watchdogs.ts";
 
 const companyId = "company-1";
 const sourceId = "source-1";
@@ -368,6 +373,24 @@ describe("task watchdog subtree classifier", () => {
     expect(result.state).toBe("stopped");
   });
 
+  it("suppresses stopped subtree verdict when leaf is in backlog via operator decision", () => {
+    const result = classify({
+      issues: [issue({ id: sourceId, status: "backlog" })],
+      operatorBacklogIssueIds: [sourceId],
+    });
+
+    expect(result.state).toBe("operator_backlog");
+  });
+
+  it("does not suppress stopped subtree verdict when leaf is in backlog without operator decision", () => {
+    const result = classify({
+      issues: [issue({ id: sourceId, status: "backlog" })],
+      operatorBacklogIssueIds: [],
+    });
+
+    expect(result.state).toBe("stopped");
+  });
+
   it("does not evaluate a task-watchdog issue as a watched source", () => {
     const result = classify({
       watchdog: {
@@ -420,5 +443,80 @@ describe("task watchdog subtree classifier", () => {
       ],
     });
     expect(result.state).toBe("stopped");
+  });
+
+  it("respects rewake cooldown when stop fingerprint is unchanged", () => {
+    // OPE-3008: one situation = one watchdog wake. The cooldown decision is a
+    // pure predicate in task-watchdogs.ts, pinned here without an embedded
+    // Postgres scheduler run.
+    const fingerprint = "task_watchdog_stop:abc";
+    const lastTriggeredAt = new Date("2026-06-18T12:00:00.000Z");
+    const cooldownMs = 6 * 60 * 60 * 1000; // 6h, matches TASK_WATCHDOG_REWAKE_COOLDOWN_MS
+
+    // Inside the window with the same fingerprint: cooldown active, no re-wake.
+    expect(rewakeCooldownActive({
+      lastTriggeredAt,
+      lastObservedFingerprint: fingerprint,
+      stopFingerprint: fingerprint,
+      cooldownMs,
+      nowMs: lastTriggeredAt.getTime() + cooldownMs - 1,
+    })).toBe(true);
+
+    // Boundary: exactly at the window edge the cooldown has elapsed.
+    expect(rewakeCooldownActive({
+      lastTriggeredAt,
+      lastObservedFingerprint: fingerprint,
+      stopFingerprint: fingerprint,
+      cooldownMs,
+      nowMs: lastTriggeredAt.getTime() + cooldownMs,
+    })).toBe(false);
+
+    // After the window: re-wake allowed.
+    expect(rewakeCooldownActive({
+      lastTriggeredAt,
+      lastObservedFingerprint: fingerprint,
+      stopFingerprint: fingerprint,
+      cooldownMs,
+      nowMs: lastTriggeredAt.getTime() + cooldownMs + 1,
+    })).toBe(false);
+
+    // A changed fingerprint is a new situation: wake immediately.
+    expect(rewakeCooldownActive({
+      lastTriggeredAt,
+      lastObservedFingerprint: fingerprint,
+      stopFingerprint: "task_watchdog_stop:different",
+      cooldownMs,
+      nowMs: lastTriggeredAt.getTime() + 1,
+    })).toBe(false);
+
+    // Missing lastObservedFingerprint (never recorded) is not a re-wake.
+    expect(rewakeCooldownActive({
+      lastTriggeredAt,
+      lastObservedFingerprint: null,
+      stopFingerprint: fingerprint,
+      cooldownMs,
+      nowMs: lastTriggeredAt.getTime() + 1,
+    })).toBe(false);
+
+    // A watchdog that never triggered has no cooldown.
+    expect(rewakeCooldownActive({
+      lastTriggeredAt: null,
+      lastObservedFingerprint: fingerprint,
+      stopFingerprint: fingerprint,
+      cooldownMs,
+      nowMs: lastTriggeredAt.getTime() + 1,
+    })).toBe(false);
+
+    // Disabling the cooldown (<= 0) always allows the wake.
+    expect(rewakeCooldownActive({
+      lastTriggeredAt,
+      lastObservedFingerprint: fingerprint,
+      stopFingerprint: fingerprint,
+      cooldownMs: 0,
+      nowMs: lastTriggeredAt.getTime() + 1,
+    })).toBe(false);
+
+    // The production default matches the documented 6h window.
+    expect(TASK_WATCHDOG_REWAKE_COOLDOWN_MS).toBe(cooldownMs);
   });
 });

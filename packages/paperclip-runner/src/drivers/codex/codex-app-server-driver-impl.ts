@@ -65,6 +65,10 @@ import {
   record,
   text,
 } from "./codex-driver-values.js";
+import {
+  checkUserNamespacesAvailable,
+  codexSandboxUnavailableError,
+} from "./codex-security-config.js";
 
 const DRIVER_KIND = "codex_app_server";
 const DRIVER_VERSION = "codex-v2";
@@ -250,6 +254,15 @@ export class CodexAppServerDriver implements HarnessDriver {
 
   async openSession(input: OpenHarnessSessionInput): Promise<HarnessSession> {
     input.signal?.throwIfAborted();
+    // OPE-12274: an unavailable bwrap userns must fail the run with a
+    // diagnosable codex_sandbox_unavailable refusal before the app-server
+    // starts, not an opaque bwrap namespace error on thread/start.
+    if (!checkUserNamespacesAvailable(this.#options.environment ?? process.env)) {
+      this.#options.onDiagnostic?.(
+        redactCodexDiagnostic(codexSandboxUnavailableError().message),
+      );
+      throw codexSandboxUnavailableError();
+    }
     const workingDirectory = validateWorkingDirectory(
       input.workingDirectory,
       this.#options.environment,

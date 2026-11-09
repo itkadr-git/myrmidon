@@ -3,6 +3,7 @@
 // myrmidon(M2-B): the key-management API.
 //
 //   GET  /api/myrmidon/companies/:companyId/litellm/keys            (company access)
+//   POST /api/myrmidon/companies/:companyId/litellm/keys/allowlist-sync (owner/admin; dry run unless ?apply=true)
 //   GET  /api/myrmidon/companies/:companyId/litellm/keys/:agentId   (company access; an agent only for itself)
 //   POST /api/myrmidon/companies/:companyId/litellm/keys/:agentId   (board only)
 //   POST /api/myrmidon/companies/:companyId/litellm/keys/:agentId/rotate (board only)
@@ -18,7 +19,7 @@ import type { Db } from "@myrmidon/db";
 import { readGatewayKeySettings } from "@myrmidon/shared";
 import { modelProviderModels, modelProviders } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import {
   assertAgentMayReadOwnGatewayKey,
   createAgentGatewayKey,
@@ -35,6 +36,8 @@ import { listLitellmModels } from "../litellm-costs/litellm-costs.js";
 import type { FallbackChain, KnownModelInfo } from "@myrmidon/shared";
 import { readCompanyKeyBudgets } from "./key-budget-adapter.js";
 import { createLiteLlmAuditService } from "../litellm-audit/service.js";
+import { updateAgentAllowlistsForCompany } from "../litellm-sync/agent-allowlist-handler.js";
+import { withCompanySyncGuard } from "../litellm-sync/lock.js";
 
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
@@ -140,6 +143,54 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       return;
     }
     res.json(await readCompanyKeyBudgets(input.deps, companyId));
+  });
+
+  /**
+   * Company-wide pass that sets every restricted agent key to the company's
+   * enabled registry models: it adds the enabled names a key lacks and drops
+   * the registry names that are no longer enabled; names the registry does not
+   * own are kept, and a key with no restriction (all models) is left alone.
+   *
+   * A DRY RUN by default: it reads the keys and answers what would change
+   * (`dryRun.changes` per agent, `added` / `removed` per model name) and sends
+   * nothing. Only `?apply=true` writes. Applying widens every curated list by
+   * the enabled names, so it is an explicit owner/admin action: the startup
+   * check and the provider-change hooks only report.
+   *
+   * Registered before the `/:agentId` routes, which would take "allowlist-sync"
+   * for an agent id.
+   */
+  router.post("/myrmidon/companies/:companyId/litellm/keys/allowlist-sync", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAdmin(req, companyId);
+    if (!settings().canManageKeys) {
+      disabled(res);
+      return;
+    }
+    const applyParam = String(req.query.apply ?? "").trim().toLowerCase();
+    const apply = applyParam === "true" || applyParam === "1";
+    const result = await withCompanySyncGuard(companyId, () =>
+      updateAgentAllowlistsForCompany(db, input.deps, companyId, [], [], false, { apply }),
+    );
+    if (apply) {
+      const actor = getActorInfo(req);
+      try {
+        await auditService.record({
+          companyId,
+          category: "keys",
+          action: "litellm_key_allowlists_synced",
+          entityId: companyId,
+          actor: { type: actor.actorType, id: actor.actorId },
+          before: null,
+          after: { attempted: result.attempted, updated: result.updated, skipped: result.skipped.length },
+          summary: `Applied the enabled-model allowlist to ${result.updated} of ${result.attempted} agent gateway keys`,
+          canRollback: false,
+        });
+      } catch {
+        // The keys are already changed; a failed audit row must not hide that.
+      }
+    }
+    res.json({ mode: apply ? "apply" : "dry-run", applied: apply, ...result });
   });
 
   router.get("/myrmidon/companies/:companyId/litellm/keys/:agentId", async (req, res) => {

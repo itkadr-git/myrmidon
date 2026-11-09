@@ -54,6 +54,12 @@ hands a run its credentials for exactly that run. A company can authorize
 GitHub once for the whole server with its own GitHub App instead of
 per-person OAuth identities.
 
+To prevent exhausting GitHub App installation rate limits, tokens are cached
+in-memory by the broker, shared concurrently via single-flight deduplication,
+cached on disk in the run scratch directory (`PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR`),
+and protected by a per-run request fuse (`MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE`, default 60/min).
+See [GitHub Credentials Cache Guide](../myrmidon/guides/github-credentials-cache.md).
+
 ## Plugins and capabilities
 
 Plugins operate as isolated processes with declared capabilities. When background

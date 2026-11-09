@@ -30,13 +30,16 @@ import {
   getModelProviderConnector,
   isK12Plan,
   isModelProviderTypeAvailable,
+  isPoolModelProviderType,
   listAvailableModelProviderTypes,
   MODEL_PROVIDER_DEFAULT_BASE_URLS,
   MODEL_PROVIDER_MODELS_PATH,
   modelProviderAccountSecretName,
   modelProviderSecretName,
+  poolModelLitellmName,
   type CreateModelProviderInput,
   type ModelProviderChannelsView,
+  type ModelProviderConnectorRegistration,
   type ModelProviderPackageWarning,
   type ModelProviderType,
   type PatchModelProviderInput,
@@ -274,7 +277,24 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
    * is derived there — the store records what the provider answered.
    */
   function litellmModelNameOf(provider: ProviderRow, modelName: string): string {
-    return `${provider.type}/${modelName}`;
+    // A pool model id is (or maps to) the name of the pool's own gateway model
+    // group; only the other provider types get the `<type>/` prefix.
+    return isPoolModelProviderType(provider.type)
+      ? poolModelLitellmName(provider.type, modelName)
+      : `${provider.type}/${modelName}`;
+  }
+
+  /**
+   * The model list a connector provider starts with. A connector that declares
+   * no list gets none: only the ChatGPT pool falls back to the ChatGPT models,
+   * so a connector of another type never inherits them.
+   */
+  function connectorDefaultModels(
+    type: string,
+    connector: ModelProviderConnectorRegistration | null,
+  ): string[] {
+    if (connector?.defaultModels) return [...connector.defaultModels];
+    return type === "chatgpt-pool" ? [...DEFAULT_CHATGPT_POOL_MODELS] : [];
   }
 
   async function hasKeyFor(row: ProviderRow): Promise<boolean> {
@@ -306,7 +326,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
             if (error instanceof ProviderAuthError) throw error;
           }
         }
-        return connector?.defaultModels ? [...connector.defaultModels] : [...DEFAULT_CHATGPT_POOL_MODELS];
+        return connectorDefaultModels(input.type, connector);
       }
 
       const { models } = await deps.catalog.listModels({ baseUrl, apiKey: input.key });

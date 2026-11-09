@@ -56,23 +56,31 @@ export const SHARED_GUARD_TESTS = [
   "server/src/__tests__/app-private-hostname-gate.test.ts",
   "server/src/__tests__/openapi-routes.test.ts",
   "server/src/__tests__/server-startup-feedback-export.test.ts",
+  "server/src/myrmidon/app-plugin.myrmidon.test.ts",
   "server/src/myrmidon/channel-connectors/bridge/bridge.myrmidon.test.ts",
   "server/src/myrmidon/flags-killswitch.myrmidon.test.ts",
   "server/src/myrmidon/monitoring/alerts/guard.myrmidon.test.ts",
   "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
   "server/src/myrmidon/monitoring/metrics/guard.myrmidon.test.ts",
+  "server/src/myrmidon/stale-block/guard.myrmidon.test.ts",
   "server/src/myrmidon/swarm-claim/app-wiring.myrmidon.test.ts",
   "server/src/myrmidon/tracing-health/app-wiring.myrmidon.test.ts",
   "server/src/myrmidon/host-disk/wiring.myrmidon.test.ts",
 ];
 
-const SHARED_GUARD_TRIGGERS = [
+export const SHARED_GUARD_TRIGGERS = [
   "server/src/app.ts",
   "server/src/index.ts",
   "server/src/myrmidon/app-plugin.ts",
   "docs/myrmidon/FLAGS.md",
   "docs/myrmidon/SETTINGS.md",
 ];
+
+const APP_PLUGIN_TRIGGER = /^server\/src\/myrmidon\/app-plugin.*\.ts$/;
+
+export function isSharedGuardTrigger(file) {
+  return SHARED_GUARD_TRIGGERS.includes(file) || APP_PLUGIN_TRIGGER.test(file);
+}
 
 const ROUTE_GUARD_TRIGGER = /^server\/src\/routes\//;
 
@@ -357,11 +365,11 @@ export function selectTests(changedFiles, packages, testFiles, { selective = SEL
     selected.get(pkg.name).files.set(file, why);
   };
 
-  if (changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file) || ROUTE_GUARD_TRIGGER.test(file))) {
+  if (changedFiles.some((file) => isSharedGuardTrigger(file) || ROUTE_GUARD_TRIGGER.test(file))) {
     const testFilesByPath = new Set(testFiles.map((testFile) => testFile.file));
     const server = packages.find((pkg) => pkg.name === "@myrmidon/server");
     const routesOnly = changedFiles.some((file) => ROUTE_GUARD_TRIGGER.test(file)) &&
-      !changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file));
+      !changedFiles.some((file) => isSharedGuardTrigger(file));
     const guards = routesOnly ? ROUTE_GUARD_TESTS : SHARED_GUARD_TESTS;
     for (const file of guards) {
       if (testFilesByPath.has(file)) add(server, file, routesOnly ? "routes guard" : "shared-source guard");

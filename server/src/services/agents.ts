@@ -54,6 +54,7 @@ import {
 } from "./company-base-skill-keys.js";
 import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
 import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
+import { isForeignKeyViolation } from "../db-errors.js";
 import {
   collectSecretRefs,
   collectUserSecretRefs,
@@ -1347,89 +1348,116 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
           .from(agents)
           .where(eq(agents.id, id))
           .for("update");
-        await issueThreadInteractionService(tx as unknown as Db)
-          .cancelPendingForDeletedAddressee(existing.companyId, id);
-        await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
-        await tx
-          .update(issues)
-          .set({ assigneeAgentId: null, createdByAgentId: null })
-          .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
-        await tx.delete(heartbeatRunEvents).where(
-          or(
-            eq(heartbeatRunEvents.agentId, id),
-            sql`${heartbeatRunEvents.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
-          ),
-        );
-        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
-        await tx
-          .update(agentTaskSessions)
-          .set({ lastRunId: null })
-          .where(
-            sql`${agentTaskSessions.lastRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+
+        // Financial history integrity: agents with recorded cost_events cannot be deleted,
+        // as deleting them would violate foreign keys or erase financial audit trails.
+        // Callers should terminate the agent instead.
+        const hasCostEvents = await tx
+          .select({ id: costEvents.id })
+          .from(costEvents)
+          .where(eq(costEvents.agentId, id))
+          .limit(1);
+
+        if (hasCostEvents.length > 0) {
+          throw conflict(
+            "Agent cannot be deleted because financial cost events are recorded for it; the agent must be terminated instead",
+            { code: "agent_has_cost_events" },
           );
-        await tx.delete(activityLog).where(
-          or(
-            eq(activityLog.agentId, id),
-            sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
-          ),
-        );
-        await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
-        await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+        }
 
-        const agentRunIdsSql = sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id}`;
-        const agentDecisionIdsSql = sql`select ${statusDecisions.id} from ${statusDecisions} where ${statusDecisions.runId} in (${agentRunIdsSql})`;
-
-        await tx
-          .update(issues)
-          .set({ lastStatusDecisionId: null })
-          .where(sql`${issues.lastStatusDecisionId} in (${agentDecisionIdsSql})`);
-
-        await tx.delete(statusDecisionEffects).where(
-          sql`${statusDecisionEffects.decisionId} in (${agentDecisionIdsSql})`,
-        );
-        await tx.delete(nativeRunFinalizations).where(
-          sql`${nativeRunFinalizations.runId} in (${agentRunIdsSql})`,
-        );
-        await tx
-          .update(statusDecisions)
-          .set({ supersedesDecisionId: null })
-          .where(
+        try {
+          await issueThreadInteractionService(tx as unknown as Db)
+            .cancelPendingForDeletedAddressee(existing.companyId, id);
+          await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+          await tx
+            .update(issues)
+            .set({ assigneeAgentId: null, createdByAgentId: null })
+            .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
+          await tx.delete(heartbeatRunEvents).where(
             or(
-              sql`${statusDecisions.runId} in (${agentRunIdsSql})`,
-              sql`${statusDecisions.supersedesDecisionId} in (${agentDecisionIdsSql})`,
+              eq(heartbeatRunEvents.agentId, id),
+              sql`${heartbeatRunEvents.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
             ),
           );
-        await tx.delete(statusDecisions).where(
-          sql`${statusDecisions.runId} in (${agentRunIdsSql})`,
-        );
-        await tx
-          .update(workAssessments)
-          .set({ supersedesAssessmentId: null })
-          .where(
+          await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
+          await tx
+            .update(agentTaskSessions)
+            .set({ lastRunId: null })
+            .where(
+              sql`${agentTaskSessions.lastRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+            );
+          await tx.delete(activityLog).where(
             or(
-              sql`${workAssessments.runId} in (${agentRunIdsSql})`,
-              sql`${workAssessments.supersedesAssessmentId} in (
-                select ${workAssessments.id} from ${workAssessments} where ${workAssessments.runId} in (${agentRunIdsSql})
-              )`,
+              eq(activityLog.agentId, id),
+              sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
             ),
           );
-        await tx.delete(workAssessments).where(
-          sql`${workAssessments.runId} in (${agentRunIdsSql})`,
-        );
-        await tx.delete(nativeRunResults).where(
-          sql`${nativeRunResults.runId} in (${agentRunIdsSql})`,
-        );
+          await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
+          await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
 
-        await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
-        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
-        await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
-        await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
-        const deleted = await tx
-          .delete(agents)
-          .where(eq(agents.id, id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        return deleted ? normalizeAgentRow(deleted) : null;
+          const agentRunIdsSql = sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id}`;
+          const agentDecisionIdsSql = sql`select ${statusDecisions.id} from ${statusDecisions} where ${statusDecisions.runId} in (${agentRunIdsSql})`;
+
+          await tx
+            .update(issues)
+            .set({ lastStatusDecisionId: null })
+            .where(sql`${issues.lastStatusDecisionId} in (${agentDecisionIdsSql})`);
+
+          await tx.delete(statusDecisionEffects).where(
+            sql`${statusDecisionEffects.decisionId} in (${agentDecisionIdsSql})`,
+          );
+          await tx.delete(nativeRunFinalizations).where(
+            sql`${nativeRunFinalizations.runId} in (${agentRunIdsSql})`,
+          );
+          await tx
+            .update(statusDecisions)
+            .set({ supersedesDecisionId: null })
+            .where(
+              or(
+                sql`${statusDecisions.runId} in (${agentRunIdsSql})`,
+                sql`${statusDecisions.supersedesDecisionId} in (${agentDecisionIdsSql})`,
+              ),
+            );
+          await tx.delete(statusDecisions).where(
+            sql`${statusDecisions.runId} in (${agentRunIdsSql})`,
+          );
+          await tx
+            .update(workAssessments)
+            .set({ supersedesAssessmentId: null })
+            .where(
+              or(
+                sql`${workAssessments.runId} in (${agentRunIdsSql})`,
+                sql`${workAssessments.supersedesAssessmentId} in (
+                  select ${workAssessments.id} from ${workAssessments} where ${workAssessments.runId} in (${agentRunIdsSql})
+                )`,
+              ),
+            );
+          await tx.delete(workAssessments).where(
+            sql`${workAssessments.runId} in (${agentRunIdsSql})`,
+          );
+          await tx.delete(nativeRunResults).where(
+            sql`${nativeRunResults.runId} in (${agentRunIdsSql})`,
+          );
+
+          await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
+          await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
+          await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
+          await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+          const deleted = await tx
+            .delete(agents)
+            .where(eq(agents.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return deleted ? normalizeAgentRow(deleted) : null;
+        } catch (err) {
+          if (isForeignKeyViolation(err)) {
+            throw conflict(
+              "Agent cannot be deleted because another record still references it; the agent must be terminated instead",
+              { code: "agent_referenced" },
+            );
+          }
+          throw err;
+        }
       });
     },
 

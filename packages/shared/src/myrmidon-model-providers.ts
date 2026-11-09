@@ -38,6 +38,16 @@ export const POOL_MODEL_PROVIDER_TYPES = [
 /** Providers whose connector exposes per-account quota windows. */
 export type PoolModelProviderType = (typeof POOL_MODEL_PROVIDER_TYPES)[number];
 
+/**
+ * True for the subscription-pool provider types. A pool lives on its own
+ * gateway deployments (its router or proxy), so the board never registers,
+ * updates or deletes gateway deployments for it: it manages which models are
+ * visible, the fallback order and the agent key lists, not the deployments.
+ */
+export function isPoolModelProviderType(type: string | null | undefined): type is PoolModelProviderType {
+  return typeof type === "string" && (POOL_MODEL_PROVIDER_TYPES as readonly string[]).includes(type);
+}
+
 /** Statically known provider types for type safety. */
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
@@ -129,6 +139,26 @@ export const DEFAULT_CHATGPT_POOL_MODELS = [
   "gpt-5.6-terra",
   "gpt-5.6-luna",
 ] as const;
+
+/**
+ * Default models for the closed antigravity-pool connector. Each id is the
+ * name of the gateway model group, so it carries no provider-type prefix.
+ */
+export const DEFAULT_ANTIGRAVITY_POOL_MODELS = [
+  "antigravity/gemini-3.8-flash-high",
+  "antigravity/gemini-3.8-flash-medium",
+  "antigravity/gemini-3.8-flash-low",
+  "antigravity/gemini-3.5-flash-lite",
+] as const;
+
+/**
+ * The gateway model-group name of one pool model. ChatGPT pool groups are
+ * `chatgpt-pool/<model>`; the model ids of the other pools already are group
+ * names (for example `antigravity/gemini-3.8-flash-high`) and stay as they are.
+ */
+export function poolModelLitellmName(type: string, modelName: string): string {
+  return type === "chatgpt-pool" ? `chatgpt-pool/${modelName}` : modelName;
+}
 
 /** The models-list path every supported provider speaks (OpenAI-compatible). */
 export const MODEL_PROVIDER_MODELS_PATH = "/models";

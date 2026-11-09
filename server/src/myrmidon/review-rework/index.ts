@@ -36,15 +36,18 @@ export function createReviewReworkScheduler(input: {
   db: Db;
   wakeup: WakeFn;
   track: (work: Promise<unknown>) => void;
+  /** myrmidon(OPE-12397): the tick is a no-op unless this process leads "scheduler" (as TASK-PR-SYNC). */
+  isLeader?: () => boolean;
 }): () => void {
   const settings = reviewReworkSettingsService(input.db, {
     settings: instanceSettingsService(input.db),
   });
   const sweep = createReviewReworkSweep({
     store: createPgReviewReworkStore(input.db),
-    resolvePr: createPullRequestReviewFactsResolver(input.db),
+    resolvePr: createPullRequestReviewFactsResolver(input.db, { source: "review-rework" }),
     readSettings: () => settings.read(),
     isUnderMaintenance: () => isInstanceUnderMaintenance(input.db),
+    isLeader: input.isLeader,
     enqueueWake: (agentId, wake) => input.wakeup(agentId, wake as Record<string, unknown>),
     logActivity: async (entry) => {
       const { logActivity } = await import("../../services/activity-log.js");
@@ -61,6 +64,9 @@ export function createReviewReworkScheduler(input: {
     },
   });
   return () => {
+    // myrmidon(OPE-12397): only the "scheduler" leader sweeps; other
+    // processes no longer re-read every PR of every candidate on their own.
+    if (input.isLeader && !input.isLeader()) return;
     input.track(
       sweep
         .sweep()
