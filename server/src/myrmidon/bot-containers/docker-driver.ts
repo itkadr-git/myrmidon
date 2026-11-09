@@ -337,9 +337,9 @@ export interface DockerDriverOptions {
   /**
    * myrmidon(1.6.5-BOT-DISK-H11): the host directory the instance shares the bot
    * runtime from (`general.botDisk.sharedBotRuntimePath`), read with the cache
-   * path on every create, recreate and drift check. Set adds three READ-ONLY
-   * binds (`<root>/bin`, `<root>/lazy-packages`, `<root>/lsp`) over the bot's
-   * own runtime paths, so the instance keeps one copy instead of one per bot.
+   * path on every create, recreate and drift check. Set adds a READ-ONLY
+   * bind (`<root>/bin`) over the bot's own runtime path, so the instance
+   * keeps one copy instead of one per bot (re-scoped in OPE-12493).
    * Absent: every bot keeps its own.
    */
   readSharedBotRuntimePath?: (botKey: string) => Promise<string | undefined>;

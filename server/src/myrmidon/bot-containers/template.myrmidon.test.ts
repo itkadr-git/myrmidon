@@ -9,6 +9,7 @@ import {
   BOT_KEY_PATTERN,
   BOT_LABEL_KEYS,
   BOT_RUNTIME_CONTRACT_LABEL,
+  BOT_RUNTIME_MOUNTS,
   BOT_RUNTIME_SCOPE_LABEL,
   BotContainerTemplateError,
   buildBinds,
@@ -489,11 +490,9 @@ describe("buildBinds: the shared bot runtime (1.6.5-BOT-DISK-H11)", () => {
   const runtime = "/srv/bot-runtime";
   const pairs = [
     `${runtime}/bin:/bot/hermes/bin:ro`,
-    `${runtime}/lazy-packages:/bot/hermes/lazy-packages:ro`,
-    `${runtime}/lsp:/bot/hermes/lsp:ro`,
   ];
 
-  it("adds the three runtime binds read-only, at the real path inside the bot's own mount", () => {
+  it("adds the runtime bind read-only, at the real path inside the bot's own mount", () => {
     expect(buildBinds("/srv/myrmidon/bots", "agent-a", { sharedBotRuntimePath: runtime })).toEqual([
       "/srv/myrmidon/bots/agent-a:/bot",
       ...pairs,
@@ -514,19 +513,15 @@ describe("buildBinds: the shared bot runtime (1.6.5-BOT-DISK-H11)", () => {
   });
 
   it("binds them at the volume itself under the legacy layout (contract \"1\" images)", () => {
-    expect(buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: runtime, volumeLayout: "legacy" }).slice(-3)).toEqual([
+    expect(buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: runtime, volumeLayout: "legacy" }).slice(-1)).toEqual([
       `${runtime}/bin:/data/hermes/bin:ro`,
-      `${runtime}/lazy-packages:/data/hermes/lazy-packages:ro`,
-      `${runtime}/lsp:/data/hermes/lsp:ro`,
     ]);
   });
 
   it("binds them into the member directory of a shared scope instance (BOT-DISK-F)", () => {
     const scope = { scopeRoot: "/srv/bots/.scopes", dirName: "caste-7" };
-    expect(buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: runtime, scope }).slice(-3)).toEqual([
+    expect(buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: runtime, scope }).slice(-1)).toEqual([
       `${runtime}/bin:/bot-scope/agent-a/hermes/bin:ro`,
-      `${runtime}/lazy-packages:/bot-scope/agent-a/hermes/lazy-packages:ro`,
-      `${runtime}/lsp:/bot-scope/agent-a/hermes/lsp:ro`,
     ]);
   });
 
@@ -545,6 +540,12 @@ describe("buildBinds: the shared bot runtime (1.6.5-BOT-DISK-H11)", () => {
     expect(() => buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/media"] })).toThrow(
       BotContainerTemplateError,
     );
+  });
+
+  it("defines only bin in BOT_RUNTIME_MOUNTS", () => {
+    expect(BOT_RUNTIME_MOUNTS).toEqual([
+      { hostSubdir: "bin", containerPath: "/data/hermes/bin" },
+    ]);
   });
 });
 
