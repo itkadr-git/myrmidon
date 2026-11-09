@@ -205,11 +205,15 @@ function paperclipRepositoryFromGitArgs(args) {
 // than trusting the launcher to have performed the check for this code path.
 // The same wrapper paths the launcher rejects: the staged launcher directory
 // (its own git binary is the launcher), the image wrapper and its
-// /usr/local/bin shadow. The variable 'directory' below is the launcher
-// script's staged directory, set by the surrounding launcher script.
+// /usr/local/bin shadow. The launcher resolves the real git once — with the
+// re-entry probe for unknown PATH entries — and stashes the answer in
+// `resolvedRealGit`; this lookup reuses exactly that binary. The variable
+// 'directory' below is the launcher script's staged directory, set by the
+// surrounding launcher script.
 function paperclipRealGitExecutable(env) {
   const fs = require('node:fs');
   const path = require('node:path');
+  if (typeof resolvedRealGit !== 'undefined' && resolvedRealGit && resolvedRealGit.value) return resolvedRealGit.value;
   const configured = env && typeof env.MYRMIDON_GIT_REAL === 'string' ? env.MYRMIDON_GIT_REAL.trim() : '';
   const wrapperPaths = new Set(['/opt/paperclip/bin/git', '/usr/local/bin/git'].map(p => {
     try { return fs.realpathSync(p); } catch { return p; }
