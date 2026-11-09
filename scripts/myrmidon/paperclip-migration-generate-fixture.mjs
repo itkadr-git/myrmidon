@@ -923,6 +923,7 @@ export function generateAllFixtures() {
         agents: 2,
         instance_settings: 1,
         company_skills: 2,
+        tool_applications: 2,
         tool_connections: 2,
         connection_grants: 1,
         heartbeat_runs: 2,
@@ -930,6 +931,8 @@ export function generateAllFixtures() {
         company_secret_versions: 2,
         assets: 2,
         issue_attachments: 2,
+        ...((rel.tag === "v2026.1001.0" || rel.tag === "v2026.1005.0" || rel.tag === "v2026.1012.0" || rel.tag === "v2026.1023.0" || rel.tag === "v2026.1106.0") ? { chat_endpoints: 1 } : {}),
+        ...((rel.tag === "v2026.1012.0" || rel.tag === "v2026.1023.0" || rel.tag === "v2026.1106.0") ? { user: 1 } : {}),
       },
       vendorGapCounts,
       spotChecks: {
