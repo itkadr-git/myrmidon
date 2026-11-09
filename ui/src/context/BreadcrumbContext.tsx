@@ -1,4 +1,4 @@
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 
 export interface Breadcrumb {
@@ -96,7 +96,18 @@ export function BreadcrumbProvider({ children, companyName }: BreadcrumbProvider
   }, []);
 
   useEffect(() => {
-    document.title = buildDocumentTitle(breadcrumbs, companyName);
+    const title = buildDocumentTitle(breadcrumbs, companyName);
+    document.title = title;
+    if (typeof document !== "undefined") {
+      const ogTitle = document.querySelector('meta[property="og:title"]');
+      if (ogTitle) {
+        ogTitle.setAttribute("content", title);
+      }
+      const twitterTitle = document.querySelector('meta[name="twitter:title"]');
+      if (twitterTitle) {
+        twitterTitle.setAttribute("content", title);
+      }
+    }
   }, [breadcrumbs, companyName]);
 
   return (

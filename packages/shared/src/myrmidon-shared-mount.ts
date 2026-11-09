@@ -21,8 +21,13 @@ export interface SharedMountSettings {
 export const sharedMountSettingsSchema = z
   .object({
     enabled: z.boolean(),
-    // a plain absolute path: it ends up in a "source:target:mode" bind string
-    hostPath: z.string().regex(/^\/[^:,\0]*$/, "must be an absolute path without ':' or ','").optional(),
+    // Reject ambiguous and dangerous bind sources before they reach the driver.
+    hostPath: z.string().refine((value) =>
+      value.startsWith("/") && value !== "/" && !/[,:\\\x00-\x1f\x7f]/.test(value) &&
+      !value.includes("//") && !value.endsWith("/") &&
+      value.split("/").every((segment) => segment !== "." && segment !== ".."),
+      "must be a normalized absolute directory path without control characters, ':' or ','",
+    ).optional(),
     writable: z.boolean().optional(),
     allowedBots: z.array(z.string().min(1)).optional(),
   })

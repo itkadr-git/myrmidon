@@ -6,7 +6,7 @@ import {
   isFrontmatterPlainRecord,
   parseFrontmatterFields,
   stringifyFrontmatter,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { AlertTriangle, ChevronDown, ChevronRight, Info, Plus, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
+
+// YAML key names and the format name are not translated.
+const LABEL_YAML = "YAML";
+const LABEL_ALLOWED_TOOLS = "allowed-tools";
 
 /**
  * Skill Studio frontmatter editor (PAP-13145 Option B / PAP-13155).
@@ -195,19 +200,21 @@ interface ValidationIssue {
   message: string;
 }
 
-function collectValidation(form: FormModel, isSkillFile: boolean): ValidationIssue[] {
+type Translate = ReturnType<typeof useTranslation>["t"];
+
+function collectValidation(form: FormModel, isSkillFile: boolean, t: Translate): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const name = form.name.trim();
   const description = form.description.trim();
-  if (isSkillFile && !name) issues.push({ field: "name", message: "SKILL.md needs a name." });
+  if (isSkillFile && !name) issues.push({ field: "name", message: t("area.documents-artifacts-2.frontmatter-panel.needsName") });
   if (name && !SLUG_RE.test(name)) {
-    issues.push({ field: "name", message: "Use lowercase letters, numbers and hyphens." });
+    issues.push({ field: "name", message: t("area.documents-artifacts-2.frontmatter-panel.slugHint") });
   }
   if (isSkillFile && !description) {
-    issues.push({ field: "description", message: "SKILL.md needs a description." });
+    issues.push({ field: "description", message: t("area.documents-artifacts-2.frontmatter-panel.needsDescription") });
   }
   if (form.allowedToolsPresent && form.allowedTools === null) {
-    issues.push({ field: "allowed-tools", message: "Expected a list — edit in YAML." });
+    issues.push({ field: "allowed-tools", message: t("area.documents-artifacts-2.frontmatter-panel.expectedList") });
   }
   return issues;
 }
@@ -225,6 +232,7 @@ export function FrontmatterPanel({
   onChange,
   className,
 }: FrontmatterPanelProps) {
+  const { t } = useTranslation();
   const isSkillFile = isSkillMarkdown(fileName);
 
   // `yamlText` is the canonical raw block — always equal to whatever we've last
@@ -244,8 +252,8 @@ export function FrontmatterPanel({
   const effectiveMode: FrontmatterMode = mode === "fields" && !canUseFields ? "yaml" : mode;
 
   const validation = useMemo(
-    () => (effectiveMode === "fields" ? collectValidation(form, isSkillFile) : []),
-    [effectiveMode, form, isSkillFile],
+    () => (effectiveMode === "fields" ? collectValidation(form, isSkillFile, t) : []),
+    [effectiveMode, form, isSkillFile, t],
   );
 
   const emit = useCallback(
@@ -313,7 +321,7 @@ export function FrontmatterPanel({
     emit(nextRaw, true);
   }, [emit, isSkillFile, skillSlug]);
 
-  const summary = useMemo(() => buildSummary(analysis.parsed), [analysis.parsed]);
+  const summary = useMemo(() => buildSummary(analysis.parsed, t), [analysis.parsed, t]);
   const warningCount = validation.length;
 
   const chevron = open ? (
@@ -339,12 +347,12 @@ export function FrontmatterPanel({
             aria-controls="frontmatter-panel-body"
           >
             {chevron}
-            <span className="text-sm font-medium">Frontmatter</span>
+            <span className="text-sm font-medium">{t("area.documents-artifacts-2.frontmatter-panel.title")}</span>
             {!open && present ? (
               <span className="truncate text-xs text-muted-foreground">{summary}</span>
             ) : null}
             {!open && !present ? (
-              <span className="text-xs text-muted-foreground">None</span>
+              <span className="text-xs text-muted-foreground">{t("common.none")}</span>
             ) : null}
           </button>
 
@@ -356,7 +364,7 @@ export function FrontmatterPanel({
               <TabsList variant="line" className="h-7">
                 {canUseFields ? (
                   <TabsTrigger value="fields" className="px-2 py-0.5 text-xs">
-                    Fields
+                    {t("area.documents-artifacts-2.frontmatter-panel.fieldsTab")}
                   </TabsTrigger>
                 ) : (
                   <Tooltip>
@@ -368,33 +376,31 @@ export function FrontmatterPanel({
                           aria-disabled="true"
                           className="px-2 py-0.5 text-xs opacity-50"
                         >
-                          Fields
+                          {t("area.documents-artifacts-2.frontmatter-panel.fieldsTab")}
                         </TabsTrigger>
                       </span>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-60">
-                      Switch to YAML to edit. This frontmatter uses YAML features the form can't safely
-                      round-trip (e.g. comments, anchors, or custom ordering). Editing here keeps it
-                      byte-for-byte.
+                      {t("area.documents-artifacts-2.frontmatter-panel.fieldsDisabledHint")}
                     </TooltipContent>
                   </Tooltip>
                 )}
                 <TabsTrigger value="yaml" className="px-2 py-0.5 text-xs">
-                  YAML
+                  {LABEL_YAML}
                 </TabsTrigger>
               </TabsList>
             </Tabs>
           ) : !readOnly ? (
             <Button variant="ghost" size="sm" onClick={addFrontmatter} data-testid="add-frontmatter">
               <Plus className="mr-1 h-3.5 w-3.5" />
-              Add frontmatter
+              {t("area.documents-artifacts-2.frontmatter-panel.addFrontmatter")}
             </Button>
           ) : null}
 
           {present && effectiveMode === "fields" && warningCount > 0 ? (
             <Badge variant="outline" className="gap-1 text-amber-500" data-testid="frontmatter-warning-chip">
               <AlertTriangle className="h-3.5 w-3.5" />
-              {warningCount} {warningCount === 1 ? "issue" : "issues"}
+              {t("area.documents-artifacts-2.frontmatter-panel.issueCount", { count: warningCount })}
             </Badge>
           ) : null}
         </div>
@@ -421,7 +427,7 @@ export function FrontmatterPanel({
             </div>
           ) : (
             <div className="px-3 pb-2 text-xs text-muted-foreground">
-              This file has no frontmatter.
+              {t("area.documents-artifacts-2.frontmatter-panel.noFrontmatter")}
             </div>
           )}
         </CollapsibleContent>
@@ -430,14 +436,14 @@ export function FrontmatterPanel({
   );
 }
 
-function buildSummary(parsed: Record<string, unknown>): string {
+function buildSummary(parsed: Record<string, unknown>, t: Translate): string {
   const parts: string[] = [];
   if (typeof parsed.name === "string" && parsed.name.trim()) parts.push(parsed.name.trim());
   const tools = asStringArray(parsed["allowed-tools"]);
-  if (tools && tools.length > 0) parts.push(`${tools.length} ${tools.length === 1 ? "tool" : "tools"}`);
+  if (tools && tools.length > 0) parts.push(t("area.documents-artifacts-2.frontmatter-panel.toolCount", { count: tools.length }));
   if (isFrontmatterPlainRecord(parsed.metadata)) {
     const count = Object.keys(parsed.metadata).length;
-    if (count > 0) parts.push(`${count} metadata`);
+    if (count > 0) parts.push(t("area.documents-artifacts-2.frontmatter-panel.metadataCount", { count }));
   }
   return parts.join(" · ");
 }
@@ -466,6 +472,7 @@ function FieldsForm({
   readOnly: boolean;
   onCommit: (form: FormModel) => void;
 }) {
+  const { t } = useTranslation();
   const nameWarning = fieldWarning(validation, "name");
   const descriptionWarning = fieldWarning(validation, "description");
   const toolsWarning = fieldWarning(validation, "allowed-tools");
@@ -508,16 +515,16 @@ function FieldsForm({
 
       {form.allowedToolsPresent ? (
         <div>
-          <Label className="text-xs text-muted-foreground">allowed-tools</Label>
+          <Label className="text-xs text-muted-foreground">{LABEL_ALLOWED_TOOLS}</Label>
           {form.allowedTools === null ? (
             <p className="mt-1 text-xs text-amber-500">
-              {toolsWarning ?? "Expected a list — edit in YAML."}
+              {toolsWarning ?? t("area.documents-artifacts-2.frontmatter-panel.expectedList")}
             </p>
           ) : (
             <ChipInput
               values={form.allowedTools}
               readOnly={readOnly}
-              placeholder="Add a tool…"
+              placeholder={t("area.documents-artifacts-2.frontmatter-panel.addToolPlaceholder")}
               onChange={(next) => onCommit({ ...form, allowedTools: next })}
             />
           )}
@@ -528,7 +535,7 @@ function FieldsForm({
         <div>
           <Label className="text-xs text-muted-foreground">metadata</Label>
           {form.metadataComplex !== null ? (
-            <p className="mt-1 text-xs text-muted-foreground">Complex value — edit in YAML.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("area.documents-artifacts-2.frontmatter-panel.complexValue")}</p>
           ) : (
             <MetadataRows
               rows={form.metaRows}
@@ -560,7 +567,7 @@ function FieldsForm({
         ) : (
           <div key={row.id}>
             <Label className="text-xs text-muted-foreground">{row.key}</Label>
-            <p className="mt-1 text-xs text-muted-foreground">Complex value — edit in YAML.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("area.documents-artifacts-2.frontmatter-panel.complexValue")}</p>
           </div>
         ),
       )}
@@ -577,6 +584,9 @@ function MetadataRows({
   readOnly: boolean;
   onChange: (rows: ScalarRow[]) => void;
 }) {
+  const { t } = useTranslation();
+  const fieldName = (row: ScalarRow, index: number) =>
+    row.key || t("area.documents-artifacts-2.frontmatter-panel.fieldFallback", { index: index + 1 });
   const update = (index: number, patch: Partial<ScalarRow>) => {
     const next = rows.slice();
     next[index] = { ...next[index]!, ...patch, edited: true };
@@ -597,18 +607,18 @@ function MetadataRows({
       {rows.map((row, index) => (
         <div key={row.id} className="flex items-center gap-1.5">
           <Input
-            aria-label={`Metadata key ${index + 1}`}
+            aria-label={t("area.documents-artifacts-2.frontmatter-panel.metadataKeyAria", { index: index + 1 })}
             value={row.key}
             readOnly={readOnly}
-            placeholder="key"
+            placeholder={t("area.documents-artifacts-2.frontmatter-panel.keyPlaceholder")}
             onChange={(event) => update(index, { key: event.target.value })}
             className="h-8 flex-1 font-mono text-xs"
           />
           <Input
-            aria-label={`Value for ${row.key || `field ${index + 1}`}`}
+            aria-label={t("area.documents-artifacts-2.frontmatter-panel.valueFor", { name: fieldName(row, index) })}
             value={row.text}
             readOnly={readOnly}
-            placeholder="value"
+            placeholder={t("area.documents-artifacts-2.frontmatter-panel.valuePlaceholder")}
             onChange={(event) => update(index, { text: event.target.value })}
             className="h-8 flex-1 text-xs"
           />
@@ -617,7 +627,7 @@ function MetadataRows({
               variant="ghost"
               size="icon"
               className="h-8 w-8 shrink-0"
-              aria-label={`Remove ${row.key || `field ${index + 1}`}`}
+              aria-label={t("area.documents-artifacts-2.frontmatter-panel.removeItem", { name: fieldName(row, index) })}
               onClick={() => remove(index)}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -628,7 +638,7 @@ function MetadataRows({
       {!readOnly ? (
         <Button variant="ghost" size="sm" onClick={add} className="text-xs">
           <Plus className="mr-1 h-3.5 w-3.5" />
-          add field
+          {t("area.documents-artifacts-2.frontmatter-panel.addField")}
         </Button>
       ) : null}
     </div>
@@ -646,6 +656,7 @@ function ChipInput({
   placeholder?: string;
   onChange: (values: string[]) => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState("");
 
   const commit = () => {
@@ -663,7 +674,7 @@ function ChipInput({
           {!readOnly ? (
             <button
               type="button"
-              aria-label={`Remove ${value}`}
+              aria-label={t("area.documents-artifacts-2.frontmatter-panel.removeItem", { name: value })}
               onClick={() => onChange(values.filter((_, i) => i !== index))}
               className="hover:text-foreground"
             >
@@ -686,7 +697,7 @@ function ChipInput({
             }
           }}
           onBlur={commit}
-          aria-label="Add tool"
+          aria-label={t("area.documents-artifacts-2.frontmatter-panel.addToolAria")}
           className="min-w-24 flex-1 bg-transparent text-xs outline-none"
         />
       ) : null}
@@ -707,12 +718,13 @@ function YamlEditor({
   parseError: boolean;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="pt-1">
       {!canReturnToFields && !parseError ? (
         <div className="mb-1.5 flex items-start gap-2 rounded-md bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span>Editing raw YAML to preserve formatting the form can't reconstruct.</span>
+          <span>{t("area.documents-artifacts-2.frontmatter-panel.rawYamlNote")}</span>
         </div>
       ) : null}
       <Textarea
@@ -722,10 +734,10 @@ function YamlEditor({
         rows={Math.min(12, Math.max(3, value.split("\n").length))}
         onChange={(event) => onChange(event.target.value)}
         className="font-mono text-xs"
-        aria-label="Frontmatter YAML"
+        aria-label={t("area.documents-artifacts-2.frontmatter-panel.yamlAria")}
       />
       <p className="mt-1 text-xs text-muted-foreground">
-        Raw YAML is the source of truth in this mode.
+        {t("area.documents-artifacts-2.frontmatter-panel.rawYamlSource")}
       </p>
     </div>
   );

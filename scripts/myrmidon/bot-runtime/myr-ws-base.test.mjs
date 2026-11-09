@@ -122,6 +122,14 @@ describe("myr-ws base: repository name validation", () => {
     assert.equal(layout.parseRepo("acme/my.repo_1-x").slug, "acme/my.repo_1-x");
   });
 
+  it("normalizes mixed-case owner and repo to one base path", () => {
+    const env = envFor(newHome());
+    const mixed = layout.parseRepo("NousResearch/Hermes-Agent.git");
+    const lower = layout.parseRepo("nousresearch/hermes-agent.git");
+    assert.deepEqual(mixed, lower);
+    assert.equal(layout.basePath(mixed, env), layout.basePath(lower, env));
+  });
+
   for (const bad of [
     "../etc",
     "acme/..",
@@ -220,6 +228,21 @@ describe("myr-ws base: ensureBase", { skip: !hasGit && "git missing" }, () => {
     assert.doesNotMatch(git(b, "for-each-ref", "--format=%(refname)", "refs/remotes/origin"), /origin\/feature/);
   });
 
+  it("reuses a mixed-case legacy base when the canonical path is absent", () => {
+    makeOrigin("acme", "legacy");
+    const home = newHome();
+    const env = envFor(home);
+    const old = base.ensureBase("acme/legacy", { env }).path;
+    const legacy = path.join(home, "git-base/Acme/Legacy.git");
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.renameSync(old, legacy);
+    const result = base.ensureBase("ACME/LEGACY", { env });
+    assert.equal(result.path, legacy);
+    assert.equal(result.created, false);
+    assert.equal(base.listBases(env).length, 1);
+    assert.equal(fs.existsSync(old), false);
+  });
+
   it("refuses the 9th repository with exit 4 and keeps the 8 bases", () => {
     const home = newHome();
     const env = envFor(home);
@@ -253,8 +276,8 @@ describe("myr-ws base: ensureBase", { skip: !hasGit && "git missing" }, () => {
 describe("myr-ws CLI frame", () => {
   const run = (args, env = {}) => spawnSync(process.execPath, [ENTRY, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
 
-  it("registers the five verbs and every one is a real handler (none is a stub)", () => {
-    assert.deepEqual(Object.keys(cli.COMMANDS).sort(), ["close", "list", "migrate", "open", "restore"]);
+  it("registers the six verbs and every one is a real handler (none is a stub)", () => {
+    assert.deepEqual(Object.keys(cli.COMMANDS).sort(), ["close", "list", "migrate", "open", "repair", "restore"]);
     for (const [verb, fn] of Object.entries(cli.COMMANDS)) {
       assert.equal(typeof fn, "function", verb);
       assert.ok(typeof fn === "function", `${verb} is a notImplemented stub`);

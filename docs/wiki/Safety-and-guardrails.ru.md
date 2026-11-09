@@ -44,6 +44,18 @@
 превышает порог (`MYRMIDON_GUARDRAILS_INJECTION_SCORE`, по умолчанию 0.6).
 Слой помечает, но не блокирует.
 
+## Режимы маскирования
+
+API ограждений также маскирует найденные сущности, а не только помечает их:
+`POST /api/myrmidon/guardrails/redact` принимает режимы `reversible`
+(оригиналы хранятся в базе сервиса с истечением, возвращается `redactionId`),
+`irreversible` (только токены, ничего не сохраняется) и `flag` (текст не
+меняется, возвращаются найденные диапазоны), а
+`POST /api/myrmidon/guardrails/restore` возвращает оригиналы, пока они не
+истекли. Подробности — в
+[руководстве по режимам маскирования](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.ru.md)
+([английском](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.md)).
+
 ## Аварийная остановка
 
 Пауза оператора даёт активным запускам агента завершиться (пауза с
@@ -52,10 +64,29 @@
 `POST /api/myrmidon/agents/:id/emergency-stop` прекращает их сразу.
 Существует с выпуска 1.1.2 и не требует никакой настройки.
 
+## Динамические ограждения и изоляция флота (1.7 SETTINGS-TO-UI)
+
+Начиная с Myrmidon 1.7, параметры безопасности выполнения и границы изоляции контейнеров настраиваются динамически без перезапуска сервера:
+
+- **Контроль исходящего трафика** (`bot_egress_mode`): управление режимом сети контейнеров ботов — прямой доступ (`off`) или логирование через egress-прокси (`log`).
+- **Предохранитель инструментов** (`tool_breaker_*`): предотвращение бесконечных циклов сбоев инструментов при превышении порога ошибок за скользящее окно.
+- **Таймауты выполнения инструментов** (`tool_timeout_*`): предельный таймаут выполнения и предупреждение о медленных вызовах инструментов.
+- **Фильтрация переменных окружения** (`run_env_allow`): белый список переменных окружения хоста, передаваемых в запуски.
+- **Границы изоляции флота контейнеров**:
+  - Белый список образов (`bot_image_allowlist`): ограничение контейнеров проверенными образами.
+  - Белый список путей монтирования (`bot_mount_sources`): ограничение каталогов файловой системы хоста.
+  - Белый список переменных GitHub (`bot_container_github_env_allowlist`): ограничение передачи чувствительных токенов.
+  - Автономный режим YOLO (`bot_yolo`): переключение подтверждений потенциально опасных действий.
+- **Приоритет и подтверждение в интерфейсе**:
+  - Приоритет: `ui` (сохранённое значение) > `env` (переменная окружения) > `default` (по умолчанию).
+  - Редактирование белых списков и включение режима YOLO требуют подтверждения в модальном диалоге интерфейса во избежание случайного ослабления безопасности.
+  - Подробнее: [Настройки в интерфейсе](Settings-in-the-interface.ru.md#панель-ограждения-instance--general).
+
 ## Подробнее
 
 - [Матрица автономии: контроль изменений инструкций](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-matrix-instructions.md)
 - [Матрица автономии: пауза, возобновление, пробуждение](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-pause-wake-enforcement.md)
 - [Матрица автономии: удаление](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-delete-enforcement.md)
 - [Аварийная остановка запусков после дренирующей паузы](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/emergency-stop.md)
+- [Режимы маскирования](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.ru.md)
 - Хранилище и API матрицы: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), разделы «AUTONOMY-MATRIX» и «GUARDRAILS»

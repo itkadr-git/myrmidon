@@ -18,7 +18,11 @@
 //     the reviewer is woken. The first sight of a head for a verdict that
 //     pinned none only stores the baseline;
 //  3. every linked PR merged or closed settles the review `done` with one
-//     neutral comment — the reviewer's job is over;
+//     neutral comment — the reviewer's job is over; when the task says
+//     acceptance is still owed (a live / operator step, or the task a person
+//     reopened after the loop already closed it), the loop instead hands the
+//     merged task back to the executor as `in_progress` («код влит, приёмка
+//     ожидается») and never closes it (OPE-12260);
 //  4. a settled rework with a newer outstanding RETURN reopens the same task
 //     with the new verdict link instead of creating a duplicate.
 //
@@ -30,6 +34,7 @@
 
 import type { Logger } from "pino";
 import {
+  REVIEW_REWORK_ACCEPTANCE_ACTION,
   REVIEW_REWORK_BLOCKED_ACTION,
   REVIEW_REWORK_CLOSED_ACTION,
   REVIEW_REWORK_CREATED_ACTION,
@@ -39,7 +44,7 @@ import {
   REVIEW_REWORK_WAKE_IDEMPOTENCY_PREFIX,
   REVIEW_REWORK_WAKE_REASON,
   type ReviewReworkSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import {
   REVIEW_REWORK_HEAD_ACK_MARKER,
@@ -75,6 +80,7 @@ export interface ReviewReworkSweepResult {
   blocked: number;
   unblocked: number;
   closed: number;
+  awaitedAcceptance: number;
   baselinesRecorded: number;
   failed: number;
 }
@@ -327,6 +333,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       );
       if (deliveringTaskAssigneeAgentId) break;
     }
+    const reopenedAfterLoopClose = await deps.store.reopenedAfterLoopClose(task.companyId, task.id);
     const decision = decideReviewRework({
       task,
       prs,
@@ -334,6 +341,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       child,
       deliveringTaskAssigneeAgentId,
       fallbackAssigneeAgentId: settings.fallbackAssigneeAgentId ?? null,
+      reopenedAfterLoopClose,
     });
     void now;
     return applyDecision(row, prs, decision, result);
@@ -347,6 +355,28 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
   ): Promise<boolean> {
     const { task } = row;
     switch (decision.kind) {
+      case "await_acceptance": {
+        const awaited = await deps.store.awaitAcceptance({
+          issueId: task.id,
+          companyId: task.companyId,
+          expectStatus: task.status,
+          assigneeAgentId: decision.assigneeAgentId,
+          comment:
+            `Code merged; acceptance pending by the review-return loop: PR ${decision.prRefs.join(", ")} is` +
+            ` ${decision.outcome}, but the task names a live / operator acceptance step or was reopened by a` +
+            " person after a previous automatic close. The loop will not close it — the executor runs the" +
+            " acceptance and settles the task.",
+        });
+        if (!awaited) return false;
+        result.awaitedAcceptance += 1;
+        await deps.logActivity({
+          companyId: task.companyId,
+          action: REVIEW_REWORK_ACCEPTANCE_ACTION,
+          issueId: task.id,
+          details: { reason: "acceptance_owed", outcome: decision.outcome, prRefs: decision.prRefs },
+        });
+        return true;
+      }
       case "close_review": {
         const closed = await deps.store.closeReviewTask({
           issueId: task.id,
@@ -557,6 +587,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
         blocked: 0,
         unblocked: 0,
         closed: 0,
+        awaitedAcceptance: 0,
         baselinesRecorded: 0,
         failed: 0,
       };

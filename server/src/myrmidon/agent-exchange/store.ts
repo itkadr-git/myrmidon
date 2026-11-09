@@ -11,8 +11,8 @@ import {
   type AgentExchangeMessageRow,
   type AgentExchangeRoomRow,
   type Db,
-} from "@paperclipai/db";
-import type { AgentExchangeMessage, AgentExchangeRoom } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { AgentExchangeMessage, AgentExchangeRoom } from "@myrmidon/shared";
 import type {
   AgentExchangeStore,
   MessagePatch,
@@ -152,6 +152,15 @@ export function agentExchangeStore(db: DbExecutor): AgentExchangeStore {
         .where(eq(agentExchangeMessages.roomId, roomId))
         .orderBy(asc(agentExchangeMessages.round), asc(agentExchangeMessages.participantIndex));
       return rows.map(toMessage);
+    },
+
+    async failPendingMessages(roomId: string, error: string): Promise<number> {
+      const rows = await db
+        .update(agentExchangeMessages)
+        .set({ status: "error", error, completedAt: new Date() })
+        .where(and(eq(agentExchangeMessages.roomId, roomId), eq(agentExchangeMessages.status, "pending")))
+        .returning({ id: agentExchangeMessages.id });
+      return rows.length;
     },
   };
 }

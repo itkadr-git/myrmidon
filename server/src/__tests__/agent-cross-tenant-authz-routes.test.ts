@@ -112,7 +112,7 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
+vi.mock("@myrmidon/shared/telemetry", () => ({
   trackAgentCreated: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
 }));
@@ -241,6 +241,7 @@ vi.mock("../myrmidon/autonomy/gate.js", async (importOriginal) => {
     dbAutonomyGate: () => ({
       decide: async (_req: unknown, actionClass: string) => ({ verdict: "allowed", role: null, actionClass }),
       assertAllowed: async (_req: unknown, actionClass: string) => ({ verdict: "allowed", role: null, actionClass }),
+      holdOrAssert: async (_req: unknown, _actionClass: string) => ({ verdict: "allowed", held: false }),
     }),
   };
 });

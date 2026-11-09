@@ -6,9 +6,8 @@
  * warning per variable name is written to the log, so an operator with an
  * existing installation sees the rename before the alias is removed.
  *
- * Precedence: MYRMIDON_<NAME> wins when both names are set; PAPERCLIP_<NAME>
- * is consulted only when MYRMIDON_<NAME> is unset (undefined or empty
- * string, matching the dotenv convention where an empty value is "not set").
+ * Precedence: MYRMIDON_<NAME> wins whenever it is present (including the
+ * empty string); PAPERCLIP_<NAME> is consulted only when it is undefined.
  *
  * Every variable name the product recognizes is listed in
  * docs/myrmidon/SETTINGS.md (the mapping table section).
@@ -23,12 +22,15 @@ export const ENV_ALIAS_DEPRECATION_MESSAGE =
 /** Warnings already emitted, keyed by the old variable name. */
 const warnedAliases = new Set<string>();
 
+export type ProductEnv = Record<string, string | undefined>;
+
+const runtimeEnv = (): ProductEnv => (globalThis as { process?: { env?: ProductEnv } }).process?.env ?? {};
+
 export interface ReadProductEnvOptions {
   /**
-   * Environment to read from; defaults to `process.env`. Tests pass an
-   * isolated object so they do not depend on the real environment.
+   * Environment to read from; defaults to the Node process environment.
    */
-  env?: NodeJS.ProcessEnv;
+  env?: ProductEnv;
   /**
    * Sink for the one-time deprecation warning; defaults to `console.warn`.
    * Tests capture the warning through this option.
@@ -45,14 +47,14 @@ function defaultWarn(message: string): void {
  * Returns `undefined` when neither name is set.
  */
 export function readProductEnv(name: string, options: ReadProductEnvOptions = {}): string | undefined {
-  const env = options.env ?? process.env;
+  const env = options.env ?? runtimeEnv();
   const canonicalName = `${MYRMIDON_PREFIX}${name}`;
   const value = env[canonicalName];
-  if (value !== undefined && value !== "") return value;
+  if (value !== undefined) return value;
 
   const legacyName = `${PAPERCLIP_PREFIX}${name}`;
   const legacyValue = env[legacyName];
-  if (legacyValue !== undefined && legacyValue !== "") {
+  if (legacyValue !== undefined) {
     if (!warnedAliases.has(legacyName)) {
       warnedAliases.add(legacyName);
       const warn = options.warn ?? defaultWarn;
@@ -71,11 +73,11 @@ export function readProductEnv(name: string, options: ReadProductEnvOptions = {}
  * warning: this path is used for environments the product itself builds, not
  * the operator's shell.
  */
-export function readProductEnvFrom(env: NodeJS.ProcessEnv, name: string): string | undefined {
+export function readProductEnvFrom(env: ProductEnv, name: string): string | undefined {
   const canonical = env[`${MYRMIDON_PREFIX}${name}`];
-  if (canonical !== undefined && canonical !== "") return canonical;
+  if (canonical !== undefined) return canonical;
   const legacy = env[`${PAPERCLIP_PREFIX}${name}`];
-  if (legacy !== undefined && legacy !== "") return legacy;
+  if (legacy !== undefined) return legacy;
   return undefined;
 }
 
@@ -85,7 +87,7 @@ export function readProductEnvFrom(env: NodeJS.ProcessEnv, name: string): string
  * and the alias does not leak further than one process boundary.
  */
 export function materializeProductEnv(
-  env: NodeJS.ProcessEnv,
+  env: ProductEnv,
   names: readonly string[],
 ): Record<string, string> {
   const out: Record<string, string> = {};
@@ -101,7 +103,7 @@ export function materializeProductEnv(
  * both the new name and the one-release alias resolve for code (including
  * child processes) that still expects the old spelling.
  */
-export function writeProductEnv(env: NodeJS.ProcessEnv, name: string, value: string): void {
+export function writeProductEnv(env: ProductEnv, name: string, value: string): void {
   env[`${MYRMIDON_PREFIX}${name}`] = value;
   env[`${PAPERCLIP_PREFIX}${name}`] = value;
 }
@@ -109,7 +111,7 @@ export function writeProductEnv(env: NodeJS.ProcessEnv, name: string, value: str
 /**
  * Deletes a product variable under both names from the given environment.
  */
-export function deleteProductEnv(env: NodeJS.ProcessEnv, name: string): void {
+export function deleteProductEnv(env: ProductEnv, name: string): void {
   delete env[`${MYRMIDON_PREFIX}${name}`];
   delete env[`${PAPERCLIP_PREFIX}${name}`];
 }

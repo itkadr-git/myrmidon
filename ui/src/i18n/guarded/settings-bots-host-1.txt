@@ -1,0 +1,8 @@
+# OPE-8950: settings-bots-host-1 area files
+components/myrmidon/BotDiskQuotaSettingsPanel.tsx
+components/myrmidon/BotDiskSettingsPanel.tsx
+components/myrmidon/BotImageRolloutSettingsPanel.tsx
+components/myrmidon/BotLspSettingsPanel.tsx
+components/myrmidon/BotScopePanel.tsx
+components/myrmidon/DataRetentionSettingsPanel.tsx
+components/myrmidon/DeployJobsPanel.tsx

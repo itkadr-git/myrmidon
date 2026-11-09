@@ -1,8 +1,13 @@
+const MYRMIDON_FAVICON_BLOCK_START = "<!-- MYRMIDON_FAVICON_START -->";
+const MYRMIDON_FAVICON_BLOCK_END = "<!-- MYRMIDON_FAVICON_END -->";
 const FAVICON_BLOCK_START = "<!-- PAPERCLIP_FAVICON_START -->";
 const FAVICON_BLOCK_END = "<!-- PAPERCLIP_FAVICON_END -->";
+const MYRMIDON_RUNTIME_BRANDING_BLOCK_START = "<!-- MYRMIDON_RUNTIME_BRANDING_START -->";
+const MYRMIDON_RUNTIME_BRANDING_BLOCK_END = "<!-- MYRMIDON_RUNTIME_BRANDING_END -->";
 const RUNTIME_BRANDING_BLOCK_START = "<!-- PAPERCLIP_RUNTIME_BRANDING_START -->";
 const RUNTIME_BRANDING_BLOCK_END = "<!-- PAPERCLIP_RUNTIME_BRANDING_END -->";
 
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import { readBuildVersion } from "./build-version.js";
 
 const DEFAULT_FAVICON_LINKS = [
@@ -163,7 +168,7 @@ function createFaviconDataUrl(color: string): string {
 }
 
 export function isWorktreeUiBrandingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE);
+  return isTruthyEnvValue(readProductEnvFrom(env, "IN_WORKTREE"));
 }
 
 export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): WorktreeUiBranding {
@@ -178,8 +183,8 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
     };
   }
 
-  const name = nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ?? nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? "worktree";
-  const color = normalizeHexColor(env.PAPERCLIP_WORKTREE_COLOR) ?? deriveColorFromSeed(name);
+  const name = nonEmpty(readProductEnvFrom(env, "WORKTREE_NAME")) ?? nonEmpty(readProductEnvFrom(env, "INSTANCE_ID")) ?? "worktree";
+  const color = normalizeHexColor(readProductEnvFrom(env, "WORKTREE_COLOR")) ?? deriveColorFromSeed(name);
   const textColor = pickReadableTextColor(color);
 
   return {
@@ -188,7 +193,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
     color,
     textColor,
     faviconHref: createFaviconDataUrl(color),
-    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID),
+    instanceId: nonEmpty(readProductEnvFrom(env, "INSTANCE_ID")),
   };
 }
 
@@ -198,7 +203,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
  * reliable refresh is a different URL after every release.
  */
 export function resolveIconVersion(env: NodeJS.ProcessEnv = process.env): string | null {
-  return readBuildVersion({ environmentVersion: env.PAPERCLIP_BUILD_VERSION ?? null });
+  return readBuildVersion({ environmentVersion: readProductEnvFrom(env, "BUILD_VERSION") ?? null });
 }
 
 const ICON_URL_PATTERN = /^\/(?:favicon[\w.-]*\.(?:ico|svg|png)|apple-touch-icon\.png|android-chrome-[\w-]+\.png|site\.webmanifest)$/;
@@ -209,10 +214,14 @@ export function versionIconUrl(url: string, version: string | null): string {
   return `${url}?v=${encodeURIComponent(version)}`;
 }
 
-/** Versions every icon/manifest href in an HTML document. */
+/** Versions every icon/manifest href and meta content URL in an HTML document. */
 export function applyIconVersionToHtml(html: string, version: string | null): string {
   if (!version) return html;
-  return html.replace(/(\bhref=")([^"]+)(")/g, (_m, a: string, url: string, c: string) => `${a}${versionIconUrl(url, version)}${c}`);
+  const withHrefs = html.replace(/(\bhref=")([^"]+)(")/g, (_m, a: string, url: string, c: string) => `${a}${versionIconUrl(url, version)}${c}`);
+  return withHrefs.replace(
+    /(\bcontent=")([^"]+)(")/g,
+    (_m, a: string, url: string, c: string) => `${a}${versionIconUrl(url, version)}${c}`,
+  );
 }
 
 export function renderFaviconLinks(branding: WorktreeUiBranding, version: string | null = null): string {
@@ -230,12 +239,17 @@ export function renderRuntimeBrandingMeta(branding: WorktreeUiBranding): string 
 
   const tags = [
     '<meta name="paperclip-worktree-enabled" content="true" />',
+    '<meta name="myrmidon-worktree-enabled" content="true" />',
     `<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`,
+    `<meta name="myrmidon-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`,
     `<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`,
+    `<meta name="myrmidon-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`,
     `<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`,
+    `<meta name="myrmidon-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`,
   ];
   if (branding.instanceId) {
     tags.push(`<meta name="paperclip-instance-id" content="${escapeHtmlAttribute(branding.instanceId)}" />`);
+    tags.push(`<meta name="myrmidon-instance-id" content="${escapeHtmlAttribute(branding.instanceId)}" />`);
   }
   return tags.join("\n");
 }
@@ -256,19 +270,29 @@ function replaceMarkedBlock(html: string, startMarker: string, endMarker: string
   return `${before}${indentedContent}${after}`;
 }
 
+function replaceFaviconBlock(html: string, content: string): string {
+  if (html.includes(MYRMIDON_FAVICON_BLOCK_START) && html.includes(MYRMIDON_FAVICON_BLOCK_END)) {
+    return replaceMarkedBlock(html, MYRMIDON_FAVICON_BLOCK_START, MYRMIDON_FAVICON_BLOCK_END, content);
+  }
+  return replaceMarkedBlock(html, FAVICON_BLOCK_START, FAVICON_BLOCK_END, content);
+}
+
+function replaceRuntimeBrandingBlock(html: string, content: string): string {
+  if (html.includes(MYRMIDON_RUNTIME_BRANDING_BLOCK_START) && html.includes(MYRMIDON_RUNTIME_BRANDING_BLOCK_END)) {
+    return replaceMarkedBlock(html, MYRMIDON_RUNTIME_BRANDING_BLOCK_START, MYRMIDON_RUNTIME_BRANDING_BLOCK_END, content);
+  }
+  return replaceMarkedBlock(html, RUNTIME_BRANDING_BLOCK_START, RUNTIME_BRANDING_BLOCK_END, content);
+}
+
 export function applyUiBranding(html: string, env: NodeJS.ProcessEnv = process.env): string {
   const branding = getWorktreeUiBranding(env);
   const version = resolveIconVersion(env);
-  const withFavicon = replaceMarkedBlock(
+  const withFavicon = replaceFaviconBlock(
     html,
-    FAVICON_BLOCK_START,
-    FAVICON_BLOCK_END,
     renderFaviconLinks(branding, version),
   );
-  const branded = replaceMarkedBlock(
+  const branded = replaceRuntimeBrandingBlock(
     withFavicon,
-    RUNTIME_BRANDING_BLOCK_START,
-    RUNTIME_BRANDING_BLOCK_END,
     renderRuntimeBrandingMeta(branding),
   );
   // Links outside the marked block (apple-touch-icon, manifest) get the same version.

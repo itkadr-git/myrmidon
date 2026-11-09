@@ -8,7 +8,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { channelSettingsRoutes } from "./routes.js";
 import {
@@ -17,6 +17,10 @@ import {
   type ChannelSettingsServiceDeps,
 } from "./service.js";
 import { getEffectiveChannelSettings, parseChannelSettingsPatch } from "./settings.js";
+
+interface StoredChannelSettings {
+  channel?: Record<string, unknown>;
+}
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
@@ -39,7 +43,7 @@ interface HarnessOptions {
 function harness(options: HarnessOptions = {}) {
   const audits: Array<Record<string, unknown>> = [];
   const writes: unknown[] = [];
-  const current = { document: options.stored };
+  const current: { document: StoredChannelSettings | undefined } = { document: options.stored as StoredChannelSettings | undefined };
 
   const deps: Partial<ChannelSettingsServiceDeps> = {
     settings: {
@@ -90,7 +94,15 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: resolving the document"
     expect(settings.telegramApiBaseUrl.value).toBeNull();
     // myrmidon(CA-A): the document gained channelAccessMode (default "sponsor").
     expect(settings.channelAccessMode.value).toBe("sponsor");
-    expect(Object.values(settings).map((entry) => entry.source)).toEqual(Array(12).fill("default"));
+    expect(settings.telegramPoolChatGptEnabled.value).toBe(false);
+    expect(settings.telegramPoolChatGptChatId.value).toBe("");
+    expect(settings.telegramPoolChatGptModel.value).toBe("balanced");
+    expect(settings.telegramPoolChatGptBotToken.value).toBe("");
+    expect(settings.telegramPoolGeminiEnabled.value).toBe(false);
+    expect(settings.telegramPoolGeminiChatId.value).toBe("");
+    expect(settings.telegramPoolGeminiModel.value).toBe("gemini-2.0-flash");
+    expect(settings.telegramPoolGeminiBotToken.value).toBe("");
+    expect(Object.values(settings).map((entry) => entry.source)).toEqual(Array(20).fill("default"));
   });
 
   it("reads the environment and marks those keys as overridden", () => {
@@ -236,5 +248,44 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: the routes", () => {
     await request(withActor(admin)).patch(URL).send({ telegramApiBaseUrl: "http://x" }).expect(400);
     await request(withActor(admin)).patch(URL).send({ telegramDmStatus: "yes" }).expect(400);
     expect(writes).toEqual([]);
+  });
+
+  it("stores telegramPool bridge settings and masks bot token in API responses and audit logs", async () => {
+    const { withActor, writes, current, audits } = harness();
+    const res = await request(withActor(admin))
+      .patch(URL)
+      .send({
+        telegramPoolChatGptEnabled: true,
+        telegramPoolChatGptChatId: "123456789",
+        telegramPoolChatGptModel: "balanced",
+        telegramPoolChatGptBotToken: "secret-bot-token-12345",
+      })
+      .expect(200);
+
+    expect(current.document?.channel?.telegramPoolChatGptEnabled).toBe(true);
+    expect(current.document?.channel?.telegramPoolChatGptChatId).toBe("123456789");
+    expect(current.document?.channel?.telegramPoolChatGptBotToken).toBe("secret-bot-token-12345");
+
+    // Masked in API response
+    expect(res.body.telegramPoolChatGptEnabled.value).toBe(true);
+    expect(res.body.telegramPoolChatGptChatId.value).toBe("123456789");
+    expect(res.body.telegramPoolChatGptBotToken.value).toBe("********");
+
+    // Masked in audit log
+    const auditDetails = audits[0]?.details as { channel?: Record<string, unknown> } | undefined;
+    expect(auditDetails?.channel?.telegramPoolChatGptBotToken).toBe("********");
+
+    // Subsequent update with mask does not overwrite stored token
+    const res2 = await request(withActor(admin))
+      .patch(URL)
+      .send({
+        telegramPoolChatGptChatId: "987654321",
+        telegramPoolChatGptBotToken: "********",
+      })
+      .expect(200);
+
+    expect(current.document?.channel?.telegramPoolChatGptChatId).toBe("987654321");
+    expect(current.document?.channel?.telegramPoolChatGptBotToken).toBe("secret-bot-token-12345");
+    expect(res2.body.telegramPoolChatGptBotToken.value).toBe("********");
   });
 });

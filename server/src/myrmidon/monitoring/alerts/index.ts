@@ -5,7 +5,7 @@
 // (vm-alertmanager) webhooks, dedups alerts by (source, key) in the
 // instance_settings JSON column, and auto-closes the board issue on recovery.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { monitoringAlertsRoutes } from "./routes.js";
 
 export {
@@ -38,6 +38,17 @@ export {
 export { readAlertsSettings, resolveAlertTokenRef, ALERT_WEBHOOK_TOKEN_REF_ENV, ALERTS_COMPANY_ID_ENV } from "./token.js";
 export { createAlertsMetrics, outcomeToMetric, ALERTS_METRIC_NAME, type AlertMetricResult, type AlertsMetrics } from "./metrics.js";
 export { DEFAULT_ALERT_RUNBOOK, routeMatch } from "./domain.js";
+// myrmidon(1.7 MONITORING, OPE-12085): Alertmanager resolved webhook handler
+// lives one level up in the monitoring domain; re-export it here so the alerts
+// module stays the single entry point for webhook wiring.
+export {
+  adaptAlertDedupStore,
+  createAlertmanagerWebhookRouteHandler,
+  createAlertmanagerWebhookRouter,
+  extractAlertmanagerAlertDetails,
+  handleAlertmanagerWebhook,
+  renderAlertmanagerAutoCloseComment,
+} from "../alertmanager-webhook-handler.js";
 
 /** Router for app.ts: `api.use(monitoringAlertsRoutes(db))`. */
 export function myrmidonMonitoringAlertsRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {

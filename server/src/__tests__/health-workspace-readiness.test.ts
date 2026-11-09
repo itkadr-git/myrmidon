@@ -4,8 +4,9 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { healthRoutes } from "../routes/health.js";
+import { resolveWorkspaceSeedMarkerDir } from "../services/workspace-readiness.js";
 import {
   WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY,
   WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY,
@@ -93,7 +94,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("GET /api/health workspace readiness", () => {
+describe("workspace readiness", () => {
+  it("resolves the seed config pointer through canonical and legacy environment names", () => {
+    expect(resolveWorkspaceSeedMarkerDir({ MYRMIDON_CONFIG: "/srv/new/config.json" })).toBe("/srv/new");
+    expect(resolveWorkspaceSeedMarkerDir({ PAPERCLIP_CONFIG: "/srv/old/config.json" })).toBe("/srv/old");
+    expect(resolveWorkspaceSeedMarkerDir({ MYRMIDON_CONFIG: "/srv/new/config.json", PAPERCLIP_CONFIG: "/srv/old/config.json" })).toBe("/srv/new");
+  });
   it("exposes readiness to a board actor of a managed workspace", async () => {
     setEnv({
       PAPERCLIP_CONFIG: createSeededWorkspace(),

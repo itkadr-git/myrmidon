@@ -4,10 +4,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Gauge } from "lucide-react";
-import type { RunLimits, RunLimitsPatch, RunLimitKey } from "@paperclipai/shared";
+import type { RunLimits, RunLimitsPatch, RunLimitKey } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import {
   describeAdmissionDenials,
   describeHostLoad,
@@ -20,6 +21,14 @@ import {
 } from "./runtimeLimitsApi";
 
 /**
+ * myrmidon(1.6.5 RUN-ADMISSION rc.3, part B): the two CPU-utilisation
+ * ceilings joined `RunLimits` with part A but were left out of
+ * `RUN_LIMIT_KEYS`, so they are not `RunLimitKey`s yet — same situation the
+ * fair-share field had before part 2. The panel carries them as string
+ * literals and reads their values from the typed `limits` object; their
+ * source label falls back to "default" (a source map for them arrives with
+ * the shared key promotion).
+ *
  * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share arrives
  * with part 2's shared key (`maxPerAgentStartSharePercent`, 1..100 or off,
  * default 15). This panel is merged before part 2 lands, so the field is
@@ -27,49 +36,67 @@ import {
  * `RUN_LIMIT_KEYS` and both parts then type-check against the shared name.
  */
 const FAIR_SHARE_KEY = "maxPerAgentStartSharePercent";
+const CPU_BUSY_KEY = "maxHostCpuBusyPercent";
+const CPU_PSI_KEY = "maxHostCpuPsiSomeAvg10";
 
-type PanelLimitKey = RunLimitKey | typeof FAIR_SHARE_KEY;
+type PanelLimitKey = RunLimitKey | typeof FAIR_SHARE_KEY | typeof CPU_BUSY_KEY | typeof CPU_PSI_KEY;
 
-/** The field ids/draft keys of the panel (the shared keys plus the fair-share literal). */
+/** The field ids/draft keys of the panel (the shared keys plus the fair-share and rc.3 CPU ceiling literals). */
 export type { PanelLimitKey };
 
-const FIELDS: Array<{ key: PanelLimitKey; label: string; hint: string; optional: boolean }> = [
+/** Labels are resolved at call time, not at import, so a language switch applies. */
+const fields = (): Array<{ key: PanelLimitKey; label: string; hint: string; optional: boolean }> => [
   {
     key: "maxConcurrentRuns",
-    label: "Concurrent runs",
-    hint: "Runs this server starts at once. Runs over the ceiling stay queued and start when a slot frees.",
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxConcurrentRuns.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxConcurrentRuns.hint"),
     optional: true,
   },
   {
     key: "maxStartsPerMinute",
-    label: "Starts per minute (start ramp)",
-    hint: "How many runs may start in a sliding minute, so a restart, a bulk resolve or a mass wake does not start everything in one burst. Default 5.",
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxStartsPerMinute.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxStartsPerMinute.hint"),
     optional: true,
   },
   {
     key: "minFreeMemoryMb",
-    label: "Free memory to keep, MB",
-    hint: "A run starts only if the server container keeps this much memory free after it. This is the hard floor: below it everything waits, including the answer to a message the owner wrote in a chat. That answer is held by this floor alone — measured on the container and on the host's available memory — and not by the host floor below. Default 1500.",
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.minFreeMemoryMb.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.minFreeMemoryMb.hint"),
     optional: true,
   },
   {
     key: "runMemoryEstimateMb",
-    label: "Memory per run, MB",
-    hint: "What one run is budgeted when free memory is counted.",
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.runMemoryEstimateMb.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.runMemoryEstimateMb.hint"),
     optional: false,
   },
   {
     // myrmidon(1.6.2 RUN-ADMISSION)
     key: "minFreeHostMemoryMb",
-    label: "Free host memory to keep, MB",
-    hint: "A new run starts only while the host (where the bot containers run) has at least this much available memory; otherwise it waits in the queue. The automatic runs wait here — a turn started by a message the owner wrote in a chat does not: it is admitted by the floor above (applied to the container and to the host's available memory) and goes to the front of the queue. Default 15360 (15 GB).",
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.minFreeHostMemoryMb.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.minFreeHostMemoryMb.hint"),
     optional: true,
   },
   {
     // myrmidon(1.6.5 RUN-ADMISSION)
     key: "maxHostLoadPercentPerCore",
-    label: "Max host load per core, % of a core",
-    hint: "A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. A turn started by a message the owner wrote in a chat does not wait for this ceiling either. Default 90. Empty switches the ceiling off.",
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostLoadPercentPerCore.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostLoadPercentPerCore.hint"),
+    optional: true,
+  },
+  {
+    // myrmidon(1.6.5 RUN-ADMISSION rc.3, part B): the deciding ceilings now —
+    // the measured CPU busy percent and, when the operator sets it, the PSI
+    // cpu pressure. The live host line sits next to the busy field.
+    key: CPU_BUSY_KEY,
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostCpuBusyPercent.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostCpuBusyPercent.hint"),
+    optional: true,
+  },
+  {
+    key: CPU_PSI_KEY,
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostCpuPsiSomeAvg10.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostCpuPsiSomeAvg10.hint"),
     optional: true,
   },
   {
@@ -78,8 +105,8 @@ const FIELDS: Array<{ key: PanelLimitKey; label: string; hint: string; optional:
     // the others have had their turn. The shared key lands with part 2 of the
     // feature; until the server serves it the field stays at its default 15.
     key: FAIR_SHARE_KEY,
-    label: "Single-agent start share, % per 10 min",
-    hint: "The most starts one agent may take in a 10-minute window, in percent. Past its share its new runs wait until the other agents have had their turn, so a hot agent cannot occupy the queue. Default 15. Empty switches the limit off (100 = no limit).",
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.fairShare.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.fairShare.hint"),
     optional: true,
   },
 ];
@@ -93,21 +120,21 @@ interface DraftParse {
 export function parseRunLimitsDraft(draft: Record<PanelLimitKey, string>): DraftParse {
   const errors: Partial<Record<PanelLimitKey, string>> = {};
   const parsed = {} as Record<PanelLimitKey, number | null>;
-  for (const { key, optional } of FIELDS) {
+  for (const { key, optional } of fields()) {
     const raw = draft[key].trim();
     const value = raw ? Number(raw) : null;
     if (raw && (value === null || !Number.isInteger(value) || value <= 0)) {
-      errors[key] = "Enter a whole number greater than zero, or leave it empty";
+      errors[key] = i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.wholeNumberOrEmptyError");
       continue;
     }
     // myrmidon(1.6.5 RUN-FAIRNESS): a share is a percentage — over 100 it
     // limits nothing and only looks like it does.
     if (key === FAIR_SHARE_KEY && value !== null && value > 100) {
-      errors[key] = "Enter a whole number from 1 to 100, or leave it empty";
+      errors[key] = i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.percentOrEmptyError");
       continue;
     }
     if (value === null && !optional) {
-      errors[key] = "Required";
+      errors[key] = i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.required");
       continue;
     }
     parsed[key] = value;
@@ -116,7 +143,7 @@ export function parseRunLimitsDraft(draft: Record<PanelLimitKey, string>): Draft
   // The per-run budget is required, so it is a number by now; the check keeps
   // the type honest without a cast.
   const estimate = parsed.runMemoryEstimateMb;
-  if (estimate === null) return { patch: null, errors: { runMemoryEstimateMb: "Required" } };
+  if (estimate === null) return { patch: null, errors: { runMemoryEstimateMb: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.required") } };
   return {
     patch: {
       maxConcurrentRuns: parsed.maxConcurrentRuns,
@@ -125,26 +152,31 @@ export function parseRunLimitsDraft(draft: Record<PanelLimitKey, string>): Draft
       runMemoryEstimateMb: estimate,
       minFreeHostMemoryMb: parsed.minFreeHostMemoryMb,
       maxHostLoadPercentPerCore: parsed.maxHostLoadPercentPerCore,
-      // myrmidon(1.6.5 RUN-FAIRNESS): not yet a key of RunLimitsPatch — part 2
-      // adds it to the shared schema; the PATCH body already carries it.
-      [FAIR_SHARE_KEY]: parsed[FAIR_SHARE_KEY],
+      maxPerAgentStartSharePercent: parsed.maxPerAgentStartSharePercent,
+      // myrmidon(1.6.5 RUN-ADMISSION rc.3): the two CPU-utilisation ceilings —
+      // `patchRunLimitsSchema` accepts both.
+      maxHostCpuBusyPercent: parsed.maxHostCpuBusyPercent,
+      maxHostCpuPsiSomeAvg10: parsed.maxHostCpuPsiSomeAvg10,
     },
     errors,
   };
 }
 
-/** Read a limit from the view: a shared key from `limits`, the fair-share key with its default. */
+/** Read a limit from the view: every key now comes from the typed `limits` object. */
 function readLimit(limits: RunLimits, key: PanelLimitKey): number | null {
-  if (key === FAIR_SHARE_KEY) {
-    const value = (limits as Record<string, unknown>)[FAIR_SHARE_KEY];
-    return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 15;
+  const value = limits[key] as number | null | undefined;
+  if (value === undefined) {
+    // An older server that does not serve the key yet (a pre-part-2 server
+    // has no fair share, a pre-rc.3 server has no CPU ceilings): the fair
+    // share shows its built-in default, every other absent key shows as off.
+    return key === "maxPerAgentStartSharePercent" ? 15 : null;
   }
-  return limits[key];
+  return value;
 }
 
 function toDraft(limits: RunLimits): Record<PanelLimitKey, string> {
   const draft = {} as Record<PanelLimitKey, string>;
-  for (const { key, optional } of FIELDS) {
+  for (const { key, optional } of fields()) {
     const value = readLimit(limits, key);
     draft[key] = value === null && optional ? "" : String(value);
   }
@@ -162,6 +194,7 @@ export function RuntimeLimitsSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<Record<PanelLimitKey, string> | null>(null);
   const current = draft ?? (view ? toDraft(view.limits) : null);
   const { patch, errors } = current
@@ -173,8 +206,6 @@ export function RuntimeLimitsSettingsPanelView({
   // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — admitted runs against
   // the ceiling, the queue length, and the head of the queue.
   const queueLine = describeQueueSnapshot(view?.queue);
-  // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's available memory
-  // and the server container's cgroup usage, next to the queue line.
   const memoryLine = describeMemorySnapshot(view?.memory);
   // myrmidon(1.6.5 F-09 B): the admission's refusal counter — how often the
   // sweep left a queued run waiting on a global/host ceiling, by reason and
@@ -187,12 +218,10 @@ export function RuntimeLimitsSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Gauge className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Run limits</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-2.runtime-limits-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          How many agent runs this server starts at once, how fast, and how much memory it and the host keep free. A run over a
-          ceiling waits in the queue and starts when a slot frees. Saving takes effect immediately: queued runs start
-          within a minute and no running run is interrupted. Leave a field empty to switch that limit off.
+          {t("area.settings-models-runtime-2.runtime-limits-settings-panel.description")}
         </p>
       </div>
 
@@ -204,13 +233,13 @@ export function RuntimeLimitsSettingsPanelView({
 
       {view ? (
         <div className="grid gap-3 md:grid-cols-2">
-          {FIELDS.map(({ key, label, hint, optional }) => (
+          {fields().map(({ key, label, hint, optional }) => (
             <div key={key} className="space-y-1">
               <Label htmlFor={`runtime-limit-${key}`}>{label}</Label>
               <Input
                 id={`runtime-limit-${key}`}
                 inputMode="numeric"
-                placeholder={optional ? "No limit" : "Required"}
+                placeholder={optional ? t("area.settings-models-runtime-2.runtime-limits-settings-panel.noLimit") : t("area.settings-models-runtime-2.runtime-limits-settings-panel.required")}
                 value={current ? current[key] : ""}
                 onChange={(event) =>
                   setDraft({ ...(current ?? toDraft(view.limits)), [key]: event.target.value })
@@ -228,7 +257,7 @@ export function RuntimeLimitsSettingsPanelView({
                   </span>
                 ) : null}
               </div>
-              {key === "maxHostLoadPercentPerCore" && hostLoadLine ? (
+              {key === "maxHostCpuBusyPercent" && hostLoadLine ? (
                 <p data-testid="runtime-limit-host-load" className="text-xs text-muted-foreground">
                   {hostLoadLine}
                 </p>
@@ -246,25 +275,20 @@ export function RuntimeLimitsSettingsPanelView({
               {queueLine}
             </p>
           ) : null}
-          {/* myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and
-              the server container's cgroup usage, next to the queue line. */}
-          {memoryLine ? (
-            <p
-              data-testid="runtime-limit-memory"
-              className="text-xs text-muted-foreground md:col-span-2"
-            >
-              {memoryLine}
-            </p>
-          ) : null}
-          {/* myrmidon(1.6.5 F-09 B): the admission's refusal counter — why the
-              sweep left queued runs waiting, by reason, and when it last did.
-              Absent when the server sends no counter (an older server). */}
           {denialsLine ? (
             <p
               data-testid="runtime-limit-admission-denials"
               className="text-xs text-muted-foreground md:col-span-2"
             >
               {denialsLine}
+            </p>
+          ) : null}
+          {memoryLine ? (
+            <p
+              data-testid="runtime-limit-memory"
+              className="text-xs text-muted-foreground md:col-span-2"
+            >
+              {memoryLine}
             </p>
           ) : null}
           <div className="md:col-span-2">
@@ -276,18 +300,19 @@ export function RuntimeLimitsSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save run limits"}
+              {pending ? t("area.settings-models-runtime-2.runtime-limits-settings-panel.saving") : t("area.settings-models-runtime-2.runtime-limits-settings-panel.save")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading run limits...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-2.runtime-limits-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function RuntimeLimitsSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -298,7 +323,7 @@ export function RuntimeLimitsSettingsPanel() {
   const save = useMutation({
     mutationFn: runtimeLimitsApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the run limits failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: runtimeLimitsQueryKey });
@@ -308,7 +333,7 @@ export function RuntimeLimitsSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load run limits."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-models-runtime-2.runtime-limits-settings-panel.loadFailed")}
       </div>
     );
   }

@@ -15,7 +15,7 @@
 
 import type { RequestHandler } from "express";
 import type { PgStatStatementsDbPort } from "./pg-stat-statements.js";
-import { boardRequestLoadMiddleware, createRequestLog, type RequestLog } from "./request-load.js";
+import { boardRequestLaneTagMiddleware, boardRequestLoadMiddleware, createRequestLog, type RequestLog } from "./request-load.js";
 import { createCpuProfileRuntime, type CpuProfileRuntime } from "./cpu-profile.js";
 import { boardLoadRoutes, type BoardLoadRoutesDeps } from "./routes.js";
 
@@ -65,6 +65,11 @@ export function boardLoadRuntime(): BoardLoadRuntime {
  */
 export function boardLoadRequestMiddleware(): RequestHandler {
   return boardRequestLoadMiddleware(boardLoadRuntime().requestLog);
+}
+
+/** The early lane tag app.ts mounts before the auth middleware (OPE-9058). */
+export function boardLoadLaneTagMiddleware(): RequestHandler {
+  return boardRequestLaneTagMiddleware();
 }
 
 /** The router app.ts mounts under `/api`. */

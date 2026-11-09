@@ -10,7 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, modelProviderModels, modelProviders } from "@paperclipai/db";
+import { companies, createDb, modelProviderModels, modelProviders } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -21,6 +21,7 @@ import {
   type ModelProviderCatalogPort,
   type ModelProviderSecretStoreDeps,
 } from "./service.js";
+import { readPackageExpirySignals } from "./signals.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -43,6 +44,11 @@ function fakeSecrets(): ModelProviderSecretStoreDeps & { store: Map<string, stri
     rotateSecret: async (secretId, value) => {
       store.set(secretId.replace(/^id-/, ""), value);
     },
+    restoreSecret: async (secretId, value) => {
+      const name = secretId.replace(/^id-/, "");
+      if (value === null) store.delete(name);
+      else store.set(name, value);
+    },
     deleteSecret: async (secretId) => {
       store.delete(secretId.replace(/^id-/, ""));
     },
@@ -51,15 +57,24 @@ function fakeSecrets(): ModelProviderSecretStoreDeps & { store: Map<string, stri
 
 function fakeCatalog(): ModelProviderCatalogPort & {
   calls: Array<{ baseUrl: string; apiKey: string }>;
+  probes: Array<{ baseUrl: string; apiKey: string; model: string }>;
 } {
   const calls: Array<{ baseUrl: string; apiKey: string }> = [];
+  const probes: Array<{ baseUrl: string; apiKey: string; model: string }> = [];
   return {
     calls,
+    probes,
     async listModels({ baseUrl, apiKey }) {
       calls.push({ baseUrl, apiKey });
       if (apiKey === "bad-key") throw new ProviderAuthError("the provider answered 401");
+      if (apiKey === "no-models-key") return { models: [] };
       if (apiKey === ROTATED_VALUE) return { models: ["model-x", "model-y", "model-z"] };
       return { models: ["model-a", "model-b"] };
+    },
+    async probeToolCall(input) {
+      probes.push(input);
+      if (input.apiKey === "probe-fail") throw new Error("tool calls are disabled");
+      if (input.apiKey === "probe-leak") throw new Error("upstream said: Authorization Bearer sk-leaked-secret rejected");
     },
   };
 }
@@ -108,7 +123,7 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
     const removeProvider = service.removeProvider.bind(service);
     (service as Record<string, unknown>).removeProvider = (input: Parameters<typeof removeProvider>[0]) =>
       removeProvider({ ...input, activity: record });
-    return { service, secrets: secrets.store, catalog, activity };
+    return { service, secrets: secrets.store, catalog, probes: catalog.probes, activity };
   }
 
   async function makeCompany(): Promise<string> {
@@ -197,6 +212,17 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
     ).rejects.toMatchObject({ status: 422 });
     expect(secrets.get(created.credentialSecretName!)).toBe(ROTATED_VALUE);
     expect((await service.listModels(companyId, created.id))).toHaveLength(3);
+
+    // Rollback to snapshot restores secret and model snapshot
+    const snapshot = await service.captureKeyRotationSnapshot(companyId, created.id);
+    expect(snapshot.secretValue).toBe(ROTATED_VALUE);
+    await service.rollbackProviderKey(companyId, created.id, {
+      ...snapshot,
+      secretValue: KEY_VALUE,
+      models: snapshot.models.slice(0, 1),
+    });
+    expect(secrets.get(created.credentialSecretName!)).toBe(KEY_VALUE);
+    expect((await service.listModels(companyId, created.id))).toHaveLength(1);
   });
 
   it("removes the provider, its cache and its secret", async () => {
@@ -234,6 +260,65 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
     expect(modelA.enabled).toBe(true);
   });
 
+  it("persists tool-call compatibility probe results", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "probe", key: KEY_VALUE, baseUrl: null },
+    });
+    const compatible = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(compatible.toolCallCompatible).toBe(true);
+    expect(probes[0]?.model).toBe("model-a");
+    expect(probes[0]?.apiKey).toBe(KEY_VALUE);
+    expect(JSON.stringify(compatible)).not.toContain(KEY_VALUE);
+    secrets.set(created.credentialSecretName!, "probe-fail");
+    const failed = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(failed.toolCallCompatible).toBe(false);
+    expect(failed.toolCallCheckError).toBe("probe_failed: the tool-call probe failed");
+  });
+
+  it("probes a provider that has no gpt-4o-mini with a model from its own /models", async () => {
+    companyId = await makeCompany();
+    const { service, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "nomini", key: KEY_VALUE, baseUrl: null },
+    });
+    await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(probes[0]?.model).not.toBe("gpt-4o-mini");
+    await service.checkToolCallCompatibility({ companyId, providerId: created.id, model: "model-b" });
+    expect(probes[1]?.model).toBe("model-b");
+  });
+
+  it("answers a clear no-models error when /models is empty and does not probe", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "empty", key: KEY_VALUE, baseUrl: null },
+    });
+    secrets.set(created.credentialSecretName!, "no-models-key");
+    await expect(
+      service.checkToolCallCompatibility({ companyId, providerId: created.id }),
+    ).rejects.toMatchObject({ details: { code: "provider_no_models" } });
+    expect(probes).toHaveLength(0);
+  });
+
+  it("never stores or returns the raw exception text of a failed probe", async () => {
+    companyId = await makeCompany();
+    const { service, secrets } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "secret", key: KEY_VALUE, baseUrl: null },
+    });
+    secrets.set(created.credentialSecretName!, "probe-leak");
+    const failed = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(failed.toolCallCompatible).toBe(false);
+    expect(failed.toolCallCheckError).not.toContain("sk-leaked-secret");
+    expect(failed.toolCallCheckError).toBe("probe_failed: the tool-call probe failed");
+  });
+
   it("reports hasKey false when the secret is gone and never leaks the value", async () => {
     companyId = await makeCompany();
     const { service, secrets } = makeService();
@@ -254,10 +339,119 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
         "hasKey",
         "credentialSecretName",
         "free",
+        "expiresAt",
+        "packageName",
+        "rpmLimit",
+        "toolCallCompatible",
+        "toolCallCheckedAt",
+        "toolCallCheckError",
         "keyValidatedAt",
+        "packageWarning",
         "createdAt",
         "updatedAt",
       ].sort(),
     );
+  });
+
+  it("automatically checks tool-call compatibility on key save", async () => {
+    companyId = await makeCompany();
+    const { service, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "auto-probe", key: KEY_VALUE, baseUrl: null },
+      autoProbeToolCall: true,
+    });
+
+    expect(created.toolCallCompatible).toBe(true);
+    expect(created.toolCallCheckedAt).not.toBeNull();
+    expect(created.toolCallCheckError).toBeNull();
+    expect(probes).toHaveLength(1);
+    expect(probes[0]?.apiKey).toBe(KEY_VALUE);
+    expect(probes[0]?.model).toBe("model-a");
+
+    // Verify persisted directly in the registry row
+    const view = await service.readProvider(companyId, created.id);
+    expect(view.toolCallCompatible).toBe(true);
+    expect(view.toolCallCheckedAt).not.toBeNull();
+  });
+
+  it("automatically checks tool-call compatibility on key rotation", async () => {
+    companyId = await makeCompany();
+    const { service, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "auto-rotate", key: KEY_VALUE, baseUrl: null },
+      autoProbeToolCall: false,
+    });
+    expect(probes).toHaveLength(0);
+
+    const rotated = await service.rotateProviderKey({
+      companyId,
+      providerId: created.id,
+      key: ROTATED_VALUE,
+      autoProbeToolCall: true,
+    });
+
+    expect(rotated.toolCallCompatible).toBe(true);
+    expect(rotated.toolCallCheckedAt).not.toBeNull();
+    expect(probes).toHaveLength(1);
+    expect(probes[0]?.apiKey).toBe(ROTATED_VALUE);
+
+    const view = await service.readProvider(companyId, created.id);
+    expect(view.toolCallCompatible).toBe(true);
+  });
+
+  it("evaluates package expiration warnings and records board signals", async () => {
+    companyId = await makeCompany();
+    const { service } = makeService();
+
+    // 15-day package (e.g. nghimmo) created on 2026-10-01, expires on 2026-10-16
+    const created = await service.createProvider({
+      companyId,
+      body: {
+        type: "openai",
+        name: "nghimmo-test",
+        key: KEY_VALUE,
+        baseUrl: null,
+        packageName: "nghimmo-15d",
+        expiresAt: "2026-10-16T00:00:00.000Z",
+      },
+      autoProbeToolCall: false,
+    });
+
+    // Check at day 12 (2026-10-13, 80% elapsed, 3 days remaining)
+    const warnings = await service.checkPackageExpirations(companyId, {
+      now: new Date("2026-10-13T00:00:00.000Z"),
+      thresholdPercent: 80,
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      providerId: created.id,
+      providerName: "nghimmo-test",
+      packageName: "nghimmo-15d",
+      trigger: "time",
+      status: "warning",
+      remainingDays: 3,
+    });
+
+    // Verify signal recorded for board attention
+    const signals = readPackageExpirySignals(companyId);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].providerId).toBe(created.id);
+    expect(signals[0].severity).toBe("medium");
+    expect(signals[0].whyNow).toContain("3 days remaining");
+
+    // Also check expired state
+    const expiredWarnings = await service.checkPackageExpirations(companyId, {
+      now: new Date("2026-10-17T00:00:00.000Z"),
+      thresholdPercent: 80,
+    });
+    expect(expiredWarnings).toHaveLength(1);
+    expect(expiredWarnings[0].status).toBe("expired");
+
+    const expiredSignals = readPackageExpirySignals(companyId);
+    expect(expiredSignals).toHaveLength(1);
+    expect(expiredSignals[0].severity).toBe("high");
   });
 });

@@ -9,8 +9,8 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, companies, createDb, instanceSettings } from "@paperclipai/db";
-import { DATA_RETENTION_UPDATED_ACTION } from "@paperclipai/shared";
+import { activityLog, companies, createDb, instanceSettings } from "@myrmidon/db";
+import { DATA_RETENTION_UPDATED_ACTION } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -89,13 +89,15 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     expect(res.status).toBe(200);
     expect(res.body.settings).toEqual({
       heartbeatRunsDays: 90,
-      activityLogDays: 0,
+      activityLogDays: 90,
       accessAuditDays: 180,
+      litellmCostEventsDays: 30,
     });
     expect(res.body.sources).toEqual({
       heartbeatRunsDays: "default",
       activityLogDays: "default",
       accessAuditDays: "default",
+      litellmCostEventsDays: "default",
     });
     expect(res.body.status).toEqual({
       lastRunAt: null,
@@ -106,6 +108,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
         runs: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         access: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       },
     });
   });
@@ -118,8 +121,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     expect(res.status).toBe(200);
     expect(res.body.settings).toEqual({
       heartbeatRunsDays: 30,
-      activityLogDays: 0,
+      activityLogDays: 90,
       accessAuditDays: 180,
+      litellmCostEventsDays: 30,
     });
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
 
@@ -130,8 +134,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     const care = (stored as Record<string, any>).datastoreCare;
     expect(care?.retention).toMatchObject({
       heartbeatRunsDays: 30,
-      activityLogDays: 0,
+      activityLogDays: 90,
       accessAuditDays: 180,
+      litellmCostEventsDays: 30,
     });
     expect((stored as Record<string, any>).dataRetention).toBeUndefined();
 
@@ -185,6 +190,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       heartbeatRunsDays: 30,
       activityLogDays: 365,
       accessAuditDays: 60,
+      litellmCostEventsDays: 30,
     });
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
   });
@@ -200,8 +206,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     expect(res.body.externalMachineBackup).toBe(true);
     expect(res.body.settings).toEqual({
       heartbeatRunsDays: 90,
-      activityLogDays: 0,
+      activityLogDays: 90,
       accessAuditDays: 180,
+      litellmCostEventsDays: 30,
     });
     // another PATCH leaves the mode alone
     const next = await request(scoped).patch(URL).send({ accessAuditDays: 30 });

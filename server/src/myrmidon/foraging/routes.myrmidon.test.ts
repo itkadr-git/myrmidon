@@ -4,9 +4,9 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
-import type { ResolvedForagingSettings } from "@paperclipai/shared";
+import type { ResolvedForagingSettings } from "@myrmidon/shared";
 import { foragingRoutes } from "./routes.js";
 import type { ForagingService } from "./service.js";
 import type { ForagingFindingRow, ForagingSourceRow, ForagingStore } from "./store.js";
@@ -128,6 +128,22 @@ describe("myrmidon(1.6-FORAGE) routes", () => {
     expect(res.body).toMatchObject({ enabled: true, sources: [{ id: "source-1", snapshotLines: 2 }] });
   });
 
+  it("returns the persisted enabled state on GET and PUT for a board actor", async () => {
+    const store = fakeStore();
+    store.listSources = vi.fn(async () => [{ ...source, enabled: false }]);
+    store.upsertSource = vi.fn(async () => ({ ...source, enabled: false }));
+    const app = appFor(boardActor, store);
+    const listed = await request(app).get(`${base}/sources`).expect(200);
+    expect(listed.body.sources[0]).toMatchObject({ id: "source-1", enabled: false });
+    const saved = await request(app).put(`${base}/sources`).send({
+      role: source.role, url: source.url, kind: source.kind, enabled: false,
+    }).expect(200);
+    expect(store.upsertSource).toHaveBeenCalledWith("company-a", {
+      role: source.role, url: source.url, kind: source.kind, enabled: false,
+    });
+    expect(saved.body).toMatchObject({ id: "source-1", enabled: false });
+  });
+
   it("refuses an agent of another company", async () => {
     const res = await request(appFor({ ...agentActor, companyId: "company-b" })).get(`${base}/sources`).expect(403);
     expect(JSON.stringify(res.body)).toMatch(/another company/i);
@@ -139,6 +155,16 @@ describe("myrmidon(1.6-FORAGE) routes", () => {
       .send({ role: "engineer", url: "https://example.com/a", kind: "url" })
       .expect(403);
     expect(JSON.stringify(res.body)).toMatch(/Board access required/i);
+  });
+
+  it("refuses a disabled source write from an agent", async () => {
+    const store = fakeStore();
+    const res = await request(appFor(agentActor, store))
+      .put(`${base}/sources`)
+      .send({ role: "engineer", url: "https://example.com/a", kind: "url", enabled: false })
+      .expect(403);
+    expect(JSON.stringify(res.body)).toMatch(/Board access required/i);
+    expect(store.upsertSource).not.toHaveBeenCalled();
   });
 
   it("answers 404 on removing a source that is not there", async () => {

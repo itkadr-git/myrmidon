@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-mail-imap",
+  "name": "@myrmidon/plugin-mail-imap",
   "version": "0.1.0",
   "type": "module",
   "private": true,
@@ -10,11 +10,11 @@
     "README.md"
   ],
   "scripts": {
-    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "pnpm --filter @myrmidon/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",
     "dev": "node ./esbuild.config.mjs --watch",
     "test": "vitest run --config ./vitest.config.ts",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+    "typecheck": "pnpm --filter @myrmidon/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
@@ -33,7 +33,7 @@
     "imapflow": "^1.0.198"
   },
   "devDependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*",
+    "@myrmidon/plugin-sdk": "workspace:*",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",

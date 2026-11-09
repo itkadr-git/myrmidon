@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
+import type { RunnerIngressEndpoint } from "@myrmidon/adapter-utils/runner-connectivity";
 import type {
   DurablePrpControlPlane,
   PrpWireConnection,

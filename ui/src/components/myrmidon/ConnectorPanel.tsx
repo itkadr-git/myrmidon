@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCompany } from "@/context/CompanyContext";
-import { useTranslation } from "@/i18n";
+import { i18n, useTranslation } from "@/i18n";
 import {
   bridgeApi,
   bridgeDevicesQueryKey,
@@ -64,7 +64,7 @@ export function parseDailyLimitDraft(raw: string): { value: number | null; error
   if (!trimmed) return { value: 0, error: null };
   const parsed = Number(trimmed);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    return { value: null, error: "Enter a whole number greater than zero, or leave it empty" };
+    return { value: null, error: i18n.t("area.settings-integrations.connector-panel.dailyLimitError") };
   }
   return { value: parsed, error: null };
 }
@@ -163,7 +163,7 @@ export function ConnectorPanelView({
             <Label htmlFor="connector-pairing-label">{t("connectorPanel.devices.pairingLabel")}</Label>
             <Input
               id="connector-pairing-label"
-              placeholder="tender-ops"
+              placeholder={t("area.settings-integrations.connector-panel.pairingLabelPlaceholder")}
               className="w-48"
               value={pairingLabel}
               onChange={(event) => setPairingLabel(event.target.value)}
@@ -316,7 +316,7 @@ export function ConnectorPanelView({
               id="connector-signing-types"
               data-testid="connector-signing-types"
               className="w-96"
-              placeholder="tender.submit, tender.bid"
+              placeholder={t("area.settings-integrations.connector-panel.typesPlaceholder")}
               value={types}
               onChange={(event) => setSigningTypes(event.target.value)}
             />
@@ -482,6 +482,7 @@ export function ConnectorPanelView({
  * filters stay local and the query key still tracks them.
  */
 export function ConnectorPanel({ journalQuery }: { journalQuery?: BridgeJournalQuery } = {}) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const [error, setError] = useState<string | null>(null);
@@ -509,7 +510,7 @@ export function ConnectorPanel({ journalQuery }: { journalQuery?: BridgeJournalQ
   const pairing = useMutation({
     mutationFn: (label?: string) => bridgeApi.createPairingCode(companyId!, label),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Issuing a pairing code failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-integrations.connector-panel.issueError")),
     onSuccess: (result) => {
       setError(null);
       setLastPairingCode({ code: result.code, expiresAt: result.expiresAt });
@@ -519,7 +520,7 @@ export function ConnectorPanel({ journalQuery }: { journalQuery?: BridgeJournalQ
   const revoke = useMutation({
     mutationFn: (deviceId: string) => bridgeApi.revokeDevice(companyId!, deviceId),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Revoking the device failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-integrations.connector-panel.revokeError")),
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["myrmidon", "browser-bridge"] });
@@ -528,7 +529,7 @@ export function ConnectorPanel({ journalQuery }: { journalQuery?: BridgeJournalQ
   const save = useMutation({
     mutationFn: (patch: { domains: string[]; signing: BridgeSettings["signing"] }) => bridgeApi.updateSettings(patch),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the connector settings failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-integrations.connector-panel.saveError")),
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: bridgeSettingsQueryKey });
@@ -537,7 +538,7 @@ export function ConnectorPanel({ journalQuery }: { journalQuery?: BridgeJournalQ
   const killSwitch = useMutation({
     mutationFn: () => bridgeApi.disableSigning(),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "The emergency stop failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-integrations.connector-panel.killSwitchError")),
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: bridgeSettingsQueryKey });
@@ -548,7 +549,7 @@ export function ConnectorPanel({ journalQuery }: { journalQuery?: BridgeJournalQ
   if (queryError) {
     return (
       <div className="text-sm text-destructive" data-testid="connector-panel-error">
-        {queryError instanceof Error ? queryError.message : "Failed to load the connector panel."}
+        {queryError instanceof Error ? queryError.message : t("area.settings-integrations.connector-panel.loadError")}
       </div>
     );
   }

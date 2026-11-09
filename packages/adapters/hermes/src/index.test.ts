@@ -54,6 +54,9 @@ test("gateway subpath export exposes the Hermes Gateway adapter entrypoint", () 
   expect(typeof adapter.sessionCodec?.deserialize).toBe("function");
   expect(adapter.sessionManagement?.nativeContextManagement).toBe("confirmed");
   expect(typeof adapter.getConfigSchema).toBe("function");
+  // myrmidon(OPE-9033): skills are assignable to gateway agents
+  expect(typeof adapter.listSkills).toBe("function");
+  expect(typeof adapter.syncSkills).toBe("function");
 });
 
 test("Hermes adapter exposes bundled Paperclip task bridge skill", async () => {

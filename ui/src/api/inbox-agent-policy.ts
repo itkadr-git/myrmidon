@@ -1,4 +1,4 @@
-import type { InboxAgentPolicy, UpdateInboxAgentPolicy } from "@paperclipai/shared";
+import type { InboxAgentPolicy, UpdateInboxAgentPolicy } from "@myrmidon/shared";
 import { api } from "./client";
 
 /**
@@ -11,4 +11,8 @@ export const inboxAgentPolicyApi = {
     api.get<InboxAgentPolicy>(`/companies/${companyId}/users/me/inbox-agent-policy`),
   updateMine: (companyId: string, input: UpdateInboxAgentPolicy) =>
     api.put<InboxAgentPolicy>(`/companies/${companyId}/users/me/inbox-agent-policy`, input),
+  getForUser: (companyId: string, userId: string) =>
+    api.get<InboxAgentPolicy>(`/companies/${companyId}/users/${encodeURIComponent(userId)}/inbox-agent-policy`),
+  updateForUser: (companyId: string, userId: string, input: UpdateInboxAgentPolicy) =>
+    api.put<InboxAgentPolicy>(`/companies/${companyId}/users/${encodeURIComponent(userId)}/inbox-agent-policy`, input),
 };

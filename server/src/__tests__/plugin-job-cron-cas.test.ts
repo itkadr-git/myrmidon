@@ -14,7 +14,7 @@ import {
   pluginJobs,
   pluginJobRuns,
   plugins,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { pluginJobStore } from "../services/plugin-job-store.js";
 import {
   createPluginJobScheduler,
@@ -70,7 +70,7 @@ describeEmbeddedPostgres("plugin job cron launch CAS (OPE-5401 ч.B)", () => {
     await db.insert(plugins).values({
       id: pluginId,
       pluginKey: "paperclip.job-cas-test",
-      packageName: "@paperclipai/plugin-job-cas-test",
+      packageName: "@myrmidon/plugin-job-cas-test",
       version: "0.0.1",
       apiVersion: 1,
       categories: ["automation"],

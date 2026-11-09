@@ -60,11 +60,13 @@ function parseRepo(input) {
   if (repo.endsWith(".git")) repo = repo.slice(0, -4);
   if (!OWNER_RE.test(owner)) return null;
   if (!REPO_RE.test(repo) || repo === "." || repo === ".." || repo.startsWith(".")) return null;
-  return { owner, repo, slug: `${owner}/${repo}` };
+  const normalizedOwner = owner.toLowerCase();
+  const normalizedRepo = repo.toLowerCase();
+  return { owner: normalizedOwner, repo: normalizedRepo, slug: `${normalizedOwner}/${normalizedRepo}` };
 }
 
 function basePath(parsed, env = process.env) {
-  return path.join(gitBaseRoot(env), parsed.owner, `${parsed.repo}.git`);
+  return path.join(gitBaseRoot(env), parsed.owner.toLowerCase(), `${parsed.repo.toLowerCase()}.git`);
 }
 
 module.exports = {

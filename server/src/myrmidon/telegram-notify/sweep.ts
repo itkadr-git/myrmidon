@@ -1,5 +1,13 @@
 // myrmidon(1.6-TG-PROACTIVITY-E): the proactivity + bundling sweep.
 //
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 point 65):
+// the direct path is deprecated. The head-bot sweep of `server/src/app.ts`
+// reaches `sweepTelegramNotifyProactivity` through the bridge seam
+// `channel-connectors/bridge/notify-sweep.js` only; with the bridge flag on a
+// registered channel connector serves the theme and this module stays behind
+// the seam as the legacy fallback. Do not add a new direct importer; removal is
+// the follow-up step, not this PR.
+//
 // One periodic pass, wired into the chat reconciliation coordinator's
 // publication lane (server/src/app.ts, marker `myrmidon(1.6-TG-PROACTIVITY-E)`):
 //
@@ -17,7 +25,7 @@
 // coalesces pending cards (which cannot appear for a default installation
 // that never enabled owner delivery), and the digest step has an empty queue.
 
-import { chatPublications, type Db } from "@paperclipai/db";
+import { chatPublications, type Db } from "@myrmidon/db";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import { PRODUCT_NAME } from "../product.js";
 import { sweepTelegramNotifyCardBundles } from "./card-bundler.js";

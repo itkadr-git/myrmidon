@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ChevronDown, CircleDot, OctagonX, Square, Flag } from "lucide-react";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
@@ -27,6 +28,7 @@ export function TaskChatMarker({
   onTryAgain?: () => Promise<void> | void;
   tryAgainPending?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const streamlined = useStreamlinedTaskChatPresentation();
@@ -82,7 +84,7 @@ export function TaskChatMarker({
               disabled={tryAgainPending}
               data-testid="task-chat-run-failed-try-again"
             >
-              {tryAgainPending ? "Trying again..." : "Try again"}
+              {tryAgainPending ? t("area.task-chat-runner.task-chat-marker.tryingAgain") : t("area.task-chat-runner.task-chat-marker.tryAgain")}
             </Button>
           ) : null}
         </div>
@@ -101,7 +103,7 @@ export function TaskChatMarker({
               <div className="flex items-center justify-end gap-2 border-t border-border/70 bg-background/50 px-3 py-2 dark:bg-background/30">
                 {item.runHref ? (
                   <Button asChild variant="ghost" size="xs">
-                    <Link to={item.runHref}>View run</Link>
+                    <Link to={item.runHref}>{t("area.task-chat-runner.task-chat-marker.viewRun")}</Link>
                   </Button>
                 ) : null}
                 {onTryAgain ? (
@@ -112,7 +114,7 @@ export function TaskChatMarker({
                     disabled={tryAgainPending}
                     data-testid="task-chat-run-failed-try-again"
                   >
-                    {tryAgainPending ? "Trying again..." : "Try again"}
+                    {tryAgainPending ? t("area.task-chat-runner.task-chat-marker.tryingAgain") : t("area.task-chat-runner.task-chat-marker.tryAgain")}
                   </Button>
                 ) : null}
               </div>
@@ -157,7 +159,7 @@ export function TaskChatMarker({
             disabled={tryAgainPending}
             data-testid="task-chat-run-failed-try-again"
           >
-            {tryAgainPending ? "Trying again..." : "Try again"}
+            {tryAgainPending ? t("area.task-chat-runner.task-chat-marker.tryingAgain") : t("area.task-chat-runner.task-chat-marker.tryAgain")}
           </Button>
         ) : null}
       </span>

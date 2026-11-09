@@ -27,9 +27,9 @@ vi.mock("./acp.js", () => ({
   resolveCodexExecutionEngineForRun: async () => ({ engine: "cli", explicit: true }),
 }));
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
-    "@paperclipai/adapter-utils/execution-target",
+vi.mock("@myrmidon/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@myrmidon/adapter-utils/execution-target")>(
+    "@myrmidon/adapter-utils/execution-target",
   );
   return {
     ...actual,
@@ -40,9 +40,9 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
-    "@paperclipai/adapter-utils/server-utils",
+vi.mock("@myrmidon/adapter-utils/server-utils", async () => {
+  const actual = await vi.importActual<typeof import("@myrmidon/adapter-utils/server-utils")>(
+    "@myrmidon/adapter-utils/server-utils",
   );
   return {
     ...actual,

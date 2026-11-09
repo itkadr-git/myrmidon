@@ -9,7 +9,7 @@ import type {
   AttentionSeverity,
   AttentionSourceKind,
   AttentionWorkspaceRef,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export type AttentionListOptions = AttentionFeedQuery;
 
@@ -69,6 +69,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   bot_media_mcp: { label: "Media not connected" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
+  // myrmidon(OPE-11890): label for the auth-401 burst detector source.
+  auth_401_burst: { label: "Auth 401 burst" },
   host_disk_alert: { label: "Host disk" },
   // myrmidon(1.6.1-WIP-LIMIT-A): label for the WIP-limit source added with the per-agent WIP limit.
   wip_limit: { label: "WIP limit" },
@@ -105,6 +107,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   codex_pool_alert: { label: "Codex pool alert" },
   // myrmidon(OPE-7932): label for an overdue issue monitor.
   issue_monitor_overdue: { label: "Overdue issue monitor" },
+  provider_usage_warning: { label: "Provider usage" },
+  litellm_budget: { label: "LLM key budget" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -175,7 +179,9 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "replay_blocked":
     case "budget_alert":
     case "host_disk_alert":
+    case "auth_401_burst":
     case "foraging_limit":
+    case "litellm_budget":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":
@@ -303,6 +309,8 @@ export function attentionDetailLine(item: AttentionItem): string | null {
     }
     case "generic":
       return quote(detail.summaryExcerpt);
+    case "provider_usage":
+      return `${detail.provider}: ${Math.round(detail.usedPercent)}% used (warning at ${detail.thresholdPercent}%, resets ${detail.resetsAt})`;
     default:
       return null;
   }

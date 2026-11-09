@@ -3,6 +3,7 @@
 // (`access.grants` row for `secrets:read_off_run`); the change goes through the
 // same PATCH /agents/:id/permissions call as the other permission flags,
 // echoing the base flags unchanged alongside `offRunSecretRead`.
+import { useTranslation } from "@/i18n";
 import type { AgentPermissionUpdate } from "@/api/agents";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 
@@ -27,19 +28,21 @@ export function AgentOffRunSecretsSection({
   base: Pick<AgentPermissionUpdate, "canCreateAgents" | "canCreateSkills" | "canAssignTasks">;
   onSave: (update: AgentPermissionUpdate) => void;
 }) {
+  const { t, i18n } = useTranslation();
   if (!canManage) return null;
   return (
     <div className="space-y-1 text-sm" data-testid="off-run-secrets-section">
       <div className="flex items-center justify-between gap-4">
         <div className="space-y-1">
-          <div>Secrets outside a run</div>
+          <div>{t("area.access-secrets-2.agent-off-run-secrets-section.title")}</div>
           <p className="text-xs text-muted-foreground">
-            Lets this agent read its own secret metadata without an active run.
-            The grant expires automatically; every read is audited.
+            {t("area.access-secrets-2.agent-off-run-secrets-section.description")}
           </p>
           {granted && expiresAt ? (
             <p className="text-xs text-muted-foreground">
-              Expires {new Date(expiresAt).toLocaleDateString()}
+              {t("area.access-secrets-2.agent-off-run-secrets-section.expires", {
+                date: new Date(expiresAt).toLocaleDateString(i18n.language),
+              })}
             </p>
           ) : null}
         </div>

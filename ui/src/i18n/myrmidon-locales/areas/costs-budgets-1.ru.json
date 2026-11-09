@@ -1,0 +1,188 @@
+{
+  "area": {
+    "costs-budgets-1": {
+      "accounting-model-card": {
+        "title": "Модель учёта",
+        "description": "Myrmidon теперь разделяет расход на инференс по запросам и финансовые события уровня аккаунта. Так отчётность по провайдерам остаётся честной, когда счёт выставляет OpenRouter, Cloudflare, Bedrock или другой посредник.",
+        "inference": {
+          "title": "Журнал инференса",
+          "description": "Расход по запросам и оплаченные прогоны из cost_events.",
+          "point1": "токены и оплаченные доллары",
+          "point2": "провайдер, плательщик, модель",
+          "point3": "с учётом подписки и перерасхода"
+        },
+        "finance": {
+          "title": "Финансовый журнал",
+          "description": "Списания уровня аккаунта, не относящиеся к одной паре запрос-ответ.",
+          "point1": "пополнения, возвраты, комиссии",
+          "point2": "выделенная мощность и обучение в Bedrock",
+          "point3": "истечение кредитов и корректировки"
+        },
+        "quotas": {
+          "title": "Живые квоты",
+          "description": "Окна провайдера или плательщика, способные остановить трафик в реальном времени.",
+          "point1": "окна квот провайдера",
+          "point2": "кредитные системы плательщика",
+          "point3": "ошибки показываются как есть"
+        }
+      },
+      "activity-charts": {
+        "tooltip": {
+          "runsTotal_one": "{{date}}: {{count}} прогон",
+          "runsTotal_other": "{{date}}: {{count}} прогонов",
+          "runsTotal_few": "{{date}}: {{count}} прогона",
+          "runsTotal_many": "{{date}}: {{count}} прогонов",
+          "succeeded_one": "успешно: {{count}}",
+          "succeeded_other": "успешно: {{count}}",
+          "succeeded_few": "успешно: {{count}}",
+          "succeeded_many": "успешно: {{count}}",
+          "recovered_one": "восстановлено: {{count}} (повтор удался)",
+          "recovered_other": "восстановлено: {{count}} (повтор удался)",
+          "recovered_few": "восстановлено: {{count}} (повтор удался)",
+          "recovered_many": "восстановлено: {{count}} (повтор удался)",
+          "failed_one": "с ошибкой: {{count}}",
+          "failed_other": "с ошибкой: {{count}}",
+          "failed_few": "с ошибкой: {{count}}",
+          "failed_many": "с ошибкой: {{count}}",
+          "other_one": "прочие: {{count}}",
+          "other_other": "прочие: {{count}}",
+          "other_few": "прочие: {{count}}",
+          "other_many": "прочие: {{count}}",
+          "issuesTotal_one": "{{date}}: {{count}} задача",
+          "issuesTotal_other": "{{date}}: {{count}} задач",
+          "issuesTotal_few": "{{date}}: {{count}} задачи",
+          "issuesTotal_many": "{{date}}: {{count}} задач"
+        },
+        "noRuns": "Прогонов пока нет",
+        "noTasks": "Задач нет",
+        "legend": {
+          "succeeded": "Успешно",
+          "recovered": "Восстановлено",
+          "failed": "С ошибкой",
+          "other": "Прочие"
+        },
+        "priority": {
+          "critical": "Критичный",
+          "high": "Высокий",
+          "medium": "Средний",
+          "low": "Низкий"
+        },
+        "status": {
+          "todo": "К выполнению",
+          "in_progress": "В работе",
+          "in_review": "На ревью",
+          "done": "Готово",
+          "blocked": "Заблокировано",
+          "cancelled": "Отменено",
+          "backlog": "Бэклог"
+        }
+      },
+      "biller-spend-card": {
+        "tokensIn": "вх.",
+        "tokensOut": "исх.",
+        "providerCount_one": "{{count}} провайдер",
+        "providerCount_other": "{{count}} провайдеров",
+        "providerCount_few": "{{count}} провайдера",
+        "providerCount_many": "{{count}} провайдеров",
+        "modelCount_one": "{{count}} модель",
+        "modelCount_other": "{{count}} моделей",
+        "modelCount_few": "{{count}} модели",
+        "modelCount_many": "{{count}} моделей",
+        "periodSpend": "Расход за период",
+        "percentOfAllocation": "{{percent}}% от лимита",
+        "meteredRuns_one": "{{count}} прогон по тарифу",
+        "meteredRuns_other": "{{count}} прогонов по тарифу",
+        "meteredRuns_few": "{{count}} прогона по тарифу",
+        "meteredRuns_many": "{{count}} прогонов по тарифу",
+        "subscriptionRuns_one": "{{count}} прогон по подписке",
+        "subscriptionRuns_other": "{{count}} прогонов по подписке",
+        "subscriptionRuns_few": "{{count}} прогона по подписке",
+        "subscriptionRuns_many": "{{count}} прогонов по подписке",
+        "thisWeek": "{{amount}} за неделю",
+        "billingTypes": "Типы оплаты",
+        "upstreamProviders": "Провайдеры выше по цепочке",
+        "tokensShort": "{{tokens}} ток."
+      },
+      "budget-incident-card": {
+        "state": {
+          "resolved": "Закрыт",
+          "dismissed": "Отклонён",
+          "escalated": "Эскалирован",
+          "pendingApproval": "Ждёт согласования",
+          "open": "Открыт"
+        },
+        "hardStop": "Жёсткая остановка: {{scope}}",
+        "spendingReached": "Расход достиг {{observed}} при лимите {{limit}}.",
+        "pausedProject": "Выполнение проекта приостановлено. Новая работа в проекте не начнётся, пока вы не закроете инцидент бюджета.",
+        "pausedScope": "Эта область приостановлена. Новые пробуждения агентов не запустятся, пока вы не закроете инцидент бюджета.",
+        "newBudgetLabel": "Новый бюджет (USD)",
+        "applying": "Применяем…",
+        "raiseAndResume": "Повысить бюджет и возобновить",
+        "mustExceed": "Новый бюджет должен превышать текущий расход.",
+        "keepPaused": "Оставить на паузе"
+      },
+      "budget-policy-card": {
+        "windowLifetime": "Бюджет на весь срок",
+        "windowMonthly": "Месячный бюджет (UTC)",
+        "statusPaused": "На паузе",
+        "statusWarning": "Предупреждение",
+        "statusHardStop": "Жёсткая остановка",
+        "statusHealthy": "В норме",
+        "observed": "Расход",
+        "budget": "Бюджет",
+        "noCap": "Лимит не задан",
+        "disabled": "Отключён",
+        "remaining": "Осталось",
+        "unlimited": "Без ограничений",
+        "budgetLabel": "Бюджет (USD)",
+        "saving": "Сохраняем…",
+        "updateBudget": "Изменить бюджет",
+        "setBudget": "Задать бюджет",
+        "invalidAmount": "Введите корректную неотрицательную сумму в долларах.",
+        "percentOfLimit": "{{percent}}% от лимита",
+        "softAlert": "Мягкое предупреждение при {{percent}}%",
+        "softAlertPaused": "Мягкое предупреждение при {{percent}}% · пауза: {{reason}}",
+        "utilizationAria": "Использование бюджета: {{percent}}%",
+        "pausedProject": "Выполнение в этом проекте приостановлено, пока бюджет не повышен или инцидент не отклонён.",
+        "pausedScope": "Пробуждения агентов в этой области приостановлены, пока бюджет не повышен или инцидент не отклонён."
+      },
+      "claude-subscription-panel": {
+        "title": "Подписка Anthropic",
+        "subtitle": "Текущие окна квот Claude.",
+        "resets": "Сброс: {{time}}",
+        "percentUsed": "использовано {{percent}}%"
+      },
+      "codex-subscription-panel": {
+        "title": "Подписка Codex",
+        "subtitle": "Текущие окна квот Codex.",
+        "resets": "Сброс: {{time}}",
+        "percentUsed": "использовано {{percent}}%",
+        "accountWindows": "Окна аккаунта",
+        "modelWindows": "Окна моделей"
+      },
+      "finance-kind-card": {
+        "title": "Структура финансовых событий",
+        "description": "Списания уровня аккаунта по видам событий.",
+        "empty": "За этот период финансовых событий нет.",
+        "eventCount_one": "{{count}} событие",
+        "eventCount_other": "{{count}} событий",
+        "eventCount_few": "{{count}} события",
+        "eventCount_many": "{{count}} событий",
+        "billerCount_one": "{{count}} плательщик",
+        "billerCount_other": "{{count}} плательщиков",
+        "billerCount_few": "{{count}} плательщика",
+        "billerCount_many": "{{count}} плательщиков",
+        "debits": "списаний: {{amount}}"
+      },
+      "finance-timeline-card": {
+        "empty": "За этот период финансовых событий нет.",
+        "title": "Последние финансовые события",
+        "description": "Пополнения, комиссии, кредиты, обязательства и прочие списания, не связанные с запросами.",
+        "invoice": "счёт {{id}}",
+        "region": "регион {{region}}",
+        "tier": "тариф {{tier}}",
+        "estimated": "оценка"
+      }
+    }
+  }
+}

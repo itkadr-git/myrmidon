@@ -2,6 +2,10 @@
 //
 // myrmidon(1.6.5-DB-RETENTION): the retention sweep of runs and logs.
 //
+// Attachment bundle cleanup is deliberately not part of this SQL sweep: it
+// requires storage-provider deletion and must run only after a closed-task
+// eligibility check in the issue service.
+//
 // One pass per scheduler tick, internally paced: every table group deletes in
 // batches of 5000 rows, at most 100 batches per table per pass (the
 // plugin-log-retention precedent), so a pass stays short even over GB-sized
@@ -12,7 +16,7 @@
 //   - `runs` (heartbeatRunsDays): heartbeat_runs rows older than the cutoff
 //     that are FINISHED — a run with `finished_at` set is always finished,
 //     otherwise the status decides (`queued`/`scheduled_retry`/`running` are
-//     the live statuses, from HEARTBEAT_RUN_STATUSES in @paperclipai/shared)
+//     the live statuses, from HEARTBEAT_RUN_STATUSES in @myrmidon/shared)
 //     — and not referenced by open work: not the execution/checkout run of a
 //     non-terminal issue, not the retry parent of a live run, and not the
 //     source of an unresolved failed_run attention item (the feed derives
@@ -39,17 +43,14 @@
 //       ride along: an effect's decision or a finalization's run is kept,
 //       so the chain keeps the run too.
 //
-//   activity_log rows of the doomed runs are never deleted: the activity
-//   log is the audit trail and is kept regardless of the run's fate. The
-//   FK has no action, so the reference is cleared (run_id is nullable)
-//   instead of the row going with the run.
+//   activity_log rows of doomed runs have their nullable run_id cleared before
+//   deleting the heartbeat run; activity retention is governed independently.
 //
 //   NULL before the delete (nullable column, no action in the schema):
 //     - cost_events.heartbeat_run_id, finance_events.heartbeat_run_id,
 //       agent_task_sessions.last_run_id,
 //       document_annotation_comments.created_by_run_id,
-//       activity_log.run_id (the activity rows themselves are never
-//       deleted — the log is the audit trail and outlives the run)
+//       activity_log.run_id (activity retention is governed independently)
 //     - the five run columns of the decision-queue family, one per table:
 //       decision_queues.created_by_run_id,
 //       decision_queue_items.added_by_run_id, decision_triage.set_by_run_id,
@@ -74,9 +75,8 @@
 //
 //   - `activity` (activityLogDays): activity_log rows older than the cutoff,
 //     except rows whose runId points at a run that survives — the audit
-//     trail of a kept run stays complete. The default is 0 (keep forever):
-//     the activity log is the audit trail and is not aged out unless the
-//     instance admin opts in.
+//     trail of a kept run stays complete. The default is 90 days and can be
+//     changed by the instance administrator.
 //   - `access` (accessAuditDays): tool_access_audit_events and
 //     secret_access_events rows older than the cutoff (no dependencies).
 //
@@ -93,20 +93,28 @@
 // not counted; the real table size settles after autovacuum).
 
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   HEARTBEAT_RUN_STATUSES,
   emptyDataRetentionLastRun,
   type DataRetentionLastRun,
   type DataRetentionSettings,
   type DataRetentionTableStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
-/** Rows per delete batch (the plugin-log-retention precedent). */
-export const DATA_RETENTION_DELETE_BATCH_SIZE = 5_000;
+/**
+ * Rows per delete batch. 5000 runs per transaction (events + a dozen FK
+ * nulling CTEs) overran the 60 s statement timeout on the live board
+ * (OPE-8354: deletedTotal stayed 0), so the batch is small and the sweep
+ * halves it further when a batch still times out.
+ */
+export const DATA_RETENTION_DELETE_BATCH_SIZE = 500;
+
+/** The floor of the adaptive batch: below it a timeout ends the group's pass. */
+export const DATA_RETENTION_MIN_BATCH_SIZE = 50;
 
 /** Batches per table per pass; the rest waits for the next tick. */
-export const DATA_RETENTION_MAX_BATCHES = 100;
+export const DATA_RETENTION_MAX_BATCHES = 200;
 
 /** The statement timeout the sweep transactions run under. */
 export const DATA_RETENTION_STATEMENT_TIMEOUT_MS = 60_000;
@@ -146,8 +154,9 @@ export interface DataRetentionSweepDeps {
    * audit trail otherwise.
    */
   logThrottled: (details: Record<string, unknown>) => Promise<void>;
-  /**
-   * Test hook: overrides the pass throttle
+  /** One storage-aware cleanup pass for closed-task git bundles. */
+  gitBundleCleanup?: () => Promise<unknown>;
+  /** Test hook: overrides the pass throttle.
    * (DATA_RETENTION_SWEEP_MIN_INTERVAL_MS by default; 0 runs every call).
    */
   minPassIntervalMs?: number;
@@ -158,7 +167,7 @@ export interface DataRetentionSweepResult {
   startedAt: Date;
   finishedAt: Date;
   waitingForBackup: boolean;
-  perTable: Record<"runs" | "activity" | "access", { deleted: number; freedBytes: number }>;
+  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents", { deleted: number; freedBytes: number }>;
 }
 
 interface DeletedRow {
@@ -171,8 +180,15 @@ function cutoffFor(now: Date, days: number): string {
 }
 
 function isDeleteBlockedError(err: unknown): boolean {
-  const code = (err as { code?: unknown } | null | undefined)?.code;
-  return code === "57014" /* query_canceled: statement_timeout */ || code === "55P03";
+  // drizzle wraps the driver error: the SQLSTATE sits on err.cause.code
+  for (let e: unknown = err, depth = 0; e && depth < 4; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (code === "57014" /* query_canceled: statement_timeout */ || code === "55P03") {
+      return true;
+    }
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
@@ -188,6 +204,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
   async function deleteRunsGroup(
     tx: Db,
     cutoff: string,
+    batchSize: number,
   ): Promise<{ deleted: number; freedBytes: number }> {
     const liveStatuses = sql.join(
       DATA_RETENTION_LIVE_RUN_STATUSES.map((status) => sql`${status}`),
@@ -275,7 +292,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               SELECT 1 FROM native_run_results nr WHERE nr.run_id = r.id
             )
           ORDER BY r.created_at
-          LIMIT ${DATA_RETENTION_DELETE_BATCH_SIZE}
+          LIMIT ${batchSize}
         ),
         -- plain (non-cascading, non-set-null) references into heartbeat_runs
         -- must let go first; the FKs otherwise refuse the delete
@@ -321,9 +338,8 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           UPDATE document_annotation_comments dac SET created_by_run_id = NULL
           WHERE dac.created_by_run_id IN (SELECT id FROM doomed)
         ),
-        -- the audit trail outlives the run: activity_log rows are never
-        -- deleted (activityLogDays defaults to 0 = keep forever), so the
-        -- reference is cleared instead of the row going with the run
+        -- activity_log is retained according to its independently configured
+        -- policy. Clear only its FK to the heartbeat run before deleting it.
         null_run_activity AS (
           UPDATE activity_log al SET run_id = NULL
           WHERE al.run_id IN (SELECT id FROM doomed)
@@ -348,6 +364,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
   async function deleteActivityGroup(
     tx: Db,
     cutoff: string,
+    batchSize: number,
   ): Promise<{ deleted: number; freedBytes: number }> {
     // one batch per call — the caller wraps each batch in its own transaction
     let deleted = 0;
@@ -363,7 +380,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               SELECT 1 FROM heartbeat_runs r WHERE r.id = a2.run_id
             ))
           ORDER BY a2.created_at
-          LIMIT ${DATA_RETENTION_DELETE_BATCH_SIZE}
+          LIMIT ${batchSize}
         )
         RETURNING a.id, pg_column_size(a.id) AS size
       `);
@@ -374,9 +391,36 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     return { deleted, freedBytes };
   }
 
+  async function deleteLitellmCostEventsGroup(
+    tx: Db,
+    cutoff: string,
+    batchSize: number,
+  ): Promise<{ deleted: number; freedBytes: number }> {
+    const rows = await tx.execute(sql`
+      WITH doomed AS (
+        SELECT id
+        FROM litellm_cost_events
+        WHERE collected_at < ${cutoff}::timestamptz
+        ORDER BY collected_at
+        LIMIT ${batchSize}
+      ), deleted AS (
+        DELETE FROM litellm_cost_events lce
+        USING doomed
+        WHERE lce.id = doomed.id
+        RETURNING lce.id, pg_column_size(lce.id) AS size
+      )
+      SELECT id, size FROM deleted
+    `);
+    const batchRows = rows as unknown as DeletedRow[];
+    let freedBytes = 0;
+    for (const row of batchRows) freedBytes += Number(row.size) || 0;
+    return { deleted: batchRows.length, freedBytes };
+  }
+
   async function deleteAccessGroup(
     tx: Db,
     cutoff: string,
+    batchSize: number,
   ): Promise<{ deleted: number; freedBytes: number }> {
     // one batch per table per call — the caller wraps each batch in its own
     // transaction
@@ -391,7 +435,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
             SELECT t2.id FROM ${tableSql} t2
             WHERE t2.created_at < ${cutoff}
             ORDER BY t2.created_at
-            LIMIT ${DATA_RETENTION_DELETE_BATCH_SIZE}
+            LIMIT ${batchSize}
           )
           RETURNING t.id, pg_column_size(t.id) AS size
         `);
@@ -414,7 +458,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     };
   }
 
-  type GroupKey = "runs" | "activity" | "access";
+  type GroupKey = "runs" | "activity" | "access" | "litellmCostEvents";
 
   async function runGroup(
     group: { key: GroupKey; days: number },
@@ -425,9 +469,12 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         ? deleteRunsGroup
         : group.key === "activity"
           ? deleteActivityGroup
-          : deleteAccessGroup;
+          : group.key === "access"
+            ? deleteAccessGroup
+            : deleteLitellmCostEventsGroup;
     let deleted = 0;
     let freedBytes = 0;
+    let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
     for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
       let batchResult: { deleted: number; freedBytes: number };
       try {
@@ -441,14 +488,13 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               `SET LOCAL statement_timeout = ${DATA_RETENTION_STATEMENT_TIMEOUT_MS}`,
             ),
           );
-          return run(tx as unknown as Db, cutoff);
+          return run(tx as unknown as Db, cutoff, batchSize);
         });
       } catch (err) {
         if (isDeleteBlockedError(err)) {
           // A batch hit the statement timeout (57014) or gave up its locks:
-          // the rest of the group waits for the next pass, and the stop
-          // goes into the journal — a swallowed timeout is invisible in
-          // the audit trail otherwise.
+          // the stop goes into the journal — a swallowed timeout is
+          // invisible in the audit trail otherwise.
           await deps
             .logThrottled({
               group: group.key,
@@ -457,13 +503,20 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               cutoff,
             })
             .catch(() => undefined);
+          if (batchSize > DATA_RETENTION_MIN_BATCH_SIZE) {
+            // Retry the same work with a smaller batch (OPE-8354): a batch
+            // that always times out would otherwise delete nothing, ever.
+            batchSize = Math.max(DATA_RETENTION_MIN_BATCH_SIZE, Math.floor(batchSize / 2));
+            continue;
+          }
+          // Already at the floor: the rest of the group waits for the next pass.
           break;
         }
         throw err;
       }
       deleted += batchResult.deleted;
       freedBytes += batchResult.freedBytes;
-      if (batchResult.deleted < DATA_RETENTION_DELETE_BATCH_SIZE) break;
+      if (batchResult.deleted < batchSize) break;
     }
     return { deleted, freedBytes };
   }
@@ -500,6 +553,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           runs: { deleted: 0, freedBytes: 0 },
           activity: { deleted: 0, freedBytes: 0 },
           access: { deleted: 0, freedBytes: 0 },
+          litellmCostEvents: { deleted: 0, freedBytes: 0 },
         },
       };
     }
@@ -508,12 +562,14 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       runs: { deleted: 0, freedBytes: 0 },
       activity: { deleted: 0, freedBytes: 0 },
       access: { deleted: 0, freedBytes: 0 },
+      litellmCostEvents: { deleted: 0, freedBytes: 0 },
     };
 
     const groups: Array<{ key: GroupKey; days: number }> = [
       { key: "runs", days: settings.heartbeatRunsDays },
       { key: "activity", days: settings.activityLogDays },
       { key: "access", days: settings.accessAuditDays },
+      { key: "litellmCostEvents", days: settings.litellmCostEventsDays },
     ];
 
     for (const group of groups) {
@@ -522,10 +578,20 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       results[group.key] = await runGroup(group, cutoff);
     }
 
+    const bundleCleanup = deps.gitBundleCleanup
+      ? await deps.gitBundleCleanup().catch(() => undefined)
+      : undefined;
     const didWork =
+      Boolean(
+        bundleCleanup &&
+        typeof bundleCleanup === "object" &&
+        "deleted" in bundleCleanup &&
+        Number((bundleCleanup as { deleted: unknown }).deleted) > 0,
+      ) ||
       results.runs.deleted > 0 ||
       results.activity.deleted > 0 ||
-      results.access.deleted > 0;
+      results.access.deleted > 0 ||
+      results.litellmCostEvents.deleted > 0;
     // The state is written only when the pass actually deleted something or
     // the backup-gate flag changes — not on every idle tick (operator review
     // dbcare-review-20261008).
@@ -539,11 +605,13 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           previous.freedBytesTotal +
           results.runs.freedBytes +
           results.activity.freedBytes +
-          results.access.freedBytes,
+          results.access.freedBytes +
+          results.litellmCostEvents.freedBytes,
         perTable: {
           runs: mergeTableStatus(previous.perTable.runs, results.runs),
           activity: mergeTableStatus(previous.perTable.activity, results.activity),
           access: mergeTableStatus(previous.perTable.access, results.access),
+          litellmCostEvents: mergeTableStatus(previous.perTable.litellmCostEvents, results.litellmCostEvents),
         },
       };
       await deps.writeLastRun(lastRun);
@@ -578,6 +646,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               runs: { deleted: 0, freedBytes: 0 },
               activity: { deleted: 0, freedBytes: 0 },
               access: { deleted: 0, freedBytes: 0 },
+              litellmCostEvents: { deleted: 0, freedBytes: 0 },
             },
           });
         }

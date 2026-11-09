@@ -6,7 +6,7 @@
 // keeps our state alive across vendor writes of instance_settings.general.
 
 import { describe, expect, it } from "vitest";
-import type { CloudJournalEntry } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudJournalEntry } from "@myrmidon/shared/myrmidon-cloud-connector";
 import {
   appendJournal,
   CLOUD_CONNECTOR_GENERAL_KEY,

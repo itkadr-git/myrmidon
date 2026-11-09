@@ -9,7 +9,7 @@ import {
   inspectMigrations,
   loadMigrationTargetSchema,
   runDatabaseRestore,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { checkVendorChain, chainStartsWithVendor, type ChainCheck } from "./myrmidon-migrate-chain.js";
 import {
   buildVendorOnlyIndex,
@@ -109,6 +109,8 @@ export type MigrationOptions = {
   allowMissingFiles?: boolean;
   /** Go on when the source holds data of Paperclip features that Myrmidon does not have (it is not transferred). */
   acceptVendorOnlyData?: boolean;
+  /** Continue when the source holds tables absent from the target that are NOT known Paperclip features (not transferred). Does not imply acceptVendorOnlyData. */
+  acceptUnknownSourceObjects?: boolean;
   json?: boolean;
   /** Test seams; not exposed as CLI flags. */
   failureInjection?: FailureInjection;
@@ -328,7 +330,8 @@ async function analyzeSource(
     const tableIntroduced = vendorIndex.tables.get(info.name);
     if (tableIntroduced !== undefined) {
       vendorOnlyCandidates.push({ kind: "table", table: info.name, rows: digest.rows, introducedIn: tableIntroduced });
-    } else if (digest.rows > 0) {
+    } else {
+      // Empty tables count too: their vendor-only columns are reported as excluded-empty, in dry-run and in the real run alike.
       for (const col of info.columns) {
         const introduced = vendorIndex.columns.get(`${info.name}.${col.name}`);
         if (introduced === undefined) continue;
@@ -481,18 +484,32 @@ function buildInventory(analysis: SourceAnalysis) {
   };
 }
 
-export type CompatResult = { problems: string[]; exclusions: Exclusion[]; vendorOnly: VendorOnlyFinding[] };
+export type SkippedSourceDatum = {
+  table: string;
+  column?: string;
+  rows: number;
+  vendorRelease: string;
+  decision: string;
+};
+
+export type CompatResult = {
+  problems: string[];
+  exclusions: Exclusion[];
+  vendorOnly: VendorOnlyFinding[];
+  skippedSourceData: SkippedSourceDatum[];
+};
 
 /**
  * Compares the source schema with the target. A table or column that only a
  * later Paperclip release has, and the target lacks, is not an error: it is
  * returned in `vendorOnly` (its data is not transferred). Every other mismatch
- * stays a problem.
+ * stays a problem unless accepted by explicit option.
  */
 export function checkCompatibility(
   analysis: Pick<SourceAnalysis, "tables" | "digests" | "vendorOnlyCandidates">,
   target: Map<string, TableInfo>,
   index: VendorOnlyIndex = buildVendorOnlyIndex(),
+  options?: Pick<MigrationOptions, "acceptVendorOnlyData" | "acceptUnknownSourceObjects">,
 ): CompatResult {
   const problems: string[] = [];
   const exclusions: Exclusion[] = [];
@@ -510,23 +527,30 @@ export function checkCompatibility(
           continue;
         }
         const introducedIn = index.tables.get(name);
-        if (introducedIn !== undefined) vendorOnly.push({ kind: "table", table: name, rows, introducedIn });
-        else problems.push(`table-missing-in-target:${name}`);
-      } else exclusions.push({ kind: "table", name, reason: "absent in target and empty in source" });
+        if (introducedIn !== undefined) {
+          vendorOnly.push({ kind: "table", table: name, rows, introducedIn });
+        } else if (options?.acceptUnknownSourceObjects) {
+          exclusions.push({ kind: "table", name, reason: "unknown source table accepted by flag" });
+        } else {
+          problems.push(`table-missing-in-target:${name}`);
+        }
+      } else {
+        exclusions.push({ kind: "table", name, reason: "absent in target and empty in source" });
+      }
       continue;
     }
     const tgtCols = new Map(tgt.columns.map((c) => [c.name, c]));
     for (const col of info.columns) {
-      if (tgtCols.has(col.name) || rows === 0) continue;
+      if (tgtCols.has(col.name)) continue;
       const key = `${name}.${col.name}`;
       if (index.droppedColumns?.has(key)) {
-        exclusions.push({ kind: "column", name: key, reason: "dropped in migration chain; not needed in target" });
+        if (rows > 0) exclusions.push({ kind: "column", name: key, reason: "dropped in migration chain; not needed in target" });
         continue;
       }
       const introducedIn = index.columns.get(key);
       if (introducedIn !== undefined) {
         vendorOnly.push({ kind: "column", table: name, column: col.name, rows: candidateRows.get(key) ?? rows, introducedIn });
-      } else problems.push(`column-missing-in-target:${key}`);
+      } else if (rows > 0) problems.push(`column-missing-in-target:${key}`);
     }
     if (rows > 0) {
       const srcCols = new Set(info.columns.map((c) => c.name));
@@ -537,7 +561,29 @@ export function checkCompatibility(
       }
     }
   }
-  return { problems, exclusions, vendorOnly };
+  const accepted = Boolean(options?.acceptVendorOnlyData);
+  const protectedLosses = vendorOnly.filter((f) => f.rows > 0 &&
+    ((f.table === "agents" && f.column === "appearance") ||
+     (f.table === "issues" && f.column === "title_needs_generation")));
+  if (protectedLosses.length > 0) {
+    problems.push(...protectedLosses.map((f) => `approved-column-not-preserved:${f.table}.${f.column}`));
+  }
+  const skippedSourceData: SkippedSourceDatum[] = [
+    ...vendorOnly.map((f) => ({
+      table: f.table,
+      ...(f.column ? { column: f.column } : {}),
+      rows: f.rows,
+      vendorRelease: f.introducedIn,
+      decision: f.rows > 0 ? (accepted ? "accepted" : "requires-flag") : "excluded-empty",
+    })),
+    ...exclusions.filter((e) => e.kind === "table" && e.reason.includes("empty")).map((e) => ({
+      table: e.name,
+      rows: 0,
+      vendorRelease: index.tables.get(e.name) ?? "unknown",
+      decision: "excluded-empty",
+    })),
+  ];
+  return { problems, exclusions, vendorOnly, skippedSourceData };
 }
 
 const INT_RANK: Record<string, number> = { smallint: 1, integer: 2, bigint: 3 };
@@ -948,6 +994,23 @@ async function execute(
 
       if (options.dryRun) {
         const candidates = vendorOnlyReport(analysis.vendorOnlyCandidates);
+        const accepted = Boolean(options.acceptVendorOnlyData);
+        const skippedSourceData: SkippedSourceDatum[] = [
+          ...candidates.withData.map((f) => ({
+            table: f.table,
+            ...(f.column ? { column: f.column } : {}),
+            rows: f.rows,
+            vendorRelease: f.introducedIn,
+            decision: accepted ? "accepted" : "requires-flag",
+          })),
+          ...candidates.empty.map((f) => ({
+            table: f.table,
+            ...(f.column ? { column: f.column } : {}),
+            rows: 0,
+            vendorRelease: f.introducedIn,
+            decision: "excluded-empty",
+          })),
+        ];
         return {
           ...base,
           vendorOnlyData: {
@@ -956,6 +1019,7 @@ async function execute(
             flag: "--accept-vendor-only-data",
             ...candidates,
           },
+          skippedSourceData,
           mode: "dry-run",
           status: "ok",
           writesPerformed: false,
@@ -1049,7 +1113,7 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
 
     const targetInfo = await introspectTables(tq);
     const vendorIndex = await loadVendorOnlyIndex();
-    const compat = checkCompatibility(analysis, targetInfo, vendorIndex);
+    const compat = checkCompatibility(analysis, targetInfo, vendorIndex, ctx.options);
     const narrowing = compat.problems.length === 0 ? await checkNarrowing(src, analysis, targetInfo) : [];
     const problems = [...compat.problems, ...narrowing];
     if (problems.length > 0) {
@@ -1171,6 +1235,7 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
       load: copyInfo,
       verification: report,
       vendorOnlyData: { acceptedByFlag: Boolean(ctx.options.acceptVendorOnlyData), transferred: false, ...vendorOnlyReport(compat.vendorOnly) },
+      skippedSourceData: compat.skippedSourceData,
       stateDir,
     };
     await writeFile(path.join(stateDir, "report.json"), `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
@@ -1288,6 +1353,10 @@ export function registerMyrmidonMigrateCommand(program: { command: (name: string
     .option(
       "--accept-vendor-only-data",
       "Continue when the source holds data of Paperclip features Myrmidon does not have (it is listed and not transferred)",
+    )
+    .option(
+      "--accept-unknown-source-objects",
+      "Continue when the source holds tables absent from the target that are not known Paperclip features (not transferred); does not imply --accept-vendor-only-data",
     )
     .option("--allow-missing-files", "Continue when asset files are missing or differ (they are reported)")
     .option("--json", "Accepted for compatibility; output is always JSON")

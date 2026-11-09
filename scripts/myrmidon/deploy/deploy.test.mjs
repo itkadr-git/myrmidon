@@ -27,11 +27,15 @@ case "$1" in
     case "$2" in
       inspect)
         case "$*" in
+          *postgres:16-alpine*)
+            case "$*" in *-f*) echo /var/lib/postgresql/data ;; esac
+            exit 0 ;;
           *org.opencontainers.image.version*)
             # image_label: the label comes from the sandbox file, as before.
             cat "$SANDBOX/label-version"; exit 0 ;;
           *org.opencontainers.image.revision*)
-            cat "$SANDBOX/label-revision"; exit 0 ;;
+            if [[ "$*" == *"sha256:aaaaaaaa"* ]]; then cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision"; else cat "$SANDBOX/label-revision"; fi
+            exit 0 ;;
         esac
         # ROLLBACK-LOCAL: a plain inspect asks whether the image is on the
         # daemon: yes when its reference is listed in $SANDBOX/local-images
@@ -39,7 +43,12 @@ case "$1" in
         # flag or a --format value.
         ref=""
         for a in "\${@:3}"; do
-          case "$a" in --*) continue ;; esac
+          case "$a" in
+          -f) skip_format=1; continue ;;
+          --format=*) continue ;;
+          -*) continue ;;
+          esac
+          if [ "\${skip_format:-0}" = 1 ]; then skip_format=0; continue; fi
           case "$a" in \{*|*\}*) continue ;; esac
           ref="$a"; break
         done
@@ -54,14 +63,41 @@ case "$1" in
         esac ;;
     esac ;;
   buildx)
-    # RELEASE-GATE: the same registry answers the component repositories. A
-    # digest-format inspect gets the component digest file; the board and every
-    # CI check get the image JSON (with labels).
+    echo "docker buildx $*" >> "$SANDBOX/calls.log"
+    # RELEASE-GATE: component inspections must be routed before the generic
+    # board-image response. check-release-support.sh asks for
+    # '{{json .Manifest.Digest}}', while image-label checks ask for the full
+    # image JSON.
     case "$4" in
       *myrmidon-dockergate*|*myrmidon-fleetd*)
         if [ -e "$SANDBOX/components-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
-        for a in "$@"; do case "$a" in *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;; esac; done
-        cat "$SANDBOX/component-image.json" ;;
+        for a in "$@"; do
+          case "$a" in
+            *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;;
+          esac
+        done
+        if [[ "$*" == *"--format"*".Manifest"* || "$*" == *"--format"*".Manifest.Digest"* ]]; then
+          echo '{"Layers":[{"size":1}]}'
+          exit 0
+        fi
+        cat "$SANDBOX/component-image.json"; exit 0 ;;
+    esac
+    if [[ "$*" == *"imagetools inspect"* ]]; then
+      if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: registry image not found" >&2; exit 1; fi
+      if [ -e "$SANDBOX/registry-invalid-revision" ]; then jq '.config.Labels["org.opencontainers.image.revision"]="efe4758"' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [ -e "$SANDBOX/registry-no-labels" ]; then jq '.config |= del(.Labels)' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [ -e "$SANDBOX/registry-no-revision" ]; then jq '.config.Labels |= del(."org.opencontainers.image.revision")' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [[ "$*" == *"--format"*".Manifest"* || "$*" == *"--format"*".Manifest.Digest"* ]]; then
+        echo '{"Layers":[{"size":1}]}'
+        exit 0
+      fi
+      if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
+        jq --arg rev "$(cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision")" '.config.Labels["org.opencontainers.image.revision"]=$rev' "$SANDBOX/imagetools.json"; exit 0
+      fi
+      cat "$SANDBOX/imagetools.json"; exit 0
+    fi
+    # RELEASE-GATE: non-imagetools buildx commands are not expected here.
+    case "$4" in
       *)
         if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
         cat "$SANDBOX/imagetools.json" ;;
@@ -75,18 +111,18 @@ case "$1" in
     exit 0 ;;
   compose)
     case "$*" in
-      *--services)
-        # HOST-TARGETING: the declared services of the sandbox's compose
-        # project (the fail-closed pre-check reads them). DEPLOY-PRECHECK (the
-        # 05.10 incident): composeConfigFails makes the project unreadable —
-        # the real compose error on stderr, nothing on stdout, exit 1, exactly
-        # like docker compose on an invalid project.
-        if [ -e "$SANDBOX/compose-config-fails" ]; then
-          echo 'service "server" has neither an image nor a build context specified' >&2
-          echo "ERROR: Invalid compose project" >&2
-          exit 1
+      *"config"*|*--services*)
+        if [[ "$*" == *--services* ]]; then
+          if [ -e "$SANDBOX/compose-config-fails" ]; then
+            echo 'service "server" has neither an image nor a build context specified' >&2
+            echo "ERROR: Invalid compose project" >&2
+            exit 1
+          fi
+          printf 'server\\ndockergate\\nfleetd\\n'
+          exit 0
         fi
-        printf 'server\\ndockergate\\nfleetd\\n' ;;
+        if [ -f "$SANDBOX/compose-json" ]; then cat "$SANDBOX/compose-json"; fi
+        exit 0 ;;
       *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
       *) exit 0 ;;
     esac ;;
@@ -103,6 +139,7 @@ case "$1" in
   remote) cat "$SANDBOX/git-origin" ;;
   fetch) if [ -e "$SANDBOX/git-fetch-fails" ]; then echo "fatal: unable to access" >&2; exit 128; fi ;;
   merge-base) exit "$(cat "$SANDBOX/git-ancestor-exit")" ;;
+  diff) [ -f "$SANDBOX/migration-files" ] && cat "$SANDBOX/migration-files"; exit 0 ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
 esac
 `;
@@ -132,23 +169,27 @@ const VENDOR = "ghcr.io/paperclipai/paperclip:2026.916.1";
 
 function sandbox({
   health,
+  newRevision = COMMIT,
   // PREDEPLOY-DB-CHECK: what the throwaway COPY of the production database
   // answers on /api/health. Green by default, so only the tests about the
   // pre-window check have to think about it.
   predeployHealth,
   dumpBytes = 2048,
   labelVersion = VERSION,
-  labelRevision = COMMIT,
+  labelRevision = newRevision,
+  oldRevision = COMMIT,
   current = OLD,
   currentImage,
   // What the registry reports for the image (imagetools inspect): the labels, or null for none.
   registryLabels,
   registryMissing = false,
+  invalidRevisionLabel = false,
   origin = ORIGIN,
   notAClone = false,
   fetchFails = false,
   onMain = true,
   tags = "",
+  migrationFiles = "",
   noGit = false,
   // ROLLBACK-LOCAL: image references present on the local docker daemon, and
   // what `docker image ls <repo>` lists for the error message.
@@ -174,7 +215,12 @@ function sandbox({
   // arguments; the files themselves must exist (a real compose dir does).
   fs.writeFileSync(path.join(composeDir, "docker-compose.yml"), "services: {}\n");
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "systemctl"), `#!/usr/bin/env bash\ncase "$1" in\n  --version) echo systemd 255 ; exit 0 ;;\n  is-enabled|daemon-reload|enable|start) exit 0 ;;\n  *) exit 0 ;;\nesac\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), `#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+printf '/dev/fake 100000000 1000000 99000000 1%% /var/lib/docker\\n'
+`, { mode: 0o755 });
   if (!noGit) fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   const labels =
@@ -190,6 +236,20 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  if (invalidRevisionLabel) fs.writeFileSync(path.join(dir, "registry-invalid-revision"), "");
+  if (registryLabels === null) fs.writeFileSync(path.join(dir, "registry-no-labels"), "");
+  if (registryLabels !== undefined && registryLabels !== null && !Object.hasOwn(registryLabels, "org.opencontainers.image.revision")) {
+    fs.writeFileSync(path.join(dir, "registry-no-revision"), "");
+  }
+  const oldLabelRevision =
+    newRevision === "0123456789abcdef0123456789abcdef01234568"
+      ? "fedcba9876543210fedcba9876543210fedcba98"
+      : labelRevision;
+  fs.writeFileSync(path.join(dir, "label-revision"), oldLabelRevision);
+  fs.writeFileSync(path.join(dir, "old-label-revision"), `${oldRevision}\n`);
+  if (newRevision !== null) {
+    fs.writeFileSync(path.join(dir, "imagetools.json"), JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: { ...labels, "org.opencontainers.image.revision": newRevision } } }));
+  } else fs.rmSync(path.join(dir, "imagetools.json"), { force: true });
   if (composeConfigFails) fs.writeFileSync(path.join(dir, "compose-config-fails"), "");
   // RELEASE-GATE: component registry answers for the same commit.
   fs.writeFileSync(
@@ -211,10 +271,13 @@ function sandbox({
   fs.writeFileSync(path.join(dir, "git-origin"), `${origin}\n`);
   fs.writeFileSync(path.join(dir, "git-ancestor-exit"), onMain ? "0" : "1");
   fs.writeFileSync(path.join(dir, "git-tags"), tags);
+  if (migrationFiles) fs.writeFileSync(path.join(dir, "migration-files"), migrationFiles);
   if (notAClone) fs.writeFileSync(path.join(dir, "git-not-a-clone"), "");
   if (fetchFails) fs.writeFileSync(path.join(dir, "git-fetch-fails"), "");
   fs.writeFileSync(path.join(dir, "label-version"), `${labelVersion}\n`);
   fs.writeFileSync(path.join(dir, "label-revision"), `${labelRevision}\n`);
+  fs.writeFileSync(path.join(dir, "old-label-revision"), `${oldRevision}\n`);
+  if (migrationFiles) fs.writeFileSync(path.join(dir, "migration-files"), migrationFiles);
   if (localImages.length > 0) fs.writeFileSync(path.join(dir, "local-images"), localImages.join("\n") + "\n");
   if (localTags) fs.writeFileSync(path.join(dir, "local-tags"), localTags);
   if (localIds) fs.writeFileSync(path.join(dir, "local-ids"), localIds);
@@ -245,12 +308,14 @@ function sandbox({
   if (bootUnit !== null) {
     fs.writeFileSync(path.join(unitDir, "paperclip.service"), bootUnit(sbPaths(composeDir)));
   }
+  if (bootUnit === null) fs.rmSync(path.join(unitDir, "paperclip.service"), { force: true });
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(
     config,
     [
       `COMPOSE_DIR=${composeDir}`,
       "COMPOSE_SERVICE=server",
+      "MYRMIDON_IMAGE=ghcr.io/itkadr-git/myrmidon",
       "HEALTH_URL=http://127.0.0.1:3100/api/health",
       "HEALTH_TIMEOUT_SEC=2",
       "POLL_INTERVAL_SEC=1",
@@ -262,6 +327,7 @@ function sandbox({
       `MAINTENANCE_EXIT_COMMAND='echo exit >> ${path.join(dir, "maintenance.log")}'`,
       "RUNNING_RUNS_COMMAND='echo 0'",
       `SYSTEMD_UNIT_DIR=${unitDir}`,
+      `SYSTEMD_UNIT_INSTALL=${bootUnit === null ? 0 : 1}`,
       // RELEASE-GATE: the release components answer their health probes here
       // (the fake curl serves every URL with the health file).
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
@@ -274,6 +340,8 @@ function sandbox({
       // predeploy-board-check.test.mjs and in the release-gate sandbox, which
       // knows BOARD_COMPANY_ID).
       "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data",
+      "MYRMIDON_PREDEPLOY_IO_RATE=30000000",
       `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
       "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
       `MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC=2`,
@@ -300,7 +368,7 @@ const sbCanonical = (render) => render(UNIT_TEMPLATE);
 function pathWithoutGit(sb) {
   const tools = path.join(sb.dir, "tools");
   fs.mkdirSync(tools, { recursive: true });
-  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk"]) {
+  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk", "mkdir"]) {
     const found = process.env.PATH.split(":")
       .map((d) => path.join(d, name))
       .find((f) => fs.existsSync(f));
@@ -309,10 +377,10 @@ function pathWithoutGit(sb) {
   return `${sb.bin}:${tools}`;
 }
 
-function run(sb, script, args, input) {
-  const searchPath = sb.noGit ? pathWithoutGit(sb) : `${sb.bin}:${process.env.PATH}`;
+function run(sb, script, args, input, extraEnv = {}) {
+  const searchPath = sb.noGit ? `${sb.bin}:${pathWithoutGit(sb)}` : `${sb.bin}:${process.env.PATH}`;
   const result = spawnSync(bashPath(), [path.join(HERE, script), "--config", sb.config, ...args], {
-    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir },
+    env: { ...process.env, BASH_ENV: "", ENV: "", PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}), ...extraEnv },
     encoding: "utf8",
     input,
   });
@@ -349,6 +417,31 @@ describe("deploy.sh", () => {
     assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon@${NEW}`));
     assert.match(calls(sb), /docker compose .* up -d --no-deps server/);
     assert.equal(maintenance(sb), "enter\nexit\n");
+  });
+
+  // OPE-9318 (1.6.6 DEBRAND): the compose project must be pinnable to the new
+  // board name without changing anything for an install that does not set it.
+  // Unset → the deploy keeps the directory-derived project (no --project-name
+  // flag, identity of volumes/networks untouched); set → every compose call
+  // carries the pin, and the rendered boot unit stays byte-identical so an
+  // existing verify_boot_unit comparison does not flag a unit change.
+  it("keeps the directory-derived compose project when COMPOSE_PROJECT_NAME is unset", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(calls(sb), /--project-name/, "unset must not add a project pin");
+  });
+
+  it("pins the compose project when COMPOSE_PROJECT_NAME is set", () => {
+    const sb = sandbox();
+    const before = read(path.join(sb.dir, "systemd", "paperclip.service"));
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      COMPOSE_PROJECT_NAME: "myrmidon-board",
+    });
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker compose --project-directory \S+ --project-name myrmidon-board /);
+    const after = read(path.join(sb.dir, "systemd", "paperclip.service"));
+    assert.equal(before, after, "the boot unit must render identically with a project pin");
   });
 
   // PREDEPLOY-DB-CHECK (the 05.10 incident): release 1.6.3's board started on
@@ -440,6 +533,109 @@ describe("deploy.sh", () => {
   // pre-check the real window would, so an unreadable compose project fails
   // HERE, with the real compose error, instead of passing and surfacing after
   // the image pull and the database dump.
+  // LICENSE-DIR: the license issuing key must not sit in the directory that is
+  // mounted into the module containers; --dry-run is the check.
+  describe("license directory preflight", () => {
+    const licenseSandbox = () => {
+      const sb = sandbox();
+      const licDir = path.join(sb.dir, "etc-myrmidon-license");
+      fs.mkdirSync(licDir);
+      fs.writeFileSync(path.join(licDir, "license.key"), "MYR1.x\n");
+      sb.env = { MYR_LICENSE_PATH: path.join(licDir, "license.key") };
+      return { sb, licDir };
+    };
+
+    it("passes when the directory holds only the license and instance-id", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(path.join(licDir, "instance-id"), "myr-aaaaaaaaaaaaaaaaaaaa\n");
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+
+    it("stops on an issuer subdirectory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.mkdirSync(path.join(licDir, "issuer"));
+      const before = read(sb.override);
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /ключ выпуска лежит в каталоге лицензии — перенесите: sudo mv .*\/issuer .*-issuer и поправьте монтирование issuer/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+      assert.equal(read(sb.override), before);
+    });
+
+    it("stops on *.pem and *ed25519* files", () => {
+      for (const name of ["signing.pem", "issuer_ed25519.key"]) {
+        const { sb, licDir } = licenseSandbox();
+        fs.writeFileSync(path.join(licDir, name), "x");
+        const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+        assert.notEqual(code, 0, name);
+        assert.match(out, /ключ выпуска лежит в каталоге лицензии/, name);
+      }
+    });
+
+    it("stops when the compose issuer mount points inside the license directory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({ services: { server: { volumes: [{ type: "bind", source: licDir, target: "/etc/myrmidon-license" }, { type: "bind", source: path.join(licDir, "keys"), target: "/run/issuer" }] } } }),
+      );
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /ключ выпуска лежит в каталоге лицензии/);
+    });
+
+    it("accepts an issuer mount outside the license directory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({ services: { server: { volumes: [{ type: "bind", source: licDir, target: "/etc/myrmidon-license" }, { type: "bind", source: `${licDir}-issuer`, target: "/run/issuer" }] } } }),
+      );
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+  });
+
+  describe("shared package cache preflight", () => {
+    const cacheSandbox = ({ readOnly = false, missing = false } = {}) => {
+      const sb = sandbox();
+      const cache = path.join(sb.dir, "shared-cache");
+      if (!missing) fs.mkdirSync(cache);
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({
+          services: {
+            server: {
+              volumes: [{ type: "bind", source: cache, target: cache, ...(readOnly ? { read_only: true } : {}) }],
+            },
+          },
+        }),
+      );
+      sb.env = { MYRMIDON_SHARED_PACKAGE_CACHE_PATH: cache };
+      return { sb, cache };
+    };
+
+    it("requires a writable cache directory and a read/write server bind", () => {
+      const { sb } = cacheSandbox();
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+
+    it("stops before pulling when the cache directory is missing", () => {
+      const { sb } = cacheSandbox({ missing: true });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /shared package cache path is not a directory/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+    });
+
+    it("rejects a read-only cache bind", () => {
+      const { sb } = cacheSandbox({ readOnly: true });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /shared package cache is not mounted read\/write/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+    });
+  });
   it("--dry-run fails with the real compose error when the compose project cannot be read", () => {
     const sb = sandbox({ composeConfigFails: true });
     const before = read(sb.override);
@@ -581,6 +777,31 @@ describe("deploy.sh", () => {
 
   // myrmidon(DEPLOY-TIMEOUT-EXIT): dry-run prints the new drain-timeout
   // behaviour in the plan, so operators see the promise before they run it.
+  it("urgent dry run skips dump and predeploy check and shows the reason", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "critical fix", "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /steps 3 and 3b skipped/);
+    assert.match(out, /critical fix/);
+    assert.match(out, /nightly backup/);
+    assert.doesNotMatch(out, /dump database with/);
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+  });
+
+  it("urgent refuses when migrations are present before dry-run exits", () => {
+    const sb = sandbox({
+      newRevision: "0123456789abcdef0123456789abcdef01234568",
+      oldRevision: "fedcba9876543210fedcba9876543210fedcba98",
+      migrationFiles: "packages/db/src/migrations/0433_urgent.sql\n",
+    });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "critical fix", "--dry-run"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /new database migrations exist/);
+    assert.match(out, /database dump is mandatory/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+  });
+
   it("dry run says the drain timeout lifts maintenance", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
@@ -683,7 +904,7 @@ describe("deploy.sh: only CI images from the registry", () => {
     });
 
     it("refuses a revision label that is not a full commit sha", () => {
-      const sb = sandbox({ registryLabels: { "org.opencontainers.image.revision": "efe4758", "org.opencontainers.image.source": SOURCE } });
+      const sb = sandbox({ registryLabels: { "org.opencontainers.image.revision": "efe4758", "org.opencontainers.image.source": SOURCE }, invalidRevisionLabel: true });
       assertRefused(sb, ["--digest", NEW], /no org\.opencontainers\.image\.revision label with a full commit sha/);
     });
 
@@ -929,10 +1150,14 @@ echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in *"-X POST"*) if [ -e "$SANDBOX/post-fails" ]; then echo 'curl: (22) The requested URL returned error' >&2; exit 22; fi ;; esac
 url="$*"
 case "$url" in
+  *"-X POST"*)
+    if [ -e "$SANDBOX/post-fails" ]; then echo 'curl: (22) The requested URL returned error' >&2; exit 22; fi
+    echo '{"active":false,"instance":null,"windows":[]}'; exit 0 ;;
   *maintenance*)
     cat "$SANDBOX/maintenance.json" 2>/dev/null || echo '{"active":false,"instance":null,"windows":[]}'
     if [ -e "$SANDBOX/flip-on-read" ]; then rm -f "$SANDBOX/flip-on-read"; echo '{"active":false,"instance":null,"windows":[]}' > "$SANDBOX/maintenance.json"; fi ;;
   *issues*) cat "$SANDBOX/issues.json" 2>/dev/null || echo '[]' ;;
+  *heartbeat-runs*) cat "$SANDBOX/runs.json" 2>/dev/null || echo '[]' ;;
   *) echo '{"status":"ok"}' ;;
 esac
 `;
@@ -948,6 +1173,7 @@ esac
         "MAINTENANCE_MODE=api",
         "MAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance",
         "MAINTENANCE_EXIT_WAIT_SEC=2",
+        "MYRMIDON_DEPLOY_POSTCHECK_RUNS=0",
         "",
       ].join("\n"),
     );
@@ -958,14 +1184,17 @@ esac
   function callLib(sb, functionCall) {
     const libScript = path.join(sb.dir, "call-lib.sh");
     fs.writeFileSync(libScript, `source "$MYR_SCRIPT_DIR/lib.sh"; load_config "$LIB_CONFIG"; ${functionCall}\n`, { mode: 0o755 });
+    const env = {
+      ...process.env,
+      PATH: `${sb.bin}:${process.env.PATH}`,
+      SANDBOX: sb.dir,
+      LIB_CONFIG: sb.config,
+      MYR_SCRIPT_DIR: HERE,
+    };
+    delete env.BASH_ENV;
+    delete env.ENV;
     const result = spawnSync(bashPath(), [libScript], {
-      env: {
-        ...process.env,
-        PATH: `${sb.bin}:${process.env.PATH}`,
-        SANDBOX: sb.dir,
-        LIB_CONFIG: sb.config,
-        MYR_SCRIPT_DIR: HERE,
-      },
+      env,
       encoding: "utf8",
     });
     return { code: result.status, out: `${result.stdout}${result.stderr}` };
@@ -1056,6 +1285,44 @@ esac
     const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
     assert.equal(code, 1);
     assert.match(out, /degraded: maintenance window did not retire after exit/);
+  });
+
+  it("post_deploy_fleet_check passes when the first completed gateway runs succeeded", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.writeFileSync(path.join(sb.dir, "runs.json"), JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+      adapterType: "hermes_gateway", status: "succeeded", createdAt: `2026-10-01T00:00:0${i}Z`, finishedAt: `2026-10-01T00:00:0${i}Z`, resultJson: { output: "ok" },
+    }))));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=5\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.match(out, /5 successful, 0 failed of first 5 completed hermes_gateway runs/);
+  });
+
+  it("post_deploy_fleet_check degrades when the first five completed gateway runs fail", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.writeFileSync(path.join(sb.dir, "runs.json"), JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+      adapterType: "hermes_gateway", status: "failed", createdAt: `2026-10-01T00:00:0${i}Z`, finishedAt: `2026-10-01T00:00:0${i}Z`, errorCode: "adapter_failed", resultJson: { output: "run failed" },
+    }))));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=5\nMYRMIDON_DEPLOY_POSTCHECK_RUNS_TIMEOUT_SEC=1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS_INTERVAL_SEC=1\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 1, out);
+    assert.match(out, /no successful hermes_gateway runs among the first 5 completed runs/);
+    assert.match(out, /adapter_failed/);
+  });
+
+  it("post_deploy_fleet_check skips gateway run check when MYRMIDON_DEPLOY_POSTCHECK_RUNS=0", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=0\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /completed hermes_gateway run/);
+    assert.match(out, /no blocked issues in the deploy window, maintenance retired/);
   });
 
   it("post_deploy_fleet_check is skipped without BOARD_API_URL/BOARD_COMPANY_ID", () => {

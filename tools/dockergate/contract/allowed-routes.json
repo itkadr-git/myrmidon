@@ -113,6 +113,22 @@
    ]
   },
   {
+   "id": "A18",
+   "method": "POST",
+   "template": "containers/{name}/update",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A20",
+   "method": "PUT",
+   "template": "containers/{name}/config/update",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
    "id": "A12",
    "method": "POST",
    "template": "containers/{name}/rename?name={mainName}",
@@ -156,6 +172,12 @@
    "id": "A14",
    "method": "GET",
    "template": "myrmidon/disk",
+   "noPrefix": true
+  },
+  {
+   "id": "A19",
+   "method": "GET",
+   "template": "myrmidon/events/oom",
    "noPrefix": true
   }
  ]

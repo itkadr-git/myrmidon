@@ -10,6 +10,8 @@
 import type { ReactNode } from "react";
 import { Route } from "@/lib/router";
 import { Ui2PlaceholderScreen } from "./screens/Ui2PlaceholderScreen";
+
+export { Ui2PlaceholderScreen };
 import { Ui2I18nProvider } from "./i18n/Ui2I18n";
 import { Ui2Decisions } from "./screens/decisions/Ui2Decisions";
 import { Ui2Costs } from "./screens/costs/Ui2Costs";
@@ -21,6 +23,15 @@ import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSett
 // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — a real ui2 screen, not
 // a placeholder (see screens/CommanderChatScreen.tsx).
 import { CommanderChatScreen } from "./screens/CommanderChatScreen";
+import { Ui2Commander } from "./screens/commander/Ui2Commander";
+import { Ui2Fleet } from "./screens/fleet/Ui2Fleet";
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge module's own screens — the
+// reader of the knowledge store and the regulations of Autonomy.
+import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
+import { Ui2Regulations } from "./screens/knowledge/Ui2Regulations";
+import { Ui2ChannelsSettings } from "./screens/settings/channels/Ui2ChannelsSettings";
+import { Ui2PhoneMore } from "./screens/more/Ui2PhoneMore";
+import { Ui2NotInWaveScreen } from "./screens/Ui2NotInWaveScreen";
 
 export type Ui2ScreenKey =
   | "decisions"
@@ -30,7 +41,14 @@ export type Ui2ScreenKey =
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
-  | "commander-chat";
+  | "settings-channels"
+  | "commander"
+  | "commander-chat"
+  | "fleet"
+  | "knowledge"
+  | "knowledge-page"
+  | "settings-autonomy-regulations"
+  | "more";
 
 export interface Ui2RouteEntry {
   key: Ui2ScreenKey;
@@ -45,16 +63,38 @@ export interface Ui2RouteEntry {
 }
 
 /**
+ * The route ROOT of a ui2 route-table entry — its first path segment
+ * (`"agents/:agentId/overview"` → `"agents"`). П2: every distinct root of
+ * every entry must be a member of BOARD_ROUTE_ROOTS
+ * (ui/src/lib/company-routes.ts) with an unprefixed redirect in App.tsx,
+ * so `extractCompanyPrefixFromPath('/<root>')` never invents a company
+ * (the OPE-3922 "COMMANDER-CHAT organization not found" defect); the
+ * wave-A guard test walks this list.
+ */
+export function ui2RouteEntryRoot(entry: Ui2RouteEntry): string {
+  return entry.path.split("/")[0]!;
+}
+
+/**
  * Wrap a screen in the ui2 language provider. The provider is the interim
  * catalog (until the i18n part merges); it is the single seam to swap for
  * the merged module, and the import path contract is pinned by the
  * language-settings guard test.
  */
 function ui2Screen(element: ReactNode): ReactNode {
-  return <Ui2I18nProvider>{element}</Ui2I18nProvider>;
+  // A single Ui2I18nProvider is mounted at Ui2Root above Ui2Shell so that
+  // settings changes propagate to rail, top bar, and sidebar without reload.
+  return element;
 }
 
 export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
+  {
+    key: "fleet",
+    path: "fleet",
+    titleKey: "ui2.screens.fleet",
+    element: ui2Screen(<Ui2Fleet />),
+    legacyPath: "/agents/all",
+  },
   {
     key: "decisions",
     path: "decisions",
@@ -104,9 +144,24 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     element: ui2Screen(<Ui2LanguageSettings />),
     legacyPath: "/company/settings",
   },
+  {
+    key: "settings-channels",
+    path: "company/settings/channels",
+    titleKey: "ui2.screens.channels",
+    element: ui2Screen(<Ui2ChannelsSettings />),
+    legacyPath: "/company/settings",
+  },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat — own route under the ui2
   // flag. The legacy entry stays /board-chat (conference room); this screen is
   // the single-owner planning conversation, so it does not shadow it.
+  {
+    key: "commander",
+    path: "commander",
+    titleKey: "ui2.screens.commander",
+    element: ui2Screen(<Ui2Commander />),
+    legacyPath: "/dashboard",
+  },
+  // Commander chat remains the separate planning conversation route.
   {
     key: "commander-chat",
     path: "commander-chat",
@@ -114,7 +169,54 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     element: <CommanderChatScreen />,
     legacyPath: "/board-chat",
   },
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge screen and its deep link
+  // into one page (§3.9: the tree, the page, the sources, the revisions). The
+  // wiki paths live under /wiki/* in the knowledge store; the legacy surface
+  // stays the plugin-free reader until parity.
+  {
+    key: "knowledge",
+    path: "knowledge",
+    titleKey: "ui2.screens.knowledge",
+    element: ui2Screen(<Ui2Knowledge />),
+    legacyPath: "/wiki",
+  },
+  {
+    key: "knowledge-page",
+    path: "knowledge/:spaceKey/:slug",
+    titleKey: "ui2.screens.knowledge",
+    element: ui2Screen(<Ui2Knowledge />),
+    legacyPath: "/wiki/:spaceKey/:slug",
+  },
+  // The regulations of Autonomy: the same screen the matrix tab carries, so a
+  // person approves a regulation without the plugin.
+  {
+    key: "settings-autonomy-regulations",
+    path: "company/settings/autonomy/regulations",
+    titleKey: "ui2.screens.regulations",
+    element: ui2Screen(<Ui2Regulations />),
+    legacyPath: "/company/settings",
+  },
+  // myrmidon(1.7 UI2 PHONE MORE): the phone "More" screen with swarm, costs, quality, settings, agent card and theme switch.
+  {
+    key: "more",
+    path: "more",
+    titleKey: "ui2.screens.more",
+    element: ui2Screen(<Ui2PhoneMore />),
+    legacyPath: "/agents/all",
+  },
 ];
+
+// myrmidon(UI-2.0-WAVE-A, ia-v2 §7 item 8): settings paths without a function
+// in this wave. They are NOT in the visible panel (the sidebar lists only
+// real screens) and a direct URL must not fall through to the vendor page —
+// each gets an honest "not in this wave" route instead (see
+// Ui2NotInWaveScreen). Paths with a live screen in this wave (budgets,
+// castes, guardrails/guards, autonomy, and channels — a real ui2 screen
+// since main's OPE-10136) stay out of this list.
+export const UI2_HIDDEN_SETTINGS_PATHS = [
+  "company/settings/forage",
+  "company/settings/personal-bot",
+] as const;
 
 /**
  * The ui2 screen routes as <Route> elements, to be rendered BEFORE the
@@ -123,9 +225,17 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
  * except costs which intentionally shadows the vendor route under the flag).
  */
 export function ui2ScreenRoutes(): ReactNode[] {
-  return UI2_ROUTE_TABLE.map((entry) => (
-    <Route key={entry.key} path={entry.path} element={entry.element} />
-  ));
+  return [
+    ...UI2_ROUTE_TABLE.map((entry) => (
+      <Route key={entry.key} path={entry.path} element={entry.element} />
+    )),
+    // myrmidon(UI-2.0-WAVE-A): direct URLs to settings paths that have no
+    // screen yet land on the honest "not in this wave" card instead of the
+    // vendor page or a crash (ia-v2 §7 item 8).
+    ...UI2_HIDDEN_SETTINGS_PATHS.map((path) => (
+      <Route key={`hidden-${path}`} path={path} element={<Ui2NotInWaveScreen />} />
+    )),
+  ];
 }
 
 /**

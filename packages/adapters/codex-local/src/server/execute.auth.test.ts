@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockRunTargetShellCommand = vi.hoisted(() => vi.fn());
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => ({
+vi.mock("@myrmidon/adapter-utils/execution-target", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   runAdapterExecutionTargetShellCommand: mockRunTargetShellCommand,
 }));

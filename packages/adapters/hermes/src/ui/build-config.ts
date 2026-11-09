@@ -10,7 +10,7 @@
  * ~/.hermes/config.yaml at runtime.
  */
 
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { CreateConfigValues } from "@myrmidon/adapter-utils";
 
 import {
   DEFAULT_TIMEOUT_SEC,
@@ -79,6 +79,19 @@ export function buildHermesConfig(
   // Prompt template
   if (v.promptTemplate) {
     ac.promptTemplate = v.promptTemplate;
+  }
+
+  // Schema-backed settings must survive the create form, not just edit mode.
+  // Keep the allowlist local so arbitrary form values cannot override runtime defaults.
+  for (const key of ["provider", "graceSec", "toolsets", "worktreeMode", "checkpoints", "filesystemScope", "filesystemSandboxCommand", "filesystemExtraPaths", "networkScope", "networkAllowlist", "includeConfiguredMcpServers", "runtimeMcpUrlRewrite", "runtimeMcpUrlBase", "quiet"] as const) {
+    const value = v.adapterSchemaValues?.[key];
+    if (value !== undefined && value !== "") ac[key] = value;
+  }
+  if (typeof v.adapterSchemaValues?.timeoutSec === "number" && v.adapterSchemaValues.timeoutSec > 0) {
+    ac.timeoutSec = v.adapterSchemaValues.timeoutSec;
+  }
+  if (typeof v.adapterSchemaValues?.persistSession === "boolean") {
+    ac.persistSession = v.adapterSchemaValues.persistSession;
   }
 
   // Heartbeat config is handled by Paperclip itself

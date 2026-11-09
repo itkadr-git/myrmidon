@@ -1,11 +1,11 @@
-import type { IssueRecoveryAction } from "@paperclipai/shared";
+import type { IssueRecoveryAction } from "@myrmidon/shared";
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
   WorkspaceOperation,
   ProviderTraceFrame,
   ProviderTraceMetadata,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { api, type RequestOptions } from "./client";
 
@@ -99,10 +99,13 @@ export type RuntimeRequestResolution =
   | { action: "accept" | "accept_for_session" | "decline" | "cancel" }
   | { action: "submit"; answers: Record<string, { answers: string[] }> }
   | { action: "submit"; content: Record<string, unknown> }
-  | { action: "submit"; response: import("@paperclipai/adapter-utils").PaperclipQuestionResponse };
+  | { action: "submit"; response: import("@myrmidon/adapter-utils").PaperclipQuestionResponse };
 
 export interface HeartbeatRunListOptions {
   summary?: boolean;
+  wakeReason?: string;
+  hasResult?: boolean;
+  before?: string;
 }
 
 export interface ExternalSessionRun {
@@ -141,10 +144,35 @@ export const heartbeatsApi = {
     if (agentId) searchParams.set("agentId", agentId);
     if (limit) searchParams.set("limit", String(limit));
     if (options.summary) searchParams.set("summary", "true");
+    if (options.wakeReason) searchParams.set("wakeReason", options.wakeReason);
+    if (options.hasResult) searchParams.set("hasResult", "true");
+    if (options.before) searchParams.set("before", options.before);
     const qs = searchParams.toString();
     return api.get<HeartbeatRun[]>(
       `/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`,
     );
+  },
+  listPage: async (
+    companyId: string,
+    agentId: string,
+    before?: string,
+  ): Promise<{ runs: HeartbeatRun[]; nextCursor: string | null }> => {
+    const params = new URLSearchParams({ agentId, limit: "200" });
+    if (before) params.set("before", before);
+    const response = await fetch(
+      `/api/companies/${encodeURIComponent(companyId)}/heartbeat-runs?${params}`,
+      { credentials: "include", headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      const recovery = tenantSessionRecovery.recoverIfNeeded(response.status, body);
+      if (recovery) return recovery as unknown as { runs: HeartbeatRun[]; nextCursor: string | null };
+      throw new Error(body?.error ?? `Request failed: ${response.status}`);
+    }
+    return {
+      runs: (await response.json()) as HeartbeatRun[],
+      nextCursor: response.headers.get("X-Next-Cursor"),
+    };
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
   events: (runId: string, afterSeq = 0, limit = 200, options?: RequestOptions) =>

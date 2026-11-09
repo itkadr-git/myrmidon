@@ -1,9 +1,10 @@
-import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
-import { LONG_TASK_CONTEXT_DEFAULT_HISTORY_CHARS } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope } from "@myrmidon/shared";
+import { LONG_TASK_CONTEXT_DEFAULT_HISTORY_CHARS } from "@myrmidon/shared";
 import { issueThreadReference } from "./long-task-context/domain.js";
 
 /**
- * Bounded continuation history (P3 + 1.6.6 LONG-TASK-CONTEXT + DB-CARE DBC-3).
+ * Bounded continuation history (P3 + 1.6.6 LONG-TASK-CONTEXT + DB-CARE DBC-3 +
+ * OPE-2321 byte ceiling).
  *
  * buildExecutionContinuation() returns the whole task history. On long tasks the
  * rendered wake prompt outgrows the per-argument limit of the OS and the agent
@@ -32,6 +33,17 @@ import { issueThreadReference } from "./long-task-context/domain.js";
  * Both are env-tunable for an incident (`MYRMIDON_CONTINUATION_HISTORY_CHARS`,
  * `MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS`); 0 disables the respective cap.
  *
+ * OPE-2321 adds the BYTE ceiling on the whole serialized envelope: the
+ * character budgets above are measured in UTF-16 code units, but the kernel
+ * counts UTF-8 bytes when a spawn argument or environment string carries this
+ * envelope (MAX_ARG_STRLEN = 131072). Cyrillic and other non-ASCII text costs
+ * two to four bytes per character, so a history inside the character budget
+ * can still cross the byte limit. The byte pass is measured on
+ * `JSON.stringify` of the envelope, targets 96 KiB by default (comfortably
+ * under the 128 KiB per-string kernel limit with room for the wrapper JSON),
+ * and trims the message list with the same reference → drop → shorten order
+ * and the same pinned-direction guarantees as the character pass.
+ *
  * DB-CARE DBC-3 added the character budget: an entry count alone does not bound
  * the payload when a task has few but very long comments (long tool dumps pasted
  * into one comment). Messages over the budget keep their identity and freshness
@@ -56,6 +68,16 @@ export const DEFAULT_CONTINUATION_MESSAGE_CHARS = 32_000;
 /** myrmidon(DB-CARE DBC-3): per-body budget used once the total budget is exceeded. */
 export const CONTINUATION_MESSAGE_BODY_CHARS_ENV = "MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS";
 export const DEFAULT_CONTINUATION_MESSAGE_BODY_CHARS = 8_000;
+
+/**
+ * myrmidon(OPE-2321): byte ceiling of the serialized envelope. The kernel's
+ * MAX_ARG_STRLEN (131072) counts UTF-8 bytes of one argv/env string; the
+ * character budgets above count UTF-16 code units, so non-ASCII history can
+ * pass them and still fail spawn. 96 KiB leaves room for the wrapper JSON the
+ * serialized envelope travels in.
+ */
+export const CONTINUATION_ENVELOPE_BYTES_ENV = "MYRMIDON_CONTINUATION_ENVELOPE_BYTES";
+export const DEFAULT_CONTINUATION_ENVELOPE_BYTES = 96 * 1024;
 
 type Message = ExecutionContinuationEnvelope["messages"][number];
 
@@ -94,8 +116,25 @@ export interface ContinuationCharTruncation {
 export type LimitedExecutionContinuationEnvelope = ExecutionContinuationEnvelope & {
   historyTruncation?: ContinuationHistoryTruncation;
   historyCharTruncation?: ContinuationCharTruncation;
+  /** myrmidon(OPE-2321): set when the byte ceiling changed the envelope. */
+  messagesTruncated?: ContinuationByteTruncation;
   truncationNotice?: string;
 };
+
+/** Size accounting of the OPE-2321 byte ceiling applied to the serialized envelope. */
+export interface ContinuationByteTruncation {
+  budgetBytes: number;
+  beforeBytes: number;
+  afterBytes: number;
+  /** Bodies replaced by a reference (`bodyOmitted`) by the byte pass. */
+  bodiesReplaced: number;
+  /** Bodies shortened by the byte pass. */
+  bodiesTruncated: number;
+  /** Messages dropped (reference-form first) by the byte pass. */
+  messagesDropped: number;
+  /** True when the pinned-direction messages alone are near the ceiling. */
+  pinnedOverBudget: boolean;
+}
 
 /** Returns the configured limit; 0 disables the limit. Invalid values fall back to the default. */
 export function readContinuationHistoryLimit(env: NodeJS.ProcessEnv = process.env): number {
@@ -115,9 +154,14 @@ export function readContinuationMessageMaxChars(env: NodeJS.ProcessEnv = process
   );
 }
 
-/** myrmidon(DB-CARE DBC-3): character budget of the message list; 0 disables the budget. */
+/** myrmidon(DB-CARE DBC-3): character budget of `messages`; 0 disables the budget. */
 export function readContinuationMessageChars(env: NodeJS.ProcessEnv = process.env): number {
   return readNonNegativeInt(env[CONTINUATION_MESSAGE_CHARS_ENV], DEFAULT_CONTINUATION_MESSAGE_CHARS);
+}
+
+/** myrmidon(OPE-2321): byte ceiling of the serialized envelope; 0 disables it. */
+export function readContinuationEnvelopeBytes(env: NodeJS.ProcessEnv = process.env): number {
+  return readNonNegativeInt(env[CONTINUATION_ENVELOPE_BYTES_ENV], DEFAULT_CONTINUATION_ENVELOPE_BYTES);
 }
 
 /** myrmidon(DB-CARE DBC-3): per-body budget applied once the total budget is exceeded. */
@@ -280,6 +324,195 @@ function limitMessages(
   };
 }
 
+function capMessagesBySerializedBytes(
+  envelope: LimitedExecutionContinuationEnvelope,
+  pinned: Set<string>,
+  budgetBytes: number,
+  bodyBudget: number,
+): { envelope: LimitedExecutionContinuationEnvelope; stats: ContinuationByteTruncation | null } {
+  const beforeBytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+  if (budgetBytes <= 0) {
+    return { envelope, stats: null };
+  }
+  // The stats object and the appended notice serialize into the same envelope
+  // and the same argv/env string, so the pass aims below the ceiling and keeps
+  // headroom for its own annotations (plus JSON escaping jitter).
+  const reserve = Math.min(1024, Math.floor(budgetBytes / 2));
+  const effectiveBudget = budgetBytes - reserve;
+  if (beforeBytes <= effectiveBudget) {
+    return { envelope, stats: null };
+  }
+
+  // The envelope carries the history twice on a resume: `messages` and
+  // `resumeDelta.messages`. Byte decisions are made once per unique message and
+  // applied to both lists, so neither copy can pour the trimmed text back in.
+  const mainById = new Map(envelope.messages.map((message) => [message.id, message]));
+  const unique: Message[] = [...envelope.messages];
+  for (const message of envelope.resumeDelta?.messages ?? []) {
+    if (!mainById.has(message.id)) unique.push(message);
+  }
+  const replaced = new Map<string, Message>();
+  const dropped = new Set<string>();
+  const shortened = new Map<string, Message>();
+
+  const rebuild = (): LimitedExecutionContinuationEnvelope => {
+    const applyOne = (message: Message): Message | null => {
+      if (dropped.has(message.id)) return null;
+      return shortened.get(message.id) ?? replaced.get(message.id) ?? message;
+    };
+    const next: LimitedExecutionContinuationEnvelope = {
+      ...envelope,
+      messages: envelope.messages.map(applyOne).filter((message): message is Message => message !== null),
+    };
+    if (envelope.resumeDelta) {
+      next.resumeDelta = {
+        ...envelope.resumeDelta,
+        messages: envelope.resumeDelta.messages
+          .map(applyOne)
+          .filter((message): message is Message => message !== null),
+      };
+    }
+    return next;
+  };
+
+  let current = envelope;
+  let bytes = beforeBytes;
+  const apply = (next: LimitedExecutionContinuationEnvelope) => {
+    current = next;
+    bytes = Buffer.byteLength(JSON.stringify(current), "utf8");
+  };
+
+  // 1. Oldest non-pinned bodies become references; identity stays comparable.
+  for (const message of unique) {
+    if (bytes <= effectiveBudget) break;
+    if (pinned.has(message.id) || replaced.has(message.id) || message.bodyOmitted || message.body.length === 0) {
+      continue;
+    }
+    replaced.set(message.id, asReference(message));
+    apply(rebuild());
+  }
+
+  // 2. Drop the oldest referenced messages next; they carry no direction.
+  for (const message of unique) {
+    if (bytes <= effectiveBudget) break;
+    if (!replaced.has(message.id) || pinned.has(message.id) || dropped.has(message.id)) continue;
+    dropped.add(message.id);
+    apply(rebuild());
+  }
+
+  const remaining = () =>
+    unique
+      .filter((message) => !dropped.has(message.id))
+      .map((message) => ({
+        message,
+        size: Buffer.byteLength(message.body, "utf8"),
+        stub: shortened.get(message.id) ?? replaced.get(message.id) ?? message,
+      }))
+      .sort((a, b) => {
+        const aPin = pinned.has(a.message.id) ? 1 : 0;
+        const bPin = pinned.has(b.message.id) ? 1 : 0;
+        if (aPin !== bPin) return aPin - bPin;
+        return b.size - a.size;
+      });
+
+  const shortenLargest = (forced: boolean): boolean => {
+    for (const { message, size, stub } of remaining()) {
+      if (shortened.has(message.id)) continue;
+      const stubBody = stub.body;
+      // The character budget decides how large a stub may stay; when it is
+      // disabled (0) fall back to a 1-character stub so the pass still
+      // converges instead of looping on a body that refuses to shrink.
+      let target = bodyBudget > 0 ? Math.min(stubBody.length, bodyBudget) : Math.min(stubBody.length, 1);
+      if (forced && size - Buffer.byteLength(stubBody.slice(0, target), "utf8") <= 0) {
+        // Nothing above the character budget is left to shorten; halve what
+        // remains so the pass still converges when the pinned direction
+        // alone sits above the byte ceiling.
+        target = Math.max(1, Math.floor(stubBody.length / 2));
+      }
+      const omitted = size - Buffer.byteLength(stubBody.slice(0, target), "utf8");
+      if (omitted <= 0) continue;
+      const cappedBody =
+        `${stubBody.slice(0, target)}\n\n` +
+        `[continuation byte cap: ${omitted} of ${size} bytes omitted; ` +
+        "read the full comment through the API]";
+      // A cap note is itself serialized text, and a body may already have
+      // been slimmed to a reference: capping is only useful when it strictly
+      // shrinks the serialized envelope. Anything else is rolled back —
+      // without this monotonic guard the pass would grow the envelope one
+      // note at a time and never converge.
+      const previousBytes = bytes;
+      shortened.set(message.id, { ...message, body: cappedBody });
+      apply(rebuild());
+      if (bytes < previousBytes) return true;
+      shortened.delete(message.id);
+      apply(rebuild());
+    }
+    return false;
+  };
+
+  // 3. Still over: shorten the largest bodies, non-pinned first. The cut is
+  // deterministic, so a body capped here compares equal across runs and never
+  // re-enters the resume delta.
+  while (bytes > effectiveBudget && shortenLargest(false)) {
+    // one largest body per iteration, until the envelope fits
+  }
+
+  // 4. The annotations this pass attaches (`messagesTruncated` plus the
+  // appended notice) serialize into the same envelope and the same argv/env
+  // string, so the ceiling must hold with them attached: keep shortening while
+  // the annotated envelope is still over.
+  const measure = (candidate: LimitedExecutionContinuationEnvelope) =>
+    Buffer.byteLength(JSON.stringify(candidate), "utf8");
+  const withAnnotations = (
+    candidate: LimitedExecutionContinuationEnvelope,
+    overBudget: boolean,
+  ): LimitedExecutionContinuationEnvelope => {
+    const stats: ContinuationByteTruncation = {
+      budgetBytes,
+      beforeBytes,
+      afterBytes: measure(candidate),
+      bodiesReplaced: replaced.size,
+      bodiesTruncated: shortened.size,
+      messagesDropped: dropped.size,
+      pinnedOverBudget: overBudget,
+    };
+    return {
+      ...candidate,
+      messagesTruncated: stats,
+      truncationNotice: [
+        candidate.truncationNotice,
+        `Serialized continuation exceeded the ${budgetBytes}-byte envelope ceiling ` +
+          `(${beforeBytes} before, ${stats.afterBytes} after): ` +
+          `${stats.bodiesReplaced} older bodies became references, ` +
+          `${stats.messagesDropped} referenced messages were dropped and ` +
+          `${stats.bodiesTruncated} bodies were shortened. ` +
+          (overBudget
+            ? "The pinned direction alone is above the ceiling; the full text stays in the task thread."
+            : "The full text stays in the task thread."),
+      ]
+        .filter(Boolean)
+        .join(" "),
+    };
+  };
+
+  let annotated = withAnnotations(current, false);
+  for (let guard = 0; measure(annotated) > budgetBytes && guard < unique.length * 2 + 8; guard += 1) {
+    if (!shortenLargest(false) && !shortenLargest(true)) {
+      // Only pinned, already-minimal bodies remain: the ceiling cannot be met
+      // without losing direction. Mark it loudly instead of trimming further.
+      annotated = withAnnotations(current, true);
+      break;
+    }
+    annotated = withAnnotations(current, false);
+  }
+  // The convergence loop above protects the pinned direction; a monotonic
+  // result here means every annotation still fits the ceiling.
+  if (measure(annotated) > budgetBytes && !annotated.messagesTruncated?.pinnedOverBudget) {
+    annotated = withAnnotations(current, true);
+  }
+  return { envelope: annotated, stats: annotated.messagesTruncated ?? null };
+}
+
 /**
  * Keeps the newest messages that fit the character budget. Pinned messages are
  * always kept — direction never disappears, even when it is what blows the
@@ -364,10 +597,11 @@ export function limitExecutionContinuationHistory(
   messageMaxChars: number = readContinuationMessageMaxChars(),
   messageChars: number = readContinuationMessageChars(),
   messageBodyChars: number = readContinuationMessageBodyChars(),
+  envelopeBytes: number = readContinuationEnvelopeBytes(),
 ): LimitedExecutionContinuationEnvelope {
   // 0 on every bound disables the bounded history; MYRMIDON_CONTINUATION_MESSAGE_CHARS=0
   // keeps the other bounds only.
-  if (limit <= 0 && chars <= 0 && messageMaxChars <= 0 && messageChars <= 0) return envelope;
+  if (limit <= 0 && chars <= 0 && messageMaxChars <= 0 && messageChars <= 0 && envelopeBytes <= 0) return envelope;
 
   const issueId = envelope.issueId ?? null;
   const pinned = pinnedMessageIds(envelope.messages, envelope.originCommentIds);
@@ -425,7 +659,14 @@ export function limitExecutionContinuationHistory(
     truncation.unresolvedInteractionIds = unresolvedInteractionIds.truncation;
   }
   const entries = Object.entries(truncation) as Array<[string, ContinuationListTruncation]>;
-  if (entries.length === 0 && !capped.stats) return envelope;
+  if (entries.length === 0 && !capped.stats) {
+    // myrmidon(OPE-2321): the entry/character bounds did nothing, but the
+    // serialized envelope may still sit above the byte ceiling — the byte pass
+    // below is the last line of defence, so only bail out when it cannot act.
+    if (envelopeBytes <= 0 || Buffer.byteLength(JSON.stringify(envelope), "utf8") <= envelopeBytes) {
+      return envelope;
+    }
+  }
 
   const bounds: string[] = [];
   if (limit > 0) bounds.push(`the newest ${limit} entries per list`);
@@ -466,5 +707,12 @@ export function limitExecutionContinuationHistory(
   }
   if (completedActions.items) result.completedActions = completedActions.items;
   if (recoveryOutcomes.items) result.recoveryOutcomes = recoveryOutcomes.items;
-  return result;
+
+  // myrmidon(OPE-2321): the serialized envelope must fit one argv/env string
+  // (MAX_ARG_STRLEN counts UTF-8 bytes). Character budgets above cannot
+  // guarantee that for non-ASCII history, so a final byte pass trims the
+  // message list with the same pinned-direction guarantees. The pass attaches
+  // `messagesTruncated` and the byte notice itself and converges with them
+  // serialized into the envelope.
+  return capMessagesBySerializedBytes(result, pinned, envelopeBytes, messageBodyChars).envelope;
 }

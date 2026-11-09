@@ -294,6 +294,14 @@ describe("issue dependency wakeups in issue routes", () => {
       .send({
         status: "blocked",
         blockedByIssueIds: [childIssueId],
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: "11111111-1111-4111-8111-111111111111" },
+          blockedByIssueIds: [childIssueId],
+          nextCheckAt: "2026-08-04T18:00:00.000Z",
+          timeoutAt: "2026-08-10T18:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
         unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
       });
 
@@ -641,6 +649,14 @@ describe("issue dependency wakeups in issue routes", () => {
       .send({
         status: "blocked",
         blockedByIssueIds: [childIssueId],
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: "11111111-1111-4111-8111-111111111111" },
+          blockedByIssueIds: [childIssueId],
+          nextCheckAt: "2026-08-04T18:00:00.000Z",
+          timeoutAt: "2026-08-10T18:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
         unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
       });
 
@@ -680,5 +696,177 @@ describe("issue dependency wakeups in issue routes", () => {
     expect(res.status).toBe(200);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("suppresses duplicate wake if an existing wake already covers the ready state on blocker resolution", async () => {
+    const parentIssueId = "11111111-1111-4111-8111-111111111111";
+    const childIssueId = "22222222-2222-4222-8222-222222222222";
+    const blockedTransitionAt = new Date("2026-08-01T12:00:00.000Z");
+
+    mockIssueService.getById.mockResolvedValue(
+      issueRecord({
+        id: parentIssueId,
+        status: "blocked",
+        assigneeAgentId: "agent-2",
+        blockedByIssueIds: [childIssueId],
+        blockedTransitionAt,
+      }),
+    );
+    mockIssueService.update.mockResolvedValue(
+      issueRecord({
+        id: parentIssueId,
+        status: "blocked",
+        assigneeAgentId: "agent-2",
+        blockedByIssueIds: [childIssueId],
+        blockedTransitionAt,
+      }),
+    );
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: parentIssueId,
+      blockerIssueIds: [childIssueId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValueOnce({
+      id: "wake-existing",
+      status: "running",
+      requestedAt: new Date("2026-08-01T12:05:00.000Z"),
+      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: parentIssueId,
+        blockerIssueIds: [childIssueId],
+        blockedTransitionAt,
+      }),
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [childIssueId],
+      });
+
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockFindExistingIssueBlockersResolvedWakeForReadyState).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        dependentIssueId: parentIssueId,
+        blockerIssueIds: [childIssueId],
+        blockedTransitionAt,
+      }),
+    );
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("emits exactly one wake when blocker resolves and deduplicates subsequent resolution events", async () => {
+    const parentIssueId = "11111111-1111-4111-8111-111111111111";
+    const blockerIssueId = "22222222-2222-4222-8222-222222222222";
+    const blockedTransitionAt = new Date("2026-08-01T12:00:00.000Z");
+
+    mockIssueService.getById.mockResolvedValue(
+      issueRecord({
+        id: blockerIssueId,
+        status: "in_progress",
+      }),
+    );
+    mockIssueService.update.mockResolvedValue(
+      issueRecord({
+        id: blockerIssueId,
+        status: "done",
+      }),
+    );
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        dependentIssueId: parentIssueId,
+        dependentAssigneeAgentId: "agent-2",
+        blockerIssueIds: [blockerIssueId],
+        blockedTransitionAt,
+      },
+    ]);
+
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValueOnce(null);
+
+    const app = await createApp();
+    const res1 = await request(app).patch(`/api/issues/${blockerIssueId}`).send({ status: "done" });
+    expect(res1.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValueOnce({
+      id: "wake-1",
+      status: "queued",
+      requestedAt: new Date(),
+      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: parentIssueId,
+        blockerIssueIds: [blockerIssueId],
+        blockedTransitionAt,
+      }),
+    });
+
+    const res2 = await request(app).patch(`/api/issues/${blockerIssueId}`).send({ status: "done" });
+    expect(res2.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("guarantees exactly one wake during concurrent blocker resolution events for the same dependent ready state", async () => {
+    const parentIssueId = "11111111-1111-4111-8111-111111111111";
+    const blocker1Id = "22222222-2222-4222-8222-222222222222";
+    const blocker2Id = "33333333-3333-4333-8333-333333333333";
+    const blockedTransitionAt = new Date("2026-08-01T12:00:00.000Z");
+
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      return issueRecord({
+        id,
+        status: "in_progress",
+      });
+    });
+    mockIssueService.update.mockImplementation(async (id: string) => {
+      return issueRecord({
+        id,
+        status: "done",
+      });
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        dependentIssueId: parentIssueId,
+        dependentAssigneeAgentId: "agent-2",
+        blockerIssueIds: [blocker1Id, blocker2Id],
+        blockedTransitionAt,
+      },
+    ]);
+
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValue(null);
+
+    let enqueuedCount = 0;
+    mockWakeup.mockImplementation(async () => {
+      if (enqueuedCount === 0) {
+        enqueuedCount++;
+        return { kind: "queued", run: { id: "run-1" } };
+      }
+      return { kind: "skipped" };
+    });
+
+    const app = await createApp();
+    const [res1, res2] = await Promise.all([
+      request(app).patch(`/api/issues/${blocker1Id}`).send({ status: "done" }),
+      request(app).patch(`/api/issues/${blocker2Id}`).send({ status: "done" }),
+    ]);
+
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalled();
+    });
+
+    expect(enqueuedCount).toBe(1);
   });
 });

@@ -20,9 +20,9 @@
 // false and the wake keeps the safe not-explicit default.
 
 import { and, eq } from "drizzle-orm";
-import { issueComments } from "@paperclipai/db";
-import { extractAgentMentionIds } from "@paperclipai/shared";
-import type { Db } from "@paperclipai/db";
+import { issueComments } from "@myrmidon/db";
+import { extractAgentMentionIds } from "@myrmidon/shared";
+import type { Db } from "@myrmidon/db";
 
 export async function userCommentMentionsWokenAgent(
   db: Db,

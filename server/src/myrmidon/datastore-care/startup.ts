@@ -17,6 +17,7 @@ import type { DatastoreTarget } from "./domain.js";
 import type { DatastoreCareService } from "./service.js";
 import type { DatastoreCareStore } from "./store.js";
 import type { DatastoreCareSettings } from "./settings.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 /** What one pass over all targets did. */
 export interface DatastoreCareJobRun {
@@ -118,7 +119,7 @@ export function createDatastoreCareJob(deps: DatastoreCareJobDeps): DatastoreCar
 
     start(): void {
       if (timer || !deps.settings.enabled) return;
-      timer = setInterval(() => {
+      timer = backgroundInterval(() => {
         void runOnce("hourly");
       }, deps.settings.intervalMs);
       timer.unref?.();

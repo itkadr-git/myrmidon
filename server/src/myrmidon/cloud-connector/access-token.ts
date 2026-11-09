@@ -6,7 +6,7 @@
 // deduplicates concurrent refreshes of the same account so a burst of calls
 // does not stampede the provider.
 
-import type { CloudAccount, CloudProviderId } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudAccount, CloudProviderId } from "@myrmidon/shared/myrmidon-cloud-connector";
 import { logger } from "../../middleware/logger.js";
 import {
   CLOUD_OAUTH_SPECS,

@@ -17,7 +17,7 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { sql, type SQL } from "drizzle-orm";
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 import type {
   DatastoreBackupMetric,
@@ -74,6 +74,12 @@ export interface PostgresCollectionInput {
   topQueries: number;
   /** Directory the board writes its database backups to. */
   backupDir: string;
+  /**
+   * Label of an external backup coverage (e.g. `vm-pbs`); set, the local
+   * backup directory is not scanned at all — the criterion answers from the
+   * label instead of failing an instance whose dumps live elsewhere.
+   */
+  backupExternal?: string | null;
   /** Whether the extension-gated metrics are collected. */
   optionalMetrics: boolean;
   /** How many tables the snapshot keeps (largest first). */
@@ -147,7 +153,25 @@ async function collectBackup(
   now: Date,
   readDir: (dir: string) => Promise<BackupFileEntry[]>,
   warnings: string[],
+  externalLabel: string | null,
 ): Promise<DatastoreBackupMetric> {
+  // External coverage (e.g. backups on the VM level, on PBS): the directory
+  // scan is meaningless — the criterion must not fail an instance whose dumps
+  // simply do not live here. `available` stays false (no local dump facts),
+  // the label is what the report shows as the coverage.
+  if (externalLabel) {
+    return {
+      available: false,
+      dir,
+      fileCount: 0,
+      latestFile: null,
+      latestAt: null,
+      ageHours: null,
+      bytes: null,
+      note: null,
+      externalLabel,
+    };
+  }
   try {
     const files = await readDir(dir);
     if (files.length === 0) {
@@ -160,6 +184,7 @@ async function collectBackup(
         ageHours: null,
         bytes: null,
         note: "directory is empty — no backup found",
+        externalLabel: null,
       };
     }
     const latest = files.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a));
@@ -173,6 +198,7 @@ async function collectBackup(
       ageHours: Number(ageHours.toFixed(2)),
       bytes: latest.bytes,
       note: null,
+      externalLabel: null,
     };
   } catch (error) {
     const note = error instanceof Error ? error.message : String(error);
@@ -186,6 +212,7 @@ async function collectBackup(
       ageHours: null,
       bytes: null,
       note,
+      externalLabel: null,
     };
   }
 }
@@ -232,6 +259,7 @@ async function collectOptional(
         JOIN pg_type t ON t.oid = a.atttypid
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE t.typname = 'vector'
+          AND c.relkind = 'r'
           AND a.attnum > 0
           AND NOT a.attisdropped
           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
@@ -485,7 +513,13 @@ export async function collectPostgresSnapshot(
   // Rows arrive ordered by size DESC, so the first unused one is the largest.
   const largestUnusedIndex = unusedIndexes[0]?.index ?? null;
 
-  const backup = await collectBackup(input.backupDir, now, readDir, warnings);
+  const backup = await collectBackup(
+    input.backupDir,
+    now,
+    readDir,
+    warnings,
+    input.backupExternal ?? null,
+  );
   const optional = await collectOptional(port, extensions, input.optionalMetrics, warnings);
 
   return {

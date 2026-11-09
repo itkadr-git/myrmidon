@@ -15,12 +15,12 @@
 // quota totals use.
 
 import { desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   DATA_RETENTION_WAITING_FOR_BACKUP_ACTION,
   DATA_RETENTION_SWEEP_THROTTLED_ACTION,
   type DataRetentionSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
@@ -37,9 +37,15 @@ import {
   writeDataRetentionLastRun,
 } from "./settings.js";
 import { createDataRetentionSweep, type DataRetentionSweep } from "./sweep.js";
+import { createClosedTaskGitBundleCleanup } from "./git-bundle-cleanup.js";
+import { getStorageService } from "../../storage/index.js";
 
 export { dataRetentionService } from "./service.js";
 export type { DataRetentionService } from "./service.js";
+export {
+  createClosedTaskGitBundleCleanup,
+} from "./git-bundle-cleanup.js";
+export type { GitBundleCleanupResult } from "./git-bundle-cleanup.js";
 export { createDataRetentionSweep } from "./sweep.js";
 export type { DataRetentionSweep, DataRetentionSweepResult } from "./sweep.js";
 export {
@@ -98,7 +104,7 @@ function createRuntime(db: Db, options: DataRetentionRuntimeOptions = {}): DataR
       // must never fail the pass — the persisted state already reports the
       // gate.
       try {
-        const { activityLog } = await import("@paperclipai/db");
+        const { activityLog } = await import("@myrmidon/db");
         const rows = await db
           .select({ createdAt: activityLog.createdAt })
           .from(activityLog)
@@ -147,6 +153,10 @@ function createRuntime(db: Db, options: DataRetentionRuntimeOptions = {}): DataR
         logger.warn({ err }, "data retention sweep-throttled log failed");
       }
     },
+    gitBundleCleanup: createClosedTaskGitBundleCleanup({
+      db,
+      storage: getStorageService(),
+    }),
   });
 
   const service = dataRetentionService({

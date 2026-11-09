@@ -80,14 +80,27 @@ and add the lines above to the board's compose. Mounting only the file
 license. When the directory is not mounted the screen warns, and saving answers
 with a clear error naming the path.
 
+If no accepted cache is available during rollback, the check fails closed with reason `denylist_rollback_no_cache` and logs a warning. Damaged or unverifiable incoming files are ignored and do not replace accepted state. Back up and restore both state files with the license directory; monitor logs for this rollback reason.
+
 ## Installation id
 
-A license fits only if the board and the modules compute the same id, i.e. see
-the same machine id. In containers (board, modules) mount
-`/etc/machine-id:/etc/machine-id:ro`, or give all of them the same
-`MYR_LICENSE_INSTANCE_ID`. Without a machine id the id is generated and cached
-in `MYR_LICENSE_STATE_DIR`; the screen warns that a new installation would get a
-different id.
+The board owns the id, and there is exactly one. It is stored in the board
+database on the first start and never changes afterwards: not with the machine
+id, not with `MYR_LICENSE_INSTANCE_ID`, not with a re-created container. On the
+first start the id is `MYR_LICENSE_INSTANCE_ID` if set, else `myr-` + 20 hex of
+`sha256(machine-id)` (the formula earlier boards used, so licenses already
+issued stay valid), else `myr-` + 20 hex of a random UUID. The Licenses screen,
+`GET /api/licensing/install-id` and the license check all read it from the
+database.
+
+At start the board writes the id to the file `instance-id` in the license
+directory (`dirname(MYR_LICENSE_PATH)`, default `/etc/myrmidon-license`;
+atomic, mode 0644). The modules read that file, so the directory must be
+mounted into the board read-write. If it is not writable the board logs a
+warning and starts, but the modules cannot learn the id.
+
+A license issued for another installation is reported with both ids: the one
+the license was issued for and the id of this board.
 
 ## When the license comes from a variable
 

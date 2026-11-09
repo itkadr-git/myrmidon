@@ -32,7 +32,6 @@ import { buildLicenseRequest, keyId, verifyLicense, type TrustedIssuerKey } from
 import { licensingRoutes } from "./routes.js";
 import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
-const MACHINE_ID = "0123456789abcdef0123456789abcdef";
 const INSTALL_ID = "myr-3eb1bd439947eb762998";
 const LICENSE_CORE_SRC = (process.env.MYR_LICENSE_CORE_SRC ?? "").trim();
 // The antigravity adapter's license gate (`.../antigravity/adapter/src/license.ts`):
@@ -70,7 +69,7 @@ const REFERENCE_REQUEST =
 
 const NOW = new Date("2026-10-16T08:00:00Z");
 const NOW_S = Math.floor(NOW.getTime() / 1000);
-const MODULES = ["google-ai", "antigravity", "chatgpt-pool"] as const;
+const MODULES = ["google-ai", "antigravity", "chatgpt-pool", "client-1"] as const;
 
 function python(args: string[], env: NodeJS.ProcessEnv = {}): string {
   return execFileSync("python3", args, {
@@ -80,12 +79,9 @@ function python(args: string[], env: NodeJS.ProcessEnv = {}): string {
 }
 
 let dir: string;
-let machineIdFile: string;
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(os.tmpdir(), "lic-client-"));
-  machineIdFile = path.join(dir, "machine-id");
-  writeFileSync(machineIdFile, MACHINE_ID + "\n");
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -148,31 +144,36 @@ describe("licenses minted by the module-side `runner issue`", () => {
   // Expected reasons: the module-side verify_license on the same strings
   // (key 1 as the only trust anchor, then key 2 as the only one).
   const expected: Record<keyof typeof RUNNER_ISSUED, Record<(typeof MODULES)[number], [string, string]>> = {
-    all: { "google-ai": ["ok", "bad_signature"], antigravity: ["ok", "bad_signature"], "chatgpt-pool": ["ok", "bad_signature"] },
+    all: { "google-ai": ["ok", "bad_signature"], antigravity: ["ok", "bad_signature"], "chatgpt-pool": ["ok", "bad_signature"], "client-1": ["module_not_granted", "bad_signature"] },
     expired: {
       "google-ai": ["expired", "bad_signature"],
       antigravity: ["expired", "bad_signature"],
       "chatgpt-pool": ["expired", "bad_signature"],
+      "client-1": ["expired", "bad_signature"],
     },
     other: {
       "google-ai": ["instance_mismatch", "bad_signature"],
       antigravity: ["instance_mismatch", "bad_signature"],
       "chatgpt-pool": ["instance_mismatch", "bad_signature"],
+      "client-1": ["instance_mismatch", "bad_signature"],
     },
     chatgptOnly: {
       "google-ai": ["module_not_granted", "bad_signature"],
       antigravity: ["module_not_granted", "bad_signature"],
       "chatgpt-pool": ["ok", "bad_signature"],
+      "client-1": ["module_not_granted", "bad_signature"],
     },
     withKid: {
       "google-ai": ["ok", "bad_signature"],
       antigravity: ["ok", "bad_signature"],
       "chatgpt-pool": ["module_not_granted", "bad_signature"],
+      "client-1": ["module_not_granted", "bad_signature"],
     },
     key2Antigravity: {
       "google-ai": ["bad_signature", "module_not_granted"],
       antigravity: ["bad_signature", "ok"],
       "chatgpt-pool": ["bad_signature", "module_not_granted"],
+      "client-1": ["bad_signature", "module_not_granted"],
     },
   };
 
@@ -333,15 +334,27 @@ describe("license state per module", () => {
     );
 
   it("maps the module decisions to the screen states", () => {
-    expect(states(RUNNER_ISSUED.all)).toEqual({ "google-ai": "valid", antigravity: "valid", "chatgpt-pool": "valid" });
+    expect(states(RUNNER_ISSUED.all)).toEqual({ "google-ai": "valid", antigravity: "valid", "chatgpt-pool": "valid", "alibaba-image": "not_granted", "client-1": "not_granted" });
     expect(states(RUNNER_ISSUED.expired)["google-ai"]).toBe("expired");
     expect(states(RUNNER_ISSUED.other)["google-ai"]).toBe("wrong_instance");
-    expect(states(RUNNER_ISSUED.chatgptOnly)).toEqual({ "google-ai": "not_granted", antigravity: "not_granted", "chatgpt-pool": "valid" });
+    expect(states(RUNNER_ISSUED.chatgptOnly)).toEqual({ "google-ai": "not_granted", antigravity: "not_granted", "chatgpt-pool": "valid", "alibaba-image": "not_granted", "client-1": "not_granted" });
     expect(states(RUNNER_ISSUED.key2Antigravity).antigravity).toBe("bad_signature");
     expect(states(null).antigravity).toBe("missing");
     expect(states("MYR1.garbage").antigravity).toBe("invalid");
   });
 
+  it("enforces the client-1 module scope", () => {
+    const pair = generateKeyPairSync("ed25519");
+    const license = issueLicense(pair.privateKey, {
+      instanceId: INSTALL_ID,
+      modules: ["client-1"],
+      features: ["core"],
+      expires: null,
+      watermark: null,
+    }).license;
+    expect(verifyLicense(license, INSTALL_ID, NOW_S, [pair.publicKey], { requiredModule: "client-1" }).reason).toBe("ok");
+    expect(verifyLicense(license, INSTALL_ID, NOW_S, [pair.publicKey], { requiredModule: "google-ai" }).reason).toBe("module_not_granted");
+  });
   it("reports a license that ends within 14 days as expiring", () => {
     const pair = generateKeyPairSync("ed25519");
     const soon = issueLicense(pair.privateKey, {
@@ -432,7 +445,7 @@ function app(actor: unknown, env: NodeJS.ProcessEnv, installed: string[] = [...M
     "/api",
     licensingRoutes({
       env,
-      machineIdPaths: [machineIdFile],
+      installId: async () => ({ installId: INSTALL_ID, source: "machine-id" as const }),
       now: () => NOW,
       installedModules: async () => installed,
       trustedKeys: [TEST_KEY_1],
@@ -470,6 +483,8 @@ describe("licensing routes: client side", () => {
       { module: "google-ai", installed: true, state: "missing", reason: "no_license", expires: null },
       { module: "antigravity", installed: true, state: "missing", reason: "no_license", expires: null },
       { module: "chatgpt-pool", installed: false, state: "missing", reason: "no_license", expires: null },
+      { module: "alibaba-image", installed: false, state: "missing", reason: "no_license", expires: null },
+      { module: "client-1", installed: false, state: "missing", reason: "no_license", expires: null },
     ]);
     const payload = JSON.parse(Buffer.from(res.body.request.split(".")[1], "base64url").toString("ascii"));
     expect(payload).toMatchObject({ v: 1, instance_id: INSTALL_ID, modules: ["antigravity", "google-ai"] });
@@ -479,22 +494,48 @@ describe("licensing routes: client side", () => {
   it("falls back to every known module in the request when none is installed", async () => {
     const res = await request(app(admin, envFor(), [])).get("/api/licensing/status");
     const payload = JSON.parse(Buffer.from(res.body.request.split(".")[1], "base64url").toString("ascii"));
-    expect(payload.modules).toEqual(["antigravity", "chatgpt-pool", "google-ai"]);
+    expect(payload.modules).toEqual(["alibaba-image", "antigravity", "chatgpt-pool", "client-1", "google-ai"]);
     expect(res.body.attention).toBe(false);
   });
 
   it("saves a valid license where the modules read it and reports it as valid", async () => {
-    const res = await request(app(admin, envFor())).post("/api/licensing/license").send({ value: `\n${RUNNER_ISSUED.all}  \n` });
+    // RUNNER_ISSUED.all covers exactly the three older modules; client-1 is
+    // not granted by it, so the board would flag attention if it were installed.
+    const res = await request(app(admin, envFor(), ["antigravity", "chatgpt-pool", "google-ai"]))
+      .post("/api/licensing/license")
+      .send({ value: `\n${RUNNER_ISSUED.all}  \n` });
     expect(res.status).toBe(200);
     expect(readFileSync(licenseFile, "utf8")).toBe(RUNNER_ISSUED.all + "\n");
     expect(res.body.attention).toBe(false);
     expect(res.body.license.source).toBe("file");
-    expect(res.body.modules.map((m: { state: string }) => m.state)).toEqual(["valid", "valid", "valid"]);
+    expect(res.body.modules.map((m: { state: string }) => m.state)).toEqual(["valid", "valid", "valid", "not_granted", "not_granted"]);
     expect(res.body.modules[0].expires).toBe(4102444800);
     expect(JSON.stringify(res.body)).not.toContain(RUNNER_ISSUED.all.split(".")[2]);
 
     const status = await request(app(admin, envFor())).get("/api/licensing/status");
     expect(JSON.stringify(status.body)).not.toContain(RUNNER_ISSUED.all.split(".")[2]);
+  });
+
+  it("names both ids when the license is for another installation", async () => {
+    const issuedFor = JSON.parse(Buffer.from(RUNNER_ISSUED.other.split(".")[1], "base64url").toString("utf8")).instance_id;
+    expect(issuedFor).not.toBe(INSTALL_ID);
+
+    const refused = await request(app(admin, envFor())).post("/api/licensing/license").send({ value: RUNNER_ISSUED.other });
+    expect(refused.status).toBe(422);
+    expect(refused.body.error).toContain(issuedFor);
+    expect(refused.body.error).toContain(INSTALL_ID);
+
+    writeFileSync(licenseFile, RUNNER_ISSUED.other + "\n");
+    const status = await request(app(admin, envFor(), ["google-ai"])).get("/api/licensing/status");
+    const google = status.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(google).toMatchObject({
+      state: "wrong_instance",
+      reason: "instance_mismatch",
+      licenseInstanceId: issuedFor,
+      boardInstanceId: INSTALL_ID,
+    });
+    expect(google.message).toContain(issuedFor);
+    expect(google.message).toContain(INSTALL_ID);
   });
 
   it("refuses a license that no module would accept and keeps the current file", async () => {
@@ -554,7 +595,7 @@ describe("licensing routes: client side", () => {
         (req as unknown as { actor: unknown }).actor = admin;
         next();
       });
-      a.use("/api", licensingRoutes({ env, trustedKeys: [publicPem] }));
+      a.use("/api", licensingRoutes({ env, trustedKeys: [publicPem], installId: async () => ({ installId: INSTALL_ID, source: "machine-id" as const }) }));
       a.use(errorHandler);
       const saved = await request(a).post("/api/licensing/license").send({ value: license });
       expect(saved.status).toBe(200);

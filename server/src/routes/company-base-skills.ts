@@ -6,12 +6,12 @@
 // every agent of the company at once.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { companyBaseSkillAddSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { companyBaseSkillAddSchema } from "@myrmidon/shared";
 import type {
   CompanyBaseSkillMutationResponse,
   CompanyBaseSkillRemoveResponse,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import { companyBaseSkillService, type CompanyBaseSkillActor } from "../services/company-base-skills.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";

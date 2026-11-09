@@ -9,7 +9,7 @@ import {
   type RunQueuedPayload,
 } from "../myrmidon/run-dispatch/index.ts";
 
-// myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the pure half of part B of
+// myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the pure half of part B of
 // T1.4 — the role gate of the dispatcher's notify branch, the worker-side
 // listener of the `run_queued` bus channel, and the role gate of the resweep
 // arming rule. The two-process pass against one database lives in
@@ -72,7 +72,7 @@ describe("notify mode: the role gate of the dispatcher (part B)", () => {
     expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
   });
 
-  it("notify-mode executor publishes instead of running inline", async () => {
+  it("the executor (executesRuns=true) starts inline even in notify mode", async () => {
     const { bus, published } = fakeBus();
     const startNextQueuedRunForAgent = vi.fn(async () => [{ id: "run-1" }]);
     const dispatcher = createRunStartDispatcher({
@@ -84,9 +84,12 @@ describe("notify mode: the role gate of the dispatcher (part B)", () => {
         bus.publish(RUN_QUEUED_CHANNEL, buildRunQueuedPayload(agentId, "company-1")),
     });
 
-    expect(await dispatcher.dispatchRunStart("agent-1")).toEqual([]);
-    expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
-    // The worker listener receives this wakeup and owns the vendor start path.
+    const result = await dispatcher.dispatchRunStart("agent-1");
+    expect(result).toEqual([{ id: "run-1" }]);
+    expect(startNextQueuedRunForAgent).toHaveBeenCalledTimes(1);
+    // The executor publishes too: the listener of the other executors reacts
+    // without waiting for its resweep; its own listener message for the same
+    // agent is a no-op on the agent start lock.
     expect(published).toEqual([
       {
         channel: RUN_QUEUED_CHANNEL,

@@ -2,7 +2,7 @@
  * Plugin UI bridge runtime — concrete implementations of the bridge hooks.
  *
  * Plugin UI bundles import `usePluginData`, `usePluginAction`, and
- * `useHostContext` from `@paperclipai/plugin-sdk/ui`.  Those are type-only
+ * `useHostContext` from `@myrmidon/plugin-sdk/ui`.  Those are type-only
  * declarations in the SDK package. The host provides the real implementations
  * by injecting this bridge runtime into the plugin's module scope.
  *
@@ -32,7 +32,7 @@ import type {
   PluginLauncherBounds,
   PluginLauncherRenderContextSnapshot,
   PluginLauncherRenderEnvironment,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { useToastActions, type ToastInput } from "@/context/ToastContext";
@@ -110,6 +110,10 @@ export interface PluginHostContext {
   parentEntityId?: string | null;
   userId: string | null;
   isInstanceAdmin?: boolean; // myrmidon(PLUGIN-INSTANCE-ADMIN)
+  /** Active board locale code (e.g. "ru", "en"). */
+  locale?: string;
+  /** Alias for `locale` for compatibility with plugins expecting `language`. */
+  language?: string;
   renderEnvironment?: PluginRenderEnvironmentContext | null;
 }
 

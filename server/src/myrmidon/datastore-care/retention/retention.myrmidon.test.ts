@@ -13,7 +13,7 @@ import {
   DEFAULT_CONTEXT_COMPACT_MAX_BATCHES,
   DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS,
   patchDatastoreCareRetentionSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   checkBackupGate,
   resolveBackupFilePrefix,

@@ -36,11 +36,8 @@ permissions:
   issues: write
 
 concurrency:
-  # Runs queue one after another; a run that is waiting is never cancelled
-  # by a newer one (GitHub keeps only one pending run per group, which is
-  # enough: a run looks at all PRs).
   group: myrmidon-pr-autoupdate
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   autoupdate:
@@ -89,6 +86,12 @@ jobs:
           # The label may not exist yet; 422 means it does.
           gh api -X POST "repos/$REPO/labels" -f name='needs-rebase' -f color='B60205' \
             -f description='Conflicts with main: rebase needed (set by myrmidon-pr-autoupdate)' >/dev/null 2>&1 || true
+
+          # MERGE-ON-RED-MAIN (OPE-10789): do not autoupdate PRs while main CI is red or pending.
+          if ! ./scripts/myrmidon/ci/main-green-gate.sh --check; then
+            echo "Main CI is not green. Auto-update skipped to prevent merging onto broken main." | tee -a "$summary"
+            exit 0
+          fi
 
           prs="$(gh pr list -R "$REPO" --base main --state open --limit 200 \
             --json number,isCrossRepository,autoMergeRequest)"

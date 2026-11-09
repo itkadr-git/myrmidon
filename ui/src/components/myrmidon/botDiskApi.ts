@@ -6,7 +6,7 @@
 // without restarting the server. This client edits the cache path, the
 // mirrored repositories (1.6.2-BOT-DISK-C) and the shared bot runtime
 // (1.6.5-BOT-DISK-H11).
-import type { BotDiskSettingsPatch } from "@paperclipai/shared";
+import type { BotDiskSettingsPatch } from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export interface BotDiskView {
@@ -18,6 +18,8 @@ export interface BotDiskView {
     /** `owner/repo` names with a host-side git mirror; absent: none. */
     gitMirrorRepos?: string[];
     gitMirrorRefreshMs?: number;
+    /** Absent: no fallback repository for tasks without a project or PR. */
+    defaultRepo?: string;
     /** Roles whose bots get the shared cache; absent: the default list (1.6.6-SETTINGS-UI-B editable). */
     sharedCacheRoles?: string[];
     pnpmStore?: "workspace" | "shared";

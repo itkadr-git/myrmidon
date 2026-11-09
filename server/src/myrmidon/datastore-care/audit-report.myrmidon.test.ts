@@ -17,6 +17,7 @@ import type { DatastoreCollectedSnapshot, DatastoreSnapshotPayload } from "./dom
 import {
   buildAuditReportMarkdown,
   evaluateCriteria,
+  settingUnitBytes,
   summarizeCriteria,
   topQueriesShare,
 } from "./audit-report.js";
@@ -78,11 +79,11 @@ function payload(overrides: Partial<DatastoreCollectedSnapshot> = {}): Datastore
     settings: [
       { name: "autovacuum_analyze_scale_factor", value: "0.02", unit: null },
       { name: "autovacuum_vacuum_scale_factor", value: "0.01", unit: null },
-      { name: "effective_cache_size", value: "2097152", unit: null },
+      { name: "effective_cache_size", value: "1048576", unit: "8kB" },
       { name: "jit", value: "off", unit: null },
-      { name: "shared_buffers", value: "524288", unit: null },
+      { name: "shared_buffers", value: "524288", unit: "8kB" },
       { name: "wal_compression", value: "lz4", unit: null },
-      { name: "work_mem", value: "4096", unit: null },
+      { name: "work_mem", value: "4096", unit: "kB" },
     ],
     extensions: [
       { name: "pg_stat_statements", version: "1.11" },
@@ -106,6 +107,7 @@ function payload(overrides: Partial<DatastoreCollectedSnapshot> = {}): Datastore
       ageHours: 3,
       bytes: 4096,
       note: null,
+      externalLabel: null,
     },
     optional: { pgvector: null, fullTextSearch: null },
     warnings: [],
@@ -214,6 +216,7 @@ describe("myrmidon(DBC-4) audit criteria", () => {
         ageHours: 51,
         bytes: 4096,
         note: null,
+        externalLabel: null,
       },
     });
 
@@ -258,11 +261,76 @@ describe("myrmidon(DBC-4) audit criteria", () => {
           ageHours: null,
           bytes: null,
           note: "ENOENT",
+          externalLabel: null,
         },
       }),
     );
     expect(criterion(criteria, "backup-freshness").verdict).toBe("fail");
     expect(criterion(criteria, "backup-freshness").value).toContain("/srv/backups/board");
+  });
+
+  it("answers the backup criterion from the external coverage label instead of scanning the directory", () => {
+    const criteria = evaluateCriteria(
+      payload({
+        backup: {
+          available: false,
+          dir: "/srv/backups/board",
+          fileCount: 0,
+          latestFile: null,
+          latestAt: null,
+          ageHours: null,
+          bytes: null,
+          note: null,
+          externalLabel: "vm-pbs",
+        },
+      }),
+    );
+    const backup = criterion(criteria, "backup-freshness");
+    expect(backup.verdict).toBe("ok");
+    expect(backup.value).toBe("внешнее покрытие: vm-pbs");
+    expect(backup.source).toContain("MYRMIDON_DATASTORE_CARE_BACKUP_EXTERNAL=vm-pbs");
+  });
+
+  it("scales memory settings by unit factors (kB, 8kB pages) to avoid false normal verdicts", () => {
+    // pg_settings reports work_mem in kB, shared_buffers and effective_cache_size in 8kB pages.
+    // 32768 kB = 32 MiB (> 16 MiB limit -> warn); 131072 * 8kB = 1 GiB; 917504 * 8kB = 7 GiB.
+    const criteria = evaluateCriteria(
+      payload({
+        settings: [
+          { name: "autovacuum_analyze_scale_factor", value: "0.02", unit: null },
+          { name: "autovacuum_vacuum_scale_factor", value: "0.01", unit: null },
+          { name: "effective_cache_size", value: "917504", unit: "8kB" },
+          { name: "jit", value: "off", unit: null },
+          { name: "shared_buffers", value: "131072", unit: "8kB" },
+          { name: "wal_compression", value: "lz4", unit: null },
+          { name: "work_mem", value: "32768", unit: "kB" },
+        ],
+      }),
+    );
+
+    const workMem = criterion(criteria, "work-mem");
+    expect(workMem.verdict).toBe("warn");
+    expect(workMem.value).toContain("32");
+    expect(workMem.value).toContain("MiB");
+
+    const effectiveCache = criterion(criteria, "effective-cache-size");
+    expect(effectiveCache.verdict).toBe("ok");
+    expect(effectiveCache.value).toContain("GiB");
+  });
+
+  it("converts pg_settings unit factors accurately", () => {
+    expect(settingUnitBytes(null)).toBeNull();
+    expect(settingUnitBytes(undefined)).toBeNull();
+    expect(settingUnitBytes("unknown")).toBeNull();
+    expect(settingUnitBytes("B")).toBe(1);
+    expect(settingUnitBytes("kB")).toBe(1024);
+    expect(settingUnitBytes("MB")).toBe(1024 * 1024);
+    expect(settingUnitBytes("GB")).toBe(1024 * 1024 * 1024);
+    expect(settingUnitBytes("TB")).toBe(1024 * 1024 * 1024 * 1024);
+    expect(settingUnitBytes("8kB")).toBe(8 * 1024);
+    expect(settingUnitBytes("8k")).toBe(8 * 1024);
+    expect(settingUnitBytes("16kB")).toBe(16 * 1024);
+    expect(settingUnitBytes("16k")).toBe(16 * 1024);
   });
 
   it("keeps the growth criterion `unknown` until there is a previous snapshot", () => {
@@ -384,6 +452,7 @@ describe("myrmidon(DBC-4) audit markdown", () => {
         ageHours: null,
         bytes: null,
         note: "ENOENT",
+        externalLabel: null,
       },
       warnings: ["table sizes: canceling statement due to statement timeout"],
     });

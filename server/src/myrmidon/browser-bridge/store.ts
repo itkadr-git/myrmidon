@@ -15,7 +15,7 @@
 //   token digest — is the secret's provider metadata. Revoking is a delete, so
 //   it is fail-closed: no record, no authentication.
 
-import type { BrowserBridgeCapability } from "@paperclipai/shared";
+import type { BrowserBridgeCapability } from "@myrmidon/shared";
 import { BRIDGE_DEVICE_SECRET_PREFIX } from "./tokens.js";
 
 export interface StoredPairingCode {

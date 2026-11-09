@@ -236,11 +236,11 @@ func (d *Daemon) Calls() []Call {
 }
 
 // APICalls returns the calls that are not the housekeeping of dockergate
-// itself (the ping of the heartbeat and the version of the self-check).
+// itself (the ping of the heartbeat, the version of the self-check, and events).
 func (d *Daemon) APICalls() []Call {
 	var out []Call
 	for _, c := range d.Calls() {
-		if p := c.Path(); p == "/_ping" || p == "/version" {
+		if p := c.Path(); p == "/_ping" || p == "/version" || p == "/events" {
 			continue
 		}
 		out = append(out, c)
@@ -545,6 +545,9 @@ func (d *Daemon) container(w http.ResponseWriter, r *http.Request, call Call, re
 		c.Status = "running"
 		d.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	case tail == "update" && call.Method == "POST":
+		d.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"Warnings": []string{}})
 	case tail == "rename" && call.Method == "POST":
 		nn := q.Get("name")
 		if _, taken := d.byName[nn]; taken {

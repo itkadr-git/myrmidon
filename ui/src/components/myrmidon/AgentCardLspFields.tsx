@@ -7,7 +7,8 @@ import {
   type BotLspCard,
   type BotLspMode,
   type BotLspSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { useTranslation } from "@/i18n";
 import { CollapsibleSection, Field } from "../agent-config-primitives";
 import { BOT_LSP_MODE_HINTS, BOT_LSP_MODE_LABELS } from "./botLspModes";
 
@@ -40,6 +41,7 @@ export function AgentCardLspFields({
   settings: BotLspSettings | null;
   onChange: (next: BotLspCard | undefined) => void;
 }) {
+  const { t } = useTranslation();
   const card = readBotLspCard({ lsp: value });
   const pinned = card.mode ?? "";
   const byRole = resolveBotLsp(role, {}, settings);
@@ -47,15 +49,15 @@ export function AgentCardLspFields({
   const [expanded, setExpanded] = useState(() => pinned !== "");
 
   return (
-    <CollapsibleSection title="Language servers" open={expanded} onToggle={() => setExpanded((open) => !open)}>
+    <CollapsibleSection title={t("area.settings-agent-card.agent-card-lsp-fields.title")} open={expanded} onToggle={() => setExpanded((open) => !open)}>
       <div className="space-y-3">
         <Field
-          label="Language-server mode"
-          hint="Diagnostics after code edits. Limited: one TypeScript server per worktree with a memory cap and a short idle timeout. Off: none. Full: the runtime defaults."
+          label={t("area.settings-agent-card.agent-card-lsp-fields.modeLabel")}
+          hint={t("area.settings-agent-card.agent-card-lsp-fields.modeHint")}
         >
           <select
             className={selectClass}
-            aria-label="Language-server mode"
+            aria-label={t("area.settings-agent-card.agent-card-lsp-fields.modeLabel")}
             data-testid="agent-lsp-mode"
             value={pinned}
             onChange={(event) => {
@@ -64,7 +66,9 @@ export function AgentCardLspFields({
             }}
           >
             <option value="">
-              By role: {BOT_LSP_MODE_LABELS[byRole.mode]} ({byRole.coding ? "writes code" : "does not write code"})
+              {byRole.coding
+                ? t("area.settings-agent-card.agent-card-lsp-fields.byRoleWrites", { mode: BOT_LSP_MODE_LABELS[byRole.mode] })
+                : t("area.settings-agent-card.agent-card-lsp-fields.byRoleNoWrites", { mode: BOT_LSP_MODE_LABELS[byRole.mode] })}
             </option>
             {BOT_LSP_MODES.map((mode) => (
               <option key={mode} value={mode}>
@@ -74,8 +78,10 @@ export function AgentCardLspFields({
           </select>
         </Field>
         <p className="text-xs text-muted-foreground" data-testid="agent-lsp-in-force">
-          In force: {BOT_LSP_MODE_LABELS[inForce.mode]}. {BOT_LSP_MODE_HINTS[inForce.mode]} Changes apply on the bot&apos;s
-          next reconcile, while it is paused.
+          {t("area.settings-agent-card.agent-card-lsp-fields.inForce", {
+            mode: BOT_LSP_MODE_LABELS[inForce.mode],
+            hint: BOT_LSP_MODE_HINTS[inForce.mode],
+          })}
         </p>
       </div>
     </CollapsibleSection>

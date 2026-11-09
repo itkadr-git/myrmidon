@@ -26,7 +26,7 @@ import {
   evalReferenceTasks as evalTasksTable,
   evalRuns as evalRunsTable,
   knowledgeItems,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
@@ -175,7 +175,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 K-9) the evals gate over the database",
 
   /** Deliver `first`, then `second`, and hand back the pointer of the first. */
   async function deliverRule(module: Module, slug: string, first: string, second?: string) {
-    await module.create({ slug, title: slug, content: first, kind: "rule", approverKind: "owner" }, AGENT);
+    await module.create({ slug, title: slug, content: first, kind: "rule", roles: [EVALS_PILOT_ROLE], approverKind: "owner" }, AGENT);
     await module.submit(slug, AGENT);
     const published = await module.approve(slug, OWNER, { publish: true });
     const firstRevisionId = published.deliveredRevisionId!;

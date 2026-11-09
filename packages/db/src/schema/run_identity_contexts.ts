@@ -36,6 +36,8 @@ export const runIdentityContexts = pgTable(
       source?: "personal" | "dedicated" | "app" | "pat";
       repository?: string;
       reason?: string;
+      reasonCode?: "repository_required";
+      availableRepositories?: string[];
       connectionId?: string;
       grantId?: string;
       authenticationMode?: "managed" | "host" | "anonymous";

@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   executionWorkspaces,
   heartbeatRuns,
@@ -15,7 +15,7 @@ import {
   projects,
   projectWorkspaces,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceDeliveryState,
@@ -33,8 +33,8 @@ import type {
   WorkspaceOverviewQuery,
   GitWorktreeBranchAncestryVerdict,
   IssueRecoveryAction,
-} from "@paperclipai/shared";
-import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@myrmidon/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -44,6 +44,7 @@ import {
 } from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { withDefaultEscalationChain } from "./review-escalation-chain.js";
 import { logActivity } from "./activity-log.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -2634,6 +2635,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedActiveRun: 0,
           skippedNonTerminalTree: 0,
           skippedUndelivered: 0,
+          skippedInspectFailed: 0,
+          skippedDirty: 0,
+          skippedUnmerged: 0,
+          skippedInspectFailedSamples: [],
+          skippedDirtySamples: [],
+          skippedUnmergedSamples: [],
           skippedRace: 0,
           skippedReopened: 0,
           skippedCooldown: 0,
@@ -2698,6 +2705,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedActiveRun: 0,
         skippedNonTerminalTree: 0,
         skippedUndelivered: 0,
+        skippedInspectFailed: 0,
+        skippedDirty: 0,
+        skippedUnmerged: 0,
+        skippedInspectFailedSamples: [] as Array<{ id: string; path: string | null }>,
+        skippedDirtySamples: [] as Array<{ id: string; path: string | null }>,
+        skippedUnmergedSamples: [] as Array<{ id: string; path: string | null }>,
         skippedRace: 0,
         skippedReopened: 0,
         skippedCooldown: 0,
@@ -2709,6 +2722,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
+          result.skippedInspectFailed += 1;
+          if (result.skippedInspectFailedSamples.length < 5) {
+            result.skippedInspectFailedSamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         const assessment = await assessDelivery(workspace, git);
@@ -2736,6 +2753,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // it stays that way past the threshold, signal it once.
           await signalStuckUndeliverableWorkspace(workspace, assessment, "dirty");
           result.skippedUndelivered += 1;
+          result.skippedDirty += 1;
+          if (result.skippedDirtySamples.length < 5) {
+            result.skippedDirtySamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         if (
@@ -2746,6 +2767,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // archived. If it stays that way past the threshold, signal it once.
           await signalStuckUndeliverableWorkspace(workspace, assessment, "undelivered");
           result.skippedUndelivered += 1;
+          result.skippedUnmerged += 1;
+          if (result.skippedUnmergedSamples.length < 5) {
+            result.skippedUnmergedSamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         // Hold the archive during the cooldown window. The anchor is the most
@@ -3726,6 +3751,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             .select({
               id: issues.id,
               companyId: issues.companyId,
+              projectId: issues.projectId,
               status: issues.status,
               assigneeAgentId: issues.assigneeAgentId,
               assigneeUserId: issues.assigneeUserId,
@@ -3746,7 +3772,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
           const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
           const transition = applyIssueExecutionPolicyTransition({
-            issue: sourceBefore,
+            // myrmidon(OPE-9031): senior escalation chain for the round limit.
+            issue: await withDefaultEscalationChain(tx as unknown as Db, sourceBefore, policy),
             policy,
             previousPolicy: policy,
             requestedStatus,

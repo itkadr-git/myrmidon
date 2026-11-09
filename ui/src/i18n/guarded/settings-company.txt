@@ -1,0 +1,14 @@
+# myrmidon(OPE-8950): area settings-company
+pages/Companies.tsx
+pages/CompanyAccess.tsx
+pages/CompanyEnvironments.tsx
+pages/CompanyExport.tsx
+pages/CompanyImport.tsx
+pages/CompanySettingsPluginPage.tsx
+pages/CompanySkills.production.tsx
+pages/CompanySkills.tsx
+pages/InstanceExperimentalSettings.tsx
+pages/InstanceGeneralSettings.tsx
+pages/PipelineSettings.tsx
+pages/ProfileSettings.tsx
+pages/UserProfile.tsx

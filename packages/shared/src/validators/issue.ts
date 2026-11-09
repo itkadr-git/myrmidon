@@ -46,6 +46,8 @@ import {
   MAX_PHEROMONE_STRENGTH,
   MIN_PHEROMONE_STRENGTH,
 } from "../myrmidon-swarm-claim.js";
+import { INTERACTION_ROUTE_TYPES } from "../interaction-routing.js";
+import type { IssueBlockerMetadata } from "../types/issue.js";
 
 // 1.6.5 (F-27 PHEROMONE): the issue pheromone strength — a non-negative
 // integer the swarm queue orders by inside the P0 band. Shared between the
@@ -72,6 +74,7 @@ export const issueBlockedInboxSeveritySchema = z.enum([
 ]);
 
 export const issueBlockedInboxReasonSchema = z.enum([
+  "unassigned_blocked_issue_overdue",
   "blocked_by_unassigned_issue",
   "blocked_by_assigned_backlog_issue",
   "blocked_by_uninvokable_assignee",
@@ -453,7 +456,15 @@ export const issueBlockReasonSchema = z.enum([
   "resource",
 ]);
 
-export const issueBlockerMetadataSchema = z.object({
+export const issueRewakeFreezeSchema = z.object({
+  agentId: z.string().uuid(),
+  frozenAt: z.string().datetime(),
+  noProgressStreak: z.number().int().positive(),
+  statusVersion: z.number().int().nonnegative().optional(),
+  assigneeAgentId: z.string().uuid().nullable().optional(),
+});
+
+export const realIssueBlockerMetadataSchema = z.object({
   blockReason: issueBlockReasonSchema,
   owner: z.union([
     z.object({ agentId: z.string().uuid() }).strict(),
@@ -464,13 +475,37 @@ export const issueBlockerMetadataSchema = z.object({
   nextCheckAt: z.string().datetime(),
   timeoutAt: z.string().datetime(),
   escalationPolicy: z.string().trim().min(1).max(120),
+  issueRewakeFreeze: issueRewakeFreezeSchema.nullable().optional(),
 }).strict().refine(
-  (value: {
-    blockedByIssueIds?: string[];
-    externalRef?: string;
-  }) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
+  (value) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
   { message: "Provide blockedByIssueIds or externalRef", path: ["externalRef"] },
 );
+
+export const issueFreezeOnlyMetadataSchema = z.object({
+  issueRewakeFreeze: issueRewakeFreezeSchema,
+}).strict();
+
+export const issueBlockerMetadataSchema: z.ZodType<IssueBlockerMetadata> = z
+  .unknown()
+  .superRefine((val, ctx) => {
+    if (!val || typeof val !== "object" || Array.isArray(val)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Expected object",
+      });
+      return;
+    }
+    const isFreezeOnly = !("blockReason" in val) && "issueRewakeFreeze" in val;
+    const targetSchema = isFreezeOnly
+      ? issueFreezeOnlyMetadataSchema
+      : realIssueBlockerMetadataSchema;
+    const parsed = targetSchema.safeParse(val);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue(issue as any);
+      }
+    }
+  }) as unknown as z.ZodType<IssueBlockerMetadata>;
 
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
@@ -487,6 +522,36 @@ export const issueExecutionPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
+  reviewEscalationPolicy: z.object({
+    maxReviewRounds: z.number().int().positive().max(100).optional(),
+    participantRoles: z.array(z.enum(["lead", "architect", "secondary_reviewer"])).min(1).max(3),
+    fallbackQueue: z.string().trim().min(1).max(200),
+    timeoutAt: z.string().datetime().nullable(),
+    policyRevision: z.string().trim().min(1).max(200),
+    participants: z.object({
+      lead: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      architect: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      secondary_reviewer: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+    }).strict().optional(),
+  }).strict().nullable().optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -533,6 +598,8 @@ export const issueExecutionMonitorStateSchema = z.object({
     .default(null),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
+  // myrmidon(MON-RESTORE): distinct from nextCheckAt, which is null when cleared.
+  nextScheduledAt: z.string().datetime().nullable().optional(),
 });
 
 export const issueReviewRequestSchema = z
@@ -554,6 +621,23 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
+  reviewCycleId: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationPolicyRevision: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationReason: z.literal("review_round_limit").nullable().optional().default(null),
+  escalationFromParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  escalationToParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  // myrmidon(OPE-11970): PR head the last changes-requested decision was made on;
+  // a repeat return on the same head does not wake the executor again.
+  lastChangesRequestedHeadSha: z.string().max(128).nullable().optional(),
+  // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the formal review decision as structure
+  // (decision + head sha + PR number), written together with lastDecisionId.
+  reviewDecision: z
+    .object({
+      reviewDecision: z.enum(["approved", "changes_requested"]),
+      headSha: z.string().max(128).nullable(),
+      pullRequestNumber: z.number().int().positive().nullable(),
+    })
+    .nullish(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -802,6 +886,7 @@ const createIssueBaseSchema = z.object({
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   createdByUserId: z.string().optional().nullable(),
   responsibleUserId: z.string().optional().nullable(),
+  responsibleAgentId: z.string().guid().optional().nullable(),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema
     .optional()
@@ -847,38 +932,6 @@ function requireBlockedStatusForUnblockDescriptor(
       code: z.ZodIssueCode.custom,
       message: "unblockDescriptor requires blocked status",
       path: ["unblockDescriptor"],
-    });
-  }
-}
-
-// myrmidon(STALE-BLOCK): a PATCH that transitions an issue into blocked is
-// valid only if it carries a reason reference — a non-empty blockedByIssueIds
-// list or an unblockDescriptor with a reasonRef. The field itself stays
-// optional so pre-rollout blocked records remain valid.
-function requireReasonRefForBlockedTransition(
-  value: {
-    status?: unknown;
-    blockedByIssueIds?: unknown;
-    blockerMetadata?: unknown;
-    unblockDescriptor?: { reasonRef?: unknown } | null;
-  },
-  ctx: z.RefinementCtx,
-) {
-  if (value.status !== "blocked") return;
-  if (value.blockerMetadata !== undefined && value.blockerMetadata !== null) return;
-  const hasBlockers =
-    Array.isArray(value.blockedByIssueIds) &&
-    value.blockedByIssueIds.length > 0;
-  const reasonRef = value.unblockDescriptor?.reasonRef;
-  const hasReasonRef =
-    reasonRef != null && typeof reasonRef === "object" &&
-    (reasonRef as { kind?: unknown }).kind !== undefined;
-  if (!hasBlockers && !hasReasonRef) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message:
-        "Entering blocked requires a reason reference: non-empty blockedByIssueIds or unblockDescriptor.reasonRef",
-      path: ["status"],
     });
   }
 }
@@ -984,6 +1037,7 @@ export const updateIssueShapeSchema = objectWithoutDefaults(
   .extend({
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+    responsibleAgentId: z.string().guid().optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
@@ -1009,6 +1063,7 @@ export const updateIssueSchema = objectWithoutDefaults(
   .extend({
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+    responsibleAgentId: z.string().guid().optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
     /** Only valid with a comment; the route binds these in the update transaction. */
@@ -1023,10 +1078,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
     blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
-    // myrmidon(STALE-BLOCK): blocked transitions need a reason reference
-    // (issue | event | date) — enforced on PATCH via the refine below.
-  })
-  .superRefine(requireReasonRefForBlockedTransition);
+  });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<
@@ -1250,6 +1302,7 @@ export const connectionIntentResultSchema = z
   .object({
     version: z.literal(1),
     outcome: z.enum(["connected", "declined", "superseded", "expired"]),
+    expirationReason: z.literal("issue_closed").optional(),
     connectionId: z.string().guid().nullable().optional(),
     reason: z.string().trim().max(4000).nullable().optional(),
     supersededByInteractionId: z.string().guid().nullable().optional(),
@@ -1355,6 +1408,7 @@ export const suggestTasksResultSchema = z.object({
   outcome: z
     .enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted"])
     .optional(),
+  expirationReason: z.literal("issue_closed").optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z
@@ -1585,7 +1639,7 @@ export const askUserQuestionsResultSchema = z.object({
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
   expirationReason: z
-    .enum(["superseded_by_comment", "superseded_by_newer_interaction"])
+    .enum(["superseded_by_comment", "superseded_by_newer_interaction", "issue_closed"])
     .optional(),
   commentId: z.string().guid().nullable().optional(),
   // Set alongside expirationReason "superseded_by_newer_interaction": the id of
@@ -1839,6 +1893,7 @@ export const requestConfirmationResultSchema = z.object({
     "issue_closed",
     "addressee_deleted",
   ]),
+  expirationReason: z.literal("issue_closed").optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().guid().nullable().optional(),
   supersededByInteractionId: z.string().guid().nullable().optional(),
@@ -2005,6 +2060,7 @@ export const requestItemVerdictsResultSchema = z
       "issue_closed",
       "addressee_deleted",
     ]),
+    expirationReason: z.literal("issue_closed").optional(),
     reason: z.string().trim().max(4000).nullable().optional(),
     complete: z.boolean(),
     items: z
@@ -2031,6 +2087,9 @@ const createIssueThreadInteractionCommon = {
   resolverPolicy: issueThreadInteractionResolverPolicySchema.optional(),
   addresseeAgentId: z.string().guid().nullable().optional(),
   addresseeUserId: z.string().trim().min(1).nullable().optional(),
+  routeType: z.enum(INTERACTION_ROUTE_TYPES).optional(),
+  addresseeQueue: z.string().trim().min(1).nullable().optional(),
+  timeoutAt: z.union([z.string().datetime(), z.date()]).nullable().optional(),
 };
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [

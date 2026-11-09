@@ -242,9 +242,9 @@ export function AsciiArtAnimation() {
         if (
           clip.life >= clip.maxLife ||
           clip.x < -clip.width - 2 ||
-          clip.x > cols + 2 ||
+          cols + 2 < clip.x ||
           clip.y < -clip.height - 2 ||
-          clip.y > rows + 2
+          rows + 2 < clip.y
         ) {
           clips.splice(i, 1);
           continue;

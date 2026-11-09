@@ -1,15 +1,17 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
-import { betterAuth, type Auth } from "better-auth";
+import { APIError, betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { isUserBlocked } from "../myrmidon/users-admin-a/service.js"; // myrmidon(OPE-8985)
+import { usersAdminAuthPlugin } from "./users-admin-a-plugin.js";
 import {
   authAccounts,
   authSessions,
   authUsers,
   authVerifications,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
 import {
@@ -22,7 +24,7 @@ import {
   resolveWorkspaceHandoffLocalKey,
   resolveWorkspaceHandoffLocalWorkspaceId,
 } from "./workspace-login-handoff.js";
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -258,6 +260,15 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     publicUrl,
   });
 
+  const usersAdminPlugin = usersAdminAuthPlugin({
+    db,
+    readGeneral: async () => {
+      const { instanceSettingsService } = await import("../services/instance-settings.js");
+      return (await instanceSettingsService(db).get()).general;
+    },
+    env: process.env,
+  });
+
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -276,6 +287,20 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    // myrmidon(OPE-8985): a user blocked by an instance administrator gets no new
+    // session on any sign-in path. Existing sessions are closed at block time.
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (session: { userId: string }) => {
+            if (await isUserBlocked(db, session.userId)) {
+              throw new APIError("FORBIDDEN", { code: "USER_BLOCKED", message: "This account is blocked" });
+            }
+          },
+        },
+      },
+    },
+    plugins: [usersAdminPlugin],
     rateLimit: buildBetterAuthRateLimitOptions({
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,
@@ -288,6 +313,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     ...(resolveWorkspaceHandoffIdentity(config)
       ? {
           plugins: [
+            usersAdminPlugin,
             workspaceLoginHandoffPlugin({
               db,
               // Re-resolved per exchange so a hot restart cannot keep validating

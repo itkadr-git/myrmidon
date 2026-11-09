@@ -1,5 +1,5 @@
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   companySecretBindings,
@@ -10,13 +10,21 @@ import {
   issues,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
-import type { SecretProvider } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { SecretProvider } from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
+import {
+  continuationPolicyWakesOnResolution,
+  recordInteractionContinuationOutbox,
+} from "../myrmidon/interaction-continuation-outbox.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
 import { normalizeSecretKey, secretService } from "./secrets.js";
+
+function isClosedIssueStatus(status: string | null | undefined): boolean {
+  return status === "done" || status === "cancelled";
+}
 
 const CONFIG_PATH_RE = /^(?:env\.[A-Za-z_][A-Za-z0-9_]*|access\.[A-Za-z_][A-Za-z0-9_]*)$/;
 const SECRET_NAME_RE = /^[^/\s]+(?:\/[^/\s]+)*$/;
@@ -163,6 +171,7 @@ export function createSecretProposalsService(db: Db) {
         issueId: proposal.originIssueId,
         targetAgentId: proposal.targetId,
         configPath: proposal.configPath,
+        rotationTargetSecretId: proposal.rotationTargetSecretId,
         valueFingerprintSha256: proposal.valueFingerprintSha256,
       },
     });
@@ -309,7 +318,67 @@ export function createSecretProposalsService(db: Db) {
         eq(issueThreadInteractions.id, current.id),
         inArray(issueThreadInteractions.status, outcome === "approved" ? ["pending", "accepted"] : ["pending"]),
       ));
+
+    if (
+      current.status === "pending" &&
+      continuationPolicyWakesOnResolution(current.continuationPolicy, status)
+    ) {
+      const originIssueId = current.issueId ?? proposal.originIssueId;
+      if (originIssueId) {
+        const originIssue = await txDb
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            assigneeAgentId: issues.assigneeAgentId,
+            status: issues.status,
+          })
+          .from(issues)
+          .where(eq(issues.id, originIssueId))
+          .then((rows) => rows[0] ?? null);
+
+        if (
+          originIssue?.assigneeAgentId &&
+          !isClosedIssueStatus(originIssue.status)
+        ) {
+          await recordInteractionContinuationOutbox(txDb, {
+            companyId: proposal.companyId,
+            agentId: originIssue.assigneeAgentId,
+            interactionId: current.id,
+            interactionStatus: status,
+            reason: "secret_proposal_resolved",
+            contract: {
+              wakeIdempotencyKey: `interaction:${current.id}:${status}`,
+              allowRunCoalescing: true,
+              payload: {
+                issueId: originIssue.id,
+                interactionId: current.id,
+                interactionKind: current.kind,
+                interactionStatus: status,
+                sourceCommentId: current.sourceCommentId ?? null,
+                sourceRunId: current.sourceRunId ?? null,
+                mutation: `secret_proposal_${outcome}`,
+                proposalId: proposal.id,
+              },
+              contextSnapshot: {
+                issueId: originIssue.id,
+                taskId: originIssue.id,
+                interactionId: current.id,
+                interactionKind: current.kind,
+                interactionStatus: status,
+                sourceCommentId: current.sourceCommentId ?? null,
+                sourceRunId: current.sourceRunId ?? null,
+                wakeReason: "secret_proposal_resolved",
+                source: "secret.proposal.resolution",
+                proposalId: proposal.id,
+              },
+            },
+          });
+        }
+      }
+    }
   }
+
+  const markProposalInteractionResolution = reflectProposalLifecycleOnInteraction;
 
   async function createSecret(context: ProposalRunContext, input: {
     name: string;
@@ -317,6 +386,7 @@ export function createSecretProposalsService(db: Db) {
     description?: string | null;
     value: string;
     justification: string;
+    rotateSecretId?: string | null;
   }) {
     const name = input.name.trim();
     const justification = input.justification.trim();
@@ -329,6 +399,45 @@ export function createSecretProposalsService(db: Db) {
     const proposedKey = normalizeSecretKey(input.key?.trim() || name.split("/").at(-1) || "");
     if (!proposedKey) throw unprocessable("Secret key is required");
     const { run, originIssueId } = await loadRunContext(db, context);
+    const rotateSecretId = typeof input.rotateSecretId === "string" && input.rotateSecretId.trim()
+      ? input.rotateSecretId.trim()
+      : null;
+    if (rotateSecretId) {
+      // Rotation proposal: the target must be a live company secret in this
+      // company. A deleted/archived/disabled target is rejected as not found —
+      // approval rotates via `rotate:`, which requires `active`, so a pending
+      // proposal against anything else would be a dead end.
+      const target = await db.select().from(companySecrets).where(and(
+        eq(companySecrets.id, rotateSecretId),
+        eq(companySecrets.companyId, context.companyId),
+      )).then((rows) => rows[0] ?? null);
+      if (!target || target.scope !== "company" || target.status !== "active") {
+        throw notFound("Rotation target secret not found");
+      }
+      // The rotation keeps the live secret's identity; a proposal naming a
+      // different path would leave a label that never lands anywhere. Force
+      // the agent to target the secret it means.
+      if (name !== target.name) {
+        throw unprocessable(
+          `A rotation proposal must use the target secret's name: ${target.name}`,
+        );
+      }
+    } else {
+      // Create-without-rotation: reject a name/key collision at creation.
+      // Approval of such a proposal could only ever fail with "Secret already
+      // exists" from `secrets.create`, which left the pending proposal as a
+      // visible dead end (OPE-2998 direction (a)).
+      const nameClash = await secretService(db).getByName(context.companyId, name);
+      if (nameClash) {
+        throw conflict(
+          `Secret already exists: ${name}. Propose with rotateSecretId=${nameClash.id} to rotate it to a new version instead`,
+        );
+      }
+      const keyClash = await secretService(db).getByKey(context.companyId, proposedKey);
+      if (keyClash) {
+        throw conflict(`Secret key already exists: ${proposedKey}`);
+      }
+    }
     const prepared = await getSecretProvider("local_encrypted").createSecret({ value: input.value });
     await context.registerForRedaction(input.value);
     return createWithinQuota(
@@ -344,6 +453,7 @@ export function createSecretProposalsService(db: Db) {
           valueCiphertext: prepared.material,
           valueFingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
           valueLength: Buffer.byteLength(input.value, "utf8"),
+          rotationTargetSecretId: rotateSecretId,
           proposedByAgentId: run.agentId,
           originIssueId,
           originRunId: run.id,
@@ -478,7 +588,7 @@ export function createSecretProposalsService(db: Db) {
   }
 
   async function enrich(proposal: Proposal) {
-    const [proposer, target, originIssue, secret, secretProposal] = await Promise.all([
+    const [proposer, target, originIssue, secret, secretProposal, rotationTarget] = await Promise.all([
       db.select({ id: agents.id, name: agents.name, icon: agents.icon }).from(agents)
         .where(eq(agents.id, proposal.proposedByAgentId)).then((rows) => rows[0] ?? null),
       proposal.targetId
@@ -497,6 +607,10 @@ export function createSecretProposalsService(db: Db) {
         ? db.select({ proposedName: companySecretProposals.proposedName }).from(companySecretProposals)
             .where(eq(companySecretProposals.id, proposal.secretProposalId)).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      proposal.rotationTargetSecretId
+        ? db.select({ name: companySecrets.name, status: companySecrets.status }).from(companySecrets)
+            .where(eq(companySecrets.id, proposal.rotationTargetSecretId)).then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
     if (!proposer) throw notFound("Proposal agent not found");
     const {
@@ -510,6 +624,8 @@ export function createSecretProposalsService(db: Db) {
       ...safe,
       secretName: secret?.name ?? null,
       secretProposalName: secretProposal?.proposedName ?? null,
+      rotationTargetName: rotationTarget?.name ?? null,
+      rotationTargetStatus: rotationTarget?.status ?? null,
       proposedBy: proposer,
       target,
       originIssue,
@@ -563,11 +679,38 @@ export function createSecretProposalsService(db: Db) {
     }
   }
 
+  // Read and validate the proposal-time rotation target, or null when the
+  // proposal is a plain create. Deliberately NOT a FOR UPDATE read: the
+  // approval would then hold the secret row lock before the version-row
+  // insert, while every existing rotate caller (board `rotate:`) inserts the
+  // version row first and only locks the parent on its compare-and-set —
+  // opposite lock orders across the same two rows would deadlock a concurrent
+  // proposal approval against a board rotation. Instead the target's
+  // `latestVersion` becomes the rotate compare-and-set guard: if anything
+  // rotated the secret between this read and the approval write, the guarded
+  // update matches no row and the approval fails with the stale-version 409,
+  // leaving the proposal pending for a fresh look.
+  async function readRotationTarget(txDb: Db, proposal: Proposal) {
+    if (proposal.kind !== "secret" || !proposal.rotationTargetSecretId) return null;
+    const target = await txDb.select().from(companySecrets).where(and(
+      eq(companySecrets.id, proposal.rotationTargetSecretId),
+      eq(companySecrets.companyId, proposal.companyId),
+    )).then((rows) => rows[0] ?? null);
+    if (!target || target.scope !== "company") {
+      throw conflict("Rotation target secret no longer exists");
+    }
+    if (target.status !== "active") {
+      throw conflict(`Rotation target secret is not active (status: ${target.status})`);
+    }
+    return target;
+  }
+
   async function applySecretApproval(txDb: Db, proposal: Proposal, input: {
     resolvedByUserId: string;
     overrides?: { name?: string; description?: string | null; providerConfigId?: string | null };
   }) {
     if (!proposal.valueCiphertext) throw conflict("Proposed secret value is no longer available");
+    const rotationTarget = await readRotationTarget(txDb, proposal);
     const name = input.overrides?.name?.trim() || proposal.proposedName || "";
     if (!SECRET_NAME_RE.test(name)) throw unprocessable("Secret name must be a slash-separated path without empty segments");
     const value = await getSecretProvider("local_encrypted").resolveVersion({
@@ -583,6 +726,64 @@ export function createSecretProposalsService(db: Db) {
       throw notFound("Provider vault not found");
     }
     const provider = (providerConfig?.provider ?? "local_encrypted") as SecretProvider;
+    if (rotationTarget) {
+      // A rotation proposal never renames its target — the live name and key
+      // are the identity agents' bindings point at. Reject an override that
+      // pretends otherwise instead of silently ignoring it.
+      const rename = input.overrides?.name?.trim();
+      if (rename && rename !== rotationTarget.name) {
+        throw unprocessable("A rotation proposal cannot rename its target secret; create a separate secret proposal instead");
+      }
+      // Rotation proposal: the value becomes the next version of the existing
+      // secret (OPE-2998 direction (b)). The name and key are the live
+      // secret's — a rename attempt is rejected above. `rotate:` validates the
+      // target (active status, managed mode) inside the account-home mutation
+      // lock, appends the provider version, flips version rows, and sets
+      // lastRotatedAt under the compare-and-set guard below. This matches the
+      // established pattern of running locked writes on the transaction-bound
+      // service inside a proposal approval (see the create path above and the
+      // AI-connection write-back).
+      const rotated = await secrets.rotate(
+        rotationTarget.id,
+        {
+          value,
+          // Owner-bound compare-and-set against the version read above: a
+          // concurrent rotation between this approval's read and its write
+          // makes the guarded update match no row, so the whole approval
+          // transaction rolls back and the proposal stays pending.
+          expectedLatestVersion: rotationTarget.latestVersion,
+          // An explicitly selected vault moves the rotation to that vault;
+          // anything else (null or undefined) keeps the secret's current
+          // binding — for a rotation, "no selection" must not mean "reset to
+          // the instance default", unlike the create path.
+          ...(typeof providerConfigId === "string" && providerConfigId
+            ? { providerConfigId }
+            : {}),
+        },
+        { userId: input.resolvedByUserId, agentId: proposal.proposedByAgentId },
+      );
+      await logActivity(txDb, {
+        companyId: proposal.companyId,
+        actorType: "user",
+        actorId: input.resolvedByUserId,
+        action: "secret.rotated",
+        entityType: "secret",
+        entityId: rotated.id,
+        agentId: proposal.proposedByAgentId,
+        runId: proposal.originRunId,
+        details: { name: rotated.name, version: rotated.latestVersion, proposalId: proposal.id },
+      });
+      return rotated;
+    }
+    // Plain create: a live name/key collision means the approval can no longer
+    // succeed. The create-time pre-check in `createSecret` rejects new
+    // collisions, but a secret created after this proposal was pending (or a
+    // proposal created before that pre-check existed) must fail here with a
+    // clear conflict instead of silently creating a second holder of the name.
+    const nameClash = await secrets.getByName(proposal.companyId, name);
+    if (nameClash) {
+      throw conflict(`Secret already exists: ${name}. Re-target this proposal as a rotation of it, or approve a rename override`);
+    }
     const created = await secrets.create(
       proposal.companyId,
       {
@@ -684,16 +885,33 @@ export function createSecretProposalsService(db: Db) {
           allowMissingOverride: false,
         }
       : { type: "secret_ref", secretId: secret.id, version: "latest" };
+    // A binding proposal may retarget a path that already carries a company
+    // secret reference: when both the existing entry and the proposed one are
+    // `secret_ref`, the proposal points the path at the proposed secret
+    // instead of colliding on the whole JSON (OPE-2998 direction (c)). A
+    // non-secret_ref entry (a literal plain value or a user-secret reference)
+    // is a different kind of credential and still requires an exact match, so
+    // a proposal can never silently drop a value the board typed directly.
+    const retargetsSecretRef = (existing: unknown) =>
+      asRecord(existing)?.type === "secret_ref" && binding.type === "secret_ref";
     if (namespace === "env") {
       const env = { ...asRecord(adapterConfig.env) };
       const existing = env[key];
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(binding)) {
+      if (
+        existing !== undefined &&
+        JSON.stringify(existing) !== JSON.stringify(binding) &&
+        !retargetsSecretRef(existing)
+      ) {
         throw conflict(`Agent config path already exists: ${proposal.configPath}`);
       }
       adapterConfig.env = { ...env, [key]: binding };
     } else {
       const existing = adapterConfig[proposal.configPath];
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(binding)) {
+      if (
+        existing !== undefined &&
+        JSON.stringify(existing) !== JSON.stringify(binding) &&
+        !retargetsSecretRef(existing)
+      ) {
         throw conflict(`Agent config path already exists: ${proposal.configPath}`);
       }
       adapterConfig[proposal.configPath] = binding;
@@ -873,5 +1091,5 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, markProposalInteractionResolution };
 }

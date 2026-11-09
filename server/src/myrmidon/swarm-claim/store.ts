@@ -8,13 +8,14 @@
 // `releaseClaim` from here rather than writing the table itself — that is the
 // interface the two parts agreed on.
 
-import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { sql, and, asc, eq, inArray, isNull, isNotNull, exists, notExists, notInArray, lt, or } from "drizzle-orm";
+import { swarmClaimMetrics } from "./metrics.js";
 import { isUniqueViolation } from "../../db-errors.js";
-import { issueClaims, issues, type Db } from "@paperclipai/db";
+import { issueClaims, issues, heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   type SwarmClaimLease,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** A lease row reshaped into the shared contract both parts order and render. */
 function toLease(row: typeof issueClaims.$inferSelect): SwarmClaimLease {
@@ -22,6 +23,7 @@ function toLease(row: typeof issueClaims.$inferSelect): SwarmClaimLease {
     id: row.id,
     issueId: row.issueId,
     agentId: row.agentId,
+    origin: row.origin === "auto_match" || row.origin === "checkout" ? row.origin : null,
     heartbeatAt: row.heartbeatAt,
     expiresAt: row.expiresAt,
     releasedAt: row.releasedAt,
@@ -189,6 +191,7 @@ export async function insertClaim(
     claimedAt: Date;
     heartbeatAt: Date;
     expiresAt: Date;
+    origin: "auto_match" | "checkout";
   },
 ): Promise<SwarmClaimLease | null> {
   const existing = await db
@@ -196,7 +199,10 @@ export async function insertClaim(
     .from(issueClaims)
     .where(and(eq(issueClaims.issueId, input.issueId), isNull(issueClaims.releasedAt)))
     .limit(1);
-  if (existing.length > 0) return null;
+  if (existing.length > 0) {
+    swarmClaimMetrics.conflict();
+    return null;
+  }
 
   const inserted = await db
     .insert(issueClaims)
@@ -206,6 +212,7 @@ export async function insertClaim(
       agentId: input.agentId,
       role: input.role,
       runId: input.runId,
+      origin: input.origin,
       claimedAt: input.claimedAt,
       heartbeatAt: input.heartbeatAt,
       expiresAt: input.expiresAt,
@@ -216,7 +223,10 @@ export async function insertClaim(
     // (issue_id WHERE released_at IS NULL) is the real gate, and 23505 is the losing side
     // of the race, not a failure: same null = «занято» as the pre-check returns.
     .catch((err: unknown) => {
-      if (isUniqueViolation(err)) return [];
+      if (isUniqueViolation(err)) {
+        swarmClaimMetrics.conflict();
+        return [];
+      }
       throw err;
     });
   const row = inserted[0];
@@ -279,17 +289,14 @@ export async function revertIdleClaimAssignment(
 }
 
 /**
- * 1.6.5 (OPE-6608 §4.1, review item 2): take the owner off a task whose lease
- * lapsed with no run behind it. The old pass left the assignee in place and
- * woke a DIFFERENT agent on the task; that run was then cancelled as
- * `reassigned` before its checkout — the failure this ticket exists for.
- * Conditional on purpose: a task that moved on (status left the queue, or the
- * owner changed meanwhile) is left exactly as it is, and the conditional update
- * is the same shape the claim path uses.
+ * Supervisor rebalance: take the owner off a queue-status task after the
+ * supervisor released that exact auto-match lease. Same guards as the expiry
+ * path: the claim must be the named, released, auto-match one with the given
+ * release reason, no newer lease may be open, and no run may hold the task.
  */
-export async function clearExpiredAssignee(
+export async function clearReleasedAssignee(
   db: Db,
-  input: { companyId: string; issueId: string; agentId: string; now: Date },
+  input: { companyId: string; issueId: string; agentId: string; claimId: string; releaseReason: string; now: Date },
 ): Promise<boolean> {
   const cleared = await db
     .update(issues)
@@ -300,6 +307,98 @@ export async function clearExpiredAssignee(
         eq(issues.companyId, input.companyId),
         eq(issues.assigneeAgentId, input.agentId),
         inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+        isNull(issues.executionRunId),
+        exists(
+          db
+            .select({ id: issueClaims.id })
+            .from(issueClaims)
+            .where(
+              and(
+                eq(issueClaims.id, input.claimId),
+                eq(issueClaims.companyId, input.companyId),
+                eq(issueClaims.issueId, input.issueId),
+                eq(issueClaims.agentId, input.agentId),
+                eq(issueClaims.origin, "auto_match"),
+                eq(issueClaims.releaseReason, input.releaseReason),
+                isNotNull(issueClaims.releasedAt),
+              ),
+            ),
+        ),
+        notExists(
+          db
+            .select({ id: issueClaims.id })
+            .from(issueClaims)
+            .where(
+              and(
+                eq(issueClaims.companyId, input.companyId),
+                eq(issueClaims.issueId, input.issueId),
+                isNull(issueClaims.releasedAt),
+              ),
+            ),
+        ),
+      ),
+    )
+    .returning({ id: issues.id });
+  return cleared.length > 0;
+}
+
+/**
+ * 1.6.5 (OPE-6608 §4.1, review item 2): take the owner off a task whose lease
+ * lapsed with no run behind it. The old pass left the assignee in place and
+ * woke a DIFFERENT agent on the task; that run was then cancelled as
+ * `reassigned` before its checkout — the failure this ticket exists for.
+ * Conditional on purpose: a task that moved on (status left the queue, or the
+ * owner changed meanwhile) is left exactly as it is, and the conditional update
+ * is the same shape the claim path uses.
+ */
+export async function clearExpiredAssignee(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; claimId: string; now: Date },
+): Promise<boolean> {
+  const cleared = await db
+    .update(issues)
+    .set({ assigneeAgentId: null, updatedAt: input.now })
+    .where(
+      and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        eq(issues.assigneeAgentId, input.agentId),
+        inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+        isNull(issues.executionRunId),
+        exists(
+          db
+            .select({ id: issueClaims.id })
+            .from(issueClaims)
+            .where(
+              and(
+                eq(issueClaims.id, input.claimId),
+                eq(issueClaims.companyId, input.companyId),
+                eq(issueClaims.issueId, input.issueId),
+                eq(issueClaims.agentId, input.agentId),
+                eq(issueClaims.origin, "auto_match"),
+                isNotNull(issueClaims.releasedAt),
+                eq(issueClaims.releaseReason, "lease_expired"),
+                // Compare-and-update fence: the sweep releases and clears at the
+                // same instant, so its release owns the assignment change. When
+                // the clear runs strictly later than the release, an issue row
+                // updated after the release is a newer explicit re-assignment
+                // that outranks the expired lease.
+                sql`(${issueClaims.releasedAt} >= ${input.now.toISOString()}::timestamptz OR ${issues.updatedAt} <= ${issueClaims.releasedAt})`,
+              ),
+            ),
+        ),
+        notExists(
+          db
+            .select({ id: issueClaims.id })
+            .from(issueClaims)
+            .where(
+              and(
+                eq(issueClaims.companyId, input.companyId),
+                eq(issueClaims.issueId, input.issueId),
+                isNull(issueClaims.releasedAt),
+              ),
+            ),
+        ),
       ),
     )
     .returning({ id: issues.id });
@@ -322,6 +421,7 @@ export async function releaseClaim(
     .set({ releasedAt: now, releaseReason: input.reason })
     .where(and(eq(issueClaims.id, input.claimId), isNull(issueClaims.releasedAt)))
     .returning({ id: issueClaims.id });
+  swarmClaimMetrics.recover(input.reason, updated.length);
   return updated.length > 0;
 }
 
@@ -336,6 +436,7 @@ export async function releaseClaimsForIssue(
     .set({ releasedAt: now, releaseReason: input.reason })
     .where(and(eq(issueClaims.issueId, input.issueId), isNull(issueClaims.releasedAt)))
     .returning({ id: issueClaims.id });
+  swarmClaimMetrics.recover(input.reason, updated.length);
   return updated.map((row) => row.id);
 }
 
@@ -356,6 +457,7 @@ export async function releaseClaimsForAgent(
       ),
     )
     .returning({ id: issueClaims.id });
+  swarmClaimMetrics.recover(input.reason, updated.length);
   return updated.map((row) => row.id);
 }
 

@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import type { HeartbeatRun, HeartbeatRunEvent, Issue, WorkspaceOperation } from "@paperclipai/shared";
+import type { HeartbeatRun, HeartbeatRunEvent, Issue, WorkspaceOperation } from "@myrmidon/shared";
 import {
   addCommonClientOptions,
   apiPath,
@@ -56,7 +56,7 @@ export function registerRunCommands(command: Command): void {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const params = new URLSearchParams();
           if (opts.agentId) params.set("agentId", opts.agentId);
-          if (opts.limit) params.set("limit", opts.limit);
+          params.set("limit", opts.limit ?? "200");
           const query = params.toString();
           const rows = (await ctx.api.get<HeartbeatRun[]>(
             `${apiPath`/api/companies/${ctx.companyId}/heartbeat-runs`}${query ? `?${query}` : ""}`,

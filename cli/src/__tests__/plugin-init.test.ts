@@ -81,7 +81,7 @@ describe("plugin init", () => {
       "cd '/tmp/acme plugin'",
       "pnpm install",
       "pnpm dev",
-      "paperclipai plugin install '/tmp/acme plugin'",
+      "myrmidon plugin install '/tmp/acme plugin'",
     ]);
   });
 

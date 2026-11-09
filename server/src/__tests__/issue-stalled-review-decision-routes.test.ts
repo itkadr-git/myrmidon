@@ -18,7 +18,7 @@ import {
   issueRecoveryActions,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import {
@@ -219,10 +219,13 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       identifier: "SRD-1",
     });
 
-    await request(app(agentActor(primary.companyId, primary.assigneeAgentId)))
+    const agentRes = await request(app(agentActor(primary.companyId, primary.assigneeAgentId)))
       .post(`/api/issues/${issueId}/stalled-review-decision`)
       .send({ action: "approve" })
       .expect(403);
+    expect(agentRes.body.error).toContain("PATCH /api/issues/");
+    expect(agentRes.body.error).toContain("со status и comment в одном запросе");
+    expect(agentRes.body.details?.hint).toContain("PATCH /api/issues/");
     await request(app(agentActor(primary.companyId, primary.peerAgentId)))
       .post(`/api/issues/${issueId}/stalled-review-decision`)
       .send({ action: "approve" })

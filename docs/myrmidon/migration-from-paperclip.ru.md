@@ -2,9 +2,10 @@
 
 > English version: [migration-from-paperclip.md](migration-from-paperclip.md)
 
-Руководство показывает, как скопировать один экземпляр Paperclip (базу, файлы и секреты) в чистую
-установку Myrmidon командой `myrmidon:migrate`. Команда никогда не меняет источник. Если источник
-или ключ не подходят, она останавливается, ничего не записав в цель.
+Команда `myrmidon:migrate` копирует один экземпляр Paperclip (базу, файлы и секреты) в чистую
+установку Myrmidon. Она никогда не меняет источник: пишет только в пустую цель, которую создаёт
+сама. Если цепочка миграций, ключ, схема или данные не проходят проверку, команда останавливается
+до переноса.
 
 Прочитайте руководство целиком до начала: раздел об откате важен **до** переключения.
 
@@ -30,10 +31,13 @@
 ### Возможности Paperclip, которых нет в Myrmidon
 
 Релизы Paperclip после `v2026.916.1` добавили таблицы и столбцы, которых в Myrmidon нет (например,
-запуски browser-use, клиенты MCP OAuth, chat-endpoints, внешний вид агента). Это не ошибка, но эти
-данные **не** копируются. Пробный прогон перечисляет их в `vendorOnlyData`: таблица или столбец,
-число строк с данными (для столбца: не null и не просто значение по умолчанию) и релиз, в котором
-это появилось.
+запуски browser-use, клиенты MCP OAuth, chat-endpoints). Согласованные колонки, такие как
+`agents.appearance` и `issues.title_needs_generation`, сохранены в схеме Myrmidon и переносятся
+в целевую базу. Данные остальных функций `Paperclip`, отсутствующих в Myrmidon, **не** копируются
+в целевую базу, а попадают в отчёт. Отчёт — это JSON, который печатает команда; настоящий запуск
+ещё сохраняет его как `report.json` в `--state-dir`. Читайте раздел `vendorOnlyData` (поля
+`skippedSourceData` нет). В нём: таблица или столбец, число строк с данными (для столбца: не null
+и не просто значение по умолчанию) и релиз, в котором это появилось.
 
 - Если в чём-то из этого есть данные, настоящий запуск останавливается **до первой записи** и
   говорит об этом. Посмотрите список, решите, что без них можно обойтись (они остаются в источнике,
@@ -48,19 +52,54 @@
   останавливает прогон ошибкой `value-out-of-range-in-target`. Столбец, который новый релиз Paperclip
   убрал (`user.keyboard_shortcuts`), цели не нужен.
 
-## 2. Требования
+## 2. Требования и запуск CLI
 
-- CLI `paperclipai` сборки Myrmidon с этой командой (`paperclipai myrmidon:migrate --help`).
-- Node 24+ на машине, где запускается команда, с сетевым доступом к исходной и целевой базам.
+CLI миграции входит в состав Myrmidon. Поскольку в продакшн-образе Docker нет установленного
+`paperclipai` в `$PATH` и нет предварительно собранного каталога `dist/`, запуск миграции из образа
+выполняется через `tsx` из `/app/cli` либо через встроенную обёртку `/usr/local/bin/myrmidon-migrate`:
+
+- **Напрямую через tsx из образа (рекомендуется для продакшна):**
+  ```sh
+  docker run --rm -i \
+    --entrypoint /app/cli/node_modules/.bin/tsx -w /app/cli \
+    -v /path/to/storage:/storage \
+    -v /path/to/keys:/keys:ro \
+    -v /path/to/state:/state \
+    -e SOURCE_DB_URL -e TARGET_DB_URL \
+    <образ> src/index.ts myrmidon:migrate --help
+  ```
+
+- **Через обёртку myrmidon-migrate в образе:**
+  ```sh
+  docker run --rm -i \
+    -v /path/to/storage:/storage \
+    -v /path/to/keys:/keys:ro \
+    -v /path/to/state:/state \
+    -e SOURCE_DB_URL -e TARGET_DB_URL \
+    <образ> myrmidon-migrate --help
+  ```
+
+- **Из исходников репозитория (локальная разработка):**
+  ```sh
+  pnpm --filter myrmidon dev myrmidon:migrate --help
+  ```
+
+Остальные требования:
+- Сетевой доступ к исходной и целевой базам с хоста или из контейнера, где запускается команда.
 - Роль целевой базы с правом создавать таблицы. Быстрее и точнее всего загрузка идёт с ролью,
   которой разрешено менять `session_replication_role` (суперпользователь или PostgreSQL 15+ с
   выданным правом на этот параметр); без неё команда упорядочивает таблицы по внешним ключам и
   отказывается, если ключи образуют цикл.
 - Для `--source-dump`: `psql` на машине и пустая временная база (см. 5.2).
 - Доступ к **ключу источника** и **ключу цели** (32 байта: base64, 64 hex-символа или строка из
-  32 символов). Ключи передаются путём к файлу или именем переменной окружения — никогда
-  значением в командной строке.
+  32 символов). Ключи передаются путём к файлу (`--source-key-file` / `--target-key-file`, рекомендуется)
+  или именем переменной окружения (`--source-key-env` / `--target-key-env`, например `MYRMIDON_SECRETS_MASTER_KEY`
+  или `PAPERCLIP_SECRETS_MASTER_KEY`) — никогда прямым значением в командной строке.
 - Свободное место под полную копию каталога хранилища и под резервную копию (раздел 3).
+
+> **Примечание к командам в примерах ниже:** Для краткости примеры приведены с вызовом `myrmidon-migrate <флаги>`.
+> При запуске через Docker подставляйте полную команду `docker run ... <образ> myrmidon-migrate` или
+> `docker run ... --entrypoint /app/cli/node_modules/.bin/tsx -w /app/cli <образ> src/index.ts myrmidon:migrate`.
 
 Во всех командах ниже — заглушки. Настоящие URL и ключи держите в файлах с правами `0600` или в
 переменных окружения; команда вычищает URL и ключи из ошибок и JSON-вывода.
@@ -83,12 +122,15 @@
 4. **Перенесите настройки сервиса**, которых нет в базе: например, провайдер секретов и место
    ключа новой установки, а также `BETTER_AUTH_SECRET` / `AGENT_JWT_SECRET`, если хотите, чтобы
    прежние браузерные сессии и токены агентов продолжили работать. Новую установку направьте на
-   **ключ цели**.
+   **ключ цели** через переменную окружения `MYRMIDON_SECRETS_MASTER_KEY_FILE` (путь к файлу ключа)
+   или `MYRMIDON_SECRETS_MASTER_KEY` (32-байтовое значение ключа). Устаревшие имена переменных `Paperclip`
+   `PAPERCLIP_SECRETS_MASTER_KEY_FILE` и `PAPERCLIP_SECRETS_MASTER_KEY` поддерживаются как алиасы
+   (при наличии обеих переменных приоритет имеет `MYRMIDON_*`).
 
 ## 4. Пробный прогон (без записи)
 
 ```sh
-paperclipai myrmidon:migrate --dry-run \
+myrmidon-migrate --dry-run \
   --source-url-env SOURCE_DB_URL \
   --source-files /path/to/paperclip/storage \
   --source-key-file /secure/source-master.key \
@@ -131,7 +173,7 @@ paperclipai myrmidon:migrate --dry-run \
 ### 5.1 Из URL базы
 
 ```sh
-paperclipai myrmidon:migrate \
+myrmidon-migrate \
   --source-url-env SOURCE_DB_URL \
   --source-files /path/to/paperclip/storage \
   --source-key-file /secure/source-master.key \
@@ -150,7 +192,7 @@ paperclipai myrmidon:migrate \
 вам на удаление:
 
 ```sh
-paperclipai myrmidon:migrate --source-dump ./source.sql --scratch-url-env SCRATCH_DB_URL \
+myrmidon-migrate --source-dump ./source.sql --scratch-url-env SCRATCH_DB_URL \
   --source-files ... --source-key-file ... --target-url-env ... --target-dir ... \
   --target-key-file ... --state-dir ...
 ```
@@ -230,7 +272,7 @@ paperclipai myrmidon:migrate --source-dump ./source.sql --scratch-url-env SCRATC
 ## 8. Откат переноса
 
 ```sh
-paperclipai myrmidon:migrate --rollback \
+myrmidon-migrate --rollback \
   --target-url-env TARGET_DB_URL --target-dir /path/to/myrmidon/storage \
   --state-dir /path/to/migration-state
 ```
@@ -247,7 +289,7 @@ paperclipai myrmidon:migrate --rollback \
 
 ## 9. Справка
 
-Флаги (`paperclipai myrmidon:migrate --help`):
+Флаги (`myrmidon-migrate --help` / `src/index.ts myrmidon:migrate --help`):
 
 | Флаг | Смысл |
 |---|---|

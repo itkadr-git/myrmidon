@@ -29,19 +29,29 @@ vi.mock("../Ui2CommanderPalette", () => ({
   Ui2CommanderPalette: () => null,
 }));
 
-// i18n: run the EN defaultValue path (the chip passes defaultValue), so the
-// rendered label is the English template with interpolations applied.
-vi.mock("@/i18n", () => ({
-  useTranslation: () => ({
-    t: (_key: string, opts?: { defaultValue?: string } & Record<string, unknown>) => {
-      let out = opts?.defaultValue ?? _key;
-      for (const [k, v] of Object.entries(opts ?? {})) {
-        if (k === "defaultValue") continue;
-        out = out.replaceAll(`{{${k}}}`, String(v));
-      }
-      return out;
-    },
-  }),
+// i18n: resolve keys against the real EN area catalog, so the rendered label
+// is the English template with interpolations applied.
+vi.mock("@/i18n", async () => {
+  const en = (await import("../../i18n/myrmidon-locales/areas/ui2-shell.en.json")).default as Record<string, unknown>;
+  const lookup = (key: string): string => {
+    const found = key.split(".").reduce<unknown>((node, part) => (node as Record<string, unknown> | undefined)?.[part], en);
+    return typeof found === "string" ? found : key;
+  };
+  return {
+    useTranslation: () => ({
+      i18n: { language: "en-US" },
+      t: (key: string, opts?: Record<string, unknown>) => {
+        let out = lookup(key);
+        for (const [k, v] of Object.entries(opts ?? {})) out = out.replaceAll(`{{${k}}}`, String(v));
+        return out;
+      },
+    }),
+  };
+});
+
+vi.mock("../i18n/Ui2I18n", () => ({
+  useUi2I18n: () => ({ t: (key: string) => key, locale: "en", setLocale: () => {}, availableLocales: ["en", "ru"] }),
+  useUi2I18nOptional: () => null,
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -124,5 +134,20 @@ describe("myrmidon(HERMES-USAGE-COST) forecast chip", () => {
     const text = await renderWith(baseStrip({ monthSpendCents: 3_100, monthBudgetCents: 10_000 }));
     expect(text).toContain("$31");
     expect(text).toContain("$100");
+  });
+
+  it("renders the unchanged strip values returned by the status endpoint", async () => {
+    const text = await renderWith({
+      colonyActive: 3,
+      colonyTotal: 12,
+      fleetAttention: true,
+      monthSpendCents: 4_200,
+      monthBudgetCents: 12_000,
+      attentionCount: 5,
+    });
+    expect(text).toContain("3 of 12");
+    expect(text).toContain("$42");
+    expect(text).toContain("$120");
+    expect(text).toContain("5");
   });
 });

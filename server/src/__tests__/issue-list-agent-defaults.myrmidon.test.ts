@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterEach, expect, it } from "vitest";
-import { instanceSettings, agents } from "@paperclipai/db";
+import { instanceSettings, agents } from "@myrmidon/db";
 import {
   __clearIssueListResponseCacheForTests,
   issueRoutes,
 } from "../routes/issues.js";
-import { issues } from "@paperclipai/db";
+import { issues } from "@myrmidon/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   describeEmbeddedPostgres,
@@ -92,7 +92,7 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
       priority: "medium",
     }));
     await ctx.db.insert(issues).values(rows);
-    return { companyId, rows };
+    return { companyId, company, rows };
   }
 
   async function setAgentDefaultsEnabled(enabled: boolean | null) {
@@ -113,6 +113,23 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
       .get(`/api/companies/${companyId}/issues`)
       .expect(200);
     expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toHaveLength(ISSUE_LIST_AGENT_DEFAULT_LIMIT);
+    expect(res.headers.etag).toMatch(/^"compact-issues:/);
+    for (const row of res.body) {
+      expect(row, `description present on ${row.id}`).not.toHaveProperty("description");
+    }
+  });
+
+  it("applies the agent defaults to integration board keys (source: board_key)", async () => {
+    const { companyId, company } = await seedCompanyWithIssues(ISSUE_LIST_AGENT_DEFAULT_LIMIT + 5);
+    const boardKeyActor = {
+      ...company.actor,
+      source: "board_key" as const,
+      keyId: randomUUID(),
+    };
+    const res = await request(routeApp(ctx.db, boardKeyActor as never, issueRoutes))
+      .get(`/api/companies/${companyId}/issues`)
+      .expect(200);
     expect(res.body).toHaveLength(ISSUE_LIST_AGENT_DEFAULT_LIMIT);
     expect(res.headers.etag).toMatch(/^"compact-issues:/);
     for (const row of res.body) {
@@ -243,5 +260,41 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
       .set("If-None-Match", enabledEtag)
       .expect(200);
     void conditional;
+  });
+
+  it("myrmidon(OPE-12027): honours page parameter as (page-1)*limit, rejects non-positive page, and gives offset priority", async () => {
+    const { companyId, company } = await seedCompanyWithIssues(5);
+    const app = routeApp(ctx.db, company.actor as never, issueRoutes);
+
+    // page=0 -> 400
+    const resPage0 = await request(app)
+      .get(`/api/companies/${companyId}/issues?page=0`)
+      .expect(400);
+    expect(resPage0.body).toHaveProperty("error");
+    expect(resPage0.body.error).toContain("page must be a positive integer");
+
+    // page=1 and page=2 at limit=2 return different issues
+    const resPage1 = await request(app)
+      .get(`/api/companies/${companyId}/issues?limit=2&page=1`)
+      .expect(200);
+    expect(resPage1.body).toHaveLength(2);
+
+    const resPage2 = await request(app)
+      .get(`/api/companies/${companyId}/issues?limit=2&page=2`)
+      .expect(200);
+    expect(resPage2.body).toHaveLength(2);
+
+    const idsPage1 = resPage1.body.map((i: { id: string }) => i.id);
+    const idsPage2 = resPage2.body.map((i: { id: string }) => i.id);
+    expect(idsPage1[0]).not.toEqual(idsPage2[0]);
+    expect(idsPage1[1]).not.toEqual(idsPage2[1]);
+    expect(idsPage1).not.toEqual(idsPage2);
+
+    // offset has priority over page
+    const resOffsetPriority = await request(app)
+      .get(`/api/companies/${companyId}/issues?limit=2&page=2&offset=0`)
+      .expect(200);
+    const idsOffsetPriority = resOffsetPriority.body.map((i: { id: string }) => i.id);
+    expect(idsOffsetPriority).toEqual(idsPage1);
   });
 });

@@ -99,10 +99,12 @@ describe("dev-runner worktree env bootstrap", () => {
       envPath: resolveWorktreeEnvFilePath(root),
       missingEnv: false,
     });
-    expect(env.PAPERCLIP_HOME).toBe("/tmp/paperclip-worktrees");
+    expect(env.MYRMIDON_HOME).toBe("/tmp/paperclip-worktrees");
+    expect(env.MYRMIDON_INSTANCE_ID).toBe("feature-worktree");
+    expect(env.MYRMIDON_IN_WORKTREE).toBe("true");
+    expect(env.MYRMIDON_OPTIONAL).toBe("");
+    expect(env.PAPERCLIP_HOME).toBeUndefined();
     expect(env.PAPERCLIP_INSTANCE_ID).toBe("already-set");
-    expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
-    expect(env.PAPERCLIP_OPTIONAL).toBe("");
   });
 
   it("repairs stale migrated config paths before loading worktree env", () => {
@@ -135,10 +137,11 @@ describe("dev-runner worktree env bootstrap", () => {
       envPath: resolveWorktreeEnvFilePath(root),
       missingEnv: false,
     });
-    expect(env.PAPERCLIP_HOME).toBe(worktreesDir);
-    expect(env.PAPERCLIP_CONFIG).toBe(localConfigPath);
-    expect(env.PAPERCLIP_CONTEXT).toBe(path.join(worktreesDir, "context.json"));
-    expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree");
+    expect(env.MYRMIDON_HOME).toBe(worktreesDir);
+    expect(env.MYRMIDON_CONFIG).toBe(localConfigPath);
+    expect(env.MYRMIDON_CONTEXT).toBe(path.join(worktreesDir, "context.json"));
+    expect(env.MYRMIDON_INSTANCE_ID).toBe("feature-worktree");
+    expect(env.PAPERCLIP_CONFIG).toBeUndefined();
   });
 
   it("reports uninitialized linked worktrees so dev runner can fail fast", () => {

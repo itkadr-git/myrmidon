@@ -37,7 +37,7 @@ change — lifts both the penalty and the cooldown at once: the board sees the
 task is different now.
 
 **Lease.** Once an agent takes a task, it holds it on a lease: 15 minutes by
-default, renewed while the run is alive, no more than three tasks at a time.
+default, renewed while the run is alive, no more than two tasks at a time.
 If the agent stays silent past the lease, the lease expires and another free
 agent takes the task.
 

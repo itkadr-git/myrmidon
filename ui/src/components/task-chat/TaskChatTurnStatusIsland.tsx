@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "@/i18n";
 import {
   CheckCircle2,
   Circle,
@@ -114,11 +116,12 @@ function checklistIcon(step: TaskChatProtocolStep) {
   return <Circle className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />;
 }
 
-function fileCountLabel(files: number): string {
-  return `${files} ${files === 1 ? "file" : "files"} changed`;
+function fileCountLabel(files: number, t: TFunction): string {
+  return t("area.task-chat-runner.task-chat-turn-status-island.filesChanged", { count: files });
 }
 
 function IslandBody({ model }: { model: TaskChatTurnStatusModel }) {
+  const { t } = useTranslation();
   const plan = model.segments.find(
     (segment): segment is Extract<TaskChatTurnStatusSegment, { kind: "plan" }> => segment.kind === "plan",
   );
@@ -131,7 +134,7 @@ function IslandBody({ model }: { model: TaskChatTurnStatusModel }) {
         <span className="flex shrink-0 items-center gap-2">
           {planIcon(plan)}
           <span className="font-mono text-sm tabular-nums" aria-live="polite" aria-atomic="true">
-            Step {plan.currentStepIndex + 1} / {plan.steps.length}
+            {t("area.task-chat-runner.task-chat-turn-status-island.stepCounter", { current: plan.currentStepIndex + 1, total: plan.steps.length })}
             <span className="sr-only">: {plan.steps[plan.currentStepIndex]?.label}</span>
           </span>
         </span>
@@ -140,7 +143,7 @@ function IslandBody({ model }: { model: TaskChatTurnStatusModel }) {
       {workspace ? (
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 truncate text-sm text-muted-foreground">
-            {fileCountLabel(workspace.files)}
+            {fileCountLabel(workspace.files, t)}
           </span>
           {workspace.additions != null ? (
             <span className="shrink-0 font-mono text-sm tabular-nums text-(--status-task-icon-done)">
@@ -158,16 +161,21 @@ function IslandBody({ model }: { model: TaskChatTurnStatusModel }) {
   );
 }
 
-function islandLabel(model: TaskChatTurnStatusModel): string {
+function islandLabel(model: TaskChatTurnStatusModel, t: TFunction): string {
   const parts: string[] = [];
   for (const segment of model.segments) {
     if (segment.kind === "plan") {
       const step = segment.steps[segment.currentStepIndex];
-      parts.push(`Step ${segment.currentStepIndex + 1} of ${segment.steps.length}${step ? `: ${step.label}` : ""}`);
+      const stepArgs = { current: segment.currentStepIndex + 1, total: segment.steps.length };
+      parts.push(
+        step
+          ? t("area.task-chat-runner.task-chat-turn-status-island.stepLabelWithName", { ...stepArgs, label: step.label })
+          : t("area.task-chat-runner.task-chat-turn-status-island.stepLabel", stepArgs),
+      );
     } else {
-      parts.push(fileCountLabel(segment.files));
-      if (segment.additions != null) parts.push(`${segment.additions} additions`);
-      if (segment.deletions != null) parts.push(`${segment.deletions} deletions`);
+      parts.push(fileCountLabel(segment.files, t));
+      if (segment.additions != null) parts.push(t("area.task-chat-runner.task-chat-turn-status-island.additions", { count: segment.additions }));
+      if (segment.deletions != null) parts.push(t("area.task-chat-runner.task-chat-turn-status-island.deletions", { count: segment.deletions }));
     }
   }
   return parts.join(", ");
@@ -178,6 +186,7 @@ const ISLAND_CLASS_NAME = "mx-auto flex min-h-10 max-w-(--sz-turn-status-island)
 const HOVER_CLOSE_GRACE_MS = 100;
 
 export function TaskChatTurnStatusIsland({ model }: { model: TaskChatTurnStatusModel }) {
+  const { t } = useTranslation();
   const plan = model.segments.find(
     (segment): segment is Extract<TaskChatTurnStatusSegment, { kind: "plan" }> => segment.kind === "plan",
   );
@@ -218,7 +227,7 @@ export function TaskChatTurnStatusIsland({ model }: { model: TaskChatTurnStatusM
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={islandLabel(model)}
+          aria-label={islandLabel(model, t)}
           className={cn(
             ISLAND_CLASS_NAME,
             "cursor-pointer transition-colors hover:bg-muted/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none",
@@ -248,7 +257,7 @@ export function TaskChatTurnStatusIsland({ model }: { model: TaskChatTurnStatusM
         align="center"
         sideOffset={8}
         className="w-(--sz-turn-status-popover) p-2"
-        aria-label="Turn plan"
+        aria-label={t("area.task-chat-runner.task-chat-turn-status-island.turnPlan")}
         onPointerEnter={(event) => {
           if (event.pointerType === "mouse") cancelClose();
         }}
@@ -258,7 +267,7 @@ export function TaskChatTurnStatusIsland({ model }: { model: TaskChatTurnStatusM
         onEscapeKeyDown={() => setPinned(false)}
         onInteractOutside={() => setPinned(false)}
       >
-        <ol className="flex flex-col gap-1" aria-label="Within-turn checklist">
+        <ol className="flex flex-col gap-1" aria-label={t("area.task-chat-runner.task-chat-turn-status-island.checklist")}>
           {plan.steps.map((step, index) => (
             <li
               key={step.id}

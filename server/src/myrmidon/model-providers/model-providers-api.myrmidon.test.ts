@@ -17,7 +17,7 @@ import {
   listAvailableModelProviderTypes,
   registerModelProviderConnector,
   unregisterModelProviderConnector,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
 import { modelProviderRoutes } from "./routes.js";
@@ -28,8 +28,61 @@ const OTHER_COMPANY = "33333333-3333-4333-8333-333333333333";
 
 const KEY_VALUE = "sk-test-provider-key-value-1234";
 
-const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_ID] };
-const outsider = { type: "board", source: "session", userId: "user-b", isInstanceAdmin: false, companyIds: [OTHER_COMPANY] };
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+};
+const ownerActor = {
+  type: "board",
+  source: "session",
+  userId: "user-owner",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+};
+const plainMember = {
+  type: "board",
+  source: "session",
+  userId: "user-plain",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "member", status: "active" }],
+};
+const operatorMember = {
+  type: "board",
+  source: "session",
+  userId: "user-operator",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "operator", status: "active" }],
+};
+const viewerMember = {
+  type: "board",
+  source: "session",
+  userId: "user-viewer",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "viewer", status: "active" }],
+};
+const instanceAdminActor = {
+  type: "board",
+  source: "session",
+  userId: "user-ia",
+  isInstanceAdmin: true,
+  companyIds: [COMPANY_ID],
+};
+const outsider = {
+  type: "board",
+  source: "session",
+  userId: "user-b",
+  isInstanceAdmin: false,
+  companyIds: [OTHER_COMPANY],
+  memberships: [{ companyId: OTHER_COMPANY, membershipRole: "admin", status: "active" }],
+};
 const agentActor = { type: "agent", source: "agent_key", agentId: "agent-a", companyId: COMPANY_ID, keyId: "key-a" };
 
 const providerView = (id: string): ModelProviderView => ({
@@ -40,6 +93,12 @@ const providerView = (id: string): ModelProviderView => ({
   hasKey: true,
   credentialSecretName: `model-provider-key-${id}`,
   free: false,
+  expiresAt: null,
+  packageName: null,
+  rpmLimit: null,
+  toolCallCompatible: null,
+  toolCallCheckedAt: null,
+  toolCallCheckError: null,
   keyValidatedAt: "2026-01-02T00:00:00.000Z",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-02T00:00:00.000Z",
@@ -75,6 +134,15 @@ function fakeService() {
       });
       return providerView(input.providerId);
     },
+    async captureKeyRotationSnapshot() {
+      return {
+        secretId: "secret-1",
+        secretValue: KEY_VALUE,
+        models: [],
+        keyValidatedAt: null,
+      };
+    },
+    async rollbackProviderKey() {},
     async patchProvider(input) {
       calls.push({ op: "patch", companyId: input.companyId, providerId: input.providerId, body: input.body });
       return providerView(input.providerId);
@@ -109,6 +177,14 @@ function fakeService() {
         { id: "m1", modelName: "model-a", litellmModelName: "openai/model-a", enabled: false, free: true },
       ];
     },
+    async checkToolCallCompatibility(input) {
+      calls.push({ op: "checkToolCallCompatibility", companyId: input.companyId, providerId: input.providerId });
+      return providerView(input.providerId);
+    },
+    async checkPackageExpirations(companyId, options) {
+      calls.push({ op: "checkPackageExpirations", companyId, body: options });
+      return [];
+    },
     async listChannels(companyId, providerId) {
       calls.push({ op: "listChannels", companyId, providerId });
       return {
@@ -137,6 +213,25 @@ function fakeService() {
     },
     listAvailableTypes: () => listAvailableModelProviderTypes(),
     syncPoolSignals: async () => [],
+    oauthBegin: async () => ({
+      verificationUri: "http://localhost:8895/auth",
+      userCode: "TEST-CODE",
+      accountNumber: 1,
+      expiresInSec: 900,
+      intervalSec: 5,
+    }),
+    oauthStatus: async () => ({
+      status: "pending",
+      accountNumber: 1,
+    }),
+    oauthComplete: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
+    oauthRefresh: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
   };
   return { service, calls };
 }
@@ -166,7 +261,7 @@ function app(actor: unknown, options: { service?: ModelProviderService } = {}) {
 
 const base = `/api/myrmidon/companies/${COMPANY_ID}/model-providers`;
 
-describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: access", () => {
+describe("myrmidon(1.6.1 MODEL-PROVIDERS, 1.6.7 OPE-9852) routes: access", () => {
   it("denies another company on every route (403, no service call)", async () => {
     const { server, calls } = app(outsider);
     await request(server).get(base).expect(403);
@@ -179,25 +274,41 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: access", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("lets an agent of the company read providers, models and channels but not mutate", async () => {
+  it("denies ordinary company members, operators and viewers on every route (403, no service call)", async () => {
+    for (const actor of [plainMember, operatorMember, viewerMember]) {
+      const { server, calls } = app(actor);
+      await request(server).get(base).expect(403);
+      await request(server).get(`${base}/provider-1/models`).expect(403);
+      await request(server).get(`${base}/provider-1/channels`).expect(403);
+      await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(403);
+      await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(403);
+      await request(server).delete(`${base}/provider-1`).expect(403);
+      await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("denies an agent actor on every route (403, no service call)", async () => {
     const { server, calls } = app(agentActor);
-    await request(server).get(base).expect(200);
-    await request(server).get(`${base}/provider-1/models`).expect(200);
-    await request(server).get(`${base}/provider-1/channels`).expect(200);
+    await request(server).get(base).expect(403);
+    await request(server).get(`${base}/provider-1/models`).expect(403);
+    await request(server).get(`${base}/provider-1/channels`).expect(403);
     await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(403);
     await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(403);
     await request(server).delete(`${base}/provider-1`).expect(403);
     await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
-    expect(calls.map((c) => c.op)).toEqual(["list", "listModels", "listChannels"]);
+    expect(calls).toHaveLength(0);
   });
 
-  it("lets a board member of the company do everything", async () => {
-    const { server } = app(member);
-    await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(201);
-    await request(server).get(base).expect(200);
-    await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(200);
-    await request(server).delete(`${base}/provider-1`).expect(204);
-    await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(200);
+  it("lets a company admin, owner, and instance admin do everything", async () => {
+    for (const actor of [member, ownerActor, instanceAdminActor]) {
+      const { server } = app(actor);
+      await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(201);
+      await request(server).get(base).expect(200);
+      await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(200);
+      await request(server).delete(`${base}/provider-1`).expect(204);
+      await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(200);
+    }
   });
 });
 
@@ -344,6 +455,8 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) connector boundary & availableTypes", 
     const getRes = await request(server).get(base).expect(200);
     expect(getRes.body.availableTypes).toBeDefined();
     expect(getRes.body.availableTypes).not.toContain("chatgpt-pool");
+    expect(getRes.body.availableTypes).not.toContain("antigravity-pool");
+    expect(getRes.body.availableTypes).not.toContain("google-ai-pool");
     expect(getRes.body.availableTypes).toContain("openai");
     expect(getRes.body.availableTypes).toContain("dashscope");
 

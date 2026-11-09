@@ -22,7 +22,7 @@ import {
   statusDecisions,
   workAssessments,
   workspaceOperations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { NativeEvidenceAssessment } from "../services/native-runtime/evidence-classifier.js";
 import { classifyNativeEvidence } from "../services/native-runtime/evidence-classifier.js";
 import {
@@ -2139,7 +2139,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       if (guard === "answered") await db.update(issueThreadInteractions).set({ status: "accepted" }).where(eq(issueThreadInteractions.id, seeded.interaction.id));
       if (guard === "attention") await db.update(workAssessments).set({ assessmentJson: { attentionRequests: [{ kind: "approval", summary: "Approve release", ownerClass: "human" }] } }).where(eq(workAssessments.id, seeded.assessmentId));
       if (guard === "authority") await db.update(completionContracts).set({ risk: "high", completionAuthority: "server_arbiter" }).where(eq(completionContracts.id, seeded.contractId!));
-      if (guard === "later_status") await issueService(db).update(seeded.issueId, { status: "blocked" });
+      if (guard === "later_status") await issueService(db).update(seeded.issueId, { status: "blocked", unblockDescriptor: { owner: "board", action: "Test hold" } });
       if (guard === "workspace_failed") await db.update(workspaceOperations).set({ status: "failed", exitCode: 1 }).where(eq(workspaceOperations.heartbeatRunId, seeded.runId));
       if (guard === "newer_contract") {
         const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.id, seeded.contractId!));
@@ -2207,7 +2207,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
 
   it.each(["blocked", "done", "cancelled"])("dismisses the obsolete card without undoing a later %s status", async (status) => {
     const seeded = await seedPolicyReview();
-    await issueService(db).update(seeded.issueId, { status });
+    await issueService(db).update(seeded.issueId, status === "blocked" ? { status, unblockDescriptor: { owner: "board", action: "Test hold" } } : { status });
     const before = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
     const after = await db.select().from(issues).where(eq(issues.id, seeded.issueId));

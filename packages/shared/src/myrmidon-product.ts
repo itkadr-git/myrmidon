@@ -3,10 +3,13 @@
 // the server keeps its import paths; adapter-utils and other shared packages
 // import the name from here without reaching into server-only code.
 //
-// This does not rename package names (@paperclipai/*), environment variables
+// This does not rename package names (@myrmidon/*), environment variables
 // (PAPERCLIP_*), the paperclipai CLI, API paths, HTTP headers, log messages,
 // or database identifiers — those stay untouched for vendor compatibility
 // (see NOTICE and docs/myrmidon/CONVENTIONS.md §8).
 
 /** The product name as shown to people and agents. */
 export const PRODUCT_NAME = "Myrmidon";
+
+/** The default product description for metadata, manifests, and Open Graph tags. */
+export const PRODUCT_DESCRIPTION = "AI-powered project management and agent coordination platform";

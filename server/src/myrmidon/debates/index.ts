@@ -10,7 +10,7 @@
 // `general.debate` key survives every vendor write of the row (the preserve
 // helper registered in services/instance-settings.ts).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { debateRoutes, debateServiceForDb } from "./routes.js";
 
 export { debateRoutes, debateServiceForDb };
@@ -31,6 +31,18 @@ export {
   type DebateService,
   type DebateServiceDeps,
 } from "./service.js";
+export * from "./domain/index.js";
+export {
+  DebateRoundRunner,
+  DebateRoundError,
+  DEBATE_PARTICIPANT_A,
+  DEBATE_PARTICIPANT_B,
+  DEBATE_PROJECTED_CALL_TOKENS,
+  type DebateRoundErrorCode,
+  type DebateRoundRunnerInput,
+  type DebateRoundRecord,
+  type DebateJudgeContext,
+} from "./round-runner.js";
 
 /** Router for app.ts; a service override lets tests drive the whole API with fakes. */
 export function myrmidonDebateRoutes(db: Db, overrides: { service?: ReturnType<typeof debateServiceForDb>; env?: NodeJS.ProcessEnv } = {}) {

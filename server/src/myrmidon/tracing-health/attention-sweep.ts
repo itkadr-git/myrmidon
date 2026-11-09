@@ -15,12 +15,13 @@
 // every myrmidon sweep. server/src/index.ts gets one marked call.
 
 import { isNotNull } from "drizzle-orm";
-import { companies, type Db } from "@paperclipai/db";
+import { companies, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/index.js";
 import { createLitellmGatewayClient } from "../litellm-costs/litellm-costs.js";
-import { readTracingHealthSettings } from "./probes.js";
+import { resolveTracingHealthSettings, readTracingHealthSettings, withClickhousePassword } from "./probes.js"; // myrmidon(1.7, OPE-4101)
+import { liveTracingHealthSettings } from "../system-settings/live.js"; // myrmidon(1.7, OPE-4101)
 import type { TracingHealthReport } from "./domain.js";
 import {
   readTracingHealthAttentionSignal,
@@ -42,6 +43,15 @@ export function readTracingSignalSweepIntervalMs(env: NodeJS.ProcessEnv = proces
     return DEFAULT_SWEEP_INTERVAL_SEC * 1000;
   }
   return value * 1000;
+}
+
+/**
+ * Live sweep interval: the UI value via the behavior-settings registry, with a
+ * set env var as a forced override. myrmidon(1.7, OPE-4101).
+ */
+export function resolveTracingSignalSweepIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const live = liveTracingHealthSettings(env);
+  return live.signalIntervalSec * 1000;
 }
 
 export interface TracingAttentionSweepDeps {
@@ -119,7 +129,7 @@ export function createTracingAttentionSweeper(
     return { companies: companiesCount, signals, transitions };
   }
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void sweep().catch((err) => log.error({ err }, "tracing health signal sweep tick failed"));
   }, intervalMs);
   timer.unref?.();
@@ -148,7 +158,9 @@ export function startTracingAttentionSweep(
   } = {},
 ): () => void {
   const env = opts.env ?? process.env;
-  const settings = readTracingHealthSettings(env);
+  // myrmidon(1.7, OPE-4101): resolve live so a UI change without a restart is
+  // honored on every sweep; the sweep interval itself stays the startup value.
+  const settings = resolveTracingHealthSettings(env);
   if (!settings.enabled) return () => {};
 
   const report = opts.report ?? defaultReportSource(db, env);
@@ -171,7 +183,7 @@ export function startTracingAttentionSweep(
         });
       },
     },
-    readTracingSignalSweepIntervalMs(env),
+    resolveTracingSignalSweepIntervalMs(env),
   );
 
   stopTracingAttentionSweep();
@@ -201,13 +213,16 @@ import {
   gatewayRequestCount,
 } from "./probes.js";
 import { computeTracingHealthState, type TracingHealthEvidence } from "./domain.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 function defaultReportSource(db: Db, env: NodeJS.ProcessEnv): (companyId: string) => Promise<TracingHealthReport> {
   const secrets = secretService(db);
-  const settings = () => readTracingHealthSettings(env);
+  // myrmidon(1.7, OPE-4101): resolve live per report so a UI change without a
+  // restart is honored on the next probe.
+  const settings = () => resolveTracingHealthSettings(env);
 
   return async () => {
-    const current = settings();
+    const current = await withClickhousePassword(settings(), env);
     const now = new Date();
     const to = now;
     const from = new Date(to.getTime() - current.windowMs);

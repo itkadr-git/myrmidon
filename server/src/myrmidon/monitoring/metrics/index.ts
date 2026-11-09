@@ -8,11 +8,13 @@
 // the in-process attention registries; there is no timer, no store and no
 // migration behind this module.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { myrmidonMetricsRoutes, type MetricsRoutesDeps } from "./routes.js";
 
 export * from "./metrics.js";
 export * from "./process-metrics.js";
+export * from "./capacity-producer.js";
+export * from "./runs-reconnecting.js";
 export {
   METRICS_TOKEN_SECRET_ENV,
   METRICS_TOKEN_ENV,

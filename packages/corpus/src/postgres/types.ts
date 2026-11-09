@@ -1,7 +1,7 @@
 /**
  * Shared database handle type for the corpus store layer.
  *
- * The corpus package depends on @paperclipai/db only for the schema tables;
+ * The corpus package depends on @myrmidon/db only for the schema tables;
  * the Db handle itself is any drizzle node-postgres database whose schema
  * includes the corpus tables (in practice: the handle from `createDb`).
  */

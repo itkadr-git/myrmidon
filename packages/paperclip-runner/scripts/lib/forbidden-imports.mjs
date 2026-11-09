@@ -83,24 +83,24 @@ function violationReason({ file, packageRoot, specifier }) {
   const relativeFile = relative(packageRoot, file).split(/[\\/]/).join("/");
   const isExampleConsumer = relativeFile.startsWith("examples/");
   const publicRunnerImports = new Set([
-    "@paperclipai/paperclip-runner/browser",
-    "@paperclipai/paperclip-runner/react",
-    "@paperclipai/paperclip-runner/standalone",
-    "@paperclipai/paperclip-runner/testing",
-    "@paperclipai/paperclip-runner/styles.css",
+    "@myrmidon/paperclip-runner/browser",
+    "@myrmidon/paperclip-runner/react",
+    "@myrmidon/paperclip-runner/standalone",
+    "@myrmidon/paperclip-runner/testing",
+    "@myrmidon/paperclip-runner/styles.css",
   ]);
   if (
-    specifier.startsWith("@paperclipai/paperclip-runner/") &&
+    specifier.startsWith("@myrmidon/paperclip-runner/") &&
     !publicRunnerImports.has(specifier)
   ) {
     return "runner consumers may import only declared public subpaths";
   }
-  if (isExampleConsumer && specifier === "@paperclipai/paperclip-runner") {
+  if (isExampleConsumer && specifier === "@myrmidon/paperclip-runner") {
     return "runner consumers may import only declared public subpaths";
   }
   if (
-    specifier.startsWith("@paperclipai/") &&
-    specifier !== "@paperclipai/paperclip-runner" &&
+    specifier.startsWith("@myrmidon/") &&
+    specifier !== "@myrmidon/paperclip-runner" &&
     !publicRunnerImports.has(specifier)
   ) {
     return "Paperclip workspace packages are outside the standalone boundary";
@@ -152,11 +152,11 @@ async function manifestViolations(packageRoot) {
   const unreviewedDevelopmentDependencies = Object.keys(
     manifest.devDependencies ?? {},
   ).filter(
-    (name) => name.startsWith("@paperclipai/"),
+    (name) => name.startsWith("@myrmidon/"),
   );
   return [...runtimeDependencies, ...unreviewedDevelopmentDependencies]
     .filter(
-      (name) => name.startsWith("@paperclipai/") && name !== "@paperclipai/paperclip-runner",
+      (name) => name.startsWith("@myrmidon/") && name !== "@myrmidon/paperclip-runner",
     )
     .map((specifier) => ({
       file: manifestPath,

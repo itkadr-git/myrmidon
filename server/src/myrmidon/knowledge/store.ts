@@ -6,9 +6,9 @@
 // every mutation runs the state machine and the invariants first, then writes
 // rows in one transaction, then appends the `knowledge.*` event and mirrors it
 // into company activity (S9). Nothing here spells dialect SQL: the module
-// keeps the "0 triggers, 0 `sql\`` with dialect operators" guarantee — full
+// keeps the "0 triggers, 0 dialect operators" guarantee — full
 // text search is the `SearchIndex` PORT (domain.ts), implemented for pg in
-// `@paperclipai/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
+// `@myrmidon/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
 //
 // The pointer discipline (the acceptance criteria):
 //   - `draft()` writes a revision and NEVER touches `delivered_revision_id`;
@@ -22,8 +22,8 @@
 //   - `exportTree()/importTree()` are canonical: export → import → export is
 //     byte-for-byte identical.
 
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import type { Db } from "@myrmidon/db";
 import {
   knowledgeEvents,
   knowledgeItems,
@@ -31,17 +31,24 @@ import {
   knowledgeRevisions,
   knowledgeSources,
   knowledgeSuggestions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
+import { resolveCasteSensitivity } from "../caste-sensitivity.js";
+import { isUniqueViolation } from "../../db-errors.js";
+import { ruleApproverKind } from "./rules.js";
 import {
   KnowledgeDomainError,
   assertApprovable,
   assertItemTransition,
+  assertKnowledgeWriteProtection,
+  type KnowledgeWriteProtectionViolation,
   assertRevisionTransition,
   assertRuleFields,
   assertSingleLine,
   assertValidSlug,
+  assertValidRoles,
   assertValidTags,
+  approverKindSatisfies,
   draftPointerFields,
   extractLinkTargets,
   assertTranslationOf,
@@ -57,6 +64,7 @@ import {
   type KnowledgeRevisionStatus,
   type KnowledgeRevisionLang,
   type KnowledgeSourceKind,
+  type KnowledgeSuggestionTrust,
   type KnowledgeTreePage,
   type SearchIndex,
 } from "./domain.js";
@@ -79,6 +87,7 @@ export interface KnowledgeItemDto {
   status: KnowledgeItemStatus;
   folderPath: string;
   tags: string[];
+  roles: string[];
   approvalRequired: boolean;
   approverKind: string | null;
   deliveredRevisionId: string | null;
@@ -95,6 +104,8 @@ export interface KnowledgeRevisionDto {
   status: KnowledgeRevisionStatus;
   lang: KnowledgeRevisionLang;
   translationOf: string | null;
+  title: string | null;
+  summary: string | null;
   content: string;
   changeSummary: string | null;
   rolledBackFromRevisionId: string | null;
@@ -137,9 +148,12 @@ export interface CreateKnowledgeInput {
   summary?: string | null;
   folderPath?: string;
   tags?: string[];
+  roles?: string[];
   approvalRequired?: boolean;
   approverKind?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
+  force?: boolean;
+  reason?: string | null;
 }
 
 export interface DraftKnowledgeInput {
@@ -147,9 +161,13 @@ export interface DraftKnowledgeInput {
   lang?: KnowledgeRevisionLang;
   translationOf?: string | null;
   changeSummary?: string | null;
+  title?: string;
+  summary?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
   /** Submit straight to review instead of leaving the revision as draft. */
   submit?: boolean;
+  force?: boolean;
+  reason?: string | null;
 }
 
 export interface ApproveKnowledgeInput {
@@ -196,6 +214,7 @@ function toItemDto(row: ItemRow): KnowledgeItemDto {
     status: row.status,
     folderPath: row.folderPath,
     tags: row.tags ?? [],
+    roles: row.roles ?? [],
     approvalRequired: row.approvalRequired,
     approverKind: row.approverKind,
     deliveredRevisionId: row.deliveredRevisionId,
@@ -217,6 +236,8 @@ function toRevisionDto(
     status: row.status,
     lang: row.lang,
     translationOf: row.translationOf,
+    title: row.title ?? null,
+    summary: row.summary ?? null,
     content: row.content,
     changeSummary: row.changeSummary,
     rolledBackFromRevisionId: row.rolledBackFromRevisionId,
@@ -268,7 +289,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
 
   async function mirrorActivity(input: {
     companyId: string;
-    itemId: string;
+    itemId?: string | null;
     slug: string;
     event: string;
     actor: KnowledgeActor;
@@ -280,7 +301,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       actorId: input.actor.actorId ?? input.actor.actorType,
       action: input.event,
       entityType: "knowledge_item",
-      entityId: input.itemId,
+      entityId: input.itemId ?? input.slug,
       agentId: input.actor.actorType === "agent" ? (input.actor.actorId ?? null) : null,
       details: { slug: input.slug, ...input.payload },
     });
@@ -355,11 +376,44 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     assertSingleLine(input.title, "Title");
     if (input.summary != null) assertSingleLine(input.summary, "Summary");
     assertValidTags(input.tags ?? []);
+    let createViolation: KnowledgeWriteProtectionViolation | null = null;
+    try {
+      createViolation = assertKnowledgeWriteProtection({
+        newContent: input.content,
+        previousContent: null,
+        force: input.force,
+        reason: input.reason,
+      });
+    } catch (err) {
+      console.warn(`[KNOWLEDGE_WRITE_PROTECTION_ALERT] Refused create for ${input.slug}: ${(err as Error).message}`);
+      await mirrorActivity({
+        companyId: input.companyId,
+        itemId: input.slug,
+        slug: input.slug,
+        event: "knowledge.write_protection_alert",
+        actor,
+        payload: { slug: input.slug, cause: (err as Error).message, action: "create" },
+      }).catch(() => {});
+      throw err;
+    }
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     if (input.translationOf) throw new KnowledgeDomainError("translation_requires_canonical_item", 400, "A translation revision must be created against an existing knowledge item.");
     const kind = input.kind ?? "note";
+    const roles = assertValidRoles(input.roles ?? []);
+    if (kind === "rule" && roles.length === 0) {
+      throw new KnowledgeDomainError("invalid_metadata", 400, "A rule (kind \"rule\") needs at least one role.");
+    }
+    if (kind !== "rule" && roles.length > 0) {
+      throw new KnowledgeDomainError("invalid_metadata", 400, "Roles are only valid on rules (kind \"rule\").");
+    }
     const approvalRequired = kind === "rule" ? true : (input.approvalRequired ?? false);
-    assertRuleFields(kind, approvalRequired, input.approverKind ?? null);
+
+    let approverKind = input.approverKind ?? null;
+    if (kind === "rule") {
+      const sensitivity = await resolveCasteSensitivity(db, input.companyId);
+      approverKind = ruleApproverKind(roles, sensitivity);
+    }
+    assertRuleFields(kind, approvalRequired, approverKind);
 
     const createdAt = now();
     const row = await db.transaction(async (tx) => {
@@ -383,8 +437,9 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: "draft",
           folderPath: input.folderPath ?? "",
           tags: input.tags ?? [],
+          roles,
           approvalRequired,
-          approverKind: input.approverKind ?? null,
+          approverKind,
           deliveredRevisionId: null,
           currentRevisionNumber: 1,
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -404,6 +459,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: "draft",
           lang,
           translationOf: null,
+          title: input.title,
+          summary: input.summary ?? null,
           content: input.content,
           changeSummary: "created",
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -437,6 +494,16 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.created", actor, payload: { kind: row.kind } });
+    if (createViolation) {
+      await mirrorActivity({
+        companyId: row.companyId,
+        itemId: row.id,
+        slug: row.slug,
+        event: "knowledge.write_protection_overridden",
+        actor,
+        payload: { slug: row.slug, violation: createViolation.kind, reason: input.reason },
+      }).catch(() => {});
+    }
     await reindex(row.nestId, row.id);
     return toItemDto(row);
   }
@@ -448,9 +515,39 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (current.status === "superseded") {
       throw new KnowledgeDomainError("superseded_read_only", 409, "A superseded item takes no new revisions.");
     }
+    if (input.title != null) assertSingleLine(input.title, "Title");
+    if (input.summary != null) assertSingleLine(input.summary, "Summary");
     if (input.changeSummary != null) assertSingleLine(input.changeSummary, "Change summary");
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     const timestamp = now();
+
+    const [latestRevision] = await db
+      .select({ content: knowledgeRevisions.content })
+      .from(knowledgeRevisions)
+      .where(and(eq(knowledgeRevisions.nestId, nestId), eq(knowledgeRevisions.itemId, current.id)))
+      .orderBy(desc(knowledgeRevisions.revisionNumber))
+      .limit(1);
+
+    let draftViolation: KnowledgeWriteProtectionViolation | null = null;
+    try {
+      draftViolation = assertKnowledgeWriteProtection({
+        newContent: input.content,
+        previousContent: latestRevision?.content ?? null,
+        force: input.force,
+        reason: input.reason,
+      });
+    } catch (err) {
+      console.warn(`[KNOWLEDGE_WRITE_PROTECTION_ALERT] Refused draft for ${current.slug}: ${(err as Error).message}`);
+      await mirrorActivity({
+        companyId: current.companyId,
+        itemId: current.id,
+        slug: current.slug,
+        event: "knowledge.write_protection_alert",
+        actor,
+        payload: { slug: current.slug, cause: (err as Error).message, action: "draft" },
+      }).catch(() => {});
+      throw err;
+    }
 
     const row = await db.transaction(async (tx) => {
       // Lock the item row so concurrent drafts serialize on the revision
@@ -474,6 +571,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           throw new KnowledgeDomainError("invalid_translation_target", 400, "A translation must reference a canonical revision of the same item.");
         }
       }
+      const revisionTitle = input.title !== undefined ? input.title : locked!.title;
+      const revisionSummary = input.summary !== undefined ? (input.summary ?? null) : locked!.summary;
       const [revision] = await tx
         .insert(knowledgeRevisions)
         .values({
@@ -484,6 +583,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: input.submit ? "submitted" : "draft",
           lang,
           translationOf,
+          title: revisionTitle,
+          summary: revisionSummary,
           content: input.content,
           changeSummary: input.changeSummary ?? null,
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -531,6 +632,16 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.draft", actor, payload: {} });
+    if (draftViolation) {
+      await mirrorActivity({
+        companyId: current.companyId,
+        itemId: current.id,
+        slug: current.slug,
+        event: "knowledge.write_protection_overridden",
+        actor,
+        payload: { slug: current.slug, violation: draftViolation.kind, reason: input.reason },
+      }).catch(() => {});
+    }
     return toItemDto(row);
   }
 
@@ -623,9 +734,14 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           .set({ status: "approved", approvedAt: now() })
           .where(eq(knowledgeRevisions.id, revision.id));
       }
+      const set: Partial<ItemRow> = { status: "published", deliveredRevisionId: revision.id, updatedAt: now() };
+      if (revision.title != null) {
+        set.title = revision.title;
+        set.summary = revision.summary;
+      }
       const [updated] = await tx
         .update(knowledgeItems)
-        .set({ status: "published", deliveredRevisionId: revision.id, updatedAt: now() })
+        .set(set)
         .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id)))
         .returning();
       await appendEvent(tx, {
@@ -654,10 +770,15 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
    */
   async function approve(nestId: string, idOrSlug: string, actor: KnowledgeActor, input: ApproveKnowledgeInput = {}): Promise<KnowledgeItemDto> {
     const current = await loadItem(nestId, idOrSlug);
+    let approverKind = current.approverKind;
+    if (current.kind === "rule") {
+      const sensitivity = await resolveCasteSensitivity(db, current.companyId);
+      approverKind = ruleApproverKind(current.roles ?? [], sensitivity);
+    }
     const gateItem: KnowledgeApprovalGateItem = {
       kind: current.kind,
       approvalRequired: current.approvalRequired,
-      approverKind: current.approverKind,
+      approverKind,
     };
     const approver: KnowledgeApprover = { actorType: actor.actorType, actorId: actor.actorId, kind: actor.kind ?? null };
     assertApprovable(gateItem, approver);
@@ -692,6 +813,10 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         assertItemTransition(current.status, "published");
         set.status = "published";
         set.deliveredRevisionId = revision.id;
+        if (revision.title != null) {
+          set.title = revision.title;
+          set.summary = revision.summary;
+        }
       } else if (current.status === "in_review") {
         set.status = "in_review";
       }
@@ -742,6 +867,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           itemId: current.id,
           revisionNumber: plan.newRevisionNumber,
           status: "approved",
+          title: target.title,
+          summary: target.summary,
           content: target.content,
           lang: target.lang,
           translationOf: target.translationOf,
@@ -771,14 +898,19 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       }
 
       const statusToDeliver = input.publish && current.status !== "published" ? "published" : current.status;
+      const set: Partial<ItemRow> = {
+        currentRevisionNumber: plan.newRevisionNumber,
+        deliveredRevisionId: copy!.id,
+        status: statusToDeliver,
+        updatedAt: now(),
+      };
+      if (target.title != null) {
+        set.title = target.title;
+        set.summary = target.summary;
+      }
       const [updated] = await tx
         .update(knowledgeItems)
-        .set({
-          currentRevisionNumber: plan.newRevisionNumber,
-          deliveredRevisionId: copy!.id,
-          status: statusToDeliver,
-          updatedAt: now(),
-        })
+        .set(set)
         .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id)))
         .returning();
 
@@ -1047,6 +1179,9 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetSlug?: string | null;
       sourceKind?: KnowledgeSourceKind;
       sourceRef?: string | null;
+      /** Provenance trust (1.7 L-5): set by the callers that propose foreign url content. */
+      trust?: KnowledgeSuggestionTrust;
+      idempotencyKey?: string | null;
     },
   ): Promise<{ id: string; targetItemId: string | null; status: string; createdAt: string }> {
     assertSingleLine(input.body, "Suggestion body");
@@ -1055,31 +1190,72 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       const target = await loadItem(nestId, input.targetSlug);
       targetId = target.id;
     }
-    const [row] = await db
-      .insert(knowledgeSuggestions)
-      .values({
-        companyId: input.companyId,
-        nestId,
-        targetItemId: targetId,
-        body: input.body,
-        rationale: input.rationale ?? null,
-        sourceKind: input.sourceKind ?? null,
-        sourceRef: input.sourceRef ?? null,
-        status: "pending",
-        createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
-        createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
-        createdAt: now(),
-      })
-      .returning();
-    await appendEvent(db, {
-      companyId: input.companyId,
-      nestId,
-      itemId: targetId,
-      event: "knowledge.suggested",
-      payload: { body: input.body },
-      actor,
-    });
-    return { id: row!.id, targetItemId: row!.targetItemId, status: row!.status, createdAt: row!.createdAt.toISOString() };
+    try {
+      return await db.transaction(async (tx) => {
+        if (input.idempotencyKey) {
+          // Fast path: read back an earlier suggestion with the same key.
+          // The partial unique index (migration 0425) is the real guard: if a
+          // concurrent writer commits between this read and the insert below,
+          // the insert throws 23505 and the outer catch reads the winner's
+          // committed row — no duplicate suggestion, no duplicate event.
+          const [existing] = await tx
+            .select()
+            .from(knowledgeSuggestions)
+            .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.idempotencyKey, input.idempotencyKey)))
+            .limit(1);
+          if (existing) {
+            return { id: existing.id, targetItemId: existing.targetItemId, status: existing.status, createdAt: existing.createdAt.toISOString() };
+          }
+        }
+        const [row] = await tx
+          .insert(knowledgeSuggestions)
+          .values({
+            companyId: input.companyId,
+            nestId,
+            targetItemId: targetId,
+            body: input.body,
+            rationale: input.rationale ?? null,
+            sourceKind: input.sourceKind ?? null,
+            sourceRef: input.sourceRef ?? null,
+            trust: input.trust ?? null,
+            idempotencyKey: input.idempotencyKey ?? null,
+            status: "pending",
+            createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
+            createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
+            createdAt: now(),
+          })
+          .returning();
+        await appendEvent(tx, {
+          companyId: input.companyId,
+          nestId,
+          itemId: targetId,
+          event: "knowledge.suggested",
+          payload: {
+            body: input.body,
+            suggestionId: row!.id,
+            ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+          },
+          actor,
+        });
+        return { id: row!.id, targetItemId: row!.targetItemId, status: row!.status, createdAt: row!.createdAt.toISOString() };
+      });
+    } catch (err) {
+      // 23505 unique_violation on the (nest_id, idempotency_key) partial
+      // unique index: a concurrent writer won the race and committed first.
+      // This transaction rolled back (no partial rows, no event); read the
+      // winner's committed row in a fresh query and return it.
+      if (isUniqueViolation(err, "knowledge_suggestions_idempotency_key_uq") && input.idempotencyKey) {
+        const [winner] = await db
+          .select()
+          .from(knowledgeSuggestions)
+          .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.idempotencyKey, input.idempotencyKey)))
+          .limit(1);
+        if (winner) {
+          return { id: winner.id, targetItemId: winner.targetItemId, status: winner.status, createdAt: winner.createdAt.toISOString() };
+        }
+      }
+      throw err;
+    }
   }
 
   async function decideSuggestion(
@@ -1111,7 +1287,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return { id: row.id, status: input.decision };
   }
 
-  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; createdAt: string }>> {
+  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; trust: string | null; createdAt: string }>> {
     const conditions = [eq(knowledgeSuggestions.nestId, nestId)];
     if (status !== "all") conditions.push(eq(knowledgeSuggestions.status, status));
     const rows = await db.select().from(knowledgeSuggestions).where(and(...conditions)).orderBy(asc(knowledgeSuggestions.createdAt));
@@ -1120,6 +1296,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetItemId: row.targetItemId,
       body: row.body,
       status: row.status,
+      trust: row.trust ?? null,
       createdAt: row.createdAt.toISOString(),
     }));
   }
@@ -1144,6 +1321,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       summary: item.summary,
       folder: item.folderPath,
       tags: item.tags ?? [],
+      roles: item.roles ?? [],
       status: item.status,
       approvalRequired: item.approvalRequired,
       approverKind: item.approverKind,
@@ -1163,19 +1341,87 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     nestId: string,
     buf: Buffer,
     actor: KnowledgeActor,
-    options: { publishOnImport?: boolean } = {},
+    options: {
+      publishOnImport?: boolean;
+      /**
+       * K-3: the approver grade the importing actor presents (from its
+       * membership, never from the file). `null` = no grade at all. Left
+       * undefined only by in-process callers (migration runner, seed), which
+       * act as the instance itself.
+       */
+      approverKind?: string | null;
+    } = {},
   ): Promise<ImportTreeResult> {
     const doc = parseKnowledgeTree(buf);
     if (doc.nestId !== nestId) {
       throw new KnowledgeDomainError("nest_mismatch", 400, `Tree was exported for nest ${doc.nestId}, not ${nestId}.`);
+    }
+    const presented = options.approverKind === undefined ? "owner" : options.approverKind;
+    const sensitivity = await resolveCasteSensitivity(db, companyId);
+
+    /**
+     * K-3: a rule's approver_kind is derived from its roles, never read from
+     * the file. Changing the roles of an existing rule, turning a note into a
+     * rule or a rule into a note needs a grade covering both the old and the
+     * new requirement (403); a new rule arrives published only when the actor
+     * could approve it, otherwise as a draft.
+     */
+    const ruleGate = (page: (typeof doc.pages)[number], existing: ItemRow | null, changed: boolean) => {
+      if (page.kind !== "rule" && existing?.kind !== "rule") return { approverKind: page.approverKind, mayPublish: true };
+      const derived = page.kind === "rule" ? ruleApproverKind(page.roles, sensitivity) : null;
+      const previous = existing?.kind === "rule" ? ruleApproverKind(existing.roles ?? [], sensitivity) : null;
+      const mayPublish = derived === null || approverKindSatisfies(derived, presented);
+      if (existing) {
+        const sameRoles = JSON.stringify([...(existing.roles ?? [])].sort()) === JSON.stringify([...page.roles].sort());
+        if (existing.kind !== page.kind || !sameRoles) {
+          for (const required of [previous, derived]) {
+            if (required && !approverKindSatisfies(required, presented)) {
+              throw new KnowledgeDomainError(
+                "approver_kind_mismatch",
+                403,
+                `Importing "${page.slug}" changes the roles of a rule that needs kind "${required}", the importer presents "${presented ?? "none"}".`,
+              );
+            }
+          }
+        }
+        if (page.kind === "rule" && page.status === "published" && changed && options.publishOnImport !== false && !mayPublish) {
+          throw new KnowledgeDomainError(
+            "approver_kind_mismatch",
+            403,
+            `Importing "${page.slug}" would publish a rule that needs kind "${derived}", the importer presents "${presented ?? "none"}".`,
+          );
+        }
+      }
+      return { approverKind: derived ?? page.approverKind, mayPublish };
+    };
+
+    const deliveredContentOf = async (item: ItemRow): Promise<string> =>
+      item.deliveredRevisionId
+        ? (
+            await db
+              .select({ content: knowledgeRevisions.content })
+              .from(knowledgeRevisions)
+              .where(eq(knowledgeRevisions.id, item.deliveredRevisionId))
+              .limit(1)
+          )[0]?.content ?? ""
+        : "";
+
+    // Refuse before the first write: an import is all-or-nothing on grades.
+    for (const page of doc.pages) {
+      assertValidSlug(page.slug);
+      const present = await loadItem(nestId, page.slug).catch(() => null);
+      ruleGate(page, present, present ? (await deliveredContentOf(present)) !== page.content : true);
     }
     let created = 0;
     let updated = 0;
 
     for (const page of doc.pages) {
       assertValidSlug(page.slug);
-      assertRuleFields(page.kind, page.approvalRequired, page.approverKind);
       const existing = await loadItem(nestId, page.slug).catch(() => null);
+      const currentContent = existing ? await deliveredContentOf(existing) : "";
+      const changed = existing ? currentContent !== page.content : true;
+      const gate = ruleGate(page, existing, changed);
+      assertRuleFields(page.kind, page.approvalRequired, gate.approverKind);
       const timestamp = now();
 
       if (!existing) {
@@ -1189,11 +1435,12 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               slug: page.slug,
               title: page.title,
               summary: page.summary,
-              status: page.status,
+              status: page.status === "published" && !gate.mayPublish ? "draft" : page.status,
               folderPath: page.folder,
               tags: page.tags,
+              roles: page.roles,
               approvalRequired: page.approvalRequired,
-              approverKind: page.approverKind,
+              approverKind: gate.approverKind,
               deliveredRevisionId: null,
               currentRevisionNumber: 1,
               createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -1209,13 +1456,15 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               nestId,
               itemId: item!.id,
               revisionNumber: 1,
-              status: page.status === "published" ? "approved" : "draft",
+              status: page.status === "published" && gate.mayPublish ? "approved" : "draft",
+              title: page.title,
+              summary: page.summary ?? null,
               content: page.content,
               changeSummary: "import",
               createdAt: timestamp,
             })
             .returning();
-          if (page.status === "published" && options.publishOnImport !== false) {
+          if (page.status === "published" && gate.mayPublish && options.publishOnImport !== false) {
             await tx
               .update(knowledgeItems)
               .set({ deliveredRevisionId: revision!.id })
@@ -1234,24 +1483,15 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         });
         created += 1;
       } else {
-        const currentContent = existing.deliveredRevisionId
-          ? (
-              await db
-                .select({ content: knowledgeRevisions.content })
-                .from(knowledgeRevisions)
-                .where(eq(knowledgeRevisions.id, existing.deliveredRevisionId))
-                .limit(1)
-            )[0]?.content ?? ""
-          : "";
-        const changed = currentContent !== page.content;
         await db.transaction(async (tx) => {
           const set: Partial<ItemRow> = {
             title: page.title,
             summary: page.summary,
             folderPath: page.folder,
             tags: page.tags,
+            roles: page.roles,
             approvalRequired: page.approvalRequired,
-            approverKind: page.approverKind,
+            approverKind: gate.approverKind,
             kind: page.kind,
             updatedAt: timestamp,
           };
@@ -1264,6 +1504,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
                 itemId: existing.id,
                 revisionNumber: existing.currentRevisionNumber + 1,
                 status: "draft",
+                title: page.title,
+                summary: page.summary ?? null,
                 content: page.content,
                 changeSummary: "import",
                 createdAt: timestamp,
@@ -1272,7 +1514,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
             set.currentRevisionNumber = existing.currentRevisionNumber + 1;
             // S3 holds here too: an import never silently moves the pointer;
             // a published page gets the new revision delivered explicitly.
-            if (page.status === "published" && options.publishOnImport !== false) {
+            if (page.status === "published" && gate.mayPublish && options.publishOnImport !== false) {
               set.deliveredRevisionId = revision!.id;
             }
             await syncLinks(tx, { ...existing, ...set } as ItemRow, page.content);

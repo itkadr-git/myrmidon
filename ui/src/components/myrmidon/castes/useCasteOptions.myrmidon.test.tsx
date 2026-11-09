@@ -10,7 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCasteOptionsForCompany, casteLabelFor } from "./useCasteOptions";
 import { castesApi } from "./castesApi";
-import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@myrmidon/shared";
 
 const apiMock = vi.hoisted(() => ({
   view: vi.fn(),

@@ -20,7 +20,7 @@ import {
   wsDiskQuotaPutResponseSchema,
   type WsDiskApiResponse,
   type WsDiskQuotaPutResponse,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export const BOT_DOCKER_SOCKET_ENV_NAME = "MYRMIDON_BOT_DOCKER_SOCKET";
 export const DEFAULT_DOCKERGATE_SOCKET = "/var/run/docker.sock";

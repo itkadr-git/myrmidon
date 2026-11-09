@@ -222,7 +222,30 @@ export async function buildInventories({ repoRoot, evalRoot }) {
 
 export async function buildSkillInventory(repoRoot) {
   const skillRoot = resolve(repoRoot, "skills/paperclip");
-  const skillFiles = ["SKILL.md", "references/artifacts.md", "references/cases.md", "references/company-skills.md", "references/issue-workspaces.md", "references/routines.md", "references/workflows.md", "references/api-reference.md"];
+  // SKILL.md is the compact core; the sections it no longer carries live verbatim in
+  // the topical references/ files listed right after it (OPE-11947), so every heading
+  // the skill ever shipped stays classified.
+  const skillFiles = [
+    "SKILL.md",
+    "references/auth-and-run-context.md",
+    "references/chat-turns.md",
+    "references/heartbeat-procedure.md",
+    "references/disposition-and-monitors.md",
+    "references/tasks-blockers-approvals.md",
+    "references/interactions-and-decisions.md",
+    "references/topic-pointers.md",
+    "references/secrets.md",
+    "references/critical-rules.md",
+    "references/comments-and-planning.md",
+    "references/hot-routes-and-search.md",
+    "references/artifacts.md",
+    "references/cases.md",
+    "references/company-skills.md",
+    "references/issue-workspaces.md",
+    "references/routines.md",
+    "references/workflows.md",
+    "references/api-reference.md",
+  ];
   const rows = (await Promise.all(skillFiles.map(async (file) => parseSkillHeadings(
     await readFile(resolve(skillRoot, file), "utf8"),
     `skills/paperclip/${file}`,
@@ -247,7 +270,7 @@ export async function buildMcpInventory(repoRoot) {
 
 export function validateInventories(inventories) {
   const errors = [];
-  const expectedCounts = { capabilities: 156, evaluations: 106, legacyMcpAliases: 42 };
+  const expectedCounts = { capabilities: 164, evaluations: 106, legacyMcpAliases: 42 };
   const normativeNames = ["capabilities", "evaluations"];
   const normativeRows = new Map();
   const globalNormativeIds = new Set();

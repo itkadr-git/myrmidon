@@ -1,7 +1,37 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
 
-import { parseMigrationSql } from "./vendor-release-add.mjs";
+import {
+  PRESERVED_MIGRATION_COLUMNS,
+  formatUnsupportedRelease,
+  isStableReleaseTag,
+  parseMigrationSql,
+  sanitizeMigrationColumns,
+  selectLatestStableRelease,
+} from "./vendor-release-add.mjs";
+
+describe("latest stable Paperclip release", () => {
+  it("ignores prerelease tags and selects the newest published stable release", () => {
+    const releases = [
+      { tag_name: "v2026.1012.0", published_at: "2026-10-12T00:00:00Z", prerelease: false, draft: false },
+      { tag_name: "nightly/2026-10-13", published_at: "2026-10-13T00:00:00Z", prerelease: false, draft: false },
+      { tag_name: "v2026.1013.0-beta", published_at: "2026-10-14T00:00:00Z", prerelease: true, draft: false },
+      { tag_name: "v2026.1005.0", published_at: "2026-10-05T00:00:00Z", prerelease: false, draft: false },
+    ];
+    assert.equal(isStableReleaseTag("v2026.1012.0"), true);
+    assert.equal(isStableReleaseTag("v2026.1013.0-beta"), false);
+    assert.equal(selectLatestStableRelease(releases).tag_name, "v2026.1012.0");
+  });
+
+  it("reports the unsupported tag and migration bounds", () => {
+    const message = formatUnsupportedRelease("v2026.1013.0", 317, "0318_new_migration");
+    assert.match(message, /v2026\.1013\.0/);
+    assert.match(message, /Release migrations: 317/);
+    assert.match(message, /Last migration: 0318_new_migration/);
+  });
+});
 
 describe("vendor-release-add parseMigrationSql", () => {
   it("finds created tables and added columns, one ALTER per statement", () => {
@@ -26,3 +56,81 @@ describe("vendor-release-add parseMigrationSql", () => {
     assert.deepEqual(parseMigrationSql(sql), { tables: [], columns: [] });
   });
 });
+
+describe("vendor-release-add v2026.1106.0 registry entry (OPE-12237)", () => {
+  it("carries the 41 migrations 0334..0374 with non-empty tables/columns", () => {
+    const tsFile = path.resolve(import.meta.dirname, "../../cli/src/commands/myrmidon-migrate-vendor-releases.ts");
+    const content = fs.readFileSync(tsFile, "utf8");
+    const m = /export const VENDOR_EXTRA_RELEASES[^=]*= (\[[\s\S]*\]);\s*$/.exec(content);
+    assert.ok(m, "VENDOR_EXTRA_RELEASES found in vendor-releases.ts");
+    const releases = new Function(`return ${m[1]}`)();
+    const r1106 = releases.find((r) => r.release === "v2026.1106.0");
+    assert.ok(r1106, "v2026.1106.0 entry present");
+    assert.equal(r1106.extra.length, 95, "1106 carries all 95 extras since idx 280");
+    const last41 = r1106.extra.slice(-41);
+    assert.equal(last41[0].tag, "0334_rare_slipstream");
+    assert.equal(last41[40].tag, "0374_rare_wolfpack");
+    for (const e of last41) {
+      assert.match(e.sha256, /^[0-9a-f]{64}$/, `${e.tag} sha256`);
+      assert.ok(Number.isInteger(e.when) && e.when > 0, `${e.tag} when`);
+      assert.ok(Array.isArray(e.tables) && Array.isArray(e.columns), `${e.tag} tables/columns arrays`);
+    }
+    const tables = new Set(last41.flatMap((e) => e.tables));
+    const columns = new Set(last41.flatMap((e) => e.columns));
+    assert.equal(tables.size, 25, "25 new tables introduced by 0334..0374");
+    assert.equal(columns.size, 57, "57 new columns introduced by 0334..0374");
+  });
+});
+
+describe("vendor-release-add PR #1702 manual splice preservation (--regen)", () => {
+  it("defines approved columns to preserve from PR #1702", () => {
+    assert.ok(PRESERVED_MIGRATION_COLUMNS.has("agents.appearance"));
+    assert.ok(PRESERVED_MIGRATION_COLUMNS.has("issues.title_needs_generation"));
+  });
+
+  it("sanitizes migration columns so --regen does not reintroduce approved columns", () => {
+    const rawColumns = [
+      "agents.appearance",
+      "issues.title_needs_generation",
+      "routine_triggers.archived",
+      "browser_use_runs.recovery_cursor",
+    ];
+    const sanitized = sanitizeMigrationColumns(rawColumns);
+    assert.deepEqual(sanitized, [
+      "routine_triggers.archived",
+      "browser_use_runs.recovery_cursor",
+    ]);
+  });
+
+  it("filters PR #1702 columns from upstream ALTER statements during migration parsing", () => {
+    const sql0280 = 'ALTER TABLE "agents" ADD COLUMN "appearance" jsonb;\n--> statement-breakpoint\nALTER TABLE "agents" ADD COLUMN "other" text;';
+    const parsed0280 = parseMigrationSql(sql0280);
+    assert.deepEqual(sanitizeMigrationColumns(parsed0280.columns), ["agents.other"]);
+
+    const sql0293 = 'ALTER TABLE "issues" ADD COLUMN "title_needs_generation" boolean DEFAULT false NOT NULL;';
+    const parsed0293 = parseMigrationSql(sql0293);
+    assert.deepEqual(sanitizeMigrationColumns(parsed0293.columns), []);
+  });
+
+  it("ensures cli/src/commands/myrmidon-migrate-vendor-releases.ts does not contain approved columns in any release", () => {
+    const tsFile = path.resolve(import.meta.dirname, "../../cli/src/commands/myrmidon-migrate-vendor-releases.ts");
+    const content = fs.readFileSync(tsFile, "utf8");
+    const m = /export const VENDOR_EXTRA_RELEASES[^=]*= (\[[\s\S]*\]);\s*$/.exec(content);
+    assert.ok(m, "VENDOR_EXTRA_RELEASES found in vendor-releases.ts");
+    const releases = new Function(`return ${m[1]}`)();
+    assert.ok(releases.length >= 4, "at least 4 releases exist");
+    for (const r of releases) {
+      for (const e of r.extra) {
+        assert.ok(
+          !e.columns.includes("agents.appearance"),
+          `Release ${r.release} migration ${e.tag} must not have agents.appearance in columns`,
+        );
+        assert.ok(
+          !e.columns.includes("issues.title_needs_generation"),
+          `Release ${r.release} migration ${e.tag} must not have issues.title_needs_generation in columns`,
+        );
+      }
+    }
+  });
+});
+

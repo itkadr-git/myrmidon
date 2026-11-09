@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 import type { SidePanelLauncherItem, SidePanelLauncherSection } from "./types";
 
 export interface SidePanelLauncherProps {
@@ -35,9 +36,10 @@ function LauncherContent({
   emptyMessage,
   panel,
 }: Pick<SidePanelLauncherProps, "sections" | "onSelect" | "placeholder" | "emptyMessage"> & { panel: boolean }) {
+  const { t } = useTranslation();
   return (
     <Command className={cn(panel && "border border-border shadow-sm")}>
-      <CommandInput placeholder={placeholder} aria-label={placeholder} />
+      <CommandInput placeholder={placeholder} aria-label={placeholder} data-side-panel-launcher-input="" />
       <CommandList className={cn(panel && "max-h-none flex-1")}>
         <CommandEmpty>{emptyMessage}</CommandEmpty>
         {sections.map((section, sectionIndex) => (
@@ -47,7 +49,7 @@ function LauncherContent({
               {section.loading ? (
                 <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground" role="status">
                   <Loader2 className="size-4 animate-spin" aria-hidden />
-                  Loading…
+                  {t("common.loading")}
                 </div>
               ) : null}
               {section.error ? (
@@ -74,7 +76,7 @@ function LauncherContent({
                       </span>
                     ) : null}
                   </span>
-                  {item.alreadyOpen ? <Check className="size-4 text-muted-foreground" aria-label="Already open" /> : null}
+                  {item.alreadyOpen ? <Check className="size-4 text-muted-foreground" aria-label={t("area.issue-properties-panels-3.side-panel-launcher.alreadyOpen")} /> : null}
                   {item.shortcut ? <CommandShortcut>{item.shortcut}</CommandShortcut> : null}
                 </CommandItem>
               ))}
@@ -93,12 +95,17 @@ export function SidePanelLauncher({
   trigger,
   open: controlledOpen,
   onOpenChange,
-  title = "Open a side panel tab",
-  description = "Choose a view or resource to open.",
-  placeholder = "Search tabs and resources…",
-  emptyMessage = "No matching tabs or resources.",
+  title: titleProp,
+  description: descriptionProp,
+  placeholder: placeholderProp,
+  emptyMessage: emptyMessageProp,
   className,
 }: SidePanelLauncherProps) {
+  const { t } = useTranslation();
+  const title = titleProp ?? t("area.issue-properties-panels-3.side-panel-launcher.title");
+  const description = descriptionProp ?? t("area.issue-properties-panels-3.side-panel-launcher.description");
+  const placeholder = placeholderProp ?? t("area.issue-properties-panels-3.side-panel-launcher.placeholder");
+  const emptyMessage = emptyMessageProp ?? t("area.issue-properties-panels-3.side-panel-launcher.emptyMessage");
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;

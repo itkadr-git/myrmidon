@@ -8,6 +8,9 @@
 //
 // The API key never reaches a log line or a reason string.
 
+import { boardEnv, boardKeyValues, redact as redactWithEnv } from "./board-env.js";
+export { redact } from "./board-env.js";
+
 export const REPORT_PATH = "/api/myrmidon/bots/me/disk-report";
 export const MAX_BODY_BYTES = 1024 * 1024; // WS_DISK_REPORT_MAX_BODY_BYTES
 export const MAX_ACTIONS = 200; // WS_DISK_REPORT_MAX_ACTIONS
@@ -95,6 +98,22 @@ export function validateReport(r) {
     else if (!SIGNS.includes(f.sign)) bad.reason = `${at}.sign is unknown`;
   });
   if (bad.reason) return { ok: false, reason: bad.reason };
+  if (r.metrics !== undefined && r.metrics !== null &&
+      (!isObj(r.metrics) || !Number.isInteger(r.metrics.copies_without_assignee) || r.metrics.copies_without_assignee < 0)) {
+    return { ok: false, reason: "metrics.copies_without_assignee is not a non-negative int" };
+  }
+  if (r.sessionPrune !== undefined && r.sessionPrune !== null) {
+    if (!isObj(r.sessionPrune)) return bad("sessionPrune is not an object");
+    if (r.sessionPrune.stateDbBytesBefore !== undefined && r.sessionPrune.stateDbBytesBefore !== null && !isNonNegInt(r.sessionPrune.stateDbBytesBefore)) {
+      return bad("sessionPrune.stateDbBytesBefore is not int|null");
+    }
+    if (r.sessionPrune.stateDbBytesAfter !== undefined && r.sessionPrune.stateDbBytesAfter !== null && !isNonNegInt(r.sessionPrune.stateDbBytesAfter)) {
+      return bad("sessionPrune.stateDbBytesAfter is not int|null");
+    }
+    if (r.sessionPrune.deletedSessions !== undefined && !isNonNegInt(r.sessionPrune.deletedSessions)) {
+      return bad("sessionPrune.deletedSessions is not a non-negative int");
+    }
+  }
   return { ok: true };
 }
 
@@ -128,8 +147,16 @@ export function buildReport(parts) {
       .slice(-MAX_ACTIONS)
       .map((a) => (a.detail === undefined ? a : { ...a, detail: clip(a.detail, 500) })),
     foreign: [...(parts.foreign ?? [])],
+    ...(Number.isInteger(parts.metrics?.copies_without_assignee) ? { metrics: { copies_without_assignee: parts.metrics.copies_without_assignee } } : {}),
     foreignUid: parts.foreignUid && typeof parts.foreignUid === "object"
       ? { path: clip(parts.foreignUid.path, 500), reason: clip(parts.foreignUid.reason, 500) }
+      : null,
+    sessionPrune: parts.sessionPrune && typeof parts.sessionPrune === "object"
+      ? {
+          stateDbBytesBefore: parts.sessionPrune.stateDbBytesBefore ?? null,
+          stateDbBytesAfter: parts.sessionPrune.stateDbBytesAfter ?? null,
+          deletedSessions: parts.sessionPrune.deletedSessions ?? 0,
+        }
       : null,
   };
   const size = () => Buffer.byteLength(JSON.stringify(report));
@@ -142,7 +169,7 @@ export function buildReport(parts) {
 }
 
 function reportUrl(env) {
-  const base = String(env.PAPERCLIP_API_URL || "").trim().replace(/\/+$/, "").replace(/\/api$/, "");
+  const base = String(boardEnv(env, "API_URL") || "").trim().replace(/\/+$/, "").replace(/\/api$/, "");
   return base ? `${base}${REPORT_PATH}` : null;
 }
 
@@ -150,7 +177,7 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * @param {object} [opts]
- * @param {object} [opts.env]        PAPERCLIP_API_URL, PAPERCLIP_API_KEY
+ * @param {object} [opts.env]        MYRMIDON_API_URL, MYRMIDON_API_KEY (PAPERCLIP_* = legacy alias)
  * @param {Function} [opts.fetchImpl]
  * @param {(line: string) => void} [opts.log]
  * @param {(ms: number) => Promise<void>} [opts.sleep]
@@ -165,12 +192,7 @@ export function createReporter(opts = {}) {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const delays = opts.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
 
-  const redact = (text) => {
-    const key = env.PAPERCLIP_API_KEY;
-    let out = String(text);
-    if (key) out = out.split(key).join("[redacted]");
-    return out;
-  };
+  const redact = (text) => redactWithEnv(text, env);
 
   async function attempt(url, body) {
     const ctl = new AbortController();
@@ -181,7 +203,7 @@ export function createReporter(opts = {}) {
         res = await fetchImpl(url, {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${env.PAPERCLIP_API_KEY}`,
+            Authorization: `Bearer ${boardEnv(env, "API_KEY")}`,
             "Content-Type": "application/json",
             Accept: "application/json",
           },
@@ -222,9 +244,9 @@ export function createReporter(opts = {}) {
       log(`botd report: not sent, invalid: ${redact(checked.reason)}`);
       return { ok: false, reason: `invalid report: ${checked.reason}` };
     }
-    if (!env.PAPERCLIP_API_KEY) return { ok: false, reason: "PAPERCLIP_API_KEY is not set" };
+    if (!boardEnv(env, "API_KEY")) return { ok: false, reason: "MYRMIDON_API_KEY is not set" };
     const url = reportUrl(env);
-    if (!url) return { ok: false, reason: "PAPERCLIP_API_URL is not set" };
+    if (!url) return { ok: false, reason: "MYRMIDON_API_URL is not set" };
     if (typeof fetchImpl !== "function") return { ok: false, reason: "fetch is not available" };
     const body = JSON.stringify(report);
     let last = { ok: false, reason: "not attempted" };

@@ -2,8 +2,8 @@
 // so it must stay cheap and must not import the heartbeat service.
 
 import { eq, inArray } from "drizzle-orm";
-import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { CHAT_PROVIDERS } from "@paperclipai/shared";
+import { agents, heartbeatRuns, issues, type Db } from "@myrmidon/db";
+import { CHAT_PROVIDERS } from "@myrmidon/shared";
 import {
   blockingWindows,
   BOT_PROFILE_WINDOW_REASON_PREFIX,

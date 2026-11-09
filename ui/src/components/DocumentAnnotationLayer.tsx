@@ -1,9 +1,10 @@
 import { Profiler, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, MessageSquarePlus } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import type {
   DocumentAnnotationAnchorState,
   DocumentAnnotationThreadStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -19,7 +20,7 @@ import {
   recordMarkdownMutations,
   recordSelectionChange,
 } from "@/lib/document-annotation-debug";
-import type { DocumentAnnotationAnchorSelector } from "@paperclipai/shared";
+import type { DocumentAnnotationAnchorSelector } from "@myrmidon/shared";
 
 export interface AnnotationOverlayThread {
   id: string;
@@ -252,6 +253,7 @@ export function DocumentAnnotationLayer({
   captureSelectionRequestId,
   pendingHighlightText = null,
 }: AnnotationLayerProps) {
+  const { t } = useTranslation();
   const [highlightRects, setHighlightRects] = useState<HighlightRect[]>([]);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition | null>(null);
@@ -545,7 +547,7 @@ export function DocumentAnnotationLayer({
                 data-status={rect.status}
                 data-focused={isFocused || undefined}
                 data-hovered={isHovered || undefined}
-                aria-label="Open annotation thread"
+                aria-label={t("area.documents-artifacts-1.document-annotation-layer.openThread")}
                 className={cn(
                   "paperclip-doc-annotation-hit-target pointer-events-auto absolute cursor-pointer rounded-none bg-transparent transition-colors",
                   isFocused && "ring-1 ring-transparent",
@@ -585,7 +587,7 @@ export function DocumentAnnotationLayer({
                   width: 16,
                   height: 16,
                 }}
-                title="Anchor moved — needs review"
+                title={t("area.documents-artifacts-1.document-annotation-layer.anchorMoved")}
               >
                 <AlertTriangle className="h-3 w-3" />
               </span>
@@ -595,7 +597,7 @@ export function DocumentAnnotationLayer({
             <div
               data-testid="document-annotation-selection-toolbar"
               role="toolbar"
-              aria-label="Selection actions"
+              aria-label={t("area.documents-artifacts-1.document-annotation-layer.selectionActions")}
               className="paperclip-doc-annotation-selection-toolbar pointer-events-auto absolute z-10 flex items-center gap-1 rounded-md border border-border bg-popover px-1 py-1 shadow-md"
               style={{ top: toolbarPosition.top, left: toolbarPosition.left }}
               onMouseDown={(event) => event.preventDefault()}
@@ -609,10 +611,10 @@ export function DocumentAnnotationLayer({
                 disabled={newCommentDisabled}
                 title={newCommentDisabled
                   ? newCommentDisabledReason ?? undefined
-                  : "Add comment on selection (⌘⇧M)"}
+                  : t("area.documents-artifacts-1.document-annotation-layer.addCommentOnSelection")}
               >
                 <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
-                Comment
+                {t("area.documents-artifacts-1.document-annotation-layer.comment")}
               </Button>
             </div>
           ) : null}

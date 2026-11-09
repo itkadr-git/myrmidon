@@ -18,7 +18,8 @@ const require = createRequire(import.meta.url);
 const ws = require(path.join(ROOT, "docker/bot-runtime/myr-ws/lib/open.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 
-const hasGit = spawnSync("git", ["--version"]).status === 0;
+const GIT = process.env.GIT_TEST_EXECUTABLE || "git";
+const hasGit = spawnSync(GIT, ["--version"]).status === 0;
 
 // The contract schemas are zod over TypeScript; Node strips the types itself.
 // Without an installed workspace (no zod) the schema checks fall back to the
@@ -37,17 +38,19 @@ let n = 0;
 let ctx; // per-test: home, workspaceRoot, scratchRoot, ensureBase, calls
 
 function git(cwd, ...args) {
-  const r = spawnSync("git", args, {
+  const r = spawnSync(GIT, ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
     cwd,
     encoding: "utf8",
     env: {
-      PATH: process.env.PATH,
+      PATH: "/usr/bin:/bin",
       HOME: tmp,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_AUTHOR_NAME: "t",
-      GIT_AUTHOR_EMAIL: "t@example.com",
-      GIT_COMMITTER_NAME: "t",
-      GIT_COMMITTER_EMAIL: "t@example.com",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "t",
+      GIT_CONFIG_KEY_1: "user.email",
+      GIT_CONFIG_VALUE_1: "t@example.com",
     },
   });
   assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
@@ -78,7 +81,26 @@ beforeEach(() => {
   fs.mkdirSync(home, { recursive: true });
   const calls = [];
   ctx = {
-    env: { ...process.env, MYRMIDON_GIT_REAL: "git" },
+    env: {
+      ...process.env,
+      PATH: process.env.PATH.split(":").filter((p) => !p.includes("paperclip-github-runtime")).join(":"),
+      MYRMIDON_GIT_REAL: GIT,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+      GIT_CONFIG_COUNT: "6",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "t",
+      GIT_CONFIG_KEY_1: "user.email",
+      GIT_CONFIG_VALUE_1: "t@example.com",
+      GIT_CONFIG_KEY_2: "user.useConfigOnly",
+      GIT_CONFIG_VALUE_2: "false",
+      GIT_CONFIG_KEY_3: "credential.helper",
+      GIT_CONFIG_VALUE_3: "",
+      GIT_CONFIG_KEY_4: "core.askPass",
+      GIT_CONFIG_VALUE_4: "",
+      GIT_CONFIG_KEY_5: "credential.interactive",
+      GIT_CONFIG_VALUE_5: "never",
+    },
     home,
     workspaceRoot: path.join(root, "workspace"),
     scratchRoot: path.join(root, "scratch"),
@@ -93,7 +115,9 @@ beforeEach(() => {
         git(base, "remote", "add", "origin", `file://${originDir}`);
         git(base, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
         git(base, "fetch", "-q", "origin");
+        git(base, "config", "remote.origin.url", `https://github.com/${repo}.git`);
       }
+      git(base, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
       return base;
     },
   };
@@ -136,8 +160,8 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     assert.equal(git(out.path, "rev-parse", "--abbrev-ref", "HEAD"), "bot/ABC-101");
     // objects live once, in the base
     const common = git(out.path, "rev-parse", "--git-common-dir");
-    assert.ok(path.resolve(out.path, common).startsWith(path.join(ctx.home, "git-base")));
-    assert.equal(git(path.join(ctx.home, "git-base", `${REPO}.git`), "worktree", "list", "--porcelain").includes(out.path), true);
+    assert.equal(fs.realpathSync(path.resolve(out.path, common)), fs.realpathSync(path.join(ctx.home, "git-base", `${REPO}.git`)));
+    assert.ok(git(path.join(ctx.home, "git-base", `${REPO}.git`), "worktree", "list", "--porcelain").includes(fs.realpathSync(out.path)));
   });
 
   it("records the copy in the registry in the C1 shape", async () => {
@@ -198,6 +222,102 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     const again = copyOf(await run(["ABC-105", REPO, "--json"]));
     assert.equal(again.reused, false);
     assert.equal(git(again.path, "rev-parse", "HEAD"), head);
+  });
+
+  it("adopts a clean legacy clone with its real origin and is idempotent", async () => {
+    const dir = path.join(ctx.workspaceRoot, "ABC-119");
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    git(tmp, "clone", "-q", originDir, dir);
+    git(dir, "remote", "set-url", "origin", `https://github.com/${REPO}.git`);
+    const first = await run(["ABC-119", REPO, "--json"]);
+    assert.equal(first.exitCode, 0, first.stderr);
+    const out = copyOf(first);
+    assert.equal(out.repo, REPO);
+    assert.equal(out.branch, "bot/ABC-119");
+    assert.equal(out.reused, false);
+    assert.ok(out.recoveryPath.endsWith(".legacy-ABC-119"));
+    assert.equal(git(out.path, "rev-parse", "--abbrev-ref", "HEAD"), "bot/ABC-119");
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# widgets\n");
+    const again = copyOf(await run(["ABC-119", REPO, "--json"]));
+    assert.equal(again.path, out.path);
+    assert.equal(again.reused, true);
+  });
+
+  it("preserves staged, untracked, and local commits before legacy clone conversion", async () => {
+    const dir = path.join(ctx.workspaceRoot, "ABC-120");
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    git(tmp, "clone", "-q", originDir, dir);
+    git(dir, "remote", "set-url", "origin", `https://github.com/${REPO}.git`);
+    fs.writeFileSync(path.join(dir, "staged.txt"), "staged\n");
+    git(dir, "add", "staged.txt");
+    fs.writeFileSync(path.join(dir, "commit.txt"), "local commit\n");
+    git(dir, "add", "commit.txt");
+    git(dir, "commit", "-q", "-m", "local-only");
+    const localHead = git(dir, "rev-parse", "HEAD");
+    fs.writeFileSync(path.join(dir, "staged.txt"), "unstaged after staged\n");
+    fs.writeFileSync(path.join(dir, "untracked.txt"), "untracked\n");
+    const first = await run(["ABC-120", REPO, "--json"]);
+    assert.equal(first.exitCode, 0, first.stderr);
+    const out = copyOf(first);
+    const old = out.recoveryPath;
+    assert.ok(fs.existsSync(old));
+    assert.equal(git(old, "rev-parse", "HEAD"), localHead);
+    assert.equal(git(old, "rev-parse", "refs/myr-ws/recovery/ABC-120"), localHead);
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# widgets\n");
+    assert.match(git(old, "stash", "list", "--format=%s"), /myr-ws recovery ABC-120/);
+    assert.equal(git(path.join(ctx.home, "git-base", `${REPO}.git`), "rev-parse", "refs/heads/myr-ws/recovery/ABC-120"), localHead);
+    const again = copyOf(await run(["ABC-120", REPO, "--json"]));
+    assert.equal(again.reused, true);
+    assert.equal(again.path, out.path);
+  });
+
+  it("refuses legacy clones whose remote only mentions github.com in a spoofed host or path", async () => {
+    for (const [key, remote] of [
+      ["ABC-122", "https://evil.example/github.com/acme/widgets.git"],
+      ["ABC-123", "https://evil.example/acme/widgets.git"],
+      ["ABC-124", "git@evil.example:acme/widgets.git"],
+    ]) {
+      const dir = path.join(ctx.workspaceRoot, key);
+      fs.mkdirSync(path.dirname(dir), { recursive: true });
+      git(tmp, "clone", "-q", originDir, dir);
+      git(dir, "remote", "set-url", "origin", remote);
+      const result = await run([key, REPO, "--json"]);
+      assert.equal(result.exitCode, 2, remote);
+      assert.ok(fs.existsSync(path.join(dir, ".git")), remote);
+      assert.ok(!fs.existsSync(path.join(ctx.home, "ws-registry.json")), remote);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still adopts an unregistered linked worktree after the registry is lost", async () => {
+    const first = copyOf(await run(["ABC-125", REPO, "--json"]));
+    fs.rmSync(path.join(ctx.home, "ws-registry.json"), { force: true });
+    const again = await run(["ABC-125", REPO, "--json"]);
+    assert.equal(again.exitCode, 0, again.stderr);
+    const out = copyOf(again);
+    assert.equal(out.path, first.path);
+    assert.equal(out.reused, true);
+    assert.ok(fs.existsSync(path.join(ctx.home, "ws-registry.json")));
+  });
+
+  it("refuses to adopt a legacy clone when the requested repo differs", async () => {
+    const dir = path.join(ctx.workspaceRoot, "ABC-121");
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    git(tmp, "clone", "-q", originDir, dir);
+    git(dir, "remote", "set-url", "origin", "https://github.com/other/widgets.git");
+    const result = await run(["ABC-121", REPO, "--json"]);
+    assert.equal(result.exitCode, 2);
+    assert.ok(fs.existsSync(path.join(dir, ".git")));
+    assert.ok(!fs.existsSync(path.join(ctx.home, "ws-registry.json")));
+  });
+
+  it("does not adopt a non-git legacy directory", async () => {
+    const dir = path.join(ctx.workspaceRoot, "ABC-122");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "keep.txt"), "keep\n");
+    const result = await run(["ABC-122", REPO, "--json"]);
+    assert.equal(result.exitCode, 2);
+    assert.equal(fs.readFileSync(path.join(dir, "keep.txt"), "utf8"), "keep\n");
   });
 
   it("without a repository and without an existing copy: code 2", async () => {
@@ -364,5 +484,62 @@ describe("myr-ws open — errors from ensureBase pass through with their code", 
       assert.equal(JSON.parse(r.stdout).exitCode, code);
       assert.ok(!fs.existsSync(path.join(ctx.workspaceRoot, "ABC-301")));
     }
+  });
+});
+
+describe("myr-ws open — two repositories for one task (OPE-8946)", { skip: !hasGit }, () => {
+  const OTHER = "acme/vault";
+
+  it("opens a second copy next to the first instead of failing", async () => {
+    const first = copyOf(await run(["ABC-401", REPO, "--json"]));
+    const r = await run(["ABC-401", OTHER, "--json"]);
+    assert.equal(r.exitCode, 0, r.stderr);
+    const second = checkOpenSchema(copyOf(r));
+    assert.equal(first.path, path.join(ctx.workspaceRoot, "ABC-401"));
+    assert.equal(second.path, path.join(ctx.workspaceRoot, "ABC-401.vault"));
+    assert.equal(second.repo, OTHER);
+    assert.equal(second.branch, "bot/ABC-401");
+    assert.equal(second.reused, false);
+    assert.ok(fs.statSync(path.join(second.path, ".git")).isFile());
+    assert.ok(fs.existsSync(first.path), "the first copy stays");
+    const reg = JSON.parse(fs.readFileSync(path.join(ctx.home, "ws-registry.json"), "utf8"));
+    assert.deepEqual(
+      reg.entries.filter((e) => e.key === "ABC-401").map((e) => [e.repo, e.path]),
+      [[REPO, first.path], [OTHER, second.path]],
+    );
+  });
+
+  it("is idempotent per repository", async () => {
+    const first = copyOf(await run(["ABC-402", REPO, "--json"]));
+    const second = copyOf(await run(["ABC-402", OTHER, "--json"]));
+    const again1 = copyOf(await run(["ABC-402", REPO, "--json"]));
+    const again2 = copyOf(await run(["ABC-402", OTHER, "--json"]));
+    assert.equal(again1.path, first.path);
+    assert.equal(again1.reused, true);
+    assert.equal(again2.path, second.path);
+    assert.equal(again2.reused, true);
+  });
+
+  it("the order does not matter: the second repository opened first keeps the primary path", async () => {
+    const a = copyOf(await run(["ABC-403", OTHER, "--json"]));
+    const b = copyOf(await run(["ABC-403", REPO, "--json"]));
+    assert.equal(a.path, path.join(ctx.workspaceRoot, "ABC-403"));
+    assert.equal(b.path, path.join(ctx.workspaceRoot, "ABC-403.widgets"));
+  });
+
+  it("without a repository the first copy is returned", async () => {
+    const first = copyOf(await run(["ABC-404", REPO, "--json"]));
+    await run(["ABC-404", OTHER, "--json"]);
+    const r = copyOf(await run(["ABC-404", "--json"]));
+    assert.equal(r.path, first.path);
+    assert.equal(r.reused, true);
+  });
+
+  it("a stale registry entry of another repository does not push the new copy aside", async () => {
+    const first = copyOf(await run(["ABC-405", REPO, "--json"]));
+    fs.rmSync(first.path, { recursive: true, force: true });
+    const second = copyOf(await run(["ABC-405", OTHER, "--json"]));
+    assert.equal(second.path, first.path);
+    assert.equal(second.repo, OTHER);
   });
 });

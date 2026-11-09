@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/adapter-pi-local",
+  "name": "@myrmidon/adapter-pi-local",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/itkadr-git/myrmidon",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/itkadr-git/myrmidon/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/itkadr-git/myrmidon",
     "directory": "packages/adapters/pi-local"
   },
   "type": "module",
@@ -50,8 +50,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*",
-    "@paperclipai/shared": "workspace:*",
+    "@myrmidon/adapter-utils": "workspace:*",
+    "@myrmidon/shared": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

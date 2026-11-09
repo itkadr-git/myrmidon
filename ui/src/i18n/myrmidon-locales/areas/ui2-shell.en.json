@@ -1,0 +1,19 @@
+{
+  "area": {
+    "ui2-shell": {
+      "ui2-top-bar": {
+        "nestsAll": "All nests",
+        "colonyChip": "{{active}} of {{total}}",
+        "fleetAttentionChip": "Fleet: 1 attention",
+        "fleetChip": "Fleet",
+        "forecastChip": "{{spend}} of {{budget}}",
+        "forecastSpendOnlyChip": "{{spend}} spent",
+        "commanderAria": "Tell the Commander (Ctrl K)",
+        "commanderPlaceholder": "Tell the Commander…",
+        "commanderShortcut": "Ctrl K",
+        "decisionsBadge_one": "{{count}} decision waiting",
+        "decisionsBadge_other": "{{count}} decisions waiting"
+      }
+    }
+  }
+}

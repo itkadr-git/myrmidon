@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@myrmidon/shared";
 import {
   applyLocalQueuedIssueCommentState,
   applyOptimisticIssueFieldUpdate,
@@ -663,6 +663,7 @@ describe("optimistic issue comments", () => {
           pauseReason: null,
           pausedAt: null,
           executionWorkspacePolicy: null,
+          developmentProcess: null,
           codebase: {
             workspaceId: null,
             repoUrl: null,

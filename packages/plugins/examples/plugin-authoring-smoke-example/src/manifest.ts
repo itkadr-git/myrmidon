@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "paperclipai.plugin-authoring-smoke-example",
@@ -8,6 +8,12 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "A Paperclip plugin",
   author: "Plugin Author",
   categories: ["connector"],
+  providerModels: {
+    provider: "example-provider",
+    baseUrl: "https://api.example.com/v1",
+    credentialSecretName: "example-provider-key",
+    models: [{ id: "example-model", name: "Example Model" }],
+  },
   capabilities: [
     "events.subscribe",
     "plugin.state.read",

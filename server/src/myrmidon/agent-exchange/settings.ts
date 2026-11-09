@@ -14,7 +14,7 @@ import {
   AGENT_EXCHANGE_SETTINGS_KEY,
   resolveAgentExchangeSettings,
   type ResolvedAgentExchangeSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export { AGENT_EXCHANGE_SETTINGS_KEY };
 

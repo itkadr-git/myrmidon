@@ -11,7 +11,7 @@ import type {
   TeamLivenessSettings,
   TeamLivenessSettingsPatch,
   TeamLivenessSource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export interface TeamLivenessView {
@@ -43,6 +43,7 @@ export interface TeamLivenessMetrics {
   autoResumeExhaustions: number;
   wakes: number;
   stalledRuns: number;
+  emptyRunsByAgent: Array<{ agentId: string; count: number }>;
 }
 
 export function teamLivenessMetricsKey(companyId: string) {

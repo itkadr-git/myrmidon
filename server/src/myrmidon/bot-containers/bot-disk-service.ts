@@ -12,7 +12,9 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
-import { agents, type Db } from "@paperclipai/db";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { agents, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   BOT_DISK_LAYOUT_KEYS,
@@ -34,15 +36,17 @@ import {
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";
+import { recordBotDiskSweepOutcome } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "./clone-hygiene.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { botKeyForAgent, readBotContainerAgentConfig } from "./agent-config.js"; // myrmidon(1.6.4-BOT-CONTAINER-CARD)
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
@@ -283,16 +287,27 @@ export async function readCloneIdleTtlSecForRole(db: Db, role: string | null | u
   return config.enabled ? Math.max(1, Math.round(config.idleTtlMs / 1000)) : 0;
 }
 
+import { botHasGitAlternates } from "./bot-disk-alternates.js";
+export { botHasGitAlternates };
+
 /** Same for the driver, which knows the bot key (= agent id) and not the role. */
 export async function readBotCacheLayoutForBot(
   db: Db,
   botKey: string,
+  options?: { volumeRoot?: string },
 ): Promise<{ path?: string; gitMirror: boolean }> {
   const layout = await readBotDiskLayout(db);
   if (!layout.sharedPackageCachePath) return { gitMirror: false };
   const rows = await db.select({ role: agents.role }).from(agents).where(eq(agents.id, botKey)).limit(1);
   if (!botRoleGetsSharedCache(layout.sharedCacheRoles, rows[0]?.role)) return { gitMirror: false };
-  return { path: layout.sharedPackageCachePath, gitMirror: layout.gitMirrorRepos.length > 0 };
+  let gitMirror = layout.gitMirrorRepos.length > 0;
+  if (!gitMirror && options?.volumeRoot) {
+    const hasAlternates = await botHasGitAlternates(options.volumeRoot, botKey);
+    if (hasAlternates) {
+      gitMirror = true;
+    }
+  }
+  return { path: layout.sharedPackageCachePath, gitMirror };
 }
 
 /**
@@ -318,7 +333,15 @@ export async function runBotDiskSweep(db: Db): Promise<void> {
   const layout = resolveBotDiskLayout(general.botDisk);
   void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
   const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
-  await sweepAllBotVolumes(lifecycle);
+  // myrmidon(FEATURES): the sweep's report reaches the features page, so a pass
+  // that fails on every tick (a volume root that does not exist) is visible.
+  try {
+    const report = await sweepAllBotVolumes(lifecycle);
+    recordBotDiskSweepOutcome(report);
+  } catch (err) {
+    recordBotDiskSweepOutcome(null, err);
+    throw err;
+  }
 }
 
 /**
@@ -351,7 +374,7 @@ export function startCloneReportCollection(
       });
     return inFlight;
   };
-  const timer = setInterval(() => void pass(), intervalMs);
+  const timer = backgroundInterval(() => void pass(), intervalMs);
   timer.unref?.();
   void pass();
   return () => {

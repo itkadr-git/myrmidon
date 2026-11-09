@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { toolAccessAuditEvents, toolRuntimeSlots } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode, ToolRuntimeSlotStatus } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { toolAccessAuditEvents, toolRuntimeSlots } from "@myrmidon/db";
+import type { DeploymentExposure, DeploymentMode, ToolRuntimeSlotStatus } from "@myrmidon/shared";
 import { logActivity } from "./activity-log.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const ACTIVE_SLOT_STATUSES: ToolRuntimeSlotStatus[] = ["starting", "running", "idle"];
 const DEFAULT_IDLE_TTL_MS = 1_000;

@@ -27,7 +27,7 @@ import type {
   ChatPublicationState,
   ChatResourceAvailability,
   SafeChatPublicationPayload,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { issueComments } from "./issue_comments.js";

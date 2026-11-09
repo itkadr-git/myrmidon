@@ -24,7 +24,7 @@ import {
   companyMemberships,
   myrmidonChannelAllowedUsers,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   CHANNEL_ALLOWLIST_ACTIONS,
   channelAccessRequestTitle,
@@ -32,7 +32,7 @@ import {
   type ChannelAllowlistScope,
   type ChatProvider,
   type ChannelAllowlistStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { badRequest, notFound } from "../../errors.js";
 import { issueService } from "../../services/issues.js";

@@ -6,8 +6,7 @@
 //   - an agent with an allowed role passes;
 //   - a board caller is never subject to the matrix;
 //   - an agent acting on itself is not subject to the matrix;
-//   - approval_required is denied with 403 autonomy_approval_required (until the
-//     held-action half ships).
+//   - approval_required remains a distinct decision; route behavior is covered by the agent-route tests.
 //
 // The router is the real one; the service runs the real domain code over an
 // in-memory store with a recording activity sink. No database, no keys.
@@ -17,10 +16,10 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { AUTONOMY_SAFE_DEFAULTS, type AutonomyChangeLogEntry } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS, type AutonomyChangeLogEntry } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { autonomyRoutes } from "./routes.js";
-import { autonomyGate, AUTONOMY_FORBIDDEN_CODE, AUTONOMY_APPROVAL_REQUIRED_CODE } from "./gate.js";
+import { autonomyGate, AUTONOMY_FORBIDDEN_CODE } from "./gate.js";
 import { memoryAutonomyStore } from "./store.js";
 import { autonomyService, AUTONOMY_ACTIVITY_SOURCE } from "./service.js";
 
@@ -211,7 +210,8 @@ describe("myrmidon(1.6.2-AUTONOMY) gate: pause_wake_agents enforcement", () => {
     expect(ran).toHaveBeenCalledTimes(1);
   });
 
-  it("denies approval_required with 403 autonomy_approval_required", async () => {
+
+  it("reports approval_required without treating it as allowed", async () => {
     const store = memoryAutonomyStore({
       version: 1,
       matrix: {
@@ -222,26 +222,7 @@ describe("myrmidon(1.6.2-AUTONOMY) gate: pause_wake_agents enforcement", () => {
       regulations: [],
     });
     const gate = autonomyGate({ store, roleOf: async () => "engineer" });
-    const ran = vi.fn();
-    const server = express();
-    server.use(express.json());
-    server.use((req, _res, next) => {
-      (req as unknown as { actor: unknown }).actor = otherAgentActor;
-      next();
-    });
-    server.post("/api/agents/:id/pause", async (req, res, next) => {
-      try {
-        await gate.assertAllowed(req, "pause_wake_agents");
-        ran();
-        res.json({ ok: true });
-      } catch (err) {
-        next(err);
-      }
-    });
-    server.use(errorHandler);
-    const res = await request(server).post(`/api/agents/${AGENT_ID}/pause`).expect(403);
-    expect(res.body.code).toBe(AUTONOMY_APPROVAL_REQUIRED_CODE);
-    expect(res.body.details?.actionClass).toBe("pause_wake_agents");
-    expect(ran).not.toHaveBeenCalled();
+    const decision = await gate.decide({ actor: otherAgentActor } as never, "pause_wake_agents");
+    expect(decision.verdict).toBe("approval_required");
   });
 });

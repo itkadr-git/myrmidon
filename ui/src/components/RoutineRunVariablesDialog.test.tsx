@@ -3,7 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, ExecutionWorkspace, Project, RoutineVariable } from "@paperclipai/shared";
+import type { Agent, ExecutionWorkspace, Project, RoutineVariable } from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
@@ -92,6 +92,7 @@ function createProject(): Project {
       defaultMode: "shared_workspace",
       allowIssueOverride: true,
     },
+    developmentProcess: null,
     codebase: {
       workspaceId: null,
       repoUrl: null,

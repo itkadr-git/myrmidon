@@ -26,13 +26,13 @@
 //    the feature is a notice, not a safety mechanism).
 
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   heartbeatRuns,
   issueComments,
   issues,
-} from "@paperclipai/db";
-import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { IssueCommentMetadata, IssueCommentPresentation } from "@myrmidon/shared";
 import { logger } from "../middleware/logger.js";
 
 export const BUDGET_SIGNAL_MODE_ENV = "MYRMIDON_BUDGET_SIGNAL_MODE";

@@ -36,6 +36,7 @@ require_command() {
 issue_id="${PAPERCLIP_TASK_ID:-}"
 status=""
 comment_arg=""
+execution_policy_arg=""
 dry_run=0
 
 while [[ $# -gt 0 ]]; do
@@ -50,6 +51,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --comment)
       comment_arg="${2:-}"
+      shift 2
+      ;;
+    --execution-policy)
+      execution_policy_arg="${2:-}"
       shift 2
       ;;
     --dry-run)
@@ -86,9 +91,11 @@ payload="$(
   jq -nc \
     --arg status "$status" \
     --arg comment "$comment" \
+    --argjson executionPolicy "${execution_policy_arg:-null}" \
     '
       (if $status == "" then {} else {status: $status} end) +
-      (if $comment == "" then {} else {comment: $comment} end)
+      (if $comment == "" then {} else {comment: $comment} end) +
+      (if $executionPolicy == null then {} else {executionPolicy: $executionPolicy} end)
     '
 )"
 

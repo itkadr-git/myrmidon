@@ -4,10 +4,11 @@
 import { api } from "@/api/client";
 import type {
   BrowserConsoleStatus,
+  BrowserScreenConsoleTokenResponse,
   BrowserScreenOpenResponse,
   BrowserScreenStatusResponse,
   BrowserSessionJournalEntry,
-} from "@paperclipai/shared/myrmidon-browser-console";
+} from "@myrmidon/shared/myrmidon-browser-console";
 
 export const browsersQueryKey = ["myrmidon", "browsers"] as const;
 export const browsersJournalQueryKey = ["myrmidon", "browsers", "journal"] as const;
@@ -24,6 +25,12 @@ export const browsersApi = {
     ),
   done: (browserId: string, companyId: string) =>
     api.post<{ done: boolean }>(`/myrmidon/browsers/${encodeURIComponent(browserId)}/screen/done?companyId=${encodeURIComponent(companyId)}`, {}),
+  // Part B: the signed Guacamole auth-JSON for the open screen session.
+  consoleToken: (browserId: string, companyId: string) =>
+    api.post<BrowserScreenConsoleTokenResponse>(
+      `/myrmidon/browsers/${encodeURIComponent(browserId)}/screen/console-token?companyId=${encodeURIComponent(companyId)}`,
+      {},
+    ),
   clearSiteData: (browserId: string, companyId: string, domain: string) =>
     api.delete<{ cleared: boolean; domain: string }>(
       `/myrmidon/browsers/${encodeURIComponent(browserId)}/data?companyId=${encodeURIComponent(companyId)}`,

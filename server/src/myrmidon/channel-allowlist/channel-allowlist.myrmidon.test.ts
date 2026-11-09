@@ -8,7 +8,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { ChannelAllowedUser } from "@paperclipai/shared";
+import type { ChannelAllowedUser } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { channelAllowlistRoutes } from "./routes.js";
 import {

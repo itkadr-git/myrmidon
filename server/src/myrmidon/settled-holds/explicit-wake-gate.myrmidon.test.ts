@@ -35,7 +35,15 @@ describe("bypassesSettledHold", () => {
   });
 
   it("only the exact value \"1\" turns the setting on", () => {
-    process.env[ENV_KEY] = "true";
-    expect(bypassesSettledHold({ source: "on_demand", triggerDetail: "manual", requestedByActorType: "user" })).toBe(true);
+    const wake = { source: "on_demand", reason: "issue_commented", requestedByActorType: "user" } as const;
+
+    process.env[ENV_KEY] = "1";
+    expect(bypassesSettledHold(wake)).toBe(false);
+
+    // Whitespace and other truthy spellings must not enable the override.
+    for (const value of ["1 ", " 1", "01", "true"]) {
+      process.env[ENV_KEY] = value;
+      expect(bypassesSettledHold(wake)).toBe(true);
+    }
   });
 });

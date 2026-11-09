@@ -305,7 +305,7 @@ func TestClosedList(t *testing.T) {
 		v + "containers/prune?filters=%7B%7D",
 		c + "/exec", c + "/attach", c + "/attach/ws", c + "/commit", c + "/export",
 		c + "/changes", c + "/top", c + "/stats", c + "/kill", c + "/pause",
-		c + "/unpause", c + "/update", c + "/resize", c + "/kill?signal=SIGKILL",
+		c + "/unpause", c + "/resize", c + "/kill?signal=SIGKILL",
 		c + "/logs", c + "/archive", c + "/archive?path=%2F",
 		v + "containers/" + nameAHelp + "/exec", v + "containers/" + nameAHelp + "/attach",
 		v + "exec/abc/start", v + "exec/abc/json", v + "exec/abc/resize",

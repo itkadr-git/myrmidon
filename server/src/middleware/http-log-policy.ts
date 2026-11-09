@@ -37,8 +37,17 @@ function normalizePath(url: string): string {
   return pathname.length > 0 ? pathname : "/";
 }
 
+const ALL_METHOD_SECRET_SENSITIVE_PATHS = [
+  // myrmidon(OPE-11891): invite routes carrying tokens in path (/api/invites/:token, /invites/:token, etc.)
+  /^\/(?:api\/)?invites?(?:\/|$)/,
+];
+
 const SECRET_SENSITIVE_HTTP_PATHS = [
   /^\/api\/chat-endpoints\/[^/]+\/setup(?:-secret)?(?:\/|$)/,
+  // myrmidon(OPE-8985): carries the one-time token and the new password.
+  /^\/api\/myrmidon\/users-admin-a\/password-set(?:\/|$)/,
+  // myrmidon(OPE-11891): invite creation routes carrying credentials
+  /^\/api\/companies\/[^/]+\/invites(?:\/|$)/,
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
@@ -78,8 +87,13 @@ export function isSecretSensitiveHttpRequest(
 ): boolean {
   if (isPrivateChatWebhookHttpRequest(method, url)) return true;
   if (!method || !url) return false;
-  if (!SECRET_SENSITIVE_HTTP_METHODS.has(method.toUpperCase())) return false;
   const pathname = normalizePath(url);
+  if (
+    ALL_METHOD_SECRET_SENSITIVE_PATHS.some((pattern) => pattern.test(pathname))
+  ) {
+    return true;
+  }
+  if (!SECRET_SENSITIVE_HTTP_METHODS.has(method.toUpperCase())) return false;
   return SECRET_SENSITIVE_HTTP_PATHS.some((pattern) => pattern.test(pathname));
 }
 

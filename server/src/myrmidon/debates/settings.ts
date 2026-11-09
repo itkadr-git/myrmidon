@@ -15,7 +15,7 @@ import {
   DEBATE_SETTINGS_KEY,
   resolveDebateSettings,
   type DebateSettingsResolution,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export { DEBATE_SETTINGS_ENV, DEBATE_SETTINGS_KEY };
 

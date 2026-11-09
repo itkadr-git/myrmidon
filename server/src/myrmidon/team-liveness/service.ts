@@ -24,7 +24,7 @@
 // runs through one queue, exactly as the parallel-helpers and runtime-limits
 // transitions do.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   DEFAULT_TEAM_LIVENESS_SETTINGS,
   TEAM_LIVENESS_KEYS,
@@ -36,7 +36,7 @@ import {
   type TeamLivenessSettings,
   type TeamLivenessSettingsPatch,
   type TeamLivenessSource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import type { instanceSettingsService } from "../../services/instance-settings.js";

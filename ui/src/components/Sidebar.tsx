@@ -16,6 +16,7 @@ import {
   Repeat,
   Layers,
   GitBranch,
+  BookOpen,
   Package,
   Settings,
   FolderOpen,
@@ -46,6 +47,7 @@ import { attentionBadgeCount } from "../lib/attention";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { pollInterval } from "../lib/auth-session-recovery";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
@@ -108,7 +110,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
     queryKey: queryKeys.attention(selectedCompanyId!),
     queryFn: () => attentionApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && showDecisions,
-    refetchInterval: 60_000,
+    refetchInterval: pollInterval(60_000),
   });
   const attentionCount = attentionBadgeCount(attentionFeed);
   const showCases = experimentalSettings?.enableCases === true;
@@ -208,6 +210,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
           ) : null}
           <SidebarNavItem to="/routines" label={t("nav.routines")} icon={Repeat} />
           <SidebarNavItem to="/artifacts" label={t("nav.artifacts")} icon={Package} />
+          <SidebarNavItem to="/wiki" label={t("ui2.nav.knowledge")} icon={BookOpen} /> {/* myrmidon(OPE-9222) */}
           {showCases ? (
             <SidebarNavItem to="/cases" label={t("nav.cases")} icon={Layers} textBadge="beta" />
           ) : null}

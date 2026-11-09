@@ -115,7 +115,7 @@ func closedList(r *rig) []callSpec {
 	// the main, .next, the helper, the 64-hex Id, the short Id, a plain name.
 	names := []string{r.name(""), r.name(".next"), r.name(".helper"), boardID, boardID[:12], "board"}
 	for _, n := range names {
-		for _, verb := range []string{"exec", "attach", "commit", "kill", "pause", "unpause", "update", "resize"} {
+		for _, verb := range []string{"exec", "attach", "commit", "kill", "pause", "unpause", "resize"} {
 			add("POST", "/containers/"+n+"/"+verb)
 		}
 		for _, verb := range []string{"attach/ws", "export", "changes", "top", "stats"} {

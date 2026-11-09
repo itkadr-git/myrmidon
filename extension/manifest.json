@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Myrmidon Bridge",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnoQf8Xp7VS8madJUqGa1j4P87JfiF0BwIxh0vKt6A9ZYq0/Ju8sLwpEsKOpzapt1CI19W74xDFVZIp4UnAsfT9gBt/dqQ1LYrWCVir+xbiwZrlF68qJOrGnR+SjWDbJWto2JzFsi9SGsO8UeNbLIvjURqfE8BA1LCltnNyz6s3MPNB4ZN5QaHu9og0nLU2dq8byovEdMuj1Thldf1LoVWPxvwgOcdD9WEy4PxM/42CPt7F9Qrc8WsnEG4ym0fpIOh39ZdACA80JOMhTBvNNfQUbS1lk1n7iSMhH0y//Q9SUyxL/1oJW4nz2TR4oxpyzR5Dtb92VLp9uc6617OxszpQIDAQAB",
   "description": "Tender-site browser actions and the pairing client of the Myrmidon browser bridge. Opens an outbound connection to the bridge gateway only.",
   "minimum_chrome_version": "116",
   "background": {
@@ -13,7 +14,7 @@
     "default_popup": "popup/popup.html"
   },
   "options_page": "options/options.html",
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "nativeMessaging"],
   "host_permissions": ["wss://*/*"],
   "content_scripts": [
     {

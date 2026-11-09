@@ -1,0 +1,201 @@
+export type LegacyBlockedClass =
+  | "dependency"
+  | "recovery"
+  | "human_decision"
+  | "external_wait"
+  | "resource"
+  | "terminal"
+  | "unknown";
+
+export type LegacyBlockedLinkFact = {
+  type: "issue" | "interaction" | "external" | "resource";
+  relation?: string;
+  status?: string;
+  label: string;
+};
+
+export type LegacyBlockedPullRequestFact = {
+  state: "open" | "closed" | "merged" | "unknown";
+  checksState: "pending" | "failed" | "passed" | "unknown";
+  reviewState: "pending" | "changes_requested" | "approved" | "unknown";
+  label?: string;
+};
+
+export type LegacyBlockedFacts = {
+  taskStatus?: string;
+  latestComments?: readonly string[];
+  links?: readonly LegacyBlockedLinkFact[];
+  pullRequests?: readonly LegacyBlockedPullRequestFact[];
+  blockerIds?: readonly string[];
+};
+
+export type LegacyBlockedClassification = {
+  class: LegacyBlockedClass;
+  evidence: string[];
+};
+
+type Candidate = Exclude<LegacyBlockedClass, "unknown">;
+
+const resolvedBlockerStatuses = new Set(["done", "cancelled"]);
+
+const activeStatuses = new Set([
+  "blocked",
+  "in_progress",
+  "in_review",
+  "open",
+  "pending",
+  "requested",
+  "todo",
+  "unavailable",
+  "waiting",
+]);
+
+function normalized(value: string | undefined): string {
+  return value?.trim().toLowerCase().replace(/[ -]+/g, "_") ?? "";
+}
+
+function addCandidate(
+  candidates: Map<Candidate, string[]>,
+  candidate: Candidate,
+  evidence: string,
+): void {
+  const current = candidates.get(candidate) ?? [];
+  current.push(evidence);
+  candidates.set(candidate, current);
+}
+
+function classifyComment(comment: string): Candidate[] {
+  const text = comment.trim().toLowerCase();
+  if (!text) return [];
+
+  // Only recognize explicit present-tense statements; negated or resolved
+  // statements are not evidence about the current blocker.
+  const hasNegationOrResolution =
+    /\b(?:not|no longer|never)\s+(?:blocked|waiting|awaiting|pending)\b/.test(text) ||
+    /\b(?:resolved|completed|cleared|unblocked)\b/.test(text);
+  if (hasNegationOrResolution) return [];
+
+  const candidates: Candidate[] = [];
+  if (/\b(?:awaiting|waiting for)\s+(?:an?\s+)?(?:human|owner|user)\s+(?:decision|approval|input)\b/.test(text) ||
+      /\b(?:human|owner|user)\s+(?:decision|approval|input)\s+(?:is\s+)?(?:required|needed|pending)\b/.test(text)) {
+    candidates.push("human_decision");
+  }
+  if (/\b(?:recovery task|recovery issue|operator action)\s+(?:is\s+)?(?:required|open|pending|created)\b/.test(text)) {
+    candidates.push("recovery");
+  }
+  if (/\b(?:permission denied|access denied|missing (?:repository )?access|missing permission|resource unavailable)\b/.test(text)) {
+    candidates.push("resource");
+  }
+  if (/\b(?:awaiting|waiting for)\s+(?:a\s+)?(?:vendor|provider|external|upstream)\s+(?:response|reply|action|service)\b/.test(text) ||
+      /\bexternal wait\b/.test(text)) {
+    candidates.push("external_wait");
+  }
+  if (/\b(?:blocked by|waiting on|depends on)\s+(?:issue\s+)?(?:ope-\d+|[a-f0-9]{8}-[a-f0-9-]{27,})\b/i.test(text)) {
+    candidates.push("dependency");
+  }
+  if (/\b(?:duplicate|cancelled|canceled|will not be pursued|no further work is needed)\b/.test(text)) {
+    candidates.push("terminal");
+  }
+  return candidates;
+}
+
+/**
+ * Classifies only explicit current evidence. Multiple supported explanations,
+ * closed/resolved links, or ambiguous observations deliberately stay unknown.
+ */
+export function classifyLegacyBlocked(
+  facts: LegacyBlockedFacts,
+): LegacyBlockedClassification {
+  const candidates = new Map<Candidate, string[]>();
+  const status = normalized(facts.taskStatus);
+  if (["cancelled", "canceled", "done", "closed", "completed"].includes(status)) {
+    addCandidate(candidates, "terminal", `Task status is ${status}.`);
+  }
+
+  const historicalDependencyEvidence: string[] = [];
+
+  for (const link of facts.links ?? []) {
+    const linkStatus = normalized(link.status);
+    const relation = normalized(link.relation);
+    const label = normalized(link.label);
+    if (resolvedBlockerStatuses.has(linkStatus)) {
+      if (link.type === "issue" && ["blocks", "blocked_by", "dependency"].includes(relation)) {
+        historicalDependencyEvidence.push(
+          `Historical blocker link: ${link.type} / ${relation} / ${link.status?.trim() ?? "unknown"} / ${link.label.trim()}.`,
+        );
+      }
+      continue;
+    }
+    let candidate: Candidate | undefined;
+    if (link.type === "issue" && ["blocks", "blocked_by", "dependency"].includes(relation)) {
+      candidate = "dependency";
+    } else if (link.type === "issue" && relation === "recovery") {
+      candidate = "recovery";
+    } else if (
+      link.type === "interaction" &&
+      (["decision", "human_decision", "approval"].includes(relation) ||
+        /(?:^|_)(?:owner_)?(?:decision|approval)(?:_|$)/.test(label))
+    ) {
+      candidate = "human_decision";
+    } else if (
+      link.type === "external" &&
+      (["wait", "external_wait", "pending"].includes(relation) || linkStatus === "pending")
+    ) {
+      candidate = "external_wait";
+    } else if (
+      link.type === "resource" &&
+      (["unavailable", "blocked", "required"].includes(relation) || linkStatus === "unavailable")
+    ) {
+      candidate = "resource";
+    }
+
+    if (candidate) {
+      const details = [link.type, relation, link.status?.trim(), link.label.trim()]
+        .filter((part): part is string => Boolean(part));
+      addCandidate(candidates, candidate, `Linked fact: ${details.join(" / ")}.`);
+    }
+  }
+
+  if ((facts.blockerIds?.length ?? 0) > 0) {
+    addCandidate(candidates, "dependency", `Explicit active blocker IDs: ${facts.blockerIds!.join(", ")}.`);
+  }
+
+  for (const comment of facts.latestComments ?? []) {
+    for (const candidate of classifyComment(comment)) {
+      addCandidate(candidates, candidate, `Latest comment: ${comment.trim()}`);
+    }
+  }
+
+  // A resolved relation is historical context only, not evidence of a current blocker.
+  for (const pr of facts.pullRequests ?? []) {
+    const state = normalized(pr.state);
+    const checks = normalized(pr.checksState);
+    const review = normalized(pr.reviewState);
+    if (state === "open" && (checks === "pending" || review === "pending")) {
+      const label = pr.label?.trim();
+      addCandidate(
+        candidates,
+        "external_wait",
+        `Linked PR${label ? ` ${label}` : ""} is open with ${checks === "pending" ? "pending checks" : "pending review"}.`,
+      );
+    }
+  }
+
+  // Historical blocker links are fallback evidence only: present-tense
+  // comments, blockers, statuses, and other links take precedence.
+  if (candidates.size === 0 && historicalDependencyEvidence.length > 0) {
+    addCandidate(candidates, "dependency", historicalDependencyEvidence[0]);
+  }
+
+  if (candidates.size !== 1) {
+    return {
+      class: "unknown",
+      evidence: candidates.size === 0
+        ? ["No unambiguous current classification evidence was provided."]
+        : ["Conflicting current classification evidence was provided."],
+    };
+  }
+
+  const [classification, evidence] = candidates.entries().next().value as [Candidate, string[]];
+  return { class: classification, evidence };
+}

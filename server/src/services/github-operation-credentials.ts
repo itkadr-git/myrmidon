@@ -1,13 +1,15 @@
-import { and, eq } from "drizzle-orm";
-import { isUuidLike } from "@paperclipai/shared";
+import { and, eq, isNull } from "drizzle-orm";
+import { isUuidLike } from "@myrmidon/shared";
 import {
-  agents,
-  heartbeatRuns,
+  connectionGrants,
   issues,
-  projects,
+  projectWorkspaces,
   runIdentityContexts,
+  toolConnections,
+  agents,
+  companySecrets,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { forbidden } from "../errors.js";
 import { captureRunIdentity } from "./run-identity.js";
 import {
@@ -15,10 +17,24 @@ import {
   resolveManagedGitHubCredential,
 } from "./git-credentials.js";
 import { secretService } from "./secrets.js";
-import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
-import { isLowTrustQuarantined } from "./source-trust.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): self-hosted GitHub App identities, chosen by the target repository
 import { applyGitHubAppIdentity } from "../myrmidon/github-shared-identity/broker.js";
+import { normalizeGitHubRepository, githubAppsFor, githubPatsFor } from "../myrmidon/github-shared-identity/settings.js";
+import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
+import { onResetGitHubAppTokenCache } from "../myrmidon/github-shared-identity/index.js";
+import {
+  allowsGitHubCredentialExport,
+  GENERIC_DENIAL,
+  quarantinedIssueDenial,
+  type GitHubCredentialDenial,
+} from "./github-credential-policy.js";
+
+export {
+  allowsGitHubCredentialExport,
+  GENERIC_DENIAL,
+  quarantinedIssueDenial,
+  type GitHubCredentialDenial,
+};
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
@@ -27,121 +43,153 @@ export type GitHubCredentialSummary = {
   repository?: string;
   login?: string;
   reason?: string;
+  // myrmidon(GITHUB-SHARED-IDENTITY): machine-readable cause of an `absent` answer and the repository patterns
+  // the agent may name, so a client can explain "access exists, say which repository"
+  reasonCode?: "repository_required";
+  availableRepositories?: string[];
   connectionId?: string;
   grantId?: string;
   authenticationMode?: "managed" | "host" | "anonymous";
-};
-
-/** A raw GitHub token cannot enforce the low-trust read-only tool boundary. */
-type GitHubCredentialDenial = {
-  allowed: boolean;
-  reason?: string;
-};
-const GENERIC_DENIAL: GitHubCredentialDenial = {
-  allowed: false,
-  reason:
-    "GitHub credentials are not available to low-trust or unverified executions; use authorized read-only tools.",
+  expiresAt?: string;
 };
 
 /**
- * A quarantined-issue denial reads to the executor as "no permissions" unless
- * it names what actually happened (the task itself is in low-trust quarantine)
- * and the one human path that unblocks it (promotion). The agent cannot
- * promote its own output by design, so the message must point at the operator
- * route instead of letting the agent restate the refusal as a rights problem.
+ * myrmidon(GITHUB-SHARED-IDENTITY): the repository of the run's task when the
+ * caller named none (`gh auth status` or `gh api user` outside a clone). The
+ * task's own workspace wins, then the project's primary workspace; only a
+ * single distinct github.com repository counts, anything else stays unknown
+ * and the broker answers `repository_required`.
  */
-function quarantinedIssueDenial(issueIdentifier: string | null | undefined, issueId: string): GitHubCredentialDenial {
-  const label = issueIdentifier ?? "this issue";
-  return {
-    allowed: false,
-    reason:
-      `GitHub credentials are withheld because the task (${label}) is quarantined as low-trust source material ` +
-      `(its creation run carried untrusted provenance — see issues.source_trust.disposition=quarantined), not because ` +
-      `the agent lacks permissions. This run cannot lift the quarantine itself. Ask a human operator to release it via ` +
-      `POST /api/issues/${issueId}/low-trust/promotions (board: “promote from low-trust”), then rerun the GitHub operation.`,
-  };
+async function inferRunRepository(
+  db: Db,
+  run: { companyId: string; contextSnapshot?: any; nativeIssueId?: string | null },
+): Promise<string | null> {
+  const issueId = run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.nativeIssueId;
+  if (typeof issueId !== "string" || !isUuidLike(issueId)) return null;
+  const [issue] = await db
+    .select({ projectId: issues.projectId, projectWorkspaceId: issues.projectWorkspaceId })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+  if (!issue) return null;
+  if (issue.projectWorkspaceId) {
+    const [own] = await db
+      .select({ repoUrl: projectWorkspaces.repoUrl })
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.id, issue.projectWorkspaceId), eq(projectWorkspaces.companyId, run.companyId)));
+    const repository = normalizeGitHubRepository(own?.repoUrl);
+    if (repository) return repository;
+  }
+  if (!issue.projectId) return null;
+  const rows = await db
+    .select({ repoUrl: projectWorkspaces.repoUrl, isPrimary: projectWorkspaces.isPrimary })
+    .from(projectWorkspaces)
+    .where(and(eq(projectWorkspaces.projectId, issue.projectId), eq(projectWorkspaces.companyId, run.companyId)));
+  const primary = rows.filter((row) => row.isPrimary).map((row) => normalizeGitHubRepository(row.repoUrl)).find(Boolean);
+  if (primary) return primary;
+  const distinct = new Set(rows.map((row) => normalizeGitHubRepository(row.repoUrl)).filter((value): value is string => Boolean(value)));
+  return distinct.size === 1 ? [...distinct][0]! : null;
 }
 
-async function allowsGitHubCredentialExport(
+const GITHUB_CREDENTIAL_CACHE_TTL_MS = 50 * 60 * 1000; // ~50 minutes
+const GITHUB_CREDENTIAL_CACHE_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
+
+interface CachedGitHubCredentialResult {
+  identityContextId: string | null;
+  revision: number | null;
+  status: GitHubCredentialSummary["status"];
+  source?: GitHubCredentialSummary["source"];
+  repository?: string;
+  login?: string;
+  connectionId?: string | null;
+  grantId?: string | null;
+  authenticationMode?: string;
+  expiresAt?: string;
+  reason?: string;
+  env: Record<string, string>;
+}
+
+interface CachedGitHubCredentialEntry {
+  result: CachedGitHubCredentialResult;
+  cachedAt: number;
+  expiresAt?: number;
+}
+
+const githubCredentialCache = new Map<string, CachedGitHubCredentialEntry>();
+
+export function clearGitHubOperationCredentialCache(): void {
+  githubCredentialCache.clear();
+}
+
+onResetGitHubAppTokenCache(clearGitHubOperationCredentialCache);
+
+function credentialExpiresAt(summary: GitHubCredentialSummary): number | undefined {
+  if (!summary.expiresAt) return undefined;
+  const expiresAt = Date.parse(summary.expiresAt);
+  return Number.isFinite(expiresAt) ? expiresAt : undefined;
+}
+
+function cachedCredentialIsFresh(entry: CachedGitHubCredentialEntry, now: number): boolean {
+  if (now - entry.cachedAt >= GITHUB_CREDENTIAL_CACHE_TTL_MS) return false;
+  return entry.expiresAt === undefined
+    || now < entry.expiresAt - GITHUB_CREDENTIAL_CACHE_EXPIRY_MARGIN_MS;
+}
+
+async function isCachedCredentialStillActive(
   db: Db,
-  run: typeof heartbeatRuns.$inferSelect,
-): Promise<GitHubCredentialDenial> {
-  const issueId =
-    run.contextSnapshot?.issueId ??
-    run.contextSnapshot?.taskId ??
-    run.nativeIssueId;
-  if (
-    issueId !== undefined &&
-    issueId !== null &&
-    (typeof issueId !== "string" || !isUuidLike(issueId))
-  )
-    return GENERIC_DENIAL;
-  const [agent] = await db
-    .select({ companyId: agents.companyId, permissions: agents.permissions })
-    .from(agents)
-    .where(
-      and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)),
-    );
-  if (!agent) return GENERIC_DENIAL;
-  const [issue] =
-    typeof issueId === "string"
-      ? await db
-          .select({
-            companyId: issues.companyId,
-            id: issues.id,
-            identifier: issues.identifier,
-            projectId: issues.projectId,
-            executionPolicy: issues.executionPolicy,
-            sourceTrust: issues.sourceTrust,
-          })
-          .from(issues)
-          .where(
-            and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
-          )
-      : [];
-  if (issueId !== undefined && issueId !== null && !issue) return GENERIC_DENIAL;
-  if (isLowTrustQuarantined(issue?.sourceTrust))
-    return quarantinedIssueDenial(issue!.identifier, issue!.id);
-  const projectId = issue?.projectId ?? run.contextSnapshot?.projectId;
-  if (
-    projectId !== undefined &&
-    projectId !== null &&
-    (typeof projectId !== "string" || !isUuidLike(projectId))
-  )
-    return GENERIC_DENIAL;
-  const [project] =
-    typeof projectId === "string"
-      ? await db
-          .select({
-            companyId: projects.companyId,
-            executionWorkspacePolicy: projects.executionWorkspacePolicy,
-          })
-          .from(projects)
-          .where(
-            and(
-              eq(projects.id, projectId),
-              eq(projects.companyId, run.companyId),
-            ),
-          )
-      : [];
-  if (projectId !== undefined && projectId !== null && !project) return GENERIC_DENIAL;
-  const resolution = resolveCoreTrustPreset({
-    companyId: run.companyId,
-    agent,
-    project,
-    issue,
-    run: {
-      companyId: run.companyId,
-      executionPolicy: run.contextSnapshot?.executionPolicy,
-    },
-  });
-  if (resolution.kind === "standard") return { allowed: true };
-  return {
-    allowed: false,
-    reason:
-      GENERIC_DENIAL.reason +
-      ` (trust preset resolved: ${resolution.kind}${"detail" in resolution && resolution.detail ? ` — ${resolution.detail}` : ""})`,
-  };
+  companyId: string,
+  agentId: string,
+  connectionId?: string | null,
+  grantId?: string | null,
+  credential?: { source?: string; repository?: string },
+): Promise<boolean> {
+  try {
+    if (connectionId) {
+      const rows = await db
+        .select({ enabled: toolConnections.enabled, status: toolConnections.status })
+        .from(toolConnections)
+        .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
+      if (!rows.length || !rows[0].enabled || rows[0].status !== "active") return false;
+    }
+    if (grantId) {
+      const rows = await db
+        .select({ status: connectionGrants.status })
+        .from(connectionGrants)
+        .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, companyId)));
+      if (!rows.length || rows[0].status !== "active") return false;
+    }
+    const [agent] = await db
+      .select({ role: agents.role, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
+    if (!agent || agent.status !== "active" || agent.role === "viewer") return false;
+    const shared = await readGitHubSharedIdentitySettings(db, companyId);
+    const repo = normalizeGitHubRepository(credential?.repository);
+    if (shared.enabled && repo) {
+      const patMatches = githubPatsFor(shared, agentId, repo);
+      const appMatches = githubAppsFor(shared, { id: agentId, role: agent.role }, repo);
+      for (const pat of patMatches) {
+        const [secret] = await db.select({ id: companySecrets.id }).from(companySecrets).where(and(
+          eq(companySecrets.id, pat.tokenSecretId), eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "company"), eq(companySecrets.status, "active"),
+          isNull(companySecrets.deletedAt),
+        ));
+        if (!secret) return false;
+      }
+      for (const app of appMatches) {
+        const [secret] = await db.select({ id: companySecrets.id }).from(companySecrets).where(and(
+          eq(companySecrets.id, app.privateKeySecretId), eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "company"), eq(companySecrets.status, "active"),
+          isNull(companySecrets.deletedAt),
+        ));
+        if (!secret) return false;
+      }
+      if (credential?.source === "app" && appMatches.length === 0) return false;
+      if (credential?.source === "pat" && patMatches.length === 0) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** No company secrets or ambient credentials are consulted by this path. */
@@ -157,6 +205,7 @@ export async function resolveGitHubOperationCredentials(
 ) {
   const { run, context } = await captureRunIdentity(db, input);
   if (!context) throw forbidden("This run predates managed GitHub credentials");
+
   let summary: GitHubCredentialSummary;
   let env: Record<string, string> = {};
   // A sponsored guest's responsible person is an internal accountability field,
@@ -179,6 +228,27 @@ export async function resolveGitHubOperationCredentials(
       ...summary,
       env,
     };
+  }
+
+  const normalizedRepo = normalizeGitHubRepository(input.repository) ?? "";
+  const cacheKey = `${input.companyId}:${input.agentId}:${input.runId}:${context.id}:${context.revision}:${context.responsibleUserId ?? "none"}:${normalizedRepo}`;
+  const cached = githubCredentialCache.get(cacheKey);
+  if (cached && cachedCredentialIsFresh(cached, Date.now())) {
+    const active = await isCachedCredentialStillActive(
+      db,
+      input.companyId,
+      input.agentId,
+      cached.result.connectionId,
+      cached.result.grantId,
+      cached.result,
+    );
+    if (!active) {
+      githubCredentialCache.delete(cacheKey);
+    } else {
+      return cached.result;
+    }
+  } else if (cached) {
+    githubCredentialCache.delete(cacheKey);
   }
   try {
     const resolved = await resolveManagedGitHubCredential(
@@ -207,6 +277,10 @@ export async function resolveGitHubOperationCredentials(
         connectionId: resolved.credential.connectionId,
         grantId: resolved.credential.grantId,
         authenticationMode: "managed",
+        expiresAt:
+          resolved.credential.source === "managed_connection"
+            ? resolved.credential.expiresAt
+            : undefined,
       };
       env = buildGitAuthInvocation(resolved.credential).env;
     } else {
@@ -230,10 +304,11 @@ export async function resolveGitHubOperationCredentials(
             context?.cause === "company_default"
               ? null
               : (context?.responsibleUserId ?? null),
-          repository: input.repository ?? null,
+          repository: normalizeGitHubRepository(input.repository) ?? (await inferRunRepository(db, run)),
         });
         if (app) {
           summary = app.summary;
+          if (app.expiresAt) summary.expiresAt = app.expiresAt;
           env = app.env;
         }
       }
@@ -245,15 +320,30 @@ export async function resolveGitHubOperationCredentials(
       reason: "GitHub credentials are temporarily unavailable",
     };
   }
+
   if (context)
     await db
       .update(runIdentityContexts)
       .set({ github: summary })
       .where(eq(runIdentityContexts.id, context.id));
-  return {
+  const result: CachedGitHubCredentialResult = {
     identityContextId: context?.id ?? null,
     revision: context?.revision ?? null,
     ...summary,
     env,
   };
+  if (summary.status === "available" && Object.keys(env).length > 0) {
+    if (githubCredentialCache.size > 2000) {
+      const now = Date.now();
+      for (const [k, v] of githubCredentialCache.entries()) {
+        if (!cachedCredentialIsFresh(v, now)) githubCredentialCache.delete(k);
+      }
+    }
+    githubCredentialCache.set(cacheKey, {
+      result,
+      cachedAt: Date.now(),
+      expiresAt: credentialExpiresAt(summary),
+    });
+  }
+  return result;
 }

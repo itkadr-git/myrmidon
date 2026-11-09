@@ -3,10 +3,11 @@ import request from "supertest";
 import { runtimeConnectionIntentRoutes } from "../routes/connection-intents.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import { errorHandler } from "../middleware/index.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agentApiKeys,
   agents,
   companies,
   companyMemberships,
@@ -22,8 +23,8 @@ import {
   toolConnectionInstalls,
   toolConnections,
   userSecretDefinitions,
-} from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -896,6 +897,56 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(
         (await post().set("Authorization", `Bearer ${token}`)).status,
       ).toBe(403);
+    });
+
+    it("authenticates via agentApiKey and resolves credentials for active run", async () => {
+      const input = await seed();
+      await grant(input, "A");
+      const app = express();
+      app.use(express.json());
+      app.use(runtimeConnectionIntentRoutes(db));
+      app.use(errorHandler);
+
+      const rawApiKey = "pcp_test_agent_key_12345";
+      const keyHash = createHash("sha256").update(rawApiKey).digest("hex");
+      await db.insert(agentApiKeys).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        name: "Test API Key",
+        keyHash,
+        createdAt: new Date(),
+      });
+
+      const post = () => request(app).post("/runtime-tools/github/credentials");
+
+      // 1. With valid agent API key and X-Paperclip-Run-Id header matching active run -> 200
+      const resWithHeader = await post()
+        .set("Authorization", `Bearer ${rawApiKey}`)
+        .set("X-Paperclip-Run-Id", input.runId);
+      expect(resWithHeader.status).toBe(200);
+      expect(resWithHeader.body.status).toBe("available");
+
+      // 2. With valid agent API key without header, finding active run -> 200
+      const resWithoutHeader = await post()
+        .set("Authorization", `Bearer ${rawApiKey}`);
+      expect(resWithoutHeader.status).toBe(200);
+      expect(resWithoutHeader.body.status).toBe("available");
+
+      // 3. With invalid API key -> 401
+      const resInvalidKey = await post()
+        .set("Authorization", "Bearer invalid-api-key");
+      expect(resInvalidKey.status).toBe(401);
+
+      // 4. When run has completed (status succeeded) -> 403
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded" })
+        .where(eq(heartbeatRuns.id, input.runId));
+      const resCompletedRun = await post()
+        .set("Authorization", `Bearer ${rawApiKey}`)
+        .set("X-Paperclip-Run-Id", input.runId);
+      expect(resCompletedRun.status).toBe(403);
     });
   },
 );

@@ -31,8 +31,8 @@
 // the Telegram transport splits a long reply itself (chat-channels.ts).
 //
 import { and, asc, eq, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { agents, issues } from "@myrmidon/db";
 import {
   persistActivity,
   publishActivity,

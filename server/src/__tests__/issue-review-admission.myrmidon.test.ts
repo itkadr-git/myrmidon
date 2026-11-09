@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  agentRuntimeState,
+  companySkills,
+  heartbeatRunEvents,
+  heartbeatRuns,
   agentWakeupRequests,
+  agentTaskSessions,
+  issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   describeEmbeddedPostgres,
   resetCompanyIssueFixtures,
@@ -15,25 +21,250 @@ import {
   seedCompanyWithBoardAccess,
   useEmbeddedPostgres,
 } from "./helpers/route-test-harness.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } from "../myrmidon/review-stage-recovery/policy.js";
+import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
 
 // myrmidon(REVIEW-ADMISSION): issue transition to in_review and reviewer wake
 // must be written in the same database transaction via PATCH /api/issues/:id.
 
 const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
   resetEach: async (db) => {
-    await db.delete(agentWakeupRequests);
-    await db.delete(activityLog);
-    await db.delete(issues);
-    await db.delete(agents);
-    await resetCompanyIssueFixtures(db);
+    // Await background wake/run handlers before taking table locks: a handler
+    // may need those relations while it finishes its transaction.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    await db.transaction(async (tx) => {
+      // Prevent new wake/activity writers while deleting their rows and issues.
+      await tx.execute(
+        sql`LOCK TABLE activity_log, agent_runtime_state, agent_task_sessions, agent_wakeup_requests, issue_comments, issues, agents, company_skills IN SHARE ROW EXCLUSIVE MODE`,
+      );
+      await tx.delete(heartbeatRunEvents);
+      await tx.update(agentTaskSessions).set({ lastRunId: null });
+      await tx.delete(activityLog);
+      await tx.delete(heartbeatRuns);
+      await tx.delete(agentWakeupRequests);
+      await tx.delete(issueComments);
+      await tx.delete(issues);
+      await tx.delete(agentRuntimeState);
+      await tx.delete(agentTaskSessions);
+      await tx.delete(agents);
+      await tx.delete(companySkills);
+      await resetCompanyIssueFixtures(tx as typeof db);
+    });
   },
 });
 
 describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", () => {
+  it("raises one no_reviewer signal on real PATCH when no eligible reviewer exists", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission no reviewer");
+    resetReviewRoutingSignals();
+    const authorAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "Task Author",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "No reviewer route regression",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const first = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(first.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
+
+    const repeated = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(repeated.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
+
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Eligible Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const policy = {
+      mode: "normal",
+      stages: [
+        {
+          id: randomUUID(),
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }],
+        },
+      ],
+    };
+    const assigned = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ executionPolicy: policy });
+    expect(assigned.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(0);
+  });
+
+  it("defers reviewer admission while exact PR-head CI is pending", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission waits for exact-head CI");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "CI-gated Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const policy = {
+      mode: "normal",
+      stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }] }],
+    };
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Pending CI must not wake reviewer",
+      status: "todo",
+      priority: "medium",
+      executionPolicy: policy,
+    });
+    const pendingCiRoutes = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "pending", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+    });
+
+    const response = await request(routeApp(ctx.db, actor, pendingCiRoutes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy });
+
+    expect(response.status).toBe(200);
+    const wakes = await ctx.db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+    expect(wakes).toHaveLength(0);
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.executionPolicy).toMatchObject({ monitor: { serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } });
+    expect(issue?.monitorNextCheckAt).toBeInstanceOf(Date);
+  });
+
+  it("does not wake the review participant during recovery while CI is pending", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review participant recovery waits for CI");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Recovery CI Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const policy = {
+      mode: "normal",
+      stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }] }],
+    };
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Participant recovery must wait for CI",
+      status: "in_review",
+      priority: "medium",
+      executionPolicy: policy,
+      executionState: { status: "pending", currentStageId: stageId, stages: policy.stages },
+    });
+    const pendingCiRoutes = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "pending", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+    });
+
+    const response = await request(routeApp(ctx.db, actor, pendingCiRoutes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy, executionState: { status: "pending", currentStageId: stageId, stages: policy.stages } });
+
+    expect(response.status).toBe(200);
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_review");
+    const wakes = await ctx.db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+    expect(wakes).toHaveLength(0);
+  });
+
+  it("records one operator activity when exact-head CI is unreadable", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission unreadable CI");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "CI-unavailable Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const policy = {
+      mode: "normal",
+      stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }] }],
+    };
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Unreadable CI should be logged once",
+      status: "todo",
+      priority: "medium",
+      executionPolicy: policy,
+    });
+    const unreadableCiRoutes = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "unknown", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc", reason: "pull:http_403" }),
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await request(routeApp(ctx.db, actor, unreadableCiRoutes as any))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "in_review", executionPolicy: policy });
+      expect(response.status).toBe(200);
+    }
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.executionState).toMatchObject({ currentStageId: stageId });
+    const events = await ctx.db.select().from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(events.filter((event) => event.action === "review_ci_unreadable")).toHaveLength(1);
+    const wakes = await ctx.db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+    expect(wakes).toHaveLength(0);
+  });
+
   it("transitions to in_review and writes reviewer wake atomically via real PATCH route", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission atomic");
+    resetReviewRoutingSignals();
     const reviewerAgentId = randomUUID();
     await ctx.db.insert(agents).values({
       id: reviewerAgentId,
@@ -68,7 +299,10 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       executionPolicy: policy,
     });
 
-    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+    const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "success", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+    });
+    const res = await request(routeApp(ctx.db, actor, routesWithSuccessCi as any))
       .patch(`/api/issues/${issueId}`)
       .send({
         status: "in_review",
@@ -103,6 +337,374 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(wakes[0]?.reason).toBe("execution_review_requested");
     expect(wakes[0]?.status).toBe("queued");
     expect(wakes[0]?.payload).toMatchObject({ issueId });
+  });
+
+  it("defers reviewer admission while exact PR-head CI completed with a failed check (OPE-12176)", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission terminal failure");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer Agent",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const stageId = randomUUID();
+    const policy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review" as const,
+          participants: [{ type: "agent" as const, agentId: reviewerAgentId }],
+        },
+      ],
+    };
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review admission terminal failure",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+      executionPolicy: policy,
+    });
+
+    const routesWithFailureCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-fail", finalCheckConclusion: "failure" }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "ok", headSha: "head-fail", pullRequestUrl: "https://github.com/acme/app/pull/7", failed: ["CI result"] }),
+    });
+    const res = await request(routeApp(ctx.db, actor, routesWithFailureCi as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionPolicy: policy,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    // myrmidon(OPE-12176): a red head must not reach the reviewer: no wake, a
+    // CI-wait monitor with the failed-check reason instead. The stage keeps its
+    // pending participant: the CI-wait monitor dispatches its recovery wake
+    // through `executionState.currentParticipant` (heartbeat.ts), so removing
+    // it here would leave the wait with no one to wake. The wake suppression is
+    // asserted by the zero rows below.
+    expect(res.body.executionState?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: reviewerAgentId,
+    });
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+        ),
+      );
+    expect(wakes).toHaveLength(0);
+    const [deferredIssue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(deferredIssue?.executionPolicy).toMatchObject({
+      monitor: { serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME },
+    });
+    expect((deferredIssue?.executionPolicy as { monitor?: { notes?: string } } | null)?.monitor?.notes).toContain("CI result");
+  });
+
+  it("admits a critical issue's reviewer even when the exact PR-head CI completed with a failed check (OPE-12176)", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission critical bypass");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer Agent",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const stageId = randomUUID();
+    const policy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review" as const,
+          participants: [{ type: "agent" as const, agentId: reviewerAgentId }],
+        },
+      ],
+    };
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review admission critical bypass",
+      status: "todo",
+      priority: "critical",
+      createdByAgentId: authorAgentId,
+      executionPolicy: policy,
+    });
+
+    const routesWithFailureCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-fail", finalCheckConclusion: "failure" }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "ok", headSha: "head-fail", pullRequestUrl: "https://github.com/acme/app/pull/7", failed: ["CI result"] }),
+    });
+    const res = await request(routeApp(ctx.db, actor, routesWithFailureCi as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionPolicy: policy,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.executionState?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: reviewerAgentId,
+    });
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.reason).toBe("execution_review_requested");
+  });
+
+  it("deduplicates reviewer wake on repeated transition or webhook replay", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission deduplication");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewer Agent",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const stageId = randomUUID();
+    const policy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review" as const,
+          participants: [{ type: "agent" as const, agentId: reviewerAgentId }],
+        },
+      ],
+    };
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review admission deduplication",
+      status: "todo",
+      priority: "medium",
+      executionPolicy: policy,
+    });
+
+    const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+    });
+    const app = routeApp(ctx.db, actor, routesWithSuccessCi as any);
+
+    const firstRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionPolicy: policy,
+      });
+    expect(firstRes.status).toBe(200);
+
+    // Repeated transition / replay with same status and policy
+    const secondRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionPolicy: policy,
+      });
+    expect(secondRes.status).toBe(200);
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+  });
+
+  it("routes a review PATCH to a reviewer whose model differs from the author", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission routing");
+    const authorAgentId = randomUUID();
+    const sameModelReviewerId = randomUUID();
+    const selectedReviewerId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sameModelReviewerId,
+        companyId,
+        name: "Same Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: selectedReviewerId,
+        companyId,
+        name: "Different Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-b" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Automatic reviewer selection",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.executionState?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: selectedReviewerId,
+    });
+    expect(res.body.assigneeAgentId).toBe(selectedReviewerId);
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${selectedReviewerId}`));
+    expect(wakes).toHaveLength(1);
+    const rejectedCandidateWakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${sameModelReviewerId}`));
+    expect(rejectedCandidateWakes).toHaveLength(0);
+  });
+
+  it("raises no_reviewer signal when only reviewers with matching model are available", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission matching model only");
+    resetReviewRoutingSignals();
+    const authorAgentId = randomUUID();
+    const sameModelReviewerId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sameModelReviewerId,
+        companyId,
+        name: "Same Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Matching model only",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.assigneeAgentId).toBeNull();
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
   });
 
   it("rolls back review transition and does not leave issue in_review when wake persistence fails", async () => {

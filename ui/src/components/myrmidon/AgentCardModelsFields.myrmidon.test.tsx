@@ -10,6 +10,8 @@ import {
   CardCompressionThresholdField,
   CardContextLengthField,
   CardEffortPicker,
+  CardMaxTokensField,
+  CARD_MAX_TOKENS_DEFAULT,
   compactCardModels,
   isCardModelFieldSupported,
   type ModelPickerRenderer,
@@ -66,7 +68,8 @@ describe("myrmidon(M1) agent card model fields", () => {
     // pickers, the context-length note and the fallbacks note.
     // myrmidon(BOT-RUNTIME-TUNING-A): the compression-threshold note is added
     // to that list (nine notes now).
-    expect(container.textContent?.match(/Not supported by this adapter\./g)).toHaveLength(9);
+    // myrmidon(REASONING-OUTPUT-LIMIT): max-tokens note is also added (eleven notes now).
+    expect(container.textContent?.match(/Not supported by this adapter\./g)).toHaveLength(11);
   });
 
   it("hermes_local supports everything except a separate video model", () => {
@@ -102,6 +105,32 @@ describe("myrmidon(M1) agent card model fields", () => {
 
 // myrmidon(BOT-TUNING-C): the new part B fields on the card.
 describe("myrmidon(BOT-TUNING-C) card fields for context length and auxiliary models", () => {
+  it("reads and writes maxOutputTokens on the card", () => {
+    const onChange = vi.fn();
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <AgentCardModelsFields
+            adapterType="hermes_local"
+            value={{ maxOutputTokens: 32_000 }}
+            onChange={onChange}
+            renderModelPicker={picker}
+          />
+        </TooltipProvider>,
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>("[data-testid=myrmidon-card-max-output-tokens]")!;
+    expect(input.value).toBe("32000");
+    setInputValue(input, "64000");
+    flushSync(() => {});
+    const last = onChange.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(last.maxOutputTokens).toBe(64_000);
+  });
+
+  it("compacts maxOutputTokens into the card models block", () => {
+    expect(compactCardModels({ maxOutputTokens: 32_000 })).toEqual({ maxOutputTokens: 32_000 });
+  });
+
   it("reads and writes contextLength on the models block", () => {
     const onChange = vi.fn();
     flushSync(() => {
@@ -208,6 +237,36 @@ describe("myrmidon(BOT-RUNTIME-TUNING-A) card field for the compression threshol
     expect(compactCardModels({ compressionThresholdTokens: Number.NaN })).toBeUndefined();
     expect(isCardModelFieldSupported("hermes_local", "compressionThresholdTokens")).toBe(true);
     expect(isCardModelFieldSupported("codex_local", "compressionThresholdTokens")).toBe(false);
+  });
+});
+
+describe("myrmidon(REASONING-OUTPUT-LIMIT) output token field", () => {
+  it("shows the shared default and enforces an integer token budget", () => {
+    expect(CARD_MAX_TOKENS_DEFAULT).toBe(32_000);
+    const onChange = vi.fn();
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <CardMaxTokensField value={undefined} onChange={onChange} />
+        </TooltipProvider>,
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>("[data-testid=myrmidon-card-max-tokens]")!;
+    expect(input.placeholder).toBe("32000");
+    setInputValue(input, "64000");
+    flushSync(() => {});
+    expect(onChange).toHaveBeenCalledWith(64_000);
+    setInputValue(input, "1");
+    flushSync(() => {});
+    expect(container.querySelector("[data-testid=myrmidon-card-max-tokens-error]")?.textContent).toContain("256");
+    expect(onChange).not.toHaveBeenCalledWith(1);
+  });
+
+  it("compacts finite budgets and exposes the field only on hermes_local", () => {
+    expect(compactCardModels({ maxTokens: 64_000 })).toEqual({ maxTokens: 64_000 });
+    expect(compactCardModels({ maxTokens: Number.NaN })).toBeUndefined();
+    expect(isCardModelFieldSupported("hermes_local", "maxTokens")).toBe(true);
+    expect(isCardModelFieldSupported("codex_local", "maxTokens")).toBe(false);
   });
 });
 

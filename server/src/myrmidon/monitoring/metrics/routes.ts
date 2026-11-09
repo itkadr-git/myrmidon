@@ -15,18 +15,24 @@
 
 import { Router, type Request, type Response } from "express";
 import { and, eq, ne } from "drizzle-orm";
-import { companySecrets, type Db } from "@paperclipai/db";
+import { companySecrets, type Db } from "@myrmidon/db";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { secretService } from "../../../services/secrets.js";
 import {
   clampErrorWindowSec,
   clampLatencyWindowSec,
+  clampEngineerIdleWindowSec,
   collectMetricsSnapshot,
   METRICS_CONTENT_TYPE,
   renderMetricsText,
   runMetricsSelfCheck,
+  type CapacityDashboardMetricsProvider,
   type MetricsCollectorDeps,
   type MetricsSelfCheck,
 } from "./metrics.js";
+import {
+  createDefaultCapacityDashboardProvider,
+} from "./capacity-producer.js";
 import {
   startProcessMetricsObservation,
   type ProcessMetricsSource,
@@ -80,7 +86,12 @@ export interface MetricsRoutesDeps {
    * Absent → the production store on `db`.
    */
   processStore?: BoardProcessStore;
-  /** Role override (tests); `PAPERCLIP_PROCESS_ROLE` via the registry domain otherwise. */
+  /**
+   * myrmidon(1.6.6 OPE-9565): the capacity dashboard metrics seam.
+   * Absent → the production producer on `db`. Pass `null` to disable exposition.
+   */
+  capacityDashboard?: CapacityDashboardMetricsProvider | null;
+  /** Role override (tests); resolved through the product env aliases otherwise. */
   role?: string;
 }
 
@@ -152,7 +163,7 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
     deps.runSelfCheck ?? runMetricsSelfCheck;
   // myrmidon(1.6.6 OPE-6959): the role of THIS process, stamped on every
   // metric sample and reported by /internal/procs.
-  const role = deps.role ?? resolveBoardProcessRole(env.PAPERCLIP_PROCESS_ROLE);
+  const role = deps.role ?? resolveBoardProcessRole(readProductEnvFrom(env, "PROCESS_ROLE"));
   const processStore: BoardProcessStore = deps.processStore ?? createBoardProcessStore(deps.db);
 
   // myrmidon(1.6.5-PROCS-Q3): the process observers (delay histogram +
@@ -193,13 +204,19 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
 
     ensureProcessObservation();
     const query = req.query as Record<string, unknown>;
+    const capacityDashboard =
+      deps.capacityDashboard !== undefined
+        ? deps.capacityDashboard
+        : createDefaultCapacityDashboardProvider(deps.db, deps.now);
     const snapshot = await collectMetricsSnapshot({
       db: deps.db,
       now: deps.now,
       errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
       latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+      engineerIdleWindowSec: clampEngineerIdleWindowSec(query.idle_window),
       role,
       ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
+      ...(capacityDashboard !== undefined ? { capacityDashboard } : {}),
     });
     res.status(200).set("Content-Type", METRICS_CONTENT_TYPE).send(renderMetricsText(snapshot));
   });
@@ -257,6 +274,7 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
         now: deps.now,
         errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
         latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+        engineerIdleWindowSec: clampEngineerIdleWindowSec(query.idle_window),
         ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
       });
       res.status(result.ok ? 200 : 503).json(result);

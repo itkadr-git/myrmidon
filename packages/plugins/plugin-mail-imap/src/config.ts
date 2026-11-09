@@ -1,4 +1,4 @@
-import type { EnvSecretRefBinding, PluginConfigValidationResult } from "@paperclipai/plugin-sdk";
+import type { EnvSecretRefBinding, PluginConfigValidationResult } from "@myrmidon/plugin-sdk";
 import { parseRules, validateRules, type MailSortRule } from "./rules.js";
 
 export interface MailPluginConfig {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   companies,
@@ -10,7 +10,7 @@ import {
   issueComments,
   issues,
   plugins,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -21,10 +21,11 @@ import {
   externalObjectService,
   type ExternalObjectResolver,
 } from "../services/external-objects.js";
-import { canonicalizeExternalObjectUrl } from "@paperclipai/shared/external-objects-server";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { canonicalizeExternalObjectUrl } from "@myrmidon/shared/external-objects-server";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
+import { createGitHubExternalObjectProvider, resetGitHubObjectCacheForTests } from "../services/github-external-object-provider.js";
+import { resetGitHubRateLimitForTests } from "../services/github-rate-limit.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -126,6 +127,12 @@ describe("external object registries", () => {
 });
 
 describe("GitHub external object provider", () => {
+  // myrmidon(OPE-12397): every case reads the same pull request; the provider's cache and the process-wide rate-limit state must not carry over.
+  beforeEach(() => {
+    resetGitHubObjectCacheForTests();
+    resetGitHubRateLimitForTests();
+  });
+
   function githubObject(path: string, objectType: "pull_request" | "issue") {
     const canonical = canonicalizeExternalObjectUrl(`https://github.com/acme/app/${path}`);
     if (!canonical) throw new Error("expected canonical url");

@@ -83,6 +83,15 @@ function store(seed: {
     async getApproval(approvalId) {
       return approvals.get(approvalId) ?? null;
     },
+    async consumeApproval(approvalId, companyId, skillId) {
+      if (companyId !== COMPANY) return null;
+      const approval = approvals.get(approvalId);
+      if (!approval || approval.type !== SKILL_PROMOTION_APPROVAL_TYPE || approval.status !== "approved" || approval.payload.skillId !== skillId) {
+        return null;
+      }
+      approvals.delete(approvalId);
+      return { ...approval };
+    },
     async setSkillCurrentVersion() {},
   };
 }
@@ -139,6 +148,19 @@ describe("myrmidon(1.6-SKILL-LIFE): routes", () => {
   it("refuses a mutation from an agent actor", async () => {
     const { withActor } = harness({ records: [verifiedRecord()] });
     await request(withActor(agent)).post(`${base}/${SKILL}/rollback`).expect(403);
+  });
+
+  it("rejects a non-UUID skill id before reading lifecycle state", async () => {
+    const { withActor } = harness();
+    const res = await request(withActor(member)).get(`${base}/foraged-smm`).expect(400);
+    expect(res.body).toMatchObject({ details: { code: "skill_id_invalid" } });
+  });
+
+  it("rejects a non-UUID skill id before creating a promotion request", async () => {
+    const { withActor, createPromotionApproval } = harness();
+    const res = await request(withActor(member)).post(`${base}/foraged-smm/promote-request`).send({}).expect(400);
+    expect(res.body).toMatchObject({ details: { code: "skill_id_invalid" } });
+    expect(createPromotionApproval).not.toHaveBeenCalled();
   });
 
   it("refuses a promotion without an approval id", async () => {

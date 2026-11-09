@@ -1,0 +1,14 @@
+# OPE-8950: area "skills" (guarded file list)
+components/SkillsContextualSidebar.tsx
+components/folders/FolderControls.tsx
+components/folders/SkillFolderTree.tsx
+components/skill-studio/AgentsUsingSkillDialog.tsx
+components/skill-studio/CompanyBaseSkillsPanel.tsx
+components/skill-studio/ForkSkillDialog.tsx
+components/skill-studio/SkillPolicySurfaces.tsx
+components/skill-studio/SkillProvenance.tsx
+pages/SkillStudio.tsx
+pages/agent-skills/AgentSkillReleasePicker.tsx
+pages/agent-skills/AgentSkillRow.tsx
+pages/agent-skills/AgentSkillsTab.tsx
+pages/skills/ImportSkillsFromProjectDialog.tsx

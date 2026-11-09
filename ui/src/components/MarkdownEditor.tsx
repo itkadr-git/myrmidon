@@ -10,8 +10,7 @@ import {
   useRef,
   useState,
   type DragEvent,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
+  type SyntheticEvent as ReactSyntheticEvent,
   type TouchEvent as ReactTouchEvent,
   type ReactElement,
   type ReactNode,
@@ -43,7 +42,7 @@ import {
   buildProjectMentionHref,
   buildRoutineMentionHref,
   buildUserMentionHref,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Boxes, CalendarClock, Flag, Hash, User, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
@@ -58,6 +57,7 @@ import {
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
+import { i18n, useTranslation } from "@/i18n";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
@@ -247,7 +247,7 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
 function richEditorErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
-  return "Rich editor failed to render";
+  return i18n.t("area.documents-artifacts-2.markdown-editor.renderFailed");
 }
 
 /**
@@ -392,7 +392,7 @@ interface CaretRect {
 function measureCaretRect(textNode: Text, offset: number, atPos: number): CaretRect {
   const length = textNode.textContent?.length ?? 0;
   const rectFromRange = (start: number, end: number, side: "right" | "left"): CaretRect | null => {
-    if (start < 0 || end > length || end <= start) return null;
+    if (start < 0 || length < end || end <= start) return null;
     const range = document.createRange();
     range.setStart(textNode, start);
     range.setEnd(textNode, end);
@@ -740,6 +740,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const [isDragOver, setIsDragOver] = useState(false);
   const [richEditorError, setRichEditorError] = useState<RichEditorError | null>(null);
   const dragDepthRef = useRef(0);
+  const { t } = useTranslation();
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
   const imageUploadHandlerRef = useRef(imageUploadHandler);
@@ -894,7 +895,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           if (!looksEmpty()) return;
           setRichEditorError({
             code: "MDE-EMPTY",
-            message: "Rich editor failed to load content",
+            message: i18n.t("area.documents-artifacts-2.markdown-editor.loadFailed"),
           });
         }, RICH_EDITOR_EMPTY_CONFIRM_MS);
       }, RICH_EDITOR_EMPTY_CHECK_MS);
@@ -926,7 +927,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const imageHandler = hasImageUpload
       ? async (file: File) => {
           const handler = imageUploadHandlerRef.current;
-          if (!handler) throw new Error("No image upload handler");
+          if (!handler) throw new Error(i18n.t("area.documents-artifacts-2.markdown-editor.noUploadHandler"));
           try {
             const src = await handler(file);
             setUploadError(null);
@@ -953,7 +954,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : i18n.t("area.documents-artifacts-2.markdown-editor.uploadFailed");
             setUploadError(message);
             throw err;
           }
@@ -1214,7 +1215,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   );
 
   const handleAutocompletePress = useCallback((
-    event: ReactMouseEvent<HTMLButtonElement> | ReactPointerEvent<HTMLButtonElement> | ReactTouchEvent<HTMLButtonElement>,
+    event: ReactSyntheticEvent<HTMLButtonElement>,
     option: AutocompleteOption,
   ) => {
     event.preventDefault();
@@ -1311,7 +1312,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
           <p>
-            Rich editor unavailable for this markdown. Showing raw source instead.{" "}
+            {t("area.documents-artifacts-2.markdown-editor.unavailable")}{" "}
             <span data-testid="markdown-editor-fallback-code" className="font-mono">
               {richEditorError.code}
             </span>
@@ -1327,7 +1328,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               setRichEditorError(null);
             }}
           >
-            Retry rich editor
+            {t("area.documents-artifacts-2.markdown-editor.retry")}
           </button>
         </div>
         <textarea
@@ -1617,27 +1618,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 )}
                 {option.kind === "issue" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Task
+                    {t("area.documents-artifacts-2.markdown-editor.badgeTask")}
                   </span>
                 )}
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Project
+                    {t("area.documents-artifacts-2.markdown-editor.badgeProject")}
                   </span>
                 )}
                 {option.kind === "user" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    User
+                    {t("common.user")}
                   </span>
                 )}
                 {option.kind === "skill" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Skill
+                    {t("area.documents-artifacts-2.markdown-editor.badgeSkill")}
                   </span>
                 )}
                 {option.kind === "routine" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Routine
+                    {t("area.documents-artifacts-2.markdown-editor.badgeRoutine")}
                   </span>
                 )}
                 {option.kind === "action" && (

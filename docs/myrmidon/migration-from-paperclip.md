@@ -2,9 +2,10 @@
 
 > Russian version: [migration-from-paperclip.ru.md](migration-from-paperclip.ru.md)
 
-This guide shows how to copy one Paperclip instance (database, files and secrets) into a clean
-Myrmidon installation with the `myrmidon:migrate` command. The command never changes the source.
-It stops before it writes anything to the target if the source or a key does not fit.
+The `myrmidon:migrate` command copies one Paperclip instance (database, files and secrets) into a
+clean Myrmidon installation. It never changes the source: it writes only to the empty target that
+it creates itself. It stops before the transfer if the migration chain, a key, the schema or the
+data do not pass its checks.
 
 Read the whole guide once before you start: the rollback section matters most **before** you
 cut over.
@@ -32,10 +33,13 @@ is yours to carry over.
 ### Paperclip features that Myrmidon does not have
 
 Paperclip releases after `v2026.916.1` added tables and columns that Myrmidon does not have (for
-example browser-use runs, MCP OAuth clients, chat endpoints, the appearance of an agent). This is
-not an error, but that data is **not** copied. The dry run lists it under `vendorOnlyData`: the
-table or column, the number of rows that hold data (for a column: not null and not just the
-default value) and the release that introduced it.
+example browser-use runs, MCP OAuth clients, chat endpoints). Approved columns such as
+`agents.appearance` and `issues.title_needs_generation` are preserved in the Myrmidon schema and
+transferred to the target database. Other vendor-specific features are not copied into the target
+database: they go into the report instead. The report is the JSON that the command prints; a real
+run also saves it as `report.json` in `--state-dir`. Read it under `vendorOnlyData` (there is no
+`skippedSourceData` field). It lists the table or column, the number of rows that hold data (for a
+column: not null and not just the default value) and the release that introduced it.
 
 - If any of it holds data, a real run stops **before the first write** and tells you so. Look at
   the list, decide that you can do without it (it stays in the source, which is never changed),
@@ -50,19 +54,55 @@ default value) and the release that introduced it.
   that does not fit stops the run with `value-out-of-range-in-target`. A column that the newer
   Paperclip release dropped (`user.keyboard_shortcuts`) is not needed in the target.
 
-## 2. Prerequisites
+## 2. Prerequisites and running the CLI
 
-- `paperclipai` CLI of a Myrmidon build that contains the command (`paperclipai myrmidon:migrate --help`).
-- Node 24+ on the machine that runs the command, with network access to the source and target databases.
+The migration CLI is included in Myrmidon. Because the production Docker container does not
+install `paperclipai` in `$PATH` and has no prebuilt `dist/` bundle, execute the migration via
+`tsx` inside `/app/cli` or via the bundled `/usr/local/bin/myrmidon-migrate` wrapper:
+
+- **Via Docker image directly with tsx (recommended for production):**
+  ```sh
+  docker run --rm -i \
+    --entrypoint /app/cli/node_modules/.bin/tsx -w /app/cli \
+    -v /path/to/storage:/storage \
+    -v /path/to/keys:/keys:ro \
+    -v /path/to/state:/state \
+    -e SOURCE_DB_URL -e TARGET_DB_URL \
+    <image> src/index.ts myrmidon:migrate --help
+  ```
+
+- **Via Docker image wrapper script:**
+  ```sh
+  docker run --rm -i \
+    -v /path/to/storage:/storage \
+    -v /path/to/keys:/keys:ro \
+    -v /path/to/state:/state \
+    -e SOURCE_DB_URL -e TARGET_DB_URL \
+    <image> myrmidon-migrate --help
+  ```
+
+- **From repository source (local development):**
+  ```sh
+  pnpm --filter myrmidon dev myrmidon:migrate --help
+  ```
+
+Other requirements:
+- Network access to the source and target databases from the host/container running the command.
 - A target PostgreSQL database role that can create tables. Loading is fastest and exact with a
   role that may set `session_replication_role` (a superuser, or PostgreSQL 15+ with that
   parameter granted); without it the command orders tables by foreign keys and refuses when the
   keys form a cycle.
 - For `--source-dump`: `psql` on the machine, and an empty scratch database (see 5.2).
 - Read access to the **source master key** and to the **target master key** (32 bytes: base64,
-  64-character hex or a raw 32-character string). Keys are passed as a file path or as the name
-  of an environment variable — never as a value on the command line.
+  64-character hex or a raw 32-character string). Pass keys via `--source-key-file` /
+  `--target-key-file` (recommended) or via `--source-key-env` / `--target-key-env` naming an
+  environment variable (such as `MYRMIDON_SECRETS_MASTER_KEY` or `PAPERCLIP_SECRETS_MASTER_KEY`).
+  Keys are never passed directly as raw values on the command line.
 - Free disk space for a full copy of the storage directory and for the backup (section 3).
+
+> **Note on command syntax in examples below:** For brevity, the examples below show the command as
+> `myrmidon-migrate <flags>`. When executing inside Docker, prefix with your `docker run ... <image> myrmidon-migrate`
+> or `docker run ... --entrypoint /app/cli/node_modules/.bin/tsx -w /app/cli <image> src/index.ts myrmidon:migrate`.
 
 Every command below uses placeholders. Keep real URLs and keys in files with mode `0600` or in
 environment variables; the command redacts URLs and keys from its errors and its JSON output.
@@ -85,12 +125,15 @@ environment variables; the command redacts URLs and keys from its errors and its
 4. **Carry over the service settings** that are not in the database: for example the secrets
    provider and key location of the new installation, and `BETTER_AUTH_SECRET` /
    `AGENT_JWT_SECRET` if you want existing browser sessions and agent tokens to keep working.
-   Point the new installation at the **target** master key.
+   Point the new installation at the **target** master key via the `MYRMIDON_SECRETS_MASTER_KEY_FILE`
+   environment variable (path to key file) or `MYRMIDON_SECRETS_MASTER_KEY` (inline 32-byte key material).
+   Legacy `Paperclip` variable names `PAPERCLIP_SECRETS_MASTER_KEY_FILE` and `PAPERCLIP_SECRETS_MASTER_KEY`
+   are supported aliases (with `MYRMIDON_*` taking precedence if both are set).
 
 ## 4. Dry run (no writes)
 
 ```sh
-paperclipai myrmidon:migrate --dry-run \
+myrmidon-migrate --dry-run \
   --source-url-env SOURCE_DB_URL \
   --source-files /path/to/paperclip/storage \
   --source-key-file /secure/source-master.key \
@@ -132,7 +175,7 @@ database or directory is not empty and was not created by an earlier run of this
 ### 5.1 From a database URL
 
 ```sh
-paperclipai myrmidon:migrate \
+myrmidon-migrate \
   --source-url-env SOURCE_DB_URL \
   --source-files /path/to/paperclip/storage \
   --source-key-file /secure/source-master.key \
@@ -151,7 +194,7 @@ into an **empty scratch database** that you provide, reads the source from there
 the scratch database in place for you to drop:
 
 ```sh
-paperclipai myrmidon:migrate --source-dump ./source.sql --scratch-url-env SCRATCH_DB_URL \
+myrmidon-migrate --source-dump ./source.sql --scratch-url-env SCRATCH_DB_URL \
   --source-files ... --source-key-file ... --target-url-env ... --target-dir ... \
   --target-key-file ... --state-dir ...
 ```
@@ -230,7 +273,7 @@ external secret providers must be switched (and switched back) by you.
 ## 8. Roll back the migration
 
 ```sh
-paperclipai myrmidon:migrate --rollback \
+myrmidon-migrate --rollback \
   --target-url-env TARGET_DB_URL --target-dir /path/to/myrmidon/storage \
   --state-dir /path/to/migration-state
 ```
@@ -247,7 +290,7 @@ rollback removes that data too.
 
 ## 9. Reference
 
-Flags (`paperclipai myrmidon:migrate --help`):
+Flags (`myrmidon-migrate --help` / `src/index.ts myrmidon:migrate --help`):
 
 | Flag | Meaning |
 |---|---|

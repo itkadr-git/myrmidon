@@ -6,7 +6,7 @@ import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
 import type { PromptBreakdown } from "./prompt-meter.js";
-import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@myrmidon/shared";
 
 export interface AdapterAgent {
   id: string;
@@ -101,6 +101,7 @@ export interface AdapterExecutionResult {
   errorFamily?: AdapterExecutionErrorFamily | null;
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
+  failedBeforeModel?: boolean;
   usage?: UsageSummary;
   /**
    * myrmidon(1.6.5 PROMPT-BUDGET A): prompt-token breakdown of the request
@@ -109,6 +110,35 @@ export interface AdapterExecutionResult {
    * (chars/4 heuristic), not provider-reported.
    */
   promptBreakdown?: PromptBreakdown;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per prompt
+   * section, parallel to `promptBreakdown.parts` (which holds token estimates
+   * from the chars/4 heuristic). Keyed by the same section names. Lets the
+   * server store both tokens and chars per section in llm_call_traces.
+   */
+  sectionChars?: Record<string, number>;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): estimated tool schema sizes
+   * derived from the paperclip_skills field sent to the gateway. The gateway
+   * builds actual JSON schemas from these skills; we estimate the size from
+   * the skill metadata to give the server a rough sense of tool schema bloat.
+   */
+  toolSchemaChars?: number | null;
+  toolSchemaTokens?: number | null;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * observed from tool.started/tool.completed events during the run.
+   */
+  toolResultChars?: number | null;
+  toolResultTokens?: number | null;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): session compaction info from
+   * the server-side session rotation evaluation. Set by the server when
+   * persisting the trace; the adapter leaves this false.
+   */
+  compacted?: boolean;
+  preCompactChars?: number | null;
+  postCompactChars?: number | null;
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the
@@ -213,6 +243,10 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterExecutionContext {
+  runGuard?: import("./run-guard.js").RunGuard;
+  onModelCall?: () => void;
+  /** Called when a guard trips; implementations should stop their active process. */
+  onRunGuardStop?: (reason: import("./run-guard.js").RunGuardStopReason) => Promise<void>;
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
@@ -227,6 +261,13 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  paperclipCancellation?: {
+    current: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    } | null;
+  };
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
@@ -273,6 +314,8 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+  pricing?: "free" | "paid";
+  accounts?: string[];
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -497,7 +540,27 @@ export interface ServerAdapterModule {
     baseUrl: string;
     apiKey: string;
     gatewayRunId: string;
+    cancellation?: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    };
   }) => Promise<{ stopped: boolean }>;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe whether a remote gateway run
+   * is still alive on the bot gateway, completed, missing (404), or unreachable.
+   */
+  probeGatewayRunForBoard?: (input: {
+    baseUrl: string;
+    apiKey?: string | null;
+    headers?: Record<string, string> | string | null;
+    gatewayRunId: string;
+    timeoutMs?: number;
+  }) => Promise<{
+    state: "live" | "terminal" | "not_found" | "unreachable";
+    status: string | null;
+    error?: string;
+  }>;
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
@@ -767,6 +830,9 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  filesystemScope?: "workspace";
+  networkScope?: "deny" | "allowlist";
+  networkAllowlist?: string;
   defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
@@ -776,6 +842,9 @@ export interface CreateConfigValues {
   // openclaw_gateway adapter fields
   authToken?: string;
   agentId?: string;
+  clientId?: string;
+  clientMode?: string;
+  clientVersion?: string;
   sessionKeyStrategy?: string;
   sessionKey?: string;
   timeoutSec?: number;

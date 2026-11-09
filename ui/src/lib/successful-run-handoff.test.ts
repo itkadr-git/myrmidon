@@ -53,7 +53,7 @@ describe("successful run handoff UI helpers", () => {
   });
 
   // myrmidon(B1): the text the server posts today, written out literally. The UI
-  // takes its constants from @paperclipai/shared, so this also fails if the shared
+  // takes its constants from @myrmidon/shared, so this also fails if the shared
   // constants and the server-posted text ever diverge from what the board renders.
   it("recognizes the comments the server posts under the current product name", () => {
     expect(SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY).toBe(

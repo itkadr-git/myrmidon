@@ -15,7 +15,7 @@
 // original bypassed wake did. See wake-classification.ts,
 // explicit-wake-bypass.ts and docs/myrmidon/DIVERGENCE.md "L2".
 import { and, eq } from "drizzle-orm";
-import { issueRecoveryActions, type Db } from "@paperclipai/db";
+import { issueRecoveryActions, type Db } from "@myrmidon/db";
 import { executionBlockerPredicate } from "../../services/execution-blocker.js";
 import { explicitWakeBypassesSettledHold } from "./explicit-wake-bypass.js";
 import { persistActivity } from "../../services/activity-log.js";

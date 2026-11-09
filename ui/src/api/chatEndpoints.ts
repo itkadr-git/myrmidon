@@ -7,11 +7,11 @@ import type {
   ChatPublicationSummary,
   ChatActivityItem,
   ChatFileTransferResolutionPrecondition,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 export type {
   ChatPublicationSummary,
   ChatActivityItem,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export type ChatProvider =
   "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "agentmail" | "imessage-photon";
@@ -128,6 +128,12 @@ export interface ChatEndpoint {
     };
     callbacksNeedUpdate?: boolean;
   };
+  /**
+   * myrmidon(1.6.5-F10-A): true when the endpoint has been sitting in the
+   * wizard's `test` stage for over a day while traffic still flows through it
+   * (an attention signal, not an error).
+   */
+  verifyingStale?: boolean;
 }
 
 export interface ChatCallbackSurfaceState {

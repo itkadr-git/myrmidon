@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   directorySnapshotSha256,
   serializeDirectorySnapshot,
-} from "@paperclipai/adapter-utils/workspace-restore-merge";
+} from "@myrmidon/adapter-utils/workspace-restore-merge";
 
 import {
   classifyNativeWorkspaceInbound,
