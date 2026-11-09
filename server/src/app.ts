@@ -217,6 +217,7 @@ import {
   myrmidonArchitectDataRoutes,
   myrmidonSttRoutes,
   myrmidonGitHubSharedIdentityRoutes,
+  myrmidonGitHubAppWebhookRoutes,
   createTelegramVoiceSttWiring,
   myrmidonVoiceMeetingProtocolRoutes,
   myrmidonEvalsRoutes,
@@ -994,6 +995,11 @@ export async function createApp(
   const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
   app.use(emailWebhookRoutes(emailChannels));
   app.use(chatWebhookRoutes(chatChannels));
+  // myrmidon(GITHUB-APP-WEBHOOK): our own GitHub App's CI / pull-request events.
+  // Public like the provider ingress above: GitHub's HMAC signature is the
+  // credential. The event service is created after the app (it carries the
+  // wakeups), so the route reaches it through `app.locals`, set at startup.
+  app.use(myrmidonGitHubAppWebhookRoutes(db, { ingest: () => app.locals.githubConnectionEvents ?? null }));
   // myrmidon(EXTCASE-B): the extension's one board-less endpoint (the pairing code
   // is the credential), mounted outside `/api` with the other provider ingress.
   app.use(myrmidonBrowserBridgePublicRoutes(db));

@@ -119,6 +119,7 @@ export { createCorpusShadowSearch } from "./corpus/shadow-search.js";
 export { myrmidonArchitectDataMcpRoutes, myrmidonArchitectDataRoutes } from "./architect-data/index.js";
 export { myrmidonSttRoutes } from "./stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 export { myrmidonGitHubSharedIdentityRoutes } from "./github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
+export { myrmidonGitHubAppWebhookRoutes } from "./github-app-webhook/index.js"; // myrmidon(GITHUB-APP-WEBHOOK)
 export { createTelegramVoiceSttWiring } from "./channel-connectors/bridge/voice-stt.js"; // myrmidon(1.6.5 VOICE-STT A) myrmidon(1.6.6 CH-CONNECTOR-D)
 export { myrmidonVoiceMeetingProtocolRoutes } from "./voice-meeting-protocol/index.js"; // myrmidon(1.6.5 VOICE-STT B)
 export { myrmidonEvalsRoutes } from "./evals/index.js"; // myrmidon(1.6-EVALS)
