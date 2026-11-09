@@ -10,15 +10,6 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-### Hindsight plugin: configurable request timeout with 60s default (OPE-8150)
-
-- Hindsight client requests (`recall`, `retain`) now default to a 60-second timeout
-  (`DEFAULT_TIMEOUT_MS = 60_000`), increased from the legacy 15 seconds to prevent
-  aborted recall queries when the bank experiences high latency under CPU contention (OPE-3314).
-- The timeout is now configurable via the plugin instance configuration field `requestTimeoutMs`
-  (declared in manifest with default `60000` and validated on configuration submit).
-- Health checks continue to use a dedicated 5-second timeout.
-
 ## 1.6.6
 
 ### IDLE-STOP: stop idle bot containers, wake on demand with health check (IDLE-STOP)

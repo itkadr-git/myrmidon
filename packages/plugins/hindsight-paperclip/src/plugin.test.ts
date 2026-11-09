@@ -917,15 +917,33 @@ describe("request timeout and latency (OPE-8150)", () => {
     }
   });
 
-  it("validates requestTimeoutMs in onValidateConfig", async () => {
+  it("validates and propagates requestTimeoutMs to HindsightClient in onValidateConfig", async () => {
     const fetchImpl: FetchLike = async () => jsonResponse({ ok: true });
     const plugin = createHindsightPlugin({ fetchImpl });
 
-    const validResult = await plugin.definition.onValidateConfig?.({
-      hindsightApiUrl: "http://localhost:8888",
-      requestTimeoutMs: 45_000,
+    let capturedTimeoutMs: number | undefined;
+    const healthSpy = vi.spyOn(HindsightClient.prototype, "health").mockImplementation(async function (this: HindsightClient) {
+      capturedTimeoutMs = this.timeoutMs;
+      return true;
     });
-    assert.deepEqual(validResult, { ok: true });
+
+    try {
+      const validResult = await plugin.definition.onValidateConfig?.({
+        hindsightApiUrl: "http://localhost:8888",
+        requestTimeoutMs: 45_000,
+      });
+      assert.deepEqual(validResult, { ok: true });
+      assert.equal(capturedTimeoutMs, 45_000);
+
+      capturedTimeoutMs = undefined;
+      const defaultResult = await plugin.definition.onValidateConfig?.({
+        hindsightApiUrl: "http://localhost:8888",
+      });
+      assert.deepEqual(defaultResult, { ok: true });
+      assert.equal(capturedTimeoutMs, DEFAULT_TIMEOUT_MS);
+    } finally {
+      healthSpy.mockRestore();
+    }
 
     const invalidNegative = await plugin.definition.onValidateConfig?.({
       hindsightApiUrl: "http://localhost:8888",
