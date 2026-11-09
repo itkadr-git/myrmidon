@@ -11,6 +11,7 @@ import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@myrmidon/shared";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import {
+  assertLocalProcessSandboxUserNamespaces,
   buildLocalProcessSandboxSpawnTarget,
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
@@ -3784,6 +3785,7 @@ async function resolveSpawnTarget(
         `Local process confinement requires Bubblewrap, but "${requestedSandboxCommand}" was not found in PATH. Install bwrap or configure filesystemSandboxCommand.`,
       );
     }
+    await assertLocalProcessSandboxUserNamespaces(sandboxCommand);
     const sandboxTarget = await buildLocalProcessSandboxSpawnTarget({
       executable,
       args,
