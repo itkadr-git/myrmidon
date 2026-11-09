@@ -56,6 +56,11 @@ export interface BotContainerStatus {
   imageRollout?: { onReleaseImage: boolean; targetImage: string | null; reason: string | null };
   /** runtimeConfig.heartbeat.maxConcurrentRuns, normalized by the server. */
   boardMaxConcurrentRuns: number;
+  /** myrmidon(1.6.7 RUN-LIMITS): the ceiling the scheduler admits against —
+   *  min(board, gateway, memory). Absent on an older server. */
+  effectiveMaxConcurrentRuns?: number;
+  /** Which ceiling binds the effective value. Absent on an older server. */
+  effectiveMaxConcurrentRunsSource?: "board" | "gateway" | "memory";
   /** Board value against the applied one; null when there is nothing to compare. */
   gatewayConcurrency: GatewayConcurrencyStatus | null;
   /** Why gatewayConcurrency is null, or a caveat about its value. */

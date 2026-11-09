@@ -1265,6 +1265,13 @@
       "only": "Queue position {{position}}"
     },
     "waiting": "waiting: {{reason}}",
+    "waitDetailLimit": "limit {{limit}}{{source}}",
+    "waitDetailRunning": "{{running}} running",
+    "limitSource": {
+      "board": " (board)",
+      "gateway": " (gateway)",
+      "memory": " (memory)"
+    },
     "waitReason": {
       "global_cap": "the concurrency ceiling is full",
       "start_ramp": "the start ramp paces new starts",

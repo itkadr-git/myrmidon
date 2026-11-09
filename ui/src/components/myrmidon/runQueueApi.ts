@@ -53,6 +53,14 @@ export interface RunQueuePosition {
   queueLength: number | null;
   waitReason: string | null;
   queuedAt: string | null;
+  /** myrmidon(1.6.7 RUN-LIMITS): numbers behind an `agent_concurrency` hold —
+   *  the effective limit, the binding ceiling and the running count. Null when
+   *  the server did not report them (older server, other wait reason). */
+  waitDetail: {
+    limit: number | null;
+    limitSource: string | null;
+    running: number | null;
+  } | null;
 }
 
 export interface RunQueuePositionView {
@@ -175,7 +183,33 @@ export function describeRunQueuePosition(
     );
   }
   const reason = describeRunWaitReason(position.waitReason, translate);
-  if (reason) parts.push(translate("runQueue.waiting", { reason }));
+  // myrmidon(1.6.7 RUN-LIMITS): an `agent_concurrency` hold says its numbers —
+  // "the agent's own concurrency limit is full — limit 2 (gateway)". The
+  // binding ceiling names why the limit is what it is: board, gateway, memory.
+  if (reason && position.waitReason === "agent_concurrency" && position.waitDetail) {
+    const { limit, limitSource, running } = position.waitDetail;
+    const source =
+      limitSource === "gateway" || limitSource === "memory" || limitSource === "board"
+        ? translate(`runQueue.limitSource.${limitSource}`)
+        : null;
+    if (limit != null) {
+      const limitText = translate("runQueue.waitDetailLimit", {
+        limit,
+        source: source ?? "",
+      });
+      parts.push(translate("runQueue.waiting", { reason: `${reason} — ${limitText}` }));
+    } else if (running != null) {
+      parts.push(
+        translate("runQueue.waiting", {
+          reason: `${reason} — ${translate("runQueue.waitDetailRunning", { running })}`,
+        }),
+      );
+    } else {
+      parts.push(translate("runQueue.waiting", { reason }));
+    }
+  } else if (reason) {
+    parts.push(translate("runQueue.waiting", { reason }));
+  }
   if (parts.length === 0) return null;
   return parts.join(", ");
 }
@@ -199,6 +233,11 @@ const FALLBACK_EN: Record<string, string> = {
   "runQueue.position.of": "Queue position {{position}} of {{total}}",
   "runQueue.position.only": "Queue position {{position}}",
   "runQueue.waiting": "waiting: {{reason}}",
+  "runQueue.waitDetailLimit": "limit {{limit}}{{source}}",
+  "runQueue.waitDetailRunning": "{{running}} running",
+  "runQueue.limitSource.board": " (board)",
+  "runQueue.limitSource.gateway": " (gateway)",
+  "runQueue.limitSource.memory": " (memory)",
   "runQueue.waitReason.global_cap": "the concurrency ceiling is full",
   "runQueue.waitReason.start_ramp": "the start ramp paces new starts",
   "runQueue.waitReason.memory": "the server keeps its free-memory floor",
