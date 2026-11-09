@@ -232,12 +232,6 @@ default and is re-read on every pass (a PATCH applies without restart):
 
 Isolation is opt-in per agent in the Hermes adapter configuration (`adapterConfig`), not an instance-wide environment switch. With neither `filesystemScope` nor `networkScope`, execution remains unsandboxed. Set `filesystemScope: "workspace"` to use a Bubblewrap workspace-only filesystem boundary. `filesystemSandboxCommand` selects the executable (default `bwrap`), and `filesystemExtraPaths` lists additional paths the sandbox may expose. For network control, set `networkScope: "deny"` or `"allowlist"` with `networkAllowlist` containing permitted hosts/origins. The configured control-plane API URL is trusted for the adapter's runtime connection. These settings affect `hermes_local` only; Bubblewrap must be installed on the agent host.
 
-**Native Runner Codex Sandbox & User Namespaces (OPE-12274):**
-For native Codex execution (`paperclip_runner`), the Codex inner sandbox (`bwrap`) is intentionally **not** disabled. Disabling it would allow agents to read board container secrets. Instead, container runtimes must support unprivileged user namespaces (`userns`). The board container requires:
-1. `--security-opt seccomp=path/to/myrmidon-board-userns.json` (custom seccomp profile allowing `clone, unshare, mount, umount2, pivot_root, setns`).
-2. `--security-opt apparmor=unconfined` (to permit mount operations required by bwrap).
-If user namespaces are unavailable, runner initialization fails gracefully with `codex_sandbox_unavailable` and operational guidance rather than crashing on `session.open`.
-
 ## Track 4 — chats and skills
 
 | Variable | Function | Default | What it does | How to disable / special |
