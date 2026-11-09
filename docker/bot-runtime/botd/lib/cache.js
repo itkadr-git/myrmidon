@@ -4,8 +4,8 @@
 //     a deferred path is announced once per TTL (default 1 h); repeated passes stay
 //     silent while the entry is fresh;
 //   * cooldown  — `$MYRMIDON_WS_HOME/botd-cooldown.json`, {path|op: {op, result, at}}:
-//     success/error actions are silent inside the TTL; deferred foreign-owner actions
-//     are retried each pass so a repaired workspace can be cleaned promptly.
+//     success/error actions are silent inside the TTL; a deferred foreign-owner
+//     action is retried on a day-long window (DEFERRED_TTL_MS), not every pass.
 // Both files are best-effort state: a broken or unwritable cache makes every entry
 // look fresh (the rule runs again, loudly once) and never breaks the pass. Stale
 // entries are swept on write, so the files do not grow without bound.
@@ -14,6 +14,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const DEFAULT_TTL_MS = 3_600_000; // 1 hour
+// A deferred foreign-owner result retries on this window, not per pass: one
+// attempt a day is enough for a directory we cannot touch until its owner (or
+// an operator) fixes the uid, and it stops the hourly failure loop.
+export const DEFERRED_TTL_MS = 24 * DEFAULT_TTL_MS;
 
 function loadCache(file) {
   try {
@@ -86,13 +90,17 @@ export function createAttention(file, opts = {}) {
 
 /**
  * Successful/error actions run at most once per TTL. A deferred foreign-owner
- * action is deliberately retried each pass after emitting its attention signal.
+ * action (a file we cannot touch because of its owner) is retried on its own,
+ * much longer window — one attempt a day instead of one per loop pass — so a
+ * permanently foreign `.git` costs one log line and one archived attempt a day,
+ * not an hourly failure.
  * @param {string} file botd-cooldown.json
- * @param {{now?:() => Date, ttlMs?:number}} [opts]
+ * @param {{now?:() => Date, ttlMs?:number, deferredTtlMs?:number}} [opts]
  */
 export function createCooldown(file, opts = {}) {
   const now = opts.now ?? (() => new Date());
   const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
+  const deferredTtlMs = opts.deferredTtlMs ?? DEFERRED_TTL_MS;
   // The key is path+op: `remove` on a path and `prune` on the same path are
   // different decisions, and neither must silence or overwrite the other.
   const keyOf = (p, op) => `${p}${op}`;
@@ -102,10 +110,13 @@ export function createCooldown(file, opts = {}) {
       const entry = loadCache(file)[keyOf(p, op)];
       return !!(entry && entry.op === op && fresh(entry, now().getTime(), ttlMs));
     },
-    /** True when the last attempt was a deferred foreign-owner failure. */
+    /**
+     * True when the last attempt was a deferred foreign-owner failure that is
+     * still inside the deferred window: the caller skips, it does not retry.
+     */
     deferredRecent(p, op) {
       const entry = loadCache(file)[keyOf(p, op)];
-      return !!(entry && entry.op === op && entry.result === "deferred" && fresh(entry, now().getTime(), ttlMs));
+      return !!(entry && entry.op === op && entry.result === "deferred" && fresh(entry, now().getTime(), deferredTtlMs));
     },
     /** Remembers the attempt so the next pass within the TTL stays silent. */
     record(p, op, result) {
