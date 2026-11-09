@@ -869,6 +869,9 @@ function ProviderCard({
                     {oauthCompleting ? "Completing..." : "Complete Authorization"}
                   </Button>
                 </div>
+              </div>
+            )}
+
             {isAddAccountOpen && (
               <div
                 className="rounded-md border border-primary/30 bg-muted/30 p-3 space-y-3"
