@@ -554,7 +554,8 @@ export function agentRoutes(
     gatewayKeyDeps?: AgentGatewayKeyDeps;
   } = {},
 ) {
-  const gatewayKeyDeps = options.gatewayKeyDeps ?? defaultAgentGatewayKeyDeps(db);
+  let resolvedGatewayKeyDeps: AgentGatewayKeyDeps | null = options.gatewayKeyDeps ?? null;
+  const getGatewayKeyDeps = () => (resolvedGatewayKeyDeps ??= defaultAgentGatewayKeyDeps(db));
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -5959,7 +5960,7 @@ function getActorIdentityPart(req: Request): string {
       }
       if (modelsToCheck.length > 0) {
         try {
-          await extendAgentGatewayKeyAllowlist(gatewayKeyDeps, {
+          await extendAgentGatewayKeyAllowlist(getGatewayKeyDeps(), {
             companyId: agent.companyId,
             agentId: agent.id,
             newModels: modelsToCheck,

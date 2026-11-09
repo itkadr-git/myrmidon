@@ -616,18 +616,19 @@ export function defaultAgentGatewayKeyDeps(
   db: Db,
   env: NodeJS.ProcessEnv = process.env,
 ): AgentGatewayKeyDeps {
-  const secrets = secretService(db);
+  let secretsInstance: ReturnType<typeof secretService> | null = null;
+  const getSecrets = () => (secretsInstance ??= secretService(db));
   return {
     db,
     env,
     readSecretValue: (companyId, secretName) =>
-      secrets
+      getSecrets()
         .getByName(companyId, secretName)
-        .then((row) => (row ? secrets.resolveSecretValue(companyId, row.id, "latest") : null)),
+        .then((row) => (row ? getSecrets().resolveSecretValue(companyId, row.id, "latest") : null)),
     findSecretId: (companyId, secretName) =>
-      secrets.getByName(companyId, secretName).then((row) => row?.id ?? null),
+      getSecrets().getByName(companyId, secretName).then((row) => row?.id ?? null),
     createSecret: async (input) => {
-      const created = (await secrets.create(
+      const created = (await getSecrets().create(
         input.companyId,
         {
           name: input.name,
@@ -640,10 +641,10 @@ export function defaultAgentGatewayKeyDeps(
       return { id: created.id };
     },
     rotateSecret: async (secretId, value) => {
-      await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
+      await getSecrets().rotate(secretId, { value }, { userId: null, agentId: null });
     },
     deleteSecret: async (secretId) => {
-      await secrets.remove(secretId);
+      await getSecrets().remove(secretId);
     },
     gateway: ({ baseUrl, adminKey }) => createGatewayKeyAdminPort(baseUrl, adminKey),
   };

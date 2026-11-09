@@ -162,6 +162,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: vi.fn(),
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => ({}),
+  secretService: () => mockSecretService,
 }));
 
 vi.mock("../services/environments.js", () => ({
