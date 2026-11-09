@@ -871,7 +871,7 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
       expect(srcDigest.digest).toBe(tgtDigest.digest);
 
       // Tamper with the integer value in the target table
-      await scalar(f.targetUrl, `update "companies" set "spent_monthly_cents" = 999 where id = '${COMPANY_A}'`);
+      await tgtDb.execute(sql.raw(`update "companies" set "spent_monthly_cents" = 999 where id = '${COMPANY_A}'`));
       const tamperedDigest = await tableDigest(tgtDb, "companies", compTgt, new Set());
       expect(srcDigest.digest).not.toBe(tamperedDigest.digest);
     } finally {
