@@ -6254,7 +6254,10 @@ export function recoveryService(
           providerQuotaMonitorRun.agentId
           ? classifyAdapterFailureForRecovery(providerQuotaMonitorRun, recoveryNow)
           : null;
-      if (preBudgetProviderQuotaClassification?.kind === "provider_quota") {
+      if (
+        providerQuotaMonitorRun &&
+        preBudgetProviderQuotaClassification?.kind === "provider_quota"
+      ) {
         if (
           hasPendingProviderQuotaRecoveryMonitor(
             issue,
