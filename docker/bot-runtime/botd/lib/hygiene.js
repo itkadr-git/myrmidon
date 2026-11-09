@@ -18,6 +18,7 @@ export const HYGIENE_DEFAULTS = Object.freeze({
   npmCacheTtlHours: 48, // 2 days
   npxTtlHours: 24, // 24 hours
   npmCacheCapBytes: 1024 * 1024 * 1024, // 1 GiB
+  npmCacacheQuotaBytes: 512 * 1024 * 1024, // OPE-12497: per-bot _cacache ceiling
   uvCacheTtlHours: 168, // 7 days
   terminalOutputTtlHours: 24, // 24 hours
   // myrmidon(OPE-12110): total ceiling for `hermes/.npm/_npx`, in bytes. An
@@ -492,6 +493,87 @@ export function enforceNpmCap(npmDir, options = {}) {
   return result;
 }
 
+/**
+ * Cap the complete per-bot cacache after the TTL pass. Evict whole content and
+ * index shards oldest-first; never follow symlinks or delete an open subtree.
+ * An active run is exempt at the call site because it may be installing now.
+ */
+export function enforceCacacheQuota(cacheDir, options = {}) {
+  const quotaBytes = options.quotaBytes ?? HYGIENE_DEFAULTS.npmCacacheQuotaBytes;
+  const result = { sizeBefore: 0, sizeAfter: 0, cleanedFiles: 0, cleanedBytes: 0, skippedOpen: 0, removed: [] };
+  if (!(quotaBytes > 0)) return result;
+  let root;
+  try {
+    // The workspace can itself be a bind/symlink alias; reject a symlink at
+    // the cache leaf, while comparing descendants against its canonical root.
+    root = fs.realpathSync(cacheDir);
+    if (!fs.lstatSync(cacheDir).isDirectory()) return result;
+  } catch { return result; }
+
+  const candidates = [];
+  const add = (dir) => {
+    let entries;
+    try {
+      if (!fs.lstatSync(dir).isDirectory()) return;
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch { return; }
+    for (const entry of entries) {
+      const candidate = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        try {
+          const real = fs.realpathSync(candidate);
+          if (!real.startsWith(`${root}${path.sep}`)) continue;
+          candidates.push({ path: candidate, newest: entryNewestMtime(candidate) });
+        } catch {}
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
+        try { candidates.push({ path: candidate, newest: fs.lstatSync(candidate).mtimeMs }); } catch {}
+      }
+    }
+  };
+  // Content shards are `content-v2/sha512/<xx>`; index shards are
+  // `index-v5/<xx>`. Include other top-level entries as individual units.
+  let tops = [];
+  try { tops = fs.readdirSync(cacheDir, { withFileTypes: true }); } catch { return result; }
+  for (const top of tops) {
+    const p = path.join(cacheDir, top.name);
+    if (top.isDirectory() && (top.name === "content-v2" || top.name === "index-v5")) {
+      if (top.name === "content-v2") {
+        if (!fs.lstatSync(p).isDirectory()) continue;
+        add(path.join(p, "sha512"));
+        // Other content algorithms, if present, remain whole entries.
+        let algorithms = [];
+        try { algorithms = fs.readdirSync(p, { withFileTypes: true }); } catch {}
+        for (const algorithm of algorithms) if (algorithm.name !== "sha512" && algorithm.isDirectory()) add(path.join(p, algorithm.name));
+      } else add(p);
+    } else if (top.isDirectory()) candidates.push({ path: p, newest: entryNewestMtime(p) });
+    else if (top.isFile() || top.isSymbolicLink()) {
+      try { candidates.push({ path: p, newest: fs.lstatSync(p).mtimeMs }); } catch {}
+    }
+  }
+  let size = dirSize(cacheDir);
+  result.sizeBefore = size;
+  result.sizeAfter = size;
+  if (size <= quotaBytes) return result;
+  candidates.sort((a, b) => a.newest - b.newest || a.path.localeCompare(b.path));
+  for (const candidate of candidates) {
+    if (size <= quotaBytes) break;
+    if (isPathOpen(candidate.path, options.openPaths)) { result.skippedOpen++; continue; }
+    const st = fs.lstatSync(candidate.path);
+    const before = st.isDirectory() ? entrySize(candidate.path) : { bytes: st.size, files: 1 };
+    try {
+      if (st.isDirectory()) fs.rmSync(candidate.path, { recursive: true, force: true });
+      else fs.unlinkSync(candidate.path);
+      if (fs.existsSync(candidate.path)) continue;
+    } catch { continue; }
+    size -= before.bytes;
+    result.cleanedBytes += before.bytes;
+    result.cleanedFiles += before.files;
+    result.removed.push(path.relative(cacheDir, candidate.path));
+  }
+  result.sizeAfter = dirSize(cacheDir);
+  return result;
+}
+
 /** { bytes, files } for one entry tree (0 when unreadable). */
 function entrySize(dir) {
   let bytes = 0;
@@ -539,6 +621,7 @@ export async function cleanCaches(options = {}) {
     npmNpxQuotaBytes: options.limits?.npmNpxQuotaBytes ?? options.npmNpxQuotaBytes ?? HYGIENE_DEFAULTS.npmNpxQuotaBytes,
     cargoTargetQuotaBytes: options.limits?.cargoTargetQuotaBytes ?? options.cargoTargetQuotaBytes ?? HYGIENE_DEFAULTS.cargoTargetQuotaBytes,
     quotaFreshGraceMs: (options.limits?.quotaFreshGraceMinutes ?? options.quotaFreshGraceMinutes ?? HYGIENE_DEFAULTS.quotaFreshGraceMinutes) * MINUTE,
+    npmCacacheQuotaBytes: options.limits?.npmCacacheQuotaBytes ?? options.npmCacacheQuotaBytes ?? HYGIENE_DEFAULTS.npmCacacheQuotaBytes,
   };
 
   // A live run may be using an npx install right now; the whole-`.npm` cap below is
@@ -620,6 +703,18 @@ export async function cleanCaches(options = {}) {
   // run — an in-flight agent may own any entry (its fd is open, but a run that has
   // not opened the file yet is still using the install).
   if (!live) {
+    const cacacheQuota = enforceCacacheQuota(path.join(hermesHome, ".npm", "_cacache"), {
+      quotaBytes: limits.npmCacacheQuotaBytes,
+      openPaths,
+    });
+    targetResults["npm-cacache-quota"] = cacacheQuota;
+    totalFiles += cacacheQuota.cleanedFiles;
+    totalBytes += cacacheQuota.cleanedBytes;
+    totalSkippedOpen += cacacheQuota.skippedOpen;
+    if (typeof options.log === "function") {
+      options.log(`botd hygiene: npm _cacache quota pass ${limits.npmCacacheQuotaBytes} bytes (${cacacheQuota.sizeBefore} -> ${cacacheQuota.sizeAfter}), evicted ${cacacheQuota.removed.length} entries, skipped open ${cacacheQuota.skippedOpen}`);
+    }
+
     const cap = enforceNpmCap(path.join(hermesHome, ".npm"), {
       capBytes: limits.npmCacheCapBytes,
       openPaths,

@@ -13,6 +13,7 @@ import {
   cleanUvCache,
   collectOpenPaths,
   enforceNpmCap,
+  enforceCacacheQuota,
   HYGIENE_DEFAULTS,
   isPathOpen,
 } from "../../../docker/bot-runtime/botd/lib/hygiene.js";
@@ -371,6 +372,72 @@ describe("botd hygiene: cache cleanup by mtime", () => {
     } finally {
       cleanup();
     }
+  });
+
+  it("enforceCacacheQuota: evicts whole content and index shards oldest-first", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const root = path.join(tmp, "_cacache");
+      const paths = [
+        path.join(root, "content-v2", "sha512", "aa", "blob"),
+        path.join(root, "index-v5", "cc", "idx"),
+        path.join(root, "content-v2", "sha512", "bb", "blob"),
+      ];
+      const times = [10, 5, 1];
+      paths.forEach((p, i) => {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, "x".repeat(300));
+        const age = new Date(now - times[i] * HOUR);
+        fs.utimesSync(p, age, age);
+        fs.utimesSync(path.dirname(p), age, age);
+      });
+      const result = enforceCacacheQuota(root, { quotaBytes: 400, openPaths: new Set() });
+      assert.deepEqual(paths.map((p) => fs.existsSync(p)), [false, false, true]);
+      assert.equal(result.cleanedBytes, 600);
+      assert.equal(result.sizeAfter, 300);
+      assert.equal(result.removed.length, 2);
+    } finally { cleanup(); }
+  });
+
+  it("enforceCacacheQuota: leaves an open shard intact and evicts the next one", () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const root = path.join(tmp, "_cacache");
+      const old = path.join(root, "content-v2", "sha512", "aa", "blob");
+      const newer = path.join(root, "index-v5", "bb", "idx");
+      for (const file of [old, newer]) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, "x".repeat(300));
+      }
+      const result = enforceCacacheQuota(root, { quotaBytes: 400, openPaths: new Set([old]) });
+      assert.equal(fs.existsSync(old), true);
+      assert.equal(fs.existsSync(newer), false);
+      assert.equal(result.skippedOpen, 1);
+    } finally { cleanup(); }
+  });
+
+  it("cleanCaches: applies the cacache quota after TTL only when idle", async () => {
+    const { tmp, cleanup } = createTempFixture();
+    try {
+      const now = Date.now();
+      const home = path.join(tmp, "hermes");
+      const file = path.join(home, ".npm", "_cacache", "content-v2", "sha512", "aa", "blob");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "x".repeat(1000));
+      const fresh = new Date(now - HOUR);
+      fs.utimesSync(file, fresh, fresh);
+      fs.utimesSync(path.dirname(file), fresh, fresh);
+      const logs = [];
+      const limits = { npmCacacheQuotaBytes: 500 };
+      const live = await cleanCaches({ hermesHome: home, now, openPaths: new Set(), live: true, limits, log: (l) => logs.push(l) });
+      assert.equal(live.targets["npm-cacache-quota"], undefined);
+      assert.equal(fs.existsSync(file), true);
+      const idle = await cleanCaches({ hermesHome: home, now, openPaths: new Set(), limits, log: (l) => logs.push(l) });
+      assert.equal(idle.targets["npm-cacache-quota"].cleanedBytes, 1000);
+      assert.equal(fs.existsSync(file), false);
+      assert.ok(logs.some((line) => line.includes("npm _cacache quota pass 500 bytes (1000 -> 0), evicted 1 entries")));
+    } finally { cleanup(); }
   });
 
   it("uses uv cache clean under hard disk pressure", async () => {
