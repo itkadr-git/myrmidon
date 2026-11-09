@@ -420,10 +420,19 @@ test("OPE-12489: ensureBase refreshes refs from the shared mirror (no origin fet
     newCalls.some((l) => l.includes(mirrorDir)),
     `refresh must fetch from the mirror dir, got: ${newCalls.join(" | ")}`,
   );
-  assert.ok(
-    !newCalls.some((l) => l.includes("origin")),
-    `refresh must not fetch from origin, got: ${newCalls.join(" | ")}`,
-  );
+  // The mirror fetch writes into refs/remotes/origin/* (that is the base's
+  // origin namespace) — assert no fetch targeted the origin REMOTE instead:
+  // the fetch's repo argument must be the mirror dir, never the origin path.
+  const originRemote = path.join(tmp, "upstream");
+  for (const call of newCalls) {
+    const args = call.split(" ").filter((a) => a && !a.startsWith("-"));
+    // args: ["fetch", <repo>, <refspec>?] — find the repo positional
+    const repo = args[1];
+    assert.ok(
+      repo && repo !== originRemote && !repo.includes(originRemote),
+      `refresh must not fetch from the origin remote, got: ${call}`,
+    );
+  }
   assert.match(
     runGit(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"], baseDir),
     /refs\/remotes\/origin\/feature/,
