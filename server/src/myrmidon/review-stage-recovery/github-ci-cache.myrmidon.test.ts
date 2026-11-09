@@ -72,9 +72,9 @@ function openPull(sha: string): Handler {
 }
 
 const completedFinalCheck: Handler = () =>
-  json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success" }] });
+  json({ check_runs: [{ name: "CI result", head_sha: "abc123", status: "completed", conclusion: "success" }] });
 const queuedFinalCheck: Handler = () =>
-  json({ check_runs: [{ name: "CI result", status: "queued", conclusion: null }] });
+  json({ check_runs: [{ name: "CI result", head_sha: "def456", status: "queued", conclusion: null }] });
 
 /** A PR whose head `abc123` has a finished CI. */
 function completeGithub() {
