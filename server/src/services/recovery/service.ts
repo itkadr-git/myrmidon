@@ -6225,6 +6225,64 @@ export function recoveryService(
             .where(eq(heartbeatRuns.id, latestRun.id))
             .then((rows) => rows[0] ?? null)
         : null;
+      const participantLatestRunForRecovery =
+        issue.status === "in_review" && participantAgentId
+          ? await getLatestIssueRunForAgent(
+              issue.companyId,
+              issue.id,
+              participantAgentId,
+            )
+          : null;
+      const executionRecoverySource =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      // Provider outages are external availability failures, not evidence that
+      // a paused assignee should be escalated. Park them before the invokability
+      // gate so a 429/402/503 outage keeps a durable monitor.
+      const recoveryNow = new Date();
+      const providerQuotaMonitorRun =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      const preBudgetProviderQuotaClassification =
+        providerQuotaMonitorRun &&
+        !isStrandedIssueRecoveryIssue(issue) &&
+        (pendingReviewStage || issue.status !== "in_review") &&
+        isUnsuccessfulTerminalIssueRun(providerQuotaMonitorRun) &&
+        getAdapterFailureRecoveryTargetAgentId(issue) ===
+          providerQuotaMonitorRun.agentId
+          ? classifyAdapterFailureForRecovery(providerQuotaMonitorRun, recoveryNow)
+          : null;
+      if (preBudgetProviderQuotaClassification?.kind === "provider_quota") {
+        if (
+          hasPendingProviderQuotaRecoveryMonitor(
+            issue,
+            providerQuotaMonitorRun,
+            recoveryNow,
+          )
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+        const monitored = await scheduleProviderQuotaRecoveryMonitor({
+          issue,
+          latestRun: providerQuotaMonitorRun,
+          classification: preBudgetProviderQuotaClassification,
+        });
+        if (monitored) {
+          latestRun = await persistAdapterFailureRecoveryClassification(
+            providerQuotaMonitorRun,
+            preBudgetProviderQuotaClassification,
+          );
+          result.providerQuotaMonitored += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       // myrmidon(L1): the agent is non-invokable only because it is paused
       // (infrastructure), and the terminal run itself ended on an
       // infrastructure interrupt code within its retry budget, on a run
@@ -6370,18 +6428,6 @@ export function recoveryService(
         continue;
       }
 
-      const participantLatestRunForRecovery =
-        issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(
-              issue.companyId,
-              issue.id,
-              participantAgentId,
-            )
-          : null;
-      const executionRecoverySource =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         executionRecoverySource?.agentId === agentId &&
         executionRecoverySource.contextSnapshot &&
@@ -6448,60 +6494,6 @@ export function recoveryService(
           result.issueIds.push(issue.id);
           continue;
         }
-      }
-      // myrmidon(PROVIDER-OUTAGE-RECOVERY): provider outages are external
-      // availability failures, not evidence that the assignee's invocation
-      // budget is exhausted. Classify and park them before the budget gate so
-      // repeated 429/402/503 failures keep a durable provider-quota monitor
-      // instead of escalating the issue permanently. Recovery-origin issues and
-      // non-review-stage lanes keep their own escalation authorities below.
-      const recoveryNow = new Date();
-      const providerQuotaMonitorRun =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
-      const preBudgetProviderQuotaClassification =
-        providerQuotaMonitorRun &&
-        !isStrandedIssueRecoveryIssue(issue) &&
-        (pendingReviewStage || issue.status !== "in_review") &&
-        isUnsuccessfulTerminalIssueRun(providerQuotaMonitorRun) &&
-        getAdapterFailureRecoveryTargetAgentId(issue) ===
-          providerQuotaMonitorRun.agentId
-          ? classifyAdapterFailureForRecovery(
-              providerQuotaMonitorRun,
-              recoveryNow,
-            )
-          : null;
-      if (
-        providerQuotaMonitorRun &&
-        preBudgetProviderQuotaClassification?.kind === "provider_quota"
-      ) {
-        if (
-          hasPendingProviderQuotaRecoveryMonitor(
-            issue,
-            providerQuotaMonitorRun,
-            recoveryNow,
-          )
-        ) {
-          result.skipped += 1;
-          continue;
-        }
-        const monitored = await scheduleProviderQuotaRecoveryMonitor({
-          issue,
-          latestRun: providerQuotaMonitorRun,
-          classification: preBudgetProviderQuotaClassification,
-        });
-        if (monitored) {
-          latestRun = await persistAdapterFailureRecoveryClassification(
-            providerQuotaMonitorRun,
-            preBudgetProviderQuotaClassification,
-          );
-          result.providerQuotaMonitored += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
-        }
-        continue;
       }
       if (await isInvocationBudgetBlocked(issue, agentId)) {
         const classification = classifyContinuationFailure(latestRun);

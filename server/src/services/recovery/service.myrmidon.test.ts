@@ -387,7 +387,10 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     expect(tick.enqueued).toBe(1);
     const wakeups = await db.select().from(agentWakeupRequests);
     expect(wakeups).toHaveLength(1);
-    expect(wakeups[0]).toMatchObject({ agentId, reason: "issue_monitor_due" });
+    expect(wakeups[0]).toMatchObject({
+      agentId,
+      reason: "transient_failure_retry",
+    });
     const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
     expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
   }, 30_000);
