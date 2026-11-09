@@ -618,12 +618,15 @@ function selectStageParticipant(
   stage: IssueExecutionStage,
   opts?: {
     preferred?: IssueExecutionStagePrincipal | null;
-    exclude?: IssueExecutionStagePrincipal | IssueExecutionStagePrincipal[] | null;
+    exclude?: IssueExecutionStagePrincipal | (IssueExecutionStagePrincipal | null)[] | null;
     candidateLoads?: ReadonlyMap<string, number>;
   },
 ): IssueExecutionStagePrincipal | null {
   const rawExclude = opts?.exclude ?? null;
-  const excluded = Array.isArray(rawExclude) ? rawExclude : rawExclude ? [rawExclude] : [];
+  const rawExcluded = Array.isArray(rawExclude) ? rawExclude : rawExclude ? [rawExclude] : [];
+  const excluded = rawExcluded.filter(
+    (candidate): candidate is IssueExecutionStagePrincipal => candidate != null,
+  );
   const participants = stage.participants.filter(
     (participant) => !excluded.some((candidate) => principalsEqual(participant, candidate)),
   );
