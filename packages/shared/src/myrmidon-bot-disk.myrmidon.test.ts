@@ -104,3 +104,48 @@ describe("1.6.6-SETTINGS-UI-B resolve of the workspace-lifecycle keys", () => {
     expect("scratchTtlHours" in resolved.settings).toBe(false);
   });
 });
+
+// myrmidon(1.6.7-SETTINGS-BOTDISK-MERGE): QA of 1.6.7-rc.9 found `gitMigrationEnabled: true`
+// gone from the stored row after a Save of the lifecycle panel. The service patches
+// `resolveBotDiskSettings(...).settings` and stores the merge result as the whole
+// object, so every stored key must survive resolve -> merge, not only merge.
+const C7_MECHANICS = {
+  botdIntervalSec: 300,
+  legacyPressureIdleDays: 7,
+  hermesPruneEnabled: true,
+  hermesPruneDays: 14,
+  gitMigrationEnabled: true,
+};
+
+describe("1.6.7-SETTINGS-BOTDISK-MERGE resolve of the C7 mechanics keys", () => {
+  it("stored mechanics keys appear in the effective settings", () => {
+    const resolved = resolveBotDiskSettings({ stored: { ...BASE, ...C7_MECHANICS } });
+    for (const [key, value] of Object.entries(C7_MECHANICS)) {
+      expect(resolved.settings[key as keyof typeof resolved.settings]).toBe(value);
+    }
+    // They claim no source of their own, like the other stored-only keys.
+    expect(Object.keys(resolved.sources).sort()).toEqual(["enabled", "idleTtlMs"]);
+  });
+
+  it("absent mechanics keys stay absent", () => {
+    const resolved = resolveBotDiskSettings({ stored: { ...BASE } });
+    for (const key of Object.keys(C7_MECHANICS)) expect(key in resolved.settings).toBe(false);
+  });
+
+  it("resolve -> merge -> store keeps every stored key across a patch of one other key", () => {
+    const stored = { ...BASE, ...C7_MECHANICS };
+    const base = resolveBotDiskSettings({ stored }).settings;
+    const next = mergeBotDiskSettings(base, { scratchTtlHours: 6 });
+    expect(next).toEqual({ ...stored, scratchTtlHours: 6 });
+    expect(next.gitMigrationEnabled).toBe(true);
+    // the stored shape stays valid for the canonical schema
+    expect(botDiskSettingsSchema.safeParse(next).success).toBe(true);
+  });
+
+  it("an explicit null still clears a mechanics key", () => {
+    const base = resolveBotDiskSettings({ stored: { ...BASE, ...C7_MECHANICS } }).settings;
+    const next = mergeBotDiskSettings(base, { gitMigrationEnabled: null });
+    expect("gitMigrationEnabled" in next).toBe(false);
+    expect(next.hermesPruneEnabled).toBe(true);
+  });
+});

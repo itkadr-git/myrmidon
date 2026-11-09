@@ -1,28 +1,40 @@
 // server/src/myrmidon/litellm-sync/config-client.ts
 //
 // myrmidon(OPE-9855): LiteLLM config client for fallback topology.
-// Source of truth: LiteLLM database (LiteLLM_Config table) and /config/update API.
+//
+// The gateway is the only source of truth. The topology is read from the live
+// router (`GET /router/settings`) and written whole with `POST /config/update`
+// ({router_settings: {fallbacks: [...]}}); the board keeps no copy of it. A
+// copy in the board database would drift from what the router really does
+// and would answer "saved" for a write the gateway never saw.
 
-import { sql } from "drizzle-orm";
-import type { Db } from "@myrmidon/db";
 import {
+  GATEWAY_ADMIN_KEY_SECRET_ENV,
+  GATEWAY_BASE_URL_ENV,
   assertFallbackTopologyAcyclic,
+  evaluateFallbackChain,
   findUnknownModelGroups,
   parseFallbackTopology,
-  validateFallbackDiversity,
-  validateFallbackOrder,
   type FallbackChain,
   type KnownModelInfo,
 } from "@myrmidon/shared";
-import { unprocessable } from "../../errors.js";
+import { serviceUnavailable, unprocessable } from "../../errors.js";
+import { sanitizeErrorMessage } from "./client.js";
+
+/** The code every "the gateway is not set up" answer carries (503). */
+export const GATEWAY_NOT_CONFIGURED_CODE = "litellm_gateway_not_configured";
 
 export interface LitellmConfigClientDeps {
   /** The base URL of the LiteLLM instance. */
   litellmBaseUrl?: string | null;
   /** The admin key for LiteLLM router and config management. */
   litellmAdminKey?: string | null;
-  /** DB connection to store and read LiteLLM_Config as source of truth. */
-  db?: Db;
+}
+
+export interface FallbackUpdateResult {
+  ok: boolean;
+  /** Findings that did not refuse the save (for example a fallback inside one provider). */
+  warnings: string[];
 }
 
 export interface LitellmConfigClient {
@@ -30,48 +42,88 @@ export interface LitellmConfigClient {
   updateFallbackTopology(
     chains: FallbackChain[],
     catalog?: Map<string, KnownModelInfo>,
-  ): Promise<{ ok: boolean }>;
+  ): Promise<FallbackUpdateResult>;
+}
+
+/**
+ * The 503 for a gateway the board cannot talk to: `code`, `enabled: false`
+ * and the names of the settings that are missing, so a screen can say what to
+ * set instead of showing a bare error.
+ */
+export function gatewayNotConfigured(missing: readonly string[], reason?: string) {
+  const names = missing.join(" and ");
+  return serviceUnavailable(reason ?? `LLM gateway fallback management is not enabled: set ${names}`, {
+    code: GATEWAY_NOT_CONFIGURED_CODE,
+    enabled: false,
+    missing: [...missing],
+  });
 }
 
 export function createLitellmConfigClient(deps: LitellmConfigClientDeps): LitellmConfigClient {
-  const url = (path: string) => {
-    if (!deps.litellmBaseUrl) return path;
-    return `${deps.litellmBaseUrl.replace(/\/$/, "")}${path}`;
+  /** The gateway address and admin key, or the 503 that names what is missing. */
+  const requireGateway = (): { baseUrl: string; adminKey: string } => {
+    const baseUrl = deps.litellmBaseUrl?.trim() || null;
+    const adminKey = deps.litellmAdminKey || null;
+    if (baseUrl && adminKey) return { baseUrl: baseUrl.replace(/\/+$/, ""), adminKey };
+    const missing: string[] = [];
+    if (!baseUrl) missing.push(GATEWAY_BASE_URL_ENV);
+    if (!adminKey) missing.push(GATEWAY_ADMIN_KEY_SECRET_ENV);
+    throw gatewayNotConfigured(
+      missing,
+      // The admin key comes from the secret the variable names; with the
+      // variable set, an empty key means that secret is absent or has no value.
+      baseUrl
+        ? `LLM gateway fallback management is not enabled: the gateway admin key is empty — store it in the company secret that ${GATEWAY_ADMIN_KEY_SECRET_ENV} names`
+        : undefined,
+    );
+  };
+
+  const call = async (
+    gateway: { baseUrl: string },
+    path: string,
+    init: { method?: "POST"; headers: Record<string, string>; body?: string },
+  ): Promise<Response> => {
+    try {
+      return await fetch(`${gateway.baseUrl}${path}`, init);
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      throw unprocessable(`LiteLLM connection error: ${sanitizeErrorMessage(raw)}`, {
+        code: "litellm_connection_failed",
+      });
+    }
+  };
+
+  /** A gateway answer that is not 2xx, with the gateway's own reason when it gave one. */
+  const requestFailed = async (path: string, response: Response) => {
+    let detail = "";
+    try {
+      detail = sanitizeErrorMessage((await response.text()).slice(0, 500));
+    } catch {
+      // No body to read; the status alone is the answer.
+    }
+    return unprocessable(
+      `LiteLLM ${path} answered ${response.status}${detail ? `: ${detail}` : ""}`,
+      { code: "litellm_request_failed", status: response.status },
+    );
   };
 
   return {
     async readFallbackTopology(): Promise<FallbackChain[]> {
-      // 1. Try reading from DB as primary source of truth
-      if (deps.db) {
-        const fromDb = await readFallbacksFromDb(deps.db);
-        if (fromDb !== null) {
-          return fromDb;
-        }
-      }
-
-      // 2. Fallback to reading from LiteLLM /router/settings HTTP API
-      if (!deps.litellmBaseUrl || !deps.litellmAdminKey) {
-        return [];
-      }
-
-      const response = await fetch(url("/router/settings"), {
-        headers: {
-          Authorization: `Bearer ${deps.litellmAdminKey}`,
-        },
+      const gateway = requireGateway();
+      const response = await call(gateway, "/router/settings", {
+        headers: { Authorization: `Bearer ${gateway.adminKey}` },
       });
+      if (!response.ok) throw await requestFailed("/router/settings", response);
 
-      if (!response.ok) {
-        throw unprocessable(`LiteLLM /router/settings answered ${response.status}`, {
-          code: "litellm_request_failed",
-          status: response.status,
-        });
-      }
-
-      const body = (await response.json()) as { fields?: Array<{ field_name?: string; field_value?: unknown }> };
+      // `current_values` is what the router runs with; `fields[]` carries the same
+      // value for gateways that answer only the field list.
+      const body = (await response.json()) as {
+        current_values?: { fallbacks?: unknown } | null;
+        fields?: Array<{ field_name?: string; field_value?: unknown }>;
+      };
       const field = (body.fields ?? []).find((entry) => entry.field_name === "fallbacks");
-      const payload = field?.field_value;
-
-      if (!payload) return [];
+      const payload = body.current_values?.fallbacks ?? field?.field_value;
+      if (payload === undefined || payload === null) return [];
 
       const chains = parseFallbackTopology(payload);
       if (!chains) {
@@ -79,14 +131,13 @@ export function createLitellmConfigClient(deps: LitellmConfigClientDeps): Litell
           code: "litellm_fallbacks_malformed",
         });
       }
-
       return chains;
     },
 
     async updateFallbackTopology(
       chains: FallbackChain[],
       catalog?: Map<string, KnownModelInfo>,
-    ): Promise<{ ok: boolean }> {
+    ): Promise<FallbackUpdateResult> {
       // 1. Check cycles and reject chain entries with no usable destination.
       const rawPayload = chains.map((c) => ({ [c.model]: [...c.targets] }));
       for (const chain of chains) {
@@ -117,125 +168,40 @@ export function createLitellmConfigClient(deps: LitellmConfigClientDeps): Litell
         );
       }
 
-      // 3. Validate order before diversity so callers receive the specific
-      // ordering/provider violation rather than a generic single-provider error.
+      // 3. The owner's ordering policy (free channels first, then cheaper ones)
+      // refuses a save. Provider findings only warn: a fallback inside one
+      // provider is the owner's call, and a provider the catalog does not know
+      // is not evidence of anything.
+      const warnings: string[] = [];
       for (const chain of chains) {
-        const order = validateFallbackOrder(chain, catalog);
-        if (!order.valid) {
-          throw unprocessable(order.error ?? "Free channels must precede paid channels in fallback chains", {
+        const { errors, warnings: chainWarnings } = evaluateFallbackChain(chain, catalog);
+        if (errors.length > 0) {
+          throw unprocessable(errors[0]!.message, {
             code: "litellm_invalid_fallback_order",
+            kind: errors[0]!.kind,
           });
         }
+        warnings.push(...chainWarnings.map((issue) => issue.message));
       }
 
-      // 4. A missing provider is not evidence of redundancy; never infer it
-      // from a model-group label (which is an arbitrary LiteLLM alias).
-      for (const chain of chains) {
-        const unknown = [chain.model, ...chain.targets].filter((name) => !catalog?.get(name)?.provider?.trim());
-        if (unknown.length > 0) {
-          throw unprocessable(`Fallback chain for '${chain.model}' has unknown provider for: ${unknown.join(", ")}`, {
-            code: "litellm_unknown_fallback_provider",
-          });
-        }
-        const diversity = validateFallbackDiversity(chain, catalog);
-        if (!diversity.valid) {
-          throw unprocessable(diversity.error ?? "Fallback chain must not rely on a single provider", {
-            code: "litellm_single_provider_forbidden",
-          });
-        }
-      }
-
-      // 5. Persist to LiteLLM database (LiteLLM_Config table) as source of truth
-      if (deps.db) {
-        await writeFallbacksToDb(deps.db, chains);
-      }
-
-      // 6. Push runtime changes to LiteLLM /config/update API if configured
-      if (deps.litellmBaseUrl && deps.litellmAdminKey) {
-        const response = await fetch(url("/config/update"), {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${deps.litellmAdminKey}`,
-            "Content-Type": "application/json",
+      // 4. Write the whole list to the gateway: LiteLLM merges per key, so the
+      // list sent here replaces `router_settings.fallbacks` and nothing else.
+      const gateway = requireGateway();
+      const response = await call(gateway, "/config/update", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${gateway.adminKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          router_settings: {
+            fallbacks: rawPayload,
           },
-          body: JSON.stringify({
-            router_settings: {
-              fallbacks: rawPayload,
-            },
-          }),
-        });
+        }),
+      });
+      if (!response.ok) throw await requestFailed("/config/update", response);
 
-        if (!response.ok) {
-          throw unprocessable(`LiteLLM /config/update answered ${response.status}`, {
-            code: "litellm_request_failed",
-            status: response.status,
-          });
-        }
-      }
-
-      return { ok: true };
+      return { ok: true, warnings };
     },
   };
-}
-
-/**
- * Direct DB reader for LiteLLM_Config table (LiteLLM database source of truth).
- * Returns null if the table is unpopulated or missing.
- */
-export async function readFallbacksFromDb(db: Db): Promise<FallbackChain[] | null> {
-  try {
-    const result = await db.execute<{ param_name: string; param_value: unknown }>(
-      sql`SELECT param_value FROM "LiteLLM_Config" WHERE param_name = 'router_settings' LIMIT 1`,
-    );
-    const rows = (Array.isArray(result)
-      ? result
-      : ((result as unknown as { rows?: unknown[] })?.rows ?? [])) as Array<{ param_value: unknown }>;
-    const row = rows[0];
-    if (!row || row.param_value === undefined || row.param_value === null) {
-      return null;
-    }
-
-    let paramValue = row.param_value;
-    if (typeof paramValue === "string") {
-      try {
-        paramValue = JSON.parse(paramValue);
-      } catch {
-        return null;
-      }
-    }
-
-    const fallbacks = (paramValue as Record<string, unknown>)?.fallbacks;
-    if (!fallbacks) return null;
-
-    return parseFallbackTopology(fallbacks);
-  } catch {
-    // If table does not exist or query fails, return null so caller can fallback to API
-    return null;
-  }
-}
-
-/**
- * Direct DB writer for LiteLLM_Config table (LiteLLM database source of truth).
- */
-export async function writeFallbacksToDb(db: Db, chains: FallbackChain[]): Promise<void> {
-  const rawPayload = chains.map((c) => ({ [c.model]: [...c.targets] }));
-  assertFallbackTopologyAcyclic(rawPayload);
-
-  const payload = JSON.stringify({
-    fallbacks: rawPayload,
-  });
-
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS "LiteLLM_Config" (
-      param_name VARCHAR(255) PRIMARY KEY,
-      param_value JSONB
-    )
-  `);
-
-  await db.execute(sql`
-    INSERT INTO "LiteLLM_Config" (param_name, param_value)
-    VALUES ('router_settings', ${payload}::jsonb)
-    ON CONFLICT (param_name)
-    DO UPDATE SET param_value = EXCLUDED.param_value
-  `);
 }

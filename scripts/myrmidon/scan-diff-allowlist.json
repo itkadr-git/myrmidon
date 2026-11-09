@@ -1,4 +1,45 @@
 {
   "$comment": "Paths where the private-address check of scripts/myrmidon/scan-diff.mjs does not apply. Glob syntax (** and *). Each entry needs a reason. Vendor test files are skipped automatically only on vendor sync branches (sync/*); list other vendor files here when a cherry-picked vendor change carries a documentation or test address.",
-  "privateIp": []
+  "privateIp": [
+    {
+      "path": "packages/adapters/hermes/src/gateway/server/transport-security.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "packages/adapters/hermes/src/gateway/server/transport-security.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "server/src/myrmidon/bot-containers/private-address.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "server/src/myrmidon/bot-containers/fleetd-hosts.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "server/src/myrmidon/bot-containers/fleetd-host-boundary.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "server/src/myrmidon/bot-containers/remote-site-t3-contract.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "server/src/myrmidon/bot-containers/site-registry.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "server/src/myrmidon/bot-containers/fleet-site-manage-routes.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "server/src/myrmidon/bot-containers/fleet-site-plainhttp.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    },
+    {
+      "path": "server/src/myrmidon/bot-containers/fleet-audit.myrmidon.test.ts",
+      "reason": "Unit test of the private-address rules of the fleet site plain-http check: the cases need addresses from the private ranges"
+    }
+  ]
 }

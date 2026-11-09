@@ -48,6 +48,13 @@ export interface AgentGatewayKeyDeps {
   readSecretValue(companyId: string, secretName: string): Promise<string | null>;
   /** Finds a company secret id by name; null when absent. */
   findSecretId(companyId: string, secretName: string): Promise<string | null>;
+  /**
+   * Resolves a company secret by id (the form a card binding carries) and
+   * returns its value; null when the secret or the version is gone. Optional:
+   * without it a card's key binding cannot be followed and only the
+   * board-managed secret name is used.
+   */
+  readSecretValueById?(companyId: string, secretId: string, version?: number | "latest"): Promise<string | null>;
   /** Creates a company secret; returns its id. */
   createSecret(input: {
     companyId: string;
@@ -82,11 +89,21 @@ export interface GatewayKeyAdminPort {
    * Replaces the model allowlist of an existing key WITHOUT touching its
    * value. Optional: the allowlist feature (1.6.1 MODEL-PROVIDERS B) skips
    * gracefully when a port does not implement it. Returns false when the
-   * alias is unknown to the gateway.
+   * key is unknown to the gateway.
+   *
+   * The key is addressed by `keyHash` (the sha256 of its value, the form the
+   * gateway stores: `/key/update` takes `key` as the value or its hash) when
+   * the caller has it, otherwise by `alias`. A hash is how a key is found when
+   * its alias is not the board's derived secret name; `key_alias` is then NOT
+   * sent, because `/key/update` would rename the key to it.
    */
-  setKeyAllowedModels?(input: { alias: string; models: string[] }): Promise<boolean>;
-  /** Reads key metadata from the gateway (such as model allowlist). */
-  getKeyInfo?(input: { alias: string }): Promise<{ models?: string[]; maxBudgetUsd?: number | null; spendUsd?: number | null } | null>;
+  setKeyAllowedModels?(input: { alias: string; keyHash?: string; models: string[] }): Promise<boolean>;
+  /**
+   * Reads key metadata from the gateway (such as model allowlist). Addressed
+   * like `setKeyAllowedModels`: by `keyHash` (`GET /key/info?key=<hash>`) when
+   * given, otherwise by `alias` (`GET /key/list`). Null for an unknown key.
+   */
+  getKeyInfo?(input: { alias: string; keyHash?: string }): Promise<{ models?: string[]; maxBudgetUsd?: number | null; spendUsd?: number | null } | null>;
 }
 
 /** What a card's gateway key looks like to a caller: never the value itself. */
@@ -550,6 +567,15 @@ export function defaultAgentGatewayKeyDeps(
         .then((row) => (row ? secrets.resolveSecretValue(companyId, row.id, "latest") : null)),
     findSecretId: (companyId, secretName) =>
       secrets.getByName(companyId, secretName).then((row) => row?.id ?? null),
+    readSecretValueById: async (companyId, secretId, version = "latest") => {
+      // A binding whose secret was deleted or whose pinned version is gone is
+      // "no key", not a failure of the whole pass.
+      try {
+        return await secrets.resolveSecretValue(companyId, secretId, version);
+      } catch {
+        return null;
+      }
+    },
     createSecret: async (input) => {
       const created = (await secrets.create(
         input.companyId,
@@ -611,7 +637,10 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     return { status: response.status, body: parsed };
   }
 
-  async function get(path: string): Promise<{ status: number; body: unknown }> {
+  async function get(
+    path: string,
+    opts: { okStatuses?: number[] } = {},
+  ): Promise<{ status: number; body: unknown }> {
     const response = await fetch(url(path), {
       method: "GET",
       headers: { Authorization: `Bearer ${adminKey}` },
@@ -623,7 +652,8 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     } catch {
       parsed = null;
     }
-    if (!response.ok) {
+    const ok = opts.okStatuses ? opts.okStatuses.includes(response.status) : response.ok;
+    if (!ok) {
       throw unprocessable(`LLM gateway ${path.split("?")[0]} answered ${response.status}`, {
         code: "gateway_key_request_failed",
         status: response.status,
@@ -648,17 +678,43 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     async deleteKey({ alias }) {
       await post("/key/delete", { key_aliases: [alias] }, { okStatuses: [200, 404] });
     },
-    async setKeyAllowedModels({ alias, models }) {
-      // `/key/update` with key_alias but NO `key` field keeps the installed
-      // value and only replaces the metadata the fields present describe —
-      // here `models`, the allowlist the key may call. The agent's stored
-      // secret therefore never needs a rotation to change its allowlist.
-      // A 404 means the gateway does not know the alias: report false rather
+    async setKeyAllowedModels({ alias, keyHash, models }) {
+      // `/key/update` is a merge patch: it only replaces the fields present —
+      // here `models`, the allowlist the key may call — so the agent's stored
+      // secret never needs a rotation to change its allowlist. The key is
+      // addressed by `key` (LiteLLM v1.104.1 takes the value or its sha256
+      // hash; a value that does not start with "sk-" is read as a hash, so the
+      // board always sends the hash) or, without one, by `key_alias`. Never
+      // both: `key_alias` in the body is a new alias to SET.
+      // A 404 means the gateway does not know the key: report false rather
       // than throwing, exactly like rotateKey treats it.
-      const response = await post("/key/update", { key_alias: alias, models }, { okStatuses: [200, 404] });
+      const response = await post(
+        "/key/update",
+        keyHash ? { key: keyHash, models } : { key_alias: alias, models },
+        { okStatuses: [200, 404] },
+      );
       return response.status !== 404;
     },
-    async getKeyInfo({ alias }) {
+    async getKeyInfo({ alias, keyHash }) {
+      if (keyHash) {
+        // `/key/info` is GET-only and takes the key's hash, which keeps the
+        // value out of URLs and access logs. An unknown key answers 404; a
+        // deleted one is still served from the archive with status "deleted".
+        const response = await get(`/key/info?key=${encodeURIComponent(keyHash)}`, { okStatuses: [200, 404] });
+        const info = (response.body as { info?: Record<string, unknown> } | null)?.info;
+        if (response.status === 404 || !info || info.status === "deleted") return null;
+        return {
+          models: Array.isArray(info.models)
+            ? info.models.filter((model): model is string => typeof model === "string")
+            : [],
+          maxBudgetUsd:
+            typeof info.max_budget === "number" && Number.isFinite(info.max_budget) && info.max_budget > 0
+              ? info.max_budget
+              : null,
+          spendUsd:
+            typeof info.spend === "number" && Number.isFinite(info.spend) && info.spend >= 0 ? info.spend : null,
+        };
+      }
       // The gateway has no lookup by alias on /key/info (it is GET-only, by key
       // value or hash: a POST answers 405). /key/list filters by alias, exact
       // match, and with return_full_object answers the key objects.

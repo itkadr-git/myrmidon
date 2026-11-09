@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   CorpusVectorSearchUnavailableError,
+  DEFAULT_SEARCH_INDEX_SCHEMA,
   createPostgresSearchIndex,
   escapeLikePattern,
   pgvectorHasIterativeScan,
   toFullTextQuery,
+  type FullTextTimeoutEvent,
   type SqlExecutor,
 } from "./hybrid-search-index.js";
 import { CORPUS_EMBEDDING_DIMENSIONS } from "./vector.js";
@@ -98,7 +100,7 @@ function createPgvectorMissingSql(
 }
 
 describe("hybrid search index", () => {
-  it("runs both rankings inside one transaction with ef_search set to the pilot value", async () => {
+  it("runs both rankings with ef_search set to the pilot value", async () => {
     const { sql, calls } = createRecordingSql({ vector: [chunkRow("a", 0, 0.9)], fullText: [chunkRow("a", 0, 0.4)] });
     const index = createPostgresSearchIndex({ sql });
 
@@ -683,11 +685,12 @@ describe("substring match of the full-text ranking", () => {
     expect(textCall?.text).toContain("plainto_tsquery($4::regconfig, $1)");
     expect(textCall?.text).toContain("to_tsquery($4::regconfig, $6)");
     expect(textCall?.text).toContain("limit $5");
-    expect(textCall?.text).not.toMatch(/ilike|\$7/);
-    // Every parameter the text names is bound, and no other: a driver rejects a gap.
-    expect(textCall?.values).toEqual([longText, companyId, [datasetId], "english", 100, "light | charcoal | grill"]);
+    expect(textCall?.text).not.toMatch(/ilike/);
+    // Every parameter the text names is bound, and no other: a driver rejects a gap. The seventh is the
+    // size of the candidate pool.
+    expect(textCall?.values).toEqual([longText, companyId, [datasetId], "english", 100, "light | charcoal | grill", 1000]);
     const named = new Set([...(textCall?.text.matchAll(/\$(\d+)/g) ?? [])].map((match) => Number(match[1])));
-    expect([...named].sort()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect([...named].sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   it("honours ilikeMaxLength, and 0 switches the match off", async () => {
@@ -698,5 +701,325 @@ describe("substring match of the full-text ranking", () => {
     // 0 switches the match off for every text, identifiers too.
     expect(await ilikeUsed("a", { ilikeMaxLength: 0 })).toBe(false);
     expect(await ilikeUsed("litellm_proxy_config", { ilikeMaxLength: 0 })).toBe(false);
+  });
+});
+
+// The full-text ranking has a cost bound: its own transaction with `set local statement_timeout`, a
+// cancel that leaves the vector ranking to answer, and a candidate pool for the tie-break.
+interface TransactionCall extends RecordedCall {
+  /** Number of the transaction the statement ran in; `0` is a statement outside any transaction. */
+  readonly transaction: number;
+}
+
+/**
+ * Executor that numbers its transactions, so a test can tell which statement ran in which one, and that
+ * counts how many transactions were open at the same moment.
+ */
+function createTransactionalSql(respond: (call: RecordedCall) => unknown[]): {
+  sql: SqlExecutor;
+  calls: TransactionCall[];
+  stats: { opened: number; maxOpen: number };
+} {
+  const calls: TransactionCall[] = [];
+  const stats = { opened: 0, maxOpen: 0 };
+  let open = 0;
+  const over = (transaction: number): SqlExecutor => ({
+    query: async <Row extends Record<string, unknown>>(text: string, values: readonly unknown[] = []) => {
+      calls.push({ transaction, text, values });
+      return respond({ text, values }) as Row[];
+    },
+    withTransaction: async (run) => {
+      stats.opened += 1;
+      const id = stats.opened;
+      open += 1;
+      stats.maxOpen = Math.max(stats.maxOpen, open);
+      try {
+        return await run(over(id));
+      } finally {
+        open -= 1;
+      }
+    },
+  });
+  return { sql: over(0), calls, stats };
+}
+
+/** Answers like a database with pgvector 0.8 and a large dataset; the rows are those of each ranking. */
+function databaseAnswers(rows: { vector?: ChunkRow[]; fullText?: ChunkRow[] }): (call: RecordedCall) => unknown[] {
+  return (call) => {
+    if (/pg_extension/.test(call.text)) return [{ extversion: "0.8.7" }];
+    if (/count\(\*\)::int as chunks/.test(call.text)) return [{ chunks: 50_000 }];
+    if (/ts_rank/.test(call.text)) return rows.fullText ?? [];
+    if (/<=>/.test(call.text)) return rows.vector ?? [];
+    if (/select d\.id/.test(call.text)) return documents;
+    return [];
+  };
+}
+
+/** The same answers, except that one kind of statement fails with `error`. */
+function failing(
+  statement: RegExp,
+  error: unknown,
+  rows: { vector?: ChunkRow[]; fullText?: ChunkRow[] } = {},
+): (call: RecordedCall) => unknown[] {
+  const answer = databaseAnswers(rows);
+  return (call) => {
+    if (statement.test(call.text)) throw error;
+    return answer(call);
+  };
+}
+
+const longQuestion = "how do I light the charcoal in the grill";
+
+/** What the server raises when `statement_timeout` cancels a statement. */
+function statementTimeout(): Error {
+  return Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" });
+}
+
+describe("time bound of the full-text ranking", () => {
+  it("sets statement_timeout (800 ms) first in a transaction of its own, apart from the vector ranking", async () => {
+    // A short text has the substring match, a long question has not; both rankings are bounded.
+    for (const text of ["supply agreement", longQuestion]) {
+      const { sql, calls } = createTransactionalSql(databaseAnswers({ vector: [chunkRow("a", 0, 0.9)], fullText: [chunkRow("a", 0, 0.4)] }));
+      await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, text, embedding: embedding() });
+
+      const fullTextTransaction = calls.find((call) => /ts_rank/.test(call.text))?.transaction;
+      const vectorTransaction = calls.find((call) => /<=>/.test(call.text))?.transaction;
+      expect(fullTextTransaction).toBeGreaterThan(0);
+      expect(vectorTransaction).toBeGreaterThan(0);
+      expect(fullTextTransaction).not.toBe(vectorTransaction);
+
+      const fullTextStatements = calls.filter((call) => call.transaction === fullTextTransaction).map((call) => call.text);
+      expect(fullTextStatements).toHaveLength(2);
+      expect(fullTextStatements[0]).toBe("set local statement_timeout = 800");
+      expect(fullTextStatements[1]).toMatch(/ts_rank/);
+      // The bound belongs to the full-text transaction only, and the HNSW settings to the vector one.
+      const vectorStatements = calls.filter((call) => call.transaction === vectorTransaction).map((call) => call.text);
+      expect(vectorStatements.some((statement) => /statement_timeout/.test(statement))).toBe(false);
+      expect(fullTextStatements.some((statement) => /hnsw/.test(statement))).toBe(false);
+      expect(vectorStatements[0]).toBe("set local hnsw.ef_search = 64");
+    }
+  });
+
+  it("sets the bound of the option, and 0 sets none of its own", async () => {
+    const custom = createTransactionalSql(databaseAnswers({ fullText: [chunkRow("a", 0, 0.4)] }));
+    await createPostgresSearchIndex({ sql: custom.sql, fullTextTimeoutMs: 250 }).search({ companyId, datasetId, text: longQuestion });
+    expect(custom.calls.map((call) => call.text)[0]).toBe("set local statement_timeout = 250");
+
+    const off = createTransactionalSql(databaseAnswers({ fullText: [chunkRow("a", 0, 0.4)] }));
+    await createPostgresSearchIndex({ sql: off.sql, fullTextTimeoutMs: 0 }).search({ companyId, datasetId, text: longQuestion });
+    expect(off.calls.some((call) => /statement_timeout/.test(call.text))).toBe(false);
+    expect(off.calls.some((call) => /ts_rank/.test(call.text))).toBe(true);
+  });
+
+  it("refuses a bound or a pool that is not a whole number in range", () => {
+    const { sql } = createTransactionalSql(databaseAnswers({}));
+    for (const fullTextTimeoutMs of [-1, 1.5, Number.NaN, 2_147_483_648]) {
+      expect(() => createPostgresSearchIndex({ sql, fullTextTimeoutMs })).toThrow(RangeError);
+    }
+    expect(() => createPostgresSearchIndex({ sql, fullTextTimeoutMs: 2_147_483_647 })).not.toThrow();
+    for (const fullTextRerankPool of [-1, 1.5, Number.NaN]) {
+      expect(() => createPostgresSearchIndex({ sql, fullTextRerankPool })).toThrow(RangeError);
+    }
+  });
+
+  it("answers from the vector ranking when the server cancels the full-text ranking, and says so", async () => {
+    for (const [text, substringMatch] of [
+      [longQuestion, false],
+      ["supply agreement", true],
+    ] as const) {
+      const events: FullTextTimeoutEvent[] = [];
+      const { sql } = createTransactionalSql(
+        failing(/ts_rank/, statementTimeout(), { vector: [chunkRow("a", 0, 0.9), chunkRow("b", 1, 0.8, secondDocumentId)] }),
+      );
+      const hits = await createPostgresSearchIndex({ sql, onFullTextTimeout: (event) => events.push(event) }).search({
+        companyId,
+        datasetId,
+        text,
+        embedding: embedding(),
+        limit: 2,
+      });
+
+      expect(hits.map((hit) => hit.chunkId)).toEqual(["a", "b"]);
+      expect(hits[0].fusion).toEqual({ vectorRank: 1, fullTextRank: null });
+      expect(events).toEqual([
+        { companyId, datasetIds: [datasetId], textLength: text.length, substringMatch, timeoutMs: 800, elapsedMs: expect.any(Number) },
+      ]);
+    }
+  });
+
+  it("finds the cancel behind a wrapper that keeps the driver error as its cause", async () => {
+    // The query layer of the product wraps driver errors; the SQLSTATE is on the `cause`.
+    const wrapped = Object.assign(new Error("Failed query: select ... params: ..."), { cause: statementTimeout() });
+    const { sql } = createTransactionalSql(failing(/ts_rank/, wrapped, { vector: [chunkRow("a", 0, 0.9)] }));
+    const hits = await createPostgresSearchIndex({ sql }).search({ companyId, datasetId, text: longQuestion, embedding: embedding() });
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["a"]);
+
+    // A wrapper around another driver error is still that error.
+    const deadlock = Object.assign(new Error("Failed query: select ... params: ..."), {
+      cause: Object.assign(new Error("deadlock detected"), { code: "40P01" }),
+    });
+    const other = createTransactionalSql(failing(/ts_rank/, deadlock, { vector: [chunkRow("a", 0, 0.9)] }));
+    await expect(
+      createPostgresSearchIndex({ sql: other.sql }).search({ companyId, datasetId, text: longQuestion, embedding: embedding() }),
+    ).rejects.toBe(deadlock);
+  });
+
+  it("does not swallow any other error of the full-text ranking", async () => {
+    for (const error of [
+      Object.assign(new Error("deadlock detected"), { code: "40P01" }),
+      Object.assign(new Error("syntax error at or near"), { code: "42601" }),
+      new Error("connection terminated"),
+      "57014",
+      null,
+    ]) {
+      const { sql } = createTransactionalSql(failing(/ts_rank/, error, { vector: [chunkRow("a", 0, 0.9)], }));
+      const events: FullTextTimeoutEvent[] = [];
+      const outcome = await createPostgresSearchIndex({ sql, onFullTextTimeout: (event) => events.push(event) })
+        .search({ companyId, datasetId, text: longQuestion, embedding: embedding() })
+        .then(() => ({ rejected: false as const }), (thrown: unknown) => ({ rejected: true as const, thrown }));
+      expect(outcome).toEqual({ rejected: true, thrown: error });
+      expect(events).toHaveLength(0);
+    }
+  });
+
+  it("does not swallow the cancel of the vector ranking", async () => {
+    const cancel = statementTimeout();
+    const { sql } = createTransactionalSql(failing(/<=>/, cancel, { fullText: [chunkRow("a", 0, 0.4)] }));
+    const error = await createPostgresSearchIndex({ sql })
+      .search({ companyId, datasetId, text: longQuestion, embedding: embedding() })
+      .then(() => null, (thrown: unknown) => thrown);
+    expect(error).toBe(cancel);
+  });
+
+  it("throws the cancel of a search that has no vector ranking, instead of an empty list", async () => {
+    const cancel = statementTimeout();
+    const { sql } = createTransactionalSql(failing(/ts_rank/, cancel));
+    const events: FullTextTimeoutEvent[] = [];
+    const error = await createPostgresSearchIndex({ sql, onFullTextTimeout: (event) => events.push(event) })
+      .search({ companyId, datasetId, text: longQuestion })
+      .then(() => null, (thrown: unknown) => thrown);
+    expect(error).toBe(cancel);
+    expect(events).toHaveLength(0);
+  });
+
+  it("is not failed by a diagnostic that throws, and needs none", async () => {
+    const rows = { vector: [chunkRow("a", 0, 0.9)] };
+    const broken = createTransactionalSql(failing(/ts_rank/, statementTimeout(), rows));
+    const withBrokenCallback = await createPostgresSearchIndex({
+      sql: broken.sql,
+      onFullTextTimeout: () => {
+        throw new Error("logger is down");
+      },
+    }).search({ companyId, datasetId, text: longQuestion, embedding: embedding() });
+    expect(withBrokenCallback.map((hit) => hit.chunkId)).toEqual(["a"]);
+
+    const bare = createTransactionalSql(failing(/ts_rank/, statementTimeout(), rows));
+    const withoutCallback = await createPostgresSearchIndex({ sql: bare.sql }).search({
+      companyId,
+      datasetId,
+      text: longQuestion,
+      embedding: embedding(),
+    });
+    expect(withoutCallback.map((hit) => hit.chunkId)).toEqual(["a"]);
+  });
+
+  it("runs the two rankings side by side, each in its own transaction", async () => {
+    const both = createTransactionalSql(databaseAnswers({ vector: [chunkRow("a", 0, 0.9)], fullText: [chunkRow("a", 0, 0.4)] }));
+    await createPostgresSearchIndex({ sql: both.sql }).search({ companyId, datasetId, text: longQuestion, embedding: embedding() });
+    expect(both.stats).toEqual({ opened: 2, maxOpen: 2 });
+
+    // One ranking alone is one transaction.
+    const vectorOnly = createTransactionalSql(databaseAnswers({ vector: [chunkRow("a", 0, 0.9)] }));
+    await createPostgresSearchIndex({ sql: vectorOnly.sql }).search({ companyId, datasetId, text: "", embedding: embedding() });
+    expect(vectorOnly.stats).toEqual({ opened: 1, maxOpen: 1 });
+    const textOnly = createTransactionalSql(databaseAnswers({ fullText: [chunkRow("a", 0, 0.4)] }));
+    await createPostgresSearchIndex({ sql: textOnly.sql }).search({ companyId, datasetId, text: longQuestion });
+    expect(textOnly.stats).toEqual({ opened: 1, maxOpen: 1 });
+  });
+
+  it("reports the error of the vector ranking first when both rankings fail", async () => {
+    const answer = databaseAnswers({});
+    const { sql } = createTransactionalSql((call) => {
+      if (/ts_rank/.test(call.text)) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      if (/set local hnsw\.ef_search/i.test(call.text)) throw Object.assign(new Error("column does not exist"), { code: "42703" });
+      return answer(call);
+    });
+    const error = await createPostgresSearchIndex({ sql })
+      .search({ companyId, datasetId, text: longQuestion, embedding: embedding() })
+      .then(() => null, (thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(CorpusVectorSearchUnavailableError);
+  });
+});
+
+describe("candidate pool of the full-text ranking", () => {
+  const rankingCall = async (
+    options: { fullTextRerankPool?: number; fusion?: { k0: number; kCandidates: number }; schema?: typeof DEFAULT_SEARCH_INDEX_SCHEMA } = {},
+    text = longQuestion,
+  ): Promise<TransactionCall> => {
+    const { sql, calls } = createTransactionalSql(databaseAnswers({ fullText: [chunkRow("t", 0, 0.3)] }));
+    await createPostgresSearchIndex({ sql, ...options }).search({ companyId, datasetId, text });
+    const call = calls.find((candidate) => /ts_rank/.test(candidate.text));
+    if (call === undefined) throw new Error("the full-text ranking did not run");
+    return call;
+  };
+
+  it("computes similarity only over the pool: ts_rank and the pool in the inner statement, similarity in the outer", async () => {
+    const call = await rankingCall();
+    const parts = call.text.split(/\n\s*\) r\n/);
+    expect(parts).toHaveLength(2);
+    const [inner, outer] = parts;
+
+    expect(inner).toContain("ts_rank(");
+    expect(inner).toContain("order by score desc");
+    expect(inner).toContain("limit $7");
+    expect(inner).toContain("@@");
+    expect(inner).not.toContain("similarity");
+    expect(outer).toContain('similarity(r.content, $1) desc');
+    expect(outer).toContain("order by r.score desc");
+    expect(outer).toContain("limit $5");
+    expect(outer).not.toContain("ts_rank");
+    // The outer statement hands back the columns the module reads, under the names it reads them by.
+    for (const column of ["id", "company_id", "document_id", "chunk_index", "content", "token_count", "metadata", "score"]) {
+      expect(inner.split("from (")[0]).toContain(`r.${column}`);
+    }
+    // No substring match, the tsvector alone.
+    expect(call.text).not.toMatch(/ilike/);
+    expect(call.values).toEqual([longQuestion, companyId, [datasetId], "english", 100, "light | charcoal | grill", 1000]);
+  });
+
+  it("reads the content column of the schema under the name the outer statement uses", async () => {
+    const call = await rankingCall({ schema: { ...DEFAULT_SEARCH_INDEX_SCHEMA, contentColumn: "body" } });
+    expect(call.text).toContain('c."body" as content');
+    expect(call.text).toContain("similarity(r.content, $1) desc");
+    expect(call.text).not.toContain('similarity(c."body"');
+  });
+
+  it("honours the pool option, and never keeps fewer candidates than the fusion takes", async () => {
+    expect((await rankingCall({ fullTextRerankPool: 300 })).values[6]).toBe(300);
+    // Below kCandidates (100) the pool would cut the list the fusion asks for.
+    expect((await rankingCall({ fullTextRerankPool: 50 })).values[6]).toBe(100);
+    expect((await rankingCall({ fusion: { k0: 60, kCandidates: 2500 } })).values[6]).toBe(2500);
+  });
+
+  it("ranks over every match, as before, when the pool is 0", async () => {
+    const call = await rankingCall({ fullTextRerankPool: 0 });
+    expect(call.text).toContain('similarity(c."content", $1) desc');
+    expect(call.text).toContain("order by ts_rank(");
+    expect(call.text).toContain("limit $5");
+    expect(call.text).not.toMatch(/\) r\b|\$7/);
+    expect(call.values).toEqual([longQuestion, companyId, [datasetId], "english", 100, "light | charcoal | grill"]);
+  });
+
+  it("keeps the statement of short texts and identifiers, which have the substring match", async () => {
+    for (const text of ["supply agreement", "litellm_proxy_config"]) {
+      const call = await rankingCall({}, text);
+      expect(call.text).toContain('c."content" ilike $4');
+      expect(call.text).toContain('similarity(c."content", $1) desc');
+      expect(call.text).toContain("limit $6");
+      // No inner statement and no pool: the order and the answer are those of the statement as it was.
+      expect(call.text).not.toMatch(/\) r\b|\$8/);
+      expect(call.values).toHaveLength(7);
+      expect(call.values[3]).toBe(`%${escapeLikePattern(text)}%`);
+    }
   });
 });

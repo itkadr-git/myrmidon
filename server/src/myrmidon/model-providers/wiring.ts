@@ -35,6 +35,8 @@ import { createLitellmSyncService, type LitellmSyncService } from "../litellm-sy
 import { createLitellmSyncClient } from "../litellm-sync/client.js";
 import { defaultAgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 import { updateAgentAllowlistsForCompany } from "../litellm-sync/agent-allowlist-handler.js";
+import { summarizeAllowlistResult } from "../litellm-sync/allowlist-report.js";
+import { logger } from "../../middleware/logger.js";
 import { createLiteLlmAuditService } from "../litellm-audit/service.js";
 import { redactCredentials } from "../litellm-audit/redaction.js";
 
@@ -134,8 +136,25 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
   const deps: ModelProviderRoutesWithSyncDeps = {
     service: modelProviderService,
     getLitellmSync: syncForCompany,
-    refreshAgentAllowlists: (companyId) =>
-      updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId),
+    // A provider change only CHECKS the agent key lists (dry run) and logs the
+    // difference. Rewriting the lists of every restricted key is an explicit
+    // admin action (POST .../litellm/keys/allowlist-sync?apply=true).
+    refreshAgentAllowlists: async (companyId) => {
+      const result = await updateAgentAllowlistsForCompany(
+        db,
+        defaultAgentGatewayKeyDeps(db, env),
+        companyId,
+        [],
+        [],
+        false,
+        { apply: false },
+      );
+      logger.info(
+        { companyId, ...summarizeAllowlistResult(result) },
+        "litellm agent key allowlists checked after a provider change (dry run, nothing applied)",
+      );
+      return result;
+    },
     recordActivity: (entry) => recordModelProviderActivity(db, entry),
     listChangeLog: (companyId) => auditService.list(companyId, { limit: 50 }),
   };
@@ -161,6 +180,12 @@ export function createPluginProviderModelSync(
     return createLitellmSyncService({
       db,
       litellm: createLitellmSyncClient({ litellmBaseUrl: settings.baseUrl, litellmAdminKey: key }),
+      // LiteLLM has no secret manager: plugin models are registered with the
+      // credential VALUE resolved here, same as the provider routes above.
+      resolveCredential: async (ownerCompanyId, secretName) => {
+        const credentialRow = await secrets.getByName(ownerCompanyId, secretName);
+        return credentialRow ? secrets.resolveSecretValue(ownerCompanyId, credentialRow.id, "latest") : null;
+      },
     });
   }
   const declaration = (plugin: PluginRecord): PluginProviderModelDeclaration | null =>
@@ -204,6 +229,7 @@ export function createPluginProviderModelSync(
       for (const modelName of modelNames) {
         const modelId = modelName.slice(provider.provider.length + 1);
         await gateway.registerPluginModel({
+          companyId,
           modelName,
           providerType: litellmProvider(provider.provider),
           baseUrl: provider.baseUrl,
@@ -213,7 +239,15 @@ export function createPluginProviderModelSync(
       }
       // Lifecycle models are separate from provider-table models; keep every
       // ready plugin's names and let the handler merge them with provider rows.
-      await updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId, companyPluginModelNames);
+      await updateAgentAllowlistsForCompany(
+        db,
+        defaultAgentGatewayKeyDeps(db, env),
+        companyId,
+        companyPluginModelNames,
+        [],
+        false,
+        { includeRegistryModels: false },
+      );
     },
     async remove(companyId, plugin) {
       const provider = declaration(plugin);
@@ -237,7 +271,8 @@ export function createPluginProviderModelSync(
           return other?.models.map((model: PluginProviderModelDeclaration["models"][number]) => `${other.provider}/${model.id}`) ?? [];
         }));
       for (const modelName of modelNames) {
-        if (!stillOwnedNames.has(modelName)) await gateway.unregisterModel(modelName);
+        // Only the deployment the board registered: the plugin's own endpoint.
+        if (!stillOwnedNames.has(modelName)) await gateway.unregisterModel(modelName, { baseUrl: provider.baseUrl });
       }
       const removableModelNames = modelNames.filter((modelName) => !stillOwnedNames.has(modelName));
       await updateAgentAllowlistsForCompany(
@@ -247,6 +282,7 @@ export function createPluginProviderModelSync(
         [...stillOwnedNames],
         removableModelNames,
         true,
+        { includeRegistryModels: false },
       );
     },
   };

@@ -35,6 +35,7 @@ export type { FetchLike };
 export interface HindsightPluginConfig {
   hindsightApiUrl: string;
   hindsightApiKeyRef?: string;
+  requestTimeoutMs?: number;
   recallBudget?: string;
   autoRetain?: boolean;
   recallOnRunStart?: string;
@@ -174,7 +175,12 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
           const resolved = await ctx.secrets.resolve(config.hindsightApiKeyRef);
           token = resolved ?? undefined;
         }
-        return new HindsightClient(config.hindsightApiUrl, token, deps.fetchImpl);
+        return new HindsightClient(
+          config.hindsightApiUrl,
+          token,
+          deps.fetchImpl,
+          config.requestTimeoutMs,
+        );
       };
 
       const resolveForAgent = async (agentId: string, companyId: string) => {
@@ -516,8 +522,18 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
       if (!c.hindsightApiUrl?.trim()) {
         return { ok: false, errors: ["hindsightApiUrl is required"] };
       }
+      if (c.requestTimeoutMs !== undefined) {
+        if (typeof c.requestTimeoutMs !== "number" || !Number.isFinite(c.requestTimeoutMs) || c.requestTimeoutMs <= 0) {
+          return { ok: false, errors: ["requestTimeoutMs must be a positive number"] };
+        }
+      }
       try {
-        const client = new HindsightClient(c.hindsightApiUrl, undefined, deps.fetchImpl);
+        const client = new HindsightClient(
+          c.hindsightApiUrl,
+          undefined,
+          deps.fetchImpl,
+          c.requestTimeoutMs,
+        );
         const healthy = await client.health();
         if (!healthy) {
           return {

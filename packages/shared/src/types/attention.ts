@@ -87,6 +87,8 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(OPE-7932): a due issue monitor has not produced a wake claim.
   "issue_monitor_overdue",
   "provider_usage_warning",
+  // MCP gateway tokens expiring within the operator attention window.
+  "mcp_gateway_token_expiring",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];

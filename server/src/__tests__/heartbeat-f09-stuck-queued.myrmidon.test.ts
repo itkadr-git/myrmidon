@@ -1094,4 +1094,59 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(stored?.status).toBe("queued");
     expect(await waitReasonOf(runId)).toBeNull();
   }, 30_000);
+
+  // myrmidon(OPE-12177): the prefix-based cleanup of review-admission records
+  // must keep matching the SHA-keyed format (`{issueId}:{headSha}`) as well as
+  // the legacy one (`{issueId}:{agentId}`) — and never foreign key namespaces.
+  it("myrmidon(OPE-12177): the review-admission prefix matches both key formats and skips foreign keys", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Reviewer", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Head-keyed review wake",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+
+    // enqueueWakeup writes the row; the key is the SHA-keyed admission format.
+    await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "execution_review_requested",
+      payload: { issueId },
+      idempotencyKey: `issue-review-admission:${issueId}:abc123def456`,
+      contextSnapshot: { issueId, wakeReason: "execution_review_requested" },
+    });
+    const foreign = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId,
+        agentId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: null,
+        idempotencyKey: `issue-monitor:${issueId}:abc123def456`,
+        createdAt: new Date(Date.now() - 1_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const rows = await db
+      .select({ id: agentWakeupRequests.id, idempotencyKey: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests);
+    const admissionRows = rows.filter((row) => row.idempotencyKey?.startsWith("issue-review-admission:"));
+    expect(admissionRows).toHaveLength(1);
+    expect(admissionRows[0]?.idempotencyKey).toBe(`issue-review-admission:${issueId}:abc123def456`);
+
+    // enqueueWakeup's finally-closes unserved admission records whose key
+    // carries the prefix; the exact-key match never touches the foreign one.
+    const closed = await db
+      .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, foreign.id));
+    expect(closed[0]?.status).toBe("queued");
+  }, 30_000);
 });

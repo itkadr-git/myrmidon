@@ -10,6 +10,8 @@ import {
 import {
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
   REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
+  REVIEW_ADMISSION_KEY_PREFIX,
+  reviewAdmissionDedupKey,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import { isPendingCiForOpenPr } from "../myrmidon/stranded-autopolicy.js";
 // myrmidon(PR-WAIT-MONITOR, OPE-11949): a due monitor that waits for a pull request is
@@ -8392,7 +8394,7 @@ export async function buildPaperclipWakePayload(input: {
   let pullRequestsCi: PullRequestCiResult[] = [];
   if (issueId) {
     try {
-      const ciResolver = createPullRequestCiResolver(input.db);
+      const ciResolver = createPullRequestCiResolver(input.db, { source: "run-context" });
       pullRequestsCi = await withCiResolveDeadline(
         ciResolver.resolveForIssue(input.companyId, issueId),
         [],
@@ -19800,7 +19802,9 @@ export function heartbeatService(
               eq(agentWakeupRequests.agentId, claimed.agentId),
               eq(agentWakeupRequests.status, "queued"),
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${claimedIssueId}`,
-              sql`${agentWakeupRequests.idempotencyKey} like 'issue-review-admission:%'`,
+              // myrmidon(OPE-12177): the suffix matches both key formats — the
+              // SHA-keyed `{issueId}:{headSha}` and the legacy `{issueId}:{agentId}`.
+              sql`${agentWakeupRequests.idempotencyKey} like ${`${REVIEW_ADMISSION_KEY_PREFIX}%`}`,
               sql`${agentWakeupRequests.createdAt} <= ${claimedAt.toISOString()}::timestamptz`,
               claimed.wakeupRequestId
                 ? sql`${agentWakeupRequests.id} <> ${claimed.wakeupRequestId}`
@@ -20693,7 +20697,13 @@ export function heartbeatService(
   const autoResumeSweeper = createAutoResumeSweeper({
     db,
     readLiveness: teamLivenessRead,
-    resumeWake: (agentId) => pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId),
+    resumeWake: (agentId) =>
+      pauseResumeWakeAgent(
+        // myrmidon(OPE-12274): through the dispatcher — the role gate decides
+        // whether this process promotes the queued run or publishes the wake.
+        { db, startNextQueuedRunForAgent: (id) => runStartDispatcher.dispatchRunStart(id), enqueueWakeup },
+        agentId,
+      ),
     logActivity: async (input) => {
       await logActivity(db, {
         companyId: input.companyId,
@@ -23998,7 +24008,11 @@ export function heartbeatService(
       readNonEmptyString(payload?.issueId) ??
       readNonEmptyString(payload?.taskId);
     const key = opts.idempotencyKey ??
-      `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
+      // myrmidon(OPE-12177): callers that know the PR head pass the full
+      // `issue-review-admission:{issueId}:{headSha}` key themselves (built with
+      // reviewAdmissionDedupKey). This fallback keeps the legacy agent-keyed
+      // format for callers without a head.
+      reviewAdmissionDedupKey({ issueId: resolvedIssueId ?? "unknown", agentId });
     if (typeof tx.select === "function") {
       try {
         const agent = await tx
@@ -30999,7 +31013,9 @@ export function heartbeatService(
       throw err;
     } finally {
       const key = opts.idempotencyKey;
-      if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
+      // myrmidon(OPE-12177): the prefix matches both key formats — the
+      // SHA-keyed `{issueId}:{headSha}` and the legacy `{issueId}:{agentId}`.
+      if (typeof key === "string" && key.startsWith(REVIEW_ADMISSION_KEY_PREFIX)) {
         try {
           await closeUnservedReviewAdmission(agentId, key);
         } catch (err) {
@@ -35915,7 +35931,13 @@ export function heartbeatService(
     // issues a drained pause left idle; logic in myrmidon/pause-drain.ts.
     // Its sole caller is the agent resume route.
     resumeAgentAfterPause: async (agentId: string) => {
-      const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      // myrmidon(OPE-12274): the dispatcher owns the role gate — an api process
+      // publishes the wake instead of promoting the queued run locally, so a
+      // split board never executes a runner session inside the api child.
+      const resumed = await pauseResumeWakeAgent(
+        { db, startNextQueuedRunForAgent: (id) => runStartDispatcher.dispatchRunStart(id), enqueueWakeup },
+        agentId,
+      );
       // A paused conversation's accepted comments have no wake receipt until
       // delivery succeeds. Resume drains that durable outbox as well as the
       // ordinary assigned-issue queue (which excludes in_review chats).

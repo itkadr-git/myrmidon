@@ -107,6 +107,11 @@ agent's adapter instead of raw `adapterConfig` JSON
   parsers the run path uses, because the adapters silently ignore bad values;
   changing a sandbox or permission key needs an instance admin (also on agent
   create and hire). The create form's permission defaults are not a change.
+- **OMP local** — filesystem sandbox (workspace scope, extra paths) and
+  network sandbox (deny or allowlist) using Bubblewrap, with the create form
+  defaulting to workspace filesystem scope. The adapter reads no timeout
+  keys. Sandbox keys are validated on save and editing them requires an
+  instance admin, same as Claude / Codex local.
 - **Hermes local** — a switch for including the configured MCP servers; the
   values set on the create form (toolsets, sandbox, timeouts) are stored, and
   comma-separated sandbox lists are honoured at run time.
@@ -157,6 +162,13 @@ The board watches its agents and repairs what breaks:
   minutes by default) is interrupted, its task goes back to `todo` and the
   assignee is woken — the board does not wait for a hard timeout to notice
   a stuck run.
+
+## Lifecycle: termination vs deletion and financial history
+
+Agent lifecycle includes pause, resume, clear error, termination, and deletion:
+
+- **Termination** (`POST /api/agents/:id/terminate`): Permanently deactivates an agent. Heartbeats are disabled, but the agent's historical records, tasks, run logs, and financial records are preserved for auditing.
+- **Deletion** (`DELETE /api/agents/:id`): Completely removes an agent record. To guarantee financial history integrity and auditability, an agent with recorded expenses (`cost_events`) cannot be deleted: the API returns `HTTP 409 Conflict` with code `agent_has_cost_events` and message instructing to terminate the agent instead. Similarly, if any other records in the database still reference the agent, foreign-key violations return `HTTP 409 Conflict` with code `agent_referenced` instead of a 500 error.
 
 ## The OMP runtime image
 
