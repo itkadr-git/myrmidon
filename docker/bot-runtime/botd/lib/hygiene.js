@@ -622,6 +622,9 @@ export async function cleanCaches(options = {}) {
     cargoTargetQuotaBytes: options.limits?.cargoTargetQuotaBytes ?? options.cargoTargetQuotaBytes ?? HYGIENE_DEFAULTS.cargoTargetQuotaBytes,
     quotaFreshGraceMs: (options.limits?.quotaFreshGraceMinutes ?? options.quotaFreshGraceMinutes ?? HYGIENE_DEFAULTS.quotaFreshGraceMinutes) * MINUTE,
     npmCacacheQuotaBytes: options.limits?.npmCacacheQuotaBytes ?? options.npmCacacheQuotaBytes ?? HYGIENE_DEFAULTS.npmCacacheQuotaBytes,
+    npmNpxQuotaBytes: options.limits?.npmNpxQuotaBytes ?? options.npmNpxQuotaBytes ?? HYGIENE_DEFAULTS.npmNpxQuotaBytes,
+    cargoTargetQuotaBytes: options.limits?.cargoTargetQuotaBytes ?? options.cargoTargetQuotaBytes ?? HYGIENE_DEFAULTS.cargoTargetQuotaBytes,
+    quotaFreshGraceMs: (options.limits?.quotaFreshGraceMinutes ?? options.quotaFreshGraceMinutes ?? HYGIENE_DEFAULTS.quotaFreshGraceMinutes) * MINUTE,
   };
 
   // A live run may be using an npx install right now; the whole-`.npm` cap below is
