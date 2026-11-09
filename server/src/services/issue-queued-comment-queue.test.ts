@@ -15,8 +15,9 @@ describe("queuedCommentIdsFromWakePayload and runContext", () => {
       _paperclipWakeContext: {
         wakeCommentIds: [
           validUuid,
-          "not-a-uuid",
+          "comment-1",
           "",
+          "   ",
           null,
           123,
           validUuid, // duplicate
@@ -24,39 +25,41 @@ describe("queuedCommentIdsFromWakePayload and runContext", () => {
       },
     };
 
-    expect(queuedCommentIdsFromWakePayload(payload)).toEqual([validUuid]);
+    expect(queuedCommentIdsFromWakePayload(payload)).toEqual([validUuid, "comment-1"]);
   });
 
   it("filters out invalid comment IDs from run context", () => {
     const validUuid = "123e4567-e89b-12d3-a456-426614174000";
     const context = {
       wakeCommentIds: [
-        "invalid-id",
+        "",
+        "   ",
+        "comment-1",
         validUuid,
       ],
     };
 
-    expect(queuedCommentIdsFromRunContext(context)).toEqual([validUuid]);
+    expect(queuedCommentIdsFromRunContext(context)).toEqual(["comment-1", validUuid]);
   });
 
   it("filters out invalid comment IDs when writing wake payload", () => {
     const validUuid = "123e4567-e89b-12d3-a456-426614174000";
-    const resWithMalformed = withQueuedCommentIdsInWakePayload({}, ["not-a-uuid", "   "]);
+    const resWithMalformed = withQueuedCommentIdsInWakePayload({}, ["", "   "]);
     expect(resWithMalformed.commentId).toBeUndefined();
     expect((resWithMalformed._paperclipWakeContext as Record<string, unknown>).wakeCommentIds).toBeUndefined();
 
-    const resWithValid = withQueuedCommentIdsInWakePayload({}, ["not-a-uuid", validUuid]);
+    const resWithValid = withQueuedCommentIdsInWakePayload({}, ["   ", validUuid]);
     expect(resWithValid.commentId).toBe(validUuid);
     expect((resWithValid._paperclipWakeContext as Record<string, unknown>).wakeCommentIds).toEqual([validUuid]);
   });
 
   it("filters out invalid comment IDs when writing run context", () => {
     const validUuid = "123e4567-e89b-12d3-a456-426614174000";
-    const resWithMalformed = withQueuedCommentIdsInRunContext({}, ["not-a-uuid", "   "]);
+    const resWithMalformed = withQueuedCommentIdsInRunContext({}, ["", "   "]);
     expect(resWithMalformed.commentId).toBeUndefined();
     expect(resWithMalformed.wakeCommentIds).toBeUndefined();
 
-    const resWithValid = withQueuedCommentIdsInRunContext({}, ["not-a-uuid", validUuid]);
+    const resWithValid = withQueuedCommentIdsInRunContext({}, ["   ", validUuid]);
     expect(resWithValid.commentId).toBe(validUuid);
     expect(resWithValid.wakeCommentIds).toEqual([validUuid]);
   });
