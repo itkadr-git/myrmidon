@@ -959,6 +959,8 @@ export function createPostgresRunDispatchAdapter(
             timeoutConfigured: false,
             timeoutSource: "stale_queued_run_gate",
             timeoutFired: false,
+            failedBeforeModel: true,
+            failed_before_model: true,
           },
           updatedAt: now,
         })

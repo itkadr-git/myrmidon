@@ -24,6 +24,18 @@ describe("maintenance interrupt retry claim", () => {
 
     await expect(p.interruptRunForMaintenance!("run-1", "window-1")).resolves.toEqual({ retryScheduled: true });
     expect(heartbeat.cancelRun).toHaveBeenCalledTimes(1);
+    expect(heartbeat.cancelRun).toHaveBeenCalledWith(
+      "run-1",
+      expect.any(String),
+      expect.objectContaining({
+        errorCode: "myrmidon_maintenance_interrupted",
+        resultJson: {
+          myrmidonMaintenance: { windowId: "window-1" },
+          failedBeforeModel: true,
+          failed_before_model: true,
+        },
+      }),
+    );
     expect(schedule).toHaveBeenCalledTimes(2);
   });
 
