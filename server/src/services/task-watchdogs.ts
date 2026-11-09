@@ -1572,19 +1572,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return { state: classification.state, reason: classification.reason, classification };
     }
 
-    if (rewakeCooldownActive({
-      lastTriggeredAt: watchdog.lastTriggeredAt,
-      lastObservedFingerprint: watchdog.lastObservedFingerprint,
-      stopFingerprint: classification.stopFingerprint,
-      cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
-    })) {
-      return {
-        state: "skipped" as const,
-        reason: "rewake_cooldown",
-        classification,
-      };
-    }
-
     const existingWatchdogIssueId = watchdog.watchdogIssueId ?? (await findTaskWatchdogIssue(
       watchdog.companyId,
       sourceIssue.id,
@@ -1634,7 +1621,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         watchdogIssueId: existingWatchdogIssue!.id,
       };
     }
-    if (existingWatchdogIssue?.originFingerprint === classification.stopFingerprint && rewakeCooldownActive({
+    if (rewakeCooldownActive({
       lastTriggeredAt: watchdog.lastTriggeredAt,
       lastObservedFingerprint: watchdog.lastObservedFingerprint,
       stopFingerprint: classification.stopFingerprint,
