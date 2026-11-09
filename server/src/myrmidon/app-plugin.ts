@@ -71,6 +71,7 @@ export { myrmidonBotImageRolloutRoutes } from "./bot-containers/bot-image-rollou
 export { myrmidonMetricsApp } from "./monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 export { boardLoadApp, boardLoadLaneTagMiddleware, boardLoadRequestMiddleware } from "./monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
 export { myrmidonMonitoringAlertsRoutes } from "./monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
+export { myrmidonZabbixSinkRoutes } from "./monitoring/zabbix-sink/index.js"; // myrmidon(1.7-ZABBIX-SINK / OPE-12126)
 export { swarmClaimApp } from "./swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 export { createCasteDirectoryReader } from "./castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
 export { myrmidonEmergencyStopRoutes } from "./emergency-stop.js";
