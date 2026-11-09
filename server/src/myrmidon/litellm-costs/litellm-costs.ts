@@ -274,6 +274,21 @@ export function parseSpendLogsV2Page(
   return { entries, totalPages };
 }
 
+/**
+ * The provider a gateway deployment declares in its `model_info`. LiteLLM
+ * names it `litellm_provider`; `custom_llm_provider` is the spelling of the
+ * spend log and of older gateways, kept as the second choice. Anything else,
+ * or a blank value, reads as "not declared" (null) — the provider is never
+ * guessed from the model name.
+ */
+export function readModelInfoProvider(info: Record<string, unknown> | null): string | null {
+  for (const key of ["litellm_provider", "custom_llm_provider"] as const) {
+    const value = info?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
 export function createLitellmGatewayClient(baseUrl: string, keyValue: string): LitellmGatewayClient {
   const url = (path: string) => `${baseUrl.replace(/\/$/, "")}${path}`;
 
@@ -341,7 +356,7 @@ export function createLitellmGatewayClient(baseUrl: string, keyValue: string): L
         const info = asRecord(item.model_info);
         rows.push({
           modelName,
-          provider: typeof info?.custom_llm_provider === "string" ? info.custom_llm_provider : null,
+          provider: readModelInfoProvider(info),
           maxInputTokens: asNullableNumber(info?.max_input_tokens),
           maxOutputTokens: asNullableNumber(info?.max_tokens),
           rates: readRates(info),
