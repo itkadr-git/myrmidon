@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import type { Db } from "@myrmidon/db";
 import type {
   AuthorizationAction,
   AuthorizationDecision,
@@ -97,6 +98,7 @@ export async function assertMyrmidonAgentConfigChange(
   existing: { id: string; companyId: string; adapterType: string; adapterConfig: unknown },
   nextAdapterType: string,
   nextAdapterConfig: Record<string, unknown> | null | undefined,
+  deps?: { db?: Db },
 ): Promise<void> {
   const previousAdapterConfig =
     typeof existing.adapterConfig === "object" && existing.adapterConfig !== null
@@ -115,5 +117,7 @@ export async function assertMyrmidonAgentConfigChange(
     adapterType: nextAdapterType,
     previousAdapterConfig: nextAdapterType === existing.adapterType ? previousAdapterConfig : null,
     nextAdapterConfig,
+    companyId: existing.companyId,
+    db: deps?.db,
   });
 }

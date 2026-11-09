@@ -681,6 +681,19 @@ the outcome commits. Resolution records an answer; every continuation, task
 creation, tool/provider call, execution-policy transition, spend, deployment, or
 other effect independently re-runs its own authorization and approval gates.
 
+A pending interaction cannot outlive its issue. When the issue reaches a
+terminal status (`done` or `cancelled`) through any path — an HTTP status
+update or a direct service-level transition — every still-pending interaction
+expires with outcome `issue_closed` and `expirationReason: "issue_closed"`
+(`connection_intent` cards keep outcome `expired` and record the same
+`expirationReason`). Linked tool actions and secret proposals are revoked or
+expired in the same transaction, `resolvedAt` is stamped, and a later resolve
+attempt on the expired card returns `409 interaction_issue_closed` instead of
+acting on a closed issue. The transition is idempotent: repeated terminal
+transitions and concurrent resolution attempts do not double-write. A
+one-time migration expired pre-existing pending rows on issues that were
+already closed before this rule.
+
 ## 11. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
@@ -836,6 +849,8 @@ Source-resolved watchdog folding concerns stale active-run bookkeeping after a v
 Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 
 ## 13. Auto-Recover vs Explicit Recovery vs Human Escalation
+
+For stranded assigned work that already has an execution workflow, automatic recovery blocks the issue and wakes an owner for a disposition. The owner is resolved separately from review routing: walk the assignee's `reportsTo` chain to the nearest invokable agent whose role is `lead` or `manager`, skipping reviewer agents. If no such ancestor exists, the board operator (`adm`) owns the escalation. The wake must request a fresh directive with its first step, a split into subtasks, or closure; a review-only handoff does not resolve the stranded block.
 
 Paperclip uses three different recovery outcomes, depending on how much it can safely infer.
 

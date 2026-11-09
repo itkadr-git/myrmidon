@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import {
   BOT_CONTAINERS_ENV,
   CONTAINER_GROUP_UNSUPPORTED_REASON,
@@ -12,6 +13,19 @@ import {
 } from "./agent-config.js";
 
 describe("isBotContainersEnabled", () => {
+  it("uses a switch saved from the UI only for the production environment", () => {
+    const previous = liveBehaviorSettingsView();
+    applyLiveBehaviorSettings({ settings: { bot_containers: true }, sources: { bot_containers: "ui" } });
+    try {
+      expect(isBotContainersEnabled(process.env)).toBe(true);
+      expect(isBotContainersEnabled({})).toBe(false);
+      expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "false" })).toBe(false);
+      expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "true" })).toBe(true);
+    } finally {
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+
   it("is off unless explicitly enabled", () => {
     expect(isBotContainersEnabled({})).toBe(false);
     expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "false" })).toBe(false);
@@ -261,6 +275,17 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
       botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE } }, {}),
     ).toBeNull();
     expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: false, image: "x" } })).toBeNull();
+  });
+
+  it("accepts idleStopMode off as well as always_on and on_demand (OPE-12291)", () => {
+    for (const mode of ["on_demand", "always_on", "off"] as const) {
+      expect(
+        botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, idleStopMode: mode } }, {}),
+      ).toBeNull();
+    }
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, idleStopMode: "sometimes" } }, {}),
+    ).toContain("idleStopMode must be always_on, on_demand or off");
   });
 
   it("refuses a block without `enabled`, naming the field", () => {

@@ -30,6 +30,8 @@ export const CORPUS_SETTINGS_KEYS = [
   "enabled",
   "parserBaseUrl",
   "parserTimeoutMs",
+  "parserMaxRunMs",
+  "parserQueueTimeoutMs",
   "embedderModel",
   "embedderDimensions",
   "embedderBaseUrl",
@@ -63,6 +65,10 @@ export type CorpusSettings = {
   parserBaseUrl: string | null;
   /** Per-request timeout of the parse service, milliseconds. */
   parserTimeoutMs: number;
+  /** Hard ceiling on a parse run in milliseconds (progress or not). */
+  parserMaxRunMs: number;
+  /** Timeout for a job waiting in the parser queue in milliseconds. */
+  parserQueueTimeoutMs: number;
   /** Embedding model the search index asks the LLM gateway for. */
   embedderModel: string;
   /** Dimensions of that model, part of the index schema. */
@@ -86,6 +92,8 @@ export const CORPUS_SETTINGS_ENV: Record<CorpusSettingsKey, string> = {
   enabled: "MYRMIDON_CORPUS_ENABLED",
   parserBaseUrl: "MYRMIDON_CORPUS_PARSER_BASE_URL",
   parserTimeoutMs: "MYRMIDON_CORPUS_PARSER_TIMEOUT_MS",
+  parserMaxRunMs: "MYRMIDON_CORPUS_PARSER_MAX_RUN_MS",
+  parserQueueTimeoutMs: "MYRMIDON_CORPUS_PARSER_QUEUE_TIMEOUT_MS",
   embedderModel: "MYRMIDON_CORPUS_EMBEDDER_MODEL",
   embedderDimensions: "MYRMIDON_CORPUS_EMBEDDER_DIMENSIONS",
   embedderBaseUrl: "MYRMIDON_CORPUS_EMBEDDER_BASE_URL",
@@ -101,7 +109,9 @@ export const DEFAULT_CORPUS_SETTINGS: CorpusSettings = {
   enabled: false,
   parserBaseUrl: null,
   parserTimeoutMs: 60_000,
-  embedderModel: "text-embedding-v4",
+  parserMaxRunMs: 6 * 60 * 60 * 1000,
+  parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
+  embedderModel: "corpus-embed-pplx-0.6b",
   embedderDimensions: 1024,
   embedderBaseUrl: null,
   maxDocumentBytes: 25 * 1024 * 1024,
@@ -113,10 +123,17 @@ export const DEFAULT_CORPUS_SETTINGS: CorpusSettings = {
 
 /** Bounds of every numeric key, shared by the stored reader and the PATCH validator. */
 export const CORPUS_SETTINGS_BOUNDS: Record<
-  "parserTimeoutMs" | "embedderDimensions" | "maxDocumentBytes" | "maxDocumentsPerDataset" | "parseConcurrency" | "maxParseAttempts" | "searchTopK",
+  "parserTimeoutMs" | "parserMaxRunMs" | "parserQueueTimeoutMs" | "embedderDimensions" | "maxDocumentBytes" | "maxDocumentsPerDataset" | "parseConcurrency" | "maxParseAttempts" | "searchTopK",
   { min: number; max: number }
 > = {
-  parserTimeoutMs: { min: 1_000, max: 600_000 },
+  // Time a parse job may RUN WITHOUT PROGRESS in the parse service (pages done growing starts the
+  // count over; the wait in its queue does not count): a 300-page scanned book needs about 25
+  // minutes of OCR in all, so the ceiling is two hours.
+  parserTimeoutMs: { min: 1_000, max: 7_200_000 },
+  // Hard ceiling on one run, progress or not (default 6 h, max 24 h).
+  parserMaxRunMs: { min: 1_000, max: 86_400_000 },
+  // Timeout for a job waiting in queue (default 4 h, max 24 h).
+  parserQueueTimeoutMs: { min: 1_000, max: 86_400_000 },
   embedderDimensions: { min: 1, max: 8_192 },
   maxDocumentBytes: { min: 1, max: 1024 * 1024 * 1024 },
   maxDocumentsPerDataset: { min: 1, max: 100_000 },
@@ -202,6 +219,8 @@ export const storedCorpusSettingsSchema = z
     enabled: z.unknown().optional(),
     parserBaseUrl: z.unknown().optional(),
     parserTimeoutMs: z.unknown().optional(),
+    parserMaxRunMs: z.unknown().optional(),
+    parserQueueTimeoutMs: z.unknown().optional(),
     embedderModel: z.unknown().optional(),
     embedderDimensions: z.unknown().optional(),
     embedderBaseUrl: z.unknown().optional(),
@@ -227,6 +246,8 @@ export const patchCorpusSettingsSchema = z
     enabled: z.boolean().optional(),
     parserBaseUrl: z.string().trim().max(CORPUS_SETTING_TEXT_MAX).nullable().optional(),
     parserTimeoutMs: z.number().int().min(CORPUS_SETTINGS_BOUNDS.parserTimeoutMs.min).max(CORPUS_SETTINGS_BOUNDS.parserTimeoutMs.max).optional(),
+    parserMaxRunMs: z.number().int().min(CORPUS_SETTINGS_BOUNDS.parserMaxRunMs.min).max(CORPUS_SETTINGS_BOUNDS.parserMaxRunMs.max).optional(),
+    parserQueueTimeoutMs: z.number().int().min(CORPUS_SETTINGS_BOUNDS.parserQueueTimeoutMs.min).max(CORPUS_SETTINGS_BOUNDS.parserQueueTimeoutMs.max).optional(),
     embedderModel: z.string().trim().min(1).max(CORPUS_SETTING_TEXT_MAX).optional(),
     embedderDimensions: z.number().int().min(CORPUS_SETTINGS_BOUNDS.embedderDimensions.min).max(CORPUS_SETTINGS_BOUNDS.embedderDimensions.max).optional(),
     embedderBaseUrl: z.string().trim().max(CORPUS_SETTING_TEXT_MAX).nullable().optional(),
@@ -327,6 +348,8 @@ export function resolveCorpusSettings(input: {
       DEFAULT_CORPUS_SETTINGS.parserBaseUrl,
     ),
     parserTimeoutMs: pick("parserTimeoutMs", (value) => readCorpusInt(value, "parserTimeoutMs"), (value) => readCorpusInt(value, "parserTimeoutMs"), DEFAULT_CORPUS_SETTINGS.parserTimeoutMs),
+    parserMaxRunMs: pick("parserMaxRunMs", (value) => readCorpusInt(value, "parserMaxRunMs"), (value) => readCorpusInt(value, "parserMaxRunMs"), DEFAULT_CORPUS_SETTINGS.parserMaxRunMs),
+    parserQueueTimeoutMs: pick("parserQueueTimeoutMs", (value) => readCorpusInt(value, "parserQueueTimeoutMs"), (value) => readCorpusInt(value, "parserQueueTimeoutMs"), DEFAULT_CORPUS_SETTINGS.parserQueueTimeoutMs),
     embedderModel: pick("embedderModel", readCorpusText, readCorpusText, DEFAULT_CORPUS_SETTINGS.embedderModel),
     embedderDimensions: pick("embedderDimensions", (value) => readCorpusInt(value, "embedderDimensions"), (value) => readCorpusInt(value, "embedderDimensions"), DEFAULT_CORPUS_SETTINGS.embedderDimensions),
     embedderBaseUrl: pick(
@@ -397,6 +420,16 @@ export interface CorpusDocument {
   updatedAt: string;
   /** When the document reached `ready`, else null. */
   parsedAt: string | null;
+  /** OPE-12000: the address a URL-sourced document is fetched from, or null for an upload. */
+  sourceUrl: string | null;
+  /** OPE-12000: hours between two fetches of `sourceUrl`; null for an upload. */
+  refreshIntervalHours: number | null;
+  /** OPE-12000: SHA-256 (hex) of the fetched bytes; a refresh re-parses only when it moves. */
+  contentHash: string | null;
+  /** OPE-12000: when `sourceUrl` was last fetched successfully, else null. */
+  lastFetchedAt: string | null;
+  /** OPE-12000: why the last fetch of `sourceUrl` failed, or null. */
+  sourceError: string | null;
 }
 
 export interface CorpusParseJob {
@@ -432,6 +465,11 @@ export interface CorpusSearchHit {
   text: string;
   /** Structured fields the parse service attached to the chunk, if any. */
   metadata: Record<string, unknown>;
+  /**
+   * Name of the document as it was uploaded (the filename), not its internal
+   * UUID. A bot that cites a search hit can quote this directly (OPE-12028).
+   */
+  documentName: string;
 }
 
 export interface CorpusSearchResponse {
@@ -468,9 +506,58 @@ export const corpusSearchBodySchema = z
   })
   .strict();
 
+/** OPE-12000: hours between two fetches of a URL-sourced document, unless the caller says otherwise. */
+export const CORPUS_DEFAULT_REFRESH_INTERVAL_HOURS = 168;
+export const CORPUS_MIN_REFRESH_INTERVAL_HOURS = 1;
+export const CORPUS_MAX_REFRESH_INTERVAL_HOURS = 8_760;
+
+/** Body of `POST …/datasets/:datasetId/documents/url` (OPE-12000). */
+export const addCorpusUrlDocumentSchema = z
+  .object({
+    url: z.string().trim().min(1).max(2_048),
+    refreshIntervalHours: z
+      .number()
+      .int()
+      .min(CORPUS_MIN_REFRESH_INTERVAL_HOURS)
+      .max(CORPUS_MAX_REFRESH_INTERVAL_HOURS)
+      .optional(),
+    name: z.string().trim().min(1).max(255).optional(),
+  })
+  .strict();
+
+/**
+ * Answer of `POST …/datasets/:datasetId/refresh-urls` (202, OPE-12000). The run goes on in the
+ * background, one at a time per dataset; its counters are written to the audit log
+ * (`myrmidon.corpus.refresh_completed`) and each document shows its own `lastFetchedAt` / `sourceError`.
+ */
+export interface CorpusRefreshUrlsStarted {
+  datasetId: string;
+  started: true;
+  /** URL-sourced documents the run will look at. */
+  documents: number;
+}
+
+/** The counters of a finished refresh run (the `details` of `myrmidon.corpus.refresh_completed`). */
+export interface CorpusRefreshUrlsResult {
+  datasetId: string;
+  /** URL-sourced documents of the dataset the pass looked at. */
+  checked: number;
+  /** Fetched, same hash: only `lastFetchedAt` moved. */
+  unchanged: number;
+  /** Fetched, new hash: the content was replaced and a new parse job queued. */
+  updated: number;
+  /** Not fetched: the document is still being parsed. */
+  skipped: number;
+  /** The fetch (or the replace) failed; the stored version stays as it was. */
+  failed: number;
+  /** One entry per failed document, at most 50. */
+  failures: Array<{ documentId: string; sourceUrl: string; error: string }>;
+}
+
 export type CreateCorpusDatasetInput = z.infer<typeof createCorpusDatasetSchema>;
 export type UpdateCorpusDatasetInput = z.infer<typeof updateCorpusDatasetSchema>;
 export type CorpusSearchInput = z.infer<typeof corpusSearchBodySchema>;
+export type AddCorpusUrlDocumentInput = z.infer<typeof addCorpusUrlDocumentSchema>;
 
 /** Route paths, so part D and part E do not hard-code strings. */
 export const CORPUS_SETTINGS_PATH = "/api/myrmidon/corpus/settings";
@@ -492,6 +579,16 @@ export function corpusDatasetPath(companyId: string, datasetId: string): string 
 /** `GET`/`POST`/`DELETE …/datasets/:datasetId/documents`. */
 export function corpusDocumentsPath(companyId: string, datasetId: string): string {
   return `${corpusDatasetPath(companyId, datasetId)}/documents`;
+}
+
+/** `POST …/datasets/:datasetId/documents/url` — add a document by address (OPE-12000). */
+export function corpusUrlDocumentsPath(companyId: string, datasetId: string): string {
+  return `${corpusDocumentsPath(companyId, datasetId)}/url`;
+}
+
+/** `POST …/datasets/:datasetId/refresh-urls` — fetch the URL-sourced documents now (OPE-12000). */
+export function corpusRefreshUrlsPath(companyId: string, datasetId: string): string {
+  return `${corpusDatasetPath(companyId, datasetId)}/refresh-urls`;
 }
 
 /** `GET`/`DELETE …/documents/:documentId` — the document id is unique in the corpus. */

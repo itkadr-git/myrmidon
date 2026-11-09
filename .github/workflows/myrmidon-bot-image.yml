@@ -31,7 +31,7 @@ permissions: {}
 
 concurrency:
   group: myrmidon-bot-image-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
 env:
   IMAGE: ghcr.io/itkadr-git/myrmidon-hermes
@@ -132,6 +132,12 @@ jobs:
                 echo "::error::image PATH element $el is under a writable root"; exit 1 ;;
             esac
           done
+
+      # myrmidon(OPE-10755): smoke-start the gateway on the built image, wait for /health,
+      # and ensure the gateway initializes and responds before finishing the build check.
+      - name: Smoke-start the gateway on the built image
+        if: ${{ github.event_name == 'pull_request' }}
+        run: ./docker/bot-runtime/smoke-start.sh myrmidon-hermes:pr-check
 
       # push to main / myr-v* tag: build, push by digest, tag after.
       - name: Build and push by digest
@@ -287,6 +293,12 @@ jobs:
           run node -e "for (const m of ['pptxgenjs','@napi-rs/canvas','sharp','image-size','pdf-lib']) require(m); console.log('require ok')"
           run node /opt/node-tools/smoke.cjs
           run sh -c 'cd /workspace && npm init -y >/dev/null && npm cache verify >/dev/null && test -d /scratch/npm-cache && test ! -e "$HOME/.npm"'
+
+      # myrmidon(OPE-10755): smoke-start the gateway on the built image, wait for /health,
+      # and ensure the gateway initializes and responds before finishing the build check.
+      - name: Smoke-start the gateway on the built image
+        if: ${{ github.event_name == 'pull_request' }}
+        run: ./docker/bot-runtime/smoke-start.sh myrmidon-hermes-node:pr-check
 
       # push to main / myr-v* tag: build, push by digest, tag after.
       - name: Build and push by digest
@@ -446,6 +458,12 @@ jobs:
           # over mutual TLS, and must be able to run no engine of its own.
           run docker --version
           docker run --rm --entrypoint sh "$img" -c 'if command -v dockerd >/dev/null 2>&1; then echo "::error::the dev image must carry the Docker CLI client only, not an engine"; exit 1; fi'
+
+      # myrmidon(OPE-10755): smoke-start the gateway on the built image, wait for /health,
+      # and ensure the gateway initializes and responds before finishing the build check.
+      - name: Smoke-start the gateway on the built image
+        if: ${{ github.event_name == 'pull_request' }}
+        run: ./docker/bot-runtime/smoke-start.sh myrmidon-hermes-dev:pr-check
   
       # push to main / myr-v* tag: build, push by digest, tag after.
       - name: Build and push by digest

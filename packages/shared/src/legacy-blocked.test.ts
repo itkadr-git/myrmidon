@@ -29,6 +29,14 @@ describe("legacy blocked report rows", () => {
     }).success).toBe(false);
   });
 
+  it("allows human_decision without an owner", () => {
+    expect(legacyBlockedReportRowSchema.safeParse({
+      ...baseRow,
+      class: "human_decision",
+      importKey: createLegacyBlockedImportKey(baseRow.issueId),
+    }).success).toBe(true);
+  });
+
   it("produces a stable import key from issue ID and rule version", () => {
     expect(createLegacyBlockedImportKey(baseRow.issueId)).toBe(
       createLegacyBlockedImportKey(baseRow.issueId),

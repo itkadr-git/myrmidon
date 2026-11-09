@@ -44,6 +44,8 @@ describe("filterErrorChannelCard", () => {
       expect(filterErrorChannelCard(ON, { sourceKind, severity: "high" })).toEqual({ send: true });
       expect(filterErrorChannelCard(ON, { sourceKind, severity: "critical" })).toEqual({ send: true });
     }
+    expect(filterErrorChannelCard(ON, { sourceKind: "litellm_budget", severity: "high" })).toEqual({ send: true });
+    expect(filterErrorChannelCard(ON, { sourceKind: "litellm_budget", severity: "critical" })).toEqual({ send: true });
   });
 
   it("keeps non-error attention kinds out of the channel", () => {

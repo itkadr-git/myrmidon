@@ -1,6 +1,10 @@
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { Router, type Request } from "express";
 import type { Db } from "@myrmidon/db";
+import { and, desc, eq, isNull } from "drizzle-orm";
+import { agentApiKeys, heartbeatRuns, issues } from "@myrmidon/db";
+import { createHash } from "node:crypto";
+import { createPullRequestCiResolver } from "../services/github-pull-request-ci.js";
 import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
   CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
@@ -9,6 +13,7 @@ import {
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
 } from "@myrmidon/shared";
+import { recordGitHubRequest } from "../services/github-rate-limit.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { verifyRuntimeToolsToken } from "../runtime-tools-token.js";
 import { connectionIntentService } from "../services/connection-intents.js";
@@ -17,6 +22,8 @@ import { accessService } from "../services/access.js";
 import type { heartbeatService } from "../services/heartbeat.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
+
+export const REPOSITORY_REGEX = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 function bearer(req: Request) {
   const value = req.header("authorization") ?? "";
@@ -37,27 +44,93 @@ function resultContent(value: unknown) {
 }
 
 export { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool-definitions.js";
-import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool-definitions.js";
+import {
+  RUNTIME_CONNECTION_TOOL_DEFINITIONS,
+  RUNTIME_INTENT_TOOL_DEFINITIONS,
+} from "../services/connection-tool-definitions.js";
+import { boardLoadRequestMiddleware } from "../myrmidon/monitoring/board-load/index.js";
 
 /** Public, token-authenticated routes mounted before the general actor middleware. */
 export function runtimeConnectionIntentRoutes(db: Db) {
   const router = Router();
   const service = connectionIntentService(db);
 
-  router.post("/runtime-tools/github/credentials", async (req, res) => {
+  router.post("/runtime-tools/github/credentials", boardLoadRequestMiddleware(), async (req, res) => {
+    recordGitHubRequest("broker", null);
     // This capability is never accepted as board/session authentication.
     // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
     if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");
-    const claims = verifyRuntimeToolsToken(typeof req.headers["x-paperclip-github-capability"] === "string"
-      ? req.headers["x-paperclip-github-capability"] : bearer(req), "github_credentials");
-    if (!claims) throw unauthorized("Invalid GitHub runtime capability");
+    const capabilityHeader = req.headers["x-myrmidon-github-capability"] ?? req.headers["x-paperclip-github-capability"];
+    const claims = verifyRuntimeToolsToken(typeof capabilityHeader === "string"
+      ? capabilityHeader : bearer(req), "github_credentials");
+
+    let companyId: string;
+    let agentId: string;
+    let runId: string;
+
+    if (claims) {
+      companyId = claims.company_id;
+      agentId = claims.sub;
+      runId = claims.run_id;
+    } else {
+      const token = bearer(req);
+      if (!token) throw unauthorized("Invalid GitHub runtime capability");
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      const [key] = await db
+        .select()
+        .from(agentApiKeys)
+        .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)));
+      if (!key) throw unauthorized("Invalid GitHub runtime capability");
+
+      companyId = key.companyId;
+      agentId = key.agentId;
+
+      const runIdHeader = req.headers["x-paperclip-run-id"] ?? req.headers["x-myrmidon-run-id"];
+      const candidateRunId = typeof runIdHeader === "string" ? runIdHeader.trim() : null;
+
+      if (candidateRunId) {
+        const [targetRun] = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, candidateRunId),
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.agentId, agentId),
+            ),
+          );
+        if (!targetRun || targetRun.status !== "running") {
+          throw forbidden("Credential acquisition requires this agent's active run");
+        }
+        runId = targetRun.id;
+      } else {
+        const activeRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              eq(heartbeatRuns.status, "running"),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.startedAt))
+          .limit(1);
+        const targetRun = activeRuns[0] ?? null;
+        if (!targetRun) {
+          throw forbidden("Credential acquisition requires this agent's active run");
+        }
+        runId = targetRun.id;
+      }
+    }
+
     res.setHeader("Cache-Control", "no-store");
     // myrmidon(GITHUB-SHARED-IDENTITY): the optional `repository` (owner/repo) the
     // git/gh operation targets; a GitHub App token is minted per repository.
     const repository = typeof req.body?.repository === "string" && req.body.repository.length <= 300
       ? req.body.repository : null;
     res.json(await resolveGitHubOperationCredentials(db, {
-      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id, repository,
+      companyId, agentId, runId, repository,
     }));
   });
 
@@ -95,7 +168,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         jsonrpc: "2.0",
         id,
         result: {
-          tools: RUNTIME_CONNECTION_TOOL_DEFINITIONS,
+          tools: RUNTIME_INTENT_TOOL_DEFINITIONS,
         },
       });
       return;
@@ -115,6 +188,74 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         const input = connectionRequestInputSchema.parse(params.arguments ?? {});
         const result = await service.request(claims, input.service);
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
+        return;
+      }
+      if (name === "pull_request_ci_status") {
+        const args = (params.arguments && typeof params.arguments === "object"
+          ? params.arguments
+          : {}) as { repository?: unknown; pullNumber?: unknown };
+        const ciResolver = createPullRequestCiResolver(db);
+
+        if (args.repository !== undefined || args.pullNumber !== undefined) {
+          if (
+            typeof args.repository !== "string" ||
+            !REPOSITORY_REGEX.test(args.repository) ||
+            typeof args.pullNumber !== "number" ||
+            !Number.isInteger(args.pullNumber) ||
+            args.pullNumber <= 0
+          ) {
+            res.json({
+              jsonrpc: "2.0",
+              id,
+              result: resultContent({
+                error: "Invalid repository or pullNumber format. Expected repository as 'owner/repo' and pullNumber as a positive integer.",
+              }),
+            });
+            return;
+          }
+          const [owner, repo] = args.repository.split("/");
+          const result = await ciResolver.resolveForPullRequest(claims.company_id, {
+            owner,
+            repo,
+            number: args.pullNumber,
+          });
+          res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
+          return;
+        }
+
+        const [run] = await db
+          .select({ nativeIssueId: heartbeatRuns.nativeIssueId, contextSnapshot: heartbeatRuns.contextSnapshot })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id)));
+
+        let issueId = run?.nativeIssueId ?? ((run?.contextSnapshot as any)?.issueId as string | undefined) ?? null;
+        if (!issueId) {
+          const [iss] = await db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.companyId, claims.company_id), eq(issues.executionRunId, claims.run_id)));
+          issueId = iss?.id ?? null;
+        }
+
+        if (!issueId) {
+          res.json({
+            jsonrpc: "2.0",
+            id,
+            result: resultContent({ error: "No active issue associated with this run, and no repository/pullNumber provided" }),
+          });
+          return;
+        }
+
+        const prs = await ciResolver.resolveForIssue(claims.company_id, issueId);
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: resultContent({
+            issueId,
+            pullRequests: prs,
+            primaryCiResult: prs[0] ?? null,
+          }),
+        });
         return;
       }
       res.status(404).json({
@@ -138,6 +279,59 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
     res.json(await service.request(runtimeClaims(req), input.service));
+  });
+  router.post("/runtime-tools/ci/status", async (req, res) => {
+    const claims = runtimeClaims(req);
+    await service.validate(claims);
+    const ciResolver = createPullRequestCiResolver(db);
+    const repository = req.body?.repository;
+    const pullNumber = req.body?.pullNumber;
+
+    if (repository !== undefined || pullNumber !== undefined) {
+      if (
+        typeof repository !== "string" ||
+        !REPOSITORY_REGEX.test(repository) ||
+        typeof pullNumber !== "number" ||
+        !Number.isInteger(pullNumber) ||
+        pullNumber <= 0
+      ) {
+        return res.status(400).json({
+          error: "Invalid repository or pullNumber format. Expected repository as 'owner/repo' and pullNumber as a positive integer.",
+        });
+      }
+      const [owner, repo] = repository.split("/");
+      const result = await ciResolver.resolveForPullRequest(claims.company_id, {
+        owner,
+        repo,
+        number: pullNumber,
+      });
+      return res.json(result);
+    }
+
+    const [run] = await db
+      .select({ nativeIssueId: heartbeatRuns.nativeIssueId, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id)));
+
+    let issueId = run?.nativeIssueId ?? ((run?.contextSnapshot as any)?.issueId as string | undefined) ?? null;
+    if (!issueId) {
+      const [iss] = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, claims.company_id), eq(issues.executionRunId, claims.run_id)));
+      issueId = iss?.id ?? null;
+    }
+
+    if (!issueId) {
+      return res.status(400).json({ error: "No issue found for run and no repository/pullNumber provided" });
+    }
+
+    const prs = await ciResolver.resolveForIssue(claims.company_id, issueId);
+    return res.json({
+      issueId,
+      pullRequests: prs,
+      primaryCiResult: prs[0] ?? null,
+    });
   });
   return router;
 }

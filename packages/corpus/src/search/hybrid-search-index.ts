@@ -3,9 +3,22 @@
 // One search runs up to two rankings over `corpus_chunks`, both scoped by company and by dataset
 // (the dataset lives on `corpus_documents`, and only chunks of `ready` documents are searchable):
 //   * vector: `embedding <=> $query` (cosine over the HNSW index), with `hnsw.ef_search` set for
-//     the transaction, because the pilot measured its recall with ef_search = 64;
-//   * full text: `fts @@ plainto_tsquery(...)` (the GIN index over the generated tsvector) plus an
-//     `ILIKE` fallback that the trigram GIN index serves.
+//     the transaction, because the pilot measured its recall with ef_search = 64. The index knows
+//     the company only, not the dataset, and the dataset and status filters run after the index scan,
+//     so a plain `order by embedding <=> $query limit k` keeps whatever survives the filter of the
+//     first 64 rows (about half of the candidates on production). With pgvector 0.8 the ranking runs
+//     with the HNSW iterative scan (`hnsw.iterative_scan = relaxed_order`), which keeps scanning
+//     until the limit is filled; a small dataset (up to `exactSetMaxChunks` chunks, the company's own
+//     chunks when a search names no dataset) is ranked exactly, over its own chunks, instead. Without the iterative scan (pgvector before 0.8) the ranking is
+//     the plain statement;
+//   * full text: `fts @@ (plainto_tsquery(...) || to_tsquery(...))` — the question as a whole (every
+//     word mandatory, which is what finds a chunk that holds all of them) or a small OR of its
+//     significant words (see `toFullTextQuery`); the GIN index over the generated tsvector serves
+//     both. The OR alone matched nothing precise: it drops numbers and short words, so a question
+//     that names a chunk by its number or code lost the chunk to the many that share the other
+//     words. The `plainto_tsquery` alone matched nothing on natural-language questions (AND of all
+//     words): the full-text leg was dead on the production corpus (empty_rate 0.986 in the 07.11
+//     golden bench). An `ILIKE` fallback still serves short query texts and identifiers.
 // The two rankings are merged with RRF (k0 = 60, k_candidates = 100) and the top-k hits are
 // returned with their chunk and document rows.
 //
@@ -23,7 +36,11 @@ import type { CorpusSearchQuery, SearchIndex } from "../ports.js";
 import { reciprocalRankFusion, type FusionParameters, DEFAULT_FUSION_PARAMETERS } from "./rrf.js";
 import {
   DEFAULT_EF_SEARCH,
+  DEFAULT_EXACT_SET_MAX_CHUNKS,
+  DEFAULT_ILIKE_MAX_LENGTH,
+  DEFAULT_MAX_SCAN_TUPLES,
   DEFAULT_SEARCH_LIMIT,
+  ILIKE_SINGLE_TOKEN_MAX_LENGTH,
   MAX_SEARCH_LIMIT,
   type CorpusSearchChunkRef,
   type CorpusSearchDocumentRef,
@@ -73,10 +90,28 @@ export interface PostgresSearchIndexOptions {
   /** `hnsw.ef_search` of the vector ranking; the pilot value is 64. */
   readonly efSearch?: number;
   /**
-   * Text search configuration of `plainto_tsquery`. It must be the configuration the generated
+   * Text search configuration of `plainto_tsquery` and `to_tsquery`. It must be the configuration the generated
    * `fts` column was built with — the corpus migration uses `english`.
    */
   readonly ftsLanguage?: string;
+  /**
+   * Longest query text (characters) that still adds the `ILIKE '%…%'` substring match to the
+   * full-text ranking; a longer text is matched by the `tsvector` alone, except a single token
+   * without whitespace of up to `ILIKE_SINGLE_TOKEN_MAX_LENGTH` characters (an identifier: a file
+   * name, a version, a task code), which keeps the match. `0` switches the substring match off.
+   */
+  readonly ilikeMaxLength?: number;
+  /**
+   * Largest dataset, in embedded chunks (the whole company when a search names no dataset), that the
+   * vector ranking reads and sorts exactly instead of scanning the HNSW index. `0` sends every search
+   * through the index.
+   */
+  readonly exactSetMaxChunks?: number;
+  /**
+   * `hnsw.max_scan_tuples` of the iterative scan: how many index tuples one search may visit while it
+   * looks for enough chunks of the requested dataset (the default is `DEFAULT_MAX_SCAN_TUPLES`).
+   */
+  readonly maxScanTuples?: number;
 }
 
 interface ChunkRow extends Record<string, unknown> {
@@ -87,6 +122,8 @@ interface ChunkRow extends Record<string, unknown> {
   content: string;
   token_count: number | null;
   metadata: Record<string, unknown> | null;
+  /** Cosine similarity or `ts_rank` of the ranking the row comes from. */
+  score?: unknown;
 }
 
 interface DocumentRow extends Record<string, unknown> {
@@ -125,6 +162,35 @@ function hasText(text: string | undefined): boolean {
 }
 
 /**
+ * `plainto_tsquery` makes every term mandatory. That is unusable for natural-language questions
+ * (and especially for a mixed RU/EN corpus): one absent term empties the whole full-text leg, so
+ * on the production corpus the leg answered 0 rows for 98.6% of the golden questions (07.11 bench)
+ * and the hybrid search degraded to vector-only. Build a bounded OR of the question's significant
+ * words instead; the generated fts column uses the same configured dictionary (english), so
+ * stemming stays consistent with the index. Words shorter than 4 characters are dropped (RU
+ * prepositions and conjunctions, EN articles) along with frequent question words; the OR is capped
+ * at 8 terms, so a GIN scan over the query keeps a bounded cost.
+ */
+const SEARCH_STOP_WORDS = new Set([
+  "about", "after", "also", "and", "are", "does", "how", "that", "the", "this", "what", "when", "which", "with", "say",
+  "для", "как", "какие", "какой", "книг", "книги", "про", "это", "этом", "чем",
+  "в", "во", "и", "на", "о", "об", "из", "у", "по", "за", "то", "же", "ли", "что", "какой-то",
+]);
+
+export function toFullTextQuery(text: string): string {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  for (const word of text.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) {
+    if (word.length < 4 || SEARCH_STOP_WORDS.has(word) || seen.has(word)) continue;
+    seen.add(word);
+    // The tokenizer only accepts letters and digits, so no to_tsquery operator can leak in.
+    terms.push(word);
+    if (terms.length >= 8) break;
+  }
+  return terms.join(" | ");
+}
+
+/**
  * Raised when a search asks for the vector ranking on a database that was migrated without
  * pgvector: migration 0310 creates the `embedding` column and its HNSW index only where the
  * extension is available, so semantic search is simply not part of such a cluster. Callers can
@@ -159,12 +225,39 @@ function isMissingPgvectorObjects(error: unknown): boolean {
   return typeof code === "string" && MISSING_PGVECTOR_CODES.has(code);
 }
 
+/**
+ * Whether a pgvector version (`pg_extension.extversion`, e.g. `0.8.7`) has the HNSW iterative scan:
+ * `hnsw.iterative_scan` appeared in 0.8.0. The version is read instead of the setting being tried,
+ * because a refused `SET` is a statement error: it aborts a PostgreSQL transaction, and the driver
+ * of the product (postgres.js) rethrows it at the end of the transaction even when the caller caught
+ * it, so there is no way to try the setting and carry on.
+ */
+export function pgvectorHasIterativeScan(version: unknown): boolean {
+  const match = /^(\d+)\.(\d+)/.exec(String(version ?? "").trim());
+  if (match === null) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 0 || minor >= 8;
+}
+
 export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): PostgresSearchIndex {
   const schema = options.schema ?? DEFAULT_SEARCH_INDEX_SCHEMA;
   const fusion = options.fusion ?? DEFAULT_FUSION_PARAMETERS;
   const efSearch = options.efSearch ?? DEFAULT_EF_SEARCH;
   if (!Number.isInteger(efSearch) || efSearch < 1) throw new RangeError("ef_search must be a positive integer");
   const language = sqlLanguage(options.ftsLanguage ?? "english");
+  const ilikeMaxLength = options.ilikeMaxLength ?? DEFAULT_ILIKE_MAX_LENGTH;
+  if (!Number.isInteger(ilikeMaxLength) || ilikeMaxLength < 0) {
+    throw new RangeError("ilike max length must be a non-negative integer");
+  }
+  const exactSetMaxChunks = options.exactSetMaxChunks ?? DEFAULT_EXACT_SET_MAX_CHUNKS;
+  if (!Number.isInteger(exactSetMaxChunks) || exactSetMaxChunks < 0) {
+    throw new RangeError("exact set max chunks must be a non-negative integer");
+  }
+  const maxScanTuples = options.maxScanTuples ?? DEFAULT_MAX_SCAN_TUPLES;
+  if (!Number.isInteger(maxScanTuples) || maxScanTuples < 1) {
+    throw new RangeError("max scan tuples must be a positive integer");
+  }
 
   const chunks = sqlIdentifier(schema.chunksTable, "chunks table");
   const documents = sqlIdentifier(schema.documentsTable, "documents table");
@@ -173,12 +266,12 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const embedding = sqlIdentifier(schema.embeddingColumn, "embedding column");
 
   // `$3` is the optional dataset: `$3::uuid is null` keeps one statement for both a dataset-scoped
-  // and a company-wide search.
+  // and a company-wide search. `$3::uuid[] is null` supports filtering by multiple datasets.
   const scope = [
     `  from ${chunks} c`,
     `  join ${documents} d on d.id = c.document_id and d.company_id = c.company_id`,
     ` where c.company_id = $2::uuid`,
-    `   and ($3::uuid is null or d.dataset_id = $3::uuid)`,
+    `   and ($3::uuid[] is null or d.dataset_id = any($3::uuid[]))`,
     `   and d.status = 'ready'`,
   ].join("\n");
 
@@ -187,6 +280,9 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     `       c.token_count, c.metadata,`,
   ].join("\n");
 
+  // The planner decides how to rank. With the iterative scan on, an index scan that the planner picks
+  // keeps going until `limit` rows have passed the dataset and status filters; without it (pgvector
+  // before 0.8) the scan stops after `ef_search` rows.
   const vectorSql = [
     `select`,
     chunkColumns,
@@ -197,15 +293,72 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
     ` limit $4`,
   ].join("\n");
 
+  // Exact ranking of the chunks of the requested datasets. `+ 0` hides the distance from the index
+  // ordering, so the planner cannot answer from the HNSW index and filter afterwards (it does that
+  // for a dataset it takes for large, and returns whatever the scan reached): it reads the chunks of
+  // the datasets and sorts them. Cheap for a small dataset, seconds to tens of seconds for a large
+  // one, which is why only a small dataset is sent here.
+  const exactSetSql = [
+    `select`,
+    chunkColumns,
+    `       1 - (c.${embedding} <=> $1::vector) as score`,
+    scope,
+    `   and c.${embedding} is not null`,
+    ` order by (c.${embedding} <=> $1::vector) + 0`,
+    ` limit $4`,
+  ].join("\n");
+
+  // Size of the requested datasets in embedded chunks, counted up to `$3` rows: the count stops there,
+  // so asking about a large dataset costs a few thousand index reads, not a scan of the dataset.
+  const setSizeSql = [
+    `select count(*)::int as chunks from (`,
+    `  select 1`,
+    `    from ${chunks} c`,
+    `    join ${documents} d on d.id = c.document_id and d.company_id = c.company_id`,
+    `   where c.company_id = $1::uuid`,
+    `     and ($2::uuid[] is null or d.dataset_id = any($2::uuid[]))`,
+    `     and d.status = 'ready'`,
+    `     and c.${embedding} is not null`,
+    `   limit $3`,
+    `) sized`,
+  ].join("\n");
+
+  // The tsquery of the full-text ranking: the question as a whole (`plainto_tsquery`, every word
+  // mandatory) or the bounded OR of its significant words (`$or`, built by `toFullTextQuery`). The
+  // first finds what the question names exactly — a number, a code, a rare word next to common ones —
+  // and ranks it first, because `ts_rank` sums over the distinct terms a chunk holds; the second finds
+  // what a natural-language question only paraphrases. An empty OR (all words short or stop words)
+  // leaves the question alone, so `to_tsquery` never sees an empty string: it raises a notice each time.
+  const fullTextQuery = (lang: string, or: string) =>
+    `(case when ${or} = '' then plainto_tsquery(${lang}::regconfig, $1)` +
+    ` else plainto_tsquery(${lang}::regconfig, $1) || to_tsquery(${lang}::regconfig, ${or}) end)`;
+
+  // `$1` is the question as the user wrote it: it feeds `plainto_tsquery`, the trigram `ilike` pattern
+  // is built from it, and `similarity` breaks the ties of `ts_rank` with it.
   const fullTextSql = [
     `select`,
     chunkColumns,
-    `       ts_rank(c.${fullText}, plainto_tsquery($5::regconfig, $1)) as score`,
+    `       ts_rank(c.${fullText}, ${fullTextQuery("$5", "$7")}) as score`,
     scope,
-    `   and (c.${fullText} @@ plainto_tsquery($5::regconfig, $1) or c.${content} ilike $4)`,
-    ` order by ts_rank(c.${fullText}, plainto_tsquery($5::regconfig, $1)) desc,`,
+    `   and (c.${fullText} @@ ${fullTextQuery("$5", "$7")} or c.${content} ilike $4)`,
+    ` order by ts_rank(c.${fullText}, ${fullTextQuery("$5", "$7")}) desc,`,
     `          similarity(c.${content}, $1) desc`,
     ` limit $6`,
+  ].join("\n");
+
+  // The same ranking without the substring match, for a query text longer than `ilikeMaxLength` that
+  // is not an identifier. Not the same statement with a null pattern: a generic plan could not drop the
+  // `or` branch and would lose the index for the `tsvector` match too. The parameters are renumbered,
+  // because a driver rejects a parameter that the text never mentions.
+  const fullTextOnlySql = [
+    `select`,
+    chunkColumns,
+    `       ts_rank(c.${fullText}, ${fullTextQuery("$4", "$6")}) as score`,
+    scope,
+    `   and c.${fullText} @@ ${fullTextQuery("$4", "$6")}`,
+    ` order by ts_rank(c.${fullText}, ${fullTextQuery("$4", "$6")}) desc,`,
+    `          similarity(c.${content}, $1) desc`,
+    ` limit $5`,
   ].join("\n");
 
   const documentsSql = [
@@ -216,17 +369,61 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   ].join("\n");
 
   const efSearchSql = `set local hnsw.ef_search = ${efSearch}`;
+  const iterativeScanSql = `set local hnsw.iterative_scan = relaxed_order`;
+  const maxScanTuplesSql = `set local hnsw.max_scan_tuples = ${maxScanTuples}`;
+  const pgvectorVersionSql = `select extversion from pg_extension where extname = 'vector'`;
+
+  // A positive answer is kept for the life of the index: pgvector is not downgraded under a running
+  // process. A negative one is not: "no `vector` extension" may change when the extension is
+  // installed, and the plain statement it leads to fails the way it always did and is reported as
+  // `CorpusVectorSearchUnavailableError`. The product builds the index for every request, so the
+  // version is read on every request in practice; one `pg_extension` lookup is cheap.
+  let iterativeScanSupported = false;
+
+  /**
+   * Whether the requested datasets (the whole company when there are none) hold at most
+   * `exactSetMaxChunks` embedded chunks.
+   */
+  async function isSmallSet(
+    transaction: SqlExecutor,
+    companyId: string,
+    datasetIds: readonly string[] | null,
+  ): Promise<boolean> {
+    const rows = await transaction.query<{ chunks?: unknown }>(setSizeSql, [companyId, datasetIds, exactSetMaxChunks + 1]);
+    const chunkCount = Number(rows[0]?.chunks);
+    return Number.isFinite(chunkCount) && chunkCount <= exactSetMaxChunks;
+  }
+
+  /** Turns the HNSW iterative scan on for the transaction; `false` where pgvector is older than 0.8. */
+  async function enableIterativeScan(transaction: SqlExecutor): Promise<boolean> {
+    if (!iterativeScanSupported) {
+      const rows = await transaction.query<{ extversion?: unknown }>(pgvectorVersionSql);
+      iterativeScanSupported = pgvectorHasIterativeScan(rows[0]?.extversion);
+    }
+    if (iterativeScanSupported) {
+      await transaction.query(iterativeScanSql);
+      await transaction.query(maxScanTuplesSql);
+    }
+    return iterativeScanSupported;
+  }
 
   return {
     async search(query: CorpusSearchQuery) {
       const limit = clampLimit(query.limit);
-      const datasetId = query.datasetId ?? null;
+      const datasetIds = query.datasetIds ?? (query.datasetId ? [query.datasetId] : null);
       const hasEmbedding = query.embedding !== undefined;
       const useFullText = hasText(query.text);
       if (!hasEmbedding && !useFullText) return [];
 
       const kCandidates = Math.max(limit, fusion.kCandidates);
-      const likePattern = `%${escapeLikePattern(useFullText ? query.text.trim() : "")}%`;
+      const text = useFullText ? query.text.trim() : "";
+      // The bounded OR of significant words (see `toFullTextQuery`) joins the question as a whole.
+      const orQuery = useFullText ? toFullTextQuery(text) : "";
+      // The substring match is for short texts and for identifiers (a single token without whitespace).
+      const useIlike =
+        ilikeMaxLength > 0 &&
+        (text.length <= ilikeMaxLength || (text.length <= ILIKE_SINGLE_TOKEN_MAX_LENGTH && !/\s/.test(text)));
+      const likePattern = `%${escapeLikePattern(text)}%`;
       const embeddingLiteral = hasEmbedding
         ? toPgVectorLiteral(assertEmbeddingVector(query.embedding ?? []))
         : null;
@@ -237,12 +434,21 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (embeddingLiteral !== null) {
           try {
             await transaction.query(efSearchSql);
-            vectorRows = await transaction.query<ChunkRow>(vectorSql, [
+            const iterativeScan = await enableIterativeScan(transaction);
+            // A small dataset, or a small company when the search names no dataset, is cheaper to read
+            // and sort than to find in the index.
+            const smallSet =
+              iterativeScan && exactSetMaxChunks > 0 ? await isSmallSet(transaction, query.companyId, datasetIds) : false;
+            vectorRows = await transaction.query<ChunkRow>(smallSet ? exactSetSql : vectorSql, [
               embeddingLiteral,
               query.companyId,
-              datasetId,
+              datasetIds,
               kCandidates,
             ]);
+            // The relaxed iterative scan returns rows slightly out of order; the fusion ranks by position.
+            if (iterativeScan && !smallSet) {
+              vectorRows = [...vectorRows].sort((left, right) => Number(right.score) - Number(left.score));
+            }
           } catch (error) {
             // A cluster migrated without pgvector has neither the embedding column nor the HNSW
             // setting; report that as the module's own error instead of a driver detail.
@@ -251,14 +457,24 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
           }
         }
         if (useFullText) {
-          fullTextRows = await transaction.query<ChunkRow>(fullTextSql, [
-            query.text.trim(),
-            query.companyId,
-            datasetId,
-            likePattern,
-            language,
-            kCandidates,
-          ]);
+          fullTextRows = useIlike
+            ? await transaction.query<ChunkRow>(fullTextSql, [
+                text,
+                query.companyId,
+                datasetIds,
+                likePattern,
+                language,
+                kCandidates,
+                orQuery,
+              ])
+            : await transaction.query<ChunkRow>(fullTextOnlySql, [
+                text,
+                query.companyId,
+                datasetIds,
+                language,
+                kCandidates,
+                orQuery,
+              ]);
         }
         return { vectorRows, fullTextRows };
       });
@@ -267,7 +483,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         vectorRows.map((row) => row.id),
         fullTextRows.map((row) => row.id),
         fusion,
-      ).slice(0, limit);
+      );
       if (fused.length === 0) return [];
 
       const chunksById = new Map<string, ChunkRow>();
@@ -276,14 +492,28 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (!chunksById.has(row.id)) chunksById.set(row.id, row);
       }
 
-      const documentIds = [...new Set([...chunksById.values()].map((row) => row.document_id))];
+      // A document often contributes several adjacent chunks. Keep only its best fused chunk
+      // in the public result so one long document cannot consume the whole top-k and hide other
+      // relevant documents. Candidate retrieval remains wide (kCandidates per leg), so this is
+      // diversification rather than a recall-reducing post-filter.
+      const diversified = [] as typeof fused;
+      const seenDocuments = new Set<string>();
+      for (const candidate of fused) {
+        const documentId = chunksById.get(candidate.id)?.document_id;
+        if (!documentId || seenDocuments.has(documentId)) continue;
+        seenDocuments.add(documentId);
+        diversified.push(candidate);
+        if (diversified.length >= limit) break;
+      }
+
+      const documentIds = [...new Set(diversified.map((candidate) => chunksById.get(candidate.id)?.document_id).filter((id): id is string => !!id))];
       const documentRows = documentIds.length
         ? await options.sql.query<DocumentRow>(documentsSql, [query.companyId, documentIds])
         : [];
       const documentsById = new Map(documentRows.map((row) => [row.id, row]));
 
       const hits: CorpusSearchHitDetail[] = [];
-      for (const candidate of fused) {
+      for (const candidate of diversified) {
         const row = chunksById.get(candidate.id);
         if (!row) continue;
         const document = documentsById.get(row.document_id);

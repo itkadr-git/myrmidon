@@ -17,7 +17,7 @@ vi.mock("../myrmidon/github-shared-identity/store.js", () => ({
   readGitHubSharedIdentitySettings: settingsMock.read,
 }));
 
-import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
+import { createGitHubExternalObjectProvider, resetGitHubObjectCacheForTests } from "../services/github-external-object-provider.js";
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resetGitHubAppTokenCacheForTests } from "../myrmidon/github-shared-identity/app-token.js";
 
@@ -42,11 +42,15 @@ function appEntry(id: string, allowedRepos: string[]) {
   };
 }
 
-function settings(apps: ReturnType<typeof appEntry>[], enabled = true) {
-  return { enabled, apps, pats: [], commitEmailDomain: null };
+function patEntry(id: string, allowedRepos: string[]) {
+  return { id, name: `pat-${id}`, tokenSecretId: `pat-secret-${id}`, agentIds: [], allowedRepos };
 }
 
-function fakeDb(keyRows: unknown[] = [{ id: "key-secret-a" }]) {
+function settings(apps: ReturnType<typeof appEntry>[], enabled = true, pats = []) {
+  return { enabled, apps, pats, commitEmailDomain: null };
+}
+
+function fakeDb(keyRows: unknown[] = [{ id: "key-secret-a" }, { id: "pat-secret-a" }, { id: "pat-secret-p" }]) {
   return { select: vi.fn(() => ({ from: () => ({ where: async () => keyRows }) })) } as never;
 }
 
@@ -99,6 +103,7 @@ function calls(fetch: ReturnType<typeof githubFetch>, path: string) {
 }
 
 beforeEach(() => {
+  resetGitHubObjectCacheForTests();
   resetGitHubAppTokenCacheForTests();
   secretMocks.getByName.mockReset().mockResolvedValue(null);
   secretMocks.resolveSecretValue.mockReset().mockResolvedValue(PEM);
@@ -107,6 +112,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -125,7 +131,7 @@ describe("GitHub external object resolver: shared-identity App token", () => {
     const [mintCall] = calls(fetch, "/app/installations/77/access_tokens");
     expect(JSON.parse(String((mintCall![1] as RequestInit).body))).toEqual({
       repositories: ["myrmidon-deploy"],
-      permissions: { metadata: "read", contents: "read", pull_requests: "read" },
+      permissions: { metadata: "read", contents: "read", pull_requests: "read", checks: "read" },
     });
     const [prCall] = calls(fetch, "/repos/itkadr-git/myrmidon-deploy/pulls/63");
     expect((prCall![1] as RequestInit).headers).toMatchObject({ authorization: `Bearer ${APP_TOKEN}` });
@@ -143,6 +149,8 @@ describe("GitHub external object resolver: shared-identity App token", () => {
   });
 
   it("caches the installation token between resolutions", async () => {
+    // myrmidon(OPE-12397): with the provider's read cache on, the second resolution would not reach GitHub at all.
+    vi.stubEnv("MYRMIDON_GITHUB_OBJECT_CACHE_TTL_SEC", "0");
     const fetch = githubFetch();
     const resolver = prResolver(fetch);
     await resolver.resolve({ companyId: COMPANY, object: prObject() });
@@ -164,6 +172,23 @@ describe("GitHub external object resolver: shared-identity App token", () => {
     expect((prCall![1] as RequestInit).headers).toMatchObject({ authorization: `Bearer ${PAT_TOKEN}` });
   });
 
+  it("uses a matching PAT when no App covers the repository", async () => {
+    settingsMock.read.mockResolvedValue(settings([], true, [patEntry("a", [PRIVATE_REPO])]));
+    secretMocks.resolveSecretValue.mockResolvedValue(PAT_TOKEN);
+    const fetch = githubFetch();
+    const result = await prResolver(fetch).resolve({ companyId: COMPANY, object: prObject() });
+    expect(result.ok).toBe(true);
+    const [prCall] = calls(fetch, "/repos/itkadr-git/myrmidon-deploy/pulls/63");
+    expect((prCall![1] as RequestInit).headers).toMatchObject({ authorization: `Bearer ${PAT_TOKEN}` });
+  });
+
+  it("prefers an App over a matching PAT", async () => {
+    settingsMock.read.mockResolvedValue(settings([appEntry("a", [PRIVATE_REPO])], true, [patEntry("p", [PRIVATE_REPO])]));
+    const fetch = githubFetch();
+    await prResolver(fetch).resolve({ companyId: COMPANY, object: prObject() });
+    expect(calls(fetch, "/app/installations/77/access_tokens")).toHaveLength(1);
+    expect(secretMocks.resolveSecretValue).toHaveBeenCalledWith(COMPANY, "key-secret-a", "latest", expect.anything());
+  });
   it.each([
     ["no App allows the repository", settings([appEntry("a", ["itkadr-git/other"])])],
     ["the shared identity is disabled", settings([appEntry("a", [PRIVATE_REPO])], false)],
@@ -178,6 +203,22 @@ describe("GitHub external object resolver: shared-identity App token", () => {
     expect(result).toEqual({ ok: true, snapshot: expect.objectContaining({ statusKey: "not_found" }) });
   });
 
+  it("uses a repository-scoped PAT when no App allows the repository", async () => {
+    settingsMock.read.mockResolvedValue({
+      enabled: true,
+      apps: [],
+      pats: [{ id: "pat-a", name: "Well", tokenSecretId: "pat-secret-a", agentIds: [], allowedRepos: [PRIVATE_REPO] }],
+      commitEmailDomain: null,
+    });
+    const db = fakeDb([{ id: "pat-secret-a" }]);
+    secretMocks.resolveSecretValue.mockResolvedValue(PAT_TOKEN);
+    const fetch = githubFetch();
+    const resolver = createGitHubExternalObjectProvider(db, { fetch }).resolvers.find((entry) => entry.objectType === "pull_request")!;
+    const result = await resolver.resolve({ companyId: COMPANY, object: prObject() });
+    expect(result.ok).toBe(true);
+    const [prCall] = calls(fetch, "/repos/itkadr-git/myrmidon-deploy/pulls/63");
+    expect((prCall![1] as RequestInit).headers).toMatchObject({ authorization: `Bearer ${PAT_TOKEN}` });
+  });
   it("fails closed when two Apps allow the repository: no token minted, no request sent", async () => {
     settingsMock.read.mockResolvedValue(settings([appEntry("a", [PRIVATE_REPO]), appEntry("b", ["itkadr-git/*"])]));
     const fetch = githubFetch();

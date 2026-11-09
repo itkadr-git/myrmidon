@@ -53,6 +53,23 @@ services:
       EGRESS_PROXY_POLICY_URL: http://board.example.com:3100/api/myrmidon/bot-egress/policy
       EGRESS_PROXY_POLICY_TOKEN: <shared token>
       EGRESS_PROXY_POLICY_REFRESH_SEC: "30"
+      # Optional. Close a CONNECT tunnel that carried no byte in either direction for this many
+      # seconds (1 to 86400, decimals allowed; the close comes a little after, never before). Each
+      # open tunnel holds two threads, and browsers keep idle HTTPS connections for minutes, so a
+      # proxy near `pids_limit` wants this. A long download is not idle. Unset or 0: tunnels stay
+      # open until one side closes them.
+      # EGRESS_PROXY_TUNNEL_IDLE_SEC: "90"
+      # Optional. Maximum concurrent CONNECT tunnels per proxy-user (bot key). When the cap is
+      # reached, new CONNECT requests from that client get 429 and a journal line with
+      # `result: "error:tunnel_cap"`. 0 (default) = unlimited. Each open tunnel holds two threads,
+      # so a browser inside a bot container can exhaust the proxy; the cap turns that into a clear
+      # error instead of a stuck flow.
+      # EGRESS_PROXY_MAX_TUNNELS_PER_CLIENT: "64"
+      # Optional. Comma-separated `host:port` list of destinations that may always open a tunnel
+      # even when the per-client cap is reached. Reserved tunnels still count toward the cap, so
+      # the destination is guaranteed a slot. Use this for api.telegram.org:443 so the bot's
+      # sendChatAction ("typing…") keeps working when the browser holds every proxy slot.
+      # EGRESS_PROXY_TUNNEL_RESERVE_DESTINATIONS: "api.telegram.org:443"
     volumes:
       - ./config:/config:ro
     tmpfs: ["/tmp:size=16m"]

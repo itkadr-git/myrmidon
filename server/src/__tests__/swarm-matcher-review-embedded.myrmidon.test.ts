@@ -27,6 +27,8 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
+  projectMemberships,
+  projects,
 } from "@myrmidon/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@myrmidon/shared";
@@ -37,6 +39,7 @@ import {
 import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 import { matchFreedAgent } from "../myrmidon/swarm-claim/index.js";
 import { matchAgent, matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
+import { tryDevReviewContinuationOnRelease } from "../myrmidon/review-continuation.js";
 import { createSwarmClaimSweeper, type SwarmClaimSweeperDeps } from "../myrmidon/swarm-claim/sweep.js";
 import type { HostCpuGate, HostMemoryGate } from "../myrmidon/run-admission.js";
 
@@ -92,6 +95,8 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
     await db.delete(issues);
+    await db.delete(projectMemberships);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(agentCastes);
     await db.delete(companies);
@@ -99,6 +104,165 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("dev handoff scopes both own and unassigned queues before the SQL limit", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev-a", leadAgentId: agentId });
+    const outside = await seedTask(companyId, "OUTSIDE", agentId);
+    const inside = await seedTask(companyId, "INSIDE", agentId);
+    await db.update(issues).set({ projectId }).where(eq(issues.id, inside));
+    const result = await matchFreedAgent(freedPorts(), agentId, { projectId });
+    expect(result.pair?.issueId).toBe(inside);
+    expect(await assigneeOf(outside)).toBe(agentId);
+  });
+
+  it("dev handoff never claims projectless work when its project queue is empty", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const outside = await seedTask(companyId);
+    const result = await matchFreedAgent(freedPorts(), agentId, { projectId: randomUUID() });
+    expect(result.pair).toBeNull();
+    expect(await assigneeOf(outside)).toBeNull();
+  });
+
+  it("dev handoff claims unassigned work only from its project", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev-a", leadAgentId: agentId });
+    const outside = await seedTask(companyId, "OUTSIDE");
+    const inside = await seedTask(companyId, "INSIDE");
+    await db.update(issues).set({ projectId }).where(eq(issues.id, inside));
+    const result = await matchFreedAgent(freedPorts(), agentId, { projectId });
+    expect(result.pair?.issueId).toBe(inside);
+    expect(await assigneeOf(inside)).toBe(agentId);
+    expect(await assigneeOf(outside)).toBeNull();
+  });
+
+  it("dev review release continuation picks up next ready task from same dev project when engineer releases task in review", async () => {
+    const companyId = await seedCompany();
+    const engineerId = await seedAgent(companyId, "eng");
+    const reviewerId = await seedAgent(companyId, "rev");
+    const leadId = await seedAgent(companyId, "lead");
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev", leadAgentId: leadId });
+    await db.insert(projectMemberships).values({
+      companyId,
+      projectId,
+      userId: engineerId,
+      state: "joined",
+    });
+
+    const submittedId = randomUUID();
+    await db.insert(issues).values({
+      id: submittedId,
+      companyId,
+      identifier: "DEV-SUBMITTED",
+      title: "submitted task",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerId,
+      projectId,
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: engineerId, userId: null },
+      },
+    });
+
+    const nextTaskId = randomUUID();
+    await db.insert(issues).values({
+      id: nextTaskId,
+      companyId,
+      identifier: "DEV-NEXT",
+      title: "next task",
+      status: "todo",
+      priority: "medium",
+      projectId,
+    });
+
+    const wakeups: Array<{ agentId: string; options: any }> = [];
+    const handled = await tryDevReviewContinuationOnRelease({
+      db,
+      releasedRun: {
+        id: randomUUID(),
+        agentId: engineerId,
+        companyId,
+        contextSnapshot: { issueId: submittedId },
+      },
+      currentRunId: randomUUID(),
+      match: (agentId, scope) => matchFreedAgent(freedPorts(), agentId, scope),
+      enqueueWakeup: async (agentId, options) => {
+        wakeups.push({ agentId, options });
+      },
+      enabledProjects: new Set([projectId]),
+    });
+
+    expect(handled).toBe(true);
+    expect(await assigneeOf(nextTaskId)).toBe(engineerId);
+    expect(wakeups).toHaveLength(0);
+  });
+
+  it("dev review release continuation signals project lead when no eligible task remains in dev project", async () => {
+    const companyId = await seedCompany();
+    const engineerId = await seedAgent(companyId, "eng");
+    const reviewerId = await seedAgent(companyId, "rev");
+    const leadId = await seedAgent(companyId, "lead");
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev", leadAgentId: leadId });
+    await db.insert(projectMemberships).values({
+      companyId,
+      projectId,
+      userId: engineerId,
+      state: "joined",
+    });
+
+    const submittedId = randomUUID();
+    await db.insert(issues).values({
+      id: submittedId,
+      companyId,
+      identifier: "DEV-SUBMITTED-EMPTY",
+      title: "submitted task without next",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerId,
+      projectId,
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: engineerId, userId: null },
+      },
+    });
+
+    const wakeups: Array<{ agentId: string; options: any }> = [];
+    const handled = await tryDevReviewContinuationOnRelease({
+      db,
+      releasedRun: {
+        id: randomUUID(),
+        agentId: engineerId,
+        companyId,
+        contextSnapshot: { issueId: submittedId },
+      },
+      currentRunId: randomUUID(),
+      match: (agentId, scope) => matchFreedAgent(freedPorts(), agentId, scope),
+      enqueueWakeup: async (agentId, options) => {
+        wakeups.push({ agentId, options });
+      },
+      enabledProjects: new Set([projectId]),
+    });
+
+    expect(handled).toBe(true);
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0].agentId).toBe(leadId);
+    expect(wakeups[0].options.reason).toBe("dev_project_queue_empty");
+    expect(wakeups[0].options.payload).toEqual({
+      issueId: submittedId,
+      projectId,
+      engineerId,
+    });
   });
 
   async function seedCompany() {
@@ -464,7 +628,6 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
   // -------------------------------------------------------------------------
   // Item 6: the caste directory and the host gate on the live pass.
   // -------------------------------------------------------------------------
-  describe("the caste directory and the host gate reach the live pass", () => {
     function freedPorts(overrides: { hostGateOpen?: () => boolean } = {}) {
       return {
         db,
@@ -480,6 +643,8 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         hostGateOpen: overrides.hostGateOpen ?? (() => true),
       } as unknown as Parameters<typeof matchFreedAgent>[0];
     }
+
+  describe("the caste directory and the host gate reach the live pass", () => {
 
     it("does not hand a task to an agent whose caste is switched off (swarmEligible: false)", async () => {
       const companyId = await seedCompany();

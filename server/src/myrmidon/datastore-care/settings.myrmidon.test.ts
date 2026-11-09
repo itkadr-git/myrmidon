@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DATASTORE_CARE_BACKUP_DIR_ENV,
+  DATASTORE_CARE_BACKUP_EXTERNAL_ENV,
   DATASTORE_CARE_ENABLED_ENV,
   DATASTORE_CARE_INTERVAL_SEC_ENV,
   DATASTORE_CARE_OPTIONAL_METRICS_ENV,
@@ -36,12 +37,14 @@ describe("myrmidon(DBC-4) datastore-care settings", () => {
     expect(settings.topQueries).toBe(DEFAULT_TOP_QUERIES);
     expect(settings.topQueries).toBe(25);
     expect(settings.optionalMetrics).toBe(true);
+    expect(settings.externalBackupLabel).toBeNull();
     expect(settings.sources).toEqual({
       enabled: "default",
       intervalSec: "default",
       retentionDays: "default",
       topQueries: "default",
       backupDir: "default",
+      backupExternal: "default",
       optionalMetrics: "default",
     });
     expect(settings.warnings).toEqual([]);
@@ -55,6 +58,7 @@ describe("myrmidon(DBC-4) datastore-care settings", () => {
       [DATASTORE_CARE_RETENTION_DAYS_ENV]: "30",
       [DATASTORE_CARE_TOP_QUERIES_ENV]: "5",
       [DATASTORE_CARE_BACKUP_DIR_ENV]: "/srv/backups/board",
+      [DATASTORE_CARE_BACKUP_EXTERNAL_ENV]: "vm-pbs",
       [DATASTORE_CARE_OPTIONAL_METRICS_ENV]: "off",
     } as NodeJS.ProcessEnv);
     expect(settings.enabled).toBe(false);
@@ -62,9 +66,19 @@ describe("myrmidon(DBC-4) datastore-care settings", () => {
     expect(settings.retentionDays).toBe(30);
     expect(settings.topQueries).toBe(5);
     expect(settings.backupDir).toBe("/srv/backups/board");
+    expect(settings.externalBackupLabel).toBe("vm-pbs");
     expect(settings.optionalMetrics).toBe(false);
     expect(settings.sources.intervalSec).toBe("env");
     expect(settings.sources.backupDir).toBe("env");
+    expect(settings.sources.backupExternal).toBe("env");
+  });
+
+  it("treats a blank external-coverage label as no coverage, not as an empty name", () => {
+    const settings = readDatastoreCareSettings({
+      [DATASTORE_CARE_BACKUP_EXTERNAL_ENV]: "   ",
+    } as NodeJS.ProcessEnv);
+    expect(settings.externalBackupLabel).toBeNull();
+    expect(settings.sources.backupExternal).toBe("default");
   });
 
   it("keeps the module enabled when the flag is a typo, and says so", () => {

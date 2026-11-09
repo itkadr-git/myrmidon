@@ -2,6 +2,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
@@ -91,7 +92,9 @@ describe("InstanceGeneralSettings sign-out", () => {
     flushSync(() => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceGeneralSettings />
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -216,6 +219,13 @@ describe("InstanceGeneralSettings sign-out", () => {
     resolveSettings?.();
     await vi.waitFor(() => expect(signOutButton()?.disabled).toBe(false));
   });
+
+  it("renders the link to secret references in the secrets area", async () => {
+    await renderPage(SELF_HOSTED_HEALTH);
+    const link = container.querySelector<HTMLAnchorElement>('[data-testid="system-secrets-link"]');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("/company/settings/secrets");
+  });
 });
 
 describe("InstanceGeneralSettings operator-hidden sections", () => {
@@ -250,7 +260,9 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     flushSync(() => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceGeneralSettings />
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -344,7 +356,9 @@ describe("InstanceGeneralSettings backup retention keep-last-only", () => {
     flushSync(() => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceGeneralSettings />
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -407,5 +421,81 @@ describe("InstanceGeneralSettings backup retention keep-last-only", () => {
       },
       expect.anything(),
     );
+  });
+});
+
+describe("InstanceGeneralSettings execution policy", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      executionMode: "kubernetes",
+    });
+    mockHealthApi.get.mockResolvedValue(SELF_HOSTED_HEALTH);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderPage() {
+    queryClient.setQueryData(queryKeys.health, SELF_HOSTED_HEALTH);
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Deployment and auth"));
+  }
+
+  it("renders read-only execution policy badge from general settings", async () => {
+    await renderPage();
+
+    const badge = container.querySelector('[data-testid="execution-mode-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent?.trim()).toBe("kubernetes");
+    expect(container.textContent).toContain("Execution policy");
+    expect(container.textContent).toContain("forces all agent execution into the managed Kubernetes sandbox");
+  });
+
+  it("hides execution policy when hiddenSettings includes instance.general.executionMode", async () => {
+    const healthWithHidden = {
+      ...SELF_HOSTED_HEALTH,
+      hiddenSettings: ["instance.general.executionMode"],
+    };
+    mockHealthApi.get.mockResolvedValue(healthWithHidden);
+    queryClient.setQueryData(queryKeys.health, healthWithHidden);
+
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Deployment and auth"));
+
+    expect(container.querySelector('[data-testid="execution-mode-badge"]')).toBeNull();
   });
 });

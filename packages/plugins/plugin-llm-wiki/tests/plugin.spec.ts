@@ -539,6 +539,7 @@ function existingProject(): Project {
     pauseReason: null,
     pausedAt: null,
     executionWorkspacePolicy: null,
+    developmentProcess: null,
     codebase: {
       workspaceId: null,
       repoUrl: null,
@@ -577,6 +578,7 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
+    responsibleAgentId: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,

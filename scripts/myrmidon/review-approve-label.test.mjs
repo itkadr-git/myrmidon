@@ -11,15 +11,23 @@ import {
   createGitHubPort,
   createMemoryStateStore,
   decideApproveLabel,
+  detectMigrationViolation,
   latestVerdicts,
   main,
   parseVerdictLines,
   runOnce,
+  selectCiResultConclusion,
 } from "./review-approve-label.mjs";
 
 const REPO = "owner/name";
 const HEAD = "bd4b5f8924df56595fde8268885f8f912ff6b262";
 const MAIN_HEAD = "1111222233334444555566667777888899990000";
+const MAIN_MIGRATIONS = [
+  "packages/db/src/migrations/0432_clean_raider.sql",
+  "packages/db/src/migrations/0433_legacy_blocked_import.sql",
+  "packages/db/src/migrations/meta/0432_snapshot.json",
+  "packages/db/src/migrations/meta/0433_snapshot.json",
+];
 const comment = (body, at, authorName = "adm-dev-review", id = "c1") => ({ id, issueId: "i1", createdAt: at, authorName, body });
 
 describe("parseVerdictLines", () => {
@@ -95,8 +103,110 @@ describe("decideApproveLabel", () => {
     assert.equal(decision.holdMerge, true);
   });
 
-  it("labels approved PR and allows auto-merge when main CI is in_progress after green", () => {
-    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "in_progress", autoMerge: true });
+  // OPE-10520: main CI that has not completed green right now holds auto-merge,
+  // even if the last completed run was green (incident #1923 merged into a main
+  // whose fresh run was red). The label is still applied so CI keeps running.
+  it("holds auto-merge when main CI is in_progress, even after green (OPE-10520)", () => {
+    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "in_progress", mainGreen: false, autoMerge: true });
+    assert.equal(decision.action, "label");
+    assert.equal(decision.autoMerge, false);
+    assert.equal(decision.holdMerge, true);
+  });
+
+  it("refuses to merge a PR whose base is behind main (OPE-10520)", () => {
+    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "success", baseBehind: true, autoMerge: true });
+    assert.equal(decision.action, "hold");
+    assert.equal(decision.reason, "base-behind");
+    assert.notEqual(decision.autoMerge, true);
+  });
+
+  it("disables an armed auto-merge when the PR base falls behind main (OPE-10520)", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, labels: [APPROVED_LABEL], autoMerge: true },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      baseBehind: true,
+      autoMerge: true,
+    });
+    assert.equal(decision.action, "hold");
+    assert.equal(decision.reason, "base-behind");
+    assert.equal(decision.disableAutoMerge, true);
+  });
+
+  it("refuses PRs that rewrite an existing migration or add a stale snapshot number (OPE-10520)", () => {
+    const overwrite = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, labels: [APPROVED_LABEL], autoMerge: true },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      migrationViolation: { reason: "migration-overwrite", path: "packages/db/src/migrations/0433_legacy_blocked_import.sql" },
+      autoMerge: true,
+    });
+    assert.equal(overwrite.action, "refuse");
+    assert.equal(overwrite.reason, "migration-overwrite");
+    assert.equal(overwrite.disableAutoMerge, true);
+    assert.equal(overwrite.removeLabel, true);
+
+    const stale = decideApproveLabel({
+      verdict: approve,
+      pr: open,
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      migrationViolation: { reason: "migration-stale-number", path: "packages/db/src/migrations/meta/0430_snapshot.json" },
+      autoMerge: true,
+    });
+    assert.equal(stale.action, "refuse");
+    assert.equal(stale.reason, "migration-stale-number");
+  });
+
+  // OPE-10815: stacked PR base check
+  it("holds auto-merge and retargets base when stacked PR base is merged (OPE-10815)", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, baseRef: "bot/OPE-9262", defaultBranch: "main", autoMerge: true },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      basePr: { number: 1959, state: "closed", merged: true },
+      autoMerge: true,
+    });
+    assert.equal(decision.action, "hold");
+    assert.equal(decision.reason, "base-retargeted-waiting-ci");
+    assert.equal(decision.retargetBase, "main");
+    assert.equal(decision.disableAutoMerge, true);
+  });
+
+  it("refuses stacked PR when retargeting to main fails (OPE-10815)", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, labels: [APPROVED_LABEL], baseRef: "bot/OPE-9262", defaultBranch: "main", autoMerge: true },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      basePr: { number: 1959, state: "closed", merged: true },
+      cannotRetarget: true,
+      autoMerge: true,
+    });
+    assert.equal(decision.action, "refuse");
+    assert.equal(decision.reason, "cannot-retarget-base-to-main");
+    assert.equal(decision.disableAutoMerge, true);
+    assert.equal(decision.removeLabel, true);
+  });
+
+  it("allows normal labeling when base is rel/* branch (OPE-10815)", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, baseRef: "rel/1.6.6", defaultBranch: "main" },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      mainGreen: true,
+      autoMerge: true,
+    });
     assert.equal(decision.action, "label");
     assert.equal(decision.autoMerge, true);
   });
@@ -199,17 +309,77 @@ describe("decideApproveLabel", () => {
   });
 });
 
-function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD, lastCompletedMain = null } = {}) {
+describe("detectMigrationViolation", () => {
+  it("flags a PR that rewrites an existing migration .sql on main", () => {
+    const v = detectMigrationViolation(
+      ["server/src/x.ts", "packages/db/src/migrations/0433_legacy_blocked_import.sql"],
+      MAIN_MIGRATIONS,
+    );
+    assert.deepEqual(v, { reason: "migration-overwrite", path: "packages/db/src/migrations/0433_legacy_blocked_import.sql" });
+  });
+
+  it("flags a PR that rewrites an existing snapshot on main", () => {
+    const v = detectMigrationViolation(["packages/db/src/migrations/meta/0433_snapshot.json"], MAIN_MIGRATIONS);
+    assert.equal(v.reason, "migration-overwrite");
+  });
+
+  it("flags a new snapshot numbered below the newest on main (chain break)", () => {
+    const v = detectMigrationViolation(["packages/db/src/migrations/meta/0430_snapshot.json"], MAIN_MIGRATIONS);
+    assert.deepEqual(v, { reason: "migration-stale-number", path: "packages/db/src/migrations/meta/0430_snapshot.json" });
+  });
+
+  it("allows new migrations above the newest on main and unrelated files", () => {
+    assert.equal(
+      detectMigrationViolation(
+        ["packages/db/src/migrations/0434_new_one.sql", "packages/db/src/migrations/meta/0434_snapshot.json", "server/src/x.ts"],
+        MAIN_MIGRATIONS,
+      ),
+      null,
+    );
+  });
+
+  it("ignores files outside the migrations tree even with 4-digit prefixes", () => {
+    assert.equal(detectMigrationViolation(["packages/db/src/migrations/README.md", "doc/0433_notes.md"], MAIN_MIGRATIONS), null);
+  });
+});
+
+function fakeGitHub(prs, { mainCi = 'success', mainHeadSha = MAIN_HEAD, lastCompletedMain = null, basePrs = {} } = {}) {
   const labeled = [];
   const autoMerged = [];
+  const autoMergeCalls = [];
   const autoDisabled = [];
+  const removedLabels = [];
+  const updatedBranches = [];
+  const retargetedBases = [];
   return {
     labeled,
     autoMerged,
+    autoMergeCalls,
     autoDisabled,
+    removedLabels,
+    updatedBranches,
+    retargetedBases,
     async pullRequest(n) {
-      if (!prs[n]) throw new Error("404");
+      if (!prs[n]) throw new Error('404');
       return prs[n].pr;
+    },
+    async pullRequestFiles(n) {
+      return prs[n]?.files ?? [];
+    },
+    async mainMigrationFiles() {
+      return MAIN_MIGRATIONS;
+    },
+    async updatePullRequestBase(n, base) {
+      retargetedBases.push({ prNumber: n, base });
+    },
+    async findPullRequestByHead(head) {
+      return basePrs[head] ?? null;
+    },
+    async updateBranch(n) {
+      updatedBranches.push(n);
+    },
+    async removeLabel(n) {
+      removedLabels.push(n);
     },
     async headCommittedAt() {
       return new Date("2026-10-08T05:00:00Z");
@@ -235,8 +405,9 @@ function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD, lastComp
     async addLabel(n) {
       labeled.push(n);
     },
-    async enableAutoMerge(n) {
+    async enableAutoMerge(n, headSha) {
       autoMerged.push(n);
+      autoMergeCalls.push({ number: n, headSha: headSha ?? null });
     },
     async disableAutoMerge(n) {
       autoDisabled.push(n);
@@ -245,7 +416,7 @@ function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD, lastComp
 }
 
 describe("runOnce with green main protection and auto-merge", () => {
-  const open = (headSha, labels = [], autoMerge = false) => ({ state: "open", draft: false, merged: false, headSha, labels, autoMerge });
+  const open = (headSha, labels = [], autoMerge = false, baseSha = MAIN_HEAD) => ({ state: "open", draft: false, merged: false, headSha, baseSha, labels, autoMerge });
   const comments = [
     comment(`VERDICT #1: APPROVE (head ${HEAD})`, "2026-10-08T07:00:00Z", "adm-dev-review", "a"),
     comment("VERDICT #2: APPROVE", "2026-10-08T07:00:00Z", "adm-dev-review", "b"),
@@ -300,8 +471,10 @@ describe("runOnce with green main protection and auto-merge", () => {
     assert.equal(saved.mainStatus, "failure");
   });
 
-  // Acceptance Case: main in_progress после зелёного → метка ставится, автовливание не останавливается, пауза не растёт
-  it("acceptance: main in_progress after green -> labels PR, does not hold auto-merge, pause does not grow", async () => {
+  // OPE-10520: main CI that has not completed green right now holds auto-merge —
+  // even if the last completed run was green (incident #1923). The label is
+  // still applied so CI pipelines keep running; the pause counter does not grow.
+  it("acceptance: main in_progress after green -> labels PR, holds auto-merge, pause does not grow", async () => {
     const store = createMemoryStateStore({
       consecutiveFailures: 0,
       backoffUntil: null,
@@ -320,14 +493,15 @@ describe("runOnce with green main protection and auto-merge", () => {
       autoMerge: true,
     });
 
-    assert.equal(paused, false);
+    assert.equal(paused, true);
     assert.equal(consecutiveFailures, 0);
     assert.equal(backoffUntil, null);
     assert.deepEqual(github.labeled, [1], "PR should be labeled");
-    assert.deepEqual(github.autoMerged, [1], "Auto-merge should be enabled");
+    assert.deepEqual(github.autoMerged, [], "Auto-merge must be held while the newest main CI run is not completed success");
     const r1 = results.find((r) => r.prNumber === 1);
     assert.equal(r1.action, "label");
-    assert.equal(r1.autoMerge, true);
+    assert.equal(r1.autoMerge, false);
+    assert.equal(r1.holdMerge, true);
   });
 
   // Acceptance Case: main in_progress после красного → автовливание стоит (метка ставится, пауза не растёт)
@@ -441,6 +615,45 @@ describe("runOnce with green main protection and auto-merge", () => {
     assert.equal(r1.reason, "already-labeled");
   });
 
+  // OPE-12186: the arm command must be pinned to the approved head. (а) A verdict
+  // naming head A while the PR head is already B is the existing п.4 gate — no
+  // label, no auto-merge. (б) When the verdict head and the PR head are both A,
+  // the arm call carries that head so GitHub can only merge exactly it.
+  it("does not label or arm auto-merge when the head moved after the verdict (race)", async () => {
+    const moved = "c".repeat(40);
+    const github = fakeGitHub({
+      1: { pr: open(moved), ci: "success" },
+    }, { mainCi: "success" });
+    const { results, failed } = await runOnce({
+      comments: [comment(`VERDICT #1: APPROVE (head ${HEAD})`, "2026-10-08T07:00:00Z", "adm-dev-review", "r1")],
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+    assert.equal(failed, 0);
+    assert.equal(results[0].action, "needs-rereview");
+    assert.deepEqual(github.labeled, [], "a moved head must not be labeled");
+    assert.deepEqual(github.autoMerged, [], "a moved head must not arm auto-merge");
+    assert.deepEqual(github.autoMergeCalls, []);
+  });
+
+  it("arms auto-merge pinned to the approved head (--match-head-commit <head>)", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD), ci: "success" },
+    }, { mainCi: "success" });
+    const { results, failed } = await runOnce({
+      comments: [comment(`VERDICT #1: APPROVE (head ${HEAD})`, "2026-10-08T07:00:00Z", "adm-dev-review", "r2")],
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+    assert.equal(failed, 0);
+    assert.equal(results[0].action, "label");
+    assert.equal(results[0].autoMerge, true);
+    assert.deepEqual(github.autoMerged, [1]);
+    assert.deepEqual(github.autoMergeCalls, [{ number: 1, headSha: HEAD }], "the arm call must carry the approved head sha");
+  });
+
   it("skips auto-merge during active backoff window while still labeling PRs", async () => {
     const future = new Date("2026-10-30T10:05:00Z").toISOString();
     const store = createMemoryStateStore({
@@ -526,6 +739,151 @@ describe("runOnce with green main protection and auto-merge", () => {
     assert.equal(paused, true, "auto-merge should be paused when main CI is missing and last completed was failure");
     assert.deepEqual(github.autoMerged, []);
   });
+
+  // OPE-10520 acceptance: PR whose base lags main never merges; update-branch is requested instead.
+  const singleApproveComments = [comment(`VERDICT #1: APPROVE (head ${HEAD})`, "2026-10-08T07:00:00Z", "adm-dev-review", "a")];
+  it("acceptance: stale base -> holds auto-merge and asks GitHub to update-branch", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD, [], false, "9999888877776666555544443333222211110000"), ci: "success" },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.equal(failed, 0);
+    assert.deepEqual(github.autoMerged, [], "stale-base PR must never auto-merge");
+    assert.deepEqual(github.updatedBranches, [1], "update-branch should be requested");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "hold");
+    assert.equal(r1.reason, "base-behind");
+  });
+
+  // OPE-10520 acceptance: armed auto-merge is disarmed when the base falls behind.
+  it("acceptance: armed auto-merge is disabled when the base falls behind main", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD, [APPROVED_LABEL], true, "9999888877776666555544443333222211110000"), ci: "success" },
+    }, { mainCi: "success" });
+
+    const { results } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.deepEqual(github.autoDisabled, [1]);
+    assert.deepEqual(github.autoMerged, []);
+    assert.deepEqual(github.updatedBranches, [1]);
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "hold");
+    assert.equal(r1.reason, "base-behind");
+    assert.equal(r1.disableAutoMerge, true);
+  });
+
+  // OPE-10520 acceptance: PR rewriting an already-applied migration is refused.
+  it("acceptance: PR that rewrites an existing migration is refused and disarmed", async () => {
+    const github = fakeGitHub({
+      1: {
+        pr: open(HEAD, [APPROVED_LABEL], true),
+        ci: "success",
+        files: ["server/src/x.ts", "packages/db/src/migrations/0433_legacy_blocked_import.sql"],
+      },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.equal(failed, 0);
+    assert.deepEqual(github.autoMerged, []);
+    assert.deepEqual(github.autoDisabled, [1]);
+    assert.deepEqual(github.removedLabels, [1], "the review-approved label must be stripped on refusal");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "refuse");
+    assert.equal(r1.reason, "migration-overwrite");
+  });
+
+  // OPE-10520 acceptance: PR adding a snapshot below the newest on main is refused.
+  it("acceptance: PR adding a snapshot numbered below the newest on main is refused", async () => {
+    const github = fakeGitHub({
+      1: {
+        pr: open(HEAD),
+        ci: "success",
+        files: ["packages/db/src/migrations/meta/0430_snapshot.json"],
+      },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.equal(failed, 0);
+    assert.deepEqual(github.autoMerged, []);
+    assert.deepEqual(github.labeled, [], "a violating PR must not be labeled");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "refuse");
+    assert.equal(r1.reason, "migration-stale-number");
+  });
+
+  // OPE-10520 acceptance: migration guard listing failure holds auto-merge (fail closed).
+  it("acceptance: migration guard listing failure holds auto-merge", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD), ci: "success" },
+    }, { mainCi: "success" });
+    github.mainMigrationFiles = async () => [];
+
+    const { results } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.deepEqual(github.autoMerged, [], "merge must be held when the migration listing is unavailable");
+    assert.deepEqual(github.labeled, [1], "labeling still works so CI keeps running");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "label");
+    assert.equal(r1.autoMerge, false);
+  });
+
+  // OPE-10815 acceptance: stacked PR with merged base PR is retargeted to main and auto-merge is held
+  it("acceptance: stacked PR with merged base PR is retargeted to main and holds auto-merge", async () => {
+    const github = fakeGitHub({
+      1: {
+        pr: { ...open(HEAD), baseRef: "bot/OPE-9262", defaultBranch: "main" },
+        ci: "success",
+      },
+    }, {
+      mainCi: "success",
+      basePrs: {
+        "bot/OPE-9262": { number: 1959, state: "closed", merged: true },
+      },
+    });
+
+    const { results } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.deepEqual(github.retargetedBases, [{ prNumber: 1, base: "main" }]);
+    assert.deepEqual(github.autoMerged, []);
+    assert.deepEqual(github.labeled, []);
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "hold");
+    assert.equal(r1.reason, "base-retargeted-waiting-ci");
+  });
 });
 
 describe("createFileStateStore", () => {
@@ -584,10 +942,246 @@ describe("createGitHubPort", () => {
         return "";
       },
     });
-    await port.enableAutoMerge(42);
-    assert.deepEqual(prCalls[0], ["merge", "42", "-R", REPO, "--auto", "--squash"]);
+    await port.enableAutoMerge(42, HEAD);
+    assert.deepEqual(prCalls[0], ["merge", "42", "-R", REPO, "--auto", "--squash", "--match-head-commit", HEAD]);
     await port.disableAutoMerge(42);
     assert.deepEqual(prCalls[1], ["merge", "42", "-R", REPO, "--disable-auto"]);
+  });
+
+  it("refuses to arm auto-merge without a head sha (fail closed, OPE-12186)", async () => {
+    const prCalls = [];
+    const port = createGitHubPort(REPO, {
+      runPr: async (args) => {
+        prCalls.push(args);
+        return "";
+      },
+    });
+    await assert.rejects(port.enableAutoMerge(42), /head sha is required/);
+    assert.deepEqual(prCalls, [], "no gh pr merge command may run without --match-head-commit");
+  });
+});
+
+// OPE-10461: the workflow skips `CI result` on label events, so after the
+// `review-approved` label (or any other) the newest `CI result` run of a head is a
+// `skipped` one. It is not a verdict; the real result of the head is the run before.
+describe("selectCiResultConclusion", () => {
+  const ci = (id, startedAt, status, conclusion = null, name = "CI result") => ({
+    id,
+    name,
+    status,
+    conclusion,
+    started_at: startedAt,
+  });
+  const T1 = "2026-11-06T10:00:00Z";
+  const T2 = "2026-11-06T10:30:00Z";
+  const T3 = "2026-11-06T11:00:00Z";
+
+  it("a skipped run newer than a success gives success", () => {
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "completed", "skipped")]), "success");
+    // whatever order GitHub lists them in
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", "skipped"), ci(1, T1, "completed", "success")]), "success");
+  });
+
+  it("a skipped run newer than a failure gives failure", () => {
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "failure"), ci(2, T2, "completed", "skipped")]), "failure");
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", "skipped"), ci(1, T1, "completed", "failure")]), "failure");
+  });
+
+  it("several skipped runs on top of the real one are all passed over", () => {
+    const runs = [ci(1, T1, "completed", "success"), ci(2, T2, "completed", "skipped"), ci(3, T3, "completed", "skipped")];
+    assert.equal(selectCiResultConclusion(runs), "success");
+  });
+
+  it("a head with only skipped runs has no verdict yet: pending, never success", () => {
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", "skipped")]), "pending");
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", "skipped"), ci(3, T3, "completed", "skipped")]), "pending");
+  });
+
+  it("no CI result run at all stays missing, other checks are not a CI result", () => {
+    assert.equal(selectCiResultConclusion([]), "missing");
+    assert.equal(selectCiResultConclusion(undefined), "missing");
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success", "tests")]), "missing");
+  });
+
+  it("the newest real run decides: a later failure beats an earlier success and the other way round", () => {
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "completed", "failure")]), "failure");
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "failure"), ci(2, T2, "completed", "success")]), "success");
+    assert.equal(
+      selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "completed", "failure"), ci(3, T3, "completed", "skipped")]),
+      "failure",
+    );
+  });
+
+  it("cancelled, timed_out, neutral, action_required are never success", () => {
+    for (const conclusion of ["cancelled", "timed_out", "neutral", "action_required", "stale", "startup_failure"]) {
+      const alone = selectCiResultConclusion([ci(2, T2, "completed", conclusion)]);
+      assert.equal(alone, conclusion);
+      assert.notEqual(alone, "success");
+      // an older success does not rescue a newer real outcome; a skipped run on top changes nothing
+      const withOlderSuccess = selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "completed", conclusion), ci(3, T3, "completed", "skipped")]);
+      assert.equal(withOlderSuccess, conclusion);
+    }
+    // a completed run without any conclusion is not success either
+    assert.equal(selectCiResultConclusion([ci(2, T2, "completed", null)]), "unknown");
+  });
+
+  it("a run still going on top is pending, also behind a skipped one; an older running run does not block a newer verdict", () => {
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "in_progress")]), "in_progress");
+    assert.equal(selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "queued")]), "queued");
+    assert.equal(
+      selectCiResultConclusion([ci(1, T1, "completed", "success"), ci(2, T2, "in_progress"), ci(3, T3, "completed", "skipped")]),
+      "in_progress",
+    );
+    assert.equal(selectCiResultConclusion([ci(1, T1, "in_progress"), ci(2, T2, "completed", "success")]), "success");
+  });
+
+  it("falls back to the run id when two runs start in the same second", () => {
+    const runs = [ci(7, T1, "completed", "success"), ci(9, T1, "completed", "failure")];
+    assert.equal(selectCiResultConclusion(runs), "failure");
+  });
+});
+
+describe("createGitHubPort CI result with skipped label-event runs", () => {
+  /**
+   * A GitHub that behaves like the real check-runs endpoint: the default
+   * `filter=latest` returns the newest run of every check name within a check
+   * suite (a rerun inside one suite hides the attempt before it), `filter=all`
+   * returns every run; `check_name` and paging are honoured.
+   */
+  function fakeCheckRunsApi(runsBySha, calls = []) {
+    return async (args) => {
+      calls.push(args);
+      const path = args[0];
+      const match = /\/commits\/([^/]+)\/check-runs\?(.*)$/.exec(path);
+      if (!match) return {};
+      const query = new URLSearchParams(match[2]);
+      const all = runsBySha[match[1]] ?? [];
+      let runs = query.get("check_name") ? all.filter((r) => r.name === query.get("check_name")) : all;
+      if ((query.get("filter") ?? "latest") === "latest") {
+        const newest = new Map();
+        for (const r of runs) {
+          const key = `${r.name}|${r.check_suite?.id ?? r.id}`;
+          const seen = newest.get(key);
+          if (!seen || String(r.started_at).localeCompare(String(seen.started_at)) > 0) newest.set(key, r);
+        }
+        runs = [...newest.values()];
+      }
+      const perPage = Number(query.get("per_page") ?? 30);
+      const page = Number(query.get("page") ?? 1);
+      return { total_count: runs.length, check_runs: runs.slice((page - 1) * perPage, page * perPage) };
+    };
+  }
+  const run = (id, startedAt, status, conclusion, suite = id) => ({
+    id,
+    name: "CI result",
+    status,
+    conclusion,
+    started_at: startedAt,
+    check_suite: { id: suite },
+  });
+  const T1 = "2026-11-06T10:00:00Z";
+  const T2 = "2026-11-06T10:30:00Z";
+
+  it("reads the real result of the head under a newer skipped label-event run", async () => {
+    const port = createGitHubPort(REPO, {
+      run: fakeCheckRunsApi({ [HEAD]: [run(1, T1, "completed", "success"), run(2, T2, "completed", "skipped")] }),
+    });
+    assert.equal(await port.ciConclusion(HEAD), "success");
+  });
+
+  it("keeps a failure when a skipped run came after it", async () => {
+    const port = createGitHubPort(REPO, {
+      run: fakeCheckRunsApi({ [HEAD]: [run(1, T1, "completed", "failure"), run(2, T2, "completed", "skipped")] }),
+    });
+    assert.equal(await port.ciConclusion(HEAD), "failure");
+  });
+
+  it("a head with only a skipped run is pending", async () => {
+    const port = createGitHubPort(REPO, { run: fakeCheckRunsApi({ [HEAD]: [run(2, T2, "completed", "skipped")] }) });
+    assert.equal(await port.ciConclusion(HEAD), "pending");
+  });
+
+  it("cancelled and timed_out heads are not success", async () => {
+    for (const conclusion of ["cancelled", "timed_out"]) {
+      const port = createGitHubPort(REPO, {
+        run: fakeCheckRunsApi({ [HEAD]: [run(1, T1, "completed", "success"), run(2, T2, "completed", conclusion)] }),
+      });
+      assert.equal(await port.ciConclusion(HEAD), conclusion);
+    }
+  });
+
+  it("asks GitHub for the CI result runs of the head only, all of them, and follows the pages", async () => {
+    const calls = [];
+    // 120 skipped runs on top of the one real success: the success is on page 2 of the listing
+    const runs = [];
+    for (let i = 0; i < 120; i += 1) {
+      runs.push(run(100 + i, `2026-11-06T10:${String(i % 60).padStart(2, "0")}:00Z`, "completed", "skipped"));
+    }
+    runs.push(run(1, "2026-11-06T09:00:00Z", "completed", "success"));
+    const port = createGitHubPort(REPO, { run: fakeCheckRunsApi({ [HEAD]: runs }, calls) });
+    assert.equal(await port.ciConclusion(HEAD), "success");
+    assert.equal(calls.length, 2);
+    for (const [url] of calls) {
+      assert.match(url, /check_name=CI%20result/);
+      assert.match(url, /filter=all/);
+    }
+    assert.match(calls[1][0], /page=2/);
+  });
+
+  it("main with a skipped-only head is not green, the last completed run before it is used", async () => {
+    const OLDER = "9".repeat(40);
+    const port = createGitHubPort(REPO, {
+      run: async (args) => {
+        if (args[0].includes("/commits/main")) return { sha: MAIN_HEAD };
+        if (args[0].includes("commits?sha=")) return [{ sha: MAIN_HEAD }, { sha: OLDER }];
+        return fakeCheckRunsApi({
+          [MAIN_HEAD]: [run(2, T2, "completed", "skipped")],
+          [OLDER]: [run(1, T1, "completed", "success")],
+        })(args);
+      },
+    });
+    const details = await port.mainCiDetails("main");
+    assert.equal(details.status, "pending");
+    assert.equal(details.lastCompleted, "success");
+  });
+
+  it("runOnce labels an approved PR whose real CI result is older than a skipped label-event run", async () => {
+    const posted = [];
+    const checkRuns = fakeCheckRunsApi({
+      [HEAD]: [run(1, T1, "completed", "success"), run(2, T2, "completed", "skipped")],
+      [MAIN_HEAD]: [run(3, T1, "completed", "success")],
+    });
+    const github = createGitHubPort(REPO, {
+      run: async (args) => {
+        const path = args[0];
+        if (args[1] === "-X" || args.includes("-X")) {
+          posted.push(args);
+          return {};
+        }
+        if (path.endsWith("/commits/main")) return { sha: MAIN_HEAD };
+        if (path.includes("/check-runs")) return checkRuns(args);
+        if (path.endsWith("/pulls/2447")) {
+          return {
+            state: "open",
+            draft: false,
+            merged: false,
+            head: { sha: HEAD },
+            base: { sha: MAIN_HEAD, ref: "main", repo: { default_branch: "main" } },
+            labels: [],
+          };
+        }
+        if (path.includes("/pulls/2447/files")) return [{ filename: "scripts/myrmidon/review-approve-label.mjs" }];
+        if (path.includes("/contents/")) return MAIN_MIGRATIONS.map((file) => ({ type: "file", path: file }));
+        throw new Error(`unexpected request ${path}`);
+      },
+    });
+    const { results } = await runOnce({
+      comments: [comment(`VERDICT #2447: APPROVE (head ${HEAD})`, "2026-11-06T09:30:00Z")],
+      repo: REPO,
+      github,
+    });
+    assert.deepEqual(results.map((r) => [r.prNumber, r.action, r.reason]), [[2447, "label", "approved-head-green"]]);
+    assert.deepEqual(posted.at(-1), ["-X", "POST", `repos/${REPO}/issues/2447/labels`, "-f", `labels[]=${APPROVED_LABEL}`]);
   });
 });
 

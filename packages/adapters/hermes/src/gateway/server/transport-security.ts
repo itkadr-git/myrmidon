@@ -45,14 +45,158 @@ export function isRemotePlainHttp(url: URL): boolean {
   return url.protocol === "http:" && !isLoopbackHostname(url.hostname);
 }
 
-// myrmidon(H3): trust is now narrow — plain http is allowed without any
-// card flag only for the fleet's own bot-container host names; the
-// escape-hatch flag remains for unsafe local development against any other
-// remote host and is no longer written into bot cards by the container
-// sync (W2a used to set it because the adapter had no narrower way).
-export function allowsInsecureRemoteHttp(url: URL, config: Record<string, unknown>): boolean {
+export function getFleetHostPlacement(config: Record<string, unknown>): string | null {
+  const container = config.container;
+  if (typeof container !== "object" || container === null || Array.isArray(container)) return null;
+  const host = (container as Record<string, unknown>).host;
+  if (typeof host !== "string") return null;
+  const trimmed = host.trim();
+  if (trimmed.length === 0 || trimmed === "local") return null;
+  return trimmed;
+}
+
+export function isFleetHostPlacement(config: Record<string, unknown>): boolean {
+  return getFleetHostPlacement(config) !== null;
+}
+
+export interface FleetSiteSecurityProfile {
+  privateNetwork?: boolean;
+  tunnel?: boolean;
+  private_network?: boolean;
+}
+
+export interface FleetSiteSecurityTarget {
+  name: string;
+  url: string;
+  status?: string;
+  profile?: FleetSiteSecurityProfile | Record<string, unknown> | null;
+  companyId?: string;
+}
+
+export type FleetSiteSecurityResolver = (
+  siteName: string,
+  companyId?: string,
+) => FleetSiteSecurityTarget | null | undefined;
+
+export interface FleetSiteSecurityOptions {
+  sites?: readonly FleetSiteSecurityTarget[] | null;
+  site?: FleetSiteSecurityTarget | null;
+  resolver?: FleetSiteSecurityResolver | null;
+  companyId?: string;
+}
+
+export function isSitePrivateNetwork(profile?: unknown): boolean {
+  if (!profile || typeof profile !== "object") return false;
+  const p = profile as FleetSiteSecurityProfile;
+  return p.privateNetwork === true || p.tunnel === true || p.private_network === true;
+}
+
+let activeFleetSiteResolver: FleetSiteSecurityResolver | null = null;
+let activeFleetSites: readonly FleetSiteSecurityTarget[] = [];
+
+export function setFleetSiteSecurityResolver(resolver: FleetSiteSecurityResolver | null): void {
+  activeFleetSiteResolver = resolver;
+}
+
+export function setActiveFleetSites(sites: readonly FleetSiteSecurityTarget[]): void {
+  activeFleetSites = sites;
+}
+
+export function resetFleetSiteSecurityForTests(): void {
+  activeFleetSiteResolver = null;
+  activeFleetSites = [];
+}
+
+export function isFleetSitePlainHttpAllowed(
+  url: URL,
+  site: FleetSiteSecurityTarget | null | undefined,
+): boolean {
+  if (!site) return false;
+  if (site.status && site.status !== "active") return false;
+  if (!isSitePrivateNetwork(site.profile)) return false;
+  try {
+    const siteUrl = new URL(site.url);
+    return siteUrl.hostname.toLowerCase() === url.hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+export function resolveFleetSiteTarget(
+  siteName: string,
+  config: Record<string, unknown>,
+  options?: FleetSiteSecurityOptions | readonly FleetSiteSecurityTarget[] | FleetSiteSecurityResolver,
+): FleetSiteSecurityTarget | null {
+  // 1. Check explicit options
+  if (typeof options === "function") {
+    const res = options(siteName);
+    if (res) return res;
+  } else if (Array.isArray(options)) {
+    const list = options as readonly FleetSiteSecurityTarget[];
+    const found = list.find((s: FleetSiteSecurityTarget) => s.name === siteName);
+    if (found) return found;
+  } else if (options && typeof options === "object") {
+    const opts = options as FleetSiteSecurityOptions;
+    if (opts.site && (opts.site.name === siteName || !opts.site.name)) {
+      return opts.site;
+    }
+    if (Array.isArray(opts.sites)) {
+      const found = (opts.sites as readonly FleetSiteSecurityTarget[]).find(
+        (s: FleetSiteSecurityTarget) => s.name === siteName,
+      );
+      if (found) return found;
+    }
+    if (typeof opts.resolver === "function") {
+      const res = opts.resolver(siteName, opts.companyId);
+      if (res) return res;
+    }
+  }
+
+  // 2. Check config object
+  const cfg = config as Record<string, unknown>;
+  if (cfg.fleetSite && typeof cfg.fleetSite === "object") {
+    const target = cfg.fleetSite as FleetSiteSecurityTarget;
+    if (target.name === siteName || !target.name) return target;
+  }
+  if (Array.isArray(cfg.fleetSites)) {
+    const found = (cfg.fleetSites as readonly FleetSiteSecurityTarget[]).find(
+      (s: FleetSiteSecurityTarget) => s.name === siteName,
+    );
+    if (found) return found;
+  }
+
+  // 3. Check activeFleetSites registry
+  const activeFound = activeFleetSites.find((s: FleetSiteSecurityTarget) => s.name === siteName);
+  if (activeFound) return activeFound;
+
+  // 4. Check activeFleetSiteResolver
+  if (typeof activeFleetSiteResolver === "function") {
+    const res = activeFleetSiteResolver(siteName);
+    if (res) return res;
+  }
+
+  return null;
+}
+
+// myrmidon(OPE-10200, defect after #1940 / OPE-7650):
+// Plain HTTP is only trusted if url.hostname matches the active registered
+// fleet site's hostname to which the card is attached (container.host), and
+// the site's profile is marked as private network or secure tunnel.
+export function allowsInsecureRemoteHttp(
+  url: URL,
+  config: Record<string, unknown>,
+  options?: FleetSiteSecurityOptions | readonly FleetSiteSecurityTarget[] | FleetSiteSecurityResolver,
+): boolean {
   if (isBotContainerHostname(url.hostname)) return true;
-  return parseBooleanLike(config[INSECURE_REMOTE_HTTP_ESCAPE_HATCH]) === true;
+  if (parseBooleanLike(config[INSECURE_REMOTE_HTTP_ESCAPE_HATCH]) === true) return true;
+
+  const fleetHost = getFleetHostPlacement(config);
+  if (fleetHost) {
+    const site = resolveFleetSiteTarget(fleetHost, config, options);
+    return isFleetSitePlainHttpAllowed(url, site);
+  }
+
+  return false;
 }
 
 export function remotePlainHttpDeniedMessage(hostname: string): string {

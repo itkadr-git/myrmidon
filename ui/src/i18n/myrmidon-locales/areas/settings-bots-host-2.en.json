@@ -168,6 +168,18 @@
         "loading": "Loading tracing health...",
         "noReason": "no reason given",
         "windowChecked": "window {{window}} · checked {{time}}"
+      },
+      "shared-mount-settings-panel": {
+        "title": "Shared bot mount",
+        "description": "Changes affect new or reconciled bot containers; already running containers retain their mount until recreated. An empty allowlist permits every bot.",
+        "enabled": "Enabled",
+        "hostPath": "Host directory (blank uses volume root/shared)",
+        "writable": "Writable by bots",
+        "allowedBots": "Allowed bot IDs (comma separated; blank allows all)",
+        "confirm": "I confirm this host path and access scope may expose files to bots.",
+        "save": "Save shared mount",
+        "saveFailed": "Save failed",
+        "invalidInput": "Enter a normalized absolute host path and comma-separated bot UUIDs."
       }
     }
   }

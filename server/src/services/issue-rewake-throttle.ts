@@ -39,6 +39,9 @@ export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
 /** How many recent terminal runs to sample when computing the streak. */
 export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
 
+/** Instance override; validated at the admission boundary. */
+export const ISSUE_REWAKE_FREEZE_THRESHOLD = 6;
+
 /**
  * Wake reasons that assert issue state rather than deliver a new event.
  * `issue_assigned` is deliberately excluded: assignment events are an explicit
@@ -52,8 +55,18 @@ export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
  */
 export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_continuation_needed",
+  "issue_state_guard_mismatch",
+  "execution_reconciliation_required",
+  "transient_failure_retry",
+  "task_ticker",
+  "task-ticker",
   "issue_assignment_recovery",
   "issue_graph_liveness_backstop",
+  // myrmidon(OPE-10582 п.2): автоматические пробуждения, которые образуют
+  // холостые петли «агент будится по своей же задаче без прогресса».
+  "swarm_matched",
+  "idle_pickup",
+  "issue_disposition_repair",
 ]);
 
 /**
@@ -99,7 +112,72 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   "issue.thread_interaction_answered",
   "issue.thread_interaction_item_verdicts_submitted",
   "issue.blockers_resolved_wake_emitted",
+  "myrmidon.task_pr_sync.settled",
+  "myrmidon.task_pr_sync.returned",
 ];
+
+/**
+ * One issue activity row, as the throttle's progress read sees it: the columns
+ * it needs and only the two JSON paths it looks at, not the whole `details`.
+ */
+export interface IssueActivitySample {
+  action: string;
+  /** `details -> 'changes'` of an `issue.updated` row: `{ field: { from, to } }`. */
+  changes?: unknown;
+  /** `details ->> 'source'`. */
+  source?: string | null;
+}
+
+const ASSIGNMENT_BOOKKEEPING_FIELDS: ReadonlySet<string> = new Set([
+  "assigneeAgentId",
+  "assigneeUserId",
+  "responsibleUserId",
+]);
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  // A driver may hand a json path back as text; the throttle reads either shape.
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** `issue.updated` that only gave the task back to the agent that holds it (release, then assign to itself). */
+function isSelfReassignment(row: IssueActivitySample, agentId: string): boolean {
+  if (row.action !== "issue.updated") return false;
+  const changes = readRecord(row.changes);
+  if (!changes) return false;
+  const fields = Object.keys(changes);
+  if (fields.length === 0 || !fields.every((field) => ASSIGNMENT_BOOKKEEPING_FIELDS.has(field))) {
+    return false;
+  }
+  return readRecord(changes.assigneeAgentId)?.to === agentId;
+}
+
+/**
+ * Does this activity, attributed to a run of `agentId`, count as issue-visible
+ * progress of that run? The listed actions do, except the run's own bookkeeping:
+ * the echo of its final text (`run_presentation_resolver` comment), the release
+ * of the task and the assignment back to itself. The 07.11 adm loop was exactly
+ * that: every run released the task, assigned it to itself and got its answer
+ * echoed as a comment, so every run looked like progress and the streak never
+ * started.
+ */
+export function isIssueProgressActivity(row: IssueActivitySample, agentId: string): boolean {
+  if (!ISSUE_PROGRESS_ACTIVITY_ACTIONS.includes(row.action)) return false;
+  if (row.action === "issue.released") return false;
+  if (row.action === "issue.comment_added" && row.source === "run_presentation_resolver") {
+    return false;
+  }
+  if (isSelfReassignment(row, agentId)) return false;
+  return true;
+}
 
 export interface IssueRewakeCandidateInput {
   reason: string | null;
@@ -131,6 +209,7 @@ export interface RecentIssueRunSample {
 
 export interface IssueRewakeThrottleInput {
   now: Date;
+  freezeThreshold?: number;
   /** Terminal runs for the same (agent, issue), newest finish first. */
   recentTerminalRuns: RecentIssueRunSample[];
   /** Runs among the sample that produced issue-visible progress. */
@@ -141,8 +220,10 @@ export interface IssueRewakeThrottleInput {
 
 export type IssueRewakeThrottleDecision =
   | { blocked: false; noProgressStreak: number }
+  | { blocked: true; frozen: true; noProgressStreak: number; frozenAt: Date }
   | {
       blocked: true;
+      frozen: false;
       noProgressStreak: number;
       cooldownMs: number;
       lastRunFinishedAt: Date;
@@ -170,6 +251,15 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
     noProgressStreak += 1;
   }
 
+  const freezeThreshold = input.freezeThreshold ?? ISSUE_REWAKE_FREEZE_THRESHOLD;
+  if (noProgressStreak >= freezeThreshold) {
+    return {
+      blocked: true,
+      frozen: true,
+      noProgressStreak,
+      frozenAt: runs[0]!.finishedAt!,
+    };
+  }
   if (noProgressStreak < ISSUE_REWAKE_NO_PROGRESS_THRESHOLD) {
     return { blocked: false, noProgressStreak };
   }
@@ -180,7 +270,7 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   const cooldownMs = computeIssueRewakeCooldownMs(noProgressStreak);
   const nextAllowedAt = new Date(lastRunFinishedAt.getTime() + cooldownMs);
   if (input.now.getTime() < nextAllowedAt.getTime()) {
-    return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
+    return { blocked: true, frozen: false, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
   }
   return { blocked: false, noProgressStreak };
 }

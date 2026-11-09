@@ -27,6 +27,8 @@ export const OCR_TIMEOUT_SEC_ENV = "MYRMIDON_OCR_TIMEOUT_SEC";
 export type OcrBackendKind = "ragflow" | "litellm";
 
 export const DEFAULT_OCR_BACKEND: OcrBackendKind = "ragflow";
+/** Replacement vision model; used when the LiteLLM backend has no explicit model setting. */
+export const DEFAULT_OCR_MODEL = "chatgpt-pool/gpt-6-luna";
 export const DEFAULT_OCR_MAX_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_OCR_MAX_PAGES = 500;
 export const DEFAULT_OCR_MAX_CHARS = 2_000_000;

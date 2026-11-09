@@ -43,17 +43,30 @@ badge on the agent and raises a signal when an agent is over the limit.
 ## Review routing
 
 A task in `in_review` with no reviewer does not wait for someone to notice:
-the review-routing sweep picks the least-loaded eligible reviewer agent
-(never the task's author or its assignee), assigns the review and wakes it.
-A review that stays without a verdict past the configured hours is signalled
-and moved to another reviewer. With no eligible reviewer at all, the task is
-signalled on the attention desk.
+the review-routing sweep picks an eligible reviewer agent (prioritizing idle
+reviewers first, then least-loaded; never the task's author, its assignee, or a
+reviewer that already had the task), assigns the review and wakes it.
+
+When a task has green CI (`head.ci === "green"`) and no verdict after
+`reassignAfterMinutes` minutes (taking precedence over `reassignAfterHours` when
+set to > 0), the review stage is automatically reassigned to another available
+reviewer of the same role with a comment recorded on the issue. Value `0`
+disables minute-based reassignment. A review that stays without a verdict past
+the configured hours (`reassignAfterHours`) is signalled and moved to another
+reviewer. With no eligible reviewer at all, the task is signalled on the
+attention desk.
 
 When an issue enters `in_review` or its reviewer is reassigned, the issue update
 and the durable reviewer wake request are committed in one database transaction.
 Execution-stage reviewer wake requests use that same transaction path. If the
 wake request cannot be persisted, the issue update does not leave the task in
 review without a durable wake receipt.
+
+A review task is not treated as stranded while its review participant is alive:
+if the participant has a live run on any task of the company, the
+stranded-work sweep skips the board escalation and keeps the task waiting for
+that participant. Only when the participant has no live run at all can the
+review task be moved to board-only `blocked` with a recovery card.
 
 ## Planning from a chat message
 
@@ -67,6 +80,20 @@ planner is reachable from Telegram.
 A development task can settle itself: when the pull requests linked to a
 task merge, the task moves on, and a task whose pull requests all merged
 does not wake its agent for nothing.
+
+When the board review stage is approved and the open pull request is green
+and mergeable on the approved head, the board merges it itself through the
+shared GitHub App identity (squash, the repository's convention). The merge
+fires when a review is approved, when a CI run completes, and on the
+periodic review-routing pass as the safety net. It is bound to the exact
+approved head: the approving verdict must name the current head, the
+required check must be green on that head, and the base must be `main` (or
+a configured release base). A conflict with the base after the approval
+returns the task to its implementer once with a rebase request instead of
+staying in review forever. The behavior is the `boardMerge` block of
+`instance_settings.general.reviewRouting`, on by default;
+`boardMerge.enabled = false` restores the previous wait-for-a-human
+behavior.
 
 ## Discussion rooms
 
@@ -83,6 +110,20 @@ an optional finisher summarizes the outcome.
 - [Commander chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
 - [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
+
+## Knowledge-note gate for system changes
+
+When a system-significant change reaches `done`, or when its review is
+approved, the board checks for a valid wiki reference in the form
+`Вики: slug@rev`. The referenced knowledge item and revision must exist; a
+missing or invalid reference is rejected after the rollout grace period. The
+same gate is applied to both the issue route and the issue service, so direct
+service updates cannot bypass it. During the first three days after
+`2026-10-31`, the default is warning-only; operators can explicitly select
+`warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
+rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
+are unaffected. See the [knowledge gate change record](../myrmidon/changes/knowledge-gate-system-changes.md)
+for the rollout and settings reference.
 
 ## Recovery and requeue holds
 

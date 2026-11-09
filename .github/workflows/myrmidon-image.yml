@@ -24,7 +24,8 @@ permissions: {}
 
 concurrency:
   group: myrmidon-image-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' || !startsWith(github.ref, 'refs/tags/myr-v') }}
+
 
 env:
   IMAGE: ghcr.io/itkadr-git/myrmidon
@@ -112,7 +113,8 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=sha,prefix=sha-,format=short
+            type=sha,prefix=sha-,format=short,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=sha,prefix=main-sha-,format=short,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=${{ steps.version.outputs.image_tag }},enable=${{ startsWith(github.ref, 'refs/tags/') }}
           labels: |
@@ -195,6 +197,58 @@ jobs:
           [ "$version" = "$EXPECTED_VERSION" ] || { echo "::error::version $version, expected $EXPECTED_VERSION"; exit 1; }
           [ "$commit" = "$EXPECTED_COMMIT" ] || { echo "::error::commit $commit, expected $EXPECTED_COMMIT"; exit 1; }
 
+      - name: Smoke test bundled agent CLIs (bun, omp, bwrap, fd)
+        env:
+          REF: ${{ github.event_name == 'pull_request' && steps.meta.outputs.tags || format('{0}@{1}', env.IMAGE, steps.build.outputs.digest) }}
+        run: |
+          set -euo pipefail
+          # OPE-12266: the omp_local adapter needs bun >= 1.3.14, omp, fd and bwrap
+          # (process sandbox) inside the production image; fail the build if any
+          # of them is missing or reports nothing.
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            docker pull --quiet "$REF"
+          fi
+          versions="$(docker run --rm --entrypoint /bin/sh "$REF" -c 'bun --version && omp --version && bwrap --version && fd --version')"
+          printf '%s\n' "$versions"
+          [ "$(printf '%s\n' "$versions" | sed -n '1p')" = "1.3.14" ] || { echo "::error::bun version mismatch"; exit 1; }
+          printf '%s\n' "$versions" | sed -n '2p' | grep -Eq '^(omp/)?18\.' || { echo "::error::omp version mismatch (expected 18.9.2)"; exit 1; }
+
+      - name: Smoke test diagnostic env masking through docker exec
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          REF: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # Exercise the exact target-container path required by OPE-3100.
+          # Use synthetic secrets only; never print their values.
+          docker rm -f paperclip-server-1 >/dev/null 2>&1 || true
+          docker run -d --name paperclip-server-1 --entrypoint /bin/sh \
+            -e 'DATABASE_URL=postgres://paperclip_app:ci_raw_database_password@db.prod.internal:5432/paperclip' \
+            -e 'POSTGRES_PASSWORD=ci_raw_postgres_password' \
+            -e 'PGHOST=db.prod.internal' \
+            "$REF" -c 'while :; do sleep 3600; done' >/dev/null
+          trap 'docker rm -f paperclip-server-1 >/dev/null 2>&1 || true' EXIT
+
+          # 1. Directly execute installed product wrapper /usr/local/bin/env
+          wrapper_output="$(docker exec paperclip-server-1 /usr/local/bin/env | grep -iE 'DATABASE|PG|POSTGRES')"
+          printf '%s\n' "$wrapper_output"
+          ! grep -Fq 'ci_raw_database_password' <<<"$wrapper_output"
+          ! grep -Fq 'ci_raw_postgres_password' <<<"$wrapper_output"
+          grep -Eq '^DATABASE_URL=postgres://paperclip_app:\*{3}@db\.prod\.internal:5432/paperclip$' <<<"$wrapper_output"
+          grep -Fq 'POSTGRES_PASSWORD=***' <<<"$wrapper_output"
+
+          # 2. Test diagnostic env command with sed pipeline as specified in OPE-3100
+          diag_output="$(docker exec paperclip-server-1 env | grep -iE 'DATABASE|PG|POSTGRES' | sed -E 's/(_URL=).*/\1***/')"
+          printf '%s\n' "$diag_output"
+          ! grep -Fq 'ci_raw_database_password' <<<"$diag_output"
+          ! grep -Fq 'ci_raw_postgres_password' <<<"$diag_output"
+          grep -Fq 'DATABASE_URL=***' <<<"$diag_output"
+          grep -Fq 'POSTGRES_PASSWORD=***' <<<"$diag_output"
+
+          raw_count="$(grep -Ec 'ci_raw_database_password|ci_raw_postgres_password' <<<"$wrapper_output"$'\n'"$diag_output" || true)"
+          [ "$raw_count" -eq 0 ]
+          echo "diagnostic raw-secret count: $raw_count"
+
       - name: Tag the tested digest
         if: ${{ github.event_name != 'pull_request' }}
         env:
@@ -207,6 +261,21 @@ jobs:
           done < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
           docker buildx imagetools create "${args[@]}" "$IMAGE@$DIGEST"
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
+
+      - name: Verify release tags refer to the tested image
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA:0:7}"
+          release_digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | jq -r .)"
+          sha_digest="$(docker buildx imagetools inspect "$IMAGE:sha-$short_sha" --format '{{json .Manifest.Digest}}' | jq -r .)"
+          if [ "$release_digest" != "$DIGEST" ] || [ "$sha_digest" != "$release_digest" ]; then
+            echo "::error::release $VERSION ($release_digest), sha-$short_sha ($sha_digest), tested image ($DIGEST) differ"
+            exit 1
+          fi
 
       - name: Summary
         if: ${{ github.event_name != 'pull_request' }}

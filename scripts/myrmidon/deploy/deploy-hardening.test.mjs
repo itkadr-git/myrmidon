@@ -331,6 +331,7 @@ function sandbox({
     `SYSTEMD_UNIT_DIR=${path.join(dir, "systemd")}`,
     `BOARD_API_URL=http://127.0.0.1:3100/api`,
     `BOARD_COMPANY_ID=${COMPANY}`,
+    "MYRMIDON_DEPLOY_POSTCHECK_RUNS=0",
     ...(fleetdHealthUrl ? ["MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health"] : []),
     ...(dgHealthUrl ? [`MYR_DOCKERGATE_HEALTH_URL='${dgHealthUrl}'`] : []),
     `DOCKERGATE_LOGS_COMMAND=''`,
@@ -358,7 +359,7 @@ function sandbox({
   // its own tests (predeploy-board-check.test.mjs, deploy.test.mjs); this file is
   // about the preflight, the images and the rollback, so it is switched off here.
   lines.push("MYRMIDON_PREDEPLOY_CHECK=0");
-  lines.push("MYRMIDON_DEPLOY_SMOKE=0", ...extraConfig, "");
+  lines.push("MYRMIDON_DEPLOY_SMOKE=0", "MYRMIDON_DEPLOY_MIN_FREE_GB=0", ...extraConfig, "");
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(config, lines.join("\n"));
   return { dir, bin, config, composeDir, dgConfig, boardOverride, dgOverridePath, fdOverridePath, unitFile };
@@ -368,8 +369,11 @@ function run(sb, script, args, { umask, env } = {}) {
   const bash = process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f));
   const argv = [path.join(HERE, script), "--config", sb.config, ...args];
   const cmd = umask ? ["-c", `umask ${umask}; exec "$@"`, "sh", bash, ...argv] : argv;
+  const childEnv = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, MYRMIDON_DEPLOY_MIN_FREE_GB: "0", ...(env ?? {}) };
+  delete childEnv.BASH_ENV;
+  delete childEnv.ENV;
   const result = spawnSync(umask ? "sh" : bash, cmd, {
-    env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, ...(env ?? {}) },
+    env: childEnv,
     encoding: "utf8",
   });
   return { code: result.status, out: `${result.stdout}${result.stderr}` };

@@ -30,6 +30,12 @@ export const DATASTORE_CARE_RETENTION_DAYS_ENV = "MYRMIDON_DATASTORE_CARE_RETENT
 export const DATASTORE_CARE_TOP_QUERIES_ENV = "MYRMIDON_DATASTORE_CARE_TOP_QUERIES";
 /** Directory holding the board's database backups. */
 export const DATASTORE_CARE_BACKUP_DIR_ENV = "MYRMIDON_DATASTORE_CARE_BACKUP_DIR";
+/**
+ * Label of an external backup coverage (e.g. `vm-pbs`): the database is backed
+ * up outside this instance, so the `backup-freshness` criterion reports the
+ * external coverage instead of failing on an empty local dump directory.
+ */
+export const DATASTORE_CARE_BACKUP_EXTERNAL_ENV = "MYRMIDON_DATASTORE_CARE_BACKUP_EXTERNAL";
 /** Toggle of the extension-gated metrics (pgvector, full-text search). */
 export const DATASTORE_CARE_OPTIONAL_METRICS_ENV = "MYRMIDON_DATASTORE_CARE_OPTIONAL_METRICS";
 
@@ -52,6 +58,12 @@ export interface DatastoreCareSettings {
   topQueries: number;
   /** Directory whose newest file answers the "backup freshness" criterion. */
   backupDir: string;
+  /**
+   * Label of the external backup coverage (`vm-pbs`), or null when backups are
+   * the local dumps of `backupDir`. Set, the collector skips the directory
+   * scan and the `backup-freshness` criterion answers ok with this label.
+   */
+  externalBackupLabel: string | null;
   /** Whether pgvector/FTS metrics are collected when their extension is there. */
   optionalMetrics: boolean;
   /** Where each value came from, for the status endpoint and the report. */
@@ -61,6 +73,7 @@ export interface DatastoreCareSettings {
     retentionDays: "env" | "default";
     topQueries: "env" | "default";
     backupDir: "env" | "default";
+    backupExternal: "env" | "default";
     optionalMetrics: "env" | "default";
   };
   /** Human-readable notes: a typo that was ignored, a clamped number. */
@@ -171,6 +184,10 @@ export function readDatastoreCareSettings(
     backupDirSource = "default";
   }
 
+  // An empty (whitespace-only) value means "no external coverage" — same
+  // convention as the other string knobs of the module.
+  const externalBackupLabel = env[DATASTORE_CARE_BACKUP_EXTERNAL_ENV]?.trim() || null;
+
   return {
     enabled: enabledRaw.value,
     intervalSec: interval.value,
@@ -179,6 +196,7 @@ export function readDatastoreCareSettings(
     retentionMs: retention.value * 24 * 60 * 60 * 1000,
     topQueries: topQueries.value,
     backupDir,
+    externalBackupLabel,
     optionalMetrics: optionalRaw.value,
     sources: {
       enabled: env[DATASTORE_CARE_ENABLED_ENV] === undefined ? "default" : "env",
@@ -186,6 +204,7 @@ export function readDatastoreCareSettings(
       retentionDays: retention.source,
       topQueries: topQueries.source,
       backupDir: backupDirSource,
+      backupExternal: externalBackupLabel === null ? "default" : "env",
       optionalMetrics: env[DATASTORE_CARE_OPTIONAL_METRICS_ENV] === undefined ? "default" : "env",
     },
     warnings,

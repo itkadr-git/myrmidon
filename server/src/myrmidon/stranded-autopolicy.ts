@@ -33,7 +33,16 @@
 //     untouched: the issue is set `blocked` with complete `blockerMetadata` and
 //     an agent-owned `unblockDescriptor`, and the target gets one idempotent
 //     wake (`disposition_blocked`).
-//  4. Only an empty chain (or a paused assignee) falls back to the vendor's
+//  4. (OPE-12265) The owner of a `disposition_blocked` escalation is the
+//     nearest invokable lead/manager in the assignee's `reports_to` chain
+//     (`resolveStrandedDispositionOwnerAgentId` below), not the direct
+//     reviewer: in teams where an engineer reports to a reviewer caste agent,
+//     the reviewer never picked up these recovery blocks and the issue sat
+//     stranded for hours. If the chain has no lead/manager at all, the
+//     operator fallback (`adm`, as before) owns it. The escalation comment
+//     names what the owner must decide: a fresh directive with the first
+//     step, a split into subtasks, or closure.
+//  5. Only an empty chain (or a paused assignee) falls back to the vendor's
 //     own board escalation unchanged (`vendor_default`).
 //
 // A `paused` assignee is exempt from all of the above: pausing is not
@@ -75,7 +84,7 @@ import { resolveDefaultEscalationAgentIds } from "../services/review-escalation-
 // myrmidon(B1): the two texts below that people and agents read name the
 // product through product.ts, like the rest of the server-generated text.
 import { productPossessive } from "./product.js";
-
+import { liveStrandedSettings } from "./runs-queue-settings/live.js";
 export const STRANDED_AUTO_POLICY_CAUSES = [
   "stranded_assigned_issue",
   "successful_run_missing_state",
@@ -116,37 +125,40 @@ export const STRANDED_AUTO_POLICY_RETRIES_PER_DAY_ENV = "MYRMIDON_STRANDED_AUTO_
 export const STRANDED_AUTO_POLICY_DEFAULT_RETRIES_PER_DAY = 2;
 export const STRANDED_AUTO_POLICY_ENABLED_ENV = "MYRMIDON_STRANDED_AUTOPOLICY_ENABLED";
 
-/** Retries allowed per rolling 24h window; invalid or unset falls back to the default. */
+/** Retries allowed per rolling 24h window. OPE-4096: resolves live (UI value
+ * → env forced override → default); an explicit env value always wins. */
 export function readStrandedAutoRetriesPerDay(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[STRANDED_AUTO_POLICY_RETRIES_PER_DAY_ENV]?.trim();
-  if (!raw) return STRANDED_AUTO_POLICY_DEFAULT_RETRIES_PER_DAY;
-  if (!/^\d+$/.test(raw)) return STRANDED_AUTO_POLICY_DEFAULT_RETRIES_PER_DAY;
-  const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) ? parsed : STRANDED_AUTO_POLICY_DEFAULT_RETRIES_PER_DAY;
+  return liveStrandedSettings(env).autoRetriesPerDay;
 }
 
 /**
- * Full kill switch: `false` (or `0`) restores 100% vendor board escalation
- * regardless of `MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY` or any agent's
- * configured manager. Defaults to enabled; unset or unrecognized values are
- * treated as enabled so a typo cannot silently disable the fix.
+ * Full kill switch. OPE-4096: resolves live (UI value → env forced override →
+ * default enabled); an explicit env value always wins, so `false`/`0` still
+ * restores 100% vendor board escalation.
  */
 export function readStrandedAutoPolicyEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[STRANDED_AUTO_POLICY_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "false" && raw !== "0";
+  return liveStrandedSettings(env).enabled;
 }
 
 export type StrandedAutoPolicyDecision =
   | { kind: "retry"; attempt: number; maxAttemptsPerDay: number }
   | {
-      kind: "reassign_to_manager";
-      managerAgentId: string;
+      kind: "monitor_external_service";
+      serviceName: string;
+      notes: string;
+      nextCheckAt?: string;
       attemptsInWindow: number;
       maxAttemptsPerDay: number;
     }
   | {
       kind: "disposition_blocked";
       ownerAgentId: string;
+      attemptsInWindow: number;
+      maxAttemptsPerDay: number;
+    }
+  | {
+      kind: "reassign_to_manager";
+      managerAgentId: string;
       attemptsInWindow: number;
       maxAttemptsPerDay: number;
     }
@@ -169,11 +181,23 @@ export function decideStrandedAutoPolicy(input: {
    */
   escalationAgentId?: string | null;
   /**
+   * The nearest invokable lead/manager in the assignee's `reportsTo` chain.
+   * Reviewers are intentionally skipped: they review work but do not own
+   * stranded recovery decisions. If no such ancestor exists, the caller's
+   * operator fallback (normally `adm`) is used.
+   */
+  dispositionOwnerAgentId?: string | null;
+  /**
    * OPE-9072: the issue carries an execution policy, monitor or non-idle
    * execution state (`issueHasExistingExecutionWorkflow`). Such an issue is
    * never taken over; it is blocked with an agent owner instead.
    */
   hasExecutionWorkflow?: boolean;
+  /**
+   * OPE-9072: issue has an open PR with pending CI checks. Instead of escalating
+   * or failing disposition, schedule an external_service monitor on CI.
+   */
+  hasPendingCi?: boolean;
   /** A corrective handoff already used its final attempt; do not retry it again. */
   successfulRunHandoffExhausted?: boolean;
   /**
@@ -182,6 +206,8 @@ export function decideStrandedAutoPolicy(input: {
    * blocked with `adm` as owner instead.
    */
   targetIsAdm?: boolean;
+  /** Successful-run disposition exhaustion must not fall through to board. */
+  requireAgentDisposition?: boolean;
   /**
    * The assignee is paused. Pausing is not stranding: an auto-retry wake to
    * a paused agent can only throw (paused is not invokable), and a manager
@@ -196,14 +222,34 @@ export function decideStrandedAutoPolicy(input: {
   if (input.assigneePaused) {
     return { kind: "vendor_default", attemptsInWindow: input.attemptsInWindow, maxAttemptsPerDay: input.maxAttemptsPerDay };
   }
+  if (input.hasPendingCi) {
+    return {
+      kind: "monitor_external_service",
+      serviceName: "CI",
+      notes: "Pending CI external service monitor",
+      attemptsInWindow: input.attemptsInWindow,
+      maxAttemptsPerDay: input.maxAttemptsPerDay,
+    };
+  }
   if (!input.successfulRunHandoffExhausted && input.maxAttemptsPerDay > 0 && input.attemptsInWindow < input.maxAttemptsPerDay) {
     return { kind: "retry", attempt: input.attemptsInWindow + 1, maxAttemptsPerDay: input.maxAttemptsPerDay };
   }
   const targetAgentId = input.managerAgentId ?? input.escalationAgentId ?? null;
-  if (targetAgentId && (input.successfulRunHandoffExhausted || input.hasExecutionWorkflow || input.targetIsAdm)) {
+  if (
+    targetAgentId &&
+    (input.successfulRunHandoffExhausted ||
+      input.hasExecutionWorkflow ||
+      input.targetIsAdm ||
+      input.requireAgentDisposition)
+  ) {
+    // OPE-12265: the owner of a disposition_blocked escalation is the nearest
+    // lead/manager, never the assignee's direct reviewer (the reviewer
+    // reports-to edge is a review-routing edge, not an ownership edge).
+    // Without a lead the operator fallback (`adm`) owns it, as before.
+    // Computed inside the guard: `targetAgentId` is narrowed to `string` here.
     return {
       kind: "disposition_blocked",
-      ownerAgentId: targetAgentId,
+      ownerAgentId: input.dispositionOwnerAgentId ?? targetAgentId,
       attemptsInWindow: input.attemptsInWindow,
       maxAttemptsPerDay: input.maxAttemptsPerDay,
     };
@@ -217,6 +263,82 @@ export function decideStrandedAutoPolicy(input: {
     };
   }
   return { kind: "vendor_default", attemptsInWindow: input.attemptsInWindow, maxAttemptsPerDay: input.maxAttemptsPerDay };
+}
+
+export interface StrandedDispositionOwnerRef {
+  id: string;
+  companyId: string;
+  role: string;
+  reportsTo: string | null;
+  status: string;
+  pausedAt?: Date | string | null;
+}
+
+const STRANDED_DISPOSITION_OWNER_ROLES = new Set(["lead", "manager"]);
+
+/** Pure: find the nearest invokable lead/manager above the stranded assignee. */
+export function resolveStrandedDispositionOwnerAgentId(input: {
+  assigneeAgentId: string;
+  companyId: string;
+  agents: StrandedDispositionOwnerRef[];
+  fallbackAgentId: string | null;
+}): string | null {
+  const byId = new Map(input.agents.map((agent) => [agent.id, agent]));
+  const seen = new Set<string>();
+  let cursor = byId.get(input.assigneeAgentId)?.reportsTo ?? null;
+  for (let depth = 0; cursor && depth < 32 && !seen.has(cursor); depth += 1) {
+    seen.add(cursor);
+    const candidate = byId.get(cursor);
+    if (
+      candidate &&
+      candidate.companyId === input.companyId &&
+      STRANDED_DISPOSITION_OWNER_ROLES.has(candidate.role.trim().toLowerCase()) &&
+      isAgentStatusInvokable(candidate.status) &&
+      !candidate.pausedAt
+    ) {
+      return candidate.id;
+    }
+    cursor = candidate?.reportsTo ?? null;
+  }
+  return input.fallbackAgentId;
+}
+
+export async function findStrandedDispositionOwnerAgentId(
+  db: Db,
+  issue: { companyId: string; assigneeAgentId: string | null },
+): Promise<string | null> {
+  if (!issue.assigneeAgentId) return null;
+  const rows = await db
+    .select({
+      id: agents.id,
+      companyId: agents.companyId,
+      role: agents.role,
+      name: agents.name,
+      reportsTo: agents.reportsTo,
+      status: agents.status,
+      pausedAt: agents.pausedAt,
+    })
+    .from(agents)
+    .where(eq(agents.companyId, issue.companyId));
+  // OPE-12265: no lead/manager anywhere in the assignee's chain — the board
+  // operator bot `adm` owns the escalation (same root-agent rule as the
+  // default escalation chain: no `reportsTo`, name `adm`), invokable only.
+  const owner = resolveStrandedDispositionOwnerAgentId({
+    assigneeAgentId: issue.assigneeAgentId,
+    companyId: issue.companyId,
+    agents: rows,
+    fallbackAgentId: null,
+  });
+  if (owner) return owner;
+  const adm = rows.find(
+    (row) =>
+      row.companyId === issue.companyId &&
+      row.reportsTo == null &&
+      row.name.trim().toLowerCase() === "adm" &&
+      isAgentStatusInvokable(row.status) &&
+      !row.pausedAt,
+  );
+  return adm?.id ?? null;
 }
 
 export interface StrandedAutoPolicyAssigneeRef {
@@ -597,7 +719,8 @@ export async function findEscalationChainAgentId(
 }
 
 export const STRANDED_DISPOSITION_WAKE_SOURCE = "myrmidon.stranded_disposition_blocked";
-export const STRANDED_DISPOSITION_ACTION = "Assign a final status to this issue (done, in_review, blocked with a blocker, or todo with a reason)";
+export const STRANDED_DISPOSITION_ACTION =
+  "Assign a final status to this issue (done, in_review, blocked with a blocker, or todo with a reason), provide a fresh directive with the first step, break it down, or close it";
 export const STRANDED_DISPOSITION_ESCALATION_POLICY = "stranded_disposition_chain_v1";
 export const STRANDED_DISPOSITION_NEXT_CHECK_MS = 4 * 60 * 60 * 1000;
 export const STRANDED_DISPOSITION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -622,19 +745,24 @@ export function buildStrandedDispositionBlockedPatch(input: {
   now?: Date;
 }): { status: "blocked"; blockerMetadata: IssueBlockerMetadata; unblockDescriptor: IssueUnblockDescriptor } {
   const now = input.now ?? new Date();
+  const timeoutAt = new Date(now.getTime() + STRANDED_DISPOSITION_TIMEOUT_MS).toISOString();
   return {
     status: "blocked",
     blockerMetadata: {
       blockReason: "recovery",
       owner: { agentId: input.ownerAgentId },
       nextCheckAt: new Date(now.getTime() + STRANDED_DISPOSITION_NEXT_CHECK_MS).toISOString(),
-      timeoutAt: new Date(now.getTime() + STRANDED_DISPOSITION_TIMEOUT_MS).toISOString(),
+      timeoutAt,
       escalationPolicy: STRANDED_DISPOSITION_ESCALATION_POLICY,
     },
     unblockDescriptor: {
       owner: { agentId: input.ownerAgentId },
       action: STRANDED_DISPOSITION_ACTION,
-      reasonRef: { kind: "event", eventKey: `stranded.disposition:${input.issueId}` },
+      reasonRef: {
+        kind: "event",
+        eventKey: `stranded.disposition:${input.issueId}`,
+        dueAt: timeoutAt,
+      },
     },
   };
 }
@@ -648,6 +776,200 @@ export function buildStrandedDispositionBlockedComment(input: {
     `${productPossessive("automatic policy")} could not get a final status from the assignee: ${input.attemptsInWindow} ` +
       `automatic continuation attempt(s) within 24 hours (cause \`${input.cause}\`, limit ${input.maxAttemptsPerDay} per day).`,
     "The issue carries its own execution workflow, so it was not taken over and the assignee is unchanged. " +
-      "It is now `blocked` and owned by a senior agent, who is asked to assign the final status.",
+      "It is now `blocked` and owned by the nearest lead or, when no lead exists, the board operator.",
+    "What the owner must do here: give the issue a fresh directive with the first step, split it into subtasks, " +
+      "or close it — a plain review is not enough; a reviewer cannot resolve this block.",
   ].join("\n");
+}
+
+export interface OpenPrCiStatusInput {
+  openPr: {
+    metadata?: unknown;
+    externalId?: string | null;
+    updatedAt?: Date | null;
+  } | null;
+  lastComment?: {
+    body?: string | null;
+    createdAt?: Date | null;
+  } | null;
+  contextSnapshot?: unknown;
+  externalPrObject?: {
+    data?: unknown;
+  } | null;
+}
+
+/**
+ * Evaluates whether an open pull request currently has pending CI checks.
+ *
+ * Requirements (OPE-9072 / review-10 findings):
+ * 1. Checks that the PR head matches the head mentioned in the executor's
+ *    last comment or run context (an outdated comment referring to a previous
+ *    head does NOT qualify).
+ * 2. Reads GitHub checks status from the work product metadata or external objects:
+ *    if checks are already completed / passed / failed, CI is not pending.
+ * 3. Does not endlessly schedule an external_service monitor based on stale text alone.
+ */
+export function isPendingCiForOpenPr(input: OpenPrCiStatusInput): boolean {
+  if (!input.openPr) return false;
+
+  const meta = (typeof input.openPr.metadata === "object" && input.openPr.metadata !== null
+    ? input.openPr.metadata
+    : {}) as Record<string, unknown>;
+
+  const extData = (typeof input.externalPrObject?.data === "object" && input.externalPrObject.data !== null
+    ? input.externalPrObject.data
+    : {}) as Record<string, unknown>;
+
+  const prHead = typeof meta.headSha === "string"
+    ? meta.headSha.trim()
+    : typeof meta.sha === "string"
+      ? meta.sha.trim()
+      : typeof extData.headSha === "string"
+        ? (extData.headSha as string).trim()
+        : null;
+
+  // 1. Check explicit check state in metadata or externalObjects
+  const activeCi = typeof meta.activeCi === "object" && meta.activeCi !== null
+    ? meta.activeCi as Record<string, unknown>
+    : null;
+  const activeCiStatus = typeof activeCi?.status === "string" ? activeCi.status.trim().toLowerCase() : null;
+  const activeCiHead = typeof activeCi?.headSha === "string" ? activeCi.headSha.trim() : null;
+
+  const metaCheckStatus = typeof meta.checks === "string"
+    ? meta.checks.trim().toLowerCase()
+    : typeof meta.ciStatus === "string"
+      ? meta.ciStatus.trim().toLowerCase()
+      : typeof meta.checksStatus === "string"
+        ? meta.checksStatus.trim().toLowerCase()
+        : typeof meta.ciState === "string"
+          ? meta.ciState.trim().toLowerCase()
+          : typeof meta.ci === "string"
+            ? meta.ci.trim().toLowerCase()
+            : typeof meta.conclusion === "string"
+              ? meta.conclusion.trim().toLowerCase()
+              : null;
+
+  const extCiStatus = typeof extData.ci === "string"
+    ? extData.ci.trim().toLowerCase()
+    : typeof extData.checks === "string"
+      ? extData.checks.trim().toLowerCase()
+      : null;
+
+  const completedStatuses = new Set([
+    "completed",
+    "success",
+    "failure",
+    "failed",
+    "passed",
+    "pass",
+    "neutral",
+    "cancelled",
+    "timed_out",
+    "action_required",
+    "green",
+    "not_green",
+  ]);
+
+  // If checks are recorded as completed in activeCi, metadata or external data, CI is NOT pending
+  if (
+    (activeCiStatus && completedStatuses.has(activeCiStatus)) ||
+    (metaCheckStatus && completedStatuses.has(metaCheckStatus)) ||
+    (extCiStatus && completedStatuses.has(extCiStatus)) ||
+    ("activeCi" in meta && meta.activeCi === null && (meta.checksCompleted === true || meta.conclusion !== undefined))
+  ) {
+    return false;
+  }
+
+  // If activeCi exists and is active (queued / in_progress / pending)
+  if (activeCiStatus === "queued" || activeCiStatus === "in_progress" || activeCiStatus === "pending") {
+    if (activeCiHead && prHead) {
+      const a = activeCiHead.toLowerCase();
+      const p = prHead.toLowerCase();
+      if (!p.startsWith(a) && !a.startsWith(p)) {
+        return false; // activeCi was for a different / older head
+      }
+    }
+    return true;
+  }
+
+  // If metadata or external data indicates queued / in_progress
+  if (
+    metaCheckStatus === "queued" ||
+    metaCheckStatus === "in_progress" ||
+    metaCheckStatus === "pending" ||
+    extCiStatus === "queued" ||
+    extCiStatus === "in_progress" ||
+    extCiStatus === "pending"
+  ) {
+    return true;
+  }
+
+  // 2. Check comment and contextSnapshot text signals
+  const commentBody = input.lastComment?.body ?? "";
+  const runSummary =
+    typeof input.contextSnapshot === "object" && input.contextSnapshot !== null
+      ? JSON.stringify(input.contextSnapshot)
+      : typeof input.contextSnapshot === "string"
+        ? input.contextSnapshot
+        : "";
+
+  const ciCompletedRegex =
+    /(\bci\b|\bchecks\b|тест|github actions).*(completed|passed|failed|зелён|красн|заверш|успеш)/i;
+  const completedCiRegex =
+    /(completed|passed|failed|зелён|красн|заверш|успеш).*(\bci\b|\bchecks\b|тест|github actions)/i;
+  if (ciCompletedRegex.test(commentBody) || completedCiRegex.test(commentBody)) {
+    return false;
+  }
+
+  const ciPendingRegex =
+    /(\bci\b|\bchecks\b|тест|github actions).*(pending|running|in_progress|wait|идёт|ожида|прогон|монитор)/i;
+  const pendingCiRegex =
+    /(pending|running|wait|ожида|прогон|монитор).*(\bci\b|\bchecks\b|тест|github actions)/i;
+
+  const hasPendingText =
+    ciPendingRegex.test(commentBody) ||
+    pendingCiRegex.test(commentBody) ||
+    ciPendingRegex.test(runSummary);
+
+  if (!hasPendingText) {
+    return false;
+  }
+
+  // 3. Verify that the head mentioned in the comment matches the PR's current head
+  if (prHead) {
+    const headMentionRegex = /(?:head|sha|commit|головой|голова)\s*[:=/\s#]\s*`?([0-9a-f]{7,40})`?/i;
+    const slashShaRegex = /#\d+\s*[/|]\s*`?([0-9a-f]{7,40})`?/i;
+    const backtickShaRegex = /`([0-9a-f]{7,40})`/i;
+
+    const match =
+      commentBody.match(headMentionRegex) ||
+      runSummary.match(headMentionRegex) ||
+      commentBody.match(slashShaRegex) ||
+      runSummary.match(slashShaRegex) ||
+      commentBody.match(backtickShaRegex) ||
+      runSummary.match(backtickShaRegex);
+
+    if (match) {
+      const mentionedSha = match[1].toLowerCase();
+      const targetSha = prHead.toLowerCase();
+      if (!targetSha.startsWith(mentionedSha) && !mentionedSha.startsWith(targetSha)) {
+        // Mismatched / outdated head!
+        return false;
+      }
+    } else {
+      // Pending text without matching SHA when PR head is known must be rejected
+      return false;
+    }
+  }
+
+  // Check staleness of comment relative to PR update:
+  if (input.openPr.updatedAt && input.lastComment?.createdAt) {
+    const commentTime = new Date(input.lastComment.createdAt).getTime();
+    const prUpdateTime = new Date(input.openPr.updatedAt).getTime();
+    if (commentTime < prUpdateTime - 60 * 1000) {
+      return false;
+    }
+  }
+
+  return true;
 }

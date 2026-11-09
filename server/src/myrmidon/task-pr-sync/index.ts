@@ -8,21 +8,20 @@ import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import type { PullRequestMergeDetailsResolver } from "../../services/github-pull-request-merge.js";
 import { createTaskPrSyncSweep } from "./sweep.js";
+import { readTaskPrSyncSettings } from "./settings.js";
 
 export { shouldSuppressRunForIssue } from "./guard.js";
-export { createTaskPrSyncSweep } from "./sweep.js";
+export { createTaskPrSyncSweep, reconcileClosedIssuePullRequests } from "./sweep.js";
 export { decideTaskPrSync, effectivePullRequestState, settlePendingForProducts } from "./policy.js";
 export { readTaskPrSyncSettings } from "./settings.js";
 
-/**
- * Builds the tick callback the scheduler calls. The GitHub resolve seam is the
- * existing company-scoped resolver; nothing new holds a credential.
- */
+/** Builds a sweep runner. The process scheduler owns its timer and leadership gate. */
 export function createTaskPrSyncScheduler(input: {
   db: Db;
   track: (work: Promise<unknown>) => void;
   env?: NodeJS.ProcessEnv;
-}): () => void {
+  isLeader?: () => boolean;
+}): (() => void) & { stop: () => void } {
   // The resolver is built on first use, so importing this module does not drag
   // the GitHub credential path into the entry point's static import graph (a
   // vendor startup suite replaces the service layer with partial mocks).
@@ -39,7 +38,8 @@ export function createTaskPrSyncScheduler(input: {
     resolvePullRequestDetails,
     env: input.env,
   });
-  return () => {
+  const run = () => {
+    if (input.isLeader && !input.isLeader()) return;
     input.track(
       sweep
         .sweep()
@@ -53,4 +53,6 @@ export function createTaskPrSyncScheduler(input: {
         }),
     );
   };
+  const timer = setInterval(run, readTaskPrSyncSettings(input.env).pollMs);
+  return Object.assign(run, { stop: () => clearInterval(timer) });
 }

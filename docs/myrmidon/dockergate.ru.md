@@ -46,6 +46,8 @@
 | A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | удаление |
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | остановка (только внутри recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | перезапуск (с пределом частоты) |
+| A18 | `POST .../myrmidon-bot-<K>/update` | обновление памяти, memory-swap и pids без перезапуска; тело строго `Memory`, `MemorySwap`, `PidsLimit` в пределах записанных лимитов бота |
+| A20 | `PUT .../myrmidon-bot-<K>/config/update` | обновление лимитов бота (`memoryMb`, `cpus`, `pidsLimit`) в `bots[]` конфига dockergate и потолков в памяти рантайма с проверкой потолков площадки и атомарной перезагрузкой без рестарта контейнера (или `/myrmidon/bots/<K>/limits`) |
 | A12 | `POST .../myrmidon-bot-<K>.next/rename?name=myrmidon-bot-<K>` | завершение recreate |
 | A13 | `GET .../myrmidon-bot-<K>/archive?path=<отчёт clone-hygiene>` | чтение отчёта гигиены клонов бота (один фиксированный файл, как A3) |
 

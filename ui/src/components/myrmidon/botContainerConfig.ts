@@ -25,7 +25,7 @@ export const BOT_CONTAINER_NUMBER_FIELDS: Record<BotContainerNumberField, Number
 };
 
 export interface BotContainerCard extends Record<string, unknown> {
-  idleStopMode?: "on_demand" | "always_on";
+  idleStopMode?: "on_demand" | "always_on" | "off";
 }
 
 /** The stored `container` block as a plain object; anything else reads as empty. */

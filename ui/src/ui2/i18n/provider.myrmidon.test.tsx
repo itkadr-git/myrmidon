@@ -18,6 +18,7 @@ const i18nMock = vi.hoisted(() => ({
   language: "en",
   addResourceBundle: vi.fn(),
   hasResourceBundle: vi.fn().mockReturnValue(false),
+  removeResourceBundle: vi.fn(),
 }));
 
 vi.mock("@/i18n", () => ({ i18n: i18nMock }));

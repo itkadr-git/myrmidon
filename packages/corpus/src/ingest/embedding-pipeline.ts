@@ -69,7 +69,7 @@ export interface IngestDocumentRequest {
 }
 
 export interface IngestionDependencies {
-  /** The module's Embedder port (dashscope text-embedding-v4 through the company gateway). */
+  /** The module's Embedder port (corpus-embed-pplx-0.6b through the company gateway). */
   readonly embedder: Embedder;
   readonly writer: CorpusChunkWriter;
 }

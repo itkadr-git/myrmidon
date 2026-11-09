@@ -1,11 +1,12 @@
 import type {
+  BlockerRootFanout,
   IssueBlockerAttention,
   IssueRecoveryAction,
   IssueRelationIssueSummary,
   IssueScheduledRetry,
   SuccessfulRunHandoffState,
 } from "@myrmidon/shared";
-import type { ReactNode } from "react";
+import { useContext, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, Circle, Flag, Loader2, RotateCcw } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
@@ -16,8 +17,11 @@ import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 import { RetryErrorBand } from "./IssueScheduledRetryCard";
 import {
+  extractRootFanout,
   isAssignedBacklogBlocker,
   orderWaitingBlockers,
+  type RootFanoutInfo,
+  type RootFanoutInput,
   type WaitingBlockerStatus,
 } from "../lib/issue-blockers";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
@@ -34,6 +38,15 @@ import {
 import { StatusGlyph } from "./StatusGlyph";
 import { Trans } from "react-i18next";
 import { useTranslation } from "@/i18n";
+import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
+import { useOptionalCompany } from "@/context/CompanyContext";
+import { blockerGraphApi } from "@/api/blocker-graph";
+
+let detachedClient: QueryClient | null = null;
+function getDetachedClient(): QueryClient {
+  detachedClient ??= new QueryClient();
+  return detachedClient;
+}
 
 function BlockerRecoveryIndicator({
   action,
@@ -169,7 +182,7 @@ function WaitingChipLink({
       <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-blue-800 dark:text-blue-200">
         {blocker.title}
       </span>
-      {blocker.blockerMetadata ? (
+      {blocker.blockerMetadata?.blockReason && blocker.blockerMetadata?.owner ? (
         <span
           data-testid="issue-blocker-metadata"
           className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-muted-foreground"
@@ -275,6 +288,7 @@ function WaitingOnLiveWorkNotice({
   liveIds,
   parkedBlockers,
   renderParkedChip,
+  rootFanoutInfo,
 }: {
   blockerAttentionState?: string;
   chainBlockers: IssueRelationIssueSummary[];
@@ -282,6 +296,7 @@ function WaitingOnLiveWorkNotice({
   liveIds: ReadonlySet<string>;
   parkedBlockers: IssueRelationIssueSummary[];
   renderParkedChip: (blocker: IssueRelationIssueSummary) => ReactNode;
+  rootFanoutInfo?: RootFanoutInfo | null;
 }) {
   const { t } = useTranslation();
   const steps = orderWaitingBlockers(chainBlockers, liveIds);
@@ -413,6 +428,28 @@ function WaitingOnLiveWorkNotice({
               {parkedBlockers.map((blocker) => renderParkedChip(blocker))}
             </div>
           ) : null}
+
+          {rootFanoutInfo && rootFanoutInfo.dependentCount > 1 ? (
+            <div
+              data-testid="issue-blocked-notice-root-fanout"
+              className="pt-0.5 text-xs font-medium text-blue-900 dark:text-blue-100"
+            >
+              <Trans
+                i18nKey="area.approvals-decisions-notices-2.issue-blocked-notice.rootFanout"
+                count={rootFanoutInfo.dependentCount}
+                values={{ identifier: rootFanoutInfo.rootIdentifier }}
+                components={[
+                  <Link
+                    key="0"
+                    to={createIssueDetailPath(rootFanoutInfo.rootId ?? rootFanoutInfo.rootIdentifier)}
+                    className="font-mono underline underline-offset-2 hover:text-foreground"
+                  >
+                    {rootFanoutInfo.rootIdentifier}
+                  </Link>,
+                ]}
+              />
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
@@ -421,6 +458,7 @@ function WaitingOnLiveWorkNotice({
 
 export function IssueBlockedNotice({
   issueId,
+  companyId,
   issueStatus,
   blockers,
   allBlockers,
@@ -429,8 +467,11 @@ export function IssueBlockedNotice({
   successfulRunHandoff,
   scheduledRetry,
   agentName,
+  rootFanout,
+  rootFanouts,
 }: {
   issueId?: string | null;
+  companyId?: string | null;
   issueStatus?: string;
   /** Unresolved blockers (drives the amber notice; unchanged). */
   blockers: IssueRelationIssueSummary[];
@@ -446,6 +487,8 @@ export function IssueBlockedNotice({
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   agentName?: string | null;
+  rootFanout?: RootFanoutInput;
+  rootFanouts?: BlockerRootFanout[] | null;
 }) {
   const { t } = useTranslation();
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
@@ -489,6 +532,41 @@ export function IssueBlockedNotice({
   const terminalBlockers = blockers
     .flatMap((blocker) => blocker.terminalBlockers ?? [])
     .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
+
+  const contextClient = useContext(QueryClientContext);
+  const optionalCompany = useOptionalCompany();
+  const effectiveCompanyId = companyId ?? optionalCompany?.selectedCompanyId ?? null;
+  const isBlocked =
+    issueStatus === "blocked" ||
+    blockers.length > 0 ||
+    Boolean(blockerAttention);
+
+  const { data: blockerRootsData } = useQuery(
+    {
+      queryKey: ["blocker-graph-roots", effectiveCompanyId],
+      queryFn: () => (effectiveCompanyId ? blockerGraphApi.roots(effectiveCompanyId) : null),
+      enabled: Boolean(
+        contextClient != null &&
+          effectiveCompanyId &&
+          isBlocked &&
+          !rootFanout &&
+          (!rootFanouts || rootFanouts.length === 0),
+      ),
+      staleTime: 30_000,
+    },
+    contextClient ?? getDetachedClient(),
+  );
+
+  const effectiveRootFanouts = rootFanouts ?? blockerRootsData?.roots ?? null;
+
+  const rootFanoutInfo = extractRootFanout({
+    rootFanout,
+    rootFanouts: effectiveRootFanouts,
+    blockerAttention,
+    blockers,
+    terminalBlockers,
+    issueId,
+  });
 
   const isStalled = blockerAttention?.state === "stalled";
   const parkedBlockers = (() => {
@@ -606,20 +684,17 @@ export function IssueBlockedNotice({
     && chainBlockers.length > 0
     && hasLiveWaitingBlocker;
 
-  if (waitingOnLiveWork) {
-    return (
-      <WaitingOnLiveWorkNotice
-        blockerAttentionState={blockerAttention?.state}
-        chainBlockers={chainBlockers}
-        terminalBlockers={terminalBlockers}
-        liveIds={liveIds}
-        parkedBlockers={showParkedRow ? parkedBlockers : []}
-        renderParkedChip={renderBlockerChip}
-      />
-    );
-  }
-
-  return (
+  const content = waitingOnLiveWork ? (
+    <WaitingOnLiveWorkNotice
+      blockerAttentionState={blockerAttention?.state}
+      chainBlockers={chainBlockers}
+      terminalBlockers={terminalBlockers}
+      liveIds={liveIds}
+      parkedBlockers={showParkedRow ? parkedBlockers : []}
+      renderParkedChip={renderBlockerChip}
+      rootFanoutInfo={rootFanoutInfo}
+    />
+  ) : (
     <div
       data-blocker-attention-state={blockerAttention?.state}
       data-successful-run-handoff={showSuccessfulRunHandoff ? "required" : undefined}
@@ -740,10 +815,41 @@ export function IssueBlockedNotice({
                   {parkedBlockers.map(renderBlockerChip)}
                 </div>
               ) : null}
+              {rootFanoutInfo && rootFanoutInfo.dependentCount > 1 ? (
+                <div
+                  data-testid="issue-blocked-notice-root-fanout"
+                  className="pt-0.5 text-xs font-medium text-amber-900 dark:text-amber-100"
+                >
+                  <Trans
+                    i18nKey="area.approvals-decisions-notices-2.issue-blocked-notice.rootFanout"
+                    count={rootFanoutInfo.dependentCount}
+                    values={{ identifier: rootFanoutInfo.rootIdentifier }}
+                    components={[
+                      <Link
+                        key="0"
+                        to={createIssueDetailPath(rootFanoutInfo.rootId ?? rootFanoutInfo.rootIdentifier)}
+                        className="font-mono underline underline-offset-2 hover:text-foreground"
+                      >
+                        {rootFanoutInfo.rootIdentifier}
+                      </Link>,
+                    ]}
+                  />
+                </div>
+              ) : null}
             </>
           ) : null}
         </div>
       </div>
     </div>
   );
+
+  if (contextClient == null) {
+    return (
+      <QueryClientContext.Provider value={getDetachedClient()}>
+        {content}
+      </QueryClientContext.Provider>
+    );
+  }
+
+  return content;
 }

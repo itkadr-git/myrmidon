@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   issueThreadInteractions,
@@ -7,6 +7,7 @@ import {
 import type { Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "../db-errors.js";
+import { liveWakeDeliverySettings } from "./runs-queue-settings/live.js";
 
 /**
  * Transactional outbox for interaction-continuation wakes (O1).
@@ -91,15 +92,13 @@ const MAX_INTENT_AGE_MS = 15 * 60_000;
 export const OUTBOX_SWEEP_AGE_ENV = "MYRMIDON_OUTBOX_SWEEP_AGE_MS";
 export const OUTBOX_SWEEP_AGE_DEFAULT_MS = 45_000;
 
-/** Sweep-age threshold in ms from `MYRMIDON_OUTBOX_SWEEP_AGE_MS` (default 45 000). */
+/** Sweep-age threshold in ms. OPE-4096: resolves live (UI value → env forced
+ * override → default) so the change applies without a restart; an explicit env
+ * value always wins. */
 export function readOutboxSweepAgeMs(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
-  const raw = env[OUTBOX_SWEEP_AGE_ENV]?.trim();
-  if (!raw) return OUTBOX_SWEEP_AGE_DEFAULT_MS;
-  if (!/^\d+$/.test(raw)) return OUTBOX_SWEEP_AGE_DEFAULT_MS;
-  const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) ? parsed : OUTBOX_SWEEP_AGE_DEFAULT_MS;
+  return liveWakeDeliverySettings(env).outboxSweepAgeMs;
 }
 
 const DURABLE_WAKE_STATUSES = [
@@ -151,7 +150,7 @@ export function interactionContinuationOutboxKey(
  * only on the positive resolution (accepted / answered).
  */
 export function continuationPolicyWakesOnResolution(
-  policy: string,
+  policy: string | null | undefined,
   status: string,
 ): boolean {
   return (
@@ -670,10 +669,12 @@ export function interactionContinuationOutboxService(
           eq(agentWakeupRequests.requestedByActorId, OUTBOX_ACTOR_ID),
           inArray(agentWakeupRequests.status, ["queued", "claimed"]),
           isNull(agentWakeupRequests.runId),
-          lt(
-            agentWakeupRequests.requestedAt,
-            new Date(now.getTime() - sweepAgeMs),
-          ),
+          sweepAgeMs > 0
+            ? lte(
+                agentWakeupRequests.requestedAt,
+                new Date(now.getTime() - sweepAgeMs),
+              )
+            : undefined,
           or(
             isNull(agentWakeupRequests.claimedAt),
             lt(agentWakeupRequests.claimedAt, new Date(now.getTime() - staleClaimMs)),

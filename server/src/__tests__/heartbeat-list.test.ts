@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -283,6 +284,204 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect(typeof result?.stdout).toBe("string");
     expect((result?.stdout as string).length).toBeLessThan(oversizedStdout.length);
     expect(result).not.toHaveProperty("nestedHuge");
+  });
+
+  it("filters runs by wakeReason and hasResult, returning a subset with brief result fields", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Agent1",
+        role: "engineer",
+        status: "running",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Agent2",
+        role: "engineer",
+        status: "running",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const run1Id = randomUUID();
+    const run2Id = randomUUID();
+    const run3Id = randomUUID();
+    const run4Id = randomUUID();
+    const run5Id = randomUUID();
+
+    // Run 1: agentId, wakeReason="issue_assigned", hasResult
+    await db.insert(heartbeatRuns).values({
+      id: run1Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextWakeReason: "issue_assigned",
+      resultJson: {
+        summary: "completed task successfully",
+        result: "success",
+        message: "finished all steps",
+      },
+    });
+
+    // Run 2: agentId, wakeReason="issue_commented", hasResult
+    await db.insert(heartbeatRuns).values({
+      id: run2Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextWakeReason: "issue_commented",
+      resultJson: {
+        summary: "answered question",
+        result: "done",
+      },
+    });
+
+    // Run 3: agentId, wakeReason="issue_assigned", NO result (resultJson == null)
+    await db.insert(heartbeatRuns).values({
+      id: run3Id,
+      companyId,
+      agentId,
+      status: "running",
+      contextWakeReason: "issue_assigned",
+      resultJson: null,
+    });
+
+    // Run 4: otherAgentId, wakeReason="issue_assigned", hasResult
+    await db.insert(heartbeatRuns).values({
+      id: run4Id,
+      companyId,
+      agentId: otherAgentId,
+      status: "succeeded",
+      contextWakeReason: "issue_assigned",
+      resultJson: {
+        summary: "other agent finished",
+        result: "ok",
+      },
+    });
+
+    // Run 5: agentId, legacy contextSnapshot with wakeReason="issue_assigned", contextWakeReason column null
+    await db.insert(heartbeatRuns).values({
+      id: run5Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextWakeReason: null,
+      contextSnapshot: {
+        wakeReason: "issue_assigned",
+      },
+      resultJson: {
+        summary: "legacy run finished",
+        result: "success",
+      },
+    });
+
+    const service = heartbeatService(db);
+
+    // 1. All runs for company
+    const allCompanyRuns = await service.list(companyId);
+    expect(allCompanyRuns).toHaveLength(5);
+
+    // 2. Filter by agentId
+    const agentRuns = await service.list(companyId, agentId);
+    expect(agentRuns).toHaveLength(4);
+
+    // 3. Filter by wakeReason returns a subset (including legacy contextSnapshot fallback)
+    const assignedRuns = await service.list(companyId, undefined, undefined, {
+      wakeReason: "issue_assigned",
+    });
+    expect(assignedRuns).toHaveLength(4);
+    expect(assignedRuns.map((r) => r.id).sort()).toEqual([run1Id, run3Id, run4Id, run5Id].sort());
+
+    const commentedRuns = await service.list(companyId, undefined, undefined, {
+      wakeReason: "issue_commented",
+    });
+    expect(commentedRuns).toHaveLength(1);
+    expect(commentedRuns[0]?.id).toBe(run2Id);
+
+    // 4. Filter by hasResult=true returns only runs with resultJson != null
+    const runsWithResult = await service.list(companyId, undefined, undefined, {
+      hasResult: true,
+    });
+    expect(runsWithResult).toHaveLength(4);
+    expect(runsWithResult.map((r) => r.id).sort()).toEqual([run1Id, run2Id, run4Id, run5Id].sort());
+
+    // 5. Combined filter: agentId + wakeReason="issue_assigned" + hasResult=true
+    const combinedRuns = await service.list(companyId, agentId, undefined, {
+      wakeReason: "issue_assigned",
+      hasResult: true,
+    });
+    expect(combinedRuns).toHaveLength(2);
+    expect(combinedRuns.map((r) => r.id).sort()).toEqual([run1Id, run5Id].sort());
+    const run1Match = combinedRuns.find((r) => r.id === run1Id);
+    expect(run1Match).toMatchObject({
+      contextWakeReason: "issue_assigned",
+      resultSummary: "completed task successfully",
+      resultResult: "success",
+      resultMessage: "finished all steps",
+    });
+
+    // 6. Test listVersionKey reflects the filters
+    const vkAll = await service.listVersionKey(companyId);
+    const vkAssigned = await service.listVersionKey(companyId, undefined, undefined, false, undefined, "issue_assigned");
+    const vkWithResult = await service.listVersionKey(companyId, undefined, undefined, false, undefined, undefined, true);
+    expect(vkAssigned).not.toBe(vkAll);
+    expect(vkWithResult).not.toBe(vkAll);
+    expect(vkAssigned).not.toBe(vkWithResult);
+  });
+  it("caps unbounded lists and pages older rows with a window-scoped version key", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Myrmidon",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Worker", role: "engineer", status: "running",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    const first = new Date("2026-05-01T00:00:00.000Z");
+    const values = Array.from({ length: 203 }, (_, i) => ({
+      id: randomUUID(), companyId, agentId, status: "succeeded" as const,
+      createdAt: new Date(first.getTime() + i * 1000),
+      updatedAt: new Date(first.getTime() + i * 1000),
+    }));
+    await db.insert(heartbeatRuns).values(values);
+    const service = heartbeatService(db);
+    const page1 = await service.list(companyId);
+    expect(page1).toHaveLength(200);
+    const before = page1.at(-1)!.createdAt;
+    const page2 = await service.list(companyId, undefined, undefined, { before });
+    expect(page2).toHaveLength(3);
+    expect(page2.map((row) => row.id)).not.toContain(page1[0]?.id);
+    expect(new Set([...page1, ...page2].map((row) => row.id)).size).toBe(203);
+    const key1 = await service.listVersionKey(companyId);
+    const key2 = await service.listVersionKey(companyId, undefined, undefined, false, undefined, undefined, false, before);
+    expect(key1).not.toBe(key2);
+    // Mutating a run outside the visible window must not invalidate page one.
+    await db.update(heartbeatRuns).set({ updatedAt: new Date("2026-06-01T00:00:00.000Z") }).where(eq(heartbeatRuns.id, page2[0]!.id));
+    expect(await service.listVersionKey(companyId)).toBe(key1);
   });
 });
 

@@ -1,6 +1,9 @@
 ---
 name: doc-maintenance
-description: Keep project docs aligned with recent code and feature changes — detect drift, update affected pages, and add release-relevant notes without rewriting unchanged sections.
+description: >
+  Audit README, SPEC, and PRODUCT docs against recent git history for drift and
+  make minimal PR-ready edits. Use when asked to review docs for accuracy, after
+  major feature merges, or on a schedule.
 key: paperclipai/bundled/docs/doc-maintenance
 recommendedForRoles:
   - engineer
@@ -12,64 +15,207 @@ tags:
   - release-notes
 ---
 
-# Doc Maintenance
+# Doc Maintenance Skill
 
-Keep the documentation honest with minimum churn. The goal is alignment between docs and behavior, not stylistic rewrites or cosmetic re-organization. Reviewers should be able to read a diff and see "this updates docs to match recent behavior changes".
+Detect documentation drift and fix it via PR — no rewrites, no churn.
 
-## When to use
+## When to Use
 
-- A PR or recent set of merges changed user-visible behavior: CLI flags, API shapes, default values, configuration keys, endpoints, environment variables, supported versions.
-- A user-reported bug traced back to outdated documentation.
-- A release is being cut and the docs need a pass against the merged commits.
-- A new feature shipped but only the engineer's PR description describes how to use it.
+- Periodic doc review (e.g. weekly or after releases)
+- After major feature merges
+- When asked "are our docs up to date?"
+- When asked to audit README / SPEC / PRODUCT accuracy
 
-## When not to use
+## Target Documents
 
-- The change is internal-only (private helper rename, refactor) with no user-visible impact.
-- You want to "improve the docs" without a behavior anchor. That is a separate scoped project, not maintenance — make a plan first.
+| Document | Path | What matters |
+|----------|------|-------------|
+| README | `README.md` | Features table, roadmap, quickstart, "what is" accuracy, "works with" table |
+| SPEC | `doc/SPEC.md` | No false "not supported" claims, major model/schema accuracy |
+| PRODUCT | `doc/PRODUCT.md` | Core concepts, feature list, principles accuracy |
 
-## The pass
+Out of scope: DEVELOPING.md, DATABASE.md, CLI.md, doc/plans/, skill files,
+release notes. These are dev-facing or ephemeral — lower risk of user-facing
+confusion.
 
-1. **Establish the baseline.** Get the commit range you are documenting against (since last release tag, since last merged-doc commit, or since a specific PR).
-2. **Enumerate user-visible changes.** Read commits and PR descriptions. List, for each change, what a user can now do differently.
-3. **Map changes to docs.** For each change, find every page that mentions the affected concept. Common targets: README, CLI reference, API reference, configuration reference, migration guide, FAQ, examples.
-4. **Update precisely.** Edit only the lines that need to change. Do not rewrap paragraphs you did not modify — it pollutes the diff.
-5. **Add new entries where needed.** New CLI flag → CLI reference entry. New env var → configuration reference entry. New endpoint → API reference entry. Don't only add it to the changelog.
-6. **Update examples and snippets.** Code blocks in docs are wrong faster than prose. Re-run any example that touches new behavior.
-7. **Write the release note.** One sentence per user-visible change. Group by Added / Changed / Fixed / Deprecated / Removed. Link to the relevant PRs and docs section.
-8. **Cross-check.** Search the docs for the old behavior wording and remove or update stragglers.
+## Workflow
 
-## Style baseline
+### Step 1 — Detect what changed
 
-- Voice: second person ("you can pass `--json` to ..."). Avoid "we" except in narrative pages.
-- Tense: present, not future. The behavior exists once shipped.
-- Headings: imperative ("Configure the cache") or noun-phrase ("Cache configuration"), match the surrounding page.
-- Code blocks: include the language tag so syntax highlighting works.
-- Cross-links: link the first mention of a concept on each page; do not link every occurrence.
-- Avoid promising future behavior. If something is unreleased, mark it `experimental` or omit it.
+Find the last review cursor:
 
-## Drift detection
+```bash
+# Read the last-reviewed commit SHA
+CURSOR_FILE=".doc-review-cursor"
+if [ -f "$CURSOR_FILE" ]; then
+  LAST_SHA=$(cat "$CURSOR_FILE" | head -1)
+else
+  # First run: look back 60 days
+  LAST_SHA=$(git log --format="%H" --after="60 days ago" --reverse | head -1)
+fi
+```
 
-A doc page is drifting if any of these are true:
+Then gather commits since the cursor:
 
-- It documents a flag, key, or endpoint that no longer exists.
-- An example does not run as written.
-- A default value in the docs does not match the code.
-- A supported-versions list excludes a version the project actually supports, or includes one it dropped.
-- A "Coming soon" section references a feature that shipped or was cancelled.
+```bash
+git log "$LAST_SHA"..HEAD --oneline --no-merges
+```
 
-When you find drift, fix it in the same pass and note it in the release note's `Fixed` group.
+### Step 2 — Classify changes
 
-## Release-note rules
+Scan commit messages and changed files. Categorize into:
 
-- One sentence per item. If two sentences are needed, the item is likely two items.
-- User impact first, internal cause second. `Faster cold start (avoid full bundle download on first run)` beats `Refactor bootstrap loader`.
-- Link the PR for engineering readers and the docs page for users.
-- Mark breaking changes explicitly: `**Breaking:**` prefix. Include migration steps inline or via link.
+- **Feature** — new capabilities (keywords: `feat`, `add`, `implement`, `support`)
+- **Breaking** — removed/renamed things (keywords: `remove`, `breaking`, `drop`, `rename`)
+- **Structural** — new directories, config changes, new adapters, new CLI commands
 
-## Anti-patterns
+**Ignore:** refactors, test-only changes, CI config, dependency bumps, doc-only
+changes, style/formatting commits. These don't affect doc accuracy.
 
-- Massive doc PRs that bundle stylistic rewrites with real updates. Reviewers cannot tell which lines reflect actual behavior changes.
-- "Updated docs" commit messages with no detail. Make the commit say what changed and why.
-- Adding to the changelog without updating the reference docs the changelog points to.
-- Marking a feature as available before its code lands. Documentation must follow behavior, not promise it.
+For borderline cases, check the actual diff — a commit titled "refactor: X"
+that adds a new public API is a feature.
+
+### Step 3 — Build a change summary
+
+Produce a concise list like:
+
+```
+Since last review (<sha>, <date>):
+- FEATURE: Plugin system merged (runtime, SDK, CLI, slots, event bridge)
+- FEATURE: Project archiving added
+- BREAKING: Removed legacy webhook adapter
+- STRUCTURAL: New .agents/skills/ directory convention
+```
+
+If there are no notable changes, skip to Step 7 (update cursor and exit).
+
+### Step 4 — Audit each target doc
+
+For each target document, read it fully and cross-reference against the change
+summary. Check for:
+
+1. **False negatives** — major shipped features not mentioned at all
+2. **False positives** — features listed as "coming soon" / "roadmap" / "planned"
+   / "not supported" / "TBD" that already shipped
+3. **Quickstart accuracy** — install commands, prereqs, and startup instructions
+   still correct (README only)
+4. **Feature table accuracy** — does the features section reflect current
+   capabilities? (README only)
+5. **Works-with accuracy** — are supported adapters/integrations listed correctly?
+
+Use `references/audit-checklist.md` as the structured checklist.
+Use `references/section-map.md` to know where to look for each feature area.
+
+### Step 5 — Create branch and apply minimal edits
+
+```bash
+# Create a branch for the doc updates
+BRANCH="docs/maintenance-$(date +%Y%m%d)"
+git checkout -b "$BRANCH"
+```
+
+Apply **only** the edits needed to fix drift. Rules:
+
+- **Minimal patches only.** Fix inaccuracies, don't rewrite sections.
+- **Preserve voice and style.** Match the existing tone of each document.
+- **No cosmetic changes.** Don't fix typos, reformat tables, or reorganize
+  sections unless they're part of a factual fix.
+- **No new sections.** If a feature needs a whole new section, note it in the
+  PR description as a follow-up — don't add it in a maintenance pass.
+- **Roadmap items:** Move shipped features out of Roadmap. Add a brief mention
+  in the appropriate existing section if there isn't one already. Don't add
+  long descriptions.
+
+### Step 6 — Open a PR
+
+Commit the changes and open a PR:
+
+```bash
+git add README.md doc/SPEC.md doc/PRODUCT.md .doc-review-cursor
+git commit -m "docs: update documentation for accuracy
+
+- [list each fix briefly]
+
+Co-Authored-By: Paperclip <noreply@paperclip.ing>"
+
+git push -u origin "$BRANCH"
+
+gh pr create \
+  --title "docs: periodic documentation accuracy update" \
+  --body "$(cat <<'EOF'
+## Summary
+Automated doc maintenance pass. Fixes documentation drift detected since
+last review.
+
+### Changes
+- [list each fix]
+
+### Change summary (since last review)
+- [list notable code changes that triggered doc updates]
+
+## Review notes
+- Only factual accuracy fixes — no style/cosmetic changes
+- Preserves existing voice and structure
+- Larger doc additions (new sections, tutorials) noted as follow-ups
+
+🤖 Generated by doc-maintenance skill
+EOF
+)"
+```
+
+### Step 7 — Update the cursor
+
+After a successful audit (whether or not edits were needed), update the cursor:
+
+```bash
+git rev-parse HEAD > .doc-review-cursor
+```
+
+If edits were made, this is already committed in the PR branch. If no edits
+were needed, commit the cursor update to the current branch.
+
+## Change Classification Rules
+
+| Signal | Category | Doc update needed? |
+|--------|----------|-------------------|
+| `feat:`, `add`, `implement`, `support` in message | Feature | Yes if user-facing |
+| `remove`, `drop`, `breaking`, `!:` in message | Breaking | Yes |
+| New top-level directory or config file | Structural | Maybe |
+| `fix:`, `bugfix` | Fix | No (unless it changes behavior described in docs) |
+| `refactor:`, `chore:`, `ci:`, `test:` | Maintenance | No |
+| `docs:` | Doc change | No (already handled) |
+| Dependency bumps only | Maintenance | No |
+
+## Patch Style Guide
+
+- Fix the fact, not the prose
+- If removing a roadmap item, don't leave a gap — remove the bullet cleanly
+- If adding a feature mention, match the format of surrounding entries
+  (e.g. if features are in a table, add a table row)
+- Keep README changes especially minimal — it shouldn't churn often
+- For SPEC/PRODUCT, prefer updating existing statements over adding new ones
+  (e.g. change "not supported in V1" to "supported via X" rather than adding
+  a new section)
+
+## Output
+
+When the skill completes, report:
+
+- How many commits were scanned
+- How many notable changes were found
+- How many doc edits were made (and to which files)
+- PR link (if edits were made)
+- Any follow-up items that need larger doc work
+
+## Docs chain
+
+The documentation maintenance process follows a strict two-stage contract across pull requests:
+
+1. **Trigger**: When a PR modifying user-facing behavior, interfaces, or documentation is merged.
+2. **Stage 1 (EN)**: Creates an **EN docs task** to audit and update English documentation (`README.md`, `doc/SPEC.md`, `doc/PRODUCT.md`) and double-check agent skills in `.agents/skills/`.
+3. **Stage 2 (RU)**: Once the EN documentation PR is merged into `main`, a task is spawned for **RU changed sections** to localize strictly the modified sections with an explicit reference back to the original source PR.
+4. **Safety & Execution Rules**:
+   - Mandatory reviewer/human review — **no auto-merge** is permitted on documentation PRs.
+   - Run limits per PR are enforced to avoid agent loops.
+   - Full contract specifications and task templates are defined in `doc/DOCS-CHAIN.md`.
+

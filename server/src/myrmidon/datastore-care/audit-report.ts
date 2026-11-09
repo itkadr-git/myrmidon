@@ -54,9 +54,19 @@ function settingValue(payload: DatastoreSnapshotPayload, name: string): string |
   return found ? found.value : null;
 }
 
+/**
+ * Parses one byte-valued `pg_settings` entry into bytes.
+ *
+ * `pg_settings` reports `setting` in the units of its `unit` column (bytes,
+ * kB, 8kB pages…), and both numbers must be multiplied together — reading the
+ * `setting` alone ships a lying report (07.11 auto-audit: `work_mem` 32768 kB
+ * shown as 32 KiB, `shared_buffers` 131072×8kB as 128 KiB). The collector
+ * stores `unit` next to `value` exactly for this.
+ */
 function bytesSetting(payload: DatastoreSnapshotPayload, name: string): number | null {
-  const raw = settingValue(payload, name);
-  if (raw === null) return null;
+  const found = payload.settings.find((setting) => setting.name === name);
+  if (!found) return null;
+  const raw = found.value;
   const match = raw.trim().match(/^([0-9.]+)\s*(kB|MB|GB|TB|B)?$/i);
   if (!match) {
     const parsed = Number(raw);
@@ -64,17 +74,60 @@ function bytesSetting(payload: DatastoreSnapshotPayload, name: string): number |
   }
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return null;
-  switch ((match[2] ?? "B").toLowerCase()) {
+  let bytes: number;
+  switch ((match[2] ?? "").toLowerCase()) {
     case "kb":
-      return value * 1024;
+      bytes = value * 1024;
+      break;
     case "mb":
-      return value * 1024 * 1024;
+      bytes = value * 1024 * 1024;
+      break;
     case "gb":
-      return value * 1024 * 1024 * 1024;
+      bytes = value * 1024 * 1024 * 1024;
+      break;
     case "tb":
-      return value * 1024 * 1024 * 1024 * 1024;
+      bytes = value * 1024 * 1024 * 1024 * 1024;
+      break;
+    case "b":
+      bytes = value;
+      break;
     default:
-      return value;
+      // No suffix in the string itself: the unit column decides the scale.
+      bytes = value;
+  }
+  const unitFactor = settingUnitBytes(found.unit);
+  return unitFactor === null ? bytes : bytes * unitFactor;
+}
+
+/**
+ * The multiplier of one `pg_settings.unit` value, in bytes per unit.
+ *
+ * Besides B/kB/MB/GB/TB this covers the page units PostgreSQL reports for the
+ * memory parameters: `8kB` (8192 B/page) and `16kB` (16384 B/page). `null`
+ * for a null or unrecognized unit — the string is then taken at face value,
+ * which is also what the previous behaviour did for `unit: null`.
+ */
+export function settingUnitBytes(unit: string | null | undefined): number | null {
+  if (unit === null || unit === undefined) return null;
+  switch (unit.toLowerCase()) {
+    case "b":
+      return 1;
+    case "kb":
+      return 1024;
+    case "mb":
+      return 1024 * 1024;
+    case "gb":
+      return 1024 * 1024 * 1024;
+    case "tb":
+      return 1024 * 1024 * 1024 * 1024;
+    case "8k":
+    case "8kb":
+      return 8 * 1024;
+    case "16k":
+    case "16kb":
+      return 16 * 1024;
+    default:
+      return null;
   }
 }
 
@@ -350,12 +403,28 @@ export function evaluateCriteria(
     title: "Свежесть бэкапа базы",
     threshold: "≤ 24 ч",
     value:
-      backupAge === null
-        ? `нет бэкапа в ${payload.backup.dir}`
-        : `${payload.backup.latestFile ?? "—"} (${backupAge.toFixed(1)} ч, ${prettyBytes(payload.backup.bytes ?? 0)})`,
-    verdict: backupAge === null ? "fail" : backupAge <= 24 ? "ok" : "fail",
-    source: `каталог бэкапов ${payload.backup.dir}`,
-    detail: backupAge === null ? "перед финальным релизом бэкап обязателен" : null,
+      payload.backup.externalLabel
+        ? `внешнее покрытие: ${payload.backup.externalLabel}`
+        : backupAge === null
+          ? `нет бэкапа в ${payload.backup.dir}`
+          : `${payload.backup.latestFile ?? "—"} (${backupAge.toFixed(1)} ч, ${prettyBytes(payload.backup.bytes ?? 0)})`,
+    verdict:
+      payload.backup.externalLabel
+        ? "ok"
+        : backupAge === null
+          ? "fail"
+          : backupAge <= 24
+            ? "ok"
+            : "fail",
+    source: payload.backup.externalLabel
+      ? `env MYRMIDON_DATASTORE_CARE_BACKUP_EXTERNAL=${payload.backup.externalLabel}`
+      : `каталог бэкапов ${payload.backup.dir}`,
+    detail:
+      payload.backup.externalLabel
+        ? "каталог локальных дампов не сканируется: бэкапы покрывает внешняя система"
+        : backupAge === null
+          ? "перед финальным релизом бэкап обязателен"
+          : null,
   });
 
   // 18-19. Optional, extension-gated metrics: printed only when present.
@@ -579,7 +648,11 @@ export function buildAuditReportMarkdown(input: AuditReportInput): string {
   lines.push("");
   lines.push("## Бэкап");
   lines.push("");
-  if (!payload.backup.available) {
+  if (payload.backup.externalLabel) {
+    lines.push(
+      `- Внешнее покрытие: ${payload.backup.externalLabel} (env MYRMIDON_DATASTORE_CARE_BACKUP_EXTERNAL); каталог локальных дампов ${payload.backup.dir} не сканируется`,
+    );
+  } else if (!payload.backup.available) {
     lines.push(`- Бэкапа нет: ${payload.backup.dir} (${payload.backup.note ?? "нет файлов"})`);
   } else {
     lines.push(

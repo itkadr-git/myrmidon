@@ -251,6 +251,7 @@
           "service": "Service",
           "branch": "Branch",
           "folder": "Folder",
+          "responsible": "Responsible",
           "originating": "Originating",
           "started": "Started",
           "completed": "Completed",

@@ -48,6 +48,7 @@ describe("buildDigestSections + renderDigestBody", () => {
         { sourceKind: "blocker_attention", title: "Waiting on a review", issueId: null },
         { sourceKind: "failed_run", title: "agent-a run failed", issueId: null },
         { sourceKind: "budget_alert", title: "company budget warning", issueId: null },
+        { sourceKind: "litellm_budget", title: "LiteLLM key near cap: bot-1", issueId: null },
         { sourceKind: "stack_update", title: "New upstream release", issueId: null },
       ]),
       completedIssues: [{ identifier: "ABC-1", title: "Fix the flaky test" }],
@@ -57,8 +58,8 @@ describe("buildDigestSections + renderDigestBody", () => {
     const bySection = Object.fromEntries(views.map((view) => [view.section, view.lines]));
     expect(bySection.done).toEqual(["- ABC-1 Fix the flaky test"]);
     expect(bySection.blocked).toHaveLength(2);
-    expect(bySection.needs_decision).toHaveLength(3); // decision + interaction + budget alert
-    expect(bySection.spend).toEqual(["- company budget warning"]);
+    expect(bySection.needs_decision).toHaveLength(4); // decision + interaction + budget alert + litellm budget
+    expect(bySection.spend).toEqual(["- company budget warning", "- LiteLLM key near cap: bot-1"]);
     // Unknown source kinds contribute nothing.
     expect(views.flatMap((view) => view.lines)).not.toContain("- New upstream release");
   });

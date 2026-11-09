@@ -1,0 +1,173 @@
+[
+  {
+    "actionIndex": 1,
+    "sourceIssue": "OPE-7710",
+    "sourceDescription": "[OPE-7710](/OPE/issues/OPE-7710) — подтвердить изолированный Windows/build слот и scoped GitHub CI access; не выдавать сырой ключ в комментарий.",
+    "signal": {
+      "issueId": "OPE-7710",
+      "action": "ci_access",
+      "message": "подтвердить изолированный Windows/build слот и scoped GitHub CI access"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "ci_access",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  },
+  {
+    "actionIndex": 2,
+    "sourceIssue": "OPE-7975",
+    "sourceDescription": "[OPE-7975](/OPE/issues/OPE-7975) — определить целевой PERSONAL-BOT instance, tracker-only aria2 egress и размер hard quota. Агент-оператор затем настраивает и проверяет; торрент до проверки выключен.",
+    "signal": {
+      "issueId": "OPE-7975",
+      "action": "infra_config",
+      "message": "определить целевой PERSONAL-BOT instance, tracker-only aria2 egress и размер hard quota"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "infra_config",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  },
+  {
+    "actionIndex": 3,
+    "sourceIssue": "OPE-7265",
+    "sourceDescription": "[OPE-7265](/OPE/issues/OPE-7265) — существующая human_only карточка e4e8fbff-589f-447e-8590-eba46792eb8c требует verdicts на HEAD 9c68c9b937ff59cc8dfd424526d08468234ac289. Не давать waiver CI/Tuwunel: вернуть недостающий workflow/интеграционный тест инженеру после законного решения.",
+    "signal": {
+      "issueId": "OPE-7265",
+      "action": "head_decision",
+      "message": "существующая human_only карточка требует verdicts на HEAD"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "head_decision",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  },
+  {
+    "actionIndex": 4,
+    "sourceIssue": "OPE-7590",
+    "sourceDescription": "[OPE-7590](/OPE/issues/OPE-7590) — независимый рецензент PR myrmidon-deploy #23: по новому правилу adm-dev-review-9; обеспечить доступ к head/CI, не создавать второго параллельного review без проверки существующего.",
+    "signal": {
+      "issueId": "OPE-7590",
+      "action": "review_route",
+      "message": "независимый рецензент PR myrmidon-deploy #23: по новому правилу adm-dev-review-9; обеспечить доступ к head/CI"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "review_route",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  },
+  {
+    "actionIndex": 5,
+    "sourceIssue": "OPE-7533",
+    "sourceDescription": "[OPE-7533](/OPE/issues/OPE-7533) — проверенный артефакт 6cfe3573e65f4e904fc761b8328c80c6115087df и авторизованный relay; не заменять защищённую историю угадыванием.",
+    "signal": {
+      "issueId": "OPE-7533",
+      "action": "branch_relay",
+      "message": "проверенный артефакт 6cfe3573e65f4e904fc761b8328c80c6115087df и авторизованный relay"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "branch_relay",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  },
+  {
+    "actionIndex": 6,
+    "sourceIssue": "OPE-6001",
+    "sourceDescription": "[OPE-6001](/OPE/issues/OPE-6001) — решение по новому head ca01bddcbb029e98bfc4722abd06e4d4cbdd6254 PR #842 после зелёного CI; прежнюю SHA-guard не обходить.",
+    "signal": {
+      "issueId": "OPE-6001",
+      "action": "head_decision",
+      "message": "решение по новому head ca01bddcbb029e98bfc4722abd06e4d4cbdd6254 PR #842 после зелёного CI"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "head_decision",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  },
+  {
+    "actionIndex": 7,
+    "sourceIssue": "OPE-6871",
+    "sourceDescription": "[OPE-6871](/OPE/issues/OPE-6871) — явное разрешение продолжить ранее отклонённую маршрутизацию review/merge PR #1178 либо оператор выполняет сам. Отказанный вызов не повторяли.",
+    "signal": {
+      "issueId": "OPE-6871",
+      "action": "review_route",
+      "message": "явное разрешение продолжить ранее отклонённую маршрутизацию review/merge PR #1178 либо оператор выполняет сам"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "review_route",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  },
+  {
+    "actionIndex": 8,
+    "sourceIssue": "OPE-7225",
+    "sourceDescription": "[OPE-7225](/OPE/issues/OPE-7225) — восстановить execution review participant/runtime, не дублировать уже написанную реализацию.",
+    "signal": {
+      "issueId": "OPE-7225",
+      "action": "review_participant_restore",
+      "message": "восстановить execution review participant/runtime"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "review_participant_restore",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  },
+  {
+    "actionIndex": 9,
+    "sourceIssue": "OPE-7969",
+    "sourceDescription": "[OPE-7969](/OPE/issues/OPE-7969) — оператор с repo write: rerun/fresh CI PR #1364 и base update при необходимости; reported unrelated Telegram-fixture shard failure не объявлять успешным CI.",
+    "signal": {
+      "issueId": "OPE-7969",
+      "action": "ci_rerun",
+      "message": "оператор с repo write: rerun/fresh CI PR #1364 и base update при необходимости"
+    },
+    "expectedClassification": {
+      "kind": "operator_action",
+      "cause": "ci_rerun",
+      "scope": "operator"
+    },
+    "policy": {
+      "role": "operator",
+      "slaMinutes": 120
+    }
+  }
+]
