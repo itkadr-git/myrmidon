@@ -29487,7 +29487,11 @@ export function heartbeatService(
         if (cancellationCause && persistedRunWrite.run?.status === "cancelled") {
           await logActivity(db, {
             companyId: run.companyId,
-            actorType: cancellationCause.source.actor === "board" ? "user" : "system",
+            actorType:
+              cancellationCause.source.actor === "board" ||
+              cancellationCause.source.code === "board_operator"
+                ? "user"
+                : "system",
             actorId: cancellationCause.source.actor ?? "system",
             action: "heartbeat_run.cancelled",
             entityType: "heartbeat_run",
@@ -30238,8 +30242,12 @@ export function heartbeatService(
         if (cancellationFailureCause && failedRunWrite.run?.status === "cancelled") {
           await logActivity(db, {
             companyId: run.companyId,
-            actorType: cancellationFailureCause.source.actor === "board" ? "user" : "system",
-            actorId: cancellationFailureCause.source.actor,
+            actorType:
+              cancellationFailureCause.source.actor === "board" ||
+              cancellationFailureCause.source.code === "board_operator"
+                ? "user"
+                : "system",
+            actorId: cancellationFailureCause.source.actor ?? "system",
             action: "heartbeat_run.cancelled",
             entityType: "heartbeat_run",
             entityId: run.id,
@@ -35365,6 +35373,27 @@ export function heartbeatService(
           level: "warn",
           message: options.eventMessage ?? "run cancelled",
           ...(options.eventPayload ? { payload: options.eventPayload } : {}),
+        });
+        // myrmidon(OPE-12484): every transition into `cancelled` must leave an
+        // activity trace naming the initiator and the reason.
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType:
+            cancellationSource.actor === "board" ||
+            cancellationSource.code === "board_operator"
+              ? "user"
+              : "system",
+          actorId: cancellationSource.actor ?? "system",
+          action: "heartbeat_run.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          agentId: cancelled.agentId,
+          runId: cancelled.id,
+          details: {
+            reason,
+            errorCode,
+            source: cancellationSource,
+          },
         });
         // myrmidon(P1): release run environment leases before promotion, like finalization
         await releaseEnvironmentLeasesForRun({
