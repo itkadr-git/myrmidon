@@ -770,7 +770,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     // with no live run or queued wake.
     const sourceId = await seedIssue(companyId, {
       identifier: "WDOG-IDLE",
-      status: "todo",
+      status: "in_progress",
       assigneeAgentId: agentId,
     });
     await seedWatchdog(companyId, sourceId, agentId);
@@ -780,6 +780,23 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(result).toMatchObject({ checked: 1, triggered: 1 });
     expect(wakes).toHaveLength(1);
+  });
+
+  it("does not trigger a genuinely idle assigned issue in todo status (legitimate idle disposition)", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-LEGIT-IDLE",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(0);
   });
 
   it("does not defer once the freshly-created issue has a terminal run on record", async () => {

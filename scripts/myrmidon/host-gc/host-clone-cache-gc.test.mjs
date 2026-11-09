@@ -56,6 +56,33 @@ describe("board status guard", () => {
     assert.equal(result.candidates.length, 0);
     assert.equal(result.skipped[0].reason, "board-unavailable");
   });
+
+  it("normalizes baseUrl with /api without duplication", async () => {
+    await fetchIssueStatus("OPE-1", {
+      baseUrl: "http://board/api",
+      fetchImpl: async (url) => {
+        assert.equal(url, "http://board/api/issues/OPE-1");
+        return response(200, { status: "done" });
+      },
+    });
+  });
+
+  it("falls back to PAPERCLIP_API_URL or default when baseUrl is unset", async () => {
+    const oldPaperclip = process.env.PAPERCLIP_API_URL;
+    process.env.PAPERCLIP_API_URL = "http://paperclip-env";
+    try {
+      await fetchIssueStatus("OPE-1", {
+        baseUrl: undefined,
+        fetchImpl: async (url) => {
+          assert.equal(url, "http://paperclip-env/api/issues/OPE-1");
+          return response(200, { status: "done" });
+        },
+      });
+    } finally {
+      if (oldPaperclip !== undefined) process.env.PAPERCLIP_API_URL = oldPaperclip;
+      else delete process.env.PAPERCLIP_API_URL;
+    }
+  });
 });
 describe("parseArgs", () => {
   it("defaults to dry-run with standard paths", () => {

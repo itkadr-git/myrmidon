@@ -418,6 +418,29 @@ describe("git wrapper: bot-local mirror end to end", { skip: !hasGit }, () => {
   });
 });
 
+describe("git wrapper: a MYRMIDON_GIT_REAL that runs git again", () => {
+  it("does not loop: the wrapper it re-enters runs the image git, not MYRMIDON_GIT_REAL", () => {
+    const dir = fs.mkdtempSync(path.join(tmp, "nested-"));
+    const log = path.join(dir, "calls.log");
+    const imageGit = path.join(dir, "image-git");
+    fs.writeFileSync(imageGit, `#!/bin/sh\necho "image $*" >> "${log}"\n`, { mode: 0o755 });
+    // The 09.11 shape: a logging fake that execs `git` from PATH, which inside the image is this wrapper.
+    const fake = path.join(dir, "fake-git");
+    fs.writeFileSync(fake, `#!/bin/sh\necho "fake $*" >> "${log}"\nexec "${process.execPath}" "${wrapper}" "$@"\n`, { mode: 0o755 });
+    const r = spawnSync(process.execPath, [wrapper, "config", "--get", "remote.origin.url"], {
+      env: { PATH: process.env.PATH, HOME: tmp, MYRMIDON_GIT_REAL: fake, MYRMIDON_GIT_IMAGE: imageGit },
+      encoding: "utf8",
+      timeout: 20000,
+    });
+    assert.equal(r.error, undefined, "the wrapper must finish");
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"), [
+      "fake config --get remote.origin.url",
+      "image config --get remote.origin.url",
+    ]);
+  });
+});
+
 describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
   function report(roots, extraEnv = {}) {
     const out = path.join(tmp, `report-${Math.random().toString(36).slice(2)}.json`);
