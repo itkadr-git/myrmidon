@@ -9,8 +9,8 @@
 // closes the task once the PR is merged.
 
 import { and, eq } from "drizzle-orm";
-import { issueWorkProducts, type Db } from "@myrmidon/db";
-import { selectOpenPullRequestWorkProduct } from "./policy.js";
+import { issueWorkProducts, issues, issueComments, type Db } from "@myrmidon/db";
+import { selectOpenPullRequestWorkProduct, OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "./policy.js";
 
 export const REVIEW_APPROVAL_PENDING_MERGE_CODE = "review_approval_pending_merge";
 
@@ -58,6 +58,7 @@ export async function findApprovalPendingMergePullRequest(
       url: issueWorkProducts.url,
       isPrimary: issueWorkProducts.isPrimary,
       updatedAt: issueWorkProducts.updatedAt,
+      metadata: issueWorkProducts.metadata,
     })
     .from(issueWorkProducts)
     .where(
@@ -68,5 +69,76 @@ export async function findApprovalPendingMergePullRequest(
       ),
     );
   const product = selectOpenPullRequestWorkProduct(Array.isArray(rows) ? rows : []);
-  return product ? { id: product.id, url: product.url ?? null } : null;
+  if (product) {
+    return { id: product.id, url: product.url ?? null };
+  }
+
+  // Fallback: search open PRs in company by branch bot/<KEY> or "APPROVE PR #N" in comments
+  const [issueRow] = await db
+    .select({ identifier: issues.identifier })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+
+  if (!issueRow) return null;
+
+  const key = issueRow.identifier;
+  const targetBranch = `bot/${key}`;
+
+  const companyPrRows = await db
+    .select({
+      id: issueWorkProducts.id,
+      type: issueWorkProducts.type,
+      status: issueWorkProducts.status,
+      url: issueWorkProducts.url,
+      isPrimary: issueWorkProducts.isPrimary,
+      updatedAt: issueWorkProducts.updatedAt,
+      metadata: issueWorkProducts.metadata,
+    })
+    .from(issueWorkProducts)
+    .where(
+      and(
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+      ),
+    );
+
+  const openPrs = (Array.isArray(companyPrRows) ? companyPrRows : []).filter(
+    (p) => OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES.has(p.status),
+  );
+
+  const branchMatch = openPrs.find((p) => {
+    const meta = (p.metadata && typeof p.metadata === "object" ? p.metadata : {}) as Record<string, unknown>;
+    const branch = String(meta.branch ?? meta.headRefName ?? meta.headBranch ?? "");
+    return branch === targetBranch;
+  });
+
+  if (branchMatch) {
+    return { id: branchMatch.id, url: branchMatch.url ?? null };
+  }
+
+  const commentRows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId)));
+
+  const approveRegex = /APPROVE\s+PR\s+#(\d+)/i;
+  for (const c of commentRows) {
+    const match = c.body?.match(approveRegex);
+    if (match && match[1]) {
+      const prNum = Number(match[1]);
+      const prMatch = openPrs.find((p) => {
+        const meta = (p.metadata && typeof p.metadata === "object" ? p.metadata : {}) as Record<string, unknown>;
+        const num = Number(meta.number ?? meta.pullRequestNumber ?? NaN);
+        if (num === prNum) return true;
+        if (p.url && p.url.endsWith(`/${prNum}`)) return true;
+        if (p.url && p.url.includes(`/pull/${prNum}`)) return true;
+        return false;
+      });
+      if (prMatch) {
+        return { id: prMatch.id, url: prMatch.url ?? null };
+      }
+    }
+  }
+
+  return null;
 }
