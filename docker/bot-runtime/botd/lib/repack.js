@@ -317,7 +317,7 @@ export async function repackRepo(repoPath, options = {}) {
   });
   if (repackRes.code !== 0) {
     log(`botd repack: git repack failed on ${repoPath} (code ${repackRes.code}): ${repackRes.stderr || repackRes.stdout}`);
-    cleanupStaleTempPacks(repoPath, { log, maxAgeMs: 0 });
+    cleanupStaleTempPacks(repoPath, { log });
     // Record the failure with a backoff marker so shouldRepack (whose
     // pack-count branch ignores the success marker) does not retry every ~5
     // min cycle; next attempt is allowed after REPACK_FAILURE_BACKOFF_MS (6h).
