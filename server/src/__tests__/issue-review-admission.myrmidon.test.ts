@@ -720,7 +720,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     // fresh key from that new head and wakes again.
     const returnRes = await request(app)
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "in_progress", commentBody: "REQUEST CHANGES: fix the failing check" });
+      .send({ status: "in_progress", comment: "REQUEST CHANGES: fix the failing check" });
     expect(returnRes.status).toBe(200);
     storedHead = "head-def";
     await ctx.db
@@ -747,7 +747,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(eq(issueWorkProducts.issueId, issueId));
     const fallbackRes = await request(app)
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "in_progress", commentBody: "REQUEST CHANGES: still broken" });
+      .send({ status: "in_progress", comment: "REQUEST CHANGES: still broken" });
     expect(fallbackRes.status).toBe(200);
     const fallbackResubmit = await request(app)
       .patch(`/api/issues/${issueId}`)
