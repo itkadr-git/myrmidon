@@ -19,8 +19,8 @@ English versions of the pages carry no suffix, e.g. [Home](Home).
   в работающую доску.
 - [Быстрый старт](Quick-start.ru) — короткий путь к доске, сжатый из
   «Установки».
-- [Миграция с Paperclip](Migration-from-Paperclip.ru) — перенос инстанса
-  Paperclip в чистый Myrmidon: проверка, перенос базы, файлов и секретов,
+- [Миграция с Paperclip](Migration-from-Paperclip.ru) — перенос экземпляра Paperclip
+  в чистый Myrmidon: проверка, перенос базы, файлов и секретов,
   откат.
 - [Настройки в интерфейсе](Settings-in-the-interface.ru) — где меняются
   лимиты запусков, параллельные ходы агента и бэкапы.

@@ -16,8 +16,8 @@ needs one. It is an independent product maintained as a fork of
   working board.
 - [Quick start](Quick-start) — the shortest path, condensed from
   Installation.
-- [Migration from Paperclip](Migration-from-Paperclip) — move a Paperclip
-  instance into a clean Myrmidon: preflight, DB, files and secrets transfer,
+- [Migration from Paperclip](Migration-from-Paperclip) — move a Paperclip instance
+  into a clean Myrmidon: preflight, DB, files and secrets transfer,
   rollback.
 - [Settings in the interface](Settings-in-the-interface) — where run limits,
   per-agent parallelism and backups are tuned.
