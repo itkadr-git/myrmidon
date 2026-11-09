@@ -251,7 +251,7 @@ export function cleanupStaleTempPacks(repoPath, options = {}) {
     if (!TEMP_PACK_PATTERNS.some((re) => re.test(name))) continue;
     try {
       const st = fs.statSync(path.join(packDir, name));
-      if (now - st.mtimeMs < maxAgeMs) continue;
+      if (maxAgeMs > 0 && now - st.mtimeMs < maxAgeMs) continue;
       fs.rmSync(path.join(packDir, name), { force: true });
       removed.push(name);
     } catch {}
@@ -317,6 +317,7 @@ export async function repackRepo(repoPath, options = {}) {
   });
   if (repackRes.code !== 0) {
     log(`botd repack: git repack failed on ${repoPath} (code ${repackRes.code}): ${repackRes.stderr || repackRes.stdout}`);
+    cleanupStaleTempPacks(repoPath, { log, maxAgeMs: 0 });
     // Record the failure with a backoff marker so shouldRepack (whose
     // pack-count branch ignores the success marker) does not retry every ~5
     // min cycle; next attempt is allowed after REPACK_FAILURE_BACKOFF_MS (6h).

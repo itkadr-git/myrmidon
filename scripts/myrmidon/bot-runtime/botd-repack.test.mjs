@@ -239,6 +239,24 @@ describe("botd repack: git-base optimization (OPE-10039)", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("repackRepo cleans up temporary pack files when repack fails", async () => {
+    const dir = makeTempDir();
+    const packDir = path.join(dir, "objects", "pack");
+    fs.mkdirSync(packDir, { recursive: true });
+    const tempPack = path.join(packDir, ".tmp-123-pack-xyz.pack");
+    fs.writeFileSync(tempPack, "temp");
+
+    const logs = [];
+    const res = await repackRepo(dir, {
+      runCmd: async () => ({ code: 128, stdout: "", stderr: "Failed to write bitmap index" }),
+      log: (line) => logs.push(line),
+    });
+    assert.equal(res.ok, false);
+    assert.equal(fs.existsSync(tempPack), false);
+    assert.ok(logs.some((line) => line.includes("removed")));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("repackRepo passes repository owner uid and gid credentials to git repack and prune", async () => {
     const dir = makeTempDir();
     const commands = [];
