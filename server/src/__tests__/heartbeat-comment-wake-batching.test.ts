@@ -4363,18 +4363,23 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
-        payload: { issueId, commentId: "   " as unknown as string },
+        payload: { issueId, commentId: "not-a-uuid" as unknown as string },
         contextSnapshot: {
           issueId,
           taskId: issueId,
-          commentId: "   " as unknown as string,
-          wakeCommentIds: ["   ", null, undefined, 12345] as unknown as string[],
+          commentId: "not-a-uuid" as unknown as string,
+          wakeCommentIds: ["not-a-uuid", "   ", null, undefined, 12345] as unknown as string[],
           wakeReason: "issue_commented",
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
       });
-      expect(malformedRun).toBeNull();
+      // The active run is returned for the coalesced wake; malformed comment IDs
+      // must not create or replace its comment context.
+      expect(malformedRun?.id).toBe(firstRun?.id);
+      expect(
+        (malformedRun?.contextSnapshot as Record<string, unknown> | null)?.commentId,
+      ).toBe(commentValid.id);
 
       // Now enqueue a second valid comment wake
       const commentFollowUp = await db

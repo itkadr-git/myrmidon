@@ -37,9 +37,10 @@ export function withQueuedCommentIdsInWakePayload(
 ): Record<string, unknown> {
   const payload = { ...record(payloadValue) };
   const context = { ...record(payload[QUEUE_CONTEXT_KEY]) };
-  if (ids.length > 0) {
-    const latestId = ids[ids.length - 1]!;
-    context[QUEUE_IDS_KEY] = ids;
+  const validIds = uniqueIds(ids);
+  if (validIds.length > 0) {
+    const latestId = validIds[validIds.length - 1]!;
+    context[QUEUE_IDS_KEY] = validIds;
     context.wakeCommentId = latestId;
     context.commentId = latestId;
     payload.commentId = latestId;
@@ -79,9 +80,10 @@ export function withQueuedCommentIdsInRunContext(
   ids: string[],
 ): Record<string, unknown> {
   const context = { ...record(contextValue) };
-  if (ids.length > 0) {
-    const latestId = ids[ids.length - 1]!;
-    context[QUEUE_IDS_KEY] = ids;
+  const validIds = uniqueIds(ids);
+  if (validIds.length > 0) {
+    const latestId = validIds[validIds.length - 1]!;
+    context[QUEUE_IDS_KEY] = validIds;
     context.wakeCommentId = latestId;
     context.commentId = latestId;
   } else {

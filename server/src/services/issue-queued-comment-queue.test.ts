@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering, queuedCommentIdsFromWakePayload, queuedCommentIdsFromRunContext } from "./issue-queued-comment-queue.js";
+import {
+  buildQueuedCommentQueueSnapshot,
+  decideQueuedCommentQueueSteering,
+  queuedCommentIdsFromWakePayload,
+  queuedCommentIdsFromRunContext,
+  withQueuedCommentIdsInWakePayload,
+  withQueuedCommentIdsInRunContext,
+} from "./issue-queued-comment-queue.js";
 
 describe("queuedCommentIdsFromWakePayload and runContext", () => {
   it("filters out invalid or malformed comment IDs from wake payload", () => {
@@ -30,6 +37,28 @@ describe("queuedCommentIdsFromWakePayload and runContext", () => {
     };
 
     expect(queuedCommentIdsFromRunContext(context)).toEqual([validUuid]);
+  });
+
+  it("filters out invalid comment IDs when writing wake payload", () => {
+    const validUuid = "123e4567-e89b-12d3-a456-426614174000";
+    const resWithMalformed = withQueuedCommentIdsInWakePayload({}, ["not-a-uuid", "   "]);
+    expect(resWithMalformed.commentId).toBeUndefined();
+    expect((resWithMalformed._paperclipWakeContext as Record<string, unknown>).wakeCommentIds).toBeUndefined();
+
+    const resWithValid = withQueuedCommentIdsInWakePayload({}, ["not-a-uuid", validUuid]);
+    expect(resWithValid.commentId).toBe(validUuid);
+    expect((resWithValid._paperclipWakeContext as Record<string, unknown>).wakeCommentIds).toEqual([validUuid]);
+  });
+
+  it("filters out invalid comment IDs when writing run context", () => {
+    const validUuid = "123e4567-e89b-12d3-a456-426614174000";
+    const resWithMalformed = withQueuedCommentIdsInRunContext({}, ["not-a-uuid", "   "]);
+    expect(resWithMalformed.commentId).toBeUndefined();
+    expect(resWithMalformed.wakeCommentIds).toBeUndefined();
+
+    const resWithValid = withQueuedCommentIdsInRunContext({}, ["not-a-uuid", validUuid]);
+    expect(resWithValid.commentId).toBe(validUuid);
+    expect(resWithValid.wakeCommentIds).toEqual([validUuid]);
   });
 });
 

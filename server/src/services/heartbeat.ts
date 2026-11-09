@@ -7240,7 +7240,7 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   const merged: string[] = [];
   const append = (value: unknown) => {
     const normalized = readNonEmptyString(value);
-    if (!normalized || merged.includes(normalized)) return;
+    if (!normalized || !isValidWakeCommentId(normalized) || merged.includes(normalized)) return;
     merged.push(normalized);
   };
 
@@ -7344,6 +7344,10 @@ function enrichWakeContextSnapshot(input: {
     readNonEmptyString(payload?.["issueId"]) ??
     readNonEmptyString(payload?.["taskId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
+  const validCommentIdFromPayload =
+    commentIdFromPayload && isValidWakeCommentId(commentIdFromPayload)
+      ? commentIdFromPayload
+      : null;
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
   const externalSession = parseObject(contextSnapshot.externalSession);
@@ -7373,9 +7377,9 @@ function enrichWakeContextSnapshot(input: {
   }
   if (
     !readNonEmptyString(contextSnapshot["commentId"]) &&
-    commentIdFromPayload
+    validCommentIdFromPayload
   ) {
-    contextSnapshot.commentId = commentIdFromPayload;
+    contextSnapshot.commentId = validCommentIdFromPayload;
   }
   if (wakeCommentIds.length > 0) {
     const latestCommentId = wakeCommentIds[wakeCommentIds.length - 1];
@@ -7385,11 +7389,26 @@ function enrichWakeContextSnapshot(input: {
     // Once comment ids are normalized into the snapshot, rebuild the structured
     // wake payload from those ids later instead of carrying forward stale data.
     delete contextSnapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
-  } else if (
-    !readNonEmptyString(contextSnapshot["wakeCommentId"]) &&
-    wakeCommentId
-  ) {
-    contextSnapshot.wakeCommentId = wakeCommentId;
+  } else {
+    delete contextSnapshot[WAKE_COMMENT_IDS_KEY];
+    if (
+      contextSnapshot.commentId !== undefined &&
+      !isValidWakeCommentId(contextSnapshot.commentId)
+    ) {
+      delete contextSnapshot.commentId;
+    }
+    if (
+      contextSnapshot.wakeCommentId !== undefined &&
+      !isValidWakeCommentId(contextSnapshot.wakeCommentId)
+    ) {
+      delete contextSnapshot.wakeCommentId;
+    }
+    if (
+      !readNonEmptyString(contextSnapshot["wakeCommentId"]) &&
+      wakeCommentId
+    ) {
+      contextSnapshot.wakeCommentId = wakeCommentId;
+    }
   }
   if (!readNonEmptyString(contextSnapshot["wakeSource"]) && source) {
     contextSnapshot.wakeSource = source;
@@ -7641,6 +7660,20 @@ export function mergeCoalescedContextSnapshot(
     // The merged context should carry canonical comment ids; the next wake will
     // regenerate any structured payload from those ids.
     delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  } else {
+    delete merged[WAKE_COMMENT_IDS_KEY];
+    if (
+      merged.commentId !== undefined &&
+      !isValidWakeCommentId(merged.commentId)
+    ) {
+      delete merged.commentId;
+    }
+    if (
+      merged.wakeCommentId !== undefined &&
+      !isValidWakeCommentId(merged.wakeCommentId)
+    ) {
+      delete merged.wakeCommentId;
+    }
   }
   const existingWake = parseObject(existing[PAPERCLIP_WAKE_PAYLOAD_KEY]);
   const existingCommentIds = extractWakeCommentIds(existing);

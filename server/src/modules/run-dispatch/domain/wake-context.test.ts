@@ -31,41 +31,70 @@ describe("wake context", () => {
   });
 
   it("keeps ordered, unique, non-empty wake comment ids", () => {
+    const id1 = "11111111-1111-4111-8111-111111111111";
+    const id2 = "22222222-2222-4222-8222-222222222222";
     expect(
       extractWakeCommentIds({
-        wakeCommentIds: ["valid-1", "", "   ", null, undefined, 123, "valid-2"],
+        wakeCommentIds: [id1, "", "   ", null, undefined, 123, "not-a-uuid", id2],
       }),
-    ).toEqual(["valid-1", "valid-2"]);
+    ).toEqual([id1, id2]);
     expect(
       extractWakeCommentIds({
-        wakeCommentIds: ["   ", "\t\n  "],
+        wakeCommentIds: ["   ", "\t\n  ", "not-a-uuid"],
       }),
     ).toEqual([]);
-    expect(extractWakeCommentIds({ wakeCommentIds: "comment-1" })).toEqual([]);
+    expect(extractWakeCommentIds({ wakeCommentIds: id1 })).toEqual([]);
     expect(extractWakeCommentIds(undefined)).toEqual([]);
   });
 
   it.each([
-    [{ wakeCommentIds: ["batch-1", "batch-2"], wakeCommentId: "wake" }, {}, "batch-2"],
-    [{ wakeCommentId: "wake", commentId: "context" }, {}, "wake"],
-    [{ commentId: "context" }, { commentId: "payload" }, "context"],
-    [{}, { commentId: "payload" }, "payload"],
+    [
+      {
+        wakeCommentIds: [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222",
+        ],
+        wakeCommentId: "33333333-3333-4333-8333-333333333333",
+      },
+      {},
+      "22222222-2222-4222-8222-222222222222",
+    ],
+    [
+      {
+        wakeCommentId: "33333333-3333-4333-8333-333333333333",
+        commentId: "44444444-4444-4444-8444-444444444444",
+      },
+      {},
+      "33333333-3333-4333-8333-333333333333",
+    ],
+    [
+      { commentId: "44444444-4444-4444-8444-444444444444" },
+      { commentId: "55555555-5555-4555-8555-555555555555" },
+      "44444444-4444-4444-8444-444444444444",
+    ],
+    [{}, { commentId: "55555555-5555-4555-8555-555555555555" }, "55555555-5555-4555-8555-555555555555"],
     [{ wakeCommentId: "  " }, { commentId: "  " }, null],
+    [{ wakeCommentId: "not-a-uuid" }, { commentId: "bad-id" }, null],
   ])("derives comment ids by canonical precedence", (context, payload, expected) => {
     expect(deriveCommentId(context, payload)).toBe(expected);
   });
 
   it("allows interaction wakes only for an allowed reason with a comment id", () => {
     const allowed = new Set(["issue_commented"]);
+    const id = "11111111-1111-4111-8111-111111111111";
     expect(allowsIssueInteractionWake({
       wakeReason: "issue_commented",
-      wakeCommentId: "comment-1",
+      wakeCommentId: id,
     }, allowed)).toBe(true);
     expect(allowsIssueInteractionWake({
       wakeReason: "timer",
-      wakeCommentId: "comment-1",
+      wakeCommentId: id,
     }, allowed)).toBe(false);
     expect(allowsIssueInteractionWake({ wakeReason: "issue_commented" }, allowed)).toBe(false);
+    expect(allowsIssueInteractionWake({
+      wakeReason: "issue_commented",
+      wakeCommentId: "not-a-uuid",
+    }, allowed)).toBe(false);
   });
 
   it.each(["accepted", "answered", "cancelled", "rejected"])(

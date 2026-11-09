@@ -64,7 +64,7 @@ export function extractWakeCommentIds(
   const out: string[] = [];
   for (const entry of raw) {
     const value = readNonEmptyString(entry);
-    if (!value || out.includes(value)) continue;
+    if (!value || !isValidWakeCommentId(value) || out.includes(value)) continue;
     out.push(value);
   }
   return out;
@@ -75,13 +75,14 @@ export function deriveCommentId(
   payload?: Record<string, unknown> | null,
 ): string | null {
   const batchedCommentId = extractWakeCommentIds(contextSnapshot).at(-1);
-  return (
-    batchedCommentId ??
-    readNonEmptyString(contextSnapshot?.wakeCommentId) ??
-    readNonEmptyString(contextSnapshot?.commentId) ??
-    readNonEmptyString(payload?.commentId) ??
-    null
-  );
+  if (batchedCommentId) return batchedCommentId;
+  const wakeCommentId = readNonEmptyString(contextSnapshot?.wakeCommentId);
+  if (wakeCommentId && isValidWakeCommentId(wakeCommentId)) return wakeCommentId;
+  const commentId = readNonEmptyString(contextSnapshot?.commentId);
+  if (commentId && isValidWakeCommentId(commentId)) return commentId;
+  const payloadCommentId = readNonEmptyString(payload?.commentId);
+  if (payloadCommentId && isValidWakeCommentId(payloadCommentId)) return payloadCommentId;
+  return null;
 }
 
 /**
