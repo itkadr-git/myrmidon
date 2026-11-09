@@ -1,4 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+const { runChildProcessMock } = vi.hoisted(() => ({
+  runChildProcessMock: vi.fn(),
+}));
+
+vi.mock("@myrmidon/adapter-utils/server-utils", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("@myrmidon/adapter-utils/server-utils");
+  return {
+    ...actual,
+    runChildProcess: (...args: Parameters<typeof actual.runChildProcess>) => runChildProcessMock(...args),
+  };
+});
+
 import {
   ensureOmpModelConfiguredAndAvailable,
   listOmpModels,
@@ -6,10 +18,24 @@ import {
   resetOmpModelsCacheForTests,
 } from "./models.js";
 
+function ompProcessResult(stdout: string) {
+  return {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout,
+    stderr: "",
+    pid: 123,
+    startedAt: new Date().toISOString(),
+  };
+}
+
 describe("omp models", () => {
   afterEach(() => {
     delete process.env.PAPERCLIP_OMP_COMMAND;
     resetOmpModelsCacheForTests();
+    runChildProcessMock.mockReset();
+    runChildProcessMock.mockRejectedValue(new Error("omp discovery unavailable in test"));
   });
 
   it("returns an empty list when discovery command is unavailable", async () => {
@@ -17,7 +43,29 @@ describe("omp models", () => {
     await expect(listOmpModels()).resolves.toEqual([]);
   });
 
+  it("lists host models under the litellm/ prefix the run sees (OPE-12464)", async () => {
+    runChildProcessMock.mockResolvedValue(
+      ompProcessResult(
+        JSON.stringify({ models: [{ provider: "antigravity", id: "gemini-3.8-flash-medium", selector: "antigravity/gemini-3.8-flash-medium" }] }),
+      ),
+    );
+    const models = await listOmpModels();
+    expect(models.map((m) => m.id)).toContain("litellm/antigravity/gemini-3.8-flash-medium");
+  });
+
+  it("accepts the litellm-prefixed configured model at run start (OPE-12464)", async () => {
+    runChildProcessMock.mockResolvedValue(
+      ompProcessResult(
+        JSON.stringify({ models: [{ provider: "antigravity", id: "gemini-3.8-flash-medium", selector: "antigravity/gemini-3.8-flash-medium" }] }),
+      ),
+    );
+    await expect(
+      ensureOmpModelConfiguredAndAvailable({ model: "litellm/antigravity/gemini-3.8-flash-medium" }),
+    ).resolves.toBeDefined();
+  });
+
   it("rejects when model is missing", async () => {
+    runChildProcessMock.mockRejectedValue(new Error("omp discovery unavailable in test"));
     await expect(
       ensureOmpModelConfiguredAndAvailable({ model: "" }),
     ).rejects.toThrow("OMP requires `adapterConfig.model`");
@@ -25,6 +73,7 @@ describe("omp models", () => {
 
   it("rejects when discovery cannot run for configured model", async () => {
     process.env.PAPERCLIP_OMP_COMMAND = "__paperclip_missing_omp_command__";
+    runChildProcessMock.mockRejectedValue(new Error("spawn missing command"));
     await expect(
       ensureOmpModelConfiguredAndAvailable({
         model: "xai/grok-4",

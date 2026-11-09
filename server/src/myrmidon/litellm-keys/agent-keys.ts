@@ -310,6 +310,82 @@ export async function updateAgentGatewayKeyAllowlist(
 }
 
 /**
+ * Extends an agent's gateway key model allowlist with new models if the key
+ * exists and already has an explicit (non-empty) allowlist.
+ * If the key has no allowlist or gateway key management is not configured, this is a no-op.
+ */
+export async function extendAgentGatewayKeyAllowlist(
+  deps: AgentGatewayKeyDeps,
+  input: {
+    companyId: string;
+    agentId: string;
+    newModels: string[];
+  },
+): Promise<AgentGatewayKeyView | null> {
+  const settings = readGatewayKeySettings(deps.env ?? process.env);
+  if (!settings.canManageKeys || !settings.baseUrl || !settings.adminKeySecret) {
+    return null;
+  }
+  let agent: { id: string; name: string };
+  try {
+    agent = await loadAgent(deps.db, input);
+  } catch {
+    return null;
+  }
+  const secretName = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
+  const secretId = await deps.findSecretId(input.companyId, secretName);
+  if (!secretId) {
+    return null;
+  }
+  const adminKey = await deps.readSecretValue(input.companyId, settings.adminKeySecret);
+  if (!adminKey) {
+    return null;
+  }
+  const gw = deps.gateway({ baseUrl: settings.baseUrl, adminKey });
+  if (!gw.getKeyInfo || !gw.setKeyAllowedModels) {
+    return null;
+  }
+  let info: { models?: string[] } | null = null;
+  try {
+    info = await gw.getKeyInfo({ alias: secretName });
+  } catch {
+    return null;
+  }
+  if (!info || !Array.isArray(info.models) || info.models.length === 0) {
+    return null;
+  }
+  const currentSet = new Set(info.models);
+  const candidates: string[] = [];
+  for (const m of input.newModels) {
+    if (typeof m !== "string") continue;
+    const trimmed = m.trim();
+    if (!trimmed) continue;
+    candidates.push(trimmed);
+    if (trimmed.startsWith("litellm/")) {
+      candidates.push(trimmed.slice("litellm/".length));
+    }
+  }
+  const missing = candidates.filter((m) => !currentSet.has(m));
+  if (missing.length === 0) {
+    return null;
+  }
+  const updatedModels = [...info.models, ...missing];
+  await gw.setKeyAllowedModels({ alias: secretName, models: updatedModels });
+  log(deps).info(
+    { companyId: input.companyId, agentId: agent.id, addedModels: missing },
+    "extended agent gateway key allowlist with new models",
+  );
+  return {
+    agentId: agent.id,
+    secretName,
+    present: true,
+    valueHash: null,
+    canManageKeys: true,
+    models: updatedModels,
+  };
+}
+
+/**
  * The state of an agent's key. An agent reaches this for itself; a board member
  * for any agent of the company. The value is never part of the answer.
  */
@@ -540,18 +616,19 @@ export function defaultAgentGatewayKeyDeps(
   db: Db,
   env: NodeJS.ProcessEnv = process.env,
 ): AgentGatewayKeyDeps {
-  const secrets = secretService(db);
+  let secretsInstance: ReturnType<typeof secretService> | null = null;
+  const getSecrets = () => (secretsInstance ??= secretService(db));
   return {
     db,
     env,
     readSecretValue: (companyId, secretName) =>
-      secrets
+      getSecrets()
         .getByName(companyId, secretName)
-        .then((row) => (row ? secrets.resolveSecretValue(companyId, row.id, "latest") : null)),
+        .then((row) => (row ? getSecrets().resolveSecretValue(companyId, row.id, "latest") : null)),
     findSecretId: (companyId, secretName) =>
-      secrets.getByName(companyId, secretName).then((row) => row?.id ?? null),
+      getSecrets().getByName(companyId, secretName).then((row) => row?.id ?? null),
     createSecret: async (input) => {
-      const created = (await secrets.create(
+      const created = (await getSecrets().create(
         input.companyId,
         {
           name: input.name,
@@ -564,10 +641,10 @@ export function defaultAgentGatewayKeyDeps(
       return { id: created.id };
     },
     rotateSecret: async (secretId, value) => {
-      await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
+      await getSecrets().rotate(secretId, { value }, { userId: null, agentId: null });
     },
     deleteSecret: async (secretId) => {
-      await secrets.remove(secretId);
+      await getSecrets().remove(secretId);
     },
     gateway: ({ baseUrl, adminKey }) => createGatewayKeyAdminPort(baseUrl, adminKey),
   };

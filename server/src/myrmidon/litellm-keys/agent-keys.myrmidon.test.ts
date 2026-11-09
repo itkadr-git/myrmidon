@@ -5,6 +5,7 @@ import {
   assertManagedKeySecretName,
   createAgentGatewayKey,
   createGatewayKeyAdminPort,
+  extendAgentGatewayKeyAllowlist,
   gatewayKeyValueHash,
   listAgentGatewayKeys,
   readAgentGatewayKey,
@@ -360,6 +361,42 @@ describe("myrmidon(M2-B) agent gateway keys", () => {
         models: ["model-x"],
       }),
     ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("extends agent gateway key allowlist when key exists and has an allowlist", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+
+    // Set initial allowlist
+    await updateAgentGatewayKeyAllowlist(deps, {
+      companyId: "company-a",
+      agentId: agent.id,
+      models: ["deepseek/deepseek-chat"],
+    });
+
+    // Extend with new model (including litellm/ prefix stripping)
+    const res = await extendAgentGatewayKeyAllowlist(deps, {
+      companyId: "company-a",
+      agentId: agent.id,
+      newModels: ["litellm/antigravity/gemini-3.8-flash-medium"],
+    });
+
+    expect(res).not.toBeNull();
+    expect(res?.models).toEqual([
+      "deepseek/deepseek-chat",
+      "litellm/antigravity/gemini-3.8-flash-medium",
+      "antigravity/gemini-3.8-flash-medium",
+    ]);
+    expect(gateway.calls).toContainEqual({
+      op: "setAllowedModels",
+      alias: created.view.secretName,
+      models: [
+        "deepseek/deepseek-chat",
+        "litellm/antigravity/gemini-3.8-flash-medium",
+        "antigravity/gemini-3.8-flash-medium",
+      ],
+    });
   });
 });
 
