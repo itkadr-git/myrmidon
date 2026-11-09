@@ -83,6 +83,7 @@ jobs:
           - "v2026.1005.0"
           - "v2026.1012.0"
           - "v2026.1023.0"
+          - "v2026.1106.0"
     services:
       postgres:
         image: postgres:16

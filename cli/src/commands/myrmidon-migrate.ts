@@ -586,11 +586,17 @@ export function checkCompatibility(
   return { problems, exclusions, vendorOnly, skippedSourceData };
 }
 
-const INT_RANK: Record<string, number> = { smallint: 1, integer: 2, bigint: 3 };
+const INT_RANK: Record<string, number> = { smallint: 1, integer: 2, bigint: 3, numeric: 4 };
 const INT_RANGE: Record<string, [bigint, bigint]> = {
   smallint: [-32768n, 32767n],
   integer: [-2147483648n, 2147483647n],
+  bigint: [-9223372036854775808n, 9223372036854775807n],
 };
+
+function parseRangeBound(val: string): bigint {
+  const dot = val.indexOf(".");
+  return BigInt(dot >= 0 ? val.slice(0, dot) : val);
+}
 
 /**
  * Columns that are wider in the source than in the target (bigint into
@@ -620,7 +626,7 @@ export async function checkNarrowing(
       );
       const lo = rows[0]?.lo;
       const hi = rows[0]?.hi;
-      if ((lo != null && BigInt(lo) < range[0]) || (hi != null && BigInt(hi) > range[1])) {
+      if ((lo != null && parseRangeBound(lo) < range[0]) || (hi != null && parseRangeBound(hi) > range[1])) {
         problems.push(`value-out-of-range-in-target:${name}.${col.name}(source ${col.dataType} ${lo}..${hi}, target ${tcol.dataType})`);
       }
     }
@@ -634,6 +640,7 @@ export async function withoutVendorOnly(
   analysis: SourceAnalysis,
   found: VendorOnlyFinding[],
   exclusions: Exclusion[] = [],
+  targetInfo?: Map<string, TableInfo>,
 ): Promise<SourceAnalysis> {
   const dropTables = new Set(found.filter((f) => f.kind === "table").map((f) => f.table));
   for (const e of exclusions) {
@@ -653,19 +660,45 @@ export async function withoutVendorOnly(
       }
     }
   }
-  if (dropTables.size === 0 && dropCols.size === 0) return analysis;
+  const typeChangedColsByTable = new Map<string, Set<string>>();
+  if (targetInfo) {
+    for (const [name, info] of analysis.tables) {
+      const tgt = targetInfo.get(name);
+      if (!tgt) continue;
+      const tgtCols = new Map(tgt.columns.map((c) => [c.name, c]));
+      for (const col of info.columns) {
+        const tcol = tgtCols.get(col.name);
+        if (
+          tcol &&
+          col.dataType === "numeric" &&
+          (tcol.dataType === "integer" || tcol.dataType === "bigint" || tcol.dataType === "smallint")
+        ) {
+          const s = typeChangedColsByTable.get(name) ?? new Set<string>();
+          s.add(col.name);
+          typeChangedColsByTable.set(name, s);
+        }
+      }
+    }
+  }
+  if (dropTables.size === 0 && dropCols.size === 0 && typeChangedColsByTable.size === 0) return analysis;
   const tables = new Map<string, TableInfo>();
   const digests = new Map<string, TableDigest>();
   for (const [name, info] of analysis.tables) {
     if (dropTables.has(name)) continue;
     const cols = dropCols.get(name);
-    if (!cols) {
+    const typeChanged = typeChangedColsByTable.get(name);
+    const excludeFromDigest = new Set([
+      ...(analysis.carrierColumns.get(name) ?? []),
+      ...(cols ?? []),
+      ...(typeChanged ?? []),
+    ]);
+    if (!cols && !typeChanged) {
       tables.set(name, info);
       digests.set(name, analysis.digests.get(name)!);
       continue;
     }
-    tables.set(name, { ...info, columns: info.columns.filter((c) => !cols.has(c.name)) });
-    digests.set(name, await tableDigest(src, name, info, new Set([...(analysis.carrierColumns.get(name) ?? []), ...cols])));
+    tables.set(name, cols ? { ...info, columns: info.columns.filter((c) => !cols.has(c.name)) } : info);
+    digests.set(name, await tableDigest(src, name, info, excludeFromDigest));
   }
   const carrierColumns = new Map<string, string[]>();
   for (const [table, cols] of analysis.carrierColumns) {
@@ -766,6 +799,23 @@ async function restoreDumpToScratch(ctx: Context, dumpPath: string, scratchUrl: 
   }
 }
 
+function normalizeNarrowedNumerics(rowRest: string, narrowedCols: Set<string>): string {
+  if (narrowedCols.size === 0) return rowRest;
+  const parsed = JSON.parse(rowRest);
+  for (const col of narrowedCols) {
+    const val = parsed[col];
+    if (val !== undefined && val !== null) {
+      if (typeof val === "number") {
+        parsed[col] = Math.round(val);
+      } else if (typeof val === "string") {
+        const dot = val.indexOf(".");
+        parsed[col] = dot >= 0 ? Number(val.slice(0, dot)) : Number(val);
+      }
+    }
+  }
+  return JSON.stringify(parsed);
+}
+
 async function copyTables(
   src: Q,
   tx: Q,
@@ -794,8 +844,19 @@ async function copyTables(
   for (const name of order) {
     const srcInfo = analysis.tables.get(name)!;
     const tgtInfo = targetInfo.get(name)!;
-    const srcCols = new Set(srcInfo.columns.map((c) => c.name));
+    const srcCols = new Map(srcInfo.columns.map((c) => [c.name, c]));
     const insertColumns = tgtInfo.columns.filter((c) => srcCols.has(c.name) && !c.generated);
+    const narrowedCols = new Set(
+      insertColumns
+        .filter((c) => {
+          const sc = srcCols.get(c.name);
+          return (
+            sc?.dataType === "numeric" &&
+            (c.dataType === "integer" || c.dataType === "bigint" || c.dataType === "smallint")
+          );
+        })
+        .map((c) => c.name),
+    );
     const carrierCols = analysis.carrierColumns.get(name) ?? [];
     const limit = !replica && selfReferencing.has(name) ? null : PAGE_ROWS;
     let after: string | null = null;
@@ -808,7 +869,8 @@ async function copyTables(
         for (const [column, value] of Object.entries(row.carriers)) {
           carriers[column] = await mapCarriers(value, (envelope) => rekeyEnvelope(keys.source, keys.target, envelope));
         }
-        jsonRows.push(rowJson(row.rest, carriers));
+        const restJson = narrowedCols.size > 0 ? normalizeNarrowedNumerics(row.rest, narrowedCols) : row.rest;
+        jsonRows.push(rowJson(restJson, carriers));
       }
       await insertPage(tx, name, insertColumns, jsonRows);
       after = page.lastRid;
@@ -843,9 +905,20 @@ async function compareTables(
       tables.push({ name, sourceRows: d.rows, targetRows: 0, match: d.rows === 0 });
       continue;
     }
-    const srcCols = new Set(analysis.tables.get(name)!.columns.map((c) => c.name));
+    const srcTable = analysis.tables.get(name)!;
+    const srcCols = new Map(srcTable.columns.map((c) => [c.name, c]));
     const exclude = new Set<string>(analysis.carrierColumns.get(name) ?? []);
-    for (const col of tgt.columns) if (!srcCols.has(col.name)) exclude.add(col.name);
+    for (const col of tgt.columns) {
+      const sc = srcCols.get(col.name);
+      if (!sc) {
+        exclude.add(col.name);
+      } else if (
+        sc.dataType === "numeric" &&
+        (col.dataType === "integer" || col.dataType === "bigint" || col.dataType === "smallint")
+      ) {
+        exclude.add(col.name);
+      }
+    }
     const td = await tableDigest(q, name, tgt, exclude);
     tables.push({ name, sourceRows: d.rows, targetRows: td.rows, match: td.rows === d.rows && td.digest === d.digest });
   }
@@ -1120,7 +1193,7 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
       throw new Error(`Target schema cannot take the source data: ${problems.slice(0, 8).join(", ")}${problems.length > 8 ? ", ..." : ""}. Roll back (--rollback) the schema and report this.`);
     }
     // What the target cannot take stays out of the copy and out of the checks below.
-    const eff = await withoutVendorOnly(src, analysis, compat.vendorOnly, compat.exclusions);
+    const eff = await withoutVendorOnly(src, analysis, compat.vendorOnly, compat.exclusions, targetInfo);
 
     if (plan.mode !== "complete") {
       // 2. data: one transaction; either all rows land or none.

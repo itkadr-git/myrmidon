@@ -13286,10 +13286,14 @@ ALTER TABLE "ai_provider_defaults" DROP CONSTRAINT IF EXISTS "ai_provider_defaul
 ALTER TABLE "ai_connection_defaults" ADD CONSTRAINT "ai_connection_defaults_provider_check" CHECK ("ai_connection_defaults"."provider" in ('anthropic','openai','openrouter','xai','google'));--> statement-breakpoint
 ALTER TABLE "ai_provider_defaults" ADD CONSTRAINT "ai_provider_defaults_provider_check" CHECK ("ai_provider_defaults"."provider" in ('anthropic','openai','openrouter','xai','google'));
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('0247bea07f69755d351074ee118d09db52b912f992e240b33969516300c56760', 1791308714862);
+
 -- >>> Migration: 0307_cool_naoko.sql <<<
 -- Older JavaScript restores can omit check constraints.
 ALTER TABLE "resource_lifecycle_events" DROP CONSTRAINT IF EXISTS "resource_lifecycle_events_action_check";--> statement-breakpoint
 ALTER TABLE "resource_lifecycle_events" ADD CONSTRAINT "resource_lifecycle_events_action_check" CHECK ("resource_lifecycle_events"."action" = 'create' OR ("resource_lifecycle_events"."resource_type" = 'project' AND "resource_lifecycle_events"."action" IN ('update', 'archive')) OR ("resource_lifecycle_events"."resource_type" = 'agent' AND "resource_lifecycle_events"."action" IN ('pause', 'resume', 'terminate')));
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('3f9e0325523a7f7ca39c06289190169ff301f2dc3ffb9b060a67d165397b9214', 1791311441769);
 
 -- >>> Migration: 0308_whole_steel_serpent.sql <<<
 CREATE TABLE IF NOT EXISTS "agent_identity_keys" (
@@ -13312,6 +13316,8 @@ DO $$ BEGIN
     ALTER TABLE "agent_identity_keys" ADD CONSTRAINT "agent_identity_keys_owner_fk" FOREIGN KEY ("company_id","agent_id") REFERENCES "public"."agents"("company_id","id") ON DELETE cascade ON UPDATE no action;
   END IF;
 END $$;
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('41a68ca22531fc357d6419f36c98e85d6982772160576bd1d752bb267adf78df', 1791312251106);
 
 -- >>> Migration: 0309_loving_the_hood.sql <<<
 -- Lock resource writers before the journal foreign key and index take locks.
@@ -13388,6 +13394,8 @@ WHERE p."archived_at" IS NULL
          AND e."resource_id" = p."id" AND e."action" <> 'create'
        ORDER BY e."id" DESC LIMIT 1) = 'archive';
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('911213f1b0c9a15cba62dfb1aa6ebcc0068835eb1e3667b9b7008b32c0b5c5fa', 1791313098905);
+
 -- >>> Migration: 0310_agent_commentary.sql <<<
 -- Internal feedback only; no backfill or external delivery.
 CREATE TABLE IF NOT EXISTS "agent_commentary" (
@@ -13422,6 +13430,8 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "agent_commentary_run_key_uq" ON "agent_commentary" USING btree ("company_id","run_id","idempotency_key");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "agent_commentary_company_kind_created_idx" ON "agent_commentary" USING btree ("company_id","kind","created_at");
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('503d8206f4b6d6b2c0e631da80d5e4e34bf563650089f2c4bc10a3c405a3d51b', 1791314887096);
 
 -- >>> Migration: 0311_mcp_file_transfers.sql <<<
 CREATE TABLE IF NOT EXISTS "mcp_attachment_uploads" (
@@ -13472,6 +13482,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS "mcp_attachment_upload_request_uq" ON "mcp_att
 CREATE INDEX IF NOT EXISTS "mcp_attachment_upload_expiry_idx" ON "mcp_attachment_uploads" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "mcp_file_ticket_expiry_idx" ON "mcp_file_tickets" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "mcp_file_ticket_grant_idx" ON "mcp_file_tickets" USING btree ("grant_id");
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('596005af0935cd020e7c156116d63e9da4adc14e15ee71bcb8349c67ece9dd33', 1791321362665);
 
 -- >>> Migration: 0312_easy_eternity.sql <<<
 -- Preserve values while upgrading exact accounting. Additions are replay-safe.
@@ -13706,6 +13718,8 @@ END $$;
 --> statement-breakpoint
 -- Preserve the ledger precision in status-card update snapshots. Reapplying this type widening is safe.
 ALTER TABLE "status_card_updates" ALTER COLUMN "cost_cents" SET DATA TYPE numeric(24, 7);
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('c98c61650be2ef8bfa2f8915bb42d9c02c4e5e86cc802d38dab7a00b8e408eff', 1791336871975);
 
 -- >>> Migration: 0313_private_task_access.sql <<<
 -- Runs through the Paperclip migration executor outside a file-wide transaction.
@@ -13987,6 +14001,8 @@ BEGIN
   END LOOP;
 END $$;
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('2a5aa13cbc46477e30fea63b9ae988849759cc0f700facbdacd860d95da56617', 1791371746435);
+
 -- >>> Migration: 0314_private_task_draft_assets.sql <<<
 -- Runs through the Paperclip migration executor outside a file-wide transaction.
 -- Each idempotent keyset batch commits before advancing; history is recorded last.
@@ -14016,6 +14032,8 @@ BEGIN
     COMMIT;
   END LOOP;
 END $$;
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('e75583b0fef01c3283d63feae35b96c026d29f22ad9986ab80bb84b02370eccc', 1791371819805);
 
 -- >>> Migration: 0315_rapid_emma_frost.sql <<<
 CREATE TABLE IF NOT EXISTS "user_company_preferences" (
@@ -14062,6 +14080,8 @@ LEFT JOIN agents a ON a.id::text = c.agent_id AND a.company_id = c.company_id
 LEFT JOIN agent_memberships m ON m.company_id = c.company_id AND m.user_id = c.user_id AND m.agent_id = a.id
 WHERE a.metadata->'paperclipBuiltInAgent' IS NULL
 ON CONFLICT (company_id, user_id) DO NOTHING;
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('ff5d3eebe35db6e15619008ecb2a91ecca74c66fa6d46e94448216cd016055ac', 1791390905429);
 
 -- >>> Migration: 0316_premium_slayback.sql <<<
 -- Idempotent for installations that applied the pre-merge decision migration.
@@ -14145,6 +14165,8 @@ END $$;
 ALTER TABLE "company_decision_models" DROP CONSTRAINT IF EXISTS "company_decision_models_connection_id_tool_connections_id_fk";
 --> statement-breakpoint
 ALTER TABLE "company_decision_models" DROP CONSTRAINT IF EXISTS "company_decision_models_grant_id_connection_grants_id_fk";
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('173de0430a731ac9df0a202d56174bc56733664aec734e8073e1ed9d8c6bd591', 1791400295370);
 
 -- >>> Migration: 0317_messy_famine.sql <<<
 -- Dot-only additions after the merged public MCP gateway. Safe to reapply to a prototype schema.
@@ -14337,6 +14359,8 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('871fece4b899e3cd259cd13c82fb24249de7fca399dd3b11143a8cda3b1f57fe', 1791416259455);
+
 -- >>> Migration: 0318_strong_blacklash.sql <<<
 CREATE TABLE IF NOT EXISTS "chat_slack_registrations" (
 	"endpoint_id" uuid PRIMARY KEY NOT NULL,
@@ -14363,6 +14387,8 @@ ALTER TABLE "chat_slack_registrations" ADD CONSTRAINT "chat_slack_registrations_
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('d74b33e089e4490fefeae6f08beb41335ea42fc14e06329179a81f2a9d990139', 1791456875836);
+
 -- >>> Migration: 0319_heavy_captain_midlands.sql <<<
 ALTER TABLE "mcp_oauth_tokens" ALTER COLUMN "expires_at" DROP NOT NULL;
 --> statement-breakpoint
@@ -14379,6 +14405,8 @@ WHERE tokens."grant_id" = grants."id"
   AND grants."purpose" = 'agent'
   AND grants."resource" LIKE '%/mcp/runner'
   AND grants."revoked_at" IS NULL;
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('0efd173d8d61735a60a326ba2b99b9c91d6286c264c662d86ded8113b0d96eb7', 1791490887468);
 
 -- >>> Migration: 0320_daily_onslaught.sql <<<
 ALTER TABLE "agents" ADD COLUMN "lifecycle_state" text DEFAULT 'ready' NOT NULL;--> statement-breakpoint
@@ -14398,8 +14426,12 @@ UPDATE "agents" SET
   "lifecycle_holds" = CASE WHEN "status" = 'paused'
     THEN jsonb_build_array(coalesce("pause_reason", 'manual')) ELSE '[]'::jsonb END;
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('313b41c9dcfb2e27b3e8add1bc8fc2cf632931bb1d0a230174fda325ff322c1c', 1791497222457);
+
 -- >>> Migration: 0321_acoustic_human_fly.sql <<<
 ALTER TABLE "chat_endpoints" ADD COLUMN IF NOT EXISTS "require_at_mention" boolean DEFAULT false NOT NULL;
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('7b9a2a801de33d5c2e4fc14aec92e754340de52a7881d800e17343bdea96cbab', 1791568503477);
 
 -- >>> Migration: 0322_reflective_kree.sql <<<
 CREATE TABLE IF NOT EXISTS "ai_subscription_connections" (
@@ -14501,11 +14533,15 @@ DO $$ BEGIN
 END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "cost_events_company_subscription_occurred_idx" ON "cost_events" USING btree ("company_id","subscription_id","occurred_at");
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('70747491a736a9e2c9a0c0008831ec8f559019a2452590aea71144ae83ae9461', 1791572660423);
+
 -- >>> Migration: 0323_petite_shockwave.sql <<<
 ALTER TABLE "chat_github_registrations" ADD COLUMN IF NOT EXISTS "owner_type" text DEFAULT 'personal' NOT NULL;--> statement-breakpoint
 ALTER TABLE "chat_github_registrations" ADD COLUMN IF NOT EXISTS "owner_login" text;--> statement-breakpoint
 ALTER TABLE "chat_github_registrations" ADD COLUMN IF NOT EXISTS "app_name" text;--> statement-breakpoint
 ALTER TABLE "chat_github_registrations" ADD COLUMN IF NOT EXISTS "handoff" jsonb;
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('5cf9edf148d004568642eb80c2aa320f948c1bf520654258562b937040406d82', 1791578748368);
 
 -- >>> Migration: 0324_long_franklin_storm.sql <<<
 CREATE TABLE IF NOT EXISTS "chat_voice_replies" (
@@ -14662,6 +14698,8 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('d22c9898cb3cbf2058c2d2475a3b95d7cf293b3e21ffbbab91383239f6e6f6f1', 1791578748369);
+
 -- >>> Migration: 0325_aberrant_machine_man.sql <<<
 ALTER TABLE "chat_voice_tool_calls" DROP CONSTRAINT IF EXISTS "chat_voice_tool_calls_tool_check";--> statement-breakpoint
 DO $$ BEGIN
@@ -14669,6 +14707,8 @@ DO $$ BEGIN
     ALTER TABLE "chat_voice_tool_calls" ADD CONSTRAINT "chat_voice_tool_calls_tool_check" CHECK ("chat_voice_tool_calls"."tool" in ('submit_request', 'get_updates', 'answer_question'));
   END IF;
 END $$;
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('c63d3507d6589bf6415badd87cba306a5dc17d138b799f5ff63c0bbf4205535f', 1791578748370);
 
 -- >>> Migration: 0326_blushing_screwball.sql <<<
 CREATE TABLE IF NOT EXISTS "chat_voice_callbacks" (
@@ -14688,6 +14728,8 @@ DO $$ BEGIN
   END IF;
 END $$;--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "chat_voice_callbacks_owner_uq" ON "chat_voice_callbacks" USING btree ("company_id","endpoint_id","user_id");
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('83a640e603d471633eb42afc0c3146fac3aa2dd2a404d757a9696bf72df9f9d0', 1791578748371);
 
 -- >>> Migration: 0327_sad_proteus.sql <<<
 CREATE TABLE IF NOT EXISTS "chat_voice_reports" (
@@ -14713,6 +14755,8 @@ DO $$ BEGIN
   END IF;
 END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "chat_voice_reports_pending_idx" ON "chat_voice_reports" USING btree ("status","next_check_at");
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('cf3d9d30a1fa5884463c1dde97e1d426181225af7e43a56a5c27dac39fd493f3', 1791578748372);
 
 -- >>> Migration: 0328_chunky_mentallo.sql <<<
 CREATE TABLE IF NOT EXISTS "chat_voice_inbound_calls" (
@@ -14768,6 +14812,8 @@ DO $$ BEGIN
 END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "chat_voice_inbound_expiry_idx" ON "chat_voice_inbound_calls" USING btree ("state","expires_at");
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('7c6f286bf22bebbd13743243baaca2c360ac5e0451b8de41950a42f758a64218', 1791578748373);
+
 -- >>> Migration: 0329_free_wolf_cub.sql <<<
 ALTER TABLE "chat_voice_inbound_calls" DROP CONSTRAINT IF EXISTS "chat_voice_inbound_state_check";--> statement-breakpoint
 ALTER TABLE "chat_voice_inbound_calls" ADD COLUMN IF NOT EXISTS "intake_issue_id" uuid;--> statement-breakpoint
@@ -14788,6 +14834,8 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('6c1fbbe804125e7bef964880e06182b1b6a8257f22922537417e83d6e5433511', 1791578748374);
+
 -- >>> Migration: 0330_spooky_white_tiger.sql <<<
 ALTER TABLE "chat_voice_phone_lines" ADD COLUMN IF NOT EXISTS "low_trust_environment_id" uuid;
 --> statement-breakpoint
@@ -14796,6 +14844,8 @@ DO $$ BEGIN
     ALTER TABLE "chat_voice_phone_lines" ADD CONSTRAINT "chat_voice_phone_lines_low_trust_environment_id_environments_id_fk" FOREIGN KEY ("low_trust_environment_id") REFERENCES "public"."environments"("id") ON DELETE no action ON UPDATE no action;
   END IF;
 END $$;
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('55a0e6d88f7207ef0e86c22c2cea4a96e1187de07b79fcb921545f82c411198e', 1791578748375);
 
 -- >>> Migration: 0331_panoramic_spyke.sql <<<
 CREATE TABLE IF NOT EXISTS "company_fast_responses" (
@@ -14873,91 +14923,16 @@ DO $$ BEGIN
 ALTER TABLE "cost_events" ADD CONSTRAINT "cost_events_usage_kind_check" CHECK ("cost_events"."usage_kind" in ('decision', 'fast_response') or ("cost_events"."usage_kind" = 'agent' and "cost_events"."agent_id" is not null));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('e8ed246f9302b0ade81c143ce373d108a4e131b844644eaba3f957d99a36e94f', 1791642049733);
+
 -- >>> Migration: 0332_little_night_nurse.sql <<<
 CREATE INDEX IF NOT EXISTS "agent_wakeup_requests_question_response_history_idx" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE "agent_wakeup_requests"."idempotency_key" LIKE 'question-response:%';
+
+INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('38fdefcee5c964b07a0f433b8b370df3708a593e924f61ca4fd2fc493c962710', 1791693159075);
 
 -- >>> Migration: 0333_normal_wild_pack.sql <<<
 CREATE INDEX "cost_events_data_quality_idx" ON "cost_events" USING btree ("company_id","occurred_at" DESC NULLS LAST,"id") WHERE "cost_events"."billing_type" = 'unknown' or ("cost_events"."cost_status" = 'unpriced' and "cost_events"."billing_type" <> 'subscription_included');--> statement-breakpoint
 CREATE INDEX "heartbeat_runs_cost_data_quality_idx" ON "heartbeat_runs" USING btree ("company_id",coalesce("finished_at", "created_at") desc,"id") WHERE "heartbeat_runs"."cost_accounting_pending" = true and "heartbeat_runs"."status" in ('succeeded','failed','timed_out','cancelled','interrupted');
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('0247bea07f69755d351074ee118d09db52b912f992e240b33969516300c56760', 1791308714862);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('3f9e0325523a7f7ca39c06289190169ff301f2dc3ffb9b060a67d165397b9214', 1791311441769);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('41a68ca22531fc357d6419f36c98e85d6982772160576bd1d752bb267adf78df', 1791312251106);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('911213f1b0c9a15cba62dfb1aa6ebcc0068835eb1e3667b9b7008b32c0b5c5fa', 1791313098905);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('503d8206f4b6d6b2c0e631da80d5e4e34bf563650089f2c4bc10a3c405a3d51b', 1791314887096);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('596005af0935cd020e7c156116d63e9da4adc14e15ee71bcb8349c67ece9dd33', 1791321362665);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('c98c61650be2ef8bfa2f8915bb42d9c02c4e5e86cc802d38dab7a00b8e408eff', 1791336871975);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('2a5aa13cbc46477e30fea63b9ae988849759cc0f700facbdacd860d95da56617', 1791371746435);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('e75583b0fef01c3283d63feae35b96c026d29f22ad9986ab80bb84b02370eccc', 1791371819805);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('ff5d3eebe35db6e15619008ecb2a91ecca74c66fa6d46e94448216cd016055ac', 1791390905429);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('173de0430a731ac9df0a202d56174bc56733664aec734e8073e1ed9d8c6bd591', 1791400295370);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('871fece4b899e3cd259cd13c82fb24249de7fca399dd3b11143a8cda3b1f57fe', 1791416259455);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('d74b33e089e4490fefeae6f08beb41335ea42fc14e06329179a81f2a9d990139', 1791456875836);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('0efd173d8d61735a60a326ba2b99b9c91d6286c264c662d86ded8113b0d96eb7', 1791490887468);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('313b41c9dcfb2e27b3e8add1bc8fc2cf632931bb1d0a230174fda325ff322c1c', 1791497222457);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('7b9a2a801de33d5c2e4fc14aec92e754340de52a7881d800e17343bdea96cbab', 1791568503477);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('70747491a736a9e2c9a0c0008831ec8f559019a2452590aea71144ae83ae9461', 1791572660423);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('5cf9edf148d004568642eb80c2aa320f948c1bf520654258562b937040406d82', 1791578748368);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('d22c9898cb3cbf2058c2d2475a3b95d7cf293b3e21ffbbab91383239f6e6f6f1', 1791578748369);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('c63d3507d6589bf6415badd87cba306a5dc17d138b799f5ff63c0bbf4205535f', 1791578748370);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('83a640e603d471633eb42afc0c3146fac3aa2dd2a404d757a9696bf72df9f9d0', 1791578748371);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('cf3d9d30a1fa5884463c1dde97e1d426181225af7e43a56a5c27dac39fd493f3', 1791578748372);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('7c6f286bf22bebbd13743243baaca2c360ac5e0451b8de41950a42f758a64218', 1791578748373);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('6c1fbbe804125e7bef964880e06182b1b6a8257f22922537417e83d6e5433511', 1791578748374);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('55a0e6d88f7207ef0e86c22c2cea4a96e1187de07b79fcb921545f82c411198e', 1791578748375);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('e8ed246f9302b0ade81c143ce373d108a4e131b844644eaba3f957d99a36e94f', 1791642049733);
-
-INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('38fdefcee5c964b07a0f433b8b370df3708a593e924f61ca4fd2fc493c962710', 1791693159075);
-
 INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('963dabb9108478cbd1b0ebba48b34fdec299cf5745a99ecbb7d75556b93dc742', 1791781882729);
+
