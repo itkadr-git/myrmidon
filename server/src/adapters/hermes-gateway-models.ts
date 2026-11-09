@@ -125,11 +125,11 @@ export async function listGatewayModels(
     const models = await fetchGatewayModels(baseUrl, apiKey);
     cache = { models, cachedAt: now };
     return models;
-  } catch {
-    if (cache) {
-      return cache.models;
-    }
-    return [];
+  } catch (error) {
+    // A failed request is distinct from a successful empty catalog. Throw so
+    // the adapter registry can use PAPERCLIP_ADAPTER_MODELS as its fallback;
+    // an empty successful response remains authoritative for hermes_gateway.
+    throw error;
   }
 }
 
