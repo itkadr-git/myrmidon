@@ -350,7 +350,12 @@ export async function runGuard(modeOrOptions, args = [], env = process.env) {
     };
 
     const mainFiles = paths(["ls-tree", "-r", "--name-only", "-z", "origin/main", "--", PREFIX]);
-    const addedFiles = paths(["diff", "--name-only", "--diff-filter=A", "-z", `origin/main...${head}`, "--", PREFIX]);
+    // A migration whose exact path already exists in main is the same migration carried to a
+    // release branch by cherry-pick (its commit differs, so `origin/main...head` lists it as added);
+    // it occupies no new number. A different file under a taken number is still a collision.
+    const mainPaths = new Set(mainFiles);
+    const addedFiles = paths(["diff", "--name-only", "--diff-filter=A", "-z", `origin/main...${head}`, "--", PREFIX])
+      .filter((file) => !mainPaths.has(file));
 
     if (addedFiles.length === 0) {
       console.log("Migration guard: no new migrations added in this PR.");
