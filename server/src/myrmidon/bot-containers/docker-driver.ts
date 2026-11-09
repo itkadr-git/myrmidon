@@ -56,7 +56,7 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { liveSavedSetting } from "../behavior-settings/live.js";
 import http from "node:http";
@@ -2000,6 +2000,19 @@ export function dockerBotContainerDriver(
     await writeIdleStopped(botKey, false).catch(() => undefined);
   }
 
+  async function cleanup(botKey: string): Promise<void> {
+    const name = containerNameFor(botKey);
+    // 1. Remove the container (and anonymous volumes). If 404, removeByName ignores it.
+    await removeByName(name);
+    // 2. Remove the bot volume data directory on host if it exists.
+    const botDir = path.join(config.volumeRoot, botKey);
+    try {
+      await rm(botDir, { recursive: true, force: true });
+    } catch {
+      // Ignore filesystem errors or non-existing path
+    }
+  }
+
   async function stopIdle(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
     const res = await requestWithRateLimitRetry({ method: "POST", path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true` });
@@ -2018,5 +2031,5 @@ export function dockerBotContainerDriver(
     return client.getOomEvents(sinceNano);
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills, getOomEvents };
+  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, cleanup, stopIdle, readCloneReport, readBotSkills, getOomEvents };
 }
