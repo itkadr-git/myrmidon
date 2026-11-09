@@ -606,6 +606,26 @@ How a bot gets its task copy now, per the interface contract
   When the board is unreachable botd deletes nothing. Botd reports disk state
   back with `POST /api/myrmidon/bots/me/disk-report`.
 
+### git-base repack on partial clones (1.6.7 OPE-12263)
+
+The per-bot bare bases (`git-base/<owner>/<repo>.git`) are **partial clones**
+(`partialclonefilter=blob:none`) and hold no full object closure, so a plain
+`git repack -A -d` fails there with `Failed to write bitmap index. Packfile
+doesn't have full closure` and leaves multi-gigabyte `.tmp-*-pack-*` /
+`tmp_idx_*` files in `objects/pack`; with more than 20 packs botd retried
+every cycle. Since 1.6.7 botd:
+
+- runs the repack with `-c repack.writeBitmaps=false -c pack.writeBitmaps=false`
+  (plus the existing `pack.threads=1`);
+- after a failed repack, and at botd startup, deletes stale temp pack files
+  (`.tmp-*-pack-*`, `tmp_pack_*`, `tmp_idx_*`, `tmp_rev_*` older than
+  30 minutes) from `objects/pack`, never touching a repository with a live
+  git lock file;
+- after a failure writes a `.myrmidon-repack-failed` marker holding the git
+  error and pauses new attempts for 6 hours (`REPACK_FAILURE_BACKOFF_MS`) —
+  the pack-count trigger does not bypass the pause — and logs the cause;
+- clears the failure marker after a successful repack.
+
 ## What's not verified yet
 
 This Dockerfile and entrypoint were written by reading a reference

@@ -221,6 +221,21 @@ async function main() {
       log(`botd: git-base normalization failed: ${err.message}`);
     }
   }
+  // Startup recovery for temp files left by an interrupted/failed repack.
+  // Cleanup validates per-repository Git locks before removing anything.
+  if (repackMod && typeof repackMod.cleanupStaleTempPacks === "function") {
+    let owners = [];
+    try { owners = fs.readdirSync(BASE_DIR); } catch {}
+    for (const owner of owners) {
+      let repos = [];
+      try { repos = fs.readdirSync(path.join(BASE_DIR, owner)); } catch {}
+      for (const name of repos) {
+        if (name.endsWith(".git")) {
+          repackMod.cleanupStaleTempPacks(path.join(BASE_DIR, owner, name), { now: Date.now(), log });
+        }
+      }
+    }
+  }
   // One attention signal per path per TTL (botd-attention.json); the uid of the
   // owner that blocks us goes into the text. chown is never attempted here.
   const attention = cacheMod.createAttention(ATTENTION_PATH, { log });
