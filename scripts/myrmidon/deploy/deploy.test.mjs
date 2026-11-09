@@ -2070,5 +2070,41 @@ exit 0
       assert.equal(code, 0, out);
       assert.match(out, /WARNING: COMPOSE-SET-ANCHOR: the anchor file does not exist/);
     });
+
+    it("handles production checklist format with indented block and prose §1 without corrupting either", () => {
+      const sb = sandbox();
+      const prodChecklist = `# Чек-лист обновления образов Paperclip
+
+## §0. Подготовка
+
+## §1. Набор docker-compose файлов
+
+Правило: любое осознанное изменение набора правится в якоре одним коммитом.
+В боевом наборе используются фрагменты:
+- \`docker-compose.yml\`
+- \`docker-compose.prod.yml\`
+
+   \`\`\`
+   <!-- board-mount-set:begin -->
+   docker-compose.yml
+   docker-compose.prod.yml
+   <!-- board-mount-set:end -->
+   \`\`\`
+
+Дальнейшие шаги регламента...
+`;
+      fs.writeFileSync(path.join(sb.dir, "checklist.md"), prodChecklist);
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.prod.yml,docker-compose.myrmidon-dockergate.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten/);
+      assert.match(out, /anchor had: docker-compose\.yml docker-compose\.prod\.yml $/m);
+      assert.match(out, /live label: docker-compose\.yml docker-compose\.prod\.yml docker-compose\.myrmidon-dockergate\.yml/);
+      const updated = read(path.join(sb.dir, "checklist.md"));
+      assert.match(updated, /## §1\. Набор docker-compose файлов/);
+      assert.match(updated, /В боевом наборе используются фрагменты/);
+      assert.match(updated, /   <!-- board-mount-set:begin -->\n   docker-compose\.yml\n   docker-compose\.prod\.yml\n   docker-compose\.myrmidon-dockergate\.yml\n   <!-- board-mount-set:end -->/);
+      assert.match(updated, /Дальнейшие шаги регламента\.\.\./);
+    });
   });
 });

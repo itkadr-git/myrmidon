@@ -1052,7 +1052,7 @@ sync_compose_set_anchor() {
   # line between the markers exactly as the format expects. The live label
   # carries absolute paths; the block keeps them verbatim (the watchdog's
   # parser accepts paths, and the project directory is the label's own).
-  local tmp printed=0 anchor_dir in_block=0
+  local tmp printed=0 anchor_dir in_block=0 indent=""
   # the previous set, read BEFORE the file is replaced (for the log line below)
   local anchor_had
   anchor_had="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | tr '\n' ' ')"
@@ -1061,6 +1061,10 @@ sync_compose_set_anchor() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" == *board-mount-set:begin* ]]; then
       printf '%s\n' "$line" >>"$tmp"
+      indent=""
+      if [[ "$line" =~ ^([[:space:]]+) ]]; then
+        indent="${BASH_REMATCH[1]}"
+      fi
       # Write fragments relative to the anchor file's own directory when they
       # live under it (the anchor's own style, and the watchdog resolves
       # relative names against its project dir); absolute otherwise. The
@@ -1068,8 +1072,8 @@ sync_compose_set_anchor() {
       printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' \
         | while IFS= read -r frag; do
             case "$frag" in
-              "$anchor_dir"/*) printf '%s\n' "${frag#"$anchor_dir"/}" ;;
-              *) printf '%s\n' "$frag" ;;
+              "$anchor_dir"/*) printf '%s%s\n' "$indent" "${frag#"$anchor_dir"/}" ;;
+              *) printf '%s%s\n' "$indent" "$frag" ;;
             esac
           done >>"$tmp"
       printed=1
