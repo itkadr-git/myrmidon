@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyProviderGarbageOutcome,
   detectProviderGarbageGroups,
+  normalizeProviderGarbageOutcomeText,
   resolveProviderGarbageSettings,
   DEFAULT_PROVIDER_GARBAGE_SETTINGS,
 } from "./provider-garbage.js";
