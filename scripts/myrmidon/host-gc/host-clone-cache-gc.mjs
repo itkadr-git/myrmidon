@@ -222,12 +222,15 @@ function issueIdentifierFromCloneName(name) {
 }
 
 export async function fetchIssueStatus(identifier, {
-  baseUrl = process.env.BOARD_API_URL,
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
   apiKey = process.env.PAPERCLIP_API_KEY,
   fetchImpl = globalThis.fetch,
 } = {}) {
-  if (!baseUrl || typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
-  const url = `${baseUrl.replace(/\/$/, "")}/api/issues/${encodeURIComponent(identifier)}`;
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const url = `${base}/issues/${encodeURIComponent(identifier)}`;
   const headers = { Accept: "application/json" };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   try {

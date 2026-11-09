@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { archive, readManifest, repoFromUrl, retain, verifyEntry } from "../../../docker/bot-runtime/botd/lib/archive.js";
+import { archive, readManifest, repoFromUrl, resolveArchiveCapBytes, retain, retainPass, verifyEntry } from "../../../docker/bot-runtime/botd/lib/archive.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const CLOSE_FIXTURE = JSON.parse(fs.readFileSync(path.join(ROOT, "docs/myrmidon/bot-disk-contract/myr-ws-close.json"), "utf8"));
@@ -289,5 +289,98 @@ describe("retain()", () => {
 
   it("empty/missing archive dir is fine", () => {
     assert.deepEqual(retain(path.join(tmp, "none"), { now: NOW }), { ok: true, removed: [], remainingBytes: 0, remaining: 0 });
+  });
+});
+
+describe("resolveArchiveCapBytes()", () => {
+  const GiB = 1024 * 1024 * 1024;
+  const MiB = 1024 * 1024;
+
+  it("caps at 2 GiB when 5% of free exceeds the ceiling", () => {
+    assert.equal(resolveArchiveCapBytes(archiveRoot, { freeBytes: 100 * GiB }), 2 * GiB);
+  });
+
+  it("scales with free volume bytes below the ceiling", () => {
+    // 20 GiB free → 5% = 1 GiB
+    assert.equal(resolveArchiveCapBytes(archiveRoot, { freeBytes: 20 * GiB }), 1 * GiB);
+  });
+
+  it("floors at 64 MiB when the volume is nearly full", () => {
+    assert.equal(resolveArchiveCapBytes(archiveRoot, { freeBytes: 100 * MiB }), 64 * MiB);
+  });
+
+  it("floors at 64 MiB when free is unknown (0)", () => {
+    assert.equal(resolveArchiveCapBytes(archiveRoot, { freeBytes: 0 }), 64 * MiB);
+  });
+
+  it("env MYRMIDON_BOTD_ARCHIVE_CAP_BYTES overrides the formula", () => {
+    const prev = process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES;
+    try {
+      process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES = String(512 * MiB);
+      assert.equal(resolveArchiveCapBytes(archiveRoot, { freeBytes: 100 * GiB }), 512 * MiB);
+      process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES = "0";
+      assert.equal(resolveArchiveCapBytes(archiveRoot, { freeBytes: 100 * GiB }), 0);
+      process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES = "garbage";
+      assert.equal(resolveArchiveCapBytes(archiveRoot, { freeBytes: 100 * GiB }), 2 * GiB);
+    } finally {
+      if (prev === undefined) delete process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES;
+      else process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES = prev;
+    }
+  });
+});
+
+describe("retainPass()", () => {
+  function seed(items) {
+    fs.mkdirSync(archiveRoot, { recursive: true });
+    const archives = items.map(({ createdAt, size, key = KEY }) => {
+      const bundle = path.join(archiveRoot, `${key}-${createdAt.replace(/[-:]/g, "").replace(/\.\d+/, "").replace(/Z$/, "")}.bundle`);
+      fs.writeFileSync(bundle, Buffer.alloc(size));
+      return { key, bundle, patch: undefined, createdAt, sizeBytes: size, truncatedUntracked: false };
+    });
+    fs.writeFileSync(path.join(archiveRoot, "manifest.json"), JSON.stringify({ version: 1, archives }));
+    return archives;
+  }
+  const NOW = at("2026-10-07T00:00:00Z");
+
+  it("uses the volume-derived cap by default and protects entries created this pass", () => {
+    const [oldBig, fresh] = seed([
+      { createdAt: "2026-10-01T00:00:00Z", size: 300, key: "OPE-1" },
+      { createdAt: "2026-10-06T00:00:00Z", size: 300, key: "OPE-2" },
+    ]);
+    // cap derived from freeBytes=1000 → 5% = 50, floored to 64 MiB; pass capBytes=400
+    // to exercise retainPass without the env/floor path.
+    const r = retainPass(archiveRoot, {
+      startedAt: new Date("2026-10-06T12:00:00Z"),
+      now: NOW,
+      capBytes: 400,
+    });
+    assert.equal(r.ok, true);
+    // oldBig (300) + fresh (300) = 600 > 400; oldest evicted, fresh kept (created this pass)
+    assert.equal(fs.existsSync(oldBig.bundle), false);
+    assert.equal(fs.existsSync(fresh.bundle), true);
+    assert.equal(r.remainingBytes, 300);
+    assert.equal(r.remaining, 1);
+  });
+
+  it("honours MYRMIDON_BOTD_ARCHIVE_CAP_BYTES when no explicit capBytes is passed", () => {
+    const [a, b] = seed([
+      { createdAt: "2026-10-05T00:00:00Z", size: 300, key: "OPE-3" },
+      { createdAt: "2026-10-06T00:00:00Z", size: 300, key: "OPE-4" },
+    ]);
+    const prev = process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES;
+    try {
+      process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES = "350";
+      const r = retainPass(archiveRoot, {
+        startedAt: new Date("2026-10-06T12:00:00Z"),
+        now: NOW,
+      });
+      assert.equal(r.ok, true);
+      assert.equal(fs.existsSync(a.bundle), false);
+      assert.equal(fs.existsSync(b.bundle), true);
+      assert.ok(r.remainingBytes <= 350);
+    } finally {
+      if (prev === undefined) delete process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES;
+      else process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES = prev;
+    }
   });
 });

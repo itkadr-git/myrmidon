@@ -48,6 +48,9 @@ import {
   type PoolAccountOAuthRefreshInput,
   type PoolAccountOAuthStatusResult,
   type PoolAccountRoleSignal,
+  type AddPoolAccountInput,
+  type StartCodexOAuthInput,
+  type CompleteCodexOAuthInput,
 } from "@myrmidon/shared";
 import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
@@ -59,6 +62,13 @@ import {
   recordPoolAccountSignals,
   type ModelProviderPackageSignal,
 } from "./signals.js";
+import {
+  deleteRegisteredPoolAccount,
+  getRegisteredPoolAccounts,
+  registerPoolAccount,
+  startCodexOAuth,
+  completeCodexOAuth,
+} from "./pool-registry.js";
 
 export interface ModelProviderKeyRotationSnapshot {
   secretId: string;
@@ -972,36 +982,35 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       };
     }
 
-    if (!provider.credentialSecretName) {
-      return {
-        providerId: provider.id,
-        providerType: provider.type,
-        channels: [],
-        signals: [],
-      };
-    }
-
-    const apiKey = await deps.secrets.readSecretValue(
-      companyId,
-      provider.credentialSecretName,
-    );
-    if (!apiKey) {
-      return {
-        providerId: provider.id,
-        providerType: provider.type,
-        channels: [],
-        signals: [],
-      };
-    }
-
-    const baseUrl = effectiveBaseUrl(provider.type, provider.baseUrl);
+    const registered = getRegisteredPoolAccounts(companyId, provider.id);
     let rawAccounts: any[] = [];
-    if (deps.catalog.listAccounts) {
-      const res = await deps.catalog.listAccounts({ baseUrl, apiKey });
-      rawAccounts = res.accounts;
+
+    if (provider.credentialSecretName) {
+      const apiKey = await deps.secrets.readSecretValue(
+        companyId,
+        provider.credentialSecretName,
+      );
+      if (apiKey && deps.catalog.listAccounts) {
+        try {
+          const baseUrl = effectiveBaseUrl(provider.type, provider.baseUrl);
+          const res = await deps.catalog.listAccounts({ baseUrl, apiKey });
+          rawAccounts = res.accounts;
+        } catch {
+          // If external provider is unreachable, use registered accounts
+        }
+      }
     }
 
-    const channels = rawAccounts.map(mapRawAccountToChannel);
+    const catalogChannels = rawAccounts.map(mapRawAccountToChannel);
+    const combinedMap = new Map<number, PoolAccountChannelView>();
+    for (const ch of catalogChannels) {
+      combinedMap.set(ch.n, ch);
+    }
+    for (const reg of registered) {
+      combinedMap.set(reg.n, reg);
+    }
+    const channels = Array.from(combinedMap.values()).sort((a, b) => a.n - b.n);
+
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
     // Pool-level reset info from the connector document (e.g. weekly reset of
@@ -1081,6 +1090,42 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         nextResetText,
       },
     };
+  }
+
+  async function addAccount(
+    companyId: string,
+    providerId: string,
+    input: AddPoolAccountInput,
+  ): Promise<PoolAccountChannelView> {
+    const provider = await loadProvider(companyId, providerId);
+    return registerPoolAccount(companyId, provider.id, input);
+  }
+
+  async function deleteAccount(
+    companyId: string,
+    providerId: string,
+    accountNumber: number,
+  ): Promise<void> {
+    const provider = await loadProvider(companyId, providerId);
+    deleteRegisteredPoolAccount(companyId, provider.id, accountNumber);
+  }
+
+  async function startOAuth(
+    companyId: string,
+    providerId: string,
+    input?: StartCodexOAuthInput,
+  ) {
+    const provider = await loadProvider(companyId, providerId);
+    return startCodexOAuth(companyId, provider.id, input);
+  }
+
+  async function completeOAuth(
+    companyId: string,
+    providerId: string,
+    input: CompleteCodexOAuthInput,
+  ): Promise<PoolAccountChannelView> {
+    const provider = await loadProvider(companyId, providerId);
+    return completeCodexOAuth(companyId, provider.id, input);
   }
 
   async function syncPoolSignals(
@@ -1348,6 +1393,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     oauthStatus,
     oauthComplete,
     oauthRefresh,
+    addAccount,
+    deleteAccount,
+    startOAuth,
+    completeOAuth,
   };
 }
 

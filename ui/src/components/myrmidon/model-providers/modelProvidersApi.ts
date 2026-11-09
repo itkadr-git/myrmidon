@@ -278,6 +278,57 @@ export const modelProvidersApi = {
       `${base(companyId)}/providers/${encodeURIComponent(providerId)}/channels`,
     ),
 
+  /** POST /providers/:pid/channels — add a Codex/ChatGPT account to the pool. */
+  addAccount: (
+    companyId: string,
+    providerId: string,
+    input: { label: string; plan?: string; email?: string | null },
+  ) =>
+    api.post<{ ok: true; account: PoolAccountChannelView }>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/channels`,
+      input,
+    ),
+
+  /** DELETE /providers/:pid/channels/:accountNumber — remove an account from the pool. */
+  deleteAccount: (companyId: string, providerId: string, accountNumber: number) =>
+    api.delete<{ ok: true }>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/channels/${encodeURIComponent(accountNumber)}`,
+    ),
+
+  /** POST /providers/:pid/oauth/start — initiate OAuth authorization flow for Codex account. */
+  startOAuth: (
+    companyId: string,
+    providerId: string,
+    input?: { plan?: string; label?: string },
+  ) =>
+    api.post<{
+      authUrl: string;
+      userCode?: string;
+      verificationUri?: string;
+      state: string;
+      expiresIn: number;
+    }>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/start`,
+      input ?? {},
+    ),
+
+  /** POST /providers/:pid/oauth/complete — complete OAuth authorization flow. */
+  completeOAuth: (
+    companyId: string,
+    providerId: string,
+    input: {
+      state?: string;
+      code?: string;
+      plan?: string;
+      label?: string;
+      email?: string;
+    },
+  ) =>
+    api.post<{ ok: true; account: PoolAccountChannelView }>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/oauth/complete`,
+      input,
+    ),
+
   /** GET /litellm/channels — model groups and routed channels from LiteLLM. */
   litellmChannels: (companyId: string) =>
     api.get<LitellmChannelsResponse>(

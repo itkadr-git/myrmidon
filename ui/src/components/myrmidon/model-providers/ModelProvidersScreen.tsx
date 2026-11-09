@@ -19,8 +19,8 @@
 // Key non-leak rule (tested): after any save the component renders only the
 // API's key-free fields; the raw key never enters props, cache or DOM.
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Boxes, KeyRound, Trash2 } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, Boxes, KeyRound, Trash2, X } from "lucide-react";
 import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -681,6 +681,76 @@ function ProviderCard({
     onToggleModel(provider.id, next);
   };
 
+  const queryClient = useQueryClient();
+  const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
+  const [accountPlan, setAccountPlan] = useState<"plus" | "pro" | "k12">("plus");
+  const [accountLabel, setAccountLabel] = useState("");
+  const [accountEmail, setAccountEmail] = useState("");
+  const [oauthState, setOauthState] = useState<{
+    authUrl?: string;
+    userCode?: string;
+    verificationUri?: string;
+    state?: string;
+  } | null>(null);
+  const [isAuthorizing, setIsAuthorizing] = useState(false);
+  const [deletingAccountNumber, setDeletingAccountNumber] = useState<number | null>(null);
+  const [oauthError, setOauthError] = useState<string | null>(null);
+
+  const handleStartOAuth = async () => {
+    setIsAuthorizing(true);
+    setOauthError(null);
+    try {
+      const res = await modelProvidersApi.startOAuth(companyId, provider.id, {
+        plan: accountPlan,
+        label: accountLabel || `Codex-${accountPlan.toUpperCase()}`,
+      });
+      setOauthState(res);
+    } catch (err) {
+      setOauthError(readable(err));
+    } finally {
+      setIsAuthorizing(false);
+    }
+  };
+
+  const handleCompleteOAuth = async () => {
+    if (!oauthState?.state) return;
+    setIsAuthorizing(true);
+    setOauthError(null);
+    try {
+      await modelProvidersApi.completeOAuth(companyId, provider.id, {
+        state: oauthState.state,
+        plan: accountPlan,
+        label: accountLabel || `Codex-${accountPlan.toUpperCase()}`,
+        email: accountEmail || undefined,
+      });
+      queryClient.invalidateQueries({
+        queryKey: channelsQuery ? channelsQuery(provider.id) : ["channels", provider.id],
+      });
+      setIsAddAccountOpen(false);
+      setOauthState(null);
+      setAccountLabel("");
+      setAccountEmail("");
+    } catch (err) {
+      setOauthError(readable(err));
+    } finally {
+      setIsAuthorizing(false);
+    }
+  };
+
+  const handleDeleteAccount = async (accountNumber: number) => {
+    setDeletingAccountNumber(accountNumber);
+    try {
+      await modelProvidersApi.deleteAccount(companyId, provider.id, accountNumber);
+      queryClient.invalidateQueries({
+        queryKey: channelsQuery ? channelsQuery(provider.id) : ["channels", provider.id],
+      });
+    } catch (err) {
+      // silent
+    } finally {
+      setDeletingAccountNumber(null);
+    }
+  };
+
   return (
     <div
       className="space-y-3 rounded-lg border border-border p-4"
@@ -763,18 +833,32 @@ function ProviderCard({
                 {/* myrmidon(OPE-12361): Codex OAuth device login only exists on the
                     ChatGPT pool connector; other pools have no OAuth flow. */}
                 {provider.type === "chatgpt-pool" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid={`myrmidon-pool-oauth-begin-btn-${provider.id}`}
-                  onClick={handleOAuthBegin}
-                  disabled={oauthStarting}
-                  className="text-xs h-7 px-2"
-                >
-                  {oauthStarting
-                    ? t("modelProviders.channels.oauthStarting")
-                    : t("modelProviders.channels.oauthLogin")}
-                </Button>
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      data-testid={`myrmidon-pool-oauth-begin-btn-${provider.id}`}
+                      onClick={handleOAuthBegin}
+                      disabled={oauthStarting}
+                      className="text-xs h-7 px-2"
+                    >
+                      {oauthStarting
+                        ? t("modelProviders.channels.oauthStarting")
+                        : t("modelProviders.channels.oauthLogin")}
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddAccountOpen(true);
+                        setOauthState(null);
+                        setOauthError(null);
+                      }}
+                      className="rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary hover:bg-primary/20"
+                      data-testid={`myrmidon-pool-add-account-btn-${provider.id}`}
+                    >
+                      + {t("modelProviders.channels.addAccount") || "Подключить аккаунт Codex (OAuth)"}
+                    </button>
+                  </>
                 )}
                 {channelsQueryResult.isFetching && (
                   <span className="text-xs text-muted-foreground">
@@ -833,6 +917,137 @@ function ProviderCard({
                     {oauthCompleting ? t("modelProviders.channels.oauthCompleting") : t("modelProviders.channels.oauthComplete")}
                   </Button>
                 </div>
+              </div>
+            )}
+
+            {isAddAccountOpen && (
+              <div
+                className="rounded-md border border-primary/30 bg-muted/30 p-3 space-y-3"
+                data-testid={`myrmidon-pool-add-account-dialog-${provider.id}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-foreground">
+                    {t("modelProviders.channels.connectCodexOAuth") || "Подключение аккаунта Codex по OAuth"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddAccountOpen(false);
+                      setOauthState(null);
+                    }}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div>
+                    <label className="text-[11px] font-medium text-muted-foreground">
+                      {t("modelProviders.channels.plan") || "Тип аккаунта"}
+                    </label>
+                    <select
+                      value={accountPlan}
+                      onChange={(e) => setAccountPlan(e.target.value as "plus" | "pro" | "k12")}
+                      className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-xs"
+                      data-testid="myrmidon-pool-plan-select"
+                    >
+                      <option value="plus">Plus (5h / 7d windows)</option>
+                      <option value="pro">Pro (5h / 7d windows)</option>
+                      <option value="k12">K-12 (5h / 7d windows)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-medium text-muted-foreground">
+                      {t("modelProviders.channels.accountLabel") || "Метка (Label)"}
+                    </label>
+                    <Input
+                      value={accountLabel}
+                      onChange={(e) => setAccountLabel(e.target.value)}
+                      placeholder="codex-work-1"
+                      className="mt-1 h-7 text-xs"
+                      data-testid="myrmidon-pool-label-input"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-medium text-muted-foreground">
+                      {t("modelProviders.channels.accountEmail") || "Email (опционально)"}
+                    </label>
+                    <Input
+                      value={accountEmail}
+                      onChange={(e) => setAccountEmail(e.target.value)}
+                      placeholder="user@example.com"
+                      className="mt-1 h-7 text-xs"
+                      data-testid="myrmidon-pool-email-input"
+                    />
+                  </div>
+                </div>
+
+                {oauthError && (
+                  <p className="text-xs text-destructive">{oauthError}</p>
+                )}
+
+                {!oauthState ? (
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setIsAddAccountOpen(false)}
+                      className="h-7 text-xs"
+                    >
+                      Отмена
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleStartOAuth}
+                      disabled={isAuthorizing}
+                      className="h-7 text-xs"
+                      data-testid="myrmidon-pool-start-oauth-btn"
+                    >
+                      {isAuthorizing ? "Запуск..." : "Авторизовать через OAuth"}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-2 rounded border border-border bg-background p-2 text-xs">
+                    <p className="font-medium text-foreground">
+                      Авторизация запущена!
+                    </p>
+                    {oauthState.userCode && (
+                      <p className="text-muted-foreground">
+                        Код подтверждения: <span className="font-mono font-bold text-foreground">{oauthState.userCode}</span>
+                      </p>
+                    )}
+                    {oauthState.authUrl && (
+                      <p className="text-muted-foreground">
+                        URL:{" "}
+                        <a
+                          href={oauthState.authUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-primary underline"
+                        >
+                          Перейти к авторизации OpenAI
+                        </a>
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-2 pt-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={handleCompleteOAuth}
+                        disabled={isAuthorizing}
+                        className="h-7 text-xs"
+                        data-testid="myrmidon-pool-complete-oauth-btn"
+                      >
+                        {isAuthorizing ? "Сохранение..." : "Подтвердить подключение"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1038,16 +1253,27 @@ function ProviderCard({
                             {ch.error ? ch.error.slice(0, 120) : "—"}
                           </td>
                           <td className="p-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              data-testid={`myrmidon-pool-oauth-refresh-${ch.n}`}
-                              onClick={() => handleOAuthRefresh(ch.n)}
-                              disabled={oauthRefreshingN === ch.n || isDisabled}
-                              className="text-xs h-6 px-1.5"
-                            >
-                              {oauthRefreshingN === ch.n ? "..." : t("modelProviders.channels.oauthRefresh")}
-                            </Button>
+                            <div className="flex items-center gap-1.5">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                data-testid={`myrmidon-pool-oauth-refresh-${ch.n}`}
+                                onClick={() => handleOAuthRefresh(ch.n)}
+                                disabled={oauthRefreshingN === ch.n || isDisabled}
+                                className="text-xs h-6 px-1.5"
+                              >
+                                {oauthRefreshingN === ch.n ? "..." : t("modelProviders.channels.oauthRefresh")}
+                              </Button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteAccount(ch.n)}
+                                disabled={deletingAccountNumber === ch.n}
+                                className="rounded border border-destructive/30 px-1.5 py-0.5 text-[11px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                                data-testid={`myrmidon-pool-channel-delete-${ch.n}`}
+                              >
+                                {deletingAccountNumber === ch.n ? "..." : (t("modelProviders.channels.delete") || "Удалить")}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );

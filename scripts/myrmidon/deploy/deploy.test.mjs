@@ -153,6 +153,7 @@ case "$*" in
     if [ -e "$SANDBOX/curl-post-fails" ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi ;;
 esac
 case "$*" in
+  *":13110/api/liveness"*) printf '200' ;;
   # PREDEPLOY-DB-CHECK: the throwaway copy of the production database answers
   # from its own health file (port 13110, never the board's HEALTH_URL port).
   *":13110"*)
