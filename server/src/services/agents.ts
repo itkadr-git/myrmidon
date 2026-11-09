@@ -25,6 +25,11 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  nativeRunFinalizations,
+  nativeRunResults,
+  statusDecisionEffects,
+  statusDecisions,
+  workAssessments,
 } from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -1349,8 +1354,19 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
           .update(issues)
           .set({ assigneeAgentId: null, createdByAgentId: null })
           .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
-        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
+        await tx.delete(heartbeatRunEvents).where(
+          or(
+            eq(heartbeatRunEvents.agentId, id),
+            sql`${heartbeatRunEvents.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+          ),
+        );
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
+        await tx
+          .update(agentTaskSessions)
+          .set({ lastRunId: null })
+          .where(
+            sql`${agentTaskSessions.lastRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+          );
         await tx.delete(activityLog).where(
           or(
             eq(activityLog.agentId, id),
@@ -1359,6 +1375,51 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         );
         await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
         await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+
+        const agentRunIdsSql = sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id}`;
+        const agentDecisionIdsSql = sql`select ${statusDecisions.id} from ${statusDecisions} where ${statusDecisions.runId} in (${agentRunIdsSql})`;
+
+        await tx
+          .update(issues)
+          .set({ lastStatusDecisionId: null })
+          .where(sql`${issues.lastStatusDecisionId} in (${agentDecisionIdsSql})`);
+
+        await tx.delete(statusDecisionEffects).where(
+          sql`${statusDecisionEffects.decisionId} in (${agentDecisionIdsSql})`,
+        );
+        await tx.delete(nativeRunFinalizations).where(
+          sql`${nativeRunFinalizations.runId} in (${agentRunIdsSql})`,
+        );
+        await tx
+          .update(statusDecisions)
+          .set({ supersedesDecisionId: null })
+          .where(
+            or(
+              sql`${statusDecisions.runId} in (${agentRunIdsSql})`,
+              sql`${statusDecisions.supersedesDecisionId} in (${agentDecisionIdsSql})`,
+            ),
+          );
+        await tx.delete(statusDecisions).where(
+          sql`${statusDecisions.runId} in (${agentRunIdsSql})`,
+        );
+        await tx
+          .update(workAssessments)
+          .set({ supersedesAssessmentId: null })
+          .where(
+            or(
+              sql`${workAssessments.runId} in (${agentRunIdsSql})`,
+              sql`${workAssessments.supersedesAssessmentId} in (
+                select ${workAssessments.id} from ${workAssessments} where ${workAssessments.runId} in (${agentRunIdsSql})
+              )`,
+            ),
+          );
+        await tx.delete(workAssessments).where(
+          sql`${workAssessments.runId} in (${agentRunIdsSql})`,
+        );
+        await tx.delete(nativeRunResults).where(
+          sql`${nativeRunResults.runId} in (${agentRunIdsSql})`,
+        );
+
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
