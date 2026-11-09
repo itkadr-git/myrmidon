@@ -201,8 +201,12 @@ Docker: dockergate намеренно отказывает в произволь
   копировать каждый пакет в каждый клон; 1.6.2 BOT-DISK-C). `pnpm-hardlink-check.sh`
   проверяет это при сборке. Склад можно вынести в общий кэш пакетов экземпляра
   (`pnpmStore: "shared"`), см. [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
-- `RUSTUP_HOME`/`CARGO_HOME` остаются запечатанными под `/opt`, а `cargo` пишет свой
-  целевой каталог в выгруженное рабочее дерево;
+- `RUSTUP_HOME`/`CARGO_HOME` остаются запечатанными под `/opt`, а `CARGO_TARGET_DIR` направляет
+  артефакты `cargo` в `/data/hermes/.cache/cargo-target` (OPE-12105), вне рабочего дерева задачи.
+  botd держит этот каталог в пределах квоты на бота (`cargoTargetQuotaBytes`, 2 ГиБ) и
+  удаляет целые каталоги профилей, к которым писали давнее всего (OPE-12110); тот же проход
+  ограничивает `hermes/.npm/_npx` значением `npmNpxQuotaBytes` (512 МиБ), см.
+  [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
 - кэш сборки Go по умолчанию лежит под `$HOME` (`/data/hermes`), долговечный том.
 
 **`PATH` никогда не содержит записываемый том.** Стадия dev собирает `PATH` только из
