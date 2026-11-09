@@ -346,3 +346,107 @@ test("BEHAVIORAL: withSyncLock exclusivity, PID tracking, and idempotency", () =
   fs.rmSync(lockFile, { force: true });
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test("OPE-12489: ensureBase refreshes refs from the shared mirror (no origin fetch) and falls back when the mirror is stale", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-mirror-sync-test-"));
+  const mirrorRoot = path.join(tmp, "cache", "git");
+  const homeDir = path.join(tmp, "home");
+  const parsed = { owner: "itkadr-git", repo: "myrmidon", slug: "itkadr-git/myrmidon" };
+  const upstreamDir = path.join(tmp, "upstream", parsed.owner, `${parsed.repo}.git`);
+  const mirrorDir = path.join(mirrorRoot, parsed.owner, `${parsed.repo}.git`);
+
+  fs.mkdirSync(upstreamDir, { recursive: true });
+  fs.mkdirSync(mirrorDir, { recursive: true });
+  fs.mkdirSync(homeDir, { recursive: true });
+
+  // 1. Upstream with v1
+  runGit(["init", "--bare", upstreamDir]);
+  const seedWork = path.join(tmp, "seed");
+  fs.mkdirSync(seedWork, { recursive: true });
+  runGit(["init", seedWork]);
+  runGit(["config", "user.name", "Dev"], seedWork);
+  runGit(["config", "user.email", "dev@example.com"], seedWork);
+  fs.writeFileSync(path.join(seedWork, "README.md"), "# v1");
+  runGit(["add", "."], seedWork);
+  runGit(["commit", "-m", "v1"], seedWork);
+  runGit(["push", upstreamDir, "HEAD:refs/heads/main"], seedWork);
+
+  // 2. Mirror from upstream, with the board's freshness stamp
+  runGit(["clone", "--mirror", upstreamDir, mirrorDir]);
+  runGit(["repack", "-a", "-d"], mirrorDir);
+  fs.writeFileSync(path.join(mirrorDir, "myrmidon-fetched-at"), `${Date.now()}\n`);
+
+  // 3. Counting git fake: delegates to the real binary, logs every invocation
+  const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  const callLog = path.join(tmp, "git-calls.log");
+  const fakeGit = path.join(tmp, "fake-git.sh");
+  fs.writeFileSync(fakeGit, `#!/bin/sh\necho "$@" >> "${callLog}"\nexec ${realGit} "$@"\n`, { mode: 0o755 });
+
+  const fetchArgs = () =>
+    fs.existsSync(callLog)
+      ? fs.readFileSync(callLog, "utf8").split("\n").filter((l) => l.startsWith("fetch "))
+      : [];
+
+  const env = {
+    ...process.env,
+    MYRMIDON_WS_HOME: homeDir,
+    MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
+    MYRMIDON_WS_REMOTE_BASE: path.join(tmp, "upstream"),
+    MYRMIDON_GIT_REAL: fakeGit,
+    MYRMIDON_WS_REFRESH_SEC: "0",
+  };
+
+  // 4. First ensureBase: creates the base (initial fill from origin) and attaches alternates
+  const created = ensureBase(parsed.slug, { env });
+  assert.strictEqual(created.created, true);
+  assert.ok(fetchArgs().some((l) => l.includes("origin")), "initial fill fetches from origin");
+  const baseDir = created.path;
+
+  // Record base's own object store size after creation+repack
+  const ownSizeAfterCreate = getDirSize(path.join(baseDir, "objects"));
+
+  // 5. Upstream gets a new branch; the board refreshes the mirror (stamp updated)
+  runGit(["branch", "feature", "main"], upstreamDir);
+  runGit(["fetch", "origin", "+refs/heads/*:refs/heads/*"], mirrorDir);
+  runGit(["repack", "-a", "-d"], mirrorDir);
+  fs.writeFileSync(path.join(mirrorDir, "myrmidon-fetched-at"), `${Date.now()}\n`);
+
+  // 6. Refresh: must sync refs from the MIRROR, not from origin
+  const callsBefore = fetchArgs().length;
+  const refreshed = ensureBase(parsed.slug, { env });
+  assert.strictEqual(refreshed.created, false);
+  const newCalls = fetchArgs().slice(callsBefore);
+  assert.ok(
+    newCalls.some((l) => l.includes(mirrorDir)),
+    `refresh must fetch from the mirror dir, got: ${newCalls.join(" | ")}`,
+  );
+  assert.ok(
+    !newCalls.some((l) => l.includes("origin")),
+    `refresh must not fetch from origin, got: ${newCalls.join(" | ")}`,
+  );
+  assert.match(
+    runGit(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"], baseDir),
+    /refs\/remotes\/origin\/feature/,
+    "new branch must appear in base refs after mirror sync",
+  );
+
+  // 7. Mirror sync must not inflate the base's own object store (objects stay in the mirror)
+  const ownSizeAfterMirrorSync = getDirSize(path.join(baseDir, "objects"));
+  assert.ok(
+    ownSizeAfterMirrorSync <= ownSizeAfterCreate + 4096,
+    `own objects must not grow on mirror sync: ${ownSizeAfterCreate} -> ${ownSizeAfterMirrorSync}`,
+  );
+
+  // 8. Stale mirror (stamp older than 48h): fall back to origin fetch
+  const staleTime = new Date(Date.now() - 49 * 60 * 60 * 1000);
+  fs.utimesSync(path.join(mirrorDir, "myrmidon-fetched-at"), staleTime, staleTime);
+  const callsBeforeStale = fetchArgs().length;
+  ensureBase(parsed.slug, { env });
+  const staleCalls = fetchArgs().slice(callsBeforeStale);
+  assert.ok(
+    staleCalls.some((l) => l.includes("origin")),
+    `stale mirror must fall back to an origin fetch, got: ${staleCalls.join(" | ")}`,
+  );
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
