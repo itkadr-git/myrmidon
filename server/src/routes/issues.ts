@@ -468,6 +468,7 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+import { isValidWakeCommentId } from "../modules/run-dispatch/index.js";
 // myrmidon(HANDOFF-CAS): guarded agent-to-agent task handoff mechanics for the
 // PATCH /api/issues/{id} path, ported from vendor paperclipai/paperclip#13686.
 import * as handoffCas from "../myrmidon/handoff-cas.js";
@@ -7635,15 +7636,18 @@ export function issueRoutes(
       return response ? [response.comment] : [];
     }
     const ids = queuedCommentIdsFromWakePayload(wake?.payload);
-    if (ids.length === 0) return [];
+    // uuid-column boundary (OPE-12209): never build an `inArray` over
+    // `issue_comments.id` from a payload with malformed ids.
+    const validIds = ids.filter(isValidWakeCommentId);
+    if (validIds.length === 0) return [];
     const rows = await executor
       .select()
       .from(issueComments)
       .where(
-        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, ids)),
+        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, validIds)),
       );
     const byId = new Map(rows.map((row) => [row.id, row]));
-    return ids.flatMap((id) => {
+    return validIds.flatMap((id) => {
       const row = byId.get(id);
       // myrmidon(UPSTREAM-13539): normalize authorType so the queue renderer never sees null.
       return row && !row.deletedAt ? [{ ...row, authorType: row.authorType ?? (row.authorAgentId ? "agent" as const : "user" as const) }] : [];

@@ -1,5 +1,73 @@
 import { describe, expect, it } from "vitest";
-import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering } from "./issue-queued-comment-queue.js";
+import {
+  buildQueuedCommentQueueSnapshot,
+  decideQueuedCommentQueueSteering,
+  queuedCommentIdsFromWakePayload,
+  queuedCommentIdsFromRunContext,
+  withQueuedCommentIdsInWakePayload,
+  withQueuedCommentIdsInRunContext,
+} from "./issue-queued-comment-queue.js";
+
+describe("queuedCommentIdsFromWakePayload and runContext", () => {
+  it("filters out invalid or malformed comment IDs from wake payload", () => {
+    const validUuid = "123e4567-e89b-12d3-a456-426614174000";
+    const payload = {
+      _paperclipWakeContext: {
+        wakeCommentIds: [
+          validUuid,
+          "abc12345",
+          "",
+          "   ",
+          null,
+          123,
+          "defa4567-e89b-32d3-b456-426614174099",
+          validUuid, // duplicate
+        ],
+      },
+    };
+
+    expect(queuedCommentIdsFromWakePayload(payload)).toEqual([
+      validUuid,
+      "defa4567-e89b-32d3-b456-426614174099",
+    ]);
+  });
+
+  it("filters out invalid comment IDs from run context", () => {
+    const validUuid = "123e4567-e89b-12d3-a456-426614174000";
+    const context = {
+      wakeCommentIds: [
+        "",
+        "   ",
+        "abc12345",
+        validUuid,
+      ],
+    };
+
+    expect(queuedCommentIdsFromRunContext(context)).toEqual([validUuid]);
+  });
+
+  it("filters out invalid comment IDs when writing wake payload", () => {
+    const validUuid = "123e4567-e89b-12d3-a456-426614174000";
+    const resWithMalformed = withQueuedCommentIdsInWakePayload({}, ["", "   "]);
+    expect(resWithMalformed.commentId).toBeUndefined();
+    expect((resWithMalformed._paperclipWakeContext as Record<string, unknown>).wakeCommentIds).toBeUndefined();
+
+    const resWithValid = withQueuedCommentIdsInWakePayload({}, ["   ", validUuid]);
+    expect(resWithValid.commentId).toBe(validUuid);
+    expect((resWithValid._paperclipWakeContext as Record<string, unknown>).wakeCommentIds).toEqual([validUuid]);
+  });
+
+  it("filters out invalid comment IDs when writing run context", () => {
+    const validUuid = "123e4567-e89b-12d3-a456-426614174000";
+    const resWithMalformed = withQueuedCommentIdsInRunContext({}, ["", "   "]);
+    expect(resWithMalformed.commentId).toBeUndefined();
+    expect(resWithMalformed.wakeCommentIds).toBeUndefined();
+
+    const resWithValid = withQueuedCommentIdsInRunContext({}, ["   ", validUuid]);
+    expect(resWithValid.commentId).toBe(validUuid);
+    expect(resWithValid.wakeCommentIds).toEqual([validUuid]);
+  });
+});
 
 describe("decideQueuedCommentQueueSteering", () => {
   it("answers unsupported on the legacy protocol", () => {
