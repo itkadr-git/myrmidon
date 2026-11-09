@@ -59,7 +59,7 @@ import {
   type ReviewReworkExecutorCandidate,
   type ReviewReworkPrFact,
 } from "./domain.js";
-import type { ReviewReworkPrResolver } from "./resolver.js";
+import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot } from "./resolver.js";
 import type { ReworkCandidateRow, ReviewReworkStore } from "./store.js";
 
 export { DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC } from "@myrmidon/shared";
@@ -247,35 +247,42 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
   async function prFacts(
     row: ReworkCandidateRow,
     commentBodies: readonly string[],
-    seen: ReadonlySet<string>,
+    prFactsCache: Map<string, ReviewReworkPrSnapshot | null>,
   ): Promise<ReviewReworkPrFact[]> {
-    // myrmidon(OPE-12397): a PR already read this pass (a sibling review task
-    // links it, or this task named it twice) is skipped — one GitHub read per
-    // PR per pass. The first candidate in scan order wins the read; the set is
-    // owned by the pass and mutates here despite the readonly view.
-    const seenPrs = seen as Set<string>;
-    const coordinates = extractPrCoordinates(
+    // myrmidon(OPE-12397): one GitHub read per PR per pass, shared across
+    // every candidate that links the same PR. The fetched snapshot is cached
+    // for the pass so sibling tasks evaluate their decisions without re-querying
+    // or being dropped.
+    const rawCoordinates = extractPrCoordinates(
       [...row.textParts, ...commentBodies],
       row.products.map((product) => ({ repo: product.repo, number: product.number, url: product.url ?? null })),
-    ).filter((coordinate) => {
+    );
+    const seenInTask = new Set<string>();
+    const coordinates = rawCoordinates.filter((coordinate) => {
       const key = reviewReworkPrKey(coordinate);
-      if (seenPrs.has(key)) return false;
-      seenPrs.add(key);
+      if (seenInTask.has(key)) return false;
+      seenInTask.add(key);
       return true;
     });
     const facts: ReviewReworkPrFact[] = [];
     for (const coordinate of coordinates) {
-      const [owner, repo] = coordinate.repo.split("/");
-      let snapshot = null;
-      if (owner && repo) {
-        try {
-          snapshot = await deps.resolvePr(row.task.companyId, { owner, repo, number: coordinate.number });
-        } catch {
-          snapshot = null;
+      const key = reviewReworkPrKey(coordinate);
+      let snapshot: ReviewReworkPrSnapshot | null = null;
+      if (prFactsCache.has(key)) {
+        snapshot = prFactsCache.get(key) ?? null;
+      } else {
+        const [owner, repo] = coordinate.repo.split("/");
+        if (owner && repo) {
+          try {
+            snapshot = await deps.resolvePr(row.task.companyId, { owner, repo, number: coordinate.number });
+          } catch {
+            snapshot = null;
+          }
         }
+        prFactsCache.set(key, snapshot);
       }
       facts.push({
-        prKey: reviewReworkPrKey(coordinate),
+        prKey: key,
         repo: coordinate.repo,
         number: coordinate.number,
         state: snapshot?.state ?? "unknown",
@@ -329,14 +336,14 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     now: Date,
     result: ReviewReworkSweepResult,
     moves: { count: number },
-    prsSeenThisPass: Set<string>,
+    prFactsCache: Map<string, ReviewReworkPrSnapshot | null>,
   ): Promise<void> {
     const rows = await deps.store.listCandidateTasks(companyId, REVIEW_REWORK_PAGE_SIZE);
     result.scanned += rows.length;
     for (const row of rows) {
       if (moves.count >= REVIEW_REWORK_MAX_MOVES_PER_PASS) return;
       try {
-        const moved = await processTask(row, settings, now, result, moves, prsSeenThisPass);
+        const moved = await processTask(row, settings, now, result, moves, prFactsCache);
         if (moved) moves.count += 1;
       } catch (err) {
         result.failed += 1;
@@ -351,7 +358,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     now: Date,
     result: ReviewReworkSweepResult,
     _moves: { count: number },
-    prsSeenThisPass: ReadonlySet<string>,
+    prFactsCache: Map<string, ReviewReworkPrSnapshot | null>,
   ): Promise<boolean> {
     const { task } = row;
     // myrmidon(OPE-12397): a task with neither a rework child, nor a verdict
@@ -375,7 +382,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     }
     const comments = await deps.store.listComments(task.id);
     const child = await deps.store.findReworkChild(task.companyId, task.id);
-    const prs = await prFacts(row, comments.map((comment) => comment.body), prsSeenThisPass);
+    const prs = await prFacts(row, comments.map((comment) => comment.body), prFactsCache);
     if (prs.length === 0) return false;
     // The delivering task's assignee: the first PR with coordinates that names
     // a task other than this review.
@@ -677,11 +684,11 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       const moves = { count: 0 };
       // myrmidon(OPE-12397): one GitHub read per PR per pass, shared across
       // every candidate that links the same PR.
-      const prsSeenThisPass = new Set<string>();
+      const prFactsCache = new Map<string, ReviewReworkPrSnapshot | null>();
       const companyIds = await deps.store.listActiveCompanyIds();
       for (const companyId of companyIds) {
         try {
-          await sweepCompany(companyId, settings, now, result, moves, prsSeenThisPass);
+          await sweepCompany(companyId, settings, now, result, moves, prFactsCache);
         } catch (err) {
           result.failed += 1;
           log.warn({ err, companyId }, "review rework sweep failed for one company");

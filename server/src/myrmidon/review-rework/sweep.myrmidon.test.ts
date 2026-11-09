@@ -7,7 +7,7 @@
 // and the reopen path. No database, no network: the store, the resolver and
 // the wake port are all in-memory.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
   REVIEW_REWORK_ACCEPTANCE_ACTION,
@@ -18,6 +18,7 @@ import {
   REVIEW_REWORK_WAKE_REASON,
   type ReviewReworkSettings,
 } from "@myrmidon/shared";
+import { resetGitHubRateLimitForTests, setGitHubRateLimitForTests } from "../../services/github-rate-limit.js";
 import {
   createReviewReworkSweep,
   extractPrCoordinates,
@@ -173,6 +174,9 @@ function build(input: {
 }
 
 describe("review rework sweep", () => {
+  afterEach(() => {
+    resetGitHubRateLimitForTests();
+  });
   it("acceptance 1: RETURN opens a rework task with the PR author and blocks the review", async () => {
     const store = new FakeStore();
     store.rows = [candidateRow(reviewTask())];
@@ -568,7 +572,7 @@ describe("review rework sweep", () => {
       expect(result.reworkCreated).toBe(1);
     });
 
-    it("reads a shared PR once when two review tasks link it", async () => {
+    it("reads a shared PR once when two review tasks link it and evaluates both tasks", async () => {
       const store = new FakeStore();
       const first = candidateRow(reviewTask());
       const second = candidateRow(reviewTask({ id: "review-2", identifier: "OPE-4418" }));
@@ -578,9 +582,13 @@ describe("review rework sweep", () => {
 
       const result = await sweep.sweep(PASS_AT, { force: true });
 
-      // One read for acme/repo#484; the second task rides on the same pass.
+      // One read for acme/repo#484; the second task rides on the same pass snapshot.
       expect(getResolveCalls()).toBe(1);
-      expect(result.reworkCreated + result.blocked).toBeGreaterThanOrEqual(1);
+      // Both tasks link the same PR with RETURN verdict; both should have rework created and be blocked
+      expect(result.reworkCreated).toBe(2);
+      expect(result.blocked).toBe(2);
+      expect(store.created).toHaveLength(2);
+      expect(store.blocked).toHaveLength(2);
     });
 
     it("skips a candidate with no rework child, no verdict and no live product", async () => {
@@ -599,6 +607,31 @@ describe("review rework sweep", () => {
       // row before the comments and GitHub reads.
       expect(getResolveCalls()).toBe(0);
       expect(result.scanned).toBe(1);
+      expect(store.created).toHaveLength(0);
+    });
+
+    it("short-circuits and makes zero GitHub calls when rate limited", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      store.rows = [row];
+      store.comments = verdictComment();
+      let resolveCalled = false;
+      const { sweep } = build({
+        store,
+        snapshot,
+        resolvePr: async () => {
+          resolveCalled = true;
+          return null;
+        },
+      });
+
+      // When rate-limited, isGitHubRateLimited() is true
+      setGitHubRateLimitForTests(Math.floor(Date.now() / 1000) + 3600, 0);
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      expect(result.skippedPass).toBe(true);
+      expect(resolveCalled).toBe(false);
       expect(store.created).toHaveLength(0);
     });
 
