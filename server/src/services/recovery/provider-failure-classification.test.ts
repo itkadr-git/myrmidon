@@ -22,11 +22,16 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
-  it("uses the default recovery backoff when quota reset time is absent", () => {
+  it.each([
+    { errorCode: "adapter_failed", error: "Provider quota exceeded for this model." },
+    { errorCode: "adapter_failed", error: "HTTP 402 insufficient_quota: billing limit reached" },
+    { errorCode: "hermes_gateway_run_failed", error: "HTTP 429: No deployments available. All deployments in cooldown." },
+    { errorCode: "hermes_gateway_run_failed", error: "HTTP 503: no deployments available for this model" },
+  ])("classifies provider outage messages as quota recovery: $error", ({ errorCode, error }) => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({
-      errorCode: "adapter_failed",
-      error: "Provider quota exceeded for this model.",
+      errorCode,
+      error,
       resultJson: null,
     }, now);
 
