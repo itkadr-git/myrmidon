@@ -125,6 +125,15 @@ rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
 are unaffected. See the [knowledge gate change record](../myrmidon/changes/knowledge-gate-system-changes.md)
 for the rollout and settings reference.
 
+## Task card readiness gate
+
+When a task moves to `in_review`, the server checks the card's mandatory
+fields (`assertTaskCardReady`). During the three days after `2026-11-07` the
+default is warning-only; afterwards incomplete cards are rejected with
+`422 task_card_not_ready`. Operators can select `warning` or `enforce`
+explicitly with `MYRMIDON_TASK_CARD_GATE_MODE` and override the rollout
+anchor with `MYRMIDON_TASK_CARD_GATE_START_DATE`.
+
 ## Recovery and requeue holds
 
 If a failed run is reconciled after an operator has already returned its task

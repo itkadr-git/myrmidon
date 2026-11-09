@@ -99,6 +99,15 @@ The board terminates Telegram webhooks and forwards turns to the bot's
 gateway via its `apiBaseUrl`, so webhook routing survives the migration
 undisturbed.
 
+The site network profile (`privateNetwork`, `tunnel`) stays editable after
+enrollment: `PATCH /api/myrmidon/fleet/sites/:name` merges them into the
+stored site profile (admin only) — for example, to give a site enrolled
+without `privateNetwork` the flag whose absence made the hermes adapter
+reject its plain-http gateway on an IPsec-internal address. Fleet bot
+actions — restart/stop/logs and moves between sites — reach the site agent,
+and a refreshed site row (profile, status, capacity) reaches the adapter's
+checks without a board restart.
+
 ## References
 
 Shipped together with the remote execution sites feature (1.6.6):
