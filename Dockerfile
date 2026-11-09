@@ -197,11 +197,12 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 # bwrap sandbox the local adapters confine agent processes with.
 # BUN_INSTALL=/usr/local makes Bun place its global bins (omp) directly into
 # /usr/local/bin for all image users instead of root's ~/.bun/bin.
+# release downloads retry: github.com answers 504 to anonymous downloads while GitHub throttles anonymous traffic.
 ENV BUN_INSTALL=/usr/local
 RUN set -eu \
-  && curl -fsSL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
   && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
-  && curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/SHASUMS256.txt" | grep "  bun-linux-x64.zip$" | sed "s|  bun-linux-x64.zip|  /tmp/bun.zip|" | sha256sum -c - \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/SHASUMS256.txt" | grep "  bun-linux-x64.zip$" | sed "s|  bun-linux-x64.zip|  /tmp/bun.zip|" | sha256sum -c - \
   && unzip -q /tmp/bun.zip -d /tmp/bun-extract \
   && install -m 0755 "/tmp/bun-extract/bun-linux-x64/bun" /usr/local/bin/bun \
   && rm -rf /tmp/bun.zip /tmp/bun-extract \
