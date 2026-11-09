@@ -294,21 +294,19 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     const second = await service.reconcileTaskWatchdogs({ companyId });
 
-    expect(second).toMatchObject({ checked: 1, triggered: 1 });
-    expect(wakes).toHaveLength(2);
+    expect(second).toMatchObject({ checked: 1, triggered: 0 });
+    expect(wakes).toHaveLength(1);
     const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
     expect(watchdogIssue).toMatchObject({
-      status: "todo",
-      assigneeAgentId: agentId,
-      originFingerprint: firstWatchdog?.lastObservedFingerprint,
+      status: "in_review",
     });
     const comments = await db
       .select()
       .from(issueComments)
       .where(eq(issueComments.issueId, watchdogIssueId));
-    expect(comments).toHaveLength(2);
+    expect(comments).toHaveLength(1);
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
-    expect(watchdog?.triggerCount).toBe(2);
+    expect(watchdog?.triggerCount).toBe(1);
   });
 
   it("skips a watchdog whose agent is paused (409) without throwing and still processes the others", async () => {

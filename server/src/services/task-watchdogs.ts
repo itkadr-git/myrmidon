@@ -1570,18 +1570,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return { state: classification.state, reason: classification.reason, classification };
     }
 
-    if (rewakeCooldownActive({
-      lastTriggeredAt: watchdog.lastTriggeredAt,
-      lastObservedFingerprint: watchdog.lastObservedFingerprint,
-      stopFingerprint: classification.stopFingerprint,
-      cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
-    })) {
-      return {
-        state: "skipped" as const,
-        reason: "rewake_cooldown",
-        classification,
-      };
-    }
 
     const existingWatchdogIssueId = watchdog.watchdogIssueId ?? (await findTaskWatchdogIssue(
       watchdog.companyId,
@@ -1598,6 +1586,18 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         })
         .where(eq(issueWatchdogs.id, watchdog.id));
       return { state: "watchdog_live" as const, classification, watchdogIssueId: existingWatchdogIssueId };
+    }
+    if (rewakeCooldownActive({
+      lastTriggeredAt: watchdog.lastTriggeredAt,
+      lastObservedFingerprint: watchdog.lastObservedFingerprint,
+      stopFingerprint: classification.stopFingerprint,
+      cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
+    })) {
+      return {
+        state: "skipped" as const,
+        reason: "rewake_cooldown",
+        classification,
+      };
     }
     const existingWatchdogIssue = existingWatchdogIssueId
       ? await db
