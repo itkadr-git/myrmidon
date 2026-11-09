@@ -195,15 +195,18 @@ mismatch fails the build, the same rule the Node.js variant states above.
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
 directories are exactly its single `/bot` mount (BOT-DISK-D), so:
 
-- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir`, inside that
-  mount like every clone root, because pnpm hard-links `node_modules` into its store and a hard
-  link cannot cross a mount (a store on a separate bind made pnpm copy every package into every
-  clone). `npm_config_package_import_method=hardlink` is set too; pnpm 9 still copies silently
-  when the kernel refuses a link, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
-  `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the check at every start
-  (`/data/hermes/.myrmidon/hardlink-check.json`, shown on the board). `/cache/pnpm` is a download
-  cache only, never the store; the paths and the method are the `pnpmStoreDir` and
-  `pnpmImportMethod` settings, see
+- the pnpm store defaults to `/cache/pnpm-store` (BOT-DISK-H8a), the shared store one per
+  partition mounted from the host's `<sharedPackageCachePath>/pnpm-store` for bots in
+  `sharedCacheRoles`. pnpm imports `node_modules` from its store with
+  `package-import-method=clone` (cp --reflink, FICLONE), and reflinks work between mount
+  points of one filesystem — the shared store and the bot volumes share the host partition.
+  When the shared store mount is absent the entrypoint falls back to `/workspace/.pnpm-store`
+  inside the /bot mount (BOT-DISK-D), the legacy per-bot store. pnpm 10 still copies silently
+  when the kernel refuses the clone, so `pnpm-reflink-check.sh` proves the reflink from
+  `/data/hermes`, `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the
+  check at every start (`/data/hermes/.myrmidon/reflink-check.json`, shown on the board).
+  `/cache/pnpm` is a download cache only, never the store; the paths and the method are the
+  `pnpmStoreDir` and `pnpmImportMethod` settings, see
   [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
 - `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `CARGO_TARGET_DIR` directs `cargo`
   artifacts to `/data/hermes/.cache/cargo-target` (OPE-12105), outside the task working tree.

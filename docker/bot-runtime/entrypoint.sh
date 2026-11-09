@@ -234,7 +234,8 @@ fi
 # the gateway: a bot with a broken store still works, just wastefully.
 # The store is the one the bot's tools will use: the environment's
 # npm_config_store_dir, overridden by the profile's .env, defaulting to the
-# image's.
+# image's /cache/pnpm-store (BOT-DISK-H8a). When the shared store mount is
+# absent the entrypoint falls back to /workspace/.pnpm-store (BOT-DISK-D).
 dotenv_value() {
   local file="${HERMES_HOME}/.env" line value
   [ -r "${file}" ] || return 0
@@ -275,10 +276,31 @@ physical_path() {
   printf '%s/%s\n' "${d}" "${b}"
 }
 
+# Resolve the pnpm store directory with fallback. The fleet standard is the
+# shared store at /cache/pnpm-store (BOT-DISK-H8a), mounted from the host's
+# shared package cache. When the mount is absent (a bot without the shared
+# cache role, or a legacy profile), the directory does not exist on the
+# read-only rootfs and mkdir fails — then the store falls back to the
+# per-bot /workspace/.pnpm-store inside the /bot mount (BOT-DISK-D), which is
+# always writable. The resolution order is: the profile's .env, then the
+# image ENV, then the fallback chain.
+resolve_pnpm_store() {
+  local store
+  store="$(dotenv_value npm_config_store_dir)"
+  store="${store:-${npm_config_store_dir:-}}"
+  if [ -z "${store}" ]; then
+    if mkdir -p /cache/pnpm-store 2>/dev/null && [ -w /cache/pnpm-store ]; then
+      store="/cache/pnpm-store"
+    else
+      store="/workspace/.pnpm-store"
+    fi
+  fi
+  printf '%s' "${store}"
+}
+
 reflink_self_check() {
   local store method roots root probe src dst err ok_all=true entries="" sep="" ok shared
-  store="$(dotenv_value npm_config_store_dir)"
-  store="${store:-${npm_config_store_dir:-/workspace/.pnpm-store}}"
+  store="$(resolve_pnpm_store)"
   method="reflink"
   roots="${MYRMIDON_REFLINK_ROOTS:-/data/hermes /workspace /scratch}"
   probe=".myrmidon-reflink-probe.$$"
