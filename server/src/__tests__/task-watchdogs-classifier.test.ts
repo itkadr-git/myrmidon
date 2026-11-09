@@ -519,5 +519,4 @@ describe("task watchdog subtree classifier", () => {
     // The production default matches the documented 6h window.
     expect(TASK_WATCHDOG_REWAKE_COOLDOWN_MS).toBe(cooldownMs);
   });
-  });
 });

@@ -313,7 +313,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, watchdogIssueId));
     expect(comments).toHaveLength(2);
-    expect(comments[1]?.body).toContain("Task watchdog review re-opened");
+    expect(comments[1]?.body).toContain("Task watchdog resumed for stopped subtree.");
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.triggerCount).toBe(2);
   });

@@ -1621,9 +1621,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         watchdogIssueId: existingWatchdogIssue!.id,
       };
     }
+    const lastTriggeredFingerprint = existingWatchdogIssue?.originFingerprint ?? watchdog.lastObservedFingerprint;
     if (rewakeCooldownActive({
       lastTriggeredAt: watchdog.lastTriggeredAt,
-      lastObservedFingerprint: watchdog.lastObservedFingerprint,
+      lastObservedFingerprint: lastTriggeredFingerprint,
       stopFingerprint: classification.stopFingerprint,
       cooldownMs: TASK_WATCHDOG_REWAKE_COOLDOWN_MS,
     })) {
