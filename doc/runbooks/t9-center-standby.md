@@ -137,6 +137,18 @@ On the standby host (`myr-vm1`):
    Both queries must print `1` (in recovery). Note: `pg_is_in_recovery()::text` prints `true`/`false` (and a bare boolean prints
    `t`/`f`); the tool always uses `::int` so the answer is `1`/`0`.
 
+### WAL Archive & Restore Paths (Defect 3 Note)
+
+The standby container mounts `/srv/backups/wal/myrmidon-pg` on the host to `/srv/backups/wal` inside the container:
+```yaml
+volumes:
+  - /srv/backups/wal/myrmidon-pg:/srv/backups/wal:ro
+```
+and `docker-compose.standby.yml` configures:
+`-c restore_command='cp /srv/backups/wal/%f %p'`.
+
+To ensure compatibility, `standby-ctl.mjs` sets the default container WAL archive directory (`walArchiveDir`, `boardWalArchiveDir`, `hindsightWalArchiveDir`) to `/srv/backups/wal`. In `postgresql.auto.conf`, `restore_command` references `/srv/backups/wal/%f`, matching the in-container mount point. Note that production primary runs `archive_mode = off` by default (see D7 note); WAL archiving is kept as a fallback mechanism when archives are copied or restored.
+
 ---
 
 ## 4. Freshness & Lag Monitoring (RPO Verification)
