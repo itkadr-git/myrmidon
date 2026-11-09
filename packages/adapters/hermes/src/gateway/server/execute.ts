@@ -146,6 +146,7 @@ type ExecutionState = {
   } | null;
   /** The single RunGuard correction queued for this gateway run. */
   runGuardHintSent: { reason: "repeated_tool_call" | "model_call_limit" } | null;
+  runGuardHintStopEmitted: boolean;
 };
 
 type TextRedactor = (value: string) => string;
@@ -944,6 +945,7 @@ function createExecutionState(runId: string): ExecutionState {
     guardPendingToolCalls: 0,
     consecutiveToolErrors: null,
     runGuardHintSent: null,
+    runGuardHintStopEmitted: false,
   };
 }
 
@@ -1126,6 +1128,46 @@ async function sendRunGuardHint(input: {
       `[hermes-gateway] run guard hint delivery failed: ${redactErrorMessage(err, input.redactText)}\n`,
     );
   }
+}
+
+// myrmidon(RUN-GUARD-HINT) part B: a run that was hinted and then reached a
+// final stop (the guard stopped it, or the run ended non-completed after the
+// correction) records the hint reason in resultJson for the part-D
+// measurement and emits a run-log event for debugging. Shared across the
+// cancelled, timeout, and terminal-result exit paths.
+async function emitRunGuardHintStopIfNeeded(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  outcome: TerminalState | "cancelled" | "timeout";
+}): Promise<{ reason: "repeated_tool_call" | "model_call_limit" } | null> {
+  const { ctx, state, outcome } = input;
+  if (!state.runGuardHintSent) return null;
+  const isStoppedOrNonCompleted =
+    Boolean(ctx.runGuard?.stopped) ||
+    outcome === "cancelled" ||
+    outcome === "timeout" ||
+    outcome.status !== "completed";
+  if (!isStoppedOrNonCompleted) return null;
+
+  const runGuardHint = { reason: state.runGuardHintSent.reason };
+  if (!state.runGuardHintStopEmitted) {
+    state.runGuardHintStopEmitted = true;
+    await ctx.onEvent?.({
+      eventType: "run_guard_hint_stop",
+      stream: "system",
+      level: "warn",
+      message: `Run stopped after run guard hint (${runGuardHint.reason})`,
+      payload: {
+        runGuardHint: { reason: runGuardHint.reason },
+        runGuardStopReason: ctx.runGuard?.stopReason ?? runGuardHint.reason,
+      },
+    });
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] run guard stop after hint (${runGuardHint.reason})\n`,
+    );
+  }
+  return runGuardHint;
 }
 
 async function observeModelTurn(input: {
@@ -3633,6 +3675,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await flushCompactDeltaLines(ctx, state, { final: true });
 
   if (outcome === "cancelled") {
+    const runGuardHint = await emitRunGuardHintStopIfNeeded({ ctx, state, outcome });
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
     // myrmidon(G4): only claim the cancellation acknowledged once
@@ -3661,6 +3704,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         last_event: state.lastEventName,
         promptBreakdown,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+        ...(runGuardHint ? { runGuardHint } : {}),
         ...(terminationVerified
           ? {
               executionCancellation: {
@@ -3683,6 +3727,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   if (outcome === "timeout") {
+    const runGuardHint = await emitRunGuardHintStopIfNeeded({ ctx, state, outcome });
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
     // myrmidon(G4): operator cancellation can race in after Promise.race
@@ -3707,6 +3752,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         last_event: state.lastEventName,
         promptBreakdown,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+        ...(runGuardHint ? { runGuardHint } : {}),
         ...(cancelledToo
           ? {
               executionCancellation: {
@@ -3769,24 +3815,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // final stop (the guard stopped it, or the run ended non-completed after the
   // correction) records the hint reason in resultJson for the part-D
   // measurement and emits a run-log event for debugging.
-  let runGuardHint: { reason: "repeated_tool_call" | "model_call_limit" } | null = null;
-  if (state.runGuardHintSent && (ctx.runGuard?.stopped || outcome.status !== "completed")) {
-    runGuardHint = { reason: state.runGuardHintSent.reason };
-    await ctx.onEvent?.({
-      eventType: "run_guard_hint_stop",
-      stream: "system",
-      level: "warn",
-      message: `Run stopped after run guard hint (${runGuardHint.reason})`,
-      payload: {
-        runGuardHint: { reason: runGuardHint.reason },
-        runGuardStopReason: ctx.runGuard?.stopReason ?? runGuardHint.reason,
-      },
-    });
-    await ctx.onLog(
-      "stderr",
-      `[hermes-gateway] run guard stop after hint (${runGuardHint.reason})\n`,
-    );
-  }
+  const runGuardHint = await emitRunGuardHintStopIfNeeded({ ctx, state, outcome });
 
   const finalResult = mapFinalResultForTest({
     terminal: outcome,

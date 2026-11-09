@@ -4939,6 +4939,71 @@ describe("execute — run guard hint-before-stop (RUN-GUARD-HINT B)", () => {
     );
   });
 
+  it("mirrors production guard stop: aborts ctx.signal via onRunGuardStop on the fourth repeat, records resultJson.runGuardHint, and emits run_guard_hint_stop", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const repeatedArgs = { path: "/workspace/big/file.ts" };
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hint-prod-stop", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-hint-prod-stop", accepted: true }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET" && !url.endsWith("/events")) {
+        return new Response(JSON.stringify({ status: "cancelled", last_event: "run.cancelled" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        // Three repeats trigger hint (steered into dialog); fourth repeat trips guard stop,
+        // invoking onRunGuardStop which calls controller.abort().
+        // No run.failed terminal event is emitted by the server.
+        const frames = [
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          "",
+        ].join("\n");
+        return new Response(sseStream(frames), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeGuardCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-key", timeoutSec: 5 });
+    ctx.signal = controller.signal;
+    ctx.onRunGuardStop = vi.fn(async () => {
+      controller.abort();
+    });
+
+    const result = await execute(ctx);
+
+    expect(steerBodies).toHaveLength(1);
+    expect(ctx.onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(ctx.onRunGuardStop).toHaveBeenCalledWith("repeated_tool_call");
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_cancelled");
+    expect(result.resultJson?.runGuardHint).toEqual({ reason: "repeated_tool_call" });
+    const hintEvents = (ctx.onEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call) => (call[0] as { eventType: string }).eventType === "run_guard_hint_stop",
+    );
+    expect(hintEvents).toHaveLength(1);
+    expect((hintEvents[0][0] as { payload: { runGuardStopReason: string } }).payload.runGuardStopReason).toBe(
+      "repeated_tool_call",
+    );
+  });
+
   it("never steers a second hint in the same run even when the guard hints again", async () => {
     const steerBodies: Array<Record<string, unknown>> = [];
     const repeatedArgs = { path: "/workspace/big/file.ts" };
