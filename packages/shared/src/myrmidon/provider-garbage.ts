@@ -176,8 +176,8 @@ export function resolveProviderGarbageSettings(
     parsePositiveInteger(input.maxOutcomeChars) ??
     defaults.maxOutcomeChars;
   const retryMaxAttempts =
-    parsePositiveInteger(env.MYRMIDON_PROVIDER_GARBAGE_RETRY_MAX_ATTEMPTS) ??
-    parsePositiveInteger(input.retryMaxAttempts) ??
+    parseNonNegativeInteger(env.MYRMIDON_PROVIDER_GARBAGE_RETRY_MAX_ATTEMPTS) ??
+    parseNonNegativeInteger(input.retryMaxAttempts) ??
     defaults.retryMaxAttempts;
   const retryDelayMs =
     parseNonNegativeInteger(env.MYRMIDON_PROVIDER_GARBAGE_RETRY_DELAY_MS) ??

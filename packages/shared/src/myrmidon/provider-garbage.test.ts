@@ -22,6 +22,13 @@ describe("provider-garbage", () => {
     expect(settings.signatures).toContain("server overloaded");
   });
 
+  it("accepts MYRMIDON_PROVIDER_GARBAGE_RETRY_MAX_ATTEMPTS=0 to disable retries per docs", () => {
+    const settings = resolveProviderGarbageSettings({
+      env: { MYRMIDON_PROVIDER_GARBAGE_RETRY_MAX_ATTEMPTS: "0" },
+    });
+    expect(settings.retryMaxAttempts).toBe(0);
+  });
+
   it("classifies known stub signatures and short outcomes", () => {
     const res1 = classifyProviderGarbageOutcome("tạm thời bảo trì để nâng cấp và sẽ bù ngày - token");
     expect(res1.suspect).toBe(true);

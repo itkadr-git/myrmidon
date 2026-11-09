@@ -33,6 +33,7 @@ describe("DEVFLOW health thresholds", () => {
           stalledRouterMs: 60,
           approvedNotMergedMs: 70,
           noMergesMs: 80,
+          providerGarbageP1: 5,
         },
         {
           engineerIdleMs: 10,
@@ -43,6 +44,7 @@ describe("DEVFLOW health thresholds", () => {
           stalledRouterMs: 60,
           approvedNotMergedMs: 70,
           noMergesMs: 81,
+          providerGarbageP1: 5,
         },
       ),
     ).toEqual([
@@ -51,6 +53,7 @@ describe("DEVFLOW health thresholds", () => {
       { metric: "staleMarkerMs", durationMs: 40, thresholdMs: 40 },
       { metric: "stalledRouterMs", durationMs: 60, thresholdMs: 60 },
       { metric: "approvedNotMergedMs", durationMs: 70, thresholdMs: 70 },
+      { metric: "providerGarbageP1", durationMs: 5, thresholdMs: 0 },
     ]);
   });
 
