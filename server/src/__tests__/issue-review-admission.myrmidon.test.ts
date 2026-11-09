@@ -740,6 +740,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
 
     // No SHA readable at all: the legacy agent-keyed key is used so such
     // boards keep deduplicating exactly as before.
+    storedHead = null as any;
     await ctx.db
       .update(issueWorkProducts)
       .set({ metadata: { repo: "acme/app", number: 7 }, updatedAt: new Date() })
