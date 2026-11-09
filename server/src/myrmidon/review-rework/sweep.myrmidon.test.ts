@@ -98,6 +98,28 @@ class FakeStore implements ReviewReworkStore {
     this.closed.push(input);
     return true;
   }
+  appliedGoalJudgeDecisions: Array<{
+    issueId: string;
+    expectStatus: string;
+    patch: Record<string, unknown>;
+    comment: string | null;
+  }> = [];
+  applyGoalJudgeDecisionResult = true;
+  async applyGoalJudgeDecision(input: {
+    issueId: string;
+    companyId: string;
+    expectStatus: string;
+    patch: Record<string, unknown>;
+    comment: string | null;
+  }) {
+    this.appliedGoalJudgeDecisions.push({
+      issueId: input.issueId,
+      expectStatus: input.expectStatus,
+      patch: input.patch,
+      comment: input.comment,
+    });
+    return this.applyGoalJudgeDecisionResult;
+  }
   reopenedAfterLoopCloseResult = false;
   awaited: Array<{ issueId: string; assigneeAgentId: string | null; comment: string }> = [];
   async reopenedAfterLoopClose(_companyId: string, _issueId: string) {
