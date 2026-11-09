@@ -34,10 +34,13 @@ export interface LitellmSyncServiceDeps {
   resolveCredential?: (companyId: string, secretName: string) => Promise<string | null>;
 }
 
-/** Trailing-slash and whitespace insensitive api_base comparison; absent and empty are equal. */
+/** Compares two base URLs ignoring surrounding blanks and trailing slashes; null equals empty. */
 function sameBaseUrl(a: string | null | undefined, b: string | null | undefined): boolean {
-  const normalize = (value: string | null | undefined) => (value ?? "").trim().replace(/\/+$/, "");
-  return normalize(a) === normalize(b);
+  const norm = (value: string | null | undefined): string | null => {
+    const trimmed = (value ?? "").trim().replace(/\/+$/, "");
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  return norm(a) === norm(b);
 }
 
 export interface SyncTrigger {
@@ -404,22 +407,34 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
 
   /**
    * Removes the gateway deployments of ONE removed provider: those in the given
-   * model groups that carry the provider's own `api_base` (the port deletes by
-   * deployment id and never targets a deployment of the static gateway
-   * config). Other deployments of the same group - another provider's, a
-   * pool router's - stay; `unregisterModels` would take all of them with it.
+   * model groups that carry the provider's own `api_base`. Other deployments of
+   * the same group (another provider, a pool router, the gateway config file)
+   * stay. Deleting by group name would take all of them with it.
    *
-   * A pool provider is a no-op.
+   * A pool provider is a no-op. A deployment the gateway does not give an id
+   * for, or reports as a config-file deployment (`dbModel === false`), is left
+   * alone: the board can address only database deployments by id.
    */
   async function unregisterProviderModels(
     provider: { type: string; baseUrl: string | null },
     litellmModelNames: string[],
-  ): Promise<void> {
-    if (isPoolModelProviderType(provider.type)) return;
-    for (const name of litellmModelNames) {
-      await deps.litellm.unregisterModel(name, { baseUrl: provider.baseUrl });
-      await trigger?.onModelUnregistered?.(name);
+  ): Promise<{ removed: number }> {
+    if (isPoolModelProviderType(provider.type) || litellmModelNames.length === 0) {
+      return { removed: 0 };
     }
+    const wanted = new Set(litellmModelNames);
+    const registered = await deps.litellm.listRegisteredModels();
+    let removed = 0;
+    for (const deployment of registered) {
+      if (!wanted.has(deployment.litellmModelName)) continue;
+      if (!deployment.modelId) continue;
+      if (deployment.dbModel === false) continue;
+      if (!sameBaseUrl(deployment.baseUrl, provider.baseUrl)) continue;
+      await deps.litellm.deleteDeployment(deployment.modelId);
+      await trigger?.onModelUnregistered?.(deployment.litellmModelName);
+      removed += 1;
+    }
+    return { removed };
   }
 
   /**
