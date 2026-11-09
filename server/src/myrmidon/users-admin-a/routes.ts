@@ -55,7 +55,7 @@ const patchUserSchema = z
 const usersQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional().default(1),
   limit: z.coerce.number().int().min(1).max(100).optional().default(20),
-  role: z.enum(["instance_admin", "member"]).optional(),
+  role: z.enum(["admin", "instance_admin", "member"]).optional(),
 });
 
 const auditQuerySchema = z.object({
@@ -124,7 +124,13 @@ export function usersAdminRoutes(db: Db, opts: UsersAdminRoutesOptions = {}) {
       return;
     }
     const result = await listUsers(db, parsed.data);
-    res.json(result);
+    res.json({
+      items: result.users,
+      users: result.users,
+      total: result.total,
+      page: parsed.data.page,
+      limit: parsed.data.limit,
+    });
   });
 
   router.post("/myrmidon/users-admin-a/users", validate(createUserSchema), async (req, res) => {
