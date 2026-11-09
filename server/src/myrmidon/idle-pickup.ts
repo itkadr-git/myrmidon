@@ -1,6 +1,6 @@
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, issueWorkProducts, type Db } from "@myrmidon/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issueExecutionDecisions, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
@@ -720,10 +720,28 @@ async function idlePickupForAgentImpl(
     // just-released exclusion no longer applying.
     if (options.excludeIssueId && candidate.id === options.excludeIssueId) {
       result.alreadyActive += 1;
+      logger.debug(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          issueId: candidate.id,
+          reason: "just_released",
+        },
+        "myrmidon.idle_pickup: skipped the issue whose execution this pass just released",
+      );
       continue;
     }
     if (liveIssueIds.has(candidate.id)) {
       result.alreadyActive += 1;
+      logger.debug(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          issueId: candidate.id,
+          reason: "live_run",
+        },
+        "myrmidon.idle_pickup: skipped a candidate with a live run",
+      );
       continue;
     }
     // OPE-10082: idle_pickup does not wake a review participant for an issue whose
@@ -758,8 +776,59 @@ async function idlePickupForAgentImpl(
       IDLE_PICKUP_BOARD_CANCELLATION_SOURCES.has(recentRun.cancellationSource ?? "");
     const readyFromReviewCancellation =
       candidate.status === "in_progress" && boardCancelledLatestRun && reviewChangesRequested;
+    // OPE-12445: a task returned from review (`changes_requested`) whose last
+    // run merely SUCCEEDED is the executor's work again. The quiet window
+    // exists so a *dispositionless* success is not double-run while the
+    // handoff/recovery paths own it — but a `changes_requested` execution
+    // state proves a disposition already landed (the reviewer returned the
+    // task after that run's work). The reviewer's return wake is the primary
+    // owner; when it was suppressed (REVIEW-RETURN-GUARD) or lost, this lane
+    // is the only one left, and a lost return would otherwise wait out the
+    // whole quiet window while the task sits in rework. A *cancelled* run is
+    // different: cancellations are their own signal class and keep the
+    // existing rules (board/reassignment cancellations pair with review
+    // changes below; system cancellations are recent activity, not a redo
+    // order).
+    //
+    // Loop safety: the bypass fires only while the return decision is NEWER
+    // than the succeeded run — the decision returned *that run's* work. When
+    // the rework run the bypass starts itself succeeds (without a fresh
+    // return), its endedAt moves past the decision's createdAt and the task
+    // falls back under the plain quiet window. A stale `changes_requested`
+    // whose last decision predates the last success is a dispositionless
+    // handoff again and stays muted. An unreadable decision reads as "not a
+    // return": the window keeps the older behaviour.
+    let readyFromReviewReturn = false;
+    const requestedState =
+      reviewChangesRequested && executionState !== null && typeof executionState === "object"
+        ? (executionState as Record<string, unknown>)
+        : null;
+    if (
+      requestedState !== null &&
+      candidate.status === "in_progress" &&
+      recentRun?.status === "succeeded"
+    ) {
+      const lastDecisionId =
+        typeof requestedState.lastDecisionId === "string" ? requestedState.lastDecisionId : null;
+      if (lastDecisionId) {
+        const decision = await deps.db
+          .select({ createdAt: issueExecutionDecisions.createdAt })
+          .from(issueExecutionDecisions)
+          .where(
+            and(
+              eq(issueExecutionDecisions.companyId, agent.companyId),
+              eq(issueExecutionDecisions.id, lastDecisionId),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        readyFromReviewReturn = Boolean(
+          decision && decision.createdAt.getTime() > recentRun.endedAt.getTime(),
+        );
+      }
+    }
     const shouldSuppressRecentRun =
-      recentRun?.status === "succeeded" ||
+      (recentRun?.status === "succeeded" && !readyFromReviewReturn) ||
       (recentRun?.status === "cancelled" && !readyFromReviewCancellation);
 
     if (recentRun && shouldSuppressRecentRun) {
@@ -778,6 +847,20 @@ async function idlePickupForAgentImpl(
       });
       if (!spokenSinceRun) {
         result.alreadyActive += 1;
+        logger.info(
+          {
+            agentId: agent.id,
+            companyId: agent.companyId,
+            issueId: candidate.id,
+            reason: "quiet_recent_run",
+            recentRunStatus: recentRun.status,
+            recentRunEndedAt: recentRun.endedAt.toISOString(),
+            reviewChangesRequested,
+            readyFromReviewReturn,
+            readyFromReviewCancellation,
+          },
+          "myrmidon.idle_pickup: skipped a candidate still inside the recent-run quiet window",
+        );
         continue;
       }
     }
@@ -812,6 +895,15 @@ async function idlePickupForAgentImpl(
     // A wake parked on an execution hold does not count (see hasCoveringWake).
     if (await hasCoveringWake(deps.db, agent, candidate.id)) {
       result.alreadyActive += 1;
+      logger.debug(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          issueId: candidate.id,
+          reason: "covering_wake",
+        },
+        "myrmidon.idle_pickup: skipped a candidate already covered by a wake in flight",
+      );
       continue;
     }
     // myrmidon(IDLE-WAKE-BUDGET): the company-wide ceiling. The candidate above
@@ -1108,7 +1200,10 @@ export interface IdlePickupSweepResult extends IdlePickupResult {
 
 export interface IdlePickupSweeperDeps extends IdlePickupDeps {
   /** Retry pending participant reviews before the general assigned-task lane. */
-  pickupReviewForAgent?: (agent: { id: string; companyId: string }) => Promise<{ handled: boolean; woken: number }>;
+  pickupReviewForAgent?: (agent: {
+    id: string;
+    companyId: string;
+  }) => Promise<{ handled: boolean; woken: number; considered?: number }>;
   /** Invokability check for one agent (evaluateAgentInvokabilityFromDb): false for a paused agent. */
   isAgentInvokable: (agent: {
     id: string;
@@ -1209,6 +1304,10 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         if (review?.handled) {
           wakesPerCompany.set(agent.companyId, (wakesPerCompany.get(agent.companyId) ?? 0) + review.woken);
           totals.woken += review.woken;
+          // OPE-12445: the review lane consumed this agent's pass; count its
+          // candidates so the pass totals do not read considered: 0 while
+          // agentsChecked and alreadyActive prove candidates were scanned.
+          totals.considered += review.considered ?? 0;
           continue;
         }
         const perAgent = await idlePickupForAgent(deps, agent, {
@@ -1223,6 +1322,7 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         totals.woken += perAgent.woken;
         totals.alreadyActive += perAgent.alreadyActive;
         totals.suppressed += perAgent.suppressed;
+        totals.considered += perAgent.considered;
         totals.budgetSkipped += perAgent.budgetSkipped;
         totals.dailyCapSkipped += perAgent.dailyCapSkipped;
         totals.issueIds.push(...perAgent.issueIds);
@@ -1231,6 +1331,25 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         logger.warn(
           { woken: totals.woken, issueIds: totals.issueIds, agentsChecked },
           "idle pickup woke ready assigned issues",
+        );
+      }
+      // OPE-12445: the zero-candidates blindness. When the pass scanned
+      // candidates but woke nobody, the totals say why: alreadyActive covers
+      // live-run/covering-wake/quiet-window skips, suppressed the admission
+      // refusals, budgetSkipped/dailyCapSkipped the budget gates. Without this
+      // line the pass log read `considered: 0` (the per-agent counts were never
+      // aggregated) and a stuck queue looked like an empty one.
+      if (totals.considered > 0 && totals.woken === 0) {
+        logger.info(
+          {
+            agentsChecked,
+            considered: totals.considered,
+            alreadyActive: totals.alreadyActive,
+            suppressed: totals.suppressed,
+            budgetSkipped: totals.budgetSkipped,
+            dailyCapSkipped: totals.dailyCapSkipped,
+          },
+          "idle pickup considered ready assigned issues but woke none",
         );
       }
       return { agentsChecked, skippedOverBatch, ...totals };
