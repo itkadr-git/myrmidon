@@ -2251,6 +2251,9 @@ async function startServerWithDatabaseTeardown(
     wakeup: backgroundHeartbeat.wakeup,
     assignmentWakeup: backgroundHeartbeat.wakeup,
   });
+  // myrmidon(GITHUB-APP-WEBHOOK): the public App-webhook route (mounted in
+  // createApp, before this exists) ingests through this very instance.
+  app.locals.githubConnectionEvents = githubConnectionEvents;
   const tools = toolAccessService(db as any, {
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
