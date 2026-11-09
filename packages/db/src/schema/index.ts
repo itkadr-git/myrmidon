@@ -348,3 +348,25 @@ export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
 export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
 // myrmidon(OPE-9187): idempotency journal for legacy blocked imports.
 export { legacyBlockedImports } from "./legacy_blocked_imports.js";
+// myrmidon(1.7-REDACT): redaction substitutions with expiry TTL
+export { redactionSubstitutions } from "./redaction_substitutions.js";
+// myrmidon(1.7 POST-TASK-REFLECT, OPE-12095): outbox queue for post-task reflection jobs on issue completion.
+export {
+  reflectJobs,
+  REFLECT_JOB_STATUSES,
+  type ReflectJobStatus,
+  REFLECT_JOB_TYPES,
+  type ReflectJobType,
+  type ReflectJobRow,
+  type NewReflectJobRow,
+} from "./reflect_jobs.js";
+// myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093): append-only payment webhook event log.
+export {
+  billingEvents,
+  BILLING_EVENT_STATUSES,
+  type BillingEventStatus,
+  BILLING_EVENT_TYPES,
+  type BillingEventType,
+  type BillingEventRow,
+  type NewBillingEventRow,
+} from "./billing_events.js";

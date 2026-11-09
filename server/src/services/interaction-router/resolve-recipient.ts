@@ -39,6 +39,7 @@ export interface ResolveInteractionRecipientInput {
   creator: InteractionRecipient;
   projectRoles?: InteractionProjectRoles | null;
   recipient?: InteractionRecipient | null;
+  manager?: InteractionRecipient | null;
   serviceQueue?: string | null;
   allowLegacyAgentQueueFallback?: boolean;
 }
@@ -91,7 +92,14 @@ export function resolveInteractionRecipient(
 ): InteractionRecipient {
   let recipient: InteractionRecipient | null = null;
 
-  if (input.routeType === "operator_action") {
+  if (input.kind === "ask_user_questions" && "agentId" in input.creator && !input.recipient) {
+    recipient = input.manager ?? null;
+    if (!recipient) {
+      throw new InteractionRecipientUnresolvedError(
+        "Agent questions require a configured manager or explicit recipient",
+      );
+    }
+  } else if (input.routeType === "operator_action") {
     const queue = input.serviceQueue?.trim();
     if (!queue) throw new InteractionRecipientUnresolvedError("operator_action requires a service queue");
     recipient = { serviceQueue: queue };

@@ -33,6 +33,7 @@ import { RemoteSitesSection } from "../components/myrmidon/RemoteSitesSection"; 
 import { ReferenceTaskEvalsPanel } from "../components/myrmidon/evals/ReferenceTaskEvalsPanel"; // myrmidon(1.6.5 EVALS-JUDGE-FAMILY)
 import { TracingHealthCard } from "../components/myrmidon/tracing-health/TracingHealthCard"; // myrmidon(TRACING-HEALTH)
 import { TeamLivenessHealthCard } from "../components/myrmidon/TeamLivenessHealthCard"; // myrmidon(TEAM-LIVENESS-METRICS)
+import { CompanySkillPolicyEditor } from "@/components/skill-studio/CompanySkillPolicyEditor";
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
 export function CompanySettings() {
@@ -245,6 +246,7 @@ export function CompanySettings() {
         <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">{t("settings.general")}</h1>
       </div>
+      {selectedCompanyId ? <CompanySkillPolicyEditor key={selectedCompanyId} companyId={selectedCompanyId} /> : null}
 
       {/* General */}
       <div className="max-w-2xl space-y-4">

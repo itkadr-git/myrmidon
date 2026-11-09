@@ -95,7 +95,14 @@ export function createInMemoryCorpus(): InMemoryCorpus {
       const terms = new Set(words(request.query));
       const hits: CorpusChunkHit[] = [];
       for (const document of documents.values()) {
-        if (request.datasets.length > 0 && !request.datasets.includes(document.datasetId)) continue;
+        const datasetName = datasets.get(document.datasetId)?.name;
+        if (
+          request.datasets.length > 0 &&
+          !request.datasets.includes(document.datasetId) &&
+          (!datasetName || !request.datasets.includes(datasetName))
+        ) {
+          continue;
+        }
         if (document.status !== "ready") continue;
         for (const chunk of document.chunks) {
           const chunkTerms = words(chunk.text);

@@ -145,4 +145,24 @@ describe("queueIssueAssignmentWakeup", () => {
     });
     expect(wakeup).toHaveBeenCalledTimes(1);
   });
+
+  // myrmidon(1.6.6 OPE-12049): the shared service never drops a wake because the
+  // actor is the assignee. An agent legitimately creates tasks for itself
+  // (create, child_create, accepted-plan decomposition, status cards, summary
+  // slots) and each of them needs its run. The self-PATCH skip lives in
+  // PATCH /issues/:id, where the run can be matched to the task.
+  it("still wakes the assignee when the acting agent is the assignee", async () => {
+    const { heartbeat, wakeup } = heartbeatSpy();
+    await queueIssueAssignmentWakeup({
+      heartbeat,
+      issue: { id: "issue-d", assigneeAgentId: "agent-a", status: "todo" },
+      reason: "issue_assigned",
+      mutation: "create",
+      contextSource: "issue.create",
+      requestedByActorType: "agent",
+      requestedByActorId: "agent-a",
+    });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup.mock.calls[0][0]).toBe("agent-a");
+  });
 });

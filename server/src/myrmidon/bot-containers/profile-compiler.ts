@@ -123,6 +123,13 @@ export interface HermesProfileAdapterConfig {
    * means "this bot keeps every tool"; absent, the instance list applies.
    */
   disabledTools?: string[];
+  /**
+   * myrmidon(TOOL-DIET-ROLES): the card's own list of tools it keeps although an instance or role
+   * default drops them. A name is a single tool (`skill_manage`) or, for the role groups, a group or
+   * toolset name (`memory`, `web`, `browser`). Ignored when the card lists `disabledTools` itself:
+   * that list is taken as written.
+   */
+  keepTools?: string[];
 }
 
 /** A text file placed under /workspace (the sibling files of an instructions bundle). */
@@ -363,6 +370,12 @@ export interface HermesProfileInstanceDefaults {
   disabledTools?: readonly string[];
 }
 
+/** myrmidon(TOOL-DIET-ROLES): the role defaults for `agent.disabled_tools` / `agent.disabled_toolsets`. */
+export interface HermesProfileRoleToolDiet {
+  disabledTools: readonly string[];
+  disabledToolsets: readonly string[];
+}
+
 export interface HermesProfileInput {
   /** The agent's slug/id — becomes CompiledProfile.botKey, unchanged. */
   botKey: string;
@@ -409,6 +422,13 @@ export interface HermesProfileInput {
    */
   parallelHelpers?: ResolvedParallelHelpers;
   instanceDefaults: HermesProfileInstanceDefaults;
+  /**
+   * myrmidon(TOOL-DIET-ROLES): the tools and toolsets this agent's ROLE keeps out of the model's
+   * schema, already resolved against the card by the caller (tool-diet.ts, which knows the role
+   * policy; this function is pure and knows no roles). Merged with the instance list; a card with
+   * its own `disabledTools` list replaces both. Absent = no role defaults.
+   */
+  roleToolDiet?: HermesProfileRoleToolDiet;
   /** Becomes API_SERVER_KEY in .env — the token runs authenticate to this bot's gateway with. */
   apiServerKey: string;
   /** Becomes PAPERCLIP_API_URL in .env — the board's address reachable from inside the bot container. */
@@ -786,6 +806,11 @@ function buildDelegation(helpers: ResolvedParallelHelpers | undefined): YamlMapp
   };
 }
 
+/** The names a card keeps (`keepTools`), trimmed and lowercased; Hermes tool and toolset names are lowercase. */
+function keptToolNames(adapterConfig: HermesProfileAdapterConfig): Set<string> {
+  return new Set((adapterConfig.keepTools ?? []).map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0));
+}
+
 /**
  * myrmidon(PARALLEL-HELPERS): the agent-level toolset switch that turns
  * `delegate_task` itself off. `delegate_task` is a member of
@@ -794,12 +819,31 @@ function buildDelegation(helpers: ResolvedParallelHelpers | undefined): YamlMapp
  * and wins over any composite that re-enables it, which is why the switch
  * belongs there rather than in `toolsets`.
  *
- * Returns undefined for the default "helpers off" case so a card that never
- * mentioned helpers compiles to exactly its previous config.yaml.
+ * myrmidon(TOOL-DIET-ROLES): the role defaults add whole toolsets to the same list, after
+ * `delegation` (so a profile that only switches helpers off compiles exactly as before). The
+ * `memory` toolset is the one that matters: it takes the built-in memory tool AND the Hindsight
+ * provider tools with it (the provider tools are injected outside `agent.disabled_tools`). A card
+ * with its own `disabledTools` list replaces the role defaults, a name in `keepTools` re-enables one.
+ *
+ * Returns undefined when nothing is disabled, so a card that never mentioned helpers and has no
+ * role defaults compiles to exactly its previous config.yaml.
  */
-function buildDisabledToolsets(helpers: ResolvedParallelHelpers | undefined): string[] | undefined {
-  if (!helpers || helpers.enabled) return undefined;
-  return ["delegation"];
+function buildDisabledToolsets(
+  helpers: ResolvedParallelHelpers | undefined,
+  roleToolDiet: HermesProfileRoleToolDiet | undefined,
+  adapterConfig: HermesProfileAdapterConfig,
+): string[] | undefined {
+  const names: string[] = [];
+  if (helpers && !helpers.enabled) names.push("delegation");
+  if (adapterConfig.disabledTools === undefined) {
+    const kept = keptToolNames(adapterConfig);
+    for (const raw of roleToolDiet?.disabledToolsets ?? []) {
+      const name = raw.trim();
+      if (!name || names.includes(name) || kept.has(name.toLowerCase())) continue;
+      names.push(name);
+    }
+  }
+  return names.length > 0 ? names : undefined;
 }
 
 /** Tools whose names the compiler accepts under `agent.disabled_tools` (Hermes tool names, plus MCP-style dots). */
@@ -808,20 +852,27 @@ const DISABLED_TOOL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 /**
  * myrmidon(TOOL-DIET): `agent.disabled_tools` for the bot — the single tools Hermes drops from
  * the schema after the toolset selection (patch 17-disabled-tools-by-name). The card's own list
- * wins and is taken as written; the instance list gives way for `vision_analyze` when the card
- * chose a vision model, because that card means to look at pictures. Names that are not tool
- * names are dropped with a warning. Undefined (no key written) when nothing is left, so a compile
- * without any list is exactly the previous config.yaml.
+ * wins and is taken as written; without one the instance list and the role defaults
+ * (myrmidon(TOOL-DIET-ROLES), see tool-diet.ts) apply together, minus what the card keeps
+ * (`keepTools`), and `vision_analyze` gives way when the card chose a vision model, because that
+ * card means to look at pictures. Names that are not tool names are dropped with a warning.
+ * Undefined (no key written) when nothing is left, so a compile without any list is exactly the
+ * previous config.yaml.
  */
 function buildDisabledTools(
   adapterConfig: HermesProfileAdapterConfig,
   instanceTools: readonly string[] | undefined,
+  roleTools: readonly string[] | undefined,
   warnings: string[],
 ): string[] | undefined {
   const fromCard = adapterConfig.disabledTools !== undefined;
-  let names = [...(fromCard ? adapterConfig.disabledTools! : (instanceTools ?? []))];
-  if (!fromCard && nonEmpty(adapterConfig.models?.vision)) {
-    names = names.filter((name) => name !== "vision_analyze");
+  let names = fromCard ? [...adapterConfig.disabledTools!] : [...(instanceTools ?? []), ...(roleTools ?? [])];
+  if (!fromCard) {
+    if (nonEmpty(adapterConfig.models?.vision)) {
+      names = names.filter((name) => name !== "vision_analyze");
+    }
+    const keep = keptToolNames(adapterConfig);
+    if (keep.size > 0) names = names.filter((name) => !keep.has(name.trim().toLowerCase()));
   }
   const seen = new Set<string>();
   const kept: string[] = [];
@@ -1005,6 +1056,38 @@ function buildLspConfig(input: HermesProfileInput): YamlMapping | undefined {
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+/**
+ * myrmidon(OPE-11966): the `providers:` entry of the instance LLM gateway, and the header it names.
+ *
+ * The pool of ChatGPT accounts behind the gateway caches a prompt only when the requests of one
+ * conversation carry one stable key. The gateway (LiteLLM) reads that key from the
+ * `x-litellm-session-id` request header (it becomes the ChatGPT `session_id`); without the header
+ * the id is the call id, new on every request, and the pool's cache hit only 25-47% of the input.
+ * Hermes has a vendor option for exactly this: `providers.<id>.session_affinity_header` names a
+ * header that Hermes fills with the conversation key on every request to the matching endpoint
+ * (agent/opencode_affinity.py: the conversation root, stable across compaction rotation, else the
+ * session id the board sends with the run). An entry is matched to a request by its base URL, so
+ * this one carries the gateway URL that `model.base_url` and every `fallback_model` entry carry;
+ * any other endpoint gets no session id (Hermes never sends one to a URL that did not ask for it).
+ */
+export const LLM_GATEWAY_PROVIDER_ID = "myrmidon-gateway";
+export const LLM_GATEWAY_SESSION_AFFINITY_HEADER = "x-litellm-session-id";
+
+function buildGatewayProviders(
+  llmBaseUrl: string | undefined,
+  llmApiKeyEnv: string | undefined,
+): YamlMapping | undefined {
+  if (!llmBaseUrl) return undefined;
+  return {
+    [LLM_GATEWAY_PROVIDER_ID]: {
+      api: llmBaseUrl,
+      // A bare variable name, like the `key_env` of the fallback entries: Hermes resolves it itself.
+      key_env: llmApiKeyEnv,
+      session_affinity_header: LLM_GATEWAY_SESSION_AFFINITY_HEADER,
+    },
+  };
+}
+
 function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string {
   const { adapterConfig } = input;
   warnUnplacedVoiceModels(adapterConfig.models, warnings);
@@ -1039,9 +1122,14 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
       // myrmidon(PARALLEL-HELPERS): "helpers off" removes delegate_task from the
       // agent's tool surface. Omitted entirely when helpers are on (or the card
       // predates the field), so no unrelated toolset is ever disabled.
-      disabled_toolsets: buildDisabledToolsets(input.parallelHelpers),
+      disabled_toolsets: buildDisabledToolsets(input.parallelHelpers, input.roleToolDiet, adapterConfig),
       // myrmidon(TOOL-DIET): single tools that stay out of the model's schema (see buildDisabledTools).
-      disabled_tools: buildDisabledTools(adapterConfig, input.instanceDefaults.disabledTools, warnings),
+      disabled_tools: buildDisabledTools(
+        adapterConfig,
+        input.instanceDefaults.disabledTools,
+        input.roleToolDiet?.disabledTools,
+        warnings,
+      ),
     },
     approvals: { mode: "off" },
     // myrmidon(BOT-RUNTIME-TUNING-B): title/compression auxiliary models — the
@@ -1099,11 +1187,26 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     },
     platform_toolsets: { api_server: buildToolsets(adapterConfig.toolsets) },
     platforms: { api_server: { enabled: true } },
+    // myrmidon(OPE-11966): the gateway endpoint asks Hermes for the conversation key, see buildGatewayProviders.
+    providers: buildGatewayProviders(llmBaseUrl, llmApiKeyEnv),
     // Company skills are delivered per run into Hermes' local skills root.
     // Keep the legacy profile mount empty so Hermes cannot index each skill twice.
     skills: { external_dirs: [] },
     sessions: { retention_days: input.instanceDefaults.sessionsRetentionDays },
-    terminal: { cwd: "/workspace" },
+    // myrmidon(OPE-11947): execute_code scrubs every *KEY*/*TOKEN* variable from its
+    // kernel environment unless config.yaml opts it in via terminal.env_passthrough.
+    // Without it the board key the skill tells Python callers to read is missing in
+    // the kernel, every board call from execute_code goes out without credentials
+    // (07.11: 8 of 8 bots that tried, ~4% of /api answered 401), and agents work
+    // around it by reading /data/hermes/.env into the session history. The board
+    // key is the bot's own per-agent key already present in the terminal env.
+    // myrmidon(REBRAND-ENV, OPE-12052): the canonical MYRMIDON_* names come first
+    // (the skill tells agents to read those); PAPERCLIP_* stays as the legacy alias
+    // that buildEnvFile writes next to them.
+    terminal: {
+      cwd: "/workspace",
+      env_passthrough: ["MYRMIDON_API_KEY", "MYRMIDON_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_API_URL"],
+    },
   };
   return writeYamlDocument(root);
 }

@@ -1304,6 +1304,9 @@ const PUBLIC_OPERATIONS = new Set([
   "POST /mcp/gateways/{gatewayPublicId}",
   "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
   "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
+  // myrmidon(1.7 WEBHOOK-INTAKE): public webhook intake; the route handler
+  // validates the optional per-source bearer/secret token itself.
+  "POST /api/intake/{source}",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -1712,7 +1715,9 @@ function applyDocumentFixups(document: any): any {
       if (
         key === "GET /api/admin-assistant/cluster-health" ||
         key === "GET /api/admin-assistant/health" ||
-        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health"
+        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health" ||
+        key === "GET /api/admin-assistant/stuck-runs" ||
+        key === "GET /api/companies/{companyId}/admin-assistant/stuck-runs"
       ) {
         operation["x-paperclip-authorization"] = {
           actor: "board_or_agent",
@@ -3983,6 +3988,33 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
+// myrmidon(OPE-12116): user block/unblock operator and password reset
+registry.registerPath({
+  method: "patch",
+  path: "/api/users/{userId}/block",
+  tags: ["users"],
+  summary: "Block or unblock a user instance-wide with audit logging",
+  request: {
+    params: z.object({ userId: z.string() }),
+    body: jsonBody(z.object({
+      blocked: z.boolean().default(true),
+      reason: z.string().trim().max(1000).optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/users/{userId}/reset-password",
+  tags: ["users"],
+  summary: "Issue a one-time password reset token for a user without SMTP",
+  request: {
+    params: z.object({ userId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/users/{userId}/block",
@@ -5618,6 +5650,42 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/admin-assistant/stuck-runs",
+  tags: ["admin-assistant"],
+  summary: "Get stuck runs diagnostics for a company",
+  description:
+    "Detects in_progress tasks and heartbeat runs whose silence exceeds the configured timeout, " +
+    "and returns actionable recovery recommendations.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      timeoutMs: z.string().optional(),
+      timeoutSeconds: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/stuck-runs",
+  tags: ["admin-assistant"],
+  summary: "Get stuck runs diagnostics",
+  description:
+    "Detects in_progress tasks and heartbeat runs whose silence exceeds the configured timeout, " +
+    "and returns actionable recovery recommendations. When companyId query is omitted, requires instance admin.",
+  request: {
+    query: z.object({
+      companyId: z.string().optional(),
+      timeoutMs: z.string().optional(),
+      timeoutSeconds: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
 // ─── Guardrails ──────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -5667,6 +5735,15 @@ registry.registerPath({
 });
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/status-strip",
+  tags: ["sidebar"],
+  summary: "Get the UI2 header status strip for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
 
 registry.registerPath({
   method: "get",
@@ -6482,6 +6559,14 @@ for (const path of ["/api/updates/settings", "/api/updates", "/api/myrmidon/upda
   });
   registry.registerPath({
     method: "put",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "post",
     path,
     tags: ["instance"],
     summary: "Replace auto-update settings",
@@ -11946,4 +12031,87 @@ registerCurrentRoute({
     params: z.record(z.string(), z.unknown()).optional(),
   }),
   responses: { 200: r.ok(), 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+// myrmidon(1.7 WEBHOOK-INTAKE): public webhook intake ingress. Accepts an
+// event, responds 202 with the intake id and enqueues the payload for parsing.
+// Per-source rate limits apply (429 with Retry-After); an optional per-source
+// token (configured via env refs) is verified by the route handler itself.
+registerCurrentRoute({
+  method: "post",
+  path: "/api/intake/{source}",
+  tags: ["webhooks"], summary: "Accept an inbound webhook and enqueue it for parsing",
+  body: z.record(z.string(), z.unknown()),
+  responses: {
+    202: r.ok(
+      z.object({
+        id: z.string(),
+        status: z.literal("accepted"),
+        source: z.string(),
+        enqueuedAt: z.string(),
+      }),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    429: r.tooManyRequests,
+  },
+});
+
+// myrmidon(1.7-ZABBIX-SINK / OPE-12126): the Zabbix alarm sink webhook. Mounted
+// from server/src/myrmidon/monitoring/zabbix-sink/ (app.ts), outside the
+// routes/ directory the coverage scanner reads, so the entry is contract-first
+// (see specOnlyContractFirstRoutes in __tests__/openapi-routes.test.ts). Auth
+// is the sink's own Bearer token (MYRMIDON_ZABBIX_SINK_TOKEN_REF), not the
+// board/agent schemes the fixups assign by default.
+registry.registerPath({
+  method: "post",
+  path: "/api/monitoring/zabbix-webhook",
+  tags: ["monitoring"],
+  summary:
+    "Zabbix alarm sink: turn one Zabbix media-type event into a role-task draft (deduped by eventid)",
+  description:
+    "Accepts a single Zabbix media-type webhook event and creates an unassigned " +
+    "role-task draft: the issue title comes from the trigger name, the priority " +
+    "from the Zabbix severity (5/4 -> critical, 3 -> high, 2 -> medium, else low), " +
+    "and the Zabbix event URL lands in the issue body as the source link. A " +
+    "redelivery of the same eventid returns the existing draft (action: dedup) " +
+    "instead of creating a second task. An invalid payload answers 400. " +
+    "Authorization is the dedicated webhook Bearer token (MYRMIDON_ZABBIX_SINK_TOKEN_REF, " +
+    "env:/file: reference), not board/agent auth: a wrong or missing token answers 401, " +
+    "an unset token reference or target company answers 503. Since 1.7 the token is a " +
+    "stub pending the signed intake.",
+  request: {
+    body: jsonBody(
+      z
+        .object({
+          eventid: z.string().min(1).describe("Zabbix event id; the dedup identity"),
+          triggerid: z.string().min(1).optional().describe("Zabbix trigger id, kept in the description"),
+          name: z.string().min(1).describe("Trigger name; becomes the issue title"),
+          severity: z
+            .union([z.string(), z.number()])
+            .optional()
+            .describe('Zabbix severity "0".."5" (or 0..5); maps to the issue priority'),
+          status: z.string().optional().describe('Zabbix event status, e.g. "PROBLEM"; resolved/closed events are rejected'),
+          hosts: z.string().optional().describe("Comma-separated host names, kept in the issue description"),
+          url: z.string().optional().describe("Zabbix event URL; the source link in the issue body"),
+        })
+        .strip(),
+    ),
+  },
+  responses: {
+    200: r.ok(
+      z
+        .object({
+          eventid: z.string(),
+          action: z.enum(["create", "dedup"]),
+          issue_id: z.string(),
+          issue_identifier: z.string().nullable(),
+        })
+        .strip(),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    503: { description: "Sink not configured: the token reference or the target company is unset" },
+  },
 });

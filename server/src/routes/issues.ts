@@ -43,11 +43,27 @@ import {
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
-import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
-import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import type { ReviewHeadFailedChecksResolver, ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+// myrmidon(OPE-11970): a review return on the same PR head, or only on infrastructure checks, does not wake the executor.
+import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmidon/review-return-guard/guard.js";
 import {
+  readReviewInfraCheckNames,
+  readReviewReturnGuardEnabled,
+  withChangesRequestedHeadSha,
+} from "../myrmidon/review-return-guard/policy.js";
+// myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
+// structure (decision + head sha + PR number) next to the decision id, so
+// consumers read data instead of re-parsing the decision comment text.
+import {
+  extractReviewVerdictRecord,
+  withReviewVerdictRecord,
+} from "../myrmidon/review-verdict/record.js";
+import {
+  REVIEW_CI_FINAL_CHECK_NAME,
   REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  decideReviewAdmission,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import {
   buildReviewApprovalPendingMergeNotice,
@@ -119,6 +135,8 @@ import {
 } from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
+import { assertTaskCardReady } from "../myrmidon/task-card-readiness/guard.js";
+import { buildRequiresEngineerMessage } from "../myrmidon/guard-return/domain.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -1588,6 +1606,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "provider_quota_recovery",
   "resurrection_execution_reconciliation_required",
   "retry_failed_run",
+  "run_guard_stop_needs_input",
   "run_liveness_continuation",
   "run_stalled",
   "skill_test_run_created",
@@ -3732,6 +3751,7 @@ export function issueRoutes(
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
     resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
+    resolveReviewHeadFailedChecks?: ReviewHeadFailedChecksResolver;
     insertReviewAdmissionWakeup?: (
       agentId: string,
       options: WakeupOptions,
@@ -3972,20 +3992,22 @@ export function issueRoutes(
       }
 
       const roleStr = agent?.role ?? "non-engineer";
-      const hint = suggested
-        ? `Assign this code task to engineer ${suggested.name} (${suggested.id}) or return to PR author.`
-        : "Assign this code task to an agent with the engineer role or return to PR author.";
+      // 1.6.7 CASTE-422-HINT (OPE-12142): name the task's caste and hint the casteKey path.
+      const message = buildRequiresEngineerMessage({
+        assigneeRole: roleStr,
+        casteKey: input.casteKey ?? input.issue?.casteKey ?? casteKey ?? null,
+        projectDefaultCasteKey,
+        suggested,
+      });
 
-      throw unprocessable(
-        `This issue requires an engineer. Cannot assign or keep in progress on non-coding role "${roleStr}". Suggested assignee: ${suggested ? `${suggested.name} (${suggested.id})` : "an agent with role engineer"}.`,
-        {
+      throw unprocessable(message, {
           code: "issue_requires_engineer",
           issueId: input.issue?.id ?? null,
           assigneeAgentId: input.assigneeAgentId,
           assigneeRole: roleStr,
           suggestedAssigneeAgentId: suggested?.id ?? null,
           suggestedAssigneeName: suggested?.name ?? null,
-          hint,
+          hint: message,
         },
       );
     }
@@ -8565,6 +8587,14 @@ export function issueRoutes(
       rawOffset !== undefined && /^\d+$/.test(rawOffset)
         ? Number.parseInt(rawOffset, 10)
         : null;
+    // myrmidon(OPE-12027): `page` (1-based) is honoured as offset=(page-1)*limit; an unknown
+    // pagination style used to be ignored silently, and a client paging by `page` looped forever.
+    const rawPage = req.query.page as string | undefined;
+    if (rawPage !== undefined && !/^[1-9]\d*$/.test(rawPage)) {
+      res.status(400).json({ error: "page must be a positive integer; prefer limit+offset" });
+      return;
+    }
+    const pageOffset = rawPage !== undefined ? (Number.parseInt(rawPage, 10) - 1) * limit : null;
     const attention = req.query.attention as string | undefined;
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
@@ -8734,7 +8764,7 @@ export function issueRoutes(
       });
       return;
     }
-    const offset = parsedOffset ?? 0;
+    const offset = parsedOffset ?? pageOffset ?? 0;
 
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
@@ -10314,10 +10344,16 @@ export function issueRoutes(
                   "Execution policy decision patch is missing executionState",
                 );
               }
-              updateFields.executionState = {
-                ...nextExecutionState,
-                lastDecisionId: decisionId,
-              };
+              updateFields.executionState = withReviewVerdictRecord(
+                {
+                  ...nextExecutionState,
+                  lastDecisionId: decisionId,
+                },
+                extractReviewVerdictRecord({
+                  outcome: transition.decision.outcome,
+                  body: transition.decision.body,
+                }),
+              );
               await tx.insert(issueExecutionDecisions).values({
                 id: decisionId,
                 companyId: lockedIssue.companyId,
@@ -12759,10 +12795,11 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      const initialStatus = typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo";
       await assertEngineerForCodeIssue({
         companyId,
         issue: null,
-        status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
+        status: initialStatus,
         assigneeAgentId: normalizedAssigneeAgentId,
         projectId: effectiveProjectId,
         labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
@@ -12773,6 +12810,40 @@ export function issueRoutes(
             ? rawCreateBody.executionWorkspacePreference
             : null,
       });
+      // TASK-CARD-READINESS-3: when creating a task born in todo for an
+      // engineer, assert readiness at the route boundary before insertion.
+      // Only explicit engineer signals on the create body itself gate the
+      // create (casteKey: "engineer" pinned by the caller or a
+      // needs-engineer label): the project default and the workspace
+      // preference are inferrable signals, and gating on them would reject
+      // ordinary non-engineer creates whose project happens to default to
+      // the engineer caste. The richer requiresEngineer set stays on
+      // assertEngineerForCodeIssue and the swarm queue; this gate only needs
+      // the card-completeness subset.
+      if (initialStatus === "todo") {
+        let createLabelNames: string[] = [];
+        if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
+          createLabelNames = await db
+            .select({ name: labels.name })
+            .from(labels)
+            .where(and(eq(labels.companyId, companyId), inArray(labels.id, rawCreateBody.labelIds as string[])))
+            .then((rows) => rows.map((r) => r.name));
+        }
+        const createCasteKey =
+          typeof rawCreateBody.casteKey === "string" && rawCreateBody.casteKey.trim().length > 0
+            ? rawCreateBody.casteKey
+            : null;
+        const createGateInputs: Parameters<typeof requiresEngineer>[0] = {
+          casteKey: createCasteKey,
+          labels: createLabelNames,
+        };
+        if (requiresEngineer(createGateInputs)) {
+          assertTaskCardReady({
+            title: typeof rawCreateBody.title === "string" ? rawCreateBody.title : null,
+            description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
+          });
+        }
+      }
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
         parentIssueId:
@@ -14418,6 +14489,11 @@ export function issueRoutes(
           });
       }
       if (req.body.executionPolicy !== undefined) {
+        if (req.body.status !== undefined && req.body.status === "done") {
+          throw unprocessable(
+            `Cannot update executionPolicy and transition status to '${req.body.status}' in the same request`,
+          );
+        }
         updateFields.executionPolicy = applyActorMonitorScheduledBy(
           normalizeIssueExecutionPolicy(req.body.executionPolicy),
           actor.actorType,
@@ -14535,10 +14611,16 @@ export function issueRoutes(
             "Execution policy decision patch is missing executionState",
           );
         }
-        transition.patch.executionState = {
-          ...nextExecutionState,
-          lastDecisionId: decisionId,
-        };
+        transition.patch.executionState = withReviewVerdictRecord(
+          {
+            ...nextExecutionState,
+            lastDecisionId: decisionId,
+          },
+          extractReviewVerdictRecord({
+            outcome: transition.decision?.outcome,
+            body: transition.decision?.body,
+          }),
+        );
       }
       Object.assign(updateFields, transition.patch);
       // myrmidon(OPE-10045): the active participant approved the last stage
@@ -15389,6 +15471,23 @@ export function issueRoutes(
         commentBody,
         actorAgentId: actor.agentId ?? null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        // myrmidon(TASK-CARD-READINESS-3): the flag is only set (true) for an
+        // explicit client request that hands the task to an engineer (PATCH
+        // status: "todo"). It reads req.body.status, not the route-rebuilt
+        // updateFields: internal policy/monitor rebuilds write status into
+        // updateFields (review admission, monitor rescheduling) and those are
+        // not client handoffs. When not applicable the key is undefined — the
+        // service treats undefined like false, and the flag never surfaces as
+        // a `taskCardGate: false` column-like field in update receipts or
+        // response bodies (a change-receipt diff would otherwise report a
+        // field no client can set). Internal auto-transitions (auto-unblock
+        // by resolved blocker, review returns, recovery updates) never carry
+        // status in the request body this way and call the same service
+        // without the flag.
+        taskCardGate:
+          req.body.status === "todo" && existing.status !== "todo"
+            ? true
+            : undefined,
       };
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
@@ -15660,6 +15759,14 @@ export function issueRoutes(
                     : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
                 );
               }
+              // myrmidon(OPE-11970): remember the pull request head this return was made on.
+              // The next return on the same head does not wake the executor again.
+              if (updateFields.executionState && typeof updateFields.executionState === "object") {
+                updateFields.executionState = withChangesRequestedHeadSha(
+                  updateFields.executionState as Record<string, unknown>,
+                  ci.headSha,
+                );
+              }
             }
             if (lockedTransition.decision?.outcome === "changes_requested") {
               const hasHumanDecisionBlocker = lockedExisting.blockerMetadata?.blockReason === "human_decision";
@@ -15692,10 +15799,16 @@ export function issueRoutes(
               if (!nextExecutionState || typeof nextExecutionState !== "object") {
                 throw new Error("Execution policy decision patch is missing executionState");
               }
-              updateFields.executionState = {
-                ...nextExecutionState,
-                lastDecisionId: lockedDecisionId,
-              };
+              updateFields.executionState = withReviewVerdictRecord(
+                {
+                  ...nextExecutionState,
+                  lastDecisionId: lockedDecisionId,
+                },
+                extractReviewVerdictRecord({
+                  outcome: lockedTransition.decision?.outcome,
+                  body: lockedTransition.decision?.body,
+                }),
+              );
               issueUpdateData.executionState = updateFields.executionState;
             }
             // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
@@ -15866,7 +15979,36 @@ export function issueRoutes(
                     companyId: updated.companyId,
                     issueId: updated.id,
                   });
-                  if (ci.state === "pending" || ci.state === "unknown") {
+                  // myrmidon(OPE-12176): the failed checks of the exact head decide
+                  // green (admit) vs red (wait for the fix). Read them only when the
+                  // head CI finished and the issue is not critical, so a critical
+                  // issue is not charged an extra GitHub read.
+                  let headFailedChecks: readonly string[] = [];
+                  let headFailedReadOk = false;
+                  if (ci.state === "complete" && updated.priority !== "critical") {
+                    const headFailed = await (opts.resolveReviewHeadFailedChecks ??
+                      createReviewHeadFailedChecksResolver({ db }))({
+                      companyId: updated.companyId,
+                      issueId: updated.id,
+                      headSha: ci.headSha ?? "",
+                    });
+                    if (headFailed.state === "ok" && headFailed.headSha === ci.headSha) {
+                      headFailedReadOk = true;
+                      headFailedChecks = headFailed.failed;
+                    }
+                  }
+                  const admissionDecision = decideReviewAdmission({
+                    ci: ci.state,
+                    headFinalCheck:
+                      ci.state !== "complete" ? "unknown" :
+                      ci.finalCheckConclusion === "failure" ? "red" :
+                      ci.finalCheckConclusion === "success" ? "green" :
+                      headFailedReadOk && headFailedChecks.length > 0 ? "red" :
+                      headFailedReadOk && headFailedChecks.length === 0 ? "green" :
+                      "green",
+                    critical: updated.priority === "critical",
+                  });
+                  if (admissionDecision !== "admit") {
                     admitReviewer = false;
                     reviewerAdmissionDeferred = true;
                     if (ci.state === "unknown") {
@@ -15905,7 +16047,10 @@ export function issueRoutes(
                     );
                     const monitor = {
                       nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
-                      notes: `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
+                      notes:
+                        admissionDecision === "wait_red"
+                          ? `Review waits for a CI fix on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; failed checks: ${headFailedChecks.join(", ") || REVIEW_CI_FINAL_CHECK_NAME}.`
+                          : `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
                       scheduledBy: "assignee" as const,
                       kind: "external_service" as const,
                       serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
@@ -16147,6 +16292,10 @@ export function issueRoutes(
           issueId: currentIssue.id,
           decisionOutcome: decision?.outcome ?? "approved",
           verdictBody: decision?.body ?? null,
+          verdictRecord: extractReviewVerdictRecord({
+            outcome: decision?.outcome ?? "approved",
+            body: decision?.body ?? null,
+          }),
           actor: {
             actorType: actor.actorType,
             actorId: actor.actorId,
@@ -16938,7 +17087,35 @@ export function issueRoutes(
           companyId: issue.companyId,
           issueId: issue.id,
         });
-        deferExecutionReviewWakeForCi = reviewCi.state === "pending" || reviewCi.state === "unknown";
+        // myrmidon(OPE-12176): the same green-head rule as the transition path —
+        // a red or unfinished head of a non-critical issue does not wake a reviewer.
+        const critical = issue.priority === "critical";
+        let headFailedChecks: readonly string[] = [];
+        let headFailedReadOk = false;
+        if (reviewCi.state === "complete" && !critical) {
+          const headFailed = await (opts.resolveReviewHeadFailedChecks ??
+            createReviewHeadFailedChecksResolver({ db }))({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            headSha: reviewCi.headSha ?? "",
+          });
+          if (headFailed.state === "ok" && headFailed.headSha === reviewCi.headSha) {
+            headFailedReadOk = true;
+            headFailedChecks = headFailed.failed;
+          }
+        }
+        deferExecutionReviewWakeForCi =
+          decideReviewAdmission({
+            ci: reviewCi.state,
+            headFinalCheck:
+              reviewCi.state !== "complete" ? "unknown" :
+              reviewCi.finalCheckConclusion === "failure" ? "red" :
+              reviewCi.finalCheckConclusion === "success" ? "green" :
+              headFailedReadOk && headFailedChecks.length > 0 ? "red" :
+              headFailedReadOk && headFailedChecks.length === 0 ? "green" :
+              "green",
+            critical,
+          }) !== "admit";
       }
 
       if (closesRecoveryIssue) {
@@ -17041,6 +17218,39 @@ export function issueRoutes(
           getDependencyReadiness?: typeof svc.getDependencyReadiness;
         };
         const dependencyReadinessSvc = svc as DependencyReadinessProvider;
+        // myrmidon(1.6.6 OPE-12049): the assignee's own PATCH (release and
+        // re-assign to itself, a status move of its own task) is not an event
+        // for that assignee: it is inside the run that made it. The skip is
+        // narrow on purpose: the actor is the assignee AND its authenticated
+        // run is a run on THIS task. An agent that writes to another task, or
+        // acts without a run, wakes the assignee as before. Only the two "state
+        // of the task changed" wakes below honour this; comment and mention
+        // wakes carry their own self guards, and the shared assignment service
+        // (create, child_create, decomposition, cards) never skips.
+        const selfPatchWake = await (async () => {
+          if (
+            actor.actorType !== "agent" ||
+            !actor.runId ||
+            !issue.assigneeAgentId ||
+            actor.actorId !== issue.assigneeAgentId
+          ) {
+            return false;
+          }
+          try {
+            const actorRun = await heartbeat.getRun(actor.runId);
+            return (
+              actorRun?.companyId === issue.companyId &&
+              actorRun.agentId === actor.actorId &&
+              actorRun.contextSnapshot?.issueId === issue.id
+            );
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id, runId: actor.runId },
+              "could not match the PATCH run to the task; self wake not skipped",
+            );
+            return false;
+          }
+        })();
         const wakeups = new Map<
           string,
           { agentId: string; wakeup: WakeupRequest }
@@ -17107,14 +17317,80 @@ export function issueRoutes(
           });
         };
 
-        if (executionStageWakeup && deferWakeForGoal !== true && !deferExecutionReviewWakeForCi) {
+        // myrmidon(OPE-11970, REVIEW-RETURN-GUARD): an agent reviewer returns the task on the
+        // same pull request head as the previous return (no new commit), or only because
+        // infrastructure checks of the head failed: the executor has nothing to change, so it
+        // is not woken. The decision stays recorded; the executor is woken by a new CI result,
+        // a new head or a comment. Anything the guard cannot read keeps the wake.
+        let suppressChangesRequestedWake = false;
+        if (executionStageWakeup?.wakeup.reason === "execution_changes_requested") {
+          try {
+            const returnWake = await decideReviewReturnWake(
+              {
+                enabled: readReviewReturnGuardEnabled() && actor.actorType === "agent",
+                companyId: issue.companyId,
+                issueId: issue.id,
+                previousState: previousExecutionState,
+                nextState: nextExecutionState,
+                commentBody,
+                infraCheckNames: readReviewInfraCheckNames(),
+              },
+              {
+                resolveFailedChecks:
+                  opts.resolveReviewHeadFailedChecks ?? createReviewHeadFailedChecksResolver({ db }),
+              },
+            );
+            if (returnWake.action === "suppress") {
+              suppressChangesRequestedWake = true;
+              await recordSuppressedReviewReturn(
+                {
+                  addSystemComment: (issueId, body) =>
+                    svc.addComment(issueId, body, { runId: null }, { authorType: "system" }),
+                  logActivity: (entry) =>
+                    logActivity(db, {
+                      companyId: entry.companyId,
+                      actorType: "system",
+                      actorId: "review-return-guard",
+                      agentId: null,
+                      runId: actor.runId,
+                      action: entry.action,
+                      entityType: "issue",
+                      entityId: entry.entityId,
+                      details: entry.details,
+                    }),
+                },
+                {
+                  companyId: issue.companyId,
+                  issueId: issue.id,
+                  identifier: issue.identifier ?? null,
+                  decisionId: nextExecutionState?.lastDecisionId ?? null,
+                  decision: returnWake,
+                },
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id },
+              "review return guard failed to evaluate or record a return",
+            );
+          }
+        }
+
+        if (
+          executionStageWakeup &&
+          deferWakeForGoal !== true &&
+          !deferExecutionReviewWakeForCi &&
+          !suppressChangesRequestedWake
+        ) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
           deferWakeForGoal !== true &&
-          !deferExecutionReviewWakeForCi
+          !deferExecutionReviewWakeForCi &&
+          !suppressChangesRequestedWake &&
+          !selfPatchWake
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "assignment",
@@ -17171,7 +17447,8 @@ export function issueRoutes(
             statusChangedFromBlockedToTodo ||
             statusChangedFromClosedToTodo ||
             userResumedFromReviewToTodo) &&
-          issue.assigneeAgentId
+          issue.assigneeAgentId &&
+          !selfPatchWake
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "automation",
@@ -17293,7 +17570,9 @@ export function issueRoutes(
           for (const mentionedId of mentionedIds) {
             if (
               (actor.actorType === "agent" && actor.actorId === mentionedId) ||
-              (commentIsFromAssigneeRun && mentionedId === assigneeId)
+              (commentIsFromAssigneeRun && mentionedId === assigneeId) ||
+              // myrmidon(OPE-11970): a return that does not wake the executor does not wake it by mention either.
+              (suppressChangesRequestedWake && mentionedId === assigneeId)
             )
               continue;
             const delegation = commentIsFromAssigneeRun
@@ -20352,10 +20631,16 @@ export function issueRoutes(
               "Execution policy decision patch is missing executionState",
             );
           }
-          transition.patch.executionState = {
-            ...nextExecutionState,
-            lastDecisionId: decisionId,
-          };
+          transition.patch.executionState = withReviewVerdictRecord(
+            {
+              ...nextExecutionState,
+              lastDecisionId: decisionId,
+            },
+            extractReviewVerdictRecord({
+              outcome: transition.decision?.outcome,
+              body: transition.decision?.body,
+            }),
+          );
         }
 
         issueBeforeCommentDecision = currentIssue;
@@ -20551,6 +20836,10 @@ export function issueRoutes(
             issueId: currentIssue.id,
             decisionOutcome: transition.decision?.outcome ?? "approved",
             verdictBody: transition.decision?.body ?? req.body?.body ?? null,
+            verdictRecord: extractReviewVerdictRecord({
+              outcome: transition.decision?.outcome ?? "approved",
+              body: transition.decision?.body ?? req.body?.body ?? null,
+            }),
             actor: {
               actorType: actor.actorType,
               actorId: actor.actorId,

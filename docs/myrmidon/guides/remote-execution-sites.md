@@ -177,7 +177,9 @@ Body specifies container layout:
 Constraints:
 - `image` must match a pinned `@sha256:` digest listed in the site's `imageAllowlist`.
 - `memoryMb`, `cpus`, `pidsLimit` must not exceed the site's enrolled quota for this bot.
-- `extraMounts` are strictly read-only and must be listed in the site's host mount allowlist.
+- `extraMounts` are read-only by default and must come from the site's `allowedMounts`. A mount without `readOnly: true` is read-write. It is accepted only when its source, with symlinks resolved, is inside one of the site's `writableMountRoots` (see 4.2). Otherwise the request fails with `mount_not_allowed`.
+- `cpus` must be at least `0.01`. `gatewayPort`, when set, must be between `1024` and `65535`. `boardExtraHost`, when set, must equal the `boardExtraHost` of the site itself. Otherwise the request fails with `spec_invalid`.
+- The rest of the container template is fixed and is not part of the spec: read-only root file system, all capabilities dropped, `/tmp` as a tmpfs, an init process, the `on-failure` restart policy, and no swap beyond the memory limit.
 
 #### 2.2.4 `PUT /v1/bots/{botKey}/profile`
 
@@ -297,7 +299,8 @@ Every error response follows single-line, secret-safe reason codes:
 | `403` | `bot_not_enrolled` | Bot key is not declared in site enrollment table |
 | `403` | `limit_exceeds_enrollment` | Spec memory, CPU, or pids exceed enrolled maximums |
 | `403` | `image_not_allowed` | Image is not pinned by digest or not allowlisted |
-| `403` | `mount_not_allowed` | Extra mount source is not on host allowlist |
+| `403` | `mount_not_allowed` | Extra mount source is not on host allowlist, or a read-write mount is outside every writable root |
+| `403` | `spec_invalid` | A spec value is outside the policy: `cpus` below `0.01`, `gatewayPort` outside `1024`-`65535`, or a `boardExtraHost` that differs from the site's |
 | `404` | `container_missing` | Target container does not exist on start/restart/stop |
 | `409` | `lease_conflict` | Execution lease already held by another execution ID |
 | `409` | `epoch_stale` | Provided lease epoch is older than current site epoch |
@@ -340,6 +343,8 @@ Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`
   "volumeRoot": "/srv/myrmidon-bots",
   "network": "myrmidon-bots",
   "images": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+  "allowedMounts": ["/srv/myrmidon-cache"],
+  "writableMountRoots": ["/srv/myrmidon-cache"],
   "boardAddress": "192.0.2.1:3100",
   // Legacy hostname stays resolvable as a compatibility alias during rollout.
   "boardExtraHost": "paperclip-server-1:192.0.2.1",
@@ -352,7 +357,7 @@ Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`
 }
 ```
 
-Notes: the allowlist key is `images` (not `imageAllowlist`) and only `repo@sha256:*` references are accepted, tags are rejected; without `gatewayPortStart`/`gatewayPortEnd` the port allocator fails with `gateway_port_exhausted`, and without `volumeRoot` creating a bot fails with `volume_root_not_configured`; `boardExtraHost` here is a Docker `ExtraHosts` entry in `name:ip` form; `bots[]` must not be empty and is static (adding a bot means editing the file and restarting the unit). Validate before starting:
+Notes: the allowlist key is `images` (not `imageAllowlist`) and only `repo@sha256:*` references are accepted, tags are rejected; without `gatewayPortStart`/`gatewayPortEnd` the port allocator fails with `gateway_port_exhausted`, and without `volumeRoot` creating a bot fails with `volume_root_not_configured`; `boardExtraHost` here is a Docker `ExtraHosts` entry in `name:ip` form, and it is the only board address a container gets: a spec that names a different one is refused with `spec_invalid`; `allowedMounts` lists the host directories that extra mounts may come from; `writableMountRoots` (default: empty) lists the directories in which an extra mount may be read-write, for example shared package caches that are mounted at `/cache/*`. A read-write mount needs both: its source must be inside `allowedMounts` and, with symlinks resolved, inside one of the `writableMountRoots`. Each root must be a clean absolute path, must not be `/`, and must not contain or lie inside `volumeRoot`. Do not nest one writable source below another: a bot with write access to the upper directory can replace the lower one with a symlink, and Docker follows the link at the next start of the container that mounts the lower directory. With the key empty, every extra mount is read-only. The key is new, and a `fleetd` binary from before it rejects it as an unknown key, so roll out the binary first and the configuration second; `bots[]` must not be empty and is static (adding a bot means editing the file and restarting the unit). Validate before starting:
 
 ```bash
 /usr/local/bin/fleetd --check-config --config /etc/myrmidon/fleetd.json

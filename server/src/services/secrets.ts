@@ -109,6 +109,7 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 ]);
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
+  openclaw_gateway: ["deviceToken"],
 };
 const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
@@ -2011,8 +2012,8 @@ export function secretService(db: Db | DbTransaction) {
             `Strict secret mode requires secret references for sensitive key: ${key}`,
           );
         }
-        if (binding.value === REDACTED_SENTINEL) {
-          throw unprocessable(`Refusing to persist redacted placeholder for key: ${key}`);
+        if (binding.value.includes(REDACTED_SENTINEL)) {
+          throw unprocessable(`Refusing to persist redacted placeholder for key: ${key}; value came from a redacted response, send the original value`);
         }
         normalized[key] = binding;
         continue;
@@ -2095,6 +2096,9 @@ export function secretService(db: Db | DbTransaction) {
       throw unprocessable(`${input.key} must be a string, plain binding, or secret reference`);
     }
     const binding = canonicalizeBinding(parsed.data as EnvBinding);
+    if (input.adapterType === "openclaw_gateway" && input.key === "deviceToken" && binding.type !== "secret_ref") {
+      throw unprocessable("deviceToken must be a company secret reference");
+    }
     if (binding.type === "secret_ref") {
       await assertSecretInCompany(companyId, binding.secretId);
       return {
@@ -2110,8 +2114,8 @@ export function secretService(db: Db | DbTransaction) {
     }
     const value = binding.value.trim();
     if (!value) return undefined;
-    if (value === REDACTED_SENTINEL) {
-      throw unprocessable(`Refusing to persist redacted placeholder for key: ${input.key}`);
+    if (value.includes(REDACTED_SENTINEL)) {
+      throw unprocessable(`Refusing to persist redacted placeholder for key: ${input.key}; value came from a redacted response, send the original value`);
     }
     const id = randomUUID();
     const adapterPart = normalizeSecretKey(input.adapterType ?? "adapter");

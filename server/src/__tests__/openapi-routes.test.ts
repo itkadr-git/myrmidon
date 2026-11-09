@@ -71,11 +71,13 @@ const apiPrefixes: Record<string, string> = {
   "routines.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
+  "status-strip.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
   // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): system update checks mount under /api.
   "system-updates.ts": "/api",
+  "intake.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
@@ -101,6 +103,8 @@ const explicitOpenApiCoverageExclusions = new Set<string>([
   "audit.ts",
   // Mounted directly by app.ts; its routes are documented in openapi.ts.
   "admin-assistant.ts",
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10218): project-scoped system maintenance window API.
+  "system.ts",
 ]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // These webhook handlers are mounted outside the scanner's route-file map.
@@ -133,6 +137,7 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "PUT /api/updates/settings",
   "PATCH /api/updates/settings",
   "POST /api/updates/validate",
+  "POST /api/monitoring/zabbix-webhook",
   "GET /api/myrmidon/companies/{companyId}/knowledge/search",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
@@ -161,6 +166,8 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "GET /api/admin-assistant/health",
   "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/stuck-runs",
+  "GET /api/companies/{companyId}/admin-assistant/stuck-runs",
 ]);
 
 function createApp() {
@@ -194,6 +201,9 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
     (file === "chat-channels.ts" || file === "email.ts") &&
     routePath.startsWith("/api/chat-webhooks/")
   ) {
+    return routePath;
+  }
+  if (file === "intake.ts" && routePath.startsWith("/api/intake/")) {
     return routePath;
   }
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
@@ -844,6 +854,8 @@ describe("openapi routes", () => {
       "/api/companies/{companyId}/admin-assistant/cluster-health",
       "/api/admin-assistant/cluster-health",
       "/api/admin-assistant/health",
+      "/api/companies/{companyId}/admin-assistant/stuck-runs",
+      "/api/admin-assistant/stuck-runs",
     ]) {
       const operation = spec.paths[path].get;
       expect(operation.responses["401"]).toBeDefined();

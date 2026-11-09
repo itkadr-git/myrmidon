@@ -131,6 +131,7 @@
       "status": "Owner · Web"
     },
     "screens": {
+      "channels": "القنوات",
       "commander": "Command Center",
       "decisions": "Decisions",
       "costs": "Costs",
@@ -157,7 +158,8 @@
       "guards": "Guardrails",
       "castes": "Castes and models",
       "system": "System",
-      "language": "Language"
+      "language": "Language",
+      "channels": "القنوات"
     },
     "shell": {
       "activeChannel": {
@@ -579,7 +581,13 @@
     "maxDuration": "Max duration, seconds",
     "maxDurationHint": "Longer recordings are rejected with audio_too_long.",
     "save": "Save settings",
-    "saving": "Saving..."
+    "saving": "Saving...",
+    "baseUrl": "Operator STT endpoint URL",
+    "baseUrlHint": "Only an operator-managed HTTP(S) endpoint; leave blank to inherit the instance default.",
+    "keySecret": "DashScope key (company secret)",
+    "deepgramKeySecret": "Deepgram key (company secret)",
+    "keepSecret": "Keep current secret selection",
+    "noSecret": "No secret selected"
   },
   "nests": {
     "title": "Nests",

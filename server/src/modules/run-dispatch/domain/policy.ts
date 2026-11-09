@@ -11,6 +11,9 @@ export type RetryReasonKind =
   | "disposition_repair"
   | "native_safe_replacement"
   | "ai_connection_wait"
+  // myrmidon(OPE-11947): retry of a run that ended because the model pool did
+  // not answer; it only runs while the issue is still todo or in_progress.
+  | "model_unavailable_wait"
   | "other";
 
 export type BudgetBlockFacts = {
@@ -159,6 +162,26 @@ export type QueuedRunFacts = {
   isPendingInteractionAddresseeWake?: boolean;
   isAuthorizedSourceScopedRecovery: boolean;
   isProductiveContinuationRecovery?: boolean;
+  /**
+   * myrmidon(RUN-GUARD-ESCALATE): the run is the wake of the assignee's manager
+   * after a final run guard stop (`run_guard_stop_needs_input`). The manager is
+   * not the assignee and must stay woken: the assignee does not change.
+   */
+  isRunGuardStopNeedsInputWake?: boolean;
+  /**
+   * myrmidon(UNBLOCK-OWNER-WAKE): the run is the `issue_unblock_requested` wake
+   * of the agent that owns the issue's block (blocker metadata or unblock
+   * descriptor owner) — typically a senior agent asked to assign a final
+   * status. It is not the assignee and must be allowed to start: cancelling it
+   * as `issue_assignee_changed` left the block without anyone able to act.
+   */
+  isUnblockOwnerWake?: boolean;
+  /**
+   * myrmidon(OPE-11948): the run is an automatic `issue_continuation_needed`
+   * wake of the system — no comment, no resume intent, no interaction. It is
+   * only worth starting while the issue is todo or in_progress.
+   */
+  isAutomaticContinuationWake?: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
   resumeIntent: boolean;
@@ -185,6 +208,10 @@ type OwnershipFacts = {
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
   isProductiveContinuationRecovery?: boolean;
+  // myrmidon(RUN-GUARD-ESCALATE): the manager's wake after a final run guard stop
+  isRunGuardStopNeedsInputWake?: boolean;
+  // myrmidon(UNBLOCK-OWNER-WAKE): the block owner's unblock wake
+  isUnblockOwnerWake?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -203,6 +230,8 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isCurrentReviewParticipant) return "current_owner";
   if (facts.isProductiveContinuationRecovery) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
+  if (facts.isRunGuardStopNeedsInputWake) return "current_owner";
+  if (facts.isUnblockOwnerWake) return "current_owner";
   return "reassigned";
 }
 
@@ -407,6 +436,23 @@ export function decideScheduledRetryGate(
       details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
     };
   }
+  if (
+    facts.retryReasonKind === "model_unavailable_wait" &&
+    facts.issueStatus !== "todo" &&
+    facts.issueStatus !== "in_progress"
+  ) {
+    return {
+      allowed: false,
+      reason: `Scheduled model-unavailable retry suppressed because issue is not todo or in_progress (current status: ${facts.issueStatus})`,
+      errorCode: "issue_not_in_progress",
+      issueId: facts.issueId,
+      details: {
+        issueId: facts.issueId,
+        currentStatus: facts.issueStatus,
+        requiredStatuses: ["todo", "in_progress"],
+      },
+    };
+  }
   if (statusOutcome === "not_in_progress") {
     return {
       allowed: false,
@@ -590,6 +636,8 @@ export function decideQueuedRunStaleness(
       facts.reviewParticipant.participantAgentId === facts.runAgentId,
     isAuthorizedSourceScopedRecovery: facts.isAuthorizedSourceScopedRecovery,
     isProductiveContinuationRecovery: facts.isProductiveContinuationRecovery,
+    isRunGuardStopNeedsInputWake: facts.isRunGuardStopNeedsInputWake,
+    isUnblockOwnerWake: facts.isUnblockOwnerWake,
   });
   if (ownership === "reassigned") {
     return {
@@ -666,6 +714,27 @@ export function decideQueuedRunStaleness(
       errorCode: "queued_run_issue_not_startable",
       reason: `Cancelled because issue is not startable (status: ${facts.issueStatus}) before the queued run could start`,
       details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
+    };
+  }
+  // myrmidon(OPE-11948): a queued automatic continuation outlives the state it
+  // was created for — the issue can have been parked (blocked) or sent to
+  // review since. Such a wake must die here instead of costing a session.
+  // Ownership was decided above; terminal and backlog have their own codes.
+  if (
+    facts.isAutomaticContinuationWake &&
+    facts.issueStatus !== null &&
+    facts.issueStatus !== "todo" &&
+    facts.issueStatus !== "in_progress"
+  ) {
+    return {
+      stale: true,
+      errorCode: "issue_not_in_progress",
+      reason: `Cancelled because an automatic continuation needs a todo or in_progress issue (current status: ${facts.issueStatus}) before the queued run could start`,
+      details: {
+        issueId: facts.issueId,
+        currentStatus: facts.issueStatus,
+        requiredStatuses: ["todo", "in_progress"],
+      },
     };
   }
   if (statusOutcome === "not_in_progress") {

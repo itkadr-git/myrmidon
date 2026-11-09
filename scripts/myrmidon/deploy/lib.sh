@@ -415,6 +415,8 @@ load_config() {
   : "${DUMP_DIR:=$STATE_DIR/dumps}"
   : "${DUMP_COMMAND:=}"
   : "${DUMP_MIN_BYTES:=1}"
+  # PREDEPLOY-RETENTION: only validated dumps are eligible for cleanup.
+  : "${DUMP_KEEP:=3}"
   : "${RESTORE_COMMAND:=}"
   : "${MAINTENANCE_MODE:=pause}"
   : "${MAINTENANCE_API_URL:=}"
@@ -910,6 +912,34 @@ take_dump() {
   fi
   log "dump: ok ($size bytes)"
   LAST_DUMP_FILE="$file"
+  prune_dumps
+}
+
+# Keep the newest validated dumps only. A listing or deletion error aborts deploy.
+prune_dumps() {
+  [[ -d "$DUMP_DIR" ]] || die "dump directory does not exist: $DUMP_DIR"
+  local -a dumps=() ordered=()
+  local path find_status listing_error
+  listing_error="${DUMP_DIR%/}/.predeploy-retention-listing-error.$$"
+  rm -f -- "$listing_error" || die "cannot prepare predeploy dump listing in $DUMP_DIR"
+  mapfile -d '' -t dumps < <(
+    find "$DUMP_DIR" -maxdepth 1 -type f -name 'myrmidon-*.dump' -printf '%T@ %p\0' || touch "$listing_error"
+  )
+  find_status=0
+  [[ ! -e "$listing_error" ]] || find_status=1
+  if ((find_status == 0)) && ((${#dumps[@]})); then
+    mapfile -t ordered < <(printf '%s\n' "${dumps[@]}" | sort -nr)
+    ((${#ordered[@]} == ${#dumps[@]})) || find_status=1
+  fi
+  rm -f -- "$listing_error" || die "cannot finalize predeploy dump listing in $DUMP_DIR"
+  ((find_status == 0)) || die "cannot list predeploy dumps in $DUMP_DIR; refusing retention cleanup"
+  (( ${#ordered[@]} > DUMP_KEEP )) || return 0
+  for path in "${ordered[@]:DUMP_KEEP}"; do
+    path="${path#* }"
+    [[ -n "$path" && -f "$path" ]] || die "invalid predeploy dump candidate during retention cleanup; refusing further cleanup"
+    rm -- "$path" || die "cannot remove old predeploy dump $path; refusing deploy"
+    log "dump retention: removed $path"
+  done
 }
 
 record_history() {
@@ -1849,14 +1879,30 @@ deploy_disk_precheck() {
 # Removes the local images of the deploy's component repositories that are
 # older than MYRMIDON_DEPLOY_IMAGE_KEEP previous releases (default 1: the
 # current release plus the one before it, kept for a rollback). Order is the
-# image creation date (docker image ls). An image used by ANY container
-# (running or stopped) is never removed: it is skipped with a log line.
-# <none> tags left by a removed image are taken with it. A keep of 0 switches
-# the cleanup off. A failure here must never fail a finished deploy: the
-# caller warns and moves on.
+# image creation date (docker image ls), newest first. An image used by ANY
+# container (running or stopped) is never removed: it is skipped with a log
+# line. <none> tags left by a removed image are taken with it. A keep of 0
+# switches the cleanup off. A failure here must never fail a finished deploy:
+# the caller warns and moves on.
+#
+# The window per repository is "the current release plus N previous":
+#   - the NEWEST image a container uses is the current release; it stays;
+#   - images newer than it (just pulled, not started yet) always stay and do
+#     not count against the window;
+#   - after it at most N unused images stay (the previous releases), every
+#     older unused image is removed; other used images stay and do not count;
+#   - a repository without any used image has no current release to anchor
+#     on: the N+1 newest stay (the newest one is the release being deployed).
+# Counting the unused images after the current release (not N+1 of them) is
+# what keeps the bot images (hermes, hermes-dev, hermes-node: pulled by digest,
+# no tags) from piling up. Their current release is used by the bot containers
+# and was never in the window, so the old rule "N+1 unused" kept two superseded
+# generations on top of it: 4 generations of each bot image (2.9 + 1.6 + 1.2 GB
+# per generation) on the 06.11 incident; the rc.41 and rc.42 deploys logged
+# "0 image(s) removed" and the disk fell to 8% free.
 deploy_image_retention() {
   local keep="${MYRMIDON_DEPLOY_IMAGE_KEEP:-1}" repos="${MYRMIDON_DEPLOY_IMAGE_REPOS:-}"
-  local repo entry id created tag kept entries
+  local repo entry id created tag kept entries budget newer fresh=0
   [[ "$keep" =~ ^[0-9]+$ ]] || { log "image retention: MYRMIDON_DEPLOY_IMAGE_KEEP must be a non-negative integer (got '$keep'); the cleanup is skipped"; return 1; }
   if ((keep == 0)); then
     log "image retention: MYRMIDON_DEPLOY_IMAGE_KEEP=0, the cleanup is off"
@@ -1876,9 +1922,24 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
     entries="$(docker image ls "$repo" --no-trunc --format '{{.CreatedAt}}{{"\t"}}{{.ID}}{{"\t"}}{{.Tag}}' 2>/dev/null \
       | sort -t"$(printf '\t')" -k1,1r)" || entries=""
     [[ -n "$entries" ]] || continue
-    # The keep window counts only images the cleanup may touch: an image a
-    # container uses is never removed, so it must not eat the budget of
-    # releases the operator still needs for a rollback.
+    # The window is anchored on the current release: the newest image a
+    # container uses. Newer images (pulled, not started yet) are never
+    # removed and do not count; after the current release at most `keep`
+    # unused images stay. Used images never eat the budget of the releases the
+    # operator still needs for a rollback. With no used image at all there is
+    # no anchor: the keep+1 newest stay.
+    newer=0
+    budget=$((keep + 1))
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      id="$(printf '%s' "$entry" | cut -f2)"
+      [[ -n "$id" ]] || continue
+      if grep -qx "${id#sha256:}" <<<"$used_ids"; then
+        newer=1
+        budget=$keep
+        break
+      fi
+    done <<<"$entries"
     kept=0
     while IFS= read -r entry; do
       [[ -n "$entry" ]] || continue
@@ -1889,9 +1950,14 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
       if grep -qx "${id#sha256:}" <<<"$used_ids"; then
         log "image retention: $repo image ${id#sha256:} (created $created) is used by a container: skipped"
         skipped=$((skipped + 1))
+        newer=0
         continue
       fi
-      if ((kept < keep + 1)); then
+      if ((newer)); then
+        fresh=$((fresh + 1))
+        continue
+      fi
+      if ((kept < budget)); then
         kept=$((kept + 1))
         continue
       fi
@@ -1904,5 +1970,5 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
       removed=$((removed + 1))
     done <<<"$entries"
   done
-  log "image retention: $removed image(s) removed, $skipped in use and kept (keep $keep previous release(s) per repository)"
+  log "image retention: $removed image(s) removed, $skipped in use and kept, $fresh newer than the running release kept (keep $keep previous release(s) per repository)"
 }

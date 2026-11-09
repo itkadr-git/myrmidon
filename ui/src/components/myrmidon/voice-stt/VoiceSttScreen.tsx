@@ -27,6 +27,9 @@ export interface VoiceSttFormState {
   language: VoiceSttSettings["language"];
   diarization: boolean;
   maxDurationSec: string;
+  baseUrl: string;
+  keySecret: string;
+  deepgramKeySecret: string;
 }
 
 export function formFromSettings(settings: VoiceSttSettings): VoiceSttFormState {
@@ -37,6 +40,9 @@ export function formFromSettings(settings: VoiceSttSettings): VoiceSttFormState 
     language: settings.language,
     diarization: settings.diarization,
     maxDurationSec: String(settings.maxDurationSec),
+    baseUrl: settings.baseUrl ?? "",
+    keySecret: "",
+    deepgramKeySecret: "",
   };
 }
 
@@ -52,6 +58,9 @@ export function diffFromSettings(
   if (form.model !== (settings.model ?? "")) input.model = form.model.trim() || null;
   if (form.language !== settings.language) input.language = form.language;
   if (form.diarization !== settings.diarization) input.diarization = form.diarization;
+  if (form.baseUrl.trim() !== (settings.baseUrl ?? "")) input.baseUrl = form.baseUrl.trim() || null;
+  if (form.keySecret) input.keySecret = form.keySecret;
+  if (form.deepgramKeySecret) input.deepgramKeySecret = form.deepgramKeySecret;
   const duration = Number.parseInt(form.maxDurationSec, 10);
   if (Number.isFinite(duration) && duration !== settings.maxDurationSec) {
     input.maxDurationSec = duration;
@@ -66,6 +75,7 @@ export function VoiceSttScreenView({
   dirty,
   onChange,
   onSave,
+  secretNames = [],
 }: {
   settings: VoiceSttSettings;
   saving: boolean;
@@ -73,6 +83,7 @@ export function VoiceSttScreenView({
   dirty: boolean;
   onChange: (next: VoiceSttFormState) => void;
   onSave: (input: VoiceSttUpdateInput) => void;
+  secretNames?: string[];
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<VoiceSttFormState>(() => formFromSettings(settings));
@@ -94,6 +105,7 @@ export function VoiceSttScreenView({
 
   const durationInvalid =
     !/^\d+$/.test(form.maxDurationSec.trim()) || Number.parseInt(form.maxDurationSec, 10) < 1;
+  const baseUrlInvalid = Boolean(form.baseUrl.trim()) && !/^https?:\/\/[^\s]+$/i.test(form.baseUrl.trim());
 
   return (
     <div className="max-w-3xl space-y-6" data-testid="myrmidon-voice-stt-screen">
@@ -192,11 +204,32 @@ export function VoiceSttScreenView({
         <p className="text-xs text-muted-foreground">{t("voiceStt.maxDurationHint")}</p>
       </section>
 
+      <section className="space-y-3" data-testid="myrmidon-voice-stt-connection">
+        <div className="space-y-1">
+          <Label htmlFor="voice-stt-base-url">{t("voiceStt.baseUrl")}</Label>
+          <Input id="voice-stt-base-url" type="url" value={form.baseUrl}
+            onChange={(e) => set({ baseUrl: e.target.value })} data-testid="myrmidon-voice-stt-base-url" />
+          <p className="text-xs text-muted-foreground">{t("voiceStt.baseUrlHint")}</p>
+        </div>
+        {(["keySecret", "deepgramKeySecret"] as const).map((field) => (
+          <div className="space-y-1" key={field}>
+            <Label htmlFor={`voice-stt-${field}`}>{t(`voiceStt.${field}`)}</Label>
+            <select id={`voice-stt-${field}`} value={form[field]}
+              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+              onChange={(e) => set({ [field]: e.target.value })}
+              data-testid={`myrmidon-voice-stt-${field}`}>
+              <option value="">{settings[`${field}Configured`] ? t("voiceStt.keepSecret") : t("voiceStt.noSecret")}</option>
+              {secretNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
+        ))}
+      </section>
+
       <div className="flex items-center gap-2">
         <Button
           size="sm"
           onClick={save}
-          disabled={saving || !dirty || durationInvalid}
+          disabled={saving || !dirty || durationInvalid || baseUrlInvalid}
           data-testid="myrmidon-voice-stt-save"
         >
           {saving ? t("voiceStt.saving") : t("voiceStt.save")}

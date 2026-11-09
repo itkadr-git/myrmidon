@@ -125,6 +125,11 @@ import { resolveEnvironmentExecutionTarget } from "../services/environment-execu
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
+import {
+  hermesGatewayConfigProblem,
+  localAdapterConfigProblem,
+  localAdapterSecurityConfigChanged,
+} from "../myrmidon/agent-local-adapter-config.js"; // myrmidon(1.6.6 OPE-11239)
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
@@ -2709,6 +2714,22 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  // myrmidon(1.6.6 OPE-11239): sandbox and permission keys of the local CLI adapters are
+  // security settings; changing one needs an instance admin (rules: myrmidon/agent-local-adapter-config.ts).
+  function assertLocalAdapterSecurityChangeAllowed(
+    req: Request,
+    adapterType: string | null | undefined,
+    previousAdapterConfig: Record<string, unknown> | null | undefined,
+    nextAdapterConfig: Record<string, unknown> | null | undefined,
+  ) {
+    const adapterDefaults: Record<string, unknown> = adapterType === "claude_local"
+      ? { dangerouslySkipPermissions: true }
+      : { dangerouslyBypassApprovalsAndSandbox: DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX };
+    if (localAdapterSecurityConfigChanged(adapterType, previousAdapterConfig, nextAdapterConfig, adapterDefaults)) {
+      assertInstanceAdmin(req);
+    }
+  }
+
   async function assertAdapterConfigConstraints(
     companyId: string,
     adapterType: string | null | undefined,
@@ -2717,6 +2738,10 @@ export function agentRoutes(
     // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
     const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
+    const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
+    if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
+    const gatewayProblem = hermesGatewayConfigProblem(adapterType, adapterConfig);
+    if (gatewayProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${gatewayProblem}`);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -4656,6 +4681,7 @@ function getActorIdentityPart(req: Request): string {
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertInheritProcessEnvChangeAllowed(req, { companyId, agentId: null, previousAdapterConfig: null, nextAdapterConfig: rawHireAdapterConfig }); // myrmidon(S4)
+    assertLocalAdapterSecurityChangeAllowed(req, hireInput.adapterType, null, rawHireAdapterConfig); // myrmidon(1.6.6 OPE-11239)
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
@@ -4969,6 +4995,7 @@ function getActorIdentityPart(req: Request): string {
         rawCreateAdapterConfig,
       ),
     );
+    assertLocalAdapterSecurityChangeAllowed(req, createInput.adapterType, null, rawCreateAdapterConfig);
     assertExternalInstructionsAdmin(req, {
       id: agentId,
       companyId,
@@ -5092,6 +5119,47 @@ function getActorIdentityPart(req: Request): string {
     // check below. The gate applies only when the request carries `boardAdmin`,
     // so ordinary permission updates keep their existing behavior.
     const requestedBoardAdmin = req.body.boardAdmin as boolean | undefined;
+    // myrmidon(1.6.6 SETTINGS-UI / OPE-11237): modifying agent authorizationPolicy requires
+    // explicit users:manage_permissions and prohibits agents from modifying their own policy.
+    const requestedAuthPolicy = req.body.authorizationPolicy as Record<string, unknown> | null | undefined;
+    if (requestedAuthPolicy !== undefined) {
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId) {
+          res.status(403).json({ error: "Agent authentication required" });
+          return;
+        }
+        if (req.actor.agentId === existing.id) {
+          res.status(403).json({ error: "An agent cannot modify its own authorization policy" });
+          return;
+        }
+        if (
+          !(await access.hasPermission(
+            existing.companyId,
+            "agent",
+            req.actor.agentId,
+            "users:manage_permissions",
+          ))
+        ) {
+          res.status(403).json({ error: "Missing users:manage_permissions grant" });
+          return;
+        }
+      } else {
+        if (!hasCompanyAccess(req, existing.companyId)) throw notFound("Agent not found");
+        assertCompanyAccess(req, existing.companyId);
+        const isLocalImplicitActor =
+          req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+        if (!isLocalImplicitActor) {
+          const allowed = await access.canUser(
+            existing.companyId,
+            req.actor.userId,
+            "users:manage_permissions",
+          );
+          if (!allowed) {
+            throw forbidden("Missing users:manage_permissions permission for the company");
+          }
+        }
+      }
+    }
     // myrmidon(1.6.5-F-23): the off-run self-secret toggle is board-only.
     if (req.body.offRunSecretRead !== undefined && req.actor.type !== "board") {
       res.status(403).json({ error: "Only board actors can manage off-run secret read grants" });
@@ -5751,6 +5819,12 @@ function getActorIdentityPart(req: Request): string {
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      assertLocalAdapterSecurityChangeAllowed(
+        req,
+        requestedAdapterType,
+        asRecord(existing.adapterConfig),
+        normalizedEffectiveAdapterConfig,
+      );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
@@ -7206,8 +7280,18 @@ function getActorIdentityPart(req: Request): string {
     assertCompanyAccess(req, companyId);
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
-    const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const rawLimit = req.query.limit;
+    if (rawLimit !== undefined && (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit) || !Number.isSafeInteger(Number(rawLimit)) || Number(rawLimit) < 1)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
+      return;
+    }
+    const limit = Math.min(1000, rawLimit === undefined ? 200 : Number(rawLimit));
+    const rawBefore = req.query.before;
+    if (rawBefore !== undefined && (typeof rawBefore !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(rawBefore) || !Number.isFinite(Date.parse(rawBefore)) || new Date(rawBefore).toISOString() !== new Date(Date.parse(rawBefore)).toISOString())) {
+      res.status(400).json({ error: "before must be an ISO timestamp" });
+      return;
+    }
+    const before = rawBefore === undefined ? undefined : new Date(rawBefore);
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
     const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
@@ -7221,11 +7305,21 @@ function getActorIdentityPart(req: Request): string {
     ]);
     // Compute the validator before fetching and redacting the response body.
     const vk = (wakeReason !== undefined || hasResult)
-      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult)
-      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult, before)
+      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, undefined, false, before);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult, before });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
+    // Cursor pagination: when the page is exactly `limit` rows, expose the
+    // createdAt of the last row so clients can fetch the next page with
+    // ?before=<cursor>. Array shape is unchanged for existing callers.
+    if (redactedRuns.length >= limit) {
+      const last = redactedRuns[redactedRuns.length - 1] as { createdAt?: string | Date | null };
+      const createdAt = last?.createdAt;
+      if (createdAt) {
+        res.setHeader("X-Next-Cursor", new Date(createdAt).toISOString());
+      }
+    }
     res.json(redactedRuns);
   });
 

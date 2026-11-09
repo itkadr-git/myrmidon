@@ -41,7 +41,20 @@ export class ResurrectionService {
         continue;
       }
 
-      // Создать новую побудку с тем же контекстом
+      const issueId = typeof payload.issueId === 'string' && payload.issueId.trim()
+        ? payload.issueId
+        : null;
+      if (!issueId) {
+        // Без скоупа задачи побудку никто не обслужит (release drain,
+        // stranded-wake reconcile и очистка читают `payload ->> 'issueId'`).
+        continue;
+      }
+
+      // Создать новую побудку с тем же контекстом: обычный отложенный ввод
+      // очереди (`deferred_issue_execution`, скоуп по issueId, без метки
+      // executionWait) — её обслуживают существующие ограниченные пути:
+      // release drain, stranded-wake reconcile (отмена на закрытой задаче,
+      // истечение по 30 минут с повторной побудкой агента).
       await db.insert(agentWakeupRequests)
         .values({
           id: crypto.randomUUID(),
@@ -50,8 +63,11 @@ export class ResurrectionService {
           source: wakeup.source,
           triggerDetail: wakeup.triggerDetail,
           reason: 'resurrection_execution_reconciliation_required',
-          payload: wakeup.payload,
-          status: 'pending',
+          payload: {
+            ...payload,
+            issueId,
+          },
+          status: 'deferred_issue_execution',
           requestedByActorType: wakeup.requestedByActorType,
           requestedByActorId: wakeup.requestedByActorId,
           idempotencyKey: `${wakeup.idempotencyKey ?? wakeup.id}:resurrection:${crypto.randomUUID()}`,

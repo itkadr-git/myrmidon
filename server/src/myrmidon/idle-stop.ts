@@ -19,6 +19,8 @@ export interface IdleStopConfig {
   afterSec: number;
   healthTimeoutMs: number;
   sweepIntervalMs: number;
+  /** OPE-12291: roles whose containers are never idle-stopped (default ["lead"]). */
+  alwaysOnRoles?: string[];
 }
 
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
@@ -41,6 +43,7 @@ export class IdleStopService {
   private readonly logger: IdleStopLogger;
   private sweepInterval?: NodeJS.Timeout;
   private startupTimes: Map<string, number> = new Map();
+  private inFlightStarts: Map<string, Promise<void>> = new Map();
   private configCache?: { value: IdleStopConfig; expiresAt: number };
 
   constructor(driver: BotContainerDriver, db: Db, config: Partial<IdleStopConfig> = {}, loggerInstance?: IdleStopLogger) {
@@ -152,7 +155,7 @@ export class IdleStopService {
   private async listBots(): Promise<{ botKeys: string[]; alwaysOn: Set<string> }> {
     try {
       const rows = await this.db
-        .select({ agentId: agents.id, adapterConfig: agents.adapterConfig })
+        .select({ agentId: agents.id, agentRole: agents.role, adapterConfig: agents.adapterConfig })
         .from(agents)
         .where(
           and(
@@ -161,10 +164,16 @@ export class IdleStopService {
             sql`${agents.adapterConfig} #> '{container,enabled}' = 'true'::jsonb`,
           ),
         );
+      const config = await this.currentConfig();
+      const alwaysOnRoles = new Set(config.alwaysOnRoles ?? []);
       const alwaysOn = new Set<string>();
       for (const row of rows) {
         const container = (row.adapterConfig as { container?: { idleStopMode?: unknown } } | null | undefined)?.container;
-        if (container?.idleStopMode === 'always_on') alwaysOn.add(row.agentId);
+        // OPE-12291: per-card "off"/"always_on" and role-based exemption (the
+        // operator bot keeps a warm container; its queue spikes are not eaten
+        // by a cold start against queuedRunStaleAfterSec).
+        if (container?.idleStopMode === 'always_on' || container?.idleStopMode === 'off') alwaysOn.add(row.agentId);
+        else if (row.agentRole && alwaysOnRoles.has(row.agentRole)) alwaysOn.add(row.agentId);
       }
       return { botKeys: rows.map((row) => row.agentId), alwaysOn };
     } catch (error) {
@@ -242,6 +251,11 @@ export class IdleStopService {
           enabled: typeof value.enabled === 'boolean' ? value.enabled : this.config.enabled,
           afterSec: typeof value.afterSec === 'number' && Number.isFinite(value.afterSec) ? value.afterSec : this.config.afterSec,
           healthTimeoutMs: typeof value.healthTimeoutMs === 'number' && Number.isFinite(value.healthTimeoutMs) ? value.healthTimeoutMs : this.config.healthTimeoutMs,
+          // OPE-12291: an explicit stored list wins, even when empty; a missing
+          // key keeps the default (["lead"]).
+          alwaysOnRoles: Array.isArray(value.alwaysOnRoles)
+            ? (value.alwaysOnRoles as unknown[]).filter((r): r is string => typeof r === 'string' && r.length > 0 && r.length <= 60)
+            : (this.config.alwaysOnRoles ?? ['lead']),
         };
         this.configCache = { value: resolved, expiresAt: Date.now() + 2_000 };
         return resolved;
@@ -249,7 +263,7 @@ export class IdleStopService {
     } catch (error) {
       this.logger.error(`Could not read live IDLE-STOP settings; keeping startup config [${error instanceof Error ? error.message : String(error)}]`);
     }
-    return this.config;
+    return this.config.alwaysOnRoles !== undefined ? this.config : { ...this.config, alwaysOnRoles: ['lead'] };
   }
 
   private async isApplyOrMaintenanceActive(botKey: string, container: BotContainerStatus, afterSec: number): Promise<boolean> {
@@ -467,6 +481,21 @@ export class IdleStopService {
    * within the configured timeout.
    */
   public async ensureStartedAndHealthy(botKey: string): Promise<void> {
+    const existingStart = this.inFlightStarts.get(botKey);
+    if (existingStart) {
+      return await existingStart;
+    }
+
+    const startPromise = this.ensureStartedAndHealthyInternal(botKey);
+    this.inFlightStarts.set(botKey, startPromise);
+    try {
+      await startPromise;
+    } finally {
+      this.inFlightStarts.delete(botKey);
+    }
+  }
+
+  private async ensureStartedAndHealthyInternal(botKey: string): Promise<void> {
     const config = await this.currentConfig();
     const startTime = Date.now();
     const timeoutMs = config.healthTimeoutMs;

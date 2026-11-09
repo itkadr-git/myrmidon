@@ -108,6 +108,7 @@ import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
+import { AdminUsers } from "./pages/AdminUsers";
 import { UsersAdmin } from "./pages/UsersAdmin";
 import { PasswordSetPage } from "./pages/PasswordSet"; // myrmidon(OPE-8985)
 import { InstanceFeatures } from "./pages/InstanceFeatures"; // myrmidon(FEATURES)
@@ -309,6 +310,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
         <Route path="company/settings/instance/access" element={<InstanceAccess />} />
+        <Route path="company/settings/instance/users" element={<AdminUsers />} />
         {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
         <Route path="company/settings/instance/board-api-keys" element={<BoardApiKeysPage />} />
       </Route>
@@ -860,6 +862,14 @@ export function App() {
           <Route path="instance/settings" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
+          {/* myrmidon(UI-2.0-WAVE-A, П2): the ui2 shell route roots get
+              unprefixed→prefixed redirects so a bare /commander, /fleet or
+              /quality link never turns into a bogus "company" via
+              extractCompanyPrefixFromPath (OPE-3922 defect 1). */}
+          <Route path="commander" element={<UnprefixedBoardRedirect />} />
+          <Route path="commander-chat" element={<UnprefixedBoardRedirect />} />
+          <Route path="fleet" element={<UnprefixedBoardRedirect />} />
+          <Route path="quality" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="tasks" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

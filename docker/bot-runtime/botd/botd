@@ -193,7 +193,7 @@ function runGitMigration({ migrationEnabled, gitMigrationMod, idle, log }) {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod, hygieneMod, repackMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod, hygieneMod, normalizeMod, repackMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -207,9 +207,20 @@ async function main() {
     tryImport("repair.js"),
     tryImport("git-migration.js"),
     tryImport("hygiene.js"),
+    tryImport("normalize-git-bases.js"),
     tryImport("repack.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
+  // One-time merge of legacy mixed-case git-base directories into their
+  // canonical lower-case names before the first loop pass reads the bases.
+  if (normalizeMod && typeof normalizeMod.normalizeGitBases === "function") {
+    try {
+      const normalized = normalizeMod.normalizeGitBases(BASE_DIR, { gitBin: GIT_BIN, log });
+      if (normalized.length > 0) log(`botd: normalized ${normalized.length} git-base path(s) to lower-case`);
+    } catch (err) {
+      log(`botd: git-base normalization failed: ${err.message}`);
+    }
+  }
   // One attention signal per path per TTL (botd-attention.json); the uid of the
   // owner that blocks us goes into the text. chown is never attempted here.
   const attention = cacheMod.createAttention(ATTENTION_PATH, { log });
@@ -323,8 +334,11 @@ async function main() {
   // before archiving, so a foreign-owned directory defers in milliseconds instead of
   // re-creating the same archive every pass.
   const probeRemoval = (probeRoots) => (p) => {
+    const abs = path.resolve(p);
     try {
-      fs.accessSync(path.resolve(p), fs.constants.W_OK | fs.constants.X_OK);
+      const st = fs.lstatSync(abs);
+      fs.accessSync(path.dirname(abs), fs.constants.W_OK | fs.constants.X_OK);
+      if (st.isDirectory()) fs.accessSync(abs, fs.constants.W_OK | fs.constants.X_OK);
     } catch (err) {
       if (err && (err.code === "EACCES" || err.code === "EPERM")) {
         signalForeignUid(p, { reason: `${err.code} foreign-uid`, uid: null });
@@ -336,15 +350,24 @@ async function main() {
   const owned = (p) => legacyMod.inRegistry((readJson(REGISTRY_PATH, { entries: [] }).entries) || [], p);
   // A path under /workspace that the registry does not list (an old clone, a task directory
   // from before myr-ws): `myr-ws close` would fail with "no open copy", so archive it here.
-  const legacyRemove = (a) =>
-    legacyMod.archiveThenRemove(a, {
-      archiveMod,
-      isGit: (p) => fs.existsSync(path.join(p, ".git")),
-      remove: (p) => removePath(p, roots),
-      probe: probeRemoval(roots),
-      archiveRoot: ARCHIVE_DIR,
-      nestedGit: legacyMod.findNestedGit,
-    });
+  const legacyRemove = (a) => {
+    try {
+      return legacyMod.archiveThenRemove(a, {
+        archiveMod,
+        isGit: (p) => fs.existsSync(path.join(p, ".git")),
+        remove: (p) => removePath(p, roots),
+        probe: probeRemoval(roots),
+        archiveRoot: ARCHIVE_DIR,
+        nestedGit: legacyMod.findNestedGit,
+      });
+    } catch (err) {
+      if (err && err.deferred === "foreign-uid") {
+        signalForeignUid(a.path, { reason: "foreign-uid in archive", uid: err.uid });
+        return { deferred: err.deferred, detail: err.message };
+      }
+      throw err;
+    }
+  };
   const executor = createWorkspaceExecutor({
     isWorkspace,
     owned,
@@ -392,13 +415,19 @@ async function main() {
     const pick = (...vals) => vals.find((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
     const limits = {
       npmCacheTtlHours: pick(g.npmCacheTtlHours, Number(process.env.MYRMIDON_BOTD_NPM_CACHE_TTL_HOURS)) ?? 48,
+      npxTtlHours: pick(g.npxTtlHours, Number(process.env.MYRMIDON_BOTD_NPX_TTL_HOURS)) ?? 24,
       uvCacheTtlHours: pick(g.uvCacheTtlHours, Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS)) ?? 168,
       terminalOutputTtlHours: pick(g.terminalOutputTtlHours, Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS)) ?? 24,
+      npmCacheCapBytes: pick(g.npmCacheCapBytes, Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES)) ?? 1024 * 1024 * 1024,
     };
+    // The npm size ceiling is skipped while a run is live: an npx install the run
+    // has not touched yet can still be in use.
+    const live = runProbe ? runProbe.probe().live === true : false;
     await hygieneMod.cleanCaches({
       now: startedAt ? startedAt.getTime() : Date.now(),
       limits,
       pressure,
+      live,
       execFile,
       log,
     });
@@ -423,13 +452,16 @@ async function main() {
     if (hygieneMod && typeof hygieneMod.cleanCaches === "function") {
       const limits = {
         npmCacheTtlHours: Number(process.env.MYRMIDON_BOTD_NPM_CACHE_TTL_HOURS) || 48,
+        npxTtlHours: Number(process.env.MYRMIDON_BOTD_NPX_TTL_HOURS) || 24,
         uvCacheTtlHours: Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS) || 168,
         terminalOutputTtlHours: Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS) || 24,
+        npmCacheCapBytes: Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES) || 1024 * 1024 * 1024,
       };
       const result = await hygieneMod.cleanCaches({
         now: startedAt.getTime(),
         limits,
         pressure: level,
+        live: runProbe ? runProbe.probe().live === true : false,
         execFile,
         log,
       });

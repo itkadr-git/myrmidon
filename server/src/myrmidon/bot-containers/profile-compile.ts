@@ -375,6 +375,9 @@ export function createBotProfileCompile(
           ...settings,
           llmBaseUrl: effective.llmBaseUrl || null,
           hindsightApiUrl: effective.hindsightUrl || null,
+          boardUrl: effective.boardAddress
+            ? new URL(`${new URL(settings.boardUrl as string).protocol}//${effective.boardAddress}`).origin
+            : settings.boardUrl,
         }
       : settings;
 
@@ -388,6 +391,8 @@ export function createBotProfileCompile(
 
     // Read-only lookups first: a missing MCP token secret fails here, before the
     // ports below create the bot's keys, so a broken instance setting leaves nothing behind.
+    const siteBoardUrl = profileSettings.boardUrl as string;
+    // Keep all bot-facing board links on the site's reachable address.
     const staticMcpServers = await resolveStaticMcpServers(ports, agent.companyId, profileSettings);
     // myrmidon(1.6.5-F11-A): a token-less media block is the F-11 incident itself,
     // so a statically declared `media` server does NOT survive a missing card
@@ -397,6 +402,11 @@ export function createBotProfileCompile(
     // settings; until they do, this filter keeps its bots from the 401 flood.
     const staticMcpServersWithoutMedia = staticMcpServers.filter((server) => server.name !== MEDIA_MCP_SERVER_NAME);
 
+    // myrmidon(1.6.6 REMOTE-SITES-T4): ensure the card key BEFORE the parallel block.
+    // listMcpServers ensures it too (the corpus MCP token is the bot's own key), and on a
+    // new bot's first apply the two concurrent get-or-create calls both created the secret:
+    // "Secret already exists: …-paperclip-api-key", apply failed, a retry passed.
+    const ensuredPaperclipApiKey = await ports.ensureAgentApiKey(agent);
     const [cardEnv, skills, instructions, apiServerKey, paperclipApiKey, gatewayResult, instanceDefaults, parallelHelpersSettings, botLspSettings] =
       await Promise.all([
         ports.resolveCardEnv(agent),
@@ -405,10 +415,10 @@ export function createBotProfileCompile(
         ports.loadSkills(agent, cache),
         ports.loadInstructions(agent),
         ports.ensureApiServerKey(agent),
-        ports.ensureAgentApiKey(agent),
+        Promise.resolve(ensuredPaperclipApiKey),
         ports.listMcpServers
-          ? // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
-            ports.listMcpServers(agent, { boardUrl: settings.boardUrl as string, enabled: boardGatewayEnabled })
+          ? // siteBoardUrl is non-null here: assertBotProfileSettings threw otherwise.
+            ports.listMcpServers(agent, { boardUrl: siteBoardUrl, enabled: boardGatewayEnabled })
           : Promise.resolve([] as BotMcpSource[]),
         // myrmidon(PERF-DIET-G): instance-scoped, so one read per pass rather than
         // one per bot; the next pass reads again, which is what makes a corrected
@@ -508,12 +518,10 @@ export function createBotProfileCompile(
     // are instance-wide (one resolved settings row per pass), so a fleetd bot gets
     // them too: the partition lives on the fleetd host, but the policy the bot's
     // myr-ws/botd apply is the board's. The card's own value never wins, like the
-    // cache variables above. The board address is the one already compiled for the
-    // bot (settings.boardUrl); the key travels as the .env variable NAME only.
+    // cache variables above. The board address is the site-resolved URL; the key travels as the .env variable NAME only.
     if (ports.botDiskMechanics) {
       const mechanics = await once("bot-disk-mechanics", () => ports.botDiskMechanics!());
-      // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
-      for (const [name, value] of Object.entries(botdProfileEnv(mechanics, settings.boardUrl as string, agent.id))) {
+      for (const [name, value] of Object.entries(botdProfileEnv(mechanics, siteBoardUrl, agent.id))) {
         cacheEnv[name] = { value, secret: false };
       }
     }
@@ -549,7 +557,7 @@ export function createBotProfileCompile(
     // myrmidon(EGRESS-A): the instance's proxied-egress variables always win
     // over the card's — they describe this instance's network, not the bot
     // (the same rule the compiler applies to its own reserved .env names).
-    const egressEnv = buildBotEgressEnvEntries({ settings: egress, botKey, boardUrl: settings.boardUrl });
+    const egressEnv = buildBotEgressEnvEntries({ settings: egress, botKey, boardUrl: siteBoardUrl });
     const egressWarnings = Object.keys(egressEnv)
       .filter((name) => cardEnv.env[name] !== undefined)
       .map((name) => `.env: "${name}" is set by ${BOT_EGRESS_MODE_ENV}; the card's value was dropped`);

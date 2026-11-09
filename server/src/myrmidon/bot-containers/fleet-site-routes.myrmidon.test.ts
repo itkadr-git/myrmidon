@@ -369,6 +369,23 @@ describe("fleet site enroll routes", () => {
     });
   });
 
+  it("enrolls site board and LLM endpoints into the registry profile", async () => {
+    const { app, deps } = harness();
+    await request(app).post(path).send(body({ boardAddress: "192.0.2.1:3100", llmBaseUrl: "http://llm.example.com:4000" })).expect(201);
+    expect(deps.createSite.mock.calls[0]![0].profile).toMatchObject({
+      boardAddress: "192.0.2.1:3100",
+      llmBaseUrl: "http://llm.example.com:4000",
+    });
+  });
+
+  it("rejects malformed site board addresses before writing a registry row", async () => {
+    const { app, deps } = harness();
+    for (const address of ["192.0.2.1", "http://192.0.2.1:3100", "192.0.2.1:3100/path", " "]) {
+      await request(app).post(path).send(body({ boardAddress: address })).expect(400);
+    }
+    expect(deps.createSite).not.toHaveBeenCalled();
+  });
+
   it("rejects http, paths and credentials in the url", async () => {
     const { app } = harness();
     await request(app).post(path).send(body({ url: "http://fleetd.internal:9100" })).expect(400);

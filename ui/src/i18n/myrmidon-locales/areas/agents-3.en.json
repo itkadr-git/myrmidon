@@ -173,6 +173,21 @@
         "configurationTab": {
           "permissions": "Permissions",
           "canCreateNewAgents": "Can create new agents",
+          "agentAccessPolicy": "Agent access policy",
+          "agentAccessPolicyHint": "These controls restrict discovery and assignment. A blocked assignment does not open an approval request.",
+          "visibility": "Visibility",
+          "discoverable": "Discoverable",
+          "private": "Private",
+          "hideFromDirectory": "Hide from default directory",
+          "assignmentPolicy": "Assignment policy",
+          "companyDefault": "Company default",
+          "protected": "Protected",
+          "blockAssignment": "Block assignment to this agent",
+          "blockAssignmentConfirm": "Block all assignments to this agent?",
+          "allowAssignmentConfirm": "Allow assignments to this agent again?",
+          "immediateEffect": "This change takes effect immediately.",
+          "confirmChange": "Confirm change",
+          "cancel": "Cancel",
           "letsThisAgentCreateOr": "Lets this agent create or hire agents. This also grants task assignment authority.",
           "canCreateImportSkills": "Can create/import skills",
           "canAssignTasks": "Can assign tasks",
@@ -448,7 +463,21 @@
       "agents": {
         "agents": {
           "selectACompanyToView": "Select a company to view agents.",
-          "viewMode": "View mode"
+          "viewMode": "View mode",
+          "selectForBulk": "Select {{name}}",
+          "clearSelection": "Clear selection",
+          "bulkApplying": "Applying…",
+          "bulkChangeModel": "Change model",
+          "bulkChangeConnection": "Change connection",
+          "bulkUnchanged": "No change",
+          "bulkSelectedCount": "{{count}} selected",
+          "bulkApplyConfirm": "Apply to {{count}} agent",
+          "bulkApplyConfirm_other": "Apply to {{count}} agents",
+          "bulkResultUpdated": "{{count}} updated",
+          "bulkResultUpdated_other": "{{count}} updated",
+          "bulkResultFailed": "{{count}} failed",
+          "bulkResultFailed_other": "{{count}} failed",
+          "bulkResultAllFailed": "Update failed"
         }
       },
       "org": {

@@ -9,11 +9,28 @@ import { issueWorkProducts, issues, type Db } from "@myrmidon/db";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { resolveGitHubAppCredential } from "../myrmidon/github-shared-identity/resolve.js";
+import { declaredReviewedHead } from "../myrmidon/review-routing/pr-policy.js";
+import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
+import {
+  type ReviewVerdictRecord,
+} from "../myrmidon/review-verdict/record.js";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { gitHubApiBase } from "./github-fetch.js";
 import { logger } from "../middleware/logger.js";
+// myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the board's public origin for
+// the check run's `details_url`. Same env-only resolution as the chat-bridge
+// links (issueService takes no options to thread config through).
+import { resolveBoardPublicBaseUrl } from "../myrmidon/agent-chat-bridge/links.js";
 
 export const REVIEW_APPROVED_LABEL = "review-approved";
+
+/**
+ * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): name of the check run the board
+ * writes on the PR head commit when a formal review decision is reached, so
+ * the review state is visible in GitHub's checks UI without reading the board.
+ * Part D (separate) grants the App the `checks:write` permission.
+ */
+export const BOARD_REVIEW_CHECK_RUN_NAME = "Board review";
 
 export const PR_APPROVAL_ACTIVITY_PROPAGATED = "myrmidon.pr_approval.propagated";
 export const PR_APPROVAL_ACTIVITY_SKIPPED = "myrmidon.pr_approval.skipped";
@@ -30,7 +47,13 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export function isApprovalOutcome(
   outcome?: string | null,
   verdictBody?: string | null,
+  verdictRecord?: ReviewVerdictRecord | null,
 ): boolean {
+  // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the structured record is
+  // authoritative when present — the decision text is not re-parsed.
+  if (verdictRecord) {
+    return verdictRecord.reviewDecision === "approved";
+  }
   if (outcome) {
     const o = outcome.trim().toLowerCase();
     if (o === "approved" || o === "approve") {
@@ -72,12 +95,14 @@ export function headMatches(
   return a.startsWith(b) || b.startsWith(a);
 }
 
-/** Extracts head sha from text (e.g. `head 1234567`). */
+/**
+ * Extracts the reviewed head sha from a verdict: the explicit `head 1234567`
+ * spelling first, then (myrmidon(OPE-11767)) the first bare sha token — the
+ * reviewers write `APPROVE PR #N <sha>`, which the explicit spelling alone
+ * never matched (`missing_reviewed_head` on PR #2449 and #2467).
+ */
 export function parseReviewedHead(text: string | null | undefined): string | null {
-  if (!text) return null;
-  const match = HEAD_SHA_PATTERN.exec(text);
-  if (match?.[1]) return match[1];
-  return null;
+  return declaredReviewedHead(text);
 }
 
 /** Extracts PR coordinates (repository and PR number) from text. */
@@ -168,6 +193,12 @@ export interface GitHubApprovalClient {
     label: string;
     token: string;
   }): Promise<void>;
+  removeLabel?(input: {
+    repository: string;
+    number: number;
+    label: string;
+    token: string;
+  }): Promise<void>;
   submitReview(input: {
     repository: string;
     number: number;
@@ -176,6 +207,33 @@ export interface GitHubApprovalClient {
     body?: string;
     token: string;
   }): Promise<{ id?: number | string; skipped?: boolean }>;
+  /**
+   * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): writes the board's own check
+   * run on the head commit. `conclusion` is "success" for an approval and
+   * "failure" for changes requested. Implementations may be absent — the
+   * propagation keeps working without the check run.
+   */
+  createCheckRun?(input: {
+    repository: string;
+    headSha: string;
+    name: string;
+    conclusion: "success" | "failure";
+    detailsUrl?: string;
+    title: string;
+    summary: string;
+    token: string;
+  }): Promise<{ id?: number | string }>;
+  /**
+   * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): lists the board's check runs
+   * on the head commit, for idempotency of repeated decisions on the same
+   * head. Implementations may be absent.
+   */
+  listCheckRuns?(input: {
+    repository: string;
+    headSha: string;
+    name: string;
+    token: string;
+  }): Promise<Array<{ id: number | string; conclusion: string | null }>>;
   listReviews?(input: {
     repository: string;
     number: number;
@@ -240,6 +298,22 @@ export function createDefaultGitHubApprovalClient(
       }
     },
 
+    async removeLabel({ repository, number, label, token }) {
+      const res = await fetchFn(
+        `${apiBase}/repos/${repository}/issues/${number}/labels/${encodeURIComponent(label)}`,
+        {
+          method: "DELETE",
+          headers: ghHeaders(token),
+        },
+      );
+      // 404: the label is not present (idempotent); treat as success.
+      if (!res.ok && res.status !== 404) {
+        const error = new Error(`GitHub removeLabel failed with HTTP ${res.status}`);
+        (error as { status?: number }).status = res.status;
+        throw error;
+      }
+    },
+
     async submitReview({ repository, number, headSha, event, body, token }) {
       const res = await fetchFn(`${apiBase}/repos/${repository}/pulls/${number}/reviews`, {
         method: "POST",
@@ -284,6 +358,56 @@ export function createDefaultGitHubApprovalClient(
           id: record.id as number | string,
           state: String(record.state ?? ""),
           commitId: typeof record.commit_id === "string" ? record.commit_id : undefined,
+        };
+      });
+    },
+
+    // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the board's check run on the
+    // PR head commit. Requires the App installation to hold `checks:write`;
+    // GitHub answers 403 (or 404) without it and the caller degrades to warn.
+    async createCheckRun({ repository, headSha, name, conclusion, detailsUrl, title, summary, token }) {
+      const res = await fetchFn(`${apiBase}/repos/${repository}/check-runs`, {
+        method: "POST",
+        headers: {
+          ...ghHeaders(token),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name,
+          head_sha: headSha,
+          status: "completed",
+          conclusion,
+          details_url: detailsUrl,
+          output: { title, summary },
+        }),
+      });
+      if (!res.ok) {
+        const error = new Error(`GitHub createCheckRun failed with HTTP ${res.status}`);
+        (error as { status?: number }).status = res.status;
+        throw error;
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      return { id: data.id as number | string | undefined };
+    },
+
+    // `filter=latest` is enough here: the idempotency check only asks whether
+    // the named check has any (completed) run on this exact commit.
+    async listCheckRuns({ repository, headSha, name, token }) {
+      const res = await fetchFn(
+        `${apiBase}/repos/${repository}/commits/${encodeURIComponent(headSha)}/check-runs` +
+          `?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`,
+        { headers: ghHeaders(token) },
+      );
+      if (!res.ok) {
+        return [];
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      const runs = Array.isArray(data.check_runs) ? data.check_runs : [];
+      return runs.map((item) => {
+        const record = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+        return {
+          id: record.id as number | string,
+          conclusion: typeof record.conclusion === "string" ? record.conclusion : null,
         };
       });
     },
@@ -373,6 +497,12 @@ export interface PropagateReviewApprovalInput {
   reviewedHeadSha?: string | null;
   decisionOutcome?: string | null;
   verdictBody?: string | null;
+  /**
+   * myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the structured verdict record
+   * extracted once at decision time. When present it is authoritative and the
+   * verdict text is not re-parsed; null keeps the legacy text fallback.
+   */
+  verdictRecord?: ReviewVerdictRecord | null;
   actor?: {
     actorType: "agent" | "user" | "system" | "plugin";
     actorId: string;
@@ -391,6 +521,10 @@ export interface PropagateReviewApprovalResult {
   reviewedHeadSha?: string;
   labelAdded?: boolean;
   reviewSubmitted?: boolean;
+  /** myrmidon(OPE-12182): the Board review check run was written on the head. */
+  checkRunCreated?: boolean;
+  /** myrmidon(OPE-12182): the check run write failed (e.g. no checks:write). */
+  checkRunFailed?: boolean;
 }
 
 export interface PropagateReviewApprovalDeps {
@@ -398,6 +532,115 @@ export interface PropagateReviewApprovalDeps {
   client?: GitHubApprovalClient;
   tokenProvider?: (companyId: string, repository?: string, identity?: { agentId?: string | null; runId?: string | null; issueId?: string | null }) => Promise<string | null>;
   retryOptions?: RetryOptions;
+  /**
+   * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): board origin for the check
+   * run's `details_url` (e.g. `https://board.example.com`); the run then links
+   * to `/issues/<id>`. Null/undefined leaves `details_url` out.
+   */
+  boardBaseUrl?: string | null;
+}
+
+/**
+ * myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): writes the board's own check run
+ * ("Board review") on the reviewed head commit — `success` after an approval,
+ * `failure` after a changes-requested decision — with `details_url` pointing at
+ * the board issue.
+ *
+ * Degradation: the permission is part D; until the App installation holds
+ * `checks:write`, GitHub answers 403/404. That is warned and journalled as
+ * `myrmidon.pr_approval.failed` (reason `check_run_failed`), never raised —
+ * the review itself already succeeded and the propagation must not fail the
+ * review flow because of a missing permission. Network/transport errors
+ * (`executeWithRetry` exhaustion) degrade the same way.
+ *
+ * Idempotency: when the client can list check runs, an existing run of the
+ * same name on the same head skips the POST, so a repeated APPROVE of one head
+ * never accumulates duplicate "Board review" runs on that commit.
+ */
+async function upsertBoardReviewCheckRun(
+  deps: PropagateReviewApprovalDeps,
+  input: PropagateReviewApprovalInput,
+  boardBaseUrl: string | null | undefined,
+  client: GitHubApprovalClient,
+  tokenProvider: NonNullable<PropagateReviewApprovalDeps["tokenProvider"]>,
+  repository: string,
+  headSha: string,
+  reviewDecision: "approved" | "changes_requested",
+): Promise<{ created: boolean; failed: boolean; skippedDuplicate: boolean }> {
+  if (typeof client.createCheckRun !== "function") return { created: false, failed: false, skippedDuplicate: false };
+
+  const token = await tokenProvider(input.companyId, repository, {
+    agentId: input.actor?.agentId ?? null,
+    runId: input.actor?.runId ?? null,
+    issueId: input.issueId ?? null,
+  });
+  if (!token) {
+    logger.warn({ repository, headSha }, "board review check run skipped: no GitHub token");
+    return { created: false, failed: false, skippedDuplicate: false };
+  }
+
+  const desiredConclusion = reviewDecision === "approved" ? "success" : "failure";
+  try {
+    if (typeof client.listCheckRuns === "function") {
+      const existing = await executeWithRetry(
+        () => client.listCheckRuns!({ repository, headSha, name: BOARD_REVIEW_CHECK_RUN_NAME, token }),
+        deps.retryOptions,
+      );
+      if (existing.some((run) => run.conclusion === desiredConclusion)) {
+        return { created: false, failed: false, skippedDuplicate: true };
+      }
+    }
+
+    const summary = reviewDecision === "approved"
+      ? "Review decision: APPROVE. The formal board review approved the pull request head."
+      : "Review decision: REQUEST CHANGES. The formal board review requested changes on the pull request head.";
+    const detailsUrl = input.issueId && boardBaseUrl
+      ? new URL(`/issues/${input.issueId}`, boardBaseUrl).toString()
+      : undefined;
+
+    await executeWithRetry(
+      () =>
+        client.createCheckRun!({
+          repository,
+          headSha,
+          name: BOARD_REVIEW_CHECK_RUN_NAME,
+          conclusion: desiredConclusion,
+          detailsUrl,
+          title: `Board review: ${reviewDecision === "approved" ? "approved" : "changes requested"}`,
+          summary,
+          token,
+        }),
+      deps.retryOptions,
+    );
+    return { created: true, failed: false, skippedDuplicate: false };
+  } catch (err) {
+    logger.warn({ err, repository, headSha, name: BOARD_REVIEW_CHECK_RUN_NAME }, "failed to create the Board review check run");
+    if (input.issueId) {
+      await logActivity(deps.db, {
+        companyId: input.companyId,
+        actorType: input.actor?.actorType ?? "system",
+        actorId: input.actor?.actorId ?? "system",
+        agentId: input.actor?.agentId ?? null,
+        runId: input.actor?.runId ?? null,
+        action: PR_APPROVAL_ACTIVITY_FAILED,
+        entityType: "issue",
+        entityId: input.issueId,
+        details: {
+          repository,
+          headSha,
+          name: BOARD_REVIEW_CHECK_RUN_NAME,
+          reason: "check_run_failed",
+          error: err instanceof Error ? err.message : String(err),
+        },
+      }).catch(() => {});
+    }
+    return { created: false, failed: true, skippedDuplicate: false };
+  }
+}
+
+/** Flat `checkRunCreated`/`checkRunFailed` fields for a propagation result. */
+function checkRunFields(outcome: { created: boolean; failed: boolean }): Pick<PropagateReviewApprovalResult, "checkRunCreated" | "checkRunFailed"> {
+  return { checkRunCreated: outcome.created, checkRunFailed: outcome.failed };
 }
 
 /**
@@ -409,11 +652,28 @@ export async function propagateReviewApprovalToPullRequest(
 ): Promise<PropagateReviewApprovalResult> {
   const client = deps.client ?? createDefaultGitHubApprovalClient();
   const tokenProvider = deps.tokenProvider ?? ((c, r, identity) => resolveGitHubTokenForApproval(deps.db, c, r, identity));
+  const boardBaseUrl = deps.boardBaseUrl ?? resolveBoardPublicBaseUrl();
 
-  // Requirement 3: Negative path verification
-  const isNonApproval =
-    (input.decisionOutcome != null && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) ||
-    (input.verdictBody != null && NON_APPROVAL_VERDICT_PATTERN.test(input.verdictBody));
+  // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): an explicit structured record
+  // wins; a record may also arrive via the issue's execution state when the
+  // caller passes state instead of a parsed record. Without a record the
+  // legacy text parsing below stays as the fallback for old tickets.
+  const verdictRecord = input.verdictRecord ?? null;
+
+  // Negative path verification
+  const isNonApproval = verdictRecord
+    ? verdictRecord.reviewDecision !== "approved"
+    : (input.decisionOutcome != null && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) ||
+      (input.verdictBody != null && NON_APPROVAL_VERDICT_PATTERN.test(input.verdictBody));
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): a REQUEST CHANGES decision
+  // still lands on GitHub — as the same check run with `conclusion: failure`
+  // on the current head — so the checks UI shows a red "Board review" instead
+  // of a stale green one. Everything past the decision below is therefore
+  // shared; only the check-run conclusion differs. `reviewDecision` names the
+  // formal outcome the check mirrors ("approved" | "changes_requested").
+  const reviewDecision: "approved" | "changes_requested" = isNonApproval
+    ? "changes_requested"
+    : "approved";
   if (isNonApproval) {
     if (input.issueId) {
       await logActivity(deps.db, {
@@ -431,13 +691,16 @@ export async function propagateReviewApprovalToPullRequest(
         },
       }).catch(() => {});
     }
-    return { success: false, action: "skipped", reason: "non_approval" };
   }
 
-  // Determine target PR coordinates and reviewed head
+  // Determine target PR coordinates and reviewed head. The structured record's
+  // head sha comes before re-parsing the verdict text (OPE-12181).
   let targetRepo = input.repository ?? null;
   let targetNumber = input.number ?? null;
-  let reviewedHead = input.reviewedHeadSha ?? parseReviewedHead(input.verdictBody) ?? input.headSha ?? null;
+  let reviewedHead = input.reviewedHeadSha ??
+    verdictRecord?.headSha ??
+    parseReviewedHead(input.verdictBody) ??
+    input.headSha ?? null;
 
   let matchedWorkProduct: typeof issueWorkProducts.$inferSelect | null = null;
 
@@ -494,7 +757,8 @@ export async function propagateReviewApprovalToPullRequest(
     }
   }
 
-  // Fall back to parsing PR from verdictBody or issue description
+  // Fall back to parsing PR from verdictBody or issue description. With a
+  // structured record the PR number comes from data first (OPE-12181).
   if ((!targetRepo || !targetNumber) && (input.verdictBody || input.issueId)) {
     let contextText = input.verdictBody ?? "";
     if (input.issueId && !contextText) {
@@ -507,6 +771,9 @@ export async function propagateReviewApprovalToPullRequest(
         contextText = issueRow?.description ?? "";
       } catch {}
     }
+    if (!targetNumber && verdictRecord?.pullRequestNumber) {
+      targetNumber = verdictRecord.pullRequestNumber;
+    }
     const parsed = parsePullRequestCoordinates(contextText, targetRepo);
     if (parsed) {
       targetRepo = parsed.repository;
@@ -516,6 +783,17 @@ export async function propagateReviewApprovalToPullRequest(
 
   if (!targetRepo || !targetNumber) {
     return { success: false, action: "skipped", reason: "no_linked_pr" };
+  }
+
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): a non-approval decision
+  // without an explicitly declared head (input field, structured verdict
+  // record) stays a silent legacy skip with no GitHub calls — the text-parsed
+  // fallback heads of old RETURN tickets are not check-run material. Only a
+  // formal decision that names the head it judged continues past the head
+  // guard below and lands the red "Board review" check there.
+  const explicitReviewedHead = input.reviewedHeadSha ?? input.headSha ?? verdictRecord?.headSha ?? null;
+  if (isNonApproval && !explicitReviewedHead) {
+    return { success: false, action: "skipped", reason: "non_approval" };
   }
 
   // Requirement 5: Authorization check
@@ -670,12 +948,42 @@ export async function propagateReviewApprovalToPullRequest(
       reviewedHeadSha: reviewedHead ?? undefined,
     };
   }
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the guard above verified the
+  // verdict's head reference matches the current PR head, so the check run
+  // lands exactly on the head the reviewer saw. GitHub's check-run API needs
+  // the full 40-character commit SHA, so post `prDetails.headSha`, never the
+  // possibly short prefix parsed from the verdict.
+  const checkRunHeadSha = prDetails.headSha;
+
+  // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): a REQUEST CHANGES decision
+  // never adds the `review-approved` label or an approving review — GitHub gets
+  // only the red "Board review" check run (conclusion: failure) on the reviewed
+  // head, so the checks UI shows the rejection instead of a stale green check.
+  if (reviewDecision === "changes_requested") {
+    const upsertOutcome = await upsertBoardReviewCheckRun(deps, input, boardBaseUrl, client, tokenProvider, targetRepo, checkRunHeadSha, reviewDecision);
+    return {
+      success: !upsertOutcome.failed,
+      action: "skipped",
+      reason: "non_approval",
+      repository: targetRepo,
+      pullRequestNumber: targetNumber,
+      currentHeadSha: prDetails.headSha,
+      reviewedHeadSha: reviewedHead ?? prDetails.headSha,
+      ...(checkRunFields(upsertOutcome)),
+    };
+  }
 
   // Requirement 4: Idempotency & Recovery
   const alreadyLabeled = prDetails.labels.includes(REVIEW_APPROVED_LABEL);
 
   // Check if an approving GitHub review is already submitted on this head
   let alreadyHasApprovedReview = false;
+  // myrmidon(OPE-12024): true when an APPROVED review is pinned to a commit
+  // that is NOT the current head — i.e. the head moved after that approval.
+  // The `review-approved` label event fired on the old head, so the label must
+  // be re-seated for the labeled-triggered hot-files-review workflow to fire
+  // on the current head (OPE-9646, PR #2352).
+  let hasApprovedReviewOnMovedHead = false;
   let canCheckReviews = false;
   if (typeof client.listReviews === "function") {
     canCheckReviews = true;
@@ -687,13 +995,49 @@ export async function propagateReviewApprovalToPullRequest(
       alreadyHasApprovedReview = existingReviews.some(
         (r) => r.state === "APPROVED" && (!r.commitId || headMatches(r.commitId, prDetails.headSha)),
       );
+      hasApprovedReviewOnMovedHead = existingReviews.some(
+        (r) => r.state === "APPROVED" && !!r.commitId && !headMatches(r.commitId, prDetails.headSha),
+      );
     } catch {
       // Best-effort check; proceed to ensure review/label
     }
   }
 
+  // myrmidon(OPE-12024): the `review-approved` label fires the labeled-triggered
+  // `myrmidon-hot-files-review` workflow, which sets a required status on the
+  // commit that carries the label event.  When the PR head moved after an
+  // earlier approval (force-push / rebuild), the label sits on the old head and
+  // the new head never gets the required status — GitHub blocks the merge
+  // (OPE-9646, PR #2352).  Re-seat the label: remove it, then add it again so
+  // the labeled event fires on the current head.  Only re-seat when a review
+  // approval actually exists on an older head — otherwise every propagation
+  // cycle would churn the label (remove+add) even though nothing moved.
+  let labelReseated = false;
+  if (
+    alreadyLabeled &&
+    canCheckReviews &&
+    alreadyHasApprovedReview &&
+    hasApprovedReviewOnMovedHead &&
+    typeof client.removeLabel === "function"
+  ) {
+    try {
+      await executeWithRetry(
+        () => client.removeLabel!({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+        deps.retryOptions,
+      );
+      await executeWithRetry(
+        () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+        deps.retryOptions,
+      );
+      labelReseated = true;
+    } catch (err) {
+      logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to reseat review-approved label on moved head");
+    }
+  }
+
   // If already labeled, and either client cannot inspect reviews or an approving review is already present: complete no-op
-  if (alreadyLabeled && (!canCheckReviews || alreadyHasApprovedReview)) {
+  if (alreadyLabeled && !labelReseated && (!canCheckReviews || alreadyHasApprovedReview)) {
+    const upsertOutcome = await upsertBoardReviewCheckRun(deps, input, boardBaseUrl, client, tokenProvider, targetRepo, checkRunHeadSha, reviewDecision);
     return {
       success: true,
       action: "noop",
@@ -702,20 +1046,26 @@ export async function propagateReviewApprovalToPullRequest(
       pullRequestNumber: targetNumber,
       currentHeadSha: prDetails.headSha,
       reviewedHeadSha: reviewedHead ?? prDetails.headSha,
+      ...(checkRunFields(upsertOutcome)),
     };
   }
 
   // Requirement 1: Tag with review-approved and/or submit approving PR review
   let labelAdded = false;
-  if (!alreadyLabeled) {
-    try {
-      await executeWithRetry(
-        () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
-        deps.retryOptions,
-      );
+  if (!alreadyLabeled || labelReseated) {
+    if (!alreadyLabeled) {
+      try {
+        await executeWithRetry(
+          () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+          deps.retryOptions,
+        );
+        labelAdded = true;
+      } catch (err) {
+        logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to add review-approved label to PR");
+      }
+    } else {
+      // The label was just reseated (removed + re-added) on the current head.
       labelAdded = true;
-    } catch (err) {
-      logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to add review-approved label to PR");
     }
   }
 
@@ -764,6 +1114,7 @@ export async function propagateReviewApprovalToPullRequest(
   }
 
   // Requirement 5: Audit trail in activity log
+  const upsertOutcome = await upsertBoardReviewCheckRun(deps, input, boardBaseUrl, client, tokenProvider, targetRepo, checkRunHeadSha, reviewDecision);
   if (input.issueId) {
     await logActivity(deps.db, {
       companyId: input.companyId,
@@ -781,6 +1132,8 @@ export async function propagateReviewApprovalToPullRequest(
         reviewedHeadSha: reviewedHead ?? prDetails.headSha,
         labelAdded,
         reviewSubmitted,
+        checkRunCreated: upsertOutcome.created,
+        checkRunFailed: upsertOutcome.failed,
       },
     }).catch(() => {});
   }
@@ -794,13 +1147,30 @@ export async function propagateReviewApprovalToPullRequest(
     reviewedHeadSha: reviewedHead ?? prDetails.headSha,
     labelAdded,
     reviewSubmitted,
+    ...(checkRunFields(upsertOutcome)),
   };
 }
 
-/** Convenience wrapper that uses default dependencies for immediate invocation. */
+/**
+ * Convenience wrapper that uses default dependencies for immediate invocation.
+ *
+ * myrmidon(OPE-11767): an approval is also the moment the board may merge the
+ * PR itself (CI can already be green). The merge trigger is told once the
+ * propagation settled — whatever it answered: the board's merge does not
+ * depend on the label/review the propagation writes on GitHub. A listener
+ * failure never reaches the caller.
+ */
 export async function triggerReviewApprovalPropagation(
   db: Db,
   input: PropagateReviewApprovalInput,
 ): Promise<PropagateReviewApprovalResult> {
-  return propagateReviewApprovalToPullRequest({ db }, input);
+  try {
+    return await propagateReviewApprovalToPullRequest({ db }, input);
+  } finally {
+    if (input.issueId && (input.verdictRecord
+      ? input.verdictRecord.reviewDecision === "approved"
+      : (input.decisionOutcome == null || isApprovalOutcome(input.decisionOutcome, input.verdictBody)))) {
+      notifyBoardMergeTrigger({ companyId: input.companyId, issueId: input.issueId, source: "review_approved" });
+    }
+  }
 }

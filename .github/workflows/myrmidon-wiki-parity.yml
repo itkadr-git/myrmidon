@@ -1,0 +1,47 @@
+name: Myrmidon wiki parity
+
+# Guards the RU/EN parity of docs/wiki/. The wiki is bilingual: every
+# docs/wiki/X.md has a docs/wiki/X.ru.md translation, and the two must keep
+# the same section structure (same number of `##` and `###` headings;
+# wording and order are free — a translation may rephrase). This workflow
+# fails when a PR adds or removes a page on one side only, or when a pair's
+# heading counts drift.
+#
+# Triggered only when docs/wiki/** changes, so ordinary code PRs pay nothing.
+# The merge_group event has no paths filter: the parity check is cheap and
+# runs on every merge-queue candidate so a combination of two green PRs
+# cannot land a broken wiki either.
+
+on:
+  pull_request:
+    paths: ["docs/wiki/**"]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+    paths: ["docs/wiki/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: myrmidon-wiki-parity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    name: check RU/EN wiki parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run wiki parity check
+        run: node .github/scripts/check-wiki-parity.mjs docs/wiki
+
+      - name: Run wiki parity unit tests
+        run: node --test .github/scripts/tests/check-wiki-parity.test.mjs

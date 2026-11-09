@@ -22,6 +22,7 @@ import {
   containerTemplateInspectExpectation,
   CONTAINER_TEMPLATE_INSPECT_FIELDS,
   demuxDockerLogs,
+  describeFailure,
   dockerBotContainerDriver,
   readDockerDriverConfig,
   BOT_VOLUME_ROOT_ENV,
@@ -29,6 +30,7 @@ import {
   serializeAppliedMarker,
   templateDriftFields,
   type DockerDriverConfig,
+  type DockerHttpResponse,
 } from "./docker-driver.js";
 import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
 import { reconcileBot, type BotMaintenancePort } from "./reconciler.js";
@@ -2215,5 +2217,35 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       const after = daemon.containers.get("myrmidon-bot-agent-a")!;
       expect(after.body.HostConfig.Memory).toBe(1024 * 1024 * 1024);
     });
+  });
+});
+
+describe("describeFailure reason-code mapping (OPE-12383)", () => {
+  const res = (message: string, status = 502): DockerHttpResponse => ({
+    status,
+    body: Buffer.from(JSON.stringify({ message })),
+    headers: {},
+  });
+
+  it("maps config_read_only to the operator-facing read-only-config fault, not a bare upstream error", () => {
+    const err = describeFailure("update resource ceilings for fb67e88b", res("dockergate: denied (config_read_only)"));
+    expect(err.message).toMatch(/resource ceilings cannot be changed/);
+    expect(err.message).toMatch(/read-only mount/);
+    expect(err.message).toMatch(/limits-override/);
+  });
+
+  it("keeps the platform-ceiling mapping (OPE-10565)", () => {
+    const err = describeFailure("update resource ceilings for fb67e88b", res("dockergate: denied (limit_exceeds_ceiling)"));
+    expect(err.message).toMatch(/requested resource limits exceed platform ceiling/);
+  });
+
+  it("falls back to the raw status and body for unknown reason codes", () => {
+    const err = describeFailure("update resource ceilings for fb67e88b", res("dockergate: denied (tar_syntax)"));
+    expect(err.message).toBe("update resource ceilings for fb67e88b failed: 502 {\"message\":\"dockergate: denied (tar_syntax)\"}");
+  });
+
+  it("tolerates a non-JSON body", () => {
+    const err = describeFailure("update resource ceilings for fb67e88b", { status: 500, body: Buffer.from("boom"), headers: {} });
+    expect(err.message).toBe("update resource ceilings for fb67e88b failed: 500 boom");
   });
 });

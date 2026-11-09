@@ -294,7 +294,7 @@ func (g *Gate) Reload() {
 	if g.opt.ConfigPath == "" {
 		return
 	}
-	cfg, hash, err := config.Load(g.opt.ConfigPath)
+	cfg, hash, err := config.LoadForRuntime(g.opt.ConfigPath)
 	if err != nil {
 		g.log.Write(Line{Level: LevelError, Event: "config_reload_failed", Detail: "invalid"})
 		return

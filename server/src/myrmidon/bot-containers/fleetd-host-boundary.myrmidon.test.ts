@@ -393,6 +393,9 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
     expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 8080)).toThrow(
       /fleetd url must be http:\/\//,
     );
+    expect(
+      fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 8080, { source: "registry" }),
+    ).toBe("http://fleetd.internal:8080");
   });
 
   it("parseFleetHosts safely parses entries and rejects non-http URLs", () => {

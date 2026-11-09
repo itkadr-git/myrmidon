@@ -830,6 +830,9 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  filesystemScope?: "workspace";
+  networkScope?: "deny" | "allowlist";
+  networkAllowlist?: string;
   defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
@@ -839,6 +842,9 @@ export interface CreateConfigValues {
   // openclaw_gateway adapter fields
   authToken?: string;
   agentId?: string;
+  clientId?: string;
+  clientMode?: string;
+  clientVersion?: string;
   sessionKeyStrategy?: string;
   sessionKey?: string;
   timeoutSec?: number;
