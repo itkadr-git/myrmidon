@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { fleetRoutingDriver, type FleetRoutingDeps, type RoutedBotAgent } from "./fleetd-routing.js";
-import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, BotSkillDirectory } from "./driver.js";
+import { CLEANUP_UNSUPPORTED_MESSAGE, type BotContainerDriver, type BotContainerSpec, type BotContainerStatus, type BotSkillDirectory } from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 
 // Everything here is placeholder data: fake bot keys and statuses.
@@ -56,6 +56,9 @@ function recordingDriver(name: string): BotContainerDriver & { calls: string[] }
     },
     async stop(botKey) {
       calls.push(`${name}:stop:${botKey}`);
+    },
+    async cleanup(botKey) {
+      calls.push(`${name}:cleanup:${botKey}`);
     },
   };
   return Object.assign(driver, { calls });
@@ -346,9 +349,28 @@ describe("myrmidon(IDLE-STOP) fleet routing — optional driver methods", () => 
     // The router is typed Required<BotContainerDriver>, so a method added to the interface fails
     // the build until it is routed; this is the runtime half of the same guard.
     const routed = fleetRoutingDriver({ local: recordingDriver("local"), fleet: new Map() }, () => undefined);
-    for (const method of ["listRunning", "updateResources", "statusWithDrift", "stopIdle", "readCloneReport", "readBotSkills"] as const) {
+    for (const method of ["listRunning", "updateResources", "statusWithDrift", "stopIdle", "readCloneReport", "readBotSkills", "cleanup"] as const) {
       expect(typeof routed[method], method).toBe("function");
     }
+  });
+
+  describe("cleanup", () => {
+    it("a bot on a site goes to that site's cleanup (OPE-12477)", async () => {
+      const fleetA = fullRecordingDriver("fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      await routed.cleanup("bot-fleet");
+      expect(fleetA.calls).toEqual(["fleet-a:cleanup:bot-fleet"]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("a site driver without cleanup fails with the cleanup 'not supported' error and nothing is cleaned", async () => {
+      const fleetA = plainDriver("fleet-a");
+      delete (fleetA as Partial<Recording>).cleanup;
+      const { local, routed } = twoHosts(fleetA);
+      await expect(routed.cleanup("bot-fleet")).rejects.toThrow(CLEANUP_UNSUPPORTED_MESSAGE);
+      expect(fleetA.calls).toEqual([]);
+      expect(local.calls).toEqual([]);
+    });
   });
 
   describe("stopIdle", () => {

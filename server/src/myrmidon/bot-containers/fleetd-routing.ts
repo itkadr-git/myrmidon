@@ -32,6 +32,7 @@
 
 import { cardFleetHost, fleetSiteKey, type FleetHostConfig } from "./fleetd-hosts.js";
 import {
+  CLEANUP_UNSUPPORTED_MESSAGE,
   IDLE_STOP_UNSUPPORTED_MESSAGE,
   type BotContainerDriver,
   type BotContainerSpec,
@@ -184,6 +185,7 @@ export function fleetRoutingDriver(
     },
     async cleanup(botKey: string): Promise<void> {
       const driver = await driverFor(deps, agentOf(botKey));
+      if (!driver.cleanup) throw new Error(CLEANUP_UNSUPPORTED_MESSAGE);
       await driver.cleanup(botKey);
     },
     async stopIdle(botKey: string): Promise<void> {

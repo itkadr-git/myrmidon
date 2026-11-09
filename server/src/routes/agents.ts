@@ -109,6 +109,7 @@ import {
 } from "../services/index.js";
 import type { AgentCasteDirectoryPort } from "../services/agents.js";
 import { botKeyForAgent } from "../myrmidon/bot-containers/agent-config.js";
+import { CLEANUP_UNSUPPORTED_MESSAGE } from "../myrmidon/bot-containers/driver.js";
 import { getBotContainerRuntime } from "../myrmidon/bot-containers/routes-wiring.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { CHAT_INBOUND_WAKE_KEY_PREFIX } from "../myrmidon/chat-holds/chat-backed.js"; // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
@@ -606,6 +607,7 @@ export function agentRoutes(
       // An enabled card without a registered runtime is not safe to delete:
       // the container may still exist on a site while startup is unavailable.
       if (!runtime) throw new Error("bot container runtime is not configured; refusing lifecycle cleanup");
+      if (!runtime.driver.cleanup) throw new Error(CLEANUP_UNSUPPORTED_MESSAGE);
       await runtime.driver.cleanup(botKey);
     },
   });

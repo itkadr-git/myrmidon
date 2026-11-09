@@ -191,7 +191,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
     try {
       const driver = fleetdBotContainerDriver(config);
       await driver.cleanup("bot-a");
-      await driver.cleanup("bot%2Fa");
+      await driver.cleanup("bot/a");
       expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
         "POST /v1/bots/bot-a/cleanup",
         "POST /v1/bots/bot%2Fa/cleanup",
