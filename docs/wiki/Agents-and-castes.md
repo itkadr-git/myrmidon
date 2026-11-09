@@ -107,6 +107,13 @@ The board watches its agents and repairs what breaks:
   assignee is woken — the board does not wait for a hard timeout to notice
   a stuck run.
 
+## Lifecycle: termination vs deletion and financial history
+
+Agent lifecycle includes pause, resume, clear error, termination, and deletion:
+
+- **Termination** (`POST /api/agents/:id/terminate`): Permanently deactivates an agent. Heartbeats are disabled, but the agent's historical records, tasks, run logs, and financial records are preserved for auditing.
+- **Deletion** (`DELETE /api/agents/:id`): Completely removes an agent record. To guarantee financial history integrity and auditability, an agent with recorded expenses (`cost_events`) cannot be deleted: the API returns `HTTP 409 Conflict` with code `agent_has_cost_events` and message instructing to terminate the agent instead. Similarly, if any other records in the database still reference the agent, foreign-key violations return `HTTP 409 Conflict` with code `agent_referenced` instead of a 500 error.
+
 ## The OMP runtime image
 
 The standalone `agent-runtime-omp` image runs `omp` directly on Bun 1.4.3 with
