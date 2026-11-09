@@ -2124,11 +2124,46 @@ exit 0
       assert.match(out, /COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten/);
       assert.match(out, /anchor had: docker-compose\.yml docker-compose\.prod\.yml $/m);
       assert.match(out, /live label: docker-compose\.yml docker-compose\.prod\.yml docker-compose\.myrmidon-dockergate\.yml/);
+      // the §1 prose snapshot follows the same live set (the review criterion:
+      // the human-readable list must not stay stale while the block moves)
+      assert.match(out, /§1 prose snapshot: the fragment list follows the same live set/);
       const updated = read(path.join(sb.dir, "checklist.md"));
       assert.match(updated, /## §1\. Набор docker-compose файлов/);
       assert.match(updated, /В боевом наборе используются фрагменты/);
+      // the prose list now carries all three live fragments, in label order
+      assert.match(updated, /В боевом наборе используются фрагменты:\n- `docker-compose\.yml`\n- `docker-compose\.prod\.yml`\n- `docker-compose\.myrmidon-dockergate\.yml`\n/);
+      assert.doesNotMatch(updated, /- `docker-compose\.myrmidon-dockergate\.yml`\n- `docker-compose\.yml`/);
       assert.match(updated, /   <!-- board-mount-set:begin -->\n   docker-compose\.yml\n   docker-compose\.prod\.yml\n   docker-compose\.myrmidon-dockergate\.yml\n   <!-- board-mount-set:end -->/);
       assert.match(updated, /Дальнейшие шаги регламента\.\.\./);
+    });
+
+    it("rewrites only the marker block and prose list; unrelated fragment lists elsewhere stay untouched", () => {
+      const sb = sandbox();
+      const body = `# checklist
+Не наш список (не трогаем):
+- \`docker-compose.yml\`
+- \`docker-compose.old-fragment.yml\`
+
+<!-- board-mount-set:begin -->
+docker-compose.yml
+<!-- board-mount-set:end -->
+
+Правило §1 (без заголовка): фрагменты остаются как были:
+- \`docker-compose.yml\`
+- \`docker-compose.prod.yml\`
+`;
+      fs.writeFileSync(path.join(sb.dir, "checklist.md"), body);
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.myrmidon-dockergate.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten/);
+      assert.doesNotMatch(out, /§1 prose snapshot/);
+      const updated = read(path.join(sb.dir, "checklist.md"));
+      // the marker block itself moved to the live set
+      assert.match(updated, /board-mount-set:begin -->\ndocker-compose\.yml\ndocker-compose\.myrmidon-dockergate\.yml\n<!-- board-mount-set:end/);
+      // every list outside the recognized §1 snapshot shape is byte-for-byte
+      assert.match(updated, /Не наш список \(не трогаем\):\n- `docker-compose\.yml`\n- `docker-compose\.old-fragment\.yml`/);
+      assert.match(updated, /Правило §1 \(без заголовка\): фрагменты остаются как были:\n- `docker-compose\.yml`\n- `docker-compose\.prod\.yml`\n$/);
     });
   });
 });

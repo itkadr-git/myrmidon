@@ -978,6 +978,11 @@ record_history() {
 # compares it (by basename, the way the watchdog compares) with the fragment
 # list in the anchor block, and when they differ rewrites the block and commits
 # the anchor file with one commit whose message names the deploy reference.
+# The production checklist also carries a human-readable snapshot in §1 (the
+# `## §1. Набор docker-compose файлов` heading with its Markdown list); when
+# that known heading follows the block, its list is rebuilt from the same live
+# label — the whole snapshot (machine-readable block and prose) moves in the
+# one commit, and every other line of the file stays byte-for-byte intact.
 #
 # Settings (all optional, see deploy.env.example; empty = the step is skipped
 # with a log line, so an installation without an anchor still deploys):
@@ -1052,13 +1057,61 @@ sync_compose_set_anchor() {
   # line between the markers exactly as the format expects. The live label
   # carries absolute paths; the block keeps them verbatim (the watchdog's
   # parser accepts paths, and the project directory is the label's own).
-  local tmp printed=0 anchor_dir in_block=0 indent=""
+  local tmp printed=0 anchor_dir in_block=0 indent="" prose_written=0 prose_indent=""
+  # The production checklist also carries a human-readable snapshot in §1.
+  # When that known heading is present, keep its Markdown list synchronized
+  # with the same live label; unrelated prose remains byte-for-byte intact.
+  emit_prose_snapshot() {
+    local frag
+    while IFS= read -r frag; do
+      [[ -z "$frag" ]] && continue
+      frag="${frag##*/}"
+      printf '%s- `%s`\n' "$prose_indent" "$frag"
+    done < <(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  }
+  # The §1 prose snapshot is detected on the ORIGINAL file before the rewrite:
+  # the production layout puts the exact `## §1.` heading before the block and
+  # the Markdown fragment list directly above it (blank/fence lines between the
+  # list and the block are allowed). Only that adjacent list is the snapshot —
+  # any other Markdown list in the file is not ours to touch. Without the exact
+  # heading or the adjacent list the prose is left byte-for-byte alone.
+  local prose_start=0 prose_end=0
+  local begin_no heading_no i l
+  # grep exits 1 on no match (a checklist without the §1 heading is the normal
+  # shape too); under the caller's pipefail that must not kill the deploy.
+  begin_no="$(grep -n 'board-mount-set:begin' "$anchor_file" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
+  heading_no="$(grep -nF -- '## §1. Набор docker-compose файлов' "$anchor_file" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
+  if [[ -n "$begin_no" && -n "$heading_no" ]] && (( heading_no < begin_no )); then
+    # walk up from the block over blank/fence lines to the closest list item,
+    # then over the whole run of list items to the FIRST one
+    i=$(( begin_no - 1 ))
+    l=""
+    while (( i > heading_no )); do
+      l="$(sed -n "${i}p" "$anchor_file")"
+      if [[ -z "${l//[[:space:]]/}" || "$l" == *'```'* ]]; then
+        i=$(( i - 1 ))
+        continue
+      fi
+      break
+    done
+    if [[ "$l" =~ ^([[:space:]]*)-[[:space:]]+\` ]]; then
+      prose_end="$i"
+      prose_indent="${BASH_REMATCH[1]}"
+      prose_start="$i"
+      while (( prose_start - 1 > heading_no )) \
+        && [[ "$(sed -n "$(( prose_start - 1 ))p" "$anchor_file")" =~ ^[[:space:]]*-[[:space:]]+\` ]]; do
+        prose_start=$(( prose_start - 1 ))
+      done
+    fi
+  fi
   # the previous set, read BEFORE the file is replaced (for the log line below)
   local anchor_had
   anchor_had="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | tr '\n' ' ')"
   anchor_dir="$(dirname "$anchor_file")"
   tmp="$(mktemp "$anchor_file.XXXXXX")"
+  local file_line=0
   while IFS= read -r line || [[ -n "$line" ]]; do
+    file_line=$(( file_line + 1 ))
     if [[ "$line" == *board-mount-set:begin* ]]; then
       printf '%s\n' "$line" >>"$tmp"
       indent=""
@@ -1088,6 +1141,11 @@ sync_compose_set_anchor() {
       fi
       continue
     fi
+    if [[ "$prose_written" == "0" && "$prose_start" != "0" && "$file_line" == "$prose_start" ]]; then
+      emit_prose_snapshot >>"$tmp"
+      prose_written=1
+      continue
+    fi
     printf '%s\n' "$line" >>"$tmp"
   done <"$anchor_file"
   if [[ "$printed" != "1" ]]; then
@@ -1109,6 +1167,9 @@ sync_compose_set_anchor() {
   # shown in the file's / the label's own order (the comparison above is sorted)
   log "  anchor had: $anchor_had"
   log "  live label: $(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | tr '\n' ' ')"
+  if [[ "$prose_written" == "1" ]]; then
+    log "  §1 prose snapshot: the fragment list follows the same live set"
+  fi
   # One commit naming the deploy, when the anchor lives in a git repository.
   if command -v git >/dev/null 2>&1 && [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" && -d "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT/.git" ]]; then
     local rel msg
