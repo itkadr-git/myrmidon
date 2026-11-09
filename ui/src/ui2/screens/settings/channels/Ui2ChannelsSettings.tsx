@@ -9,6 +9,7 @@ import { useState, type ReactNode } from "react";
 import { Ui2Page } from "../../../components/ui2Primitives";
 import { useUi2I18n } from "../../../i18n/Ui2I18n";
 import { Ui2VoiceSttTab } from "./Ui2VoiceSttTab";
+import { Ui2ChannelAccessTabContainer } from "./Ui2ChannelAccessTabContainer";
 
 export interface Ui2ChannelTab {
   id: string;
@@ -22,6 +23,11 @@ export function getDefaultChannelsTabs(t: (key: any) => string): Ui2ChannelTab[]
       id: "voice",
       label: t("ui2.settings.channels.tabs.voice"),
       content: <Ui2VoiceSttTab />,
+    },
+    {
+      id: "access",
+      label: t("ui2.settings.channels.tabs.access"),
+      content: <Ui2ChannelAccessTabContainer />,
     },
   ];
 }

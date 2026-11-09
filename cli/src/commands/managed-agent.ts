@@ -1,5 +1,6 @@
 import { Command } from "commander";
 
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import {
   addCommonClientOptions,
   apiPath,
@@ -164,7 +165,7 @@ function resourceByProfile(
   );
   if (matches.length > 1) {
     throw new Error(
-      `Multiple Anthropic ${resourceLabel} resources use Paperclip profile ${profileKey}; pass an explicit resource ID`,
+      `Multiple Anthropic ${resourceLabel} resources use ${PRODUCT_NAME} profile ${profileKey}; pass an explicit resource ID`,
     );
   }
   return matches[0] ?? null;
@@ -189,7 +190,7 @@ export function assertSafeManagedEnvironment(environment: Record<string, unknown
     || installed.length > 0
   ) {
     throw new Error(
-      "Existing Anthropic Environment does not match Paperclip's no-network, no-package profile",
+      `Existing Anthropic Environment does not match ${PRODUCT_NAME}'s no-network, no-package profile`,
     );
   }
 }

@@ -44,10 +44,11 @@ export function idleStopSettingsRoutes(db: Db, invalidateConfigCache?: () => voi
         ...(await Promise.all(
           chunk.map(async (row) => {
             const container = (row.adapterConfig as { container?: { idleStopMode?: unknown } } | null)?.container;
+            const savedMode = container?.idleStopMode;
             const bot = {
               agentId: row.id,
               name: row.name,
-              mode: container?.idleStopMode === "always_on" ? ("always_on" as const) : ("on_demand" as const),
+              mode: savedMode === "always_on" || savedMode === "off" ? (savedMode as "always_on" | "off") : ("on_demand" as const),
               state: null as string | null,
               idleStopped: false,
               lastStoppedAt: null as string | null,

@@ -106,6 +106,14 @@ type config struct {
 	GatewayPortEnd   int           `json:"gatewayPortEnd,omitempty"`
 	Bots             []bot         `json:"bots"`
 	Memory           *memoryConfig `json:"memory,omitempty"`
+
+	// WritableMountRoots lists the host directories in which an extra mount may
+	// be read-write (for example a shared package cache). A mount without
+	// readOnly is accepted only when its source, with symlinks resolved, is
+	// inside one of them. As for every extra mount, the source as written must
+	// also be inside AllowedMounts. Empty (the default): every extra mount is
+	// read-only.
+	WritableMountRoots []string `json:"writableMountRoots,omitempty"`
 }
 
 type bot struct {
@@ -271,6 +279,14 @@ func validate(cfg *config) error {
 		}
 		if ip.IsUnspecified() {
 			return fmt.Errorf("gatewayBindIp %q is unspecified (0.0.0.0 or :: is not allowed; must be a specific interface IP or loopback)", cfg.GatewayBindIP)
+		}
+	}
+	for i, root := range cfg.WritableMountRoots {
+		if !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" || strings.ContainsAny(root, ":,") {
+			return fmt.Errorf("writableMountRoots[%d] %q must be a clean absolute path other than /", i, root)
+		}
+		if cfg.VolumeRoot != "" && (pathWithin(cfg.VolumeRoot, root) || pathWithin(root, cfg.VolumeRoot)) {
+			return fmt.Errorf("writableMountRoots[%d] %q overlaps volumeRoot", i, root)
 		}
 	}
 	if len(cfg.Bots) == 0 {
