@@ -76,6 +76,12 @@ export interface BotContainerSpec {
  */
 export type BotContainerState = "running" | "stopped" | "missing" | "unhealthy";
 
+export interface BotContainerLimits {
+  memoryMb: number;
+  cpus: number;
+  pidsLimit: number;
+}
+
 export interface BotContainerStatus {
   botKey: string;
   state: BotContainerState;
@@ -110,6 +116,7 @@ export interface BotContainerStatus {
   memoryMb?: number;
   cpus?: number;
   pidsLimit?: number;
+  lastDenial?: string | null;
 }
 
 /** One template field whose live value (the container's inspect) no longer

@@ -23,6 +23,19 @@ export type BotImageTracking =
   | { category: "pinned"; image: string | null; reason: string }
   | { category: "not_applicable"; image: null; reason: string };
 
+export interface BotContainerLimits {
+  memoryMb: number;
+  cpus: number;
+  pidsLimit: number;
+}
+
+export interface BotContainerLimitsStatus {
+  requested: BotContainerLimits;
+  actual: BotContainerLimits | null;
+  diverged: boolean;
+  reason: string | null;
+}
+
 export interface BotContainerStatus {
   /** The instance switch for bot containers is on. */
   enabled: boolean;
@@ -66,6 +79,8 @@ export interface BotContainerStatus {
    *  the agent's busy runs to drain (open maintenance window), the ISO time the
    *  window opened; null when nothing is pending. */
   profileUpdatePendingSince: string | null;
+  /** myrmidon(OPE-12337): requested card limits against actual container limits and denial reason. */
+  limits?: BotContainerLimitsStatus | null;
 }
 
 export type BotContainerApplyOutcome =

@@ -858,3 +858,12 @@ export {
 } from "./site-agent-security-harness.js";
 export { generateEphemeralTestPki, cleanupTestPki, resolveAllowedScratchDir, type TestPkiArtifacts } from "./site-agent-pki.js";
 
+
+export {
+  botContainerRoutes,
+  buildBotContainerItemStatus,
+  type BotContainerLimitsStatus,
+  type BotContainerItemStatus,
+  type BotContainerStatusResponse,
+} from "./routes.js";
+export { type BotContainerLimits, type BotContainerStatus } from "./driver.js";

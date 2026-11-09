@@ -419,6 +419,32 @@ export function AgentCardContainerFieldsView({
               })}
             </p>
           )}
+          {/* myrmidon(OPE-12337): display discrepancy when running container limits differ from card */}
+          {status?.limits?.diverged && (
+            <div
+              className="mt-1.5 rounded border border-amber-400/40 bg-amber-400/5 p-2 text-xs text-amber-400"
+              data-testid="myrmidon-bot-container-limits-diverged"
+            >
+              <div className="font-medium">
+                {t("area.settings-agent-card.agent-card-container-fields.limitsDivergedTitle")}
+              </div>
+              <div className="mt-0.5 text-muted-foreground">
+                {t("area.settings-agent-card.agent-card-container-fields.limitsDivergedDetail", {
+                  requestedMem: status.limits.requested.memoryMb,
+                  actualMem: status.limits.actual?.memoryMb ?? "-",
+                  requestedCpus: status.limits.requested.cpus,
+                  actualCpus: status.limits.actual?.cpus ?? "-",
+                  requestedPids: status.limits.requested.pidsLimit,
+                  actualPids: status.limits.actual?.pidsLimit ?? "-",
+                })}
+              </div>
+              {status.limits.reason && (
+                <div className="mt-0.5 text-amber-400/90" data-testid="myrmidon-bot-container-limits-reason">
+                  {status.limits.reason}
+                </div>
+              )}
+            </div>
+          )}
           {feedback && (
             <p
               role="status"
