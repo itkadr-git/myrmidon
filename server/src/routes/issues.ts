@@ -50,6 +50,7 @@ import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmido
 import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
+  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
 import {
@@ -14635,7 +14636,7 @@ export function issueRoutes(
           companyId: existing.companyId,
           issueId: existing.id,
         });
-        if (ci.state === "pending" || ci.state === "unknown") {
+        if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -15733,7 +15734,7 @@ export function issueRoutes(
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
-              if (ci.state === "pending" || ci.state === "unknown") {
+              if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
