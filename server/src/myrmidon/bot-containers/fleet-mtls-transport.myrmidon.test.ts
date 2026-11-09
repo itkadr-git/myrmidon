@@ -81,7 +81,7 @@ describe("fleet mTLS transport wiring", () => {
         mtls: false,
       };
       const transports = new Map<string, FleetSiteTransport>();
-      transports.set(`${COMPANY_ID}:remote-vm1`, incompleteTransport);
+      transports.set(`${COMPANY_ID}/remote-vm1`, incompleteTransport);
 
       const manager: FleetClientManager = {
         getClients: () => new Map(),
@@ -115,7 +115,7 @@ describe("fleet mTLS transport wiring", () => {
         mtls: true,
       };
       const transports = new Map<string, FleetSiteTransport>();
-      transports.set(`${COMPANY_ID}:remote-vm1`, validTransport);
+      transports.set(`${COMPANY_ID}/remote-vm1`, validTransport);
 
       const manager: FleetClientManager = {
         getClients: () => new Map(),
@@ -287,10 +287,10 @@ describe("fleet mTLS transport wiring", () => {
       };
 
       const transports = new Map<string, FleetSiteTransport>();
-      transports.set(`${COMPANY_ID}:remote-vm1`, validTransport);
+      transports.set(`${COMPANY_ID}/remote-vm1`, validTransport);
 
       const clients = new Map<string, any>();
-      clients.set(`${COMPANY_ID}:remote-vm1`, {
+      clients.set(`${COMPANY_ID}/remote-vm1`, {
         restart: restartSpy,
         stop: stopSpy,
       });
@@ -336,7 +336,7 @@ describe("fleet mTLS transport wiring", () => {
       };
 
       const transports = new Map<string, FleetSiteTransport>();
-      transports.set(`${COMPANY_ID}:remote-vm1`, incompleteTransport);
+      transports.set(`${COMPANY_ID}/remote-vm1`, incompleteTransport);
 
       const manager: FleetClientManager = {
         getClients: () => new Map(),
@@ -371,7 +371,7 @@ describe("fleet mTLS transport wiring", () => {
       };
 
       const transports = new Map<string, FleetSiteTransport>();
-      transports.set(`${COMPANY_ID}:remote-vm1`, incompleteTransport);
+      transports.set(`${COMPANY_ID}/remote-vm1`, incompleteTransport);
 
       const manager: FleetClientManager = {
         getClients: () => new Map(),

@@ -31,6 +31,14 @@
 //  6. with no eligible reviewer/steward the PR raises a `no_reviewer` /
 //     `no_steward` attention card carrying its coordinates.
 //
+// myrmidon(OPE-11767): the last step of the pass is the board-side merge
+// (board-merge.ts). A task whose review stage is approved and whose pull
+// request is green and mergeable on the approved head is merged by the board
+// itself through the shared GitHub App identity; a conflict after the approval
+// sends the task back to its implementer. The same evaluation also runs the
+// moment a review is approved or a CI run completes (`mergeOnEvent`, fed by
+// merge-trigger.ts); this pass is the safety net with a per-pass merge cap.
+//
 // The sweep is idempotent: the assignment re-checks its premise under a row
 // lock, so a second pass (or a racing human) never double-assigns. The PR lane
 // re-checks the work-product coverage inside its guarded create path, and a
@@ -79,9 +87,12 @@ import {
   shouldRouteOpenPrToReview,
 } from "./pr-policy.js";
 import type { PullRequestHeadResolver } from "./github.js";
+import { createBoardMerger, type BoardMergePassResult } from "./board-merge.js";
+import type { BoardMergeClient } from "./github-board-merge.js";
+import type { BoardMergeTriggerEvent } from "./merge-trigger.js";
 import type { InReviewIssueRow, ReviewRoutingStore } from "./store.js";
-import { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
-export { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+import { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+export { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 
 export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
@@ -132,6 +143,11 @@ export interface ReviewRoutingSweepResult {
   prSuperseded: number;
   /** Pull request review approvals propagated natively to GitHub. */
   prApprovalsPropagated: number;
+  // --- Board-side merge (OPE-11767) ------------------------------------------
+  /** Approved pull requests the board merged in this pass. */
+  boardMerged: number;
+  /** Approved tasks sent back to their implementer (conflict / behind main). */
+  boardReturned: number;
 }
 
 export interface ReviewRoutingSweepDeps {
@@ -139,6 +155,11 @@ export interface ReviewRoutingSweepDeps {
   readSettings: () => Promise<ReviewRoutingSettings>;
   /** GitHub head resolver; without it the PR lane stays inert (task lane only). */
   prResolver?: PullRequestHeadResolver;
+  /**
+   * GitHub client of the board-side merge (OPE-11767). Without it the merge
+   * step stays inert; with it, `boardMerge.enabled` (default on) decides.
+   */
+  boardMerge?: BoardMergeClient;
   /** PR approval propagator (propagates board review approvals to GitHub PR). */
   approvalPropagator?: (input: {
     companyId: string;
@@ -170,6 +191,13 @@ export interface ReviewRoutingSweepDeps {
 
 export interface ReviewRoutingSweep {
   sweep(now?: Date, options?: { force?: boolean }): Promise<ReviewRoutingSweepResult>;
+  /**
+   * The event path of the board-side merge: a review was approved or a CI run
+   * completed. Evaluates that one task / pull request at once; null when the
+   * merge is not wired, the instance is under maintenance, or the event names
+   * nothing to evaluate.
+   */
+  mergeOnEvent(event: BoardMergeTriggerEvent): Promise<BoardMergePassResult | null>;
   resetForTest(): void;
 }
 
@@ -198,6 +226,17 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   const recentReassignments = new Map<string, { signal: ReviewRoutingSignal; untilMs: number }>();
   /** PR-lane signals from the lane's last actual run, kept through throttle gaps. */
   const prLaneSignalsByCompany = new Map<string, ReviewRoutingSignal[]>();
+  const boardMerger = deps.boardMerge
+    ? createBoardMerger({
+        store: deps.store,
+        client: deps.boardMerge,
+        addComment: deps.addComment,
+        wakeAgent: (agentId, wake) => deps.wakeReviewer(agentId, wake),
+        logActivity: deps.logActivity,
+        now: deps.now,
+        log,
+      })
+    : null;
 
   async function sweepCompany(
     companyId: string,
@@ -273,10 +312,23 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           stageId: review.stageId,
         });
         if (wakeState.activeRun || wakeState.pendingWake) continue;
-        if (wakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
-          await deps.store.recordReviewWakeEscalation({ companyId, issueId: row.id, reviewerAgentId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts, at: now });
-          log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; escalation persisted for ADM");
-          continue;
+        // myrmidon(OPE-11947): an exhausted series is escalated once (a
+        // wake_escalation_required row newer than the last wake means it was),
+        // not on every pass, and it is re-armed after REVIEW_WAKE_REARM_AFTER_MS
+        // since its last attempt: the next wake then opens a new series at
+        // attempt 1 with the backoff counted from the start.
+        let seriesAttempts = wakeState.attempts;
+        if (seriesAttempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
+          const escalated = wakeState.lastEscalationAt != null
+            && (!wakeState.lastWakeAt || wakeState.lastEscalationAt.getTime() > wakeState.lastWakeAt.getTime());
+          if (!escalated) {
+            await deps.store.recordReviewWakeEscalation({ companyId, issueId: row.id, reviewerAgentId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts, at: now });
+            log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; escalation persisted for ADM");
+          }
+          const rearmed = wakeState.lastWakeAt != null
+            && now.getTime() - wakeState.lastWakeAt.getTime() >= REVIEW_WAKE_REARM_AFTER_MS;
+          if (!rearmed) continue;
+          seriesAttempts = 0;
         }
         // Cancelled runs for the same reviewer/task are direct evidence of a
         // failed dispatch: retry on bounded backoff, without the initial stale delay.
@@ -284,13 +336,13 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           ? wakeState.lastCancelledRunAt
           : wakeState.lastWakeAt;
         if (retryAnchor) {
-          const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, wakeState.attempts - 1));
+          const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, seriesAttempts - 1));
           if (now.getTime() - retryAnchor.getTime() < backoffMs) continue;
         } else {
           const lastActivity = row.updatedAt ?? row.createdAt;
           if (now.getTime() - lastActivity.getTime() < REVIEW_WAKE_STALE_AFTER_MS) continue;
         }
-        const attempt = wakeState.attempts + 1;
+        const attempt = seriesAttempts + 1;
         const wakeContext = buildReviewRoutingWakeContext(
           (row.executionState ?? {}) as Record<string, unknown>,
         );
@@ -1115,6 +1167,23 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       lastPrLaneAtMs = 0;
       recentReassignments.clear();
       prLaneSignalsByCompany.clear();
+      boardMerger?.resetForTest();
+    },
+    async mergeOnEvent(event) {
+      if (!boardMerger) return null;
+      if (deps.isUnderMaintenance && (await deps.isUnderMaintenance())) return null;
+      const settings = await deps.readSettings();
+      const now = (deps.now ?? (() => new Date()))();
+      if (event.issueId) return boardMerger.mergeIssue(event.companyId, event.issueId, settings, now);
+      if (event.repository && event.number) {
+        return boardMerger.mergePullRequest(
+          event.companyId,
+          { repository: event.repository, number: event.number },
+          settings,
+          now,
+        );
+      }
+      return null;
     },
     async sweep(now = (deps.now ?? (() => new Date()))(), options) {
       const result: ReviewRoutingSweepResult = {
@@ -1130,6 +1199,8 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         stewardTasksCreated: 0,
         prSuperseded: 0,
         prApprovalsPropagated: 0,
+        boardMerged: 0,
+        boardReturned: 0,
       };
       if (!options?.force && now.getTime() - lastSweepAtMs < intervalMs) {
         result.skippedPass = true;
@@ -1164,6 +1235,19 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         } catch (err) {
           result.failed += 1;
           log.warn({ err, companyId }, "review routing sweep failed for one company");
+        }
+        // myrmidon(OPE-11767): the board-side merge runs last and on its own, so
+        // a GitHub trouble here never costs the desk its signals above.
+        if (boardMerger) {
+          try {
+            const merged = await boardMerger.sweepCompany(companyId, settings, now);
+            result.boardMerged += merged.merged;
+            result.boardReturned += merged.returned;
+            result.failed += merged.failed;
+          } catch (err) {
+            result.failed += 1;
+            log.warn({ err, companyId }, "review routing board merge failed for one company");
+          }
         }
       }
       return result;

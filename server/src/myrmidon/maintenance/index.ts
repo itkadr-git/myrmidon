@@ -13,7 +13,7 @@ import {
 import { getCachedMaintenanceDocument } from "./gate.js";
 import { maintenanceRoutes } from "./routes.js";
 import { maintenanceService, type MaintenanceHeartbeatPort } from "./service.js";
-import { readZabbixSettings, zabbixMaintenanceHooks } from "./zabbix.js";
+import { resolveZabbixSettings, zabbixMaintenanceHooks } from "./zabbix.js"; // myrmidon(1.7, OPE-4101)
 import { readMaintenanceSettings } from "./settings.js";
 import { runBotDiskSweep } from "../bot-containers/bot-disk-service.js"; // myrmidon(BOT-DISK-A)
 import { runDatastoreCareRetentionTick } from "../datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
@@ -79,7 +79,11 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
     async interruptRunForMaintenance(runId, windowId) {
       const stopped = await heartbeat.cancelRun(runId, "Interrupted by maintenance mode; retried after maintenance ends", {
         errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE,
-        resultJson: { myrmidonMaintenance: { windowId } },
+        resultJson: {
+          myrmidonMaintenance: { windowId },
+          failedBeforeModel: true,
+          failed_before_model: true,
+        },
         eventMessage: "run interrupted by maintenance mode",
         // The retry below is the successor path; the admission gate holds it until exit.
         suppressImmediateRecovery: true,
@@ -104,7 +108,9 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
 }
 
 function defaultService(db: Db) {
-  return maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)), hooks: zabbixMaintenanceHooks(readZabbixSettings()) });
+  // myrmidon(1.7, OPE-4101): resolve live so a UI change without a restart is
+  // honored on the next maintenance open/close.
+  return maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)), hooks: zabbixMaintenanceHooks(resolveZabbixSettings()) });
 }
 
 /** Router for app.ts: GET/POST /api/myrmidon/maintenance. */

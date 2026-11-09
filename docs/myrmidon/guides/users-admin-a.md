@@ -54,7 +54,7 @@ Every administrative action is recorded in the activity log with actor details, 
 
 ## UI Interface
 
-The management UI is available at `/company/settings/users` and contains two main tabs:
+The management UI is available at `/company/settings/users` (see the dedicated guide [users-admin-ui.md](users-admin-ui.md)) and contains two main tabs:
 
 1. **Users**:
    - Form to create new users with optional initial password or one-time setup link.

@@ -29,6 +29,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     runsFailedTotal: 7,
     runsFailedWindow: 1,
     emptyRunsByAgent: [],
+    noResultRunsByPair24h: [],
     runDurationSecondsP50: 42.5,
     runDurationSecondsP95: 130.25,
     roleQueueTasks: [
@@ -65,10 +66,35 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
 
 describe("prometheus exposition format", () => {
   it("renders every family the ticket names", () => {
-    const text = renderMetricsText(snapshot());
+    const text = renderMetricsText(snapshot({
+      noResultRunsByPair24h: [{ agentId: "agent-1", issueId: "issue-1", count: 5 }],
+    }));
+    expect(text).toContain('myrmidon_no_result_runs_24h{role="all",agent_id="agent-1",issue_id="issue-1"} 5');
     for (const family of METRIC_FAMILIES) {
       expect(text, `family ${family} must appear`).toContain(family);
     }
+  });
+
+  it("renders rolling per-agent spend for the authenticated metrics scrape", () => {
+    const text = renderMetricsText(snapshot({ llmKeySpend: [
+      { companyId: "co-a", agentId: "agent-a", window: "24h", cents: 120 },
+      { companyId: "co-a", agentId: "agent-a", window: "7d", cents: 420 },
+    ] }));
+    expect(text).toContain('myrmidon_llm_key_spend_cents{role="all",company_id="co-a",agent_id="agent-a",window="24h"} 120');
+    expect(text).toContain('myrmidon_llm_key_spend_cents{role="all",company_id="co-a",agent_id="agent-a",window="7d"} 420');
+    expect(text).toContain("# TYPE myrmidon_llm_key_spend_cents gauge");
+  });
+
+  it("renders the LiteLLM key cap utilization, one sample per capped key", () => {
+    const text = renderMetricsText(snapshot({ llmKeyBudgetPercent: [
+      { companyId: "co-a", agentId: "agent-a", percent: 84.2137 },
+      { companyId: "co-a", agentId: "agent-b", percent: 100 },
+    ] }));
+    expect(text).toContain("# TYPE myrmidon_llm_key_budget_utilization_percent gauge");
+    expect(text).toContain('myrmidon_llm_key_budget_utilization_percent{role="all",company_id="co-a",agent_id="agent-a"} 84.2');
+    expect(text).toContain('myrmidon_llm_key_budget_utilization_percent{role="all",company_id="co-a",agent_id="agent-b"} 100');
+    // No evaluation yet: the family is declared and carries no sample.
+    expect(renderMetricsText(snapshot())).not.toContain("myrmidon_llm_key_budget_utilization_percent{");
   });
 
   it("renders the created and deduped continuation counters after port calls", () => {
@@ -215,7 +241,9 @@ describe("prometheus exposition format", () => {
   });
 
   it("renders exactly one HELP and one TYPE line per family", () => {
-    const text = renderMetricsText(snapshot());
+    const text = renderMetricsText(snapshot({
+      noResultRunsByPair24h: [{ agentId: "agent-1", issueId: "issue-1", count: 5 }],
+    }));
     const lines = text.split("\n");
     for (const family of METRIC_FAMILIES) {
       const helpLines = lines.filter((line) => line.startsWith(`# HELP ${family} `));
@@ -559,7 +587,9 @@ describe("prometheus exposition format", () => {
   });
 
   it("ends with a newline and separates families with blank lines", () => {
-    const text = renderMetricsText(snapshot());
+    const text = renderMetricsText(snapshot({
+      noResultRunsByPair24h: [{ agentId: "agent-1", issueId: "issue-1", count: 5 }],
+    }));
     expect(text.endsWith("\n")).toBe(true);
     const body = text.slice(0, -1);
     const blocks = body.split("\n\n");

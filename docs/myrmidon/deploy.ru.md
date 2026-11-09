@@ -738,6 +738,34 @@ scripts/myrmidon/deploy/rollback-component.sh --config /path/to/deploy.env --com
 но не блокирует. Откат доски не откатывает компоненты, откат компонента не трогает доску:
 после DEGRADED-выката вывод называет, какая сторона упала и какую команду запустить.
 
+### Откат на локальный образ (ROLLBACK-LOCAL)
+
+Образы до 1.1.0 не лежат в реестре, а реестр может быть недоступен именно в момент инцидента.
+`--local` откатывает на образ, который уже есть на хосте выката, **без скачивания**:
+
+```sh
+# локальный тег
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --local myrmidon-local:hotfix
+# тот же дайджест, что и обычно, но без pull
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --local sha256:<64 hex>
+# откат на --to/--to-image без pull
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to sha256:<old> --local
+```
+
+- Ссылка берётся из аргумента `--local` (тег или дайджест; голый дайджест дополняется до
+  `ghcr.io/itkadr-git/myrmidon@sha256:…`), из `MYRMIDON_ROLLBACK_LOCAL` в файле настроек
+  (действует, когда `--local` не передан), а голый `--local` без значения — из `--to`/`--to-image`.
+  Явный `--local <ссылка>` вместе с `--to`/`--to-image` — ошибка: ссылка одна.
+- Наличие образа проверяется через `docker image inspect` **до любых изменений**. Образа нет —
+  откат прекращается с ошибкой и списком локальных тегов/дайджестов этого репозитория
+  (`docker image ls <repo>`), чтобы опечатка в теге не превращалась в голое «No such image».
+- В этом режиме реестр не читается вовсе: ни `pull`, ни проверка «только из CI» — локальный
+  образ и так не мог пройти CI, а предупреждение о не-CI образе здесь бесполезно
+  (это его основной сценарий). Остальные шаги (maintenance, смена `image:`, health) — как в
+  обычном откате.
+- Помните: локальный образ на хосте ничем не защищён от подмены — право записи на хост
+  выката и есть граница доверия. `--dry-run` печатает план без изменений.
+
 ## Многопроцессный режим (BOARD-PROCESSES)
 
 Доска может работать в нескольких процессах Node внутри того же контейнера. Режим
@@ -960,8 +988,8 @@ Release не создаётся (отменённый прогон CI тега �
 
 **Как устроено.** Workflow **Myrmidon release publish** (запускается пушем
 тега `myr-vX.Y.Z`) открывает задачу `release-freeze: <тег>`; задача в
-открытом состоянии и есть freeze. Проверка **Release freeze gate** (workflow
-[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+открытом состоянии и есть freeze. Проверка **Release freeze gate** (встроена
+напрямую в шаг `plan` основного workflow `Myrmidon CI`, [.github/workflows/myrmidon-ci.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci.yml))
 красная на каждом PR в `main`, пока freeze активен. Как только `Myrmidon CI`
 на теге позеленел, тот же tag-workflow закрывает задачу — freeze снят.
 Состояние выводится из GitHub (новейший тег + его CI + открытая

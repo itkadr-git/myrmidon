@@ -218,18 +218,21 @@ function finish() {
 // ---------------------------------------------------------------- commands
 
 function planCommand(args) {
-  const opts = { base: null, head: "HEAD", forceFull: false, releaseFast: false, prLight: false, out: null };
+  const opts = { base: null, head: "HEAD", forceFull: false, releaseFast: false, prLight: false, out: null, tierOverride: null };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--base") opts.base = args[++i];
     else if (args[i] === "--head") opts.head = args[++i];
     else if (args[i] === "--force-full") opts.forceFull = true;
     else if (args[i] === "--release-fast") opts.releaseFast = true;
+    else if (args[i] === "--tier") opts.tierOverride = args[++i];
     else if (args[i] === "--pr-light") opts.prLight = true;
     else if (args[i] === "--out") opts.out = args[++i];
     else throw new Error(`unknown argument ${args[i]}`);
   }
   let plan;
-  if (!opts.base) {
+  if (opts.tierOverride) {
+    plan = { tier: opts.tierOverride, reasons: [`explicit tier override: ${opts.tierOverride}`] };
+  } else if (!opts.base) {
     plan = { tier: "full", reasons: ["no base commit (push or manual run)"] };
   } else {
     const changed = git(["diff", "--name-only", "--no-renames", `${opts.base}...${opts.head}`]).split("\n").filter(Boolean);

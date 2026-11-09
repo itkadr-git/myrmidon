@@ -72,6 +72,17 @@
 Лимит по умолчанию — 20, максимум — 100; большее значение возвращает HTTP
 400. См. [описание изменения эндпоинта](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-7-costs-by-issue.md).
 
+## Бюджеты и расход виртуальных ключей LiteLLM
+
+Доска отслеживает бюджет и расход ключей LiteLLM напрямую из реестра `litellm_cost_events` и метаданных ключей LiteLLM (`/key/list`), заменяя сканирование базы хостовыми скриптами:
+
+- **Интерфейс Costs и Keys**: Экран **Costs** отображает панель **Key budget and spend** с суточным (24ч) и недельным (7д) расходом по каждому ключу и агенту, долей использования капа и предупреждениями о маршрутах без цены (неоценённые модели в LiteLLM). На экране **Keys** для каждого ключа также выводится блок использования.
+- **API расхода по ключам**: `GET /api/companies/:companyId/litellm/key-usage` возвращает капы и агрегированный расход с кэшированием по TTL и ограничением выполнения запросов (10 секунд).
+- **Карточки внимания и сигналы**: При достижении ≥80% капа бюджета (`near_cap`), исчерпании лимита (`exhausted`) или аномальном суточном расходе ≥2× от среднего за предыдущие 6 дней (`anomalous_daily_spend`) доска формирует карточки `litellm_budget` в ленте внимания. Они доставляются операторам через канал ошибок в Telegram (важность high/critical) и секцию расходов суточного дайджеста.
+- **Метрики Prometheus**: Защищённый эндпоинт `/metrics` отдаёт:
+  - `myrmidon_llm_key_spend_cents{company_id,agent_id,window="24h"|"7d"}`
+  - `myrmidon_llm_key_budget_utilization_percent{company_id,agent_id}`
+
 ## Подробнее
 
 - [Провайдеры моделей компании](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/model-providers.md)

@@ -33,6 +33,7 @@
         "soon": "soon",
         "environments": "Environments",
         "access": "Access",
+        "instanceUsers": "Instance users",
         "boardApiKeys": "Board API keys",
         "heartbeats": "Heartbeats",
         "export": "Export",

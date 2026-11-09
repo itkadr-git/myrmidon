@@ -32,6 +32,9 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(STALE-BLOCK): the watchdog lifted a dead block off a task; the
   // lead and operator must see the routing change the machine made.
   "stale_block",
+  // myrmidon(OPE-11890): the product-side auth-401 burst detector latched —
+  // the board signal replacing the paperclip-auth-401-watch host timer.
+  "auth_401_burst",
   // myrmidon(BOT-DISK E): the host disk fill level crossed the saved threshold.
   "host_disk_alert",
   // myrmidon(1.6.1-WIP-LIMIT-A): an agent's in-flight task count (in_progress
@@ -76,6 +79,8 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(1.6.5-F-18): the gateway spend sweep completed but the model
   // catalog (/v1/model/info) is empty — the accounting key is misconfigured.
   "empty_model_catalog",
+  // myrmidon(OPE-11776): LiteLLM key cap and spend threshold signals.
+  "litellm_budget",
   // myrmidon(1.6.5 F-09): a queued run older than the instance's stall
   // threshold (default 1 h) still waits without a waitReason.
   "queue_stall",

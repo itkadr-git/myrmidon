@@ -39,6 +39,12 @@ import {
 } from "./contract.js";
 import { CORPUS_TOOL_NAMES, CorpusError, callCorpusTool, corpusToolDefinitions, isCorpusToolName } from "./tools.js";
 
+/** MCP structuredContent must always be a JSON object, including list results. */
+function corpusStructuredContent(name: string, result: unknown): Record<string, unknown> {
+  if (name === CORPUS_TOOL_NAMES.listDatasets) return { datasets: result };
+  return result as Record<string, unknown>;
+}
+
 /** The MCP protocol revision the endpoint answers with, as the OCR endpoint does. */
 const CORPUS_MCP_PROTOCOL_VERSION = "2025-03-26";
 
@@ -88,7 +94,8 @@ export function myrmidonCorpusMcpRoutes(deps: CorpusMcpDeps) {
         settings: await deps.settings(),
         port: await deps.port(companyId),
       });
-      return send({ content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
+      const structuredContent = corpusStructuredContent(params.name, result);
+      return send({ content: [{ type: "text", text: JSON.stringify(structuredContent) }], structuredContent });
     } catch (error) {
       // A failed call is a tool result, not a transport error: the bot sees the
       // stable code and decides (another dataset, a report to its operator)

@@ -14,10 +14,26 @@ import {
   corpusDocumentsQueryKey,
   corpusSettingsQueryKey,
   hasPendingDocuments,
+  type CorpusDocument,
+  type CorpusReparseResult,
   type CorpusSearchResult,
   type CorpusSettings,
 } from "./corpusApi";
 import { CORPUS_POLL_INTERVAL_MS } from "./corpusConfig";
+
+/**
+ * The corpus routes answer errors as `{ error: <machine token>, message:
+ * <human text> }`; the message is what an operator can act on (409/422/502).
+ */
+function corpusReadable(error: unknown): string {
+  if (error instanceof ApiError) {
+    const body = error.body as { message?: string; error?: string } | null;
+    const text = body?.message || body?.error;
+    return text || error.message || `Request failed: ${error.status}`;
+  }
+  if (error instanceof Error) return error.message;
+  return "Unexpected error";
+}
 
 function readable(error: unknown): string {
   if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
@@ -145,15 +161,24 @@ export function CorpusScreen() {
   });
 
   const retry = useMutation({
-    mutationFn: (documentId: string) => corpusApi.retryDocument(companyId, documentId),
+    mutationFn: (documentId: string) => corpusApi.reparseDocument(companyId, documentId),
     onMutate: () => setRetryError(null),
-    onSuccess: async () => {
+    onSuccess: async (data: CorpusReparseResult) => {
       setRetryError(null);
+      // The row shows the answer at once (`queued`), then the refetch confirms
+      // it against the server. Without the patch the refetch races the pass
+      // that still sees the old `failed` row.
+      if (selectedDatasetId && data?.document) {
+        queryClient.setQueryData<CorpusDocument[]>(
+          corpusDocumentsQueryKey(companyId, selectedDatasetId),
+          (prev) => (prev ? prev.map((doc) => (doc.id === data.document.id ? data.document : doc)) : [data.document]),
+        );
+      }
       await queryClient.invalidateQueries({
         queryKey: corpusDocumentsQueryKey(companyId, selectedDatasetId ?? ""),
       });
     },
-    onError: (error) => setRetryError(readable(error)),
+    onError: (error) => setRetryError(corpusReadable(error)),
   });
 
   const deleteDocument = useMutation({

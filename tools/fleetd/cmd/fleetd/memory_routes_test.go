@@ -162,4 +162,7 @@ func TestMemoryRoutesRejectBadBody(t *testing.T) {
 	if rec := routeMemory(s, http.MethodPost, "/v1/memory/recall", s.cfg.Token, `{"unknown":1}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown key: got %d", rec.Code)
 	}
+	if rec := routeMemory(s, http.MethodPost, "/v1/memory/recall", s.cfg.Token, `{} {}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON: got %d", rec.Code)
+	}
 }

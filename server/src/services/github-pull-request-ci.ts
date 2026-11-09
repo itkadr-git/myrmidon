@@ -2,8 +2,9 @@ import type { Db } from "@myrmidon/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
+import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
-import { resolveGitHubRepositoryToken } from "./github-external-object-provider.js";
+import { resetGitHubObjectCacheForTests, resolveGitHubRepositoryToken } from "./github-external-object-provider.js";
 import type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -49,6 +50,7 @@ export type PullRequestCiStatus =
   | "queued"
   | "pending"
   | "no_checks"
+  | "not_configured"
   | "unavailable"
   | "unknown";
 
@@ -62,6 +64,7 @@ export type PullRequestCiConclusion =
   | "action_required"
   | "skipped"
   | "no_checks"
+  | "not_configured"
   | "missing"
   | "denied"
   | "rate_limited"
@@ -477,6 +480,7 @@ export function clearCiCacheForTests(): void {
   prHeadCache.clear();
   checkRunsCache.clear();
   resetGitHubRateLimitForTests();
+  resetGitHubObjectCacheForTests();
 }
 
 export const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
@@ -861,6 +865,15 @@ export function createPullRequestCiResolver(
         repository: repoKey,
         pullNumber: reference.number,
       });
+      if (summarized.totalRuns === 0 && runs.conclusion !== "rate_limited") {
+        const hostedCi = await repositoryHasHostedCi({ ...reference, token, fetch: fetchImpl });
+        if (hostedCi === false) {
+          summarized.status = "not_configured";
+          summarized.conclusion = "not_configured";
+          summarized.summary = NO_HOSTED_CI_SUMMARY;
+          summarized.authoritative = true;
+        }
+      }
 
       const isRateLimited = runs.conclusion === "rate_limited" || isGitHubRateLimited();
       const result: PullRequestCiResult = {
@@ -875,7 +888,7 @@ export function createPullRequestCiResolver(
         runs,
       };
 
-      const ttlMs = result.status === "completed" ? CI_CACHE_COMPLETED_TTL_MS : CI_CACHE_INCOMPLETE_TTL_MS;
+      const ttlMs = result.status === "completed" || result.status === "not_configured" ? CI_CACHE_COMPLETED_TTL_MS : CI_CACHE_INCOMPLETE_TTL_MS;
       if (ciCache.size >= CI_CACHE_MAX_ENTRIES) {
         const oldestKey = ciCache.keys().next().value;
         if (oldestKey !== undefined) ciCache.delete(oldestKey);
@@ -1025,4 +1038,115 @@ export function createPullRequestCiResolver(
       return results;
     },
   };
+}
+
+export type PullRequestHeadLane = "test" | "lint";
+
+export interface PullRequestHeadLaneEvidence {
+  lane: PullRequestHeadLane;
+  name: string;
+  headSha: string | null;
+  state: "success" | "failure" | "pending" | "missing" | "unknown";
+  status: "queued" | "in_progress" | "completed" | "missing" | "unknown";
+  conclusion: string | null;
+  finishedAt: string | null;
+}
+
+export function isTestCheckRun(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return (
+    /\b(test|tests|vitest|jest|pytest)\b/.test(n) ||
+    n.startsWith("tests (") ||
+    n.startsWith("test (")
+  );
+}
+
+export function isLintCheckRun(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return (
+    /\b(lint|linter|typecheck|type-check|checks|eslint|biome)\b/.test(n) ||
+    n.startsWith("checks (") ||
+    n.includes("typecheck")
+  );
+}
+
+export function summarizeHeadLaneEvidence(
+  runs: readonly PullRequestCiJob[],
+  options?: { headSha?: string | null },
+): PullRequestHeadLaneEvidence[] {
+  const headSha = options?.headSha ?? null;
+  const testRuns = runs.filter((r) => isTestCheckRun(r.name));
+  const lintRuns = runs.filter((r) => isLintCheckRun(r.name));
+
+  function summarizeLane(
+    lane: PullRequestHeadLane,
+    laneRuns: readonly PullRequestCiJob[],
+  ): PullRequestHeadLaneEvidence {
+    if (laneRuns.length === 0) {
+      return {
+        lane,
+        name: lane,
+        headSha,
+        state: "missing",
+        status: "missing",
+        conclusion: null,
+        finishedAt: null,
+      };
+    }
+
+    const pendingRun = laneRuns.find(
+      (r) => r.status === "queued" || r.status === "in_progress" || (r.status as string) === "pending",
+    );
+    if (pendingRun) {
+      return {
+        lane,
+        name: pendingRun.name,
+        headSha,
+        state: "pending",
+        status: pendingRun.status,
+        conclusion: pendingRun.conclusion,
+        finishedAt: null,
+      };
+    }
+
+    const failedRun = laneRuns.find(
+      (r) =>
+        r.conclusion &&
+        r.conclusion !== "success" &&
+        r.conclusion !== "neutral" &&
+        r.conclusion !== "skipped",
+    );
+    if (failedRun) {
+      return {
+        lane,
+        name: failedRun.name,
+        headSha,
+        state: "failure",
+        status: failedRun.status,
+        conclusion: failedRun.conclusion,
+        finishedAt: failedRun.completedAt ?? null,
+      };
+    }
+
+    let latestCompletedAt: string | null = null;
+    for (const r of laneRuns) {
+      if (r.completedAt) {
+        if (!latestCompletedAt || new Date(r.completedAt).getTime() > new Date(latestCompletedAt).getTime()) {
+          latestCompletedAt = r.completedAt;
+        }
+      }
+    }
+
+    return {
+      lane,
+      name: lane,
+      headSha,
+      state: "success",
+      status: "completed",
+      conclusion: "success",
+      finishedAt: latestCompletedAt,
+    };
+  }
+
+  return [summarizeLane("test", testRuns), summarizeLane("lint", lintRuns)];
 }

@@ -1,6 +1,7 @@
 import { logger } from "../middleware/logger.js";
 
-export type GitHubRequestSource = "ci-resolver" | "review-recovery" | "task-pr-sync" | "broker";
+// myrmidon(OPE-11767): "board-merge" counts the requests of the board-side merge.
+export type GitHubRequestSource = "ci-resolver" | "review-recovery" | "task-pr-sync" | "broker" | "board-merge";
 
 export interface GitHubRateLimitMetrics {
   remaining: number | null;
@@ -36,6 +37,7 @@ const state: RateLimitState = {
     "review-recovery": 0,
     "task-pr-sync": 0,
     broker: 0,
+    "board-merge": 0,
   },
 };
 
@@ -57,6 +59,15 @@ export function recordGitHubRequest(
     const record = response.headers as Record<string, string | null | undefined>;
     return record[name] ?? record[name.toLowerCase()] ?? null;
   };
+
+  // myrmidon(OPE-12397): a response of a small bucket (the anonymous 60/h, the search 30/min) is not
+  // the installation's 5000/h budget. Recording it marked every authenticated read rate limited:
+  // since the readers skip GitHub while the shared state says so, an exhausted anonymous bucket
+  // blinded the CI reads of the review with 3740 of 5000 left (09.11). Such responses are only counted.
+  const bucketLimit = parseInt(getHeader("x-ratelimit-limit") ?? "", 10);
+  if (Number.isFinite(bucketLimit) && bucketLimit < 1000) {
+    return;
+  }
 
   const remHeader = getHeader("x-ratelimit-remaining");
   let parsedRemaining: number | null = null;
@@ -190,6 +201,7 @@ export function resetGitHubRateLimitForTests(): void {
     "review-recovery": 0,
     "task-pr-sync": 0,
     broker: 0,
+    "board-merge": 0,
   };
 }
 

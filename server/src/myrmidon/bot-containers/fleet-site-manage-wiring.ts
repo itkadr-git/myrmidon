@@ -15,6 +15,7 @@ import { createSiteAgentClient } from "./site-agent-client.js";
 import { fleetSiteManageRoutes, type BotCardView, type SiteBotView, type SiteLoad } from "./fleet-site-manage-routes.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { siteHealthStore } from "./site-health-store.js";
+import { fleetSiteKey } from "./fleetd-hosts.js";
 import { getFleetSite, listFleetSites, parseTlsCredentials, updateFleetSite, type FleetClientManager } from "./site-registry.js";
 import { X509Certificate } from "node:crypto";
 import { secretService } from "../../services/index.js";
@@ -57,7 +58,7 @@ export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClien
     const manager = currentClientManager();
     if (!manager) throw new Error(`site "${siteName}" has no active mTLS client transport`);
     await manager.ensureFresh();
-    const transport = manager.getTransports?.()?.get(`${companyId}:${siteName}`);
+    const transport = manager.getTransports?.()?.get(fleetSiteKey(companyId, siteName));
     if (!transport?.mtls || !transport.agent || !transport.caCert || !transport.clientCert || !transport.clientKey) {
       throw new Error(`site "${siteName}" has no valid mTLS client certificate, key, or CA`);
     }
@@ -207,11 +208,11 @@ export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClien
       const manager = currentClientManager();
       if (!manager) throw new Error(`site "${siteName}" has no active mTLS client transport`);
       await manager.ensureFresh();
-      const transport = manager.getTransports?.()?.get(`${card[0].companyId}:${siteName}`);
+      const transport = manager.getTransports?.()?.get(fleetSiteKey(card[0].companyId, siteName));
       if (!transport?.mtls || !transport.agent || !transport.caCert || !transport.clientCert || !transport.clientKey) {
         throw new Error(`site "${siteName}" has no valid mTLS client certificate, key, or CA`);
       }
-      const driver = manager.getClients().get(`${card[0].companyId}:${siteName}`);
+      const driver = manager.getClients().get(fleetSiteKey(card[0].companyId, siteName));
       if (!driver) throw new Error(`site "${siteName}" has no active mTLS client transport`);
       if (action === "restart") await driver.restart(botKey);
       else await driver.stop(botKey);

@@ -810,6 +810,23 @@ export interface IssueExecutionState {
   escalationReason?: "review_round_limit" | null;
   escalationFromParticipant?: IssueExecutionStagePrincipal | null;
   escalationToParticipant?: IssueExecutionStagePrincipal | null;
+  /**
+   * myrmidon(OPE-11970): head commit of the pull request at the last
+   * changes-requested decision. A repeat return on the same head (no new commit)
+   * does not wake the executor again.
+   */
+  lastChangesRequestedHeadSha?: string | null;
+  /**
+   * myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the formal review decision as
+   * structure — `approved` | `changes_requested` plus the head sha and the PR
+   * number the verdict names. Written together with `lastDecisionId`;
+   * consumers read it instead of re-parsing the decision comment text.
+   */
+  reviewDecision?: {
+    reviewDecision: "approved" | "changes_requested";
+    headSha: string | null;
+    pullRequestNumber: number | null;
+  } | null;
 }
 
 export interface IssueExecutionDecision {
@@ -1339,7 +1356,7 @@ export interface AskUserQuestionsResult {
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
-  expirationReason?: "superseded_by_comment" | "superseded_by_newer_interaction";
+  expirationReason?: "superseded_by_comment" | "superseded_by_newer_interaction" | "issue_closed";
   commentId?: string | null;
   // Set with expirationReason "superseded_by_newer_interaction": the newer
   // sibling ask_user_questions that replaced this one (PAP-437).
@@ -1468,6 +1485,7 @@ export interface ConnectionIntentPayload {
 export interface ConnectionIntentResult {
   version: 1;
   outcome: "connected" | "declined" | "superseded" | "expired";
+  expirationReason?: "issue_closed";
   connectionId?: string | null;
   reason?: string | null;
   supersededByInteractionId?: string | null;
@@ -1550,6 +1568,7 @@ export interface RequestConfirmationResult {
     | "withdrawn"
     | "issue_closed"
     | "addressee_deleted";
+  expirationReason?: "issue_closed";
   reason?: string | null;
   commentId?: string | null;
   supersededByInteractionId?: string | null;
@@ -1586,6 +1605,7 @@ export interface RequestItemVerdictsResultItem {
 export interface RequestItemVerdictsResult {
   version: 1;
   outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "skipped" | "withdrawn" | "issue_closed" | "addressee_deleted";
+  expirationReason?: "issue_closed";
   reason?: string | null;
   complete: boolean;
   items: RequestItemVerdictsResultItem[];

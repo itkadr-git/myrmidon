@@ -15,6 +15,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { badRequest, conflict, notFound } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, assertCompanyAdmin } from "../../routes/authz.js";
+import { parseBoardAddress } from "./fleetd-hosts.js";
 import { type FleetSite, type FleetSiteInsert } from "./site-registry.js";
 import {
   generateSiteCa,
@@ -56,6 +57,21 @@ const enrollBodySchema = z
     imageAllowlist: z.array(z.string().trim().min(1)).max(64).optional(),
     hindsightUrl: z.string().trim().min(1).optional(),
     llmBaseUrl: z.string().trim().min(1).optional(),
+    boardAddress: z
+      .string()
+      .trim()
+      .refine(
+        (val) => {
+          try {
+            parseBoardAddress(val);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { message: "boardAddress must be host:port" },
+      )
+      .optional(),
     boardExtraHost: z.string().trim().min(1).optional(),
     volumeRoot: z.string().trim().min(1).optional(),
     network: z.string().trim().min(1).optional(),
@@ -336,6 +352,7 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       ...(body.imageAllowlist ? { imageAllowlist: body.imageAllowlist } : {}),
       ...(body.hindsightUrl ? { hindsightUrl: body.hindsightUrl } : {}),
       ...(body.llmBaseUrl ? { llmBaseUrl: body.llmBaseUrl } : {}),
+      ...(body.boardAddress ? { boardAddress: body.boardAddress } : {}),
       ...(body.boardExtraHost ? { boardExtraHost: body.boardExtraHost } : {}),
       ...(body.volumeRoot ? { volumeRoot: body.volumeRoot } : {}),
       ...(body.network ? { network: body.network } : {}),

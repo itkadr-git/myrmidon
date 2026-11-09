@@ -62,6 +62,12 @@ Execution-stage reviewer wake requests use that same transaction path. If the
 wake request cannot be persisted, the issue update does not leave the task in
 review without a durable wake receipt.
 
+A review task is not treated as stranded while its review participant is alive:
+if the participant has a live run on any task of the company, the
+stranded-work sweep skips the board escalation and keeps the task waiting for
+that participant. Only when the participant has no live run at all can the
+review task be moved to board-only `blocked` with a recovery card.
+
 ## Planning from a chat message
 
 The Commander chat is the board's planning entry: the owner writes what is
@@ -74,6 +80,20 @@ planner is reachable from Telegram.
 A development task can settle itself: when the pull requests linked to a
 task merge, the task moves on, and a task whose pull requests all merged
 does not wake its agent for nothing.
+
+When the board review stage is approved and the open pull request is green
+and mergeable on the approved head, the board merges it itself through the
+shared GitHub App identity (squash, the repository's convention). The merge
+fires when a review is approved, when a CI run completes, and on the
+periodic review-routing pass as the safety net. It is bound to the exact
+approved head: the approving verdict must name the current head, the
+required check must be green on that head, and the base must be `main` (or
+a configured release base). A conflict with the base after the approval
+returns the task to its implementer once with a rebase request instead of
+staying in review forever. The behavior is the `boardMerge` block of
+`instance_settings.general.reviewRouting`, on by default;
+`boardMerge.enabled = false` restores the previous wait-for-a-human
+behavior.
 
 ## Discussion rooms
 
@@ -102,7 +122,7 @@ service updates cannot bypass it. During the first three days after
 `2026-10-31`, the default is warning-only; operators can explicitly select
 `warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
 rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
-are unaffected. See the [knowledge gate change record](../changes/knowledge-gate-system-changes.md)
+are unaffected. See the [knowledge gate change record](../myrmidon/changes/knowledge-gate-system-changes.md)
 for the rollout and settings reference.
 
 ## Recovery and requeue holds

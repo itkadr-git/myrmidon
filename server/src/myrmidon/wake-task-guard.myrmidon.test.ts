@@ -127,6 +127,32 @@ describe("myrmidon(1.6.5 F-26 T5) cooling decision (pure, system actors excluded
     expect(decide([{ at: after, actorType: "agent", actorId: "agent-2" }]).cooling).toBe(false);
   });
 
+  it("three returns to todo without external input suppress the fourth wake until an event", () => {
+    const runs = [0, 1, 2].map((index) => ({
+      ...run,
+      status: "succeeded",
+      livenessState: "needs_followup",
+      finishedAt: new Date(finishedAt.getTime() - index * 60_000),
+      startedAt: new Date(finishedAt.getTime() - index * 60_000 - 30_000),
+      createdAt: new Date(finishedAt.getTime() - index * 60_000 - 30_000),
+    }));
+    const decision = decideIssueCooling({ issueStatus: "todo", runs, moves: [
+      { at: finishedAt.getTime() + 1, actorType: "agent", actorId: "agent-1", action: "issue.updated" },
+    ], settings, now });
+    expect(decision.cooling).toBe(true);
+    expect(decision.staleCount).toBe(3);
+    expect(decision.cooldownMin).toBe(120);
+    expect(decideIssueCooling({ issueStatus: "todo", runs, moves: [
+      { at: finishedAt.getTime() + 1, actorType: "user", actorId: "u1", action: "issue.comment_added" },
+    ], settings, now }).cooling).toBe(false);
+  });
+
+  it("external blocker or CI events lift cooling without treating internal status updates as input", () => {
+    expect(decide([{ at: after, actorType: "system", actorId: "recovery", action: "issue.updated" }]).cooling).toBe(true);
+    expect(decide([{ at: after, actorType: "system", actorId: "ci", action: "myrmidon.task_pr_sync.settled" }]).cooling).toBe(false);
+    expect(decide([{ at: after, actorType: "system", actorId: "blocker", action: "issue.blockers_resolved_wake_emitted" }]).cooling).toBe(false);
+  });
+
   it("isRealTaskMovement classifies actors", () => {
     expect(isRealTaskMovement({ at: 1, actorType: "system", actorId: "x" }, "a")).toBe(false);
     expect(isRealTaskMovement({ at: 1, actorType: "user", actorId: "u" }, "a")).toBe(true);

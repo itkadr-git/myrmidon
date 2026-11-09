@@ -70,6 +70,9 @@ const FIRST_LOOKBACK_DAYS_MAX = 90;
 const SPEND_LOGS_PAGE_SIZE = 1000;
 /** Page cap; a window larger than this fails the sweep rather than truncating. */
 const SPEND_LOGS_MAX_PAGES = 50;
+/** myrmidon(OPE-11776): /key/list page size (the gateway caps it at 100) and the page cap. */
+const KEY_LIST_PAGE_SIZE = 100;
+const KEY_LIST_MAX_PAGES = 20;
 /** Runs are matched with a start before the window; give the match slack. */
 const RUN_MATCH_LOOKBACK_MS = 6 * 3_600_000;
 
@@ -131,6 +134,9 @@ export interface SpendLogEntry {
   startTime: string;
   model: string;
   provider: string | null;
+  /** LiteLLM's final request result; failed rows can have zero spend. */
+  status?: string | null;
+  attemptedFallbacks?: number;
 }
 
 export interface GatewayModelRow {
@@ -147,9 +153,29 @@ export interface GatewayModelRow {
   mode?: string | null;
 }
 
+/**
+ * myrmidon(OPE-11776): one gateway key's cap and spend as `/key/list` reports
+ * them. `tokenHash` is the key's sha256 (the gateway's hash_token) — the same
+ * hash the spend ledger stores in `api_key` — so a bot's key value is matched
+ * here without the gateway ever being asked about a raw key.
+ */
+export interface GatewayKeyBudgetRow {
+  tokenHash: string;
+  /** `max_budget` in USD; null when the key has no cap. */
+  maxBudgetUsd: number | null;
+  /** `spend` in USD, accumulated since the key's last budget reset. */
+  spendUsd: number | null;
+}
+
 export interface LitellmGatewayClient {
   listSpendLogs(window: { from: Date; to: Date }): Promise<SpendLogEntry[]>;
   listModels(): Promise<GatewayModelRow[]>;
+  /**
+   * myrmidon(OPE-11776): the cap and spend of every key of the gateway, read
+   * with the accounting (admin) key — one request per 100 keys, never one per
+   * key. Optional so a client that cannot list keys stays a valid client.
+   */
+  listKeyBudgets?(): Promise<GatewayKeyBudgetRow[]>;
   /**
    * myrmidon(F06-A): the model ids `/v1/models` answers — the OpenAI-shaped
    * list, unlike the richer `/v1/model/info` read above. Called with an agent's
@@ -158,6 +184,33 @@ export interface LitellmGatewayClient {
    * bridge's `/model` uses it to list what a gateway agent can choose.
    */
   listAvailableModels(): Promise<string[]>;
+}
+
+/**
+ * myrmidon(OPE-11776): one `/key/list?return_full_object=true` page —
+ * `{ keys: [{ token, max_budget, spend, ... }], total_pages }`. Returns null
+ * for any other shape, so a wrong endpoint surfaces as an error and never as
+ * "no keys"; entries without a hash are skipped. Only the hash, the cap and the
+ * spend are read: nothing else of a key object leaves this function.
+ */
+export function parseKeyListPage(payload: unknown): { rows: GatewayKeyBudgetRow[]; totalPages: number } | null {
+  const body = asRecord(payload);
+  if (!body || !Array.isArray(body.keys)) return null;
+  const rows: GatewayKeyBudgetRow[] = [];
+  for (const item of body.keys) {
+    const key = asRecord(item);
+    const tokenHash = key && typeof key.token === "string" ? key.token.trim() : "";
+    if (!key || !tokenHash) continue;
+    const cap = asNullableNumber(key.max_budget);
+    const spend = asNullableNumber(key.spend);
+    rows.push({
+      tokenHash,
+      maxBudgetUsd: cap != null && cap > 0 ? cap : null,
+      spendUsd: spend != null && spend >= 0 ? spend : null,
+    });
+  }
+  const pages = asNullableNumber(body.total_pages);
+  return { rows, totalPages: pages != null && pages >= 1 ? Math.floor(pages) : 1 };
 }
 
 /**
@@ -204,6 +257,7 @@ export function parseSpendLogsV2Page(
     if (!startTime) continue;
     const when = new Date(startTime);
     if (Number.isNaN(when.getTime()) || when < window.from || when >= window.to) continue;
+    const metadata = asRecord(row.metadata);
     entries.push({
       requestId: typeof row.request_id === "string" && row.request_id ? row.request_id : null,
       apiKey: typeof row.api_key === "string" && row.api_key.trim() ? row.api_key.trim() : null,
@@ -213,6 +267,8 @@ export function parseSpendLogsV2Page(
       startTime,
       model: typeof row.model === "string" ? row.model : "unknown",
       provider: typeof row.custom_llm_provider === "string" ? row.custom_llm_provider : null,
+      status: typeof row.status === "string" ? row.status : null,
+      attemptedFallbacks: typeof metadata?.attempted_fallbacks === "number" ? metadata.attempted_fallbacks : undefined,
     });
   }
   return { entries, totalPages };
@@ -254,6 +310,26 @@ export function createLitellmGatewayClient(baseUrl: string, keyValue: string): L
         }
       }
       return entries;
+    },
+
+    async listKeyBudgets() {
+      const rows: GatewayKeyBudgetRow[] = [];
+      let totalPages = 1;
+      for (let page = 1; page <= totalPages; page += 1) {
+        const payload = await getJson<unknown>(
+          `/key/list?return_full_object=true&size=${KEY_LIST_PAGE_SIZE}&page=${page}`,
+        );
+        const parsed = parseKeyListPage(payload);
+        if (!parsed) throw new Error("LLM gateway /key/list answered in an unexpected shape");
+        rows.push(...parsed.rows);
+        totalPages = parsed.totalPages;
+        if (totalPages > KEY_LIST_MAX_PAGES) {
+          throw new Error(
+            `LLM gateway key list is too large (${totalPages} pages of ${KEY_LIST_PAGE_SIZE}; cap ${KEY_LIST_MAX_PAGES})`,
+          );
+        }
+      }
+      return rows;
     },
 
     async listModels() {

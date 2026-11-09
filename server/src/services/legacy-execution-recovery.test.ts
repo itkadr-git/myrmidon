@@ -16,7 +16,14 @@ import {
 import { decideReleaseRecovery, type ReleaseRecoveryFacts } from "../modules/wake-queue/domain/policy.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
 
-const runGuardReasons = ["model_call_limit", "idle_timeout", "tool_retry_loop"] as const;
+// myrmidon(RUN-GUARD-LOOPS): the two read-only-loop stop reasons are guard stops too.
+const runGuardReasons = [
+  "model_call_limit",
+  "idle_timeout",
+  "tool_retry_loop",
+  "no_progress_exploration",
+  "repeated_tool_call",
+] as const;
 
 it.each(runGuardReasons)("does not hold guard-stopped %s runs in reconciliation", (reason) => {
   for (const status of ["failed", "timed_out", "interrupted", "cancelled"]) {
@@ -296,13 +303,16 @@ it("persists stopReason in heartbeat metadata, bypasses reconciliation hold, and
   }
 });
 
-it("allows N model calls and rejects N+1 before it can dispatch", () => {
+it("allows N model calls, hints on N+1, and rejects the following call", () => {
   const guard = new RunGuard({ modelCallLimit: 3 });
   expect(guard.modelCall().stop).toBe(false); // N-2
   expect(guard.modelCall().stop).toBe(false); // N-1
   expect(guard.modelCall().stop).toBe(false); // N
-  expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" }); // N+1
-  expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+  expect(guard.modelCall()).toEqual({
+    stop: false,
+    hint: { reason: "model_call_limit", modelCalls: 3 },
+  }); // N+1: one hint before stopping
+  expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" }); // repeated N+2
   expect(guard.stats().modelCallCount).toBe(3);
 });
 
@@ -417,9 +427,11 @@ it("counts discrete provider requests across streaming token bursts and tool bou
     ["message.delta", { delta: "tokens" }],
     ["tool.started", { tool: "noop" }],
     ["tool.completed", { tool: "noop" }],
-    // Round 3 (provider request 3: exceeds modelCallLimit 2 -> triggers model_call_limit stop)
+    // Round 3 (provider request 3: first call beyond modelCallLimit 2 -> hint)
     ["model.request", { request_id: "req-3" }],
     ["message.delta", { delta: "third" }],
+    // Round 4 (provider request 4: repeated limit trip -> model_call_limit stop)
+    ["model.request", { request_id: "req-4" }],
     ["run.completed", { status: "completed", output: "done" }],
   ] as const;
   const newline = String.fromCharCode(10);

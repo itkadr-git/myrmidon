@@ -35,6 +35,7 @@ export function configFieldsForSection(
 
 export function schemaFieldSection(key: string): AdapterConfigSection {
   if (["model", "provider"].includes(key)) return "adapter";
+  if (["filesystemScope", "networkScope", "networkAllowlist"].includes(key)) return "advanced";
   if (["command", "agentCommand", "args", "extraArgs"].includes(key))
     return "advanced";
   if (["env", "envVars", "environmentVariables"].includes(key))

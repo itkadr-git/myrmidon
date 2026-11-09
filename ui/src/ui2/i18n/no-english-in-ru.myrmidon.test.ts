@@ -63,17 +63,24 @@ const ruKeys = flatten(ru);
 for (const key of Object.keys(ui2Messages.en)) catalogKeys.add(key);
 for (const key of Object.keys(ui2Messages.ru)) ruKeys.add(key);
 // myrmidon(OPE-8950): ui2 shell components translated through @/i18n use the
-// legacy area catalogs (area.<area>.*); accept those keys too (plural base included).
+// legacy area catalogs (area.<area>.*); accept those keys too (plural base
+// included). Parsed once here (OPE-10143): scanKeyUsage() used to re-read and
+// re-parse every area JSON once per scanned source file — O(files x areas) IO
+// that pushed this guard over the 5s vitest timeout once the ui2 tree grew
+// past ~30 files in the combined CI suite. The keysets are static per tree.
 const AREAS_DIR = join(UI2_ROOT, "../i18n/myrmidon-locales/areas");
+const AREA_KEYSETS = { en: new Set<string>(), ru: new Set<string>() };
 for (const file of readdirSync(AREAS_DIR)) {
   const match = /^(.+)\.(en|ru)\.json$/.exec(file);
   if (!match) continue;
-  const target = match[2] === "en" ? catalogKeys : ruKeys;
+  const target = match[2] === "en" ? AREA_KEYSETS.en : AREA_KEYSETS.ru;
   for (const key of flatten(JSON.parse(readFileSync(join(AREAS_DIR, file), "utf8")))) {
     target.add(key);
     target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
   }
 }
+for (const key of AREA_KEYSETS.en) catalogKeys.add(key);
+for (const key of AREA_KEYSETS.ru) ruKeys.add(key);
 // myrmidon(OPE-9382): ui2 shell components can also use top-level keys from
 // legacy locales (e.g. uiSwitch from ui/src/i18n/locales/{en,ru}.json).
 const LOCALES_DIR = join(UI2_ROOT, "../i18n/locales");
@@ -202,15 +209,6 @@ function scanKeyUsage(path: string): Array<string> {
   const legacyCaller = relative === "shell/Ui2AccountMenu.tsx";
   const topBarCaller = relative === "shell/Ui2TopBar.tsx";
   const legacyAreaKeys = [catalogKeys, ruKeys];
-  for (const file of readdirSync(AREAS_DIR)) {
-    const match = /^(.+)\.(en|ru)\.json$/.exec(file);
-    if (!match || (topBarCaller && match[1] !== "ui2-shell")) continue;
-    const target = match[2] === "en" ? legacyAreaKeys[0] : legacyAreaKeys[1];
-    for (const key of flatten(JSON.parse(readFileSync(join(AREAS_DIR, file), "utf8")))) {
-      target.add(key);
-      target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
-    }
-  }
   const sourceKeys = topBarCaller ? legacyAreaKeys : [catalogKeys, ruKeys];
   for (const match of source.matchAll(/\bt\(\s*"([A-Za-z0-9_.-]+)"/g)) {
     const key = match[1];

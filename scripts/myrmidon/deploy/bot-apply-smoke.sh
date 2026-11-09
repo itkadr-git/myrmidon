@@ -13,10 +13,20 @@
 # window. On failure, it reports DEPLOYED-DEGRADED, prints trailing gateway logs,
 # and exits != 0 so deploy.sh reports DEPLOYED-DEGRADED and prints rollback commands.
 #
+# DEPLOY-SMOKE-FALSE (the 08.11 incidents): a healthy fleet must not fail the
+# smoke. Containers stopped BEFORE the deploy began are pre-deploy state, not
+# deploy casualties; an `Exited (143)` container the fleet itself stopped by
+# IDLE-STOP (the board's idleStopped flag) is a planned stop, not a crash.
+# Abnormal means OOMKilled, a board/dockergate containerError, Docker
+# unhealthy, or a non-zero exit AFTER the deploy started that is not the
+# IDLE-STOP 143. Without the bot image rollout (--no-bot-rollout) no bot
+# re-applies by design: the smoke then verifies the already-running gateways.
+#
 #   bot-apply-smoke.sh --board-url <http://host:3100/api> --token-file <file>
 #                      --company <companyId> [--timeout 300] [--interval 10]
 #                      [--agent <id>] [--summary <file>]
-#                      [--min-healthy-percent <0-100>] [--dry-run]
+#                      [--min-healthy-percent <0-100>] [--no-bot-rollout]
+#                      [--dry-run]
 #
 # Exit codes: 0 = required percentage of bot gateways healthy; 1 = not within
 # timeout (prints DEPLOYED-DEGRADED and gateway logs); 2 = usage/transport error.
@@ -33,6 +43,9 @@ interval="${MYRMIDON_DEPLOY_SMOKE_INTERVAL_SEC:-10}"
 agent="${MYRMIDON_DEPLOY_SMOKE_AGENT:-}"
 summary_file="${MYRMIDON_BOT_IMAGE_ROLLOUT_SUMMARY:-}"
 min_healthy_percent="${MYRMIDON_DEPLOY_SMOKE_MIN_HEALTHY_PERCENT:-${MYRMIDON_DEPLOY_SMOKE_HEALTHY_PERCENT:-50}}"
+no_bot_rollout=0
+deploy_started_at=""
+
 dry_run=0
 
 while (($#)); do
@@ -45,8 +58,10 @@ while (($#)); do
     --agent) agent="$2"; shift 2 ;;
     --summary) summary_file="$2"; shift 2 ;;
     --min-healthy-percent) min_healthy_percent="$2"; shift 2 ;;
+    --no-bot-rollout) no_bot_rollout=1; shift ;;
+    --deploy-started-at) deploy_started_at="$2"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -57,6 +72,14 @@ done
 [[ "$interval" =~ ^[1-9][0-9]*$ ]] || die "--interval must be a positive number of seconds"
 [[ "$min_healthy_percent" =~ ^[0-9]+$ ]] || die "--min-healthy-percent must be an integer (0-100)"
 (( min_healthy_percent >= 0 && min_healthy_percent <= 100 )) || die "--min-healthy-percent must be between 0 and 100"
+if [[ -n "$deploy_started_at" ]]; then
+  [[ "$deploy_started_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || die "--deploy-started-at must be an ISO-8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ)"
+  deploy_start_epoch="$(date -u -d "$deploy_started_at" +%s 2>/dev/null)" \
+    || die "--deploy-started-at is not a parseable UTC timestamp: $deploy_started_at"
+else
+  deploy_start_epoch=0
+fi
 
 auth_args=()
 if [[ -n "$token_file" ]]; then
@@ -106,14 +129,40 @@ classify_bot() {
   bidle="$(jq -r '(.container.idleStopped // .idleStopRuntime.idleStopped // false)' <<<"$bjson" 2>/dev/null || echo "false")"
   berr="$(jq -r '.containerError // ""' <<<"$bjson" 2>/dev/null || echo "")"
 
-  local hstatus="missing" dstatus="missing" exitcode="0" oomkilled="false"
+  local hstatus="missing" dstatus="missing" exitcode="0" oomkilled="false" finishedat="0"
   if command -v docker >/dev/null 2>&1; then
     local dinfo
-    dinfo="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}' "$cname" 2>/dev/null || echo "missing|missing|0|false")"
-    IFS='|' read -r hstatus dstatus exitcode oomkilled <<<"$dinfo"
+    dinfo="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{if .State.FinishedAt}}{{.State.FinishedAt}}{{end}}' "$cname" 2>/dev/null || echo "missing|missing|0|false|")"
+    IFS='|' read -r hstatus dstatus exitcode oomkilled finishedat <<<"$dinfo"
     [[ -z "$dstatus" ]] && dstatus="$hstatus"
     [[ -z "$exitcode" ]] && exitcode="0"
     [[ -z "$oomkilled" ]] && oomkilled="false"
+    [[ -z "$finishedat" ]] && finishedat="0"
+  fi
+
+  # DEPLOY-SMOKE-FALSE (the 08.11 incidents): a container that stopped BEFORE
+  # the deploy began is pre-deploy state, not a deploy casualty — the deploy
+  # cannot have crashed it. No deploy start recorded: every stop is in-window
+  # (the conservative pre-08.11 behaviour).
+  local stopped_before_deploy=0
+  if (( deploy_start_epoch > 0 )) && [[ "$dstatus" == "exited" || "$hstatus" == "exited" ]]; then
+    local finished_epoch=0
+    if [[ "$finishedat" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+      finished_epoch="$(date -u -d "${finishedat%%.*}" +%s 2>/dev/null || echo 0)"
+      [[ "$finished_epoch" =~ ^[0-9]+$ ]] || finished_epoch=0
+    fi
+    if (( finished_epoch > 0 && finished_epoch < deploy_start_epoch )); then
+      stopped_before_deploy=1
+    fi
+  fi
+
+  # DEPLOY-SMOKE-FALSE: an `Exited (143)` of an IDLE-STOP is the fleet's own
+  # planned stop (SIGTERM on the idle timeout), not an abnormal exit. The
+  # board's idleStopped flag is the source of truth; with the flag present the
+  # 143 is trusted even when the inspect FinishedAt is unavailable.
+  local idle_stop_143=0
+  if [[ "$bidle" == "true" && "$exitcode" == "143" ]]; then
+    idle_stop_143=1
   fi
 
   # 1. Crash / abnormal exit checks (аварийный выход)
@@ -129,9 +178,18 @@ classify_bot() {
     echo "crashed:oom"
     return 0
   fi
-  if [[ ( "$dstatus" == "exited" || "$hstatus" == "exited" ) && "$exitcode" != "0" ]]; then
-    echo "crashed:exit_${exitcode}"
-    return 0
+  if [[ "$dstatus" == "exited" || "$hstatus" == "exited" ]]; then
+    if (( stopped_before_deploy == 1 )); then
+      # Pre-deploy stop: not a deploy casualty. It is still not a running
+      # gateway, so fall through to the idle-stop/healthy classification below.
+      :
+    elif (( idle_stop_143 == 1 )); then
+      echo "idle_stopped"
+      return 0
+    elif [[ "$exitcode" != "0" ]]; then
+      echo "crashed:exit_${exitcode}"
+      return 0
+    fi
   fi
   if [[ "$hstatus" == "unhealthy" ]]; then
     echo "crashed:docker_unhealthy"
@@ -152,6 +210,13 @@ classify_bot() {
     return 0
   fi
   if [[ ( "$dstatus" == "exited" || "$hstatus" == "exited" ) && "$exitcode" == "0" && ( "$bstate" == "stopped" || "$agent_status" == "idle" ) ]]; then
+    echo "idle_stopped"
+    return 0
+  fi
+  # DEPLOY-SMOKE-FALSE: an exited container with no idle-stop signal and no
+  # deploy-start reference can only be judged by its own facts: a clean 0 exit
+  # is a planned stop, a non-zero one is abnormal (no in-window proof).
+  if (( deploy_start_epoch == 0 )) && [[ ( "$dstatus" == "exited" || "$hstatus" == "exited" ) && "$exitcode" == "0" ]]; then
     echo "idle_stopped"
     return 0
   fi
@@ -280,10 +345,18 @@ while ((SECONDS < deadline)); do
     # 3. If active_total == 0: all bots are idle-stopped (and none crashed)
     if (( crashed_count == 0 )); then
       if (( active_total == 0 )); then
-        log "OK: all $total bot gateways are idle-stopped (0 active, 0 crashed; release gate passed)"
+        if (( no_bot_rollout == 1 )); then
+          log "OK: no bot image rollout (--no-bot-rollout): $total bot gateways verified without re-apply (all idle-stopped, 0 crashed; release gate passed)"
+        else
+          log "OK: all $total bot gateways are idle-stopped (0 active, 0 crashed; release gate passed)"
+        fi
         exit 0
       elif (( healthy_count >= needed )); then
-        log "OK: bot container of agent ${last_healthy_id:-${target_ids[0]}} is running and healthy (re-applied after the deploy; $healthy_count/$active_total active bot gateways healthy, $idle_count idle-stopped, threshold: ${min_healthy_percent}%)"
+        if (( no_bot_rollout == 1 )); then
+          log "OK: bot container of agent ${last_healthy_id:-${target_ids[0]}} is running and healthy (no re-apply expected: --no-bot-rollout; $healthy_count/$active_total active bot gateways healthy, $idle_count idle-stopped, threshold: ${min_healthy_percent}%)"
+        else
+          log "OK: bot container of agent ${last_healthy_id:-${target_ids[0]}} is running and healthy (re-applied after the deploy; $healthy_count/$active_total active bot gateways healthy, $idle_count idle-stopped, threshold: ${min_healthy_percent}%)"
+        fi
         exit 0
       fi
     fi

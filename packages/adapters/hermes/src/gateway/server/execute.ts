@@ -26,7 +26,9 @@ import {
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
+  renderWakeBlockDelta,
   isPaperclipRecoveryWakePayload,
+  resolvePaperclipWakeHistoryMode,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
 } from "@myrmidon/adapter-utils/server-utils";
@@ -34,6 +36,8 @@ import {
   ADAPTER_TYPE,
   CREATE_CANCEL_GRACE_MS,
   resolveCreateRequestTimeoutMs,
+  GATEWAY_CONNECT_RETRY_INTERVAL_MS,
+  resolveGatewayReadyTimeoutMs,
   DEFAULT_EVENT_RECONNECT_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TIMEOUT_SEC,
@@ -285,6 +289,27 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
+/**
+ * The session key strategy a run actually uses.
+ *
+ * Owner decisions: 05.11 isolation applies only to developers, 06.11 developers
+ * do not load previous runs at all. The board sets `developerOnlyTaskSession`
+ * (derived from the agent, never from the card) for developer runs; those get a
+ * fresh Hermes session per run (`run`), never `issue` (a task session that
+ * carries earlier runs' history) or `agent`. A card that already says `run` or
+ * `none` is never upgraded. Every other agent keeps its configured strategy.
+ *
+ * Kept in step with `resolveDeveloperSessionKeyStrategy` in @myrmidon/shared,
+ * which this package deliberately does not import.
+ */
+export function resolveEffectiveSessionKeyStrategy(input: {
+  configuredStrategy: SessionKeyStrategy;
+  developerOnlyTaskSession?: boolean;
+}): SessionKeyStrategy {
+  if (input.developerOnlyTaskSession !== true) return input.configuredStrategy;
+  return input.configuredStrategy === "none" ? "none" : "run";
+}
+
 export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
@@ -419,29 +444,62 @@ function buildHeaders(input: {
   };
 }
 
-function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): {
+function buildInput(
+  ctx: AdapterExecutionContext,
+  paperclipApiUrl: string | null,
+  idempotencyRunId: string,
+  previousDigests?: Record<string, string> | null,
+): {
   text: string;
   sections: Record<string, string | null | undefined>;
+  wakeBlockDigests: Record<string, string>;
 } {
   // Stable session keys (issue/agent strategy) resume the same remote Hermes
   // conversation across runs; a stored session id from a prior run means that
   // conversation already received the task brief, so pick the compact
   // task-context variant under the shared resume rules.
-  const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const sessionKeyStrategy = resolveEffectiveSessionKeyStrategy({
+    configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
+  });
+  // A developer run (effective strategy "run") never resumes: it gets the full
+  // task brief, whatever session id the board still has stored.
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
     Boolean(nonEmpty(ctx.runtime?.sessionId));
-  const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
+  const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
+  const isCompacted = Boolean(sessionHandoff);
+  const effectivePreviousDigests = resumedSession && !isCompacted ? (previousDigests ?? null) : null;
+  const outDigests: Record<string, string> = {};
+
+  const rawTaskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, {
+    // A compaction handoff starts a fresh provider context: restore the full
+    // task brief even though the transport still reports a resumed session.
+    resumedSession: resumedSession && !isCompacted,
+  }));
+  let taskMarkdown = rawTaskMarkdown;
+  if (rawTaskMarkdown) {
+    const delta = renderWakeBlockDelta({ taskMarkdown: rawTaskMarkdown }, effectivePreviousDigests);
+    taskMarkdown = delta.blocks.taskMarkdown ?? rawTaskMarkdown;
+    Object.assign(outDigests, delta.digests);
+  }
+
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
     conversationMode: ctx.context.conversationMode === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: Boolean(taskMarkdown),
+    suppressIssueDescription: Boolean(rawTaskMarkdown),
+    // myrmidon(WAKE-HISTORY): how much task history the wake carries — the
+    // card's wakeHistory, else by session strategy (run | none: summary only).
+    // The effective strategy decides, so a developer run forced to "run"
+    // (WAKE-9) gets the summary even when its card still says issue/agent.
+    wakeHistory: resolvePaperclipWakeHistoryMode({ ...ctx.config, sessionKeyStrategy }),
+    previousDigests: effectivePreviousDigests,
+    outDigests,
   });
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
-    omitIssueDescription: Boolean(taskMarkdown),
+    omitIssueDescription: Boolean(rawTaskMarkdown),
   });
-  const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   // myrmidon(1.6.5 PROMPT-BUDGET A): the identity/contract head of the input,
   // measured as its own prompt section.
@@ -496,6 +554,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
       taskMarkdown,
       wakePayloadJson: wakePayloadBlock,
     },
+    wakeBlockDigests: outDigests,
   };
 }
 
@@ -646,11 +705,13 @@ function buildRunBody(
    * token heuristic. Needed because the trace schema stores both tokens and
    * chars per section. */
   sectionChars: Record<string, number>;
+  wakeBlockDigests: Record<string, string>;
 } {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
-  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId);
+  const previousDigests = (ctx.runtime?.sessionParams?.wakeBlockDigests as Record<string, string>) ?? null;
+  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId, previousDigests);
   const input = configuredInput && ctx.context.conversationMode === true
     ? `${configuredInput}\n\n${builtInput.text}`
     : configuredInput ?? builtInput.text;
@@ -747,7 +808,7 @@ function buildRunBody(
       sectionChars[name] = value.length;
     }
   }
-  return { body, promptBreakdown, sectionChars };
+  return { body, promptBreakdown, sectionChars, wakeBlockDigests: builtInput.wakeBlockDigests };
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
@@ -1016,8 +1077,11 @@ function popGuardToolArguments(state: ExecutionState, name: string): unknown {
 async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
   if (!ctx.runGuard || state.guardModelTurnObserved) return;
   state.guardModelTurnObserved = true;
+  // myrmidon(RUN-GUARD-LOOPS): a stopped guard keeps answering stop; report the
+  // stop once, on the call that made it.
+  const alreadyStopped = ctx.runGuard.stopped;
   const decision = ctx.runGuard.modelCall();
-  if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+  if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
 }
 
 async function observeRunGuardEvent(input: {
@@ -1038,7 +1102,13 @@ async function observeRunGuardEvent(input: {
     const name = toolNameFromEvent(record);
     const args = record?.input ?? record?.arguments ?? record?.preview;
     if (args !== undefined) pushGuardToolArguments(state, name, args);
-    guard.event();
+    // myrmidon(RUN-GUARD-LOOPS): the call is classified (read-only or not) and
+    // counted; a long read-only streak or a thrice-repeated read stops the run.
+    // The wire event carries only the tool name and a short preview of the
+    // primary argument, which is all the guard hashes or inspects.
+    const alreadyStopped = guard.stopped;
+    const decision = guard.toolStarted(name, args);
+    if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
     return;
   }
   if (eventName === "tool.completed") {
@@ -1048,10 +1118,11 @@ async function observeRunGuardEvent(input: {
     }
     const name = toolNameFromEvent(record);
     const args = popGuardToolArguments(state, name);
+    const alreadyStopped = guard.stopped;
     const decision = toolHasError(record)
       ? guard.toolFailure(name, args)
       : guard.toolSuccess();
-    if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+    if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
     if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
     return;
   }
@@ -1695,7 +1766,23 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
+// myrmidon(OPE-11947): Hermes' own give-up notice. When the model pool is out of
+// quota (or the model never answers) Hermes retries, then ends the turn with
+// "⚠️ No reply: <model> didn't produce a reply this time, even after retries.
+// Send `continue` to try again, or switch models with /model." as the final
+// response. The turn "completes", so the board recorded a succeeded run whose
+// comment was that notice and re-woke the agent every few minutes (1709 of 5998
+// runs in 24 h). The notice is anchored at the start and bounded in length so a
+// long agent report that merely quotes it is never reclassified.
+export const HERMES_NO_REPLY_SENTINEL_RE =
+  /^\u26A0\uFE0F?\s*No reply:.{0,300}didn['\u2019]t produce a reply.{0,300}$/i;
+
+export function isHermesNoReplySentinel(response: string): boolean {
+  return HERMES_NO_REPLY_SENTINEL_RE.test(response.trim().replace(/\s+/g, " "));
+}
+
 export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  HERMES_NO_REPLY_SENTINEL_RE,
   // myrmidon(OPE-10494): provider maintenance / resource-exhaustion replies.
   // The upstream proxy answers with a bilingual Vietnamese/English notice
   // ("Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to
@@ -2128,6 +2215,8 @@ export function mapFinalResultForTest(input: {
   postCompactChars?: number | null;
   /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
   modelAttemptId?: string | null;
+  /** Digests of static wake blocks to persist for delta computation on next turn. */
+  wakeBlockDigests?: Record<string, string>;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -2137,8 +2226,14 @@ export function mapFinalResultForTest(input: {
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
   const hasToolCalls = Array.isArray(payload.tool_calls) && payload.tool_calls.length > 0;
+  // myrmidon(OPE-11947): Hermes' "No reply" give-up notice is the gateway's own
+  // text, never a tool result, so it is a provider failure even when the turn
+  // made tool calls earlier. Without tool calls nothing was acted on and the
+  // run is safe to replay (see executionRecovery below).
+  const hermesNoReply = input.terminal.status === "completed" && isHermesNoReplySentinel(output);
   const providerErrorAsContent = Boolean(
-    input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output),
+    hermesNoReply ||
+      (input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output)),
   );
   const mapped = providerErrorAsContent
     ? { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" }
@@ -2239,6 +2334,11 @@ export function mapFinalResultForTest(input: {
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
+    // myrmidon(OPE-11947): the model returned nothing and no tool ran, so the
+    // retry scheduler may replay the run (absent evidence never authorizes it).
+    ...(hermesNoReply && !hasToolCalls
+      ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } as const }
+      : {}),
     failedBeforeModel,
     retryNotBefore,
     ...(usage ? { usage } : {}),
@@ -2253,6 +2353,9 @@ export function mapFinalResultForTest(input: {
       hermesRunId: input.terminal.runId,
       ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
       strategy: input.strategy,
+      ...(input.wakeBlockDigests && Object.keys(input.wakeBlockDigests).length > 0
+        ? { wakeBlockDigests: input.wakeBlockDigests }
+        : {}),
     },
     sessionDisplayId,
     resultJson: {
@@ -2304,6 +2407,14 @@ export function mapFinalResultForTest(input: {
         return traces.length > 0 ? { llmCallTraces: { version: 1, calls: traces } } : {};
       })(),
       ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
+      // myrmidon(OPE-11947): the board defers the retry of a model-unavailable
+      // run by 30 min and up instead of the 30 s transient pair, and auto-resume
+      // returns the agent on the same long schedule. Every provider-error-as-content text
+      // (Hermes' "No reply" notice, an overload, a quota or maintenance reply)
+      // means the model pool did not answer, so the marker follows
+      // providerErrorAsContent, not only the "No reply" sentinel. Replay safety
+      // is a separate question, answered by executionRecovery above.
+      ...(providerErrorAsContent ? { model_unavailable: true } : {}),
     },
   };
 }
@@ -2337,6 +2448,19 @@ async function stopRun(input: {
 }
 
 /**
+ * myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): provenance travels as HTTP header
+ * values, which must be single-line Latin-1. An operator's cancellation reason
+ * is free text (often Russian); one character above U+00FF makes fetch throw
+ * before the request is sent, and the best-effort stop then silently never
+ * reached the gateway. Non-ASCII text is percent-encoded, control characters
+ * dropped, length bounded.
+ */
+function headerSafe(value: string): string {
+  const flat = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 160);
+  return /^[\x20-\x7e]*$/.test(flat) ? flat : encodeURIComponent(flat);
+}
+
+/**
  * myrmidon(HERMES-RUN-REATTACH): board-side stop for a gateway run the board
  * is not actively supervising (no live adapter execution): the heartbeat
  * cancellation path calls this with the run's persisted externalRunId so the
@@ -2363,11 +2487,11 @@ export async function stopGatewayRunForBoard(input: {
         Authorization: `Bearer ${input.apiKey}`,
         ...(input.cancellation
           ? {
-              "x-paperclip-correlation-id": input.cancellation.correlationId,
-              "x-paperclip-cancellation-source": input.cancellation.source.code,
-              ...(input.cancellation.source.endpoint ? { "x-paperclip-cancellation-endpoint": input.cancellation.source.endpoint } : {}),
-              ...(input.cancellation.source.actor ? { "x-paperclip-cancellation-actor": input.cancellation.source.actor } : {}),
-              "x-paperclip-cancellation-reason": input.cancellation.reason,
+              "x-paperclip-correlation-id": headerSafe(input.cancellation.correlationId),
+              "x-paperclip-cancellation-source": headerSafe(input.cancellation.source.code),
+              ...(input.cancellation.source.endpoint ? { "x-paperclip-cancellation-endpoint": headerSafe(input.cancellation.source.endpoint) } : {}),
+              ...(input.cancellation.source.actor ? { "x-paperclip-cancellation-actor": headerSafe(input.cancellation.source.actor) } : {}),
+              "x-paperclip-cancellation-reason": headerSafe(input.cancellation.reason),
             }
           : {}),
       },
@@ -2720,7 +2844,17 @@ function connectErrorCode(err: unknown): string | null {
   const outer = err instanceof Error ? (err as { cause?: unknown }).cause : null;
   const inner = outer instanceof Error ? (outer as { cause?: unknown }).cause : null;
   const code = inner && typeof inner === "object" ? (inner as { code?: unknown }).code : null;
-  return typeof code === "string" ? code : null;
+  if (typeof code === "string") return code;
+  const outerCode = outer && typeof outer === "object" ? (outer as { code?: unknown }).code : null;
+  if (typeof outerCode === "string") return outerCode;
+  const errCode = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
+  if (typeof errCode === "string") return errCode;
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  if (msg.includes("EAI_AGAIN")) return "EAI_AGAIN";
+  if (msg.includes("ECONNREFUSED")) return "ECONNREFUSED";
+  if (msg.includes("ENOTFOUND")) return "ENOTFOUND";
+  if (msg.includes("EHOSTUNREACH")) return "EHOSTUNREACH";
+  return null;
 }
 
 // myrmidon(G4): network failures that unambiguously never reached Hermes at
@@ -2732,6 +2866,7 @@ const UNAMBIGUOUS_PRE_SEND_CONNECT_ERROR_CODES = new Set([
   "ECONNREFUSED",
   "ENOTFOUND",
   "EHOSTUNREACH",
+  "EAI_AGAIN",
 ]);
 
 /** myrmidon(G4): true only when a failed POST /v1/runs proves Hermes never
@@ -2820,7 +2955,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
-  const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const strategy = resolveEffectiveSessionKeyStrategy({
+    configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
+  });
   // myrmidon(G4): raw debug JSON is opt-in; see handleEvent/logCompactEvent.
   const debugEvents = ctx.config.debugEvents === true;
   // myrmidon(G4): the Idempotency-Key, the "run" session-key strategy, and
@@ -3179,12 +3317,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // remote create request is its dispatch boundary. Report it before the
     // request can block so continuation gates may release their issue lock.
     ctx.onDispatch?.();
-    const created = await fetchJson(createRunUrl, {
-      method: "POST",
-      headers: runHeaders,
-      body: JSON.stringify(body.body),
-      signal: createSignal,
-    });
+  // myrmidon(OPE-11677): when waking stopped containers, wait for gateway readiness
+  // (DNS resolution and TCP listen) before failing the run. EAI_AGAIN and ECONNREFUSED
+  // are unambiguous pre-send connect errors that can resolve once the container is ready.
+  const gatewayReadyTimeoutMs = resolveGatewayReadyTimeoutMs(ctx.config.gatewayReadyTimeoutMs);
+  const createStartMs = Date.now();
+  let created: unknown;
+  while (true) {
+    try {
+      created = await fetchJson(createRunUrl, {
+        method: "POST",
+        headers: runHeaders,
+        body: JSON.stringify(body.body),
+        signal: createSignal,
+      });
+      break;
+    } catch (err) {
+      const code = connectErrorCode(err);
+      const isRetryableConnect = code === "EAI_AGAIN" || code === "ECONNREFUSED";
+      const elapsed = Date.now() - createStartMs;
+      if (
+        isRetryableConnect &&
+        !ctx.signal?.aborted &&
+        !createSignal.aborted &&
+        elapsed + GATEWAY_CONNECT_RETRY_INTERVAL_MS < gatewayReadyTimeoutMs
+      ) {
+        await ctx.onLog("stdout", `[hermes-gateway] waiting for gateway readiness (${code}, elapsed ${elapsed}ms / timeout ${gatewayReadyTimeoutMs}ms)...\\n`);
+        await new Promise((resolve) => setTimeout(resolve, GATEWAY_CONNECT_RETRY_INTERVAL_MS));
+        continue;
+      }
+      throw err;
+    }
+  }
     runId = extractRunId(created);
     replayed = asRecord(created)?.replayed === true; // myrmidon(G4)
     if (!runId) {
@@ -3422,6 +3586,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: {
         hermesRunId: runId,
         strategy,
+        ...(body.wakeBlockDigests && Object.keys(body.wakeBlockDigests).length > 0
+          ? { wakeBlockDigests: body.wakeBlockDigests }
+          : {}),
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
@@ -3465,6 +3632,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: {
         hermesRunId: runId,
         strategy,
+        ...(body.wakeBlockDigests && Object.keys(body.wakeBlockDigests).length > 0
+          ? { wakeBlockDigests: body.wakeBlockDigests }
+          : {}),
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
@@ -3524,6 +3694,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     toolSchemaTokens,
     toolResultChars,
     toolResultTokens,
+    wakeBlockDigests: body.wakeBlockDigests,
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's

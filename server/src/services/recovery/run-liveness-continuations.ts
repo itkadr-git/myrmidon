@@ -6,7 +6,17 @@ import { withRecoveryContext } from "./status-only-context.js";
 import { RECOVERY_REASON_KINDS } from "./origins.js";
 
 export const RUN_LIVENESS_CONTINUATION_REASON = RECOVERY_REASON_KINDS.runLivenessContinuation;
+// OPE-12190: continuation ceilings are per liveness state. `plan_only` keeps the
+// previous shared ceiling (2); `empty_response` gets exactly one correction.
 export const DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS = 2;
+export const DEFAULT_MAX_PLAN_ONLY_LIVENESS_CONTINUATION_ATTEMPTS = DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS;
+export const DEFAULT_MAX_EMPTY_RESPONSE_LIVENESS_CONTINUATION_ATTEMPTS = 1;
+
+// OPE-12190: an empty run (no tool call, no text) gets exactly one correction
+// in the agent's own words, modelled after NO_PROGRESS_AUTO_RETRY_HINT in
+// server/src/myrmidon/run-guard-stop.ts.
+export const EMPTY_RESPONSE_LIVENESS_CONTINUATION_INSTRUCTION =
+  "Предыдущий прогон завершился без вызова инструмента и без текста. Сделай конкретный шаг по задаче: правка, тест, коммит или комментарий с точным блокером";
 
 const ACTIONABLE_LIVENESS_STATES = new Set<RunLivenessState>(["plan_only", "empty_response"]);
 const CONTINUATION_ACTIVE_ISSUE_STATUSES = new Set(["todo", "in_progress"]);
@@ -104,7 +114,11 @@ export function decideRunLivenessContinuation(input: {
     budgetBlocked,
     idempotentWakeExists,
   } = input;
-  const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS;
+  const defaultMaxAttempts =
+    livenessState === "empty_response"
+      ? DEFAULT_MAX_EMPTY_RESPONSE_LIVENESS_CONTINUATION_ATTEMPTS
+      : DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS;
+  const maxAttempts = input.maxAttempts ?? defaultMaxAttempts;
 
   if (!livenessState || !ACTIONABLE_LIVENESS_STATES.has(livenessState)) {
     return { kind: "skip", reason: "liveness state is not actionable for continuation" };
@@ -169,7 +183,9 @@ export function decideRunLivenessContinuation(input: {
     maxContinuationAttempts: maxAttempts,
     instruction:
       nextAction ??
-      "The previous run ended without concrete progress. Take the first concrete action now or mark the issue blocked with a specific unblock request.",
+      (livenessState === "empty_response"
+        ? EMPTY_RESPONSE_LIVENESS_CONTINUATION_INSTRUCTION
+        : "The previous run ended without concrete progress. Take the first concrete action now or mark the issue blocked with a specific unblock request."),
   }, "normal_model");
 
   return {

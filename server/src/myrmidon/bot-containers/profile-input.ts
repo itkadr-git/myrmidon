@@ -35,9 +35,18 @@ import type {
   HermesProfileInstanceDefaults,
   HermesProfileLspSettings,
   HermesProfileMcpServer,
+  HermesProfileRoleToolDiet,
   HermesProfileSkillFile,
   HermesProfileWorkspaceFile,
 } from "./profile-compiler.js";
+// myrmidon(TOOL-DIET-ROLES): the per-role default tool lists (role + card -> what the bot keeps out of its schema).
+import {
+  BOT_DEVELOPER_ROLES_ENV,
+  BOT_ROLE_TOOL_DIET_ENV,
+  parseBotDeveloperRoles,
+  parseBotRoleToolDiet,
+  resolveBotToolDiet,
+} from "./tool-diet.js";
 
 // ---------------------------------------------------------------------------
 // Instance settings
@@ -74,8 +83,10 @@ export const BOT_COMPRESSION_THRESHOLD_TOKENS_ENV = "MYRMIDON_BOT_COMPRESSION_TH
  * myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS — comma-separated single tool names that every
  * bot's config.yaml lists under `agent.disabled_tools`, so their schemas are not sent on each
  * model call. Unset means {@link BOT_DEFAULT_DISABLED_TOOLS}; `none` (also `off`, `-`) means no
- * tool is disabled — the one-line way back to the previous config.yaml. A card's own
- * `disabledTools` list replaces it, and `vision_analyze` is kept for a card with a vision model.
+ * tool is disabled — the one-line way back to the previous config.yaml: it also switches the
+ * per-role defaults off (myrmidon(TOOL-DIET-ROLES), see tool-diet.ts). A card's own
+ * `disabledTools` list replaces both lists, its `keepTools` re-enables single names of them, and
+ * `vision_analyze` is kept for a card with a vision model.
  */
 export const BOT_DISABLED_TOOLS_ENV = "MYRMIDON_BOT_DISABLED_TOOLS";
 
@@ -83,6 +94,18 @@ export const BOT_DISABLED_TOOLS_ENV = "MYRMIDON_BOT_DISABLED_TOOLS";
  * myrmidon(TOOL-DIET): the fleet default — the tools that no measured role called even once in
  * ~7000 model calls over three days (engineering, infrastructure and dev roles): the five browser
  * credential-vault tools and `vision_analyze`. Their schemas cost about 1.2k tokens per call.
+ *
+ * myrmidon(TOOL-DIET-ROLES, OPE-11947) adds two tools that no bot can use or needs, whatever its
+ * role (a 28k-request sample of 21 bots: each called under 0.5 times per 100 requests):
+ *  - `clarify` asks a person at a terminal. Every bot runs behind the Hermes API server, which
+ *    wires no clarify callback (gateway/platforms/api_server.py), so the tool only ever answers
+ *    "not available in this execution context"; Hermes' own `hermes-api-server` toolset leaves it
+ *    out, and only a card that lists the `clarify` toolset pulls it back. About 1.7k characters.
+ *  - `skill_manage` lets the bot write its own skills. Company skills reach a bot through the
+ *    board; while the tool is present Hermes also adds its guidance to the system prompt and
+ *    forks a background skill review (vendor estimate ~30K tokens per event) after every ten
+ *    tool iterations. About 3.5k characters of schema, plus those two costs.
+ * A card that needs either keeps it with `keepTools: ["clarify"]` / `["skill_manage"]`.
  */
 export const BOT_DEFAULT_DISABLED_TOOLS: readonly string[] = [
   "browser_vault_enter_code",
@@ -91,6 +114,8 @@ export const BOT_DEFAULT_DISABLED_TOOLS: readonly string[] = [
   "browser_vault_save_login",
   "browser_vault_unlock",
   "vision_analyze",
+  "clarify",
+  "skill_manage",
 ];
 
 /**
@@ -244,6 +269,26 @@ export interface BotProfileSettings {
    * `readBotProfileSettings` always fills it.
    */
   disabledTools?: string[];
+  /**
+   * myrmidon(TOOL-DIET-ROLES): whether the per-role default tool lists apply
+   * (MYRMIDON_BOT_ROLE_TOOL_DIET, and not MYRMIDON_BOT_DISABLED_TOOLS=none).
+   * Optional in the type so hand-built settings objects keep compiling — absent
+   * means off there; `readBotProfileSettings` always fills it (default on).
+   */
+  roleToolDiet?: boolean;
+  /**
+   * myrmidon(TOOL-DIET-ROLES): MYRMIDON_BOT_DEVELOPER_ROLES resolved — the caste
+   * keys of the developer tier. Absent = the module default. `readBotProfileSettings`
+   * always fills it.
+   */
+  developerRoles?: string[];
+}
+
+/** myrmidon(TOOL-DIET): whether MYRMIDON_BOT_DISABLED_TOOLS says "no tool is disabled" (`none`, `off`, `-`). */
+function isNoneToolList(raw: string | null): boolean {
+  if (raw === null) return false;
+  const lowered = raw.trim().toLowerCase();
+  return lowered === "none" || lowered === "off" || lowered === "-";
 }
 
 /**
@@ -252,8 +297,7 @@ export interface BotProfileSettings {
  */
 export function parseBotDisabledTools(raw: string | null): string[] {
   if (raw === null) return [...BOT_DEFAULT_DISABLED_TOOLS];
-  const lowered = raw.trim().toLowerCase();
-  if (lowered === "none" || lowered === "off" || lowered === "-") return [];
+  if (isNoneToolList(raw)) return [];
   const seen = new Set<string>();
   const names: string[] = [];
   for (const item of raw.split(",")) {
@@ -530,6 +574,12 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
     localMemoryOff: isTruthyBotSwitch(readSetting(env, BOT_LOCAL_MEMORY_OFF_ENV)),
     // myrmidon(TOOL-DIET): the single tools no bot sends to the model.
     disabledTools: parseBotDisabledTools(readSetting(env, BOT_DISABLED_TOOLS_ENV)),
+    // myrmidon(TOOL-DIET-ROLES): the per-role defaults on top of that list. Off with their own
+    // switch, and off with MYRMIDON_BOT_DISABLED_TOOLS=none ("no tool is disabled").
+    roleToolDiet:
+      parseBotRoleToolDiet(readSetting(env, BOT_ROLE_TOOL_DIET_ENV)) &&
+      !isNoneToolList(readSetting(env, BOT_DISABLED_TOOLS_ENV)),
+    developerRoles: parseBotDeveloperRoles(readSetting(env, BOT_DEVELOPER_ROLES_ENV)),
   };
 }
 
@@ -552,8 +602,24 @@ function assertHttpUrl(setting: string, value: string): void {
   }
 }
 
-/** Env variable names the compiler or the image owns; the LLM key variable may not be one of them. */
-const OWNED_ENV_NAMES = new Set(["HOME", "PATH", "HERMES_HOME", "API_SERVER_KEY", "PAPERCLIP_API_URL", "PAPERCLIP_API_KEY"]);
+/**
+ * Env variable names the compiler or the image owns; the LLM key variable may
+ * not be one of them. The board key/address pair is owned under both names:
+ * MYRMIDON_API_KEY / MYRMIDON_API_URL (the canonical names the profile
+ * compiles in, REBRAND-ENV) and the legacy PAPERCLIP_* alias written next to
+ * them — otherwise an admin could name the LLM key variable MYRMIDON_API_KEY
+ * and the bot would hand the board key to the LLM gateway.
+ */
+const OWNED_ENV_NAMES = new Set([
+  "HOME",
+  "PATH",
+  "HERMES_HOME",
+  "API_SERVER_KEY",
+  "MYRMIDON_API_URL",
+  "MYRMIDON_API_KEY",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_API_KEY",
+]);
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -575,7 +641,7 @@ export function assertBotProfileSettings(settings: BotProfileSettings): void {
   if (settings.llmApiKeyEnv) {
     if (!ENV_NAME_PATTERN.test(settings.llmApiKeyEnv) || OWNED_ENV_NAMES.has(settings.llmApiKeyEnv)) {
       throw new BotProfileInputError(
-        `${BOT_LLM_API_KEY_ENV_ENV} must be a valid variable name that is not HOME, PATH, HERMES_HOME, API_SERVER_KEY, PAPERCLIP_API_URL or PAPERCLIP_API_KEY`,
+        `${BOT_LLM_API_KEY_ENV_ENV} must be a valid variable name that is not HOME, PATH, HERMES_HOME, API_SERVER_KEY, MYRMIDON_API_URL, MYRMIDON_API_KEY, PAPERCLIP_API_URL or PAPERCLIP_API_KEY`,
       );
     }
   }
@@ -767,6 +833,8 @@ function readAdapterConfig(card: Record<string, unknown>): HermesProfileAdapterC
     toolsets,
     // myrmidon(TOOL-DIET): present (even empty) it replaces the instance list; absent, the instance list applies.
     disabledTools: Array.isArray(card.disabledTools) ? (asStringList(card.disabledTools) ?? []) : undefined,
+    // myrmidon(TOOL-DIET-ROLES): tools / role groups the card keeps although a default list drops them.
+    keepTools: asStringList(card.keepTools),
   };
 }
 
@@ -1000,6 +1068,27 @@ function buildBotLsp(
 }
 
 /**
+ * myrmidon(TOOL-DIET-ROLES): the role defaults -> the compiler's `roleToolDiet`. Off (undefined) when the
+ * instance switched them off, when hand-built settings carry no switch, or when the bot has no role.
+ * Resolved here, not in the compiler, for the same reason as the language-server policy: the pure
+ * compiler keeps no role knowledge. The role is matched as a caste key (tool-diet.ts), never by name.
+ */
+function buildRoleToolDiet(
+  role: string | undefined,
+  adapterConfig: HermesProfileAdapterConfig,
+  settings: BotProfileSettings,
+): HermesProfileRoleToolDiet | undefined {
+  if (!settings.roleToolDiet) return undefined;
+  const diet = resolveBotToolDiet({
+    role,
+    cardToolsets: (adapterConfig.toolsets ?? "").split(","),
+    keepTools: adapterConfig.keepTools ?? [],
+    developerRoles: settings.developerRoles,
+  });
+  return diet ? { disabledTools: diet.disabledTools, disabledToolsets: diet.disabledToolsets } : undefined;
+}
+
+/**
  * Card + resolved data + instance settings -> the input of `compileHermesProfile`.
  * Deterministic: the same source and settings give the same input, which is what
  * keeps the compiled hashes stable between reconcile ticks (the reconciler calls
@@ -1075,9 +1164,10 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
   if (settings.modelContextLengthsError) instanceDefaultsWarnings.push(settings.modelContextLengthsError);
   warnings.push(...instanceDefaultsWarnings);
 
+  const adapterConfig = readAdapterConfig(card);
   const input: HermesProfileInput = {
     botKey: source.botKey,
-    adapterConfig: readAdapterConfig(card),
+    adapterConfig,
     env,
     skills: source.skills,
     instructions: source.instructions,
@@ -1102,6 +1192,8 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
       readSettingFromRecord(env, PARALLEL_HELPERS_DEFAULT_MODEL_ENV) ?? liveBehaviorSetting<string>("botHelperModel") ?? "",
     ),
     instanceDefaults: settingsInstanceDefaults,
+    // myrmidon(TOOL-DIET-ROLES): role defaults for the tools the bot keeps out of its schema.
+    roleToolDiet: buildRoleToolDiet(source.role, adapterConfig, settings),
     // myrmidon(BOT-LSP-DEFAULTS): role policy + card pin -> the bot's `lsp` block.
     // Resolved here (not in the compiler) for the same reason as the helpers:
     // the pure compiler keeps no settings knowledge.

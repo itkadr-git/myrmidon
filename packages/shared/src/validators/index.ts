@@ -348,6 +348,7 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  agentVisibilityAuthorizationPolicySchema,
   assignmentAuthorizationPolicySchema,
   protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
@@ -355,6 +356,7 @@ export {
   sourceTrustMetadataSchema,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
+  type AgentVisibilityAuthorizationPolicyInput,
   type TrustAuthorizationPolicyInput,
   type SourceTrustMetadataInput,
 } from "./trust-policy.js";
@@ -1011,6 +1013,7 @@ export {
 } from "./tool-access.js";
 export * from "./skill-policy.js";
 export * from "./provider-trace.js";
+export * from "./run-outcome.js";
 export * from "./app-definition.js";
 export * from "./chat-channels.js";
 export * from "./geo-check.js";

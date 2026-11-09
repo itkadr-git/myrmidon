@@ -37,6 +37,13 @@ describe("heartbeatsApi.list", () => {
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?agentId=agent-1&limit=25");
   });
 
+  it("passes a before cursor to the heartbeat runs endpoint", async () => {
+    await heartbeatsApi.list("company-1", "agent-1", 200, { before: "2026-11-07T00:00:00.000Z" });
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/heartbeat-runs?agentId=agent-1&limit=200&before=2026-11-07T00%3A00%3A00.000Z",
+    );
+  });
+
   it("passes wakeReason and hasResult options to filter runs", async () => {
     await heartbeatsApi.list("company-1", "agent-1", 50, {
       wakeReason: "issue_commented",
@@ -45,6 +52,25 @@ describe("heartbeatsApi.list", () => {
 
     expect(mockApi.get).toHaveBeenCalledWith(
       "/companies/company-1/heartbeat-runs?agentId=agent-1&limit=50&wakeReason=issue_commented&hasResult=true",
+    );
+  });
+});
+
+describe("heartbeatsApi.listPage", () => {
+  it("returns the array body and X-Next-Cursor response header", async () => {
+    const runs = [{ id: "run-1" }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(runs), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "X-Next-Cursor": "2026-11-07T00:00:00.000Z" },
+    })));
+
+    await expect(heartbeatsApi.listPage("company-1", "agent-1")).resolves.toEqual({
+      runs,
+      nextCursor: "2026-11-07T00:00:00.000Z",
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/companies/company-1/heartbeat-runs?agentId=agent-1&limit=200",
+      expect.objectContaining({ credentials: "include" }),
     );
   });
 });

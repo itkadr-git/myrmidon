@@ -2690,6 +2690,48 @@
       "when": 1762248000000,
       "tag": "0457_company_secret_github_app_installations",
       "breakpoints": true
+    },
+    {
+      "idx": 459,
+      "version": "7",
+      "when": 1793560000001,
+      "tag": "0459_expire_pending_interactions_on_closed_issues",
+      "breakpoints": true
+    },
+    {
+      "idx": 460,
+      "version": "7",
+      "when": 1762334717000,
+      "tag": "0460_chubby_doctor_spectrum",
+      "breakpoints": true
+    },
+    {
+      "idx": 462,
+      "version": "7",
+      "when": 1762400000000,
+      "tag": "0462_pull_request_work_product_url_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 463,
+      "version": "7",
+      "when": 1762400000001,
+      "tag": "0463_reconcile_stuck_resurrection_wakes",
+      "breakpoints": true
+    },
+    {
+      "idx": 464,
+      "version": "7",
+      "when": 1794090617091,
+      "tag": "0464_sticky_sabra",
+      "breakpoints": true
+    },
+    {
+      "idx": 466,
+      "version": "7",
+      "when": 1794175196510,
+      "tag": "0466_slim_thunderbolt_ross",
+      "breakpoints": true
     }
   ]
 }
