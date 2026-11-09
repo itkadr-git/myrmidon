@@ -29,7 +29,7 @@ describe("transport-security", () => {
     expect(isLoopbackHostname("localhost")).toBe(true);
     expect(isLoopbackHostname("127.0.0.1")).toBe(true);
     expect(isRemotePlainHttp(new URL("http://127.0.0.1:8642"))).toBe(false);
-    expect(isRemotePlainHttp(new URL("http://192.0.2.110:18701"))).toBe(true);
+    expect(isRemotePlainHttp(new URL("http://10.0.0.110:18701"))).toBe(true);
   });
 
   // myrmidon(OPE-10200): plain HTTP only to the gateway of an active registered private fleet site
@@ -37,13 +37,13 @@ describe("transport-security", () => {
     const configWithFleetHost = { container: { host: "myr-vm1" } };
     const sitePrivate: FleetSiteSecurityTarget = {
       name: "myr-vm1",
-      url: "http://192.0.2.110:9100",
+      url: "http://10.0.0.110:9100",
       status: "active",
-      profile: { privateNetwork: true },
+      profile: { privateNetwork: true, gatewayPortStart: 18700, gatewayPortEnd: 18799 },
     };
     const siteNoFlag: FleetSiteSecurityTarget = {
       name: "myr-vm1",
-      url: "http://192.0.2.110:9100",
+      url: "http://10.0.0.110:9100",
       status: "active",
       profile: {},
     };
@@ -59,12 +59,12 @@ describe("transport-security", () => {
 
     it("2. apiBaseUrl на хост площадки без флага приватной сети → отказ", () => {
       // Host matches, but site profile has no privateNetwork/tunnel flag (defaults to false)
-      const siteGatewayUrl = new URL("http://192.0.2.110:18701");
+      const siteGatewayUrl = new URL("http://10.0.0.110:18701");
       expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithFleetHost, [siteNoFlag])).toBe(false);
 
       const siteExplicitFalse: FleetSiteSecurityTarget = {
         name: "myr-vm1",
-        url: "http://192.0.2.110:9100",
+        url: "http://10.0.0.110:9100",
         status: "active",
         profile: { privateNetwork: false, tunnel: false },
       };
@@ -72,7 +72,7 @@ describe("transport-security", () => {
     });
 
     it("3. с флагом → разрешено (privateNetwork, tunnel, private_network)", () => {
-      const siteGatewayUrl = new URL("http://192.0.2.110:18701");
+      const siteGatewayUrl = new URL("http://10.0.0.110:18701");
 
       // with privateNetwork flag
       expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithFleetHost, [sitePrivate])).toBe(true);
@@ -80,24 +80,24 @@ describe("transport-security", () => {
       // with tunnel flag
       const siteTunnel: FleetSiteSecurityTarget = {
         name: "myr-vm1",
-        url: "http://192.0.2.110:9100",
+        url: "http://10.0.0.110:9100",
         status: "active",
-        profile: { tunnel: true },
+        profile: { tunnel: true, gatewayPortStart: 18700, gatewayPortEnd: 18799 },
       };
       expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithFleetHost, [siteTunnel])).toBe(true);
 
       // with private_network flag
       const siteSnakeCase: FleetSiteSecurityTarget = {
         name: "myr-vm1",
-        url: "http://192.0.2.110:9100",
+        url: "http://10.0.0.110:9100",
         status: "active",
-        profile: { private_network: true },
+        profile: { private_network: true, gatewayPortStart: 18700, gatewayPortEnd: 18799 },
       };
       expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithFleetHost, [siteSnakeCase])).toBe(true);
     });
 
     it("4. карточка без host → поведение прежнее", () => {
-      const remoteUrl = new URL("http://192.0.2.110:18701");
+      const remoteUrl = new URL("http://10.0.0.110:18701");
 
       const configLocal = { container: { host: "local" } };
       expect(isFleetHostPlacement(configLocal)).toBe(false);
@@ -124,27 +124,27 @@ describe("transport-security", () => {
     });
 
     it("rejects non-active fleet sites even with private network flag", () => {
-      const siteGatewayUrl = new URL("http://192.0.2.110:18701");
+      const siteGatewayUrl = new URL("http://10.0.0.110:18701");
 
       const siteDraining: FleetSiteSecurityTarget = {
         name: "myr-vm1",
-        url: "http://192.0.2.110:9100",
+        url: "http://10.0.0.110:9100",
         status: "draining",
-        profile: { privateNetwork: true },
+        profile: { privateNetwork: true, gatewayPortStart: 18700, gatewayPortEnd: 18799 },
       };
       expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithFleetHost, [siteDraining])).toBe(false);
 
       const siteDisabled: FleetSiteSecurityTarget = {
         name: "myr-vm1",
-        url: "http://192.0.2.110:9100",
+        url: "http://10.0.0.110:9100",
         status: "disabled",
-        profile: { privateNetwork: true },
+        profile: { privateNetwork: true, gatewayPortStart: 18700, gatewayPortEnd: 18799 },
       };
       expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithFleetHost, [siteDisabled])).toBe(false);
     });
 
     it("supports resolution via setActiveFleetSites and setFleetSiteSecurityResolver", () => {
-      const siteGatewayUrl = new URL("http://192.0.2.110:18701");
+      const siteGatewayUrl = new URL("http://10.0.0.110:18701");
 
       // Before registering: rejected
       expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithFleetHost)).toBe(false);
@@ -162,13 +162,15 @@ describe("transport-security", () => {
       expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithFleetHost)).toBe(true);
     });
 
-    it("supports fleetSites / fleetSite embedded directly in adapter config", () => {
-      const siteGatewayUrl = new URL("http://192.0.2.110:18701");
-      const configWithEmbeddedSites = {
-        container: { host: "myr-vm1" },
-        fleetSites: [sitePrivate],
-      };
-      expect(allowsInsecureRemoteHttp(siteGatewayUrl, configWithEmbeddedSites)).toBe(true);
+    it("a site described inside the card does not open plain http: only the registry is a source", () => {
+      const siteGatewayUrl = new URL("http://10.0.0.110:18701");
+      // `fleetSites` / `fleetSite` typed into the card were read before the registry once; now they are not read.
+      expect(
+        allowsInsecureRemoteHttp(siteGatewayUrl, { container: { host: "myr-vm1" }, fleetSites: [sitePrivate] }),
+      ).toBe(false);
+      expect(
+        allowsInsecureRemoteHttp(siteGatewayUrl, { container: { host: "myr-vm1" }, fleetSite: sitePrivate }),
+      ).toBe(false);
     });
 
     it("isSitePrivateNetwork correctly validates profile flags", () => {

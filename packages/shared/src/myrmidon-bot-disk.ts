@@ -707,6 +707,16 @@ export function resolveBotDiskSettings(options: {
       ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
       ...(stored.defaultRepo ? { defaultRepo: stored.defaultRepo } : {}),
       ...optionalLayoutKeys(stored),
+      // myrmidon(1.6.7-SETTINGS-BOTDISK-MERGE): the C7 mechanics keys the lifecycle
+      // keys above do not cover (botdIntervalSec, legacyPressureIdleDays,
+      // hermesPruneEnabled, hermesPruneDays, gitMigrationEnabled) must be part of
+      // the effective settings too. The service patches `base = resolve(...).settings`
+      // and then replaces the whole stored object (instance settings replace nested
+      // objects), so a stored key missing here was erased by the next PATCH of any
+      // other key — on the board gitMigrationEnabled=true vanished and the bot
+      // container lost MYRMIDON_GIT_MIGRATION_ENABLED. The keys that overlap with
+      // the lifecycle group above carry the same values, so spreading both is idempotent.
+      ...optionalMechanicsKeys(stored),
     },
     sources: { enabled: enabled[1], idleTtlMs: idleTtlMs[1] },
   };
