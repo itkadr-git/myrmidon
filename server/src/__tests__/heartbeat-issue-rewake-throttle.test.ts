@@ -129,7 +129,9 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: {
+        teamLiveness: { idlePickup: false },
+      },
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -360,9 +362,6 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     await seedStaleCancelledRun(120);
     const wake1 = await staleWake();
     expect(wake1).not.toBeNull();
-    // Finish the admitted run before seeding the next cancellation. Otherwise
-    // its completion may race the second wake and break the terminal-run streak.
-    await drainHeartbeatRunsToQuiescence(db, heartbeat);
     if (wake1) {
       await db.update(heartbeatRuns).set({
         status: "cancelled",
@@ -370,6 +369,9 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
         finishedAt: new Date(Date.now() - 90_000),
       }).where(eq(heartbeatRuns.id, wake1.id));
     }
+    // Finish the admitted run before seeding the next cancellation. Otherwise
+    // its completion may race the second wake and break the terminal-run streak.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
 
     // Run 2 stale cancelled -> wake 2 encounters streak of 2 stale cancellations -> freeze engaged!
     await seedStaleCancelledRun(60);
@@ -382,7 +384,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .where(eq(issues.id, issueId));
     expect(frozenIssue?.blocker?.issueRewakeFreeze).toMatchObject({
       agentId,
-      noProgressStreak: 2,
+      noProgressStreak: 3,
     });
 
     const comments = await db
@@ -390,7 +392,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("2 прогонов по задаче без прогресса");
+    expect(comments[0]?.body).toContain("3 прогонов по задаче без прогресса");
 
     // Third auto-wake is suppressed because issue is frozen
     const wake3 = await staleWake();
