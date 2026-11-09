@@ -85,7 +85,10 @@ describe("provider-garbage", () => {
     expect(hits).toHaveLength(0);
     expect(
       detectProviderGarbageGroups(runs, { distinctAgents: 3, sameAgentRuns: 5, now }).map((h) => h.modelGroup),
-    ).toEqual(["nexus-grok", "other-channel"]);
+    ).toEqual(["nexus-grok"]);
+    expect(
+      detectProviderGarbageGroups(runs, { distinctAgents: 2, sameAgentRuns: 5, now }).map((h) => h.modelGroup),
+    ).toEqual(["other-channel", "nexus-grok"]);
   });
 
   it("does not report a group hit for isolated runs matching a stub signature below the burst threshold", () => {
