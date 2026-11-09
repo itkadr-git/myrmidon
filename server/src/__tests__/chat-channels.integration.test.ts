@@ -1545,6 +1545,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       runId,
     });
     await service.processPendingPublications();
+    // Publication processing can commit the issue comment and its link in
+    // separate async steps. Wait for the exact final publication before the
+    // setup test checks the round-trip proof, instead of relying on the
+    // current drain timing.
+    await vi.waitFor(async () => {
+      const publication = await db
+        .select({
+          id: chatPublications.id,
+        })
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.endpointId, endpointId),
+            eq(chatPublications.conversationId, conversation.id),
+            eq(chatPublications.state, "published"),
+            isNotNull(chatPublications.commentId),
+            sql`${chatPublications.payload}->>'interactionId' is null`,
+            sql`${chatPublications.payload}->>'progressState' is null`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0]);
+      expect(publication).toBeDefined();
+    });
     const providerRuntime = fakeRuntime.endpoints.get(endpointId);
     if (providerRuntime) providerRuntime.posts.length = 0;
   }
