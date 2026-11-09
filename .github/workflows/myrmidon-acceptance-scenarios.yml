@@ -30,15 +30,6 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Generate bot token
-        id: token
-        run: |
-          TOKEN=$(node .github/scripts/get-bot-token.mjs)
-          echo "::add-mask::$TOKEN"
-          echo "value=$TOKEN" >> $GITHUB_OUTPUT
-        env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
-
       - name: Run acceptance scenarios check
         run: |
           # Fetch PR body via GitHub API, extract issue keys (OPE-xxxx), fetch their acceptance-scenarios documents from Paperclip API, and run check-acceptance-scenarios.mjs
@@ -148,7 +139,8 @@ jobs:
             });
           '
         env:
-          GH_TOKEN: ${{ steps.token.outputs.value }}
+          # The job token reads the PR (pull-requests: read); the upstream COMMITPERCLIP bot key does not exist in this repo.
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
