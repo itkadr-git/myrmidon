@@ -13,6 +13,16 @@ import type { Config } from "../../config.js";
 import { CORPUS_EMBED_BATCH_SIZE, embedInBatches } from "./embed-batches.js";
 import { CorpusRequestError } from "./service.js";
 import { logger } from "../../middleware/logger.js";
+import {
+  CORPUS_DATASET_LIST_CACHE_TTL_ENV,
+  CORPUS_QUERY_EMBED_CACHE_TTL_ENV,
+  DEFAULT_DATASET_LIST_CACHE_TTL_SEC,
+  DEFAULT_QUERY_EMBED_CACHE_TTL_SEC,
+  createQueryVectorCache,
+  queryVectorKey,
+  readCacheTtlMs,
+  withDatasetListCache,
+} from "./hot-path-cache.js";
 
 /** How long one embedding request may take before it is aborted. A document is sent as many requests. */
 const CORPUS_EMBED_REQUEST_TIMEOUT_MS = 120_000;
@@ -83,7 +93,7 @@ function sourceFields(row: { sourceUri: string | null; contentHash: string | nul
 }
 
 // Port objects are created per request; keep the bounded query cache across requests.
-const queryVectors = new Map<string, { expiresAt: number; value: Promise<number[]> }>();
+const queryVectors = createQueryVectorCache();
 
 export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Config): CorpusPorts {
   const { settings } = context;
@@ -134,18 +144,12 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
   const searchIndex = createPostgresSearchIndex({ sql: createSqlExecutor(db) });
   // Share identical in-flight queries and retain only a small, short-lived set of vectors.
   const queryVector = (input: { companyId: string; query: string; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }): Promise<number[]> => {
-    const key = JSON.stringify([input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.query]);
-    const now = Date.now();
-    const cached = queryVectors.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
-    if (cached) queryVectors.delete(key);
-    const value = embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, [input.query]).then((vectors) => vectors[0]!);
-    queryVectors.set(key, { value, expiresAt: now + 60_000 });
-    void value.catch(() => {
-      if (queryVectors.get(key)?.value === value) queryVectors.delete(key);
-    });
-    while (queryVectors.size > 128) queryVectors.delete(queryVectors.keys().next().value!);
-    return value;
+    const key = queryVectorKey(input);
+    // OPE-12272: the TTL is a setting (default 10 min, 0 = off); the key holds the model and the exact text.
+    const ttlMs = readCacheTtlMs(context.env[CORPUS_QUERY_EMBED_CACHE_TTL_ENV], DEFAULT_QUERY_EMBED_CACHE_TTL_SEC);
+    return queryVectors.get(key, ttlMs, () =>
+      embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, [input.query]).then((vectors) => vectors[0]!),
+    );
   };
   const index = {
     assertEmbedderConfigured: checkEmbedderConfigured,
@@ -183,12 +187,12 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
   };
   const datasetRecord = async (companyId: string, row: Awaited<ReturnType<typeof store.getDataset>>): Promise<CorpusDatasetRecord | null> => {
     if (!row) return null;
-    const [docs, stats, chunks] = await Promise.all([
-      store.listDocuments({ companyId, datasetId: row.id }),
+    // OPE-12272: the document count is the sum of the per-status counts; do not load every document row to count them.
+    const [stats, chunks] = await Promise.all([
       db.select({ status: corpusDocuments.status, value: count() }).from(corpusDocuments).where(and(eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.datasetId, row.id))).groupBy(corpusDocuments.status),
       db.select({ value: count() }).from(corpusChunks).innerJoin(corpusDocuments, eq(corpusChunks.documentId, corpusDocuments.id)).where(and(eq(corpusChunks.companyId, companyId), eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.datasetId, row.id))),
     ]);
-    return { id: row.id, companyId, name: row.name, description: row.description, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), documentCount: docs.length, readyCount: countValue(stats.find((x) => x.status === "ready")), failedCount: countValue(stats.find((x) => x.status === "failed")), chunkCount: countValue(chunks[0]) };
+    return { id: row.id, companyId, name: row.name, description: row.description, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), documentCount: stats.reduce((sum, item) => sum + countValue(item), 0), readyCount: countValue(stats.find((x) => x.status === "ready")), failedCount: countValue(stats.find((x) => x.status === "failed")), chunkCount: countValue(chunks[0]) };
   };
   const getDocument = async (companyId: string, id: string) => documentRecord(companyId, await store.getDocument(companyId, id));
   const getDataset = async (companyId: string, id: string) => datasetRecord(companyId, await store.getDataset(companyId, id));
@@ -197,7 +201,9 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     const doc = await getDocument(companyId, row.documentId);
     return { id: row.id, companyId, datasetId: doc?.datasetId ?? "", documentId: row.documentId, state: row.status === "pending" ? "queued" : row.status, attempts: row.attempts, maxAttempts: row.maxAttempts, lastError: row.lastError, createdAt: row.createdAt.toISOString(), updatedAt: row.createdAt.toISOString() };
   };
-  return {
+  // OPE-12272: `listDatasets` counts documents and chunks of every dataset; serve it from a short-lived cache
+  // that any write through these ports drops. A search does not use it (see `listDatasetNames`).
+  return withDatasetListCache({
     store: {
       async listDatasets(companyId) { const rows = await store.listDatasets(companyId); const mapped: CorpusDatasetRecord[] = []; for (const item of rows) { const record = await datasetRecord(companyId, item); if (record) mapped.push(record); } return mapped; },
       getDataset,
@@ -205,6 +211,11 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
         const rows = await db.select({ id: corpusDatasets.id }).from(corpusDatasets)
           .where(and(eq(corpusDatasets.companyId, companyId), eq(corpusDatasets.id, id))).limit(1);
         return rows.length > 0;
+      },
+      // OPE-12272: ids and names only, in `listDatasets` order. No per-dataset document and chunk counts.
+      async listDatasetNames(companyId) {
+        return db.select({ id: corpusDatasets.id, name: corpusDatasets.name }).from(corpusDatasets)
+          .where(eq(corpusDatasets.companyId, companyId)).orderBy(asc(corpusDatasets.createdAt));
       },
       async createDataset(input) { return (await datasetRecord(input.companyId, await store.createDataset({ companyId: input.companyId, name: input.name, description: input.description })))!; },
       async updateDataset(companyId, id, patch) {
@@ -390,7 +401,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       },
     },
     index,
-  };
+  }, { ttlMs: readCacheTtlMs(context.env[CORPUS_DATASET_LIST_CACHE_TTL_ENV], DEFAULT_DATASET_LIST_CACHE_TTL_SEC) });
 }
 
 export function createCorpusMcpProvider(readSettings: (companyId: string) => Promise<CorpusSettings>, createPorts: (context: CorpusPortContext) => CorpusPorts): CorpusMcpPortProvider {
@@ -406,7 +417,9 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         const current = await resolve();
         if (!current) throw new Error("corpus_disabled");
         const { settings, ports } = current;
-        const datasets = await ports.store.listDatasets(companyId);
+        // OPE-12272: a search needs only the ids and names of the datasets. `listDatasets` also counts the
+        // documents and chunks of every dataset (seconds on a large corpus) and is for `corpus_list_datasets`.
+        const datasets = await ports.store.listDatasetNames(companyId);
         const datasetMap = new Map<string, string>(); // id -> id and name -> id
         for (const d of datasets) {
           datasetMap.set(d.id, d.id);
@@ -473,7 +486,8 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         if (!current) throw new Error("corpus_disabled");
         const { ports } = current;
         const document = await ports.store.getDocument(companyId, documentId); if (!document) throw new Error("document not found");
-        const dataset = await ports.store.getDataset(companyId, document.datasetId);
+        // Only the name of the dataset is shown; `getDataset` would count all its documents and chunks.
+        const dataset = (await ports.store.listDatasetNames(companyId)).find((item) => item.id === document.datasetId);
         // A document can exist without a stored blob (e.g. created but never
         // uploaded, or the blob key was cleared). Asking for text of such a
         // document must not crash on "corpus blob: empty key" (OPE-12028).
@@ -490,7 +504,7 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         const current = await resolve();
         if (!current) throw new Error("corpus_disabled");
         const { ports } = current;
-        const datasets = await ports.store.listDatasets(companyId);
+        const datasets = await ports.store.listDatasetNames(companyId);
         const allowed = new Set(datasets.map((d) => d.id));
         const rows = datasetId ? (allowed.has(datasetId) ? await ports.store.listDocuments(companyId, datasetId, { offset, limit }) : []) : (await Promise.all(datasets.map((d) => ports.store.listDocuments(companyId, d.id)))).flat().slice(offset, offset + limit);
         return { dataset: datasetId ? (() => { const d = datasets.find((item) => item.id === datasetId); return d ? { id: d.id, name: d.name } : null; })() : null, documents: rows.map((d) => ({ id: d.id, name: d.filename, datasetId: d.datasetId, status: d.status, chunks: d.chunkCount, createdAt: d.createdAt })), offset, limit };
