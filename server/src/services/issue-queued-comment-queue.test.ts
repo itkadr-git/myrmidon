@@ -1,5 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering } from "./issue-queued-comment-queue.js";
+import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering, queuedCommentIdsFromWakePayload, queuedCommentIdsFromRunContext } from "./issue-queued-comment-queue.js";
+
+describe("queuedCommentIdsFromWakePayload and runContext", () => {
+  it("filters out invalid or malformed comment IDs from wake payload", () => {
+    const validUuid = "123e4567-e89b-12d3-a456-426614174000";
+    const payload = {
+      _paperclipWakeContext: {
+        wakeCommentIds: [
+          validUuid,
+          "not-a-uuid",
+          "",
+          null,
+          123,
+          validUuid, // duplicate
+        ],
+      },
+    };
+
+    expect(queuedCommentIdsFromWakePayload(payload)).toEqual([validUuid]);
+  });
+
+  it("filters out invalid comment IDs from run context", () => {
+    const validUuid = "123e4567-e89b-12d3-a456-426614174000";
+    const context = {
+      wakeCommentIds: [
+        "invalid-id",
+        validUuid,
+      ],
+    };
+
+    expect(queuedCommentIdsFromRunContext(context)).toEqual([validUuid]);
+  });
+});
 
 describe("decideQueuedCommentQueueSteering", () => {
   it("answers unsupported on the legacy protocol", () => {
