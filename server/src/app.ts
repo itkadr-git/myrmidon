@@ -166,6 +166,7 @@ import {
   boardLoadLaneTagMiddleware,
   boardLoadRequestMiddleware,
   myrmidonMonitoringAlertsRoutes,
+  myrmidonZabbixSinkRoutes,
   swarmClaimApp,
   createCasteDirectoryReader,
   myrmidonEmergencyStopRoutes,
@@ -244,10 +245,12 @@ import {
   startDenyListPuller,
   createPluginProviderModelSync,
   localeUploadRoutes,
+  localeModuleRoutes,
   myrmidonHindsightModelsRoutes,
   configureCorpusAdapters,
   createCorpusShadowSearch,
   buildTokensTraceRoutes,
+  myrmidonOnboardRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -1308,6 +1311,7 @@ export async function createApp(
   api.use(myrmidonLitellmChannelsRoutes(db)); // myrmidon(1.6.7 OPE-9854): LiteLLM channels /model/new|update|delete
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
+  api.use(myrmidonOnboardRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonFleetMoveRoutes(db, opts.fleetClientManager)); // myrmidon(1.6.6 REMOTE-SITES-T5)
   api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6 OPE-8999): enroll / list / delete execution sites
   api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges
@@ -1338,6 +1342,7 @@ export async function createApp(
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
   api.use(localeUploadRoutes(db)); // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure validator
+  api.use(localeModuleRoutes(db)); // myrmidon(1.7 LOCALE-UPLOAD, OPE-12117): /api/locale upload+current
   // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
   // Telegram DM — read by board members, changed by instance admins.
   api.use(myrmidonBridgeLanguageRoutes(db));
@@ -1345,6 +1350,7 @@ export async function createApp(
   api.use(myrmidonInstalledLocalesRoutes(db));
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonMonitoringAlertsRoutes(db)); // myrmidon(1.6.6-ALERTS): monitoring alerts webhook (Zabbix/Alertmanager) and its settings
+  api.use(myrmidonZabbixSinkRoutes(db)); // myrmidon(1.7-ZABBIX-SINK / OPE-12126): Zabbix alarm sink -> role-task draft
   api.use(myrmidonMonitoringDashboardRoutes(db)); // myrmidon(1.6.6 MONITORING C): fleet dashboard from VictoriaMetrics + Zabbix, connection settings, selfcheck
   api.use(myrmidonForagingIdleGateRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history

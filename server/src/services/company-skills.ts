@@ -108,7 +108,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 // myrmidon(B1c): product name in user-facing skill texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { conflict, forbidden, notFound, payloadTooLarge, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { ghFetch, gitHubApiBase, isPinnedCommitRef, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
 import { toIssueWorkProduct } from "./work-products.js";
@@ -610,10 +610,6 @@ function getRequiredEnvFromSkill(skill: Pick<CompanySkill, "metadata">): string[
   const raw = getSkillMeta(skill).requiredEnv;
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
-}
-
-function isPinnedCommitRef(value: string | null | undefined) {
-  return Boolean(value && /^[0-9a-f]{40}$/i.test(value.trim()));
 }
 
 function assertImportedSkillSourceAllowed(skill: ImportedSkill) {
@@ -1134,7 +1130,7 @@ async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, 
   return sha;
 }
 
-function parseGitHubSourceUrl(rawUrl: string) {
+export function parseGitHubSourceUrl(rawUrl: string) {
   const url = parseRemoteSkillImportUrl(rawUrl);
   if (url.protocol !== "https:") {
     throw unprocessable("GitHub source URL must use HTTPS");
@@ -1191,7 +1187,7 @@ function normalizeRemoteSkillImportSource(rawUrl: string) {
   return url.toString();
 }
 
-async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
+export async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
   const apiBase = gitHubApiBase(parsed.hostname);
   if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
     return {

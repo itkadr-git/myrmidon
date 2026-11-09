@@ -114,6 +114,7 @@ function appFor(
     env?: Record<string, string>;
     settings?: ReturnType<typeof fakeSettings>;
     store?: FakeStore;
+    resolveIssue?: (companyId: string, issueId: string) => Promise<{ id: string } | null>;
     computeUsage?: (
       deps: BudgetLimitUsageDeps,
       companyId: string,
@@ -125,7 +126,6 @@ function appFor(
 ) {
   const store = options.store ?? fakeStore();
   const settings = options.settings ?? fakeSettings();
-  void settings;
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -137,6 +137,8 @@ function appFor(
     budgetLimitsRoutes({} as unknown as Db, {
       env: (options.env ?? {}) as NodeJS.ProcessEnv,
       store: store as any,
+      settings: settings as unknown as import("./settings.js").BudgetLimitsSettingsService,
+      resolveIssue: options.resolveIssue,
       computeUsage: options.computeUsage,
     }),
   );
@@ -193,6 +195,91 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) routes", () => {
       .put(`${base}/limits/caste/engineer`)
       .send({ amountCents: -5 })
       .expect(400);
+  });
+
+  describe("1.7-BUDGET-CONFIG-READ: GET /config hierarchy tree", () => {
+    it("refuses an agent of another company on the config routes", async () => {
+      const { app } = appFor(foreignAgentActor);
+      await request(app).get(`${base}/config`).expect(403);
+      await request(app).get(`${base}/config/ticket/issue-1`).expect(403);
+    });
+
+    it("returns the full tree with hard/soft when every level is configured", async () => {
+      const store = fakeStore();
+      await store.upsert("company-a", "nest", "company", {
+        amountCents: 100_000, period: "calendar_month_utc", mode: "hard", isActive: true,
+      });
+      await store.upsert("company-a", "caste", "engineer", {
+        amountCents: 20_000, period: "calendar_month_utc", mode: "soft", isActive: true,
+      });
+      await store.upsert("company-a", "foraging", "foraging", {
+        amountCents: 5_000, period: "lifetime", mode: "hard", isActive: true,
+      });
+      await store.upsert("company-a", "issue", "issue-1", {
+        amountCents: 1_000, period: "calendar_month_utc", mode: "soft", isActive: true,
+      });
+      const { app } = appFor(boardActor, {
+        store,
+        settings: fakeSettings({ budgetLimits: { signalOnly: false } }),
+      });
+      const res = await request(app).get(`${base}/config`).expect(200);
+      expect(res.body.companyId).toBe("company-a");
+      expect(res.body.signalOnly).toBe(false);
+      expect(res.body.signalOnlySource).toBe("stored");
+      const levels = res.body.levels;
+      expect(Object.keys(levels)).toEqual(["nest", "caste", "foraging", "ticket"]);
+      expect(levels.nest.configured).toBe(true);
+      expect(levels.nest.limits[0]).toMatchObject({ ref: "company", mode: "hard", amountCents: 100_000 });
+      expect(levels.caste.limits[0]).toMatchObject({ ref: "engineer", mode: "soft", amountCents: 20_000 });
+      expect(levels.foraging.limits[0]).toMatchObject({ ref: "foraging", mode: "hard", period: "lifetime" });
+      // No ticket scope requested: the ticket level lists nothing and reports defaults.
+      expect(levels.ticket.configured).toBe(false);
+      expect(levels.ticket.isDefault).toBe(true);
+      expect(levels.ticket.limits).toEqual([]);
+    });
+
+    it("returns the default when a level has no configured row", async () => {
+      const { app } = appFor(boardActor, { store: fakeStore() });
+      const res = await request(app).get(`${base}/config`).expect(200);
+      const levels = res.body.levels;
+      expect(levels.nest.configured).toBe(false);
+      expect(levels.nest.isDefault).toBe(true);
+      expect(levels.nest.limits).toEqual([]);
+      expect(levels.nest.defaults).toEqual({ period: "calendar_month_utc", mode: "soft" });
+      expect(levels.caste.configured).toBe(false);
+      expect(levels.foraging.configured).toBe(false);
+      expect(levels.ticket.configured).toBe(false);
+      expect(res.body.signalOnlySource).toBe("default");
+    });
+
+    it("answers 404 on a ticket-scoped read of an unknown issue (недоступный уровень)", async () => {
+      const store = fakeStore();
+      await store.upsert("company-a", "issue", "issue-1", {
+        amountCents: 1_000, period: "calendar_month_utc", mode: "soft", isActive: true,
+      });
+      const { app } = appFor(boardActor, {
+        store,
+        settings: fakeSettings(),
+        resolveIssue: async () => null,
+      });
+      await request(app).get(`${base}/config/ticket/issue-unknown`).expect(404);
+    });
+
+    it("returns the ticket row on a ticket-scoped read of a known issue", async () => {
+      const store = fakeStore();
+      await store.upsert("company-a", "issue", "issue-1", {
+        amountCents: 1_000, period: "calendar_month_utc", mode: "soft", isActive: true,
+      });
+      const { app } = appFor(boardActor, {
+        store,
+        settings: fakeSettings(),
+        resolveIssue: async (_companyId, issueId) => ({ id: issueId }),
+      });
+      const res = await request(app).get(`${base}/config/ticket/issue-1`).expect(200);
+      expect(res.body.levels.ticket.available).toBe(true);
+      expect(res.body.levels.ticket.configured).toBe(true);
+      expect(res.body.levels.ticket.limits[0]).toMatchObject({ ref: "issue-1", mode: "soft" });
+    });
   });
 
   describe("usage with warning thresholds (80% and 95%)", () => {

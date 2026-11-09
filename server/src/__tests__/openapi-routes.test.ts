@@ -138,6 +138,7 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "PUT /api/updates/settings",
   "PATCH /api/updates/settings",
   "POST /api/updates/validate",
+  "POST /api/monitoring/zabbix-webhook",
   "GET /api/myrmidon/companies/{companyId}/knowledge/search",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
@@ -166,6 +167,8 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "GET /api/admin-assistant/health",
   "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/stuck-runs",
+  "GET /api/companies/{companyId}/admin-assistant/stuck-runs",
 ]);
 
 function createApp() {
@@ -852,6 +855,8 @@ describe("openapi routes", () => {
       "/api/companies/{companyId}/admin-assistant/cluster-health",
       "/api/admin-assistant/cluster-health",
       "/api/admin-assistant/health",
+      "/api/companies/{companyId}/admin-assistant/stuck-runs",
+      "/api/admin-assistant/stuck-runs",
     ]) {
       const operation = spec.paths[path].get;
       expect(operation.responses["401"]).toBeDefined();
