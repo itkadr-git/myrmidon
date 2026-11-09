@@ -7934,7 +7934,10 @@ export async function attestReviewedExternalChatRun(input: {
             // Inbound processing commits the message/link before dispatching its
             // wake, but completes subscription and marks delivery processed after
             // dispatch. Wait for that exact committed batch, never admit it early.
-            const links = await tx
+            // uuid-column boundary (OPE-12209): admitted ids are validator-UUIDs,
+            // but re-check before `inArray` over the uuid column.
+            const queryableIds = admittedIds.filter(isValidWakeCommentId);
+            const links = queryableIds.length === 0 ? [] : await tx
               .select({
                 commentId: chatMessageLinks.commentId,
                 state: chatDeliveries.state,
@@ -7956,11 +7959,11 @@ export async function attestReviewedExternalChatRun(input: {
                 and(
                   eq(chatMessageLinks.companyId, input.companyId),
                   eq(chatMessageLinks.direction, "inbound"),
-                  inArray(chatMessageLinks.commentId, admittedIds),
+                  inArray(chatMessageLinks.commentId, queryableIds),
                 ),
               );
             if (
-              admittedIds.every((id) =>
+              queryableIds.every((id) =>
                 links.some((link) => link.commentId === id),
               ) &&
               links.some((link) => link.state === "processing") &&
@@ -11663,10 +11666,12 @@ export function heartbeatService(
         : null;
     const messageIds = Array.isArray(input.contextSnapshot.wakeCommentIds)
       ? input.contextSnapshot.wakeCommentIds.filter(
-          (id): id is string => typeof id === "string",
+          (id): id is string => typeof id === "string" && isValidWakeCommentId(id),
         )
       : readNonEmptyString(input.contextSnapshot.wakeCommentId)
-        ? [String(input.contextSnapshot.wakeCommentId)]
+        ? isValidWakeCommentId(input.contextSnapshot.wakeCommentId)
+          ? [input.contextSnapshot.wakeCommentId]
+          : []
         : [];
     if (
       input.issueContext &&

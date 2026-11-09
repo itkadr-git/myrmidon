@@ -1,4 +1,3 @@
-import { isValidWakeCommentId } from "../modules/run-dispatch/domain/wake-context.js";
 
 /**
  * Whether a comment on an issue wakes the assignee.
@@ -7,9 +6,7 @@ import { isValidWakeCommentId } from "../modules/run-dispatch/domain/wake-contex
  * prompt-budget notice — the signal the board used to write into the agent's
  * most recent in_progress task, 17 copies in two hours on the live board — is
  * not a message for the agent whose prompt is already over budget. The copies
- * already in threads must not wake anyone, so the guard rides here, where every
- * comment wake is decided, and the wake path passes it `isPromptBudgetSignalNotice`
- * over the comment row.
+ * already in threads must not wake anyone, whatever the issue status.
  */
 export function shouldWakeAssigneeForIssueComment(input: {
   selfComment: boolean;
@@ -21,13 +18,9 @@ export function shouldWakeAssigneeForIssueComment(input: {
   };
   reopened: boolean;
   currentStatus: string | null | undefined;
-  commentId?: string | null;
   suppressesWake?: boolean;
 }) {
   if (input.suppressesWake) {
-    return false;
-  }
-  if (input.commentId !== undefined && input.commentId !== null && !isValidWakeCommentId(input.commentId)) {
     return false;
   }
   const sourceRunId = input.commentCreatedByRunId;

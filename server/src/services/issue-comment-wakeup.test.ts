@@ -89,7 +89,7 @@ describe("shouldWakeAssigneeForIssueComment", () => {
     ).toBe(false);
   });
 
-  it("suppresses wake on malformed commentId", () => {
+  it("does not require a comment id to decide whether an issue comment wakes", () => {
     const base = {
       selfComment: false,
       resumeRequested: false,
@@ -98,10 +98,6 @@ describe("shouldWakeAssigneeForIssueComment", () => {
       reopened: true,
       currentStatus: "in_progress",
     };
-    expect(shouldWakeAssigneeForIssueComment({ ...base, commentId: "" })).toBe(false);
-    expect(shouldWakeAssigneeForIssueComment({ ...base, commentId: "   " })).toBe(false);
-    expect(shouldWakeAssigneeForIssueComment({ ...base, commentId: null })).toBe(true);
-    expect(shouldWakeAssigneeForIssueComment({ ...base, commentId: "comment-1" })).toBe(true);
-    expect(shouldWakeAssigneeForIssueComment({ ...base, commentId: "123e4567-e89b-12d3-a456-426614174000" })).toBe(true);
+    expect(shouldWakeAssigneeForIssueComment(base)).toBe(true);
   });
 });

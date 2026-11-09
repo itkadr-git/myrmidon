@@ -1998,7 +1998,7 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(
       shouldResetTaskSessionForWake({
         wakeReason: "issue_comment_mentioned",
-        wakeCommentId: "comment-1",
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
       }),
     ).toBe(false);
   });
@@ -2007,7 +2007,7 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(
       shouldResetTaskSessionForWake({
         wakeReason: "issue_commented",
-        commentId: "comment-2",
+        commentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e",
       }),
     ).toBe(false);
   });
@@ -2036,7 +2036,7 @@ describe("shouldDeferFollowupWakeForSameIssue", () => {
       shouldDeferFollowupWakeForSameIssue({
         activeRunStatus: "running",
         isSameExecutionAgent: true,
-        wakeCommentId: "comment-1",
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         forceFreshSession: false,
       }),
     ).toBe(true);
@@ -2655,22 +2655,22 @@ describe("comment wake batching", () => {
       {
         issueId: "issue-1",
         wakeReason: "issue_commented",
-        wakeCommentId: "comment-1",
-        wakeCommentIds: ["comment-1"],
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
         paperclipWake: {
-          latestCommentId: "comment-1",
+          latestCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         },
       },
       {
         issueId: "issue-1",
         wakeReason: "issue_commented",
-        wakeCommentId: "comment-2",
+        wakeCommentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e",
       },
     );
 
-    expect(merged.wakeCommentIds).toEqual(["comment-1", "comment-2"]);
-    expect(merged.commentId).toBe("comment-2");
-    expect(merged.wakeCommentId).toBe("comment-2");
+    expect(merged.wakeCommentIds).toEqual(["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d", "2aa92f18-06b6-4231-a2a5-bf7d7f41718e"]);
+    expect(merged.commentId).toBe("2aa92f18-06b6-4231-a2a5-bf7d7f41718e");
+    expect(merged.wakeCommentId).toBe("2aa92f18-06b6-4231-a2a5-bf7d7f41718e");
     expect(merged.paperclipWake).toBeUndefined();
   });
 

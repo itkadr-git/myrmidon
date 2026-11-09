@@ -5,13 +5,17 @@
 // independently maintained copy in either file could silently drift out of
 // sync with the other and change only one of the two gates that read it.
 
-// Comment IDs are opaque identifiers at the wake boundary. Database-backed
-// callers normally provide UUIDs, but queued/context payloads can be produced
-// by adapters and tests using another stable identifier format. Validate only
-// the invariant needed here: a comment ID must be a non-empty string. UUID
-// validation at this layer incorrectly discarded otherwise usable wake data.
+// Comment IDs become values of the `issue_comments.id` and
+// `chat_message_links.comment_id` uuid columns the moment a wake is resolved
+// against the database. Like vendor #13912 (isUuidLike), reject anything that
+// is not a UUID before it can reach a uuid-column query: a malformed id in a
+// queued wake must be dropped there instead of poisoning the query or the
+// whole queue. Passing wake context may carry opaque reference strings for
+// rendering, but anything consumed as a comment row identifier must be a UUID.
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export function isValidWakeCommentId(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+  return typeof value === "string" && UUID_REGEX.test(value.trim());
 }
 
 function parseObject(value: unknown): Record<string, unknown> {

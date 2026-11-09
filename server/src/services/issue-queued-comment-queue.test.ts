@@ -15,17 +15,21 @@ describe("queuedCommentIdsFromWakePayload and runContext", () => {
       _paperclipWakeContext: {
         wakeCommentIds: [
           validUuid,
-          "comment-1",
+          "abc12345",
           "",
           "   ",
           null,
           123,
+          "defa4567-e89b-32d3-b456-426614174099",
           validUuid, // duplicate
         ],
       },
     };
 
-    expect(queuedCommentIdsFromWakePayload(payload)).toEqual([validUuid, "comment-1"]);
+    expect(queuedCommentIdsFromWakePayload(payload)).toEqual([
+      validUuid,
+      "defa4567-e89b-32d3-b456-426614174099",
+    ]);
   });
 
   it("filters out invalid comment IDs from run context", () => {
@@ -34,12 +38,12 @@ describe("queuedCommentIdsFromWakePayload and runContext", () => {
       wakeCommentIds: [
         "",
         "   ",
-        "comment-1",
+        "abc12345",
         validUuid,
       ],
     };
 
-    expect(queuedCommentIdsFromRunContext(context)).toEqual(["comment-1", validUuid]);
+    expect(queuedCommentIdsFromRunContext(context)).toEqual([validUuid]);
   });
 
   it("filters out invalid comment IDs when writing wake payload", () => {
