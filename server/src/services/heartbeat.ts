@@ -35921,7 +35921,13 @@ export function heartbeatService(
     // issues a drained pause left idle; logic in myrmidon/pause-drain.ts.
     // Its sole caller is the agent resume route.
     resumeAgentAfterPause: async (agentId: string) => {
-      const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      // myrmidon(OPE-12274): the dispatcher owns the role gate — an api process
+      // publishes the wake instead of promoting the queued run locally, so a
+      // split board never executes a runner session inside the api child.
+      const resumed = await pauseResumeWakeAgent(
+        { db, startNextQueuedRunForAgent: (id) => runStartDispatcher.dispatchRunStart(id), enqueueWakeup },
+        agentId,
+      );
       // A paused conversation's accepted comments have no wake receipt until
       // delivery succeeds. Resume drains that durable outbox as well as the
       // ordinary assigned-issue queue (which excludes in_review chats).

@@ -38,6 +38,13 @@ describe("live migration checks (pure parts)", () => {
       { table: "browser_use_runs", rows: 0 },
       { table: "mcp_oauth_tokens", rows: 1 },
     ]);
+
+    const sourceWithLifecycle = snap(
+      { resource_lifecycle_events: [10, "lc"], activity_log: [0, "al"] },
+      { resource_lifecycle_events: ["id"], activity_log: ["id"] },
+    );
+    const targetWithActivityLog = snap({ activity_log: [10, "al"] }, { activity_log: ["id"] });
+    assert.deepEqual(expectedSkipped(sourceWithLifecycle, targetWithActivityLog), []);
   });
 
   it("compares a CLI report with the expected skipped data", () => {
