@@ -8,7 +8,24 @@ needs one. It is an independent product maintained as a fork of
 
 Русские версии страниц — с суффиксом `.ru`, например [Home.ru](Home.ru).
 
-## The product
+## Start here
+
+- [System requirements](System-requirements) — supported OS and
+  architectures, minimum and recommended CPU/RAM/disk, network and ports.
+- [Installation](Installation) — one command brings a clean server to a
+  working board.
+- [Quick start](Quick-start) — the shortest path, condensed from
+  Installation.
+- [Migration from Paperclip](Migration-from-Paperclip) — move a Paperclip
+  instance into a clean Myrmidon: preflight, DB, files and secrets transfer,
+  rollback.
+- [Settings in the interface](Settings-in-the-interface) — where run limits,
+  per-agent parallelism and backups are tuned.
+
+## The product, by area
+
+Each area has its own page in this wiki, summarized from the operator
+guides in the repository.
 
 - [What it does](What-it-does) — the product overview.
 - [Agents and castes](Agents-and-castes) — what an agent is, its container
@@ -16,41 +33,21 @@ needs one. It is an independent product maintained as a fork of
 - [Tasks and the board](Tasks-and-the-board) — task lifecycle, role queues,
   WIP limits, review routing, planning from a chat message, discussion
   rooms.
-- [Telegram and channels](Channels) — the DM bridge, decision
-  cards, digests and escalations, group topics as a task inbox.
-- [Models and budgets](Models-and-keys) — model providers, budget
-  enforcement, prompt-cost advice, run admission limits.
-- [Streaming cost overlay for LiteLLM v1.104.1](../myrmidon/guides/litellm-streaming-cost-overlay.md) ([Russian](../myrmidon/guides/litellm-streaming-cost-overlay.ru.md)) — operator runbook for deployment and verification of streaming spend accounting.
+- [Telegram and channels](Channels) — the DM bridge, decision cards,
+  digests and escalations, group topics as a task inbox.
+- [Models and keys](Models-and-keys) — model providers, budget enforcement,
+  prompt-cost advice, run admission limits.
 - [Knowledge and learning](Knowledge-and-learning) — regulations, foraging
   from approved sources, reference-task evals, quality baselines.
-- [POST-TASK-REFLECT design](../myrmidon/design/post-task-reflect.md)
-  ([Russian](../myrmidon/design/post-task-reflect.ru.md)) — the proposal for
-  capturing reusable role lessons after task outcomes.
 - [Autonomy and guardrails](Safety-and-guardrails) — the role × action
   matrix, injection flagging, emergency stop.
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP
   connectors, cloud storage and Microsoft 365, media and OCR, GitHub.
-- [UI2 plugin navigation](../myrmidon/changes/1-6-6-ui2-plugin-nav.md) —
-  desktop and mobile plugin entries and direct plugin-page loading; see the
-  [UI2 shell guide](../myrmidon/guides/ui2-shell.md).
 
-## Corpus
+## Run the server
 
-- [Corpus server integration](../myrmidon/changes/ope-7844-corpus-integration.md) — configuration and end-to-end verification.
-
-## Getting started
-
-- [System requirements](System-requirements) — supported OS and
-  architectures, minimum and recommended CPU/RAM/disk, network and ports.
-- [Installation](Installation) — one command brings a clean server to a
-  working board.
-- [Migration from Paperclip](Migration-from-Paperclip) — move a Paperclip v2026.916.1 instance into a clean Myrmidon with `myrmidon:migrate`: preflight, DB, files and secrets transfer, rollback.
 - [Upgrading and rollback](Upgrading-and-rollback) — re-run the installer to
   update; RC and final releases; the manual `deploy.sh --release` flow.
-- [Settings in the interface](Settings-in-the-interface) — where run limits,
-  per-agent parallelism and backups are tuned.
-- [Quick start](Quick-start) — the shortest path, condensed from
-  Installation.
 - [Manual deployment](Manual-deployment) — the hands-on `deploy.sh` flow
   with a maintenance window, for experienced administrators.
 - [Operations and maintenance](Server-maintenance) — backups, disk,
