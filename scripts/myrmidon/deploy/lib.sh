@@ -1066,6 +1066,7 @@ sync_compose_set_anchor() {
     while IFS= read -r frag; do
       [[ -z "$frag" ]] && continue
       frag="${frag##*/}"
+      # shellcheck disable=SC2016  # the format string stays literal; values are passed as arguments
       printf '%s- `%s`\n' "$prose_indent" "$frag"
     done < <(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   }
