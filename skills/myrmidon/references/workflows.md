@@ -111,17 +111,17 @@ Use this when validating Myrmidon itself (assignment flow, checkouts, run visibi
 
 ```bash
 npx paperclipai issue create \
-  --company-id "$PAPERCLIP_COMPANY_ID" \
+  --company-id "$MYRMIDON_COMPANY_ID" \
   --title "Self-test: assignment/watch flow" \
   --description "Temporary validation issue" \
   --status todo \
-  --assignee-agent-id "$PAPERCLIP_AGENT_ID"
+  --assignee-agent-id "$MYRMIDON_AGENT_ID"
 ```
 
 2. Trigger and watch a heartbeat for that assignee:
 
 ```bash
-npx paperclipai heartbeat run --agent-id "$PAPERCLIP_AGENT_ID"
+npx paperclipai heartbeat run --agent-id "$MYRMIDON_AGENT_ID"
 ```
 
 3. Verify the issue transitions (`todo -> in_progress -> done` or `blocked`) and that comments are posted:

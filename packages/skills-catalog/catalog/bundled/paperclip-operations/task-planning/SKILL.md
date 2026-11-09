@@ -75,6 +75,16 @@ Use the Paperclip API to write the plan document, then comment:
 
 When the plan is accepted, see the companion skill for converting accepted plans into Paperclip executable tasks. Key requirements covered there: produce a compact task matrix (task, owner, initial status, blockers); encode every hard dependency as `blockedByIssueIds` — parent/child nesting alone does not block execution; and verify the created issue graph before closing the source planning issue.
 
+## Assigning to a non-engineer owner (caste)
+
+Dev-project code tasks default to the `engineer` caste and cannot be assigned
+to a non-engineer while `in_progress` (422 `issue_requires_engineer`). To hand
+an epic to a **lead for planning or splitting**, set the task's caste:
+`PATCH /api/issues/{issueId}` with `{ "casteKey": "lead" }` (or include
+`"casteKey": "lead"` in the create body). Use `"infra"` or `"devops"` for
+operator tasks. The error text itself names the task's current caste and this
+remedy.
+
 ## Anti-patterns
 
 - Plan disguised as a description edit. Use the `plan` document.

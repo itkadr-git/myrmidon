@@ -175,7 +175,10 @@ describe("non-container GitHub launcher (GITHUB-SHARED-IDENTITY)", () => {
       `#!/usr/bin/env node
 const { execFileSync } = require('node:child_process');
 const args = process.argv.slice(2);
-if (args[0] === 'dump-env') {
+if (args[0] === 'config' && args[1] === '--get' && args[2] === 'remote.origin.url') {
+  const result = execFileSync('/usr/bin/git', args, { encoding: 'utf8', env: process.env });
+  process.stdout.write(result);
+} else if (args[0] === 'dump-env') {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (/^(GIT_CONFIG_|GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_|GIT_COMMITTER_|GIT_TERMINAL_PROMPT)/.test(key)) env[key] = value;

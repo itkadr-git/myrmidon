@@ -5,6 +5,7 @@
 //
 //   GET  /api/myrmidon/companies/:companyId/litellm/costs?from&to&limit
 //   GET  /api/myrmidon/companies/:companyId/litellm/models
+//   GET  /api/myrmidon/companies/:companyId/litellm/key-usage     (OPE-11776)
 //   POST /api/myrmidon/companies/:companyId/litellm/sweep        (board only)
 //
 // Reads need company access (the same check the vendor costs routes use);
@@ -26,6 +27,7 @@ import {
   sweepLitellmCosts,
 } from "./litellm-costs.js";
 import { listGatewayBotKeys } from "./bot-keys.js";
+import { readKeyUsageReport } from "./key-budgets.js"; // myrmidon(OPE-11776)
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -72,6 +74,32 @@ export function litellmCostsRoutes(db: Db, deps: LitellmCostsRoutesDeps) {
       return;
     }
     res.json(await listLitellmModels(db));
+  });
+
+  // myrmidon(OPE-11776): the cap and spend of every bot's gateway key — the
+  // report the sweep tick refreshes (key-budgets.ts). No key value or hash is
+  // in the answer, only agent ids and names, caps and amounts.
+  router.get("/myrmidon/companies/:companyId/litellm/key-usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const current = settings();
+    if (!current.enabled) {
+      res.status(503).json({ error: "LLM gateway cost collection is not enabled", enabled: false });
+      return;
+    }
+    res.json(
+      await readKeyUsageReport(
+        {
+          db,
+          settings: current,
+          readGatewayKey: deps.readGatewayKey,
+          listBotKeys: deps.listBotKeys,
+          client: deps.client,
+          now: deps.now,
+        },
+        companyId,
+      ),
+    );
   });
 
   router.post("/myrmidon/companies/:companyId/litellm/sweep", async (req, res) => {

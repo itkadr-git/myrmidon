@@ -172,6 +172,28 @@ describe("command managed runtime", () => {
           : runner.execute(input) },
       });
       await expect(failedClient.readFile(missingPath)).rejects.toThrow("transport read failed");
+      const sizeRunner: CommandManagedRuntimeRunner["execute"] = async (input) => {
+        const command = input.args?.[1] ?? "";
+        return command.startsWith("wc -c")
+          ? {
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "runner returned no output",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            }
+          : runner.execute(input);
+      };
+      const malformedSizeClient = createCommandManagedRuntimeClient({
+        commandCwd: root,
+        timeoutMs: 5000,
+        runner: { ...runner, execute: sizeRunner },
+      });
+      await expect(malformedSizeClient.readFile(missingPath)).rejects.toThrow(
+        'Could not determine remote file size for ' + missingPath + ' (wc stdout: "", stderr: "runner returned no output")',
+      );
       await expect(client.readFile(missingPath)).resolves.toEqual(Buffer.from("present"));
     } finally {
       await rm(root, { recursive: true, force: true });

@@ -20,6 +20,7 @@
 // tsx is not a runtime dependency of the image, and the contract must not add
 // one.
 
+import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";

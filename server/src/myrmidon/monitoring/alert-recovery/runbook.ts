@@ -91,11 +91,29 @@ export const METRICS_SCRAPE_FAILING_RUNBOOK: AlertRecoveryRunbook = {
   match: ["scrape", "prometheus", "target down", "метрики"],
 };
 
+export const RUNS_RECONNECTING_RUNBOOK: AlertRecoveryRunbook = {
+  key: "runs-reconnecting",
+  title: "Прогоны висят в reconnecting",
+  ownerRole: "devops",
+  document: `${DOCUMENT_DIR}/runs-reconnecting.md`,
+  metric: "myrmidon_runs_execution_phase{phase=\"reconnecting\"} = 0",
+  steps: [
+    "Проверить список зависших прогонов в описании задачи или по API `GET /api/heartbeat-runs/:id`.",
+    "Проверить метрики прогонов: `GET /metrics` — значения `myrmidon_runs_execution_phase{phase=\"reconnecting\"}` и `myrmidon_runs_reconnecting_oldest_seconds`.",
+    "Проверить журналы затронутых прогонов (`GET /api/heartbeat-runs/:id/log`) и состояние процессов/воркеров на хостах.",
+    "Если агенты не присылают пульс из-за сбоя сети или шлюза — проверить связь со шлюзом и перезапустить проблемные воркеры.",
+    "Если прогоны завершились аварийно без финализации — отменить зависшие прогоны через `POST /api/heartbeat-runs/:id/cancel`.",
+    "Проверить метрику: число прогонов в reconnecting вернулось к 0, тревога снята.",
+  ],
+  match: ["runs-reconnecting", "reconnecting", "runs reconnecting", "прогоны reconnecting"],
+};
+
 /** Named runbooks, in the order the settings page lists them. */
 export const ALERT_RECOVERY_RUNBOOKS: readonly AlertRecoveryRunbook[] = [
   DISK_SPACE_LOW_RUNBOOK,
   HOST_UNREACHABLE_RUNBOOK,
   METRICS_SCRAPE_FAILING_RUNBOOK,
+  RUNS_RECONNECTING_RUNBOOK,
 ];
 
 /**

@@ -445,7 +445,7 @@ When the executor finishes work, move the source issue to `in_review`. Myrmidon 
 - approve/sign off with `PATCH /api/issues/:issueId` using `{ "status": "done", "comment": "Approved: ..." }`
 - request changes with `PATCH /api/issues/:issueId` using `{ "status": "in_progress", "comment": "Changes requested: ..." }`
 
-Agent heartbeat implementations should follow the Myrmidon skill's **Execution-policy review/approval wakes** procedure when they are assigned as the active gate participant.
+Agent heartbeat implementations should follow the Myrmidon skill's **Execution-policy review/approval wakes** procedure when they are assigned as the active gate participant; reviewers must adhere to `references/review-discipline.md` (evidence on current head, style as non-blocking nit, mandatory APPROVE when no defects).
 
 Do not model cross-agent review gates as bridge child issues, freeform comments, ad-hoc `request_confirmation` cards, responder fields, mention grants, or broadened comment/interaction authorization. Those workarounds either split the audit trail away from the source issue or loosen authorization around who may decide. The native execution-stage path keeps the gate, reviewer authority, return assignee, decision row, wake behavior, and audit history on the issue that is actually being reviewed.
 
@@ -1278,9 +1278,9 @@ GET /api/companies/{companyId}/approvals?status=pending
 ### Approval follow-up (requesting agent)
 
 When board resolves your approval, you may be woken with:
-- `PAPERCLIP_APPROVAL_ID`
-- `PAPERCLIP_APPROVAL_STATUS`
-- `PAPERCLIP_LINKED_ISSUE_IDS`
+- `MYRMIDON_APPROVAL_ID`
+- `MYRMIDON_APPROVAL_STATUS`
+- `MYRMIDON_LINKED_ISSUE_IDS` (or legacy `PAPERCLIP_LINKED_ISSUE_IDS`)
 
 Use:
 
@@ -1362,11 +1362,14 @@ Terminal states: `done`, `cancelled`
 
 ### Issues (Tasks)
 
+Задача по идентификатору: `GET /api/issues/OPE-N`; списки — `limit`+`offset`, цикл до `len < limit`.
+
 | Method | Path                               | Description                                                                              |
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
-| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor, and board-verified `ciResult` |
+| GET    | `/api/issues/:issueId/ci-status`   | Board-verified CI status for linked pull requests on the exact head SHA (`pullRequests`, `primaryCiResult`) |
 | GET    | `/api/issues/:issueId/diagnostics/blockers` | Read-only blocker diagnostic with `diagnosis`, readiness, and bounded anomaly flags |
 | GET    | `/api/issues/:issueId/diagnostics/wakes` | Read-only wake-history diagnostic with `diagnosis`, bounded events, and Case-B inference |
 | GET    | `/api/issues/:issueId/diagnostics/subtree` | Read-only subtree diagnostic combining visible child, blocker, and wake edges with `diagnosis` |
@@ -1482,18 +1485,18 @@ Terminal states: `done`, `cancelled`
 Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
 
 ```bash
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+MYRMIDON_API_BASE="${MYRMIDON_API_URL%/}"
+MYRMIDON_API_BASE="${MYRMIDON_API_BASE%/api}"
 jq -n \
   --arg name "integrations/vendor/api-token" \
   --arg value "$PROPOSED_SECRET_VALUE" \
   --arg justification "Credential supplied for the current task" \
   '{kind:"secret", name:$name, value:$value, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
   -H "Content-Type: application/json" \
   --data-binary @- \
-  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+  "$MYRMIDON_API_BASE/api/agents/me/secret-proposals"
 unset PROPOSED_SECRET_VALUE
 ```
 
@@ -1533,7 +1536,7 @@ jq -n \
   --arg justification "Inject the approved credential into my adapter environment" \
   '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
   -H "Content-Type: application/json" \
   --data-binary @- \
   "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
@@ -1546,18 +1549,18 @@ A binding must specify exactly one of `secretProposalId`, `secretId`, or `source
 Use `sourceConfigPath` when the secret is already bound to the proposing agent. The server resolves that agent's own `env.*` or `access.*` binding, so the request never needs a secret ID or `secretRef`:
 
 ```bash
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+MYRMIDON_API_BASE="${MYRMIDON_API_URL%/}"
+MYRMIDON_API_BASE="${MYRMIDON_API_BASE%/api}"
 jq -n \
   --arg sourceConfigPath "access.openai_api_key" \
   --arg configPath "access.evals_openai_api_key" \
   --arg justification "Use the existing OpenAI credential under the eval-specific alias" \
   '{kind:"binding", sourceConfigPath:$sourceConfigPath, configPath:$configPath, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
   -H "Content-Type: application/json" \
   --data-binary @- \
-  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+  "$MYRMIDON_API_BASE/api/agents/me/secret-proposals"
 ```
 
 `sourceConfigPath` must name an existing binding on the proposing agent; another agent's path and an unknown path both return `404`. Omit `targetAgentId` to bind the alias back to yourself. Supplying more than one source selector (`sourceConfigPath`, `secretId`, or `secretProposalId`) is rejected.
@@ -1577,8 +1580,8 @@ The card uses `continuationPolicy: "wake_assignee"`. On resolution the issue ass
 
 ```bash
 curl -s \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_BASE/api/agents/me/secrets"
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
+  "$MYRMIDON_API_BASE/api/agents/me/secrets"
 ```
 
 Confirm the expected secret metadata and delivery are present before using the new binding. If the wake reports `failed`, or the metadata is absent, treat the alias as unavailable, inspect the failure comment, fix the cause, and submit a fresh proposal. Never infer success merely because the card says accepted.

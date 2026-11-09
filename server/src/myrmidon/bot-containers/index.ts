@@ -39,6 +39,8 @@ import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
 import { isBotSkillBackimportEnabled } from "./skill-backimport.js";
 import { createDbBotSkillBackimportPorts } from "./skill-backimport-ports.js";
+import { containerOomRecorder } from "./container-oom-store.js";
+import { dockerEventOomObservation } from "./container-oom.js";
 import {
   reconcileBot,
   type BotContainerActivitySink,
@@ -164,7 +166,12 @@ export interface BotContainerRuntimeDeps {
    *  version of the profile this pass applied (the compiled profile's
    *  `apiServerKeyVersion`) — the card pins exactly it, so a secret rotation whose
    *  container switch failed (or has not happened yet) never reaches the card. */
-  syncCard?: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<{ changedKeys: string[] }>;
+  syncCard?: (
+    agentId: string,
+    botKey: string,
+    appliedApiServerKeyVersion: number,
+    options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
+  ) => Promise<{ changedKeys: string[] }>;
   /** Optional. Called by every sweep with the ids of the agents the sweep reconciles: releases the board
    *  tool gateways made for any other agent (deleted, terminated, switched to another adapter or with the
    *  container turned off), which no reconcile pass reaches any more (board-gateway-ports.ts). */
@@ -211,7 +218,7 @@ export interface BotContainerRuntimeDeps {
    *  release. Returns null while its own flag checks exclude it. A throw is
    *  recorded in the activity log and does not fail the sweep: the facade keeps
    *  serving the previous registry. */
-  exportMediaAcl?: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
+  exportMediaAcl?: () => Promise<{ path: string; bots: number; failedResolves: number; skipped: boolean; changed: boolean } | null>;
   /**
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company of an agent,
    * for the back-import of the bot's own skills into the company catalog.
@@ -351,7 +358,19 @@ export async function applyBotContainerNow(
     });
     const appliedVersion = applied.profile?.apiServerKeyVersion;
     if (deps.syncCard && leavesContainerApplied(outcome) && appliedVersion !== undefined) {
-      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity);
+      let syncOptions: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null } | undefined;
+      const fleetHost = current.config.host ?? null;
+      if (fleetHost) {
+        try {
+          const status = await deps.driver.status(botKey);
+          if (status.gatewayPort) {
+            syncOptions = { gatewayPort: status.gatewayPort };
+          }
+        } catch {
+          // ignore status read error
+        }
+      }
+      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity, syncOptions);
     }
     return outcome;
   });
@@ -449,10 +468,13 @@ async function syncCardAfterReconcile(
   syncCard: NonNullable<BotContainerRuntimeDeps["syncCard"]>,
   appliedApiServerKeyVersion: number,
   activity: BotContainerActivitySink | undefined,
+  options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
 ): Promise<void> {
   // Never throws: neither a failing sync nor a failing activity sink may fail the pass.
   try {
-    const { changedKeys } = await syncCard(agentId, botKey, appliedApiServerKeyVersion);
+    const { changedKeys } = options !== undefined
+      ? await syncCard(agentId, botKey, appliedApiServerKeyVersion, options)
+      : await syncCard(agentId, botKey, appliedApiServerKeyVersion);
     if (changedKeys.length > 0) {
       await activity?.record({
         level: "info",
@@ -533,6 +555,16 @@ async function exportMediaAclOfSweep(deps: BotContainerRuntimeDeps): Promise<voi
   try {
     const result = await deps.exportMediaAcl();
     if (!result) return;
+    if (result.skipped) {
+      await deps.activity?.record({
+        level: "info",
+        agentId: "*",
+        botKey: "*",
+        message: "media ACL registry export skipped; registry mount is unavailable",
+        details: { path: result.path },
+      });
+      return;
+    }
     if (!result.changed && result.failedResolves === 0) return;
     await deps.activity?.record({
       level: result.failedResolves > 0 ? "error" : "info",
@@ -554,6 +586,56 @@ async function exportMediaAclOfSweep(deps: BotContainerRuntimeDeps): Promise<voi
     } catch {
       // nothing left to report to
     }
+  }
+}
+
+/**
+ * Synchronizes OOM events from dockergate/fleetd driver into activity_log.
+ * Never throws: failing OOM event sync must not break reconciliation.
+ */
+export async function syncOomEventsOfSweep(
+  agents: readonly BotContainerAgent[],
+  deps: BotContainerRuntimeDeps,
+  state: { lastSinceNano: number },
+): Promise<void> {
+  if (!deps.db || !deps.driver.getOomEvents) return;
+  try {
+    const events = await deps.driver.getOomEvents(state.lastSinceNano > 0 ? state.lastSinceNano : undefined);
+    if (!events || events.length === 0) return;
+    const recorder = containerOomRecorder(deps.db);
+    const botKeyToAgentId = new Map<string, string>();
+    for (const agent of agents) {
+      botKeyToAgentId.set(agent.agentId, agent.agentId);
+      const key = botKeyForAgent(agent.agentId);
+      if (key) {
+        botKeyToAgentId.set(key, agent.agentId);
+      }
+      if ((agent as any).botKey) {
+        botKeyToAgentId.set((agent as any).botKey, agent.agentId);
+      }
+    }
+    const sorted = [...events].sort((a, b) => (a.timeNano < b.timeNano ? -1 : a.timeNano > b.timeNano ? 1 : 0));
+    for (const ev of sorted) {
+      const agentId = botKeyToAgentId.get(ev.botKey);
+      if (!agentId) {
+        if (ev.timeNano > state.lastSinceNano) {
+          state.lastSinceNano = ev.timeNano;
+        }
+        continue;
+      }
+      const obs = dockerEventOomObservation(ev);
+      try {
+        await recorder(agentId, obs);
+        if (ev.timeNano > state.lastSinceNano) {
+          state.lastSinceNano = ev.timeNano;
+        }
+      } catch {
+        // Stop advancing watermark on record error so the event can be retried on next sweep.
+        break;
+      }
+    }
+  } catch {
+    // Never throws
   }
 }
 
@@ -616,6 +698,7 @@ export function startBotContainerReconciliation(
   if (!isBotContainersEnabled(opts.env)) return () => {};
   const intervalMs = opts.intervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS;
   let stopped = false;
+  const oomSyncState = { lastSinceNano: 0 };
 
   // One sweep at a time: a slow sweep is still running when the next tick fires.
   // (Two reconciles of the same bot are excluded by the per-bot lock anyway; this
@@ -645,6 +728,7 @@ export function startBotContainerReconciliation(
       // media ACL registry, so a token issued or revoked on a card reaches the
       // facade within one interval without a restart.
       await exportMediaAclOfSweep(deps);
+      await syncOomEventsOfSweep(agents, deps, oomSyncState);
       // myrmidon(PERF-DIET-G): one pass for the whole sweep. The company- and
       // instance-scoped reads behind the profiles (the skill catalogue, the
       // instance settings) were paid once per bot; inside one tick they are paid

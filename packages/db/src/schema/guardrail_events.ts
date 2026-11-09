@@ -7,6 +7,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { agents } from "./agents.js";
 
 /**
  * myrmidon(1.6-GRD): one guardrail flagging event, company-scoped.
@@ -32,6 +33,13 @@ export const guardrailEvents = pgTable(
     /** Masked excerpt; the plain text itself is never stored. */
     snippet: text("snippet"),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    /** myrmidon(1.6.6 GUARDRAILS J.1, OPE-9649): enforcement context — which rule
+     * fired, in which mode, at which level, for which agent, with what decision. */
+    rule: text("rule"),
+    mode: text("mode"),
+    level: text("level"),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    decision: text("decision"),
   },
   (table) => ({
     companyOccurredIdx: index("guardrail_events_company_occurred_idx").on(
@@ -39,5 +47,7 @@ export const guardrailEvents = pgTable(
       table.occurredAt,
     ),
     runIdx: index("guardrail_events_run_id_idx").on(table.runId),
+    agentIdx: index("guardrail_events_agent_id_idx").on(table.agentId),
+    ruleIdx: index("guardrail_events_rule_idx").on(table.rule),
   }),
 );

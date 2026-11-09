@@ -13,7 +13,8 @@
 //   DELETE /api/myrmidon/companies/:companyId/corpus/datasets/:datasetId
 //   GET  /api/myrmidon/companies/:companyId/corpus/datasets/:datasetId/documents
 //   POST /api/myrmidon/companies/:companyId/corpus/documents  multipart: datasetId + file
-//   POST /api/myrmidon/companies/:companyId/corpus/documents/:documentId/retry
+//   POST /api/myrmidon/companies/:companyId/corpus/documents/:documentId/reparse
+//        -> 202 { document, job }; 409 when the document is not `failed`
 //   DELETE /api/myrmidon/companies/:companyId/corpus/documents/:documentId
 //   POST /api/myrmidon/companies/:companyId/corpus/datasets/:datasetId/search
 //        { query, topK } -> { hits: [...] }
@@ -83,6 +84,11 @@ export interface CorpusSearchHit {
   chunkIndex: number;
   score: number;
   text: string;
+  /**
+   * Name of the document as it was uploaded, resolved by the server from the
+   * document row — not the internal UUID (OPE-12028).
+   */
+  documentName?: string;
 }
 
 export interface CorpusSearchResult {
@@ -90,6 +96,25 @@ export interface CorpusSearchResult {
   query: string;
   hits: CorpusSearchHit[];
   tookMs: number | null;
+}
+
+/** Answer of the reparse route: 202 with the queued row and the re-armed job. */
+export interface CorpusReparseResult {
+  document: CorpusDocument;
+  job: CorpusParseJob;
+}
+
+/** Parse job the server runs for a document; the UI only shows the document. */
+export interface CorpusParseJob {
+  id: string;
+  datasetId: string;
+  documentId: string;
+  state: string;
+  attempts: number;
+  maxAttempts: number;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 const corpusPath = (companyId: string) =>
@@ -133,9 +158,11 @@ export const corpusApi = {
     body.append("file", file);
     return api.postForm<CorpusDocument>(`${corpusPath(companyId)}/documents`, body);
   },
-  retryDocument: (companyId: string, documentId: string) =>
-    api.post<CorpusDocument>(
-      `${corpusPath(companyId)}/documents/${encodeURIComponent(documentId)}/retry`,
+  // Reparse (OPE-12058): the server answers 202 {document, job} — the row is
+  // replaced with the returned document, which is already `queued`.
+  reparseDocument: (companyId: string, documentId: string) =>
+    api.post<CorpusReparseResult>(
+      `${corpusPath(companyId)}/documents/${encodeURIComponent(documentId)}/reparse`,
       {},
     ),
   deleteDocument: (companyId: string, documentId: string) =>

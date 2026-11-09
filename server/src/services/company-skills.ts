@@ -423,17 +423,27 @@ async function fetchWellKnownIndex(origin: string): Promise<WellKnownSkillEntry[
   return entries;
 }
 
-function resolveWellKnownArchiveUrl(origin: string, rawUrl: string) {
+export function resolveWellKnownArchiveUrl(originOrIndexUrl: string, rawUrl: string): string {
+  let base: URL;
+  try {
+    base = new URL(originOrIndexUrl);
+  } catch {
+    throw unprocessable(`Invalid skill archive URL "${rawUrl}".`, { code: "skill_discovery_invalid" });
+  }
+  const baseIndexUrl =
+    base.pathname === "" || base.pathname === "/"
+      ? new URL(buildWellKnownIndexUrl(base.origin))
+      : base;
   let resolved: URL;
   try {
-    resolved = new URL(rawUrl, `${origin}/`);
+    resolved = new URL(rawUrl, baseIndexUrl);
   } catch {
     throw unprocessable(`Invalid skill archive URL "${rawUrl}".`, { code: "skill_discovery_invalid" });
   }
   if (resolved.protocol !== "https:") {
     throw unprocessable("Skill archives must be served over HTTPS.", { code: "skill_source_validation_failed" });
   }
-  if (resolved.origin !== origin) {
+  if (resolved.origin !== base.origin) {
     throw unprocessable("Skill archive URLs must stay on the discovery site's origin.", {
       code: "skill_source_validation_failed",
     });
@@ -2305,7 +2315,7 @@ const BUILT_IN_SKILL_TEST_RUN_TEMPLATE_DATE = new Date("2026-01-01T00:00:00.000Z
 const BUILT_IN_SKILL_TEST_RUN_TEMPLATE_BODY = [
   "You are running a Skills Studio test for `{{skillName}}` (`{{skillKey}}`), skill version v{{skillVersion}}.",
   "",
-  "Invoke and use the selected skill under test: `{{skillInvocation}}`. Use the pinned skill revision supplied by Paperclip as the source of truth, regardless of any other runtime skills.",
+  `Invoke and use the selected skill under test: \`{{skillInvocation}}\`. Use the pinned skill revision supplied by ${PN} as the source of truth, regardless of any other runtime skills.`,
   "",
   "This is a test run. Do not make durable changes outside this test task. Do not mutate unrelated issues, push, publish, send external messages, or affect real work.",
   "",
@@ -2319,7 +2329,7 @@ function builtInSkillTestRunTemplate(companyId: string): CompanySkillTestRunTemp
     id: BUILT_IN_SKILL_TEST_RUN_TEMPLATE_ID,
     companyId,
     name: "Default test template",
-    description: "Paperclip's read-only default harness instructions for Skills Studio runs.",
+    description: `${PN}'s read-only default harness instructions for Skills Studio runs.`,
     body: BUILT_IN_SKILL_TEST_RUN_TEMPLATE_BODY,
     builtIn: true,
     createdByAgentId: null,
@@ -3097,7 +3107,7 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
       return {
         editable: true,
         editableReason: null,
-        sourceLabel: "Paperclip workspace",
+        sourceLabel: `${PN} workspace`,
         sourceBadge: "paperclip",
         sourcePath: managedRoot,
       };
@@ -4444,7 +4454,7 @@ export function companySkillService(db: Db) {
 
     if (!isPaperclipManagedRenameTarget(skill)) {
       throw unprocessable(
-        "Only Paperclip-managed skills can be renamed. Catalog, external, project-scanned, and unmanaged local skills are read-only.",
+        `Only ${PN}-managed skills can be renamed. Catalog, external, project-scanned, and unmanaged local skills are read-only.`,
         { skillId: skill.id, sourceType: skill.sourceType, sourceKind: getSkillMeta(skill).sourceKind ?? null },
       );
     }
@@ -6630,12 +6640,13 @@ export function companySkillService(db: Db) {
       );
     }
     const entries = await fetchWellKnownIndex(origin);
+    const indexUrl = buildWellKnownIndexUrl(origin);
     return {
       skills: entries.map((entry) => ({
         name: entry.name,
         description: entry.description,
         digest: entry.digest,
-        url: resolveWellKnownArchiveUrl(origin, entry.url),
+        url: resolveWellKnownArchiveUrl(indexUrl, entry.url),
       })),
     };
   }
@@ -6663,7 +6674,8 @@ export function companySkillService(db: Db) {
       );
     }
 
-    const archiveUrl = resolveWellKnownArchiveUrl(origin, entry.url);
+    const indexUrl = buildWellKnownIndexUrl(origin);
+    const archiveUrl = resolveWellKnownArchiveUrl(indexUrl, entry.url);
     const archiveBytes = await fetchWellKnownArchiveBytes(archiveUrl);
     const digestHex = createHash("sha256").update(archiveBytes).digest("hex");
     const computedDigest = `sha256:${digestHex}`;

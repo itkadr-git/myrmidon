@@ -23,6 +23,7 @@ import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  renderWakeBlockDelta,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
@@ -33,12 +34,25 @@ import {
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
+  normalizePaperclipWakePayload,
+  normalizePaperclipWakeEventDigest,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
 
 describe("runtime connection tool delivery", () => {
+  it("sends changed wake blocks fully and represents unchanged blocks by revision", () => {
+    const original = { rules: "rules-v1", notes: "notes-v1" };
+    const first = renderWakeBlockDelta(original, null);
+    expect(first.blocks).toEqual(original);
+    const next = renderWakeBlockDelta({ ...original, notes: "notes-v2" }, first.digests);
+    expect(next.blocks.rules).toBe(`без изменений (ревизия ${first.digests.rules})`);
+    expect(next.blocks.notes).toBe("notes-v2");
+    const afterCompaction = renderWakeBlockDelta(original, null);
+    expect(afterCompaction.blocks).toEqual(original);
+  });
+
   const access = {
     version: 1 as const,
     guidance: CONNECTION_INTENT_AGENT_GUIDANCE,
@@ -2909,6 +2923,41 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("renders execution stage, allowed actions, and review recovery instruction on review recovery wake", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "execution_review_participant_recovery",
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-10204",
+        title: "Review recovery handoff",
+        status: "in_review",
+      },
+      executionStage: {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-1" },
+        returnAssignee: { type: "agent", agentId: "agent-2" },
+        allowedActions: ["approve", "request_changes"],
+      },
+      reviewRecoveryInstruction:
+        "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now: PATCH the issue with status=in_progress and a comment to return it for changes, or with status=done and a comment to approve it.",
+      reviewDecisionRetryAttempt: 1,
+      reviewDecisionMaxRetries: 3,
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("- execution wake role: reviewer");
+    expect(prompt).toContain("- allowed actions: approve, request_changes");
+    expect(prompt).toContain(
+      "You are waking as the active reviewer for this issue.",
+    );
+    expect(prompt).toContain("Review recovery instruction (attempt 1/3):");
+    expect(prompt).toContain(
+      "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now: PATCH the issue with status=in_progress and a comment to return it for changes, or with status=done and a comment to approve it.",
+    );
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
@@ -3387,6 +3436,109 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
   });
 });
 
+describe("eventDigest in PaperclipWakePayload", () => {
+  it("normalizes and preserves structured eventDigest in wake payload", () => {
+    const rawPayload = {
+      reason: "security_incident",
+      eventDigest: {
+        agentId: "agent-test-1",
+        issueId: "issue-123",
+        events: [
+          {
+            id: "evt-1",
+            agentId: "agent-test-1",
+            issueId: "issue-123",
+            type: "heartbeat",
+            priority: "P4",
+            payload: { status: "alive" },
+            timestamp: "2026-10-30T10:00:00.000Z",
+          },
+          {
+            id: "evt-2",
+            agentId: "agent-test-1",
+            issueId: "issue-123",
+            type: "security_incident",
+            priority: "P0",
+            payload: { alert: "breach" },
+            timestamp: "2026-10-30T10:05:00.000Z",
+          },
+        ],
+        eventCount: 2,
+        oldestEventAt: "2026-10-30T10:00:00.000Z",
+        newestEventAt: "2026-10-30T10:05:00.000Z",
+      },
+    };
+
+    const normalized = normalizePaperclipWakePayload(rawPayload);
+    expect(normalized).not.toBeNull();
+    expect(normalized?.eventDigest).not.toBeNull();
+    expect(normalized?.eventDigest?.agentId).toBe("agent-test-1");
+    expect(normalized?.eventDigest?.issueId).toBe("issue-123");
+    expect(normalized?.eventDigest?.eventCount).toBe(2);
+    expect(normalized?.eventDigest?.events).toHaveLength(2);
+    expect(normalized?.eventDigest?.events[0].type).toBe("heartbeat");
+    expect(normalized?.eventDigest?.events[1].type).toBe("security_incident");
+
+    const serialized = stringifyPaperclipWakePayload(rawPayload);
+    const reparsed = JSON.parse(serialized ?? "{}");
+    expect(reparsed.eventDigest).toBeDefined();
+    expect(reparsed.eventDigest.eventCount).toBe(2);
+    expect(reparsed.eventDigest.events[0].type).toBe("heartbeat");
+  });
+
+  it("handles null or missing eventDigest gracefully", () => {
+    const rawPayload = {
+      reason: "routine_wake",
+      eventDigest: null,
+    };
+    const normalized = normalizePaperclipWakePayload(rawPayload);
+    // A payload with no meaningful content stays fail-closed (null); a null
+    // digest never fabricates content. Digest-bearing payloads are covered by
+    // the digest-only test above and the structured digest test.
+    expect(normalized).toBeNull();
+
+    const withDigestAndComments = {
+      reason: "routine_wake",
+      eventDigest: null,
+      commentIds: ["comment-1"],
+    };
+    const normalizedWithContent = normalizePaperclipWakePayload(
+      withDigestAndComments,
+    );
+    expect(normalizedWithContent).not.toBeNull();
+    expect(normalizedWithContent?.eventDigest).toBeNull();
+  });
+
+  it("keeps a digest-only wake payload non-empty (digest is meaningful content)", () => {
+    const rawPayload = {
+      reason: "security_incident",
+      eventDigest: {
+        agentId: "agent-test-1",
+        issueId: null,
+        events: [
+          {
+            id: "evt-1",
+            agentId: "agent-test-1",
+            issueId: null,
+            type: "heartbeat",
+            priority: "P4",
+            payload: { status: "alive" },
+            timestamp: "2026-10-30T10:00:00.000Z",
+          },
+        ],
+        eventCount: 1,
+        oldestEventAt: "2026-10-30T10:00:00.000Z",
+        newestEventAt: "2026-10-30T10:00:00.000Z",
+      },
+    };
+    const normalized = normalizePaperclipWakePayload(rawPayload);
+    expect(normalized).not.toBeNull();
+    expect(normalized?.eventDigest).not.toBeNull();
+    expect(normalized?.eventDigest?.eventCount).toBe(1);
+    expect(normalized?.eventDigest?.events[0]?.type).toBe("heartbeat");
+  });
+});
+
 describe("applyPaperclipWorkspaceEnv", () => {
   it("adds shared workspace env vars including AGENT_HOME", () => {
     const env = applyPaperclipWorkspaceEnv(
@@ -3764,6 +3916,10 @@ describe("appendWithByteCap", () => {
 
 describe("buildPaperclipEnv", () => {
   const ENV_KEYS = [
+    "MYRMIDON_API_URL",
+    "MYRMIDON_RUNTIME_API_URL",
+    "MYRMIDON_LISTEN_HOST",
+    "MYRMIDON_LISTEN_PORT",
     "PAPERCLIP_API_URL",
     "PAPERCLIP_RUNTIME_API_URL",
     "PAPERCLIP_LISTEN_HOST",
@@ -3799,7 +3955,10 @@ describe("buildPaperclipEnv", () => {
           id: "agent-1",
           companyId: "company-1",
         });
+        expect(env.MYRMIDON_API_URL).toBe("http://localhost:3100");
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
+        expect(env.MYRMIDON_AGENT_ID).toBe("agent-1");
+        expect(env.MYRMIDON_COMPANY_ID).toBe("company-1");
         expect(env.PAPERCLIP_AGENT_ID).toBe("agent-1");
         expect(env.PAPERCLIP_COMPANY_ID).toBe("company-1");
       },
@@ -3809,6 +3968,7 @@ describe("buildPaperclipEnv", () => {
   it("falls back to the derived runtime URL when no explicit override is set", () => {
     withEnv({ PAPERCLIP_RUNTIME_API_URL: "http://203.0.113.7:3100" }, () => {
       const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+      expect(env.MYRMIDON_API_URL).toBe("http://203.0.113.7:3100");
       expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.7:3100");
     });
   });
@@ -3821,6 +3981,7 @@ describe("buildPaperclipEnv", () => {
           id: "agent-1",
           companyId: "company-1",
         });
+        expect(env.MYRMIDON_API_URL).toBe("http://localhost:3200");
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
       },
     );

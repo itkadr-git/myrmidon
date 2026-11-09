@@ -42,6 +42,9 @@ export { alertRecoveryRoutes } from "./routes.js";
 
 export interface AlertRecoveryRuntime {
   service: AlertRecoveryService;
+  bindIssue(identity: string, companyId: string, link: { issueId: string; issueIdentifier: string | null }): Promise<void>;
+  lookup(alert: import("./domain.js").AlertRecoveryAlert): ReturnType<AlertRecoveryService["lookup"]>;
+  ingest(alert: import("./domain.js").AlertRecoveryAlert): ReturnType<AlertRecoveryService["ingest"]>;
   /** Run one sweep pass — the automatic close and the pruning — and track it. */
   run(track: (work: Promise<unknown>) => void): void;
 }
@@ -63,6 +66,9 @@ function createRuntime(db: Db, options: AlertRecoveryRuntimeOptions = {}): Alert
   });
   return {
     service,
+    lookup: (alert) => service.lookup(alert),
+    bindIssue: (identity, companyId, link) => service.bindIssue(identity, companyId, link),
+    ingest: (alert) => service.ingest(alert),
     run: (track) => {
       track(
         service.sweep().catch((err) => {

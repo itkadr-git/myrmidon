@@ -82,6 +82,19 @@ export const DEBATE_SETTINGS_KEY = "debate";
 export const DEBATE_SETTINGS_ENV = "MYRMIDON_DEBATE_CONFIG";
 /** The issue-document key of a debate result. */
 export const DEBATE_RESULT_DOCUMENT_KEY = "debate-result";
+/**
+ * The issue-document key of the round-by-round debate protocol (OPE-12096):
+ * the same debate leaves two documents — the final result and the protocol
+ * that grows while the rounds run.
+ */
+export const DEBATE_PROTOCOL_DOCUMENT_KEY = "debate-protocol";
+/**
+ * Character cap of one protocol entry's text (OPE-12096). A debate has at
+ * most 9 replicas (2 independent + 2 per exchange round, ≤3 rounds, + judge),
+ * so 9 × 50k plus the document wrapper always fits the documents contract
+ * (512 KiB body cap). Longer replicas are stored truncated, marked so.
+ */
+export const DEBATE_PROTOCOL_TEXT_LIMIT = 50_000;
 /** Activity-log action of a finished debate. */
 export const DEBATE_COMPLETED_ACTION = "debate.completed";
 /** Activity-log action for a saved (or cleared) per-caste configuration. */
@@ -425,7 +438,39 @@ export interface DebateOutcome {
   casteKey?: string | null;
   /** Roles that argued with custom caste guidance. */
   customPrompts?: DebateRole[];
+  /**
+   * True when at least one round-protocol append failed (OPE-12096). The
+   * debate itself still completed — the flag only marks that the written
+   * protocol may be missing entries a reader would expect.
+   */
+  protocolWriteFailed?: boolean;
 }
+
+/**
+ * One protocol entry of a debate round (OPE-12096): the replica a round
+ * produced, with the token/cost accounting the round was charged. `recordedAt`
+ * is stamped by the sink's clock when the entry lands, not by the engine —
+ * the engine is clock-free by design.
+ */
+export interface DebateProtocolEntry {
+  role: DebateRole;
+  round: number;
+  independent: boolean;
+  model: string;
+  family: string;
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+  costCents: number;
+  recordedAt: string;
+}
+
+/**
+ * The round protocol sink (OPE-12096): called after each replica that actually
+ * landed (charged against the ceiling), in transcript order. Entries carry no
+ * timestamp — the sink stamps `recordedAt` with its own clock.
+ */
+export type DebateProtocolSink = (entry: Omit<DebateProtocolEntry, "recordedAt">) => void | Promise<void>;
 
 export interface DebateEngineInput {
   question: string;
@@ -436,6 +481,14 @@ export interface DebateEngineInput {
    * is appended to the built-in pole prompt, never instead of it.
    */
   prompts?: DebatePromptOverrides;
+  /**
+   * Round protocol sink (OPE-12096): the service hands one in to append the
+   * JSON protocol to the task's document as the debate progresses, so a
+   * debate that fails later still keeps the rounds it finished. A sink that
+   * throws never fails the debate: the protocol is a best-effort record, the
+   * exchange and the verdict are the product.
+   */
+  onRoundComplete?: DebateProtocolSink;
 }
 
 /** The cost rule: cents = input/1k*inPrice + output/1k*outPrice, ceil to a cent. */
@@ -503,8 +556,41 @@ export async function runDebate(input: DebateEngineInput): Promise<DebateOutcome
   const roundsPlanned = settings.rounds ?? DEBATE_DEFAULT_ROUNDS;
   const tokenCeiling = settings.tokenCeiling ?? DEBATE_DEFAULT_TOKEN_CEILING;
 
+  // The round-protocol sink (OPE-12096) is best-effort: a failed or rejected
+  // append must never fail the debate itself — the protocol is a record of an
+  // exchange, not a prerequisite of one. Swallowed errors are reported through
+  // `protocolWriteFailed` so a broken sink stays visible in the outcome.
+  let protocolWriteFailed = false;
+  // seal(): every engine exit reports whether the round protocol stayed in
+  // sync (OPE-12096) — a swallowed sink error must remain visible.
+  function seal(outcome: DebateOutcome): DebateOutcome {
+    return { ...outcome, protocolWriteFailed };
+  }
+
+  async function emitProtocolEntry(turn: DebateTurn): Promise<void> {
+    // Only the two debate roles enter the round protocol (OPE-12096): the
+    // judge sits outside the dispute, and its verdict is carried by the result
+    // document — the protocol is the record of the exchange itself.
+    if (!input.onRoundComplete || turn.role === "judge") return;
+    try {
+      await input.onRoundComplete({
+        role: turn.role,
+        round: turn.round,
+        independent: turn.independent,
+        model: turn.model,
+        family: turn.family,
+        text: turn.text,
+        inputTokens: turn.inputTokens,
+        outputTokens: turn.outputTokens,
+        costCents: turn.costCents,
+      });
+    } catch {
+      protocolWriteFailed = true;
+    }
+  }
+
   if (familyProblem) {
-    return {
+    return seal({
       question,
       completed: false,
       stopReason: "rejected_config",
@@ -518,7 +604,7 @@ export async function runDebate(input: DebateEngineInput): Promise<DebateOutcome
       judgeVerdict: null,
       familyProblem,
       roles,
-    };
+    });
   }
 
   const transcript: DebateTurn[] = [];
@@ -549,7 +635,8 @@ export async function runDebate(input: DebateEngineInput): Promise<DebateOutcome
     };
     if (tokensUsed + turnTokens > tokenCeiling) {
       // The call ran and crossed the ceiling: record the overrun separately,
-      // do not charge it, stop.
+      // do not charge it, stop. The protocol records only what the debate was
+      // charged for — the crossed call is not a protocol entry.
       cost.ceilingCrossedCents += turn.costCents;
       transcript.push(turn);
       return null;
@@ -557,17 +644,18 @@ export async function runDebate(input: DebateEngineInput): Promise<DebateOutcome
     tokensUsed += turnTokens;
     addCost(cost, turn);
     transcript.push(turn);
+    await emitProtocolEntry(turn);
     return turn;
   }
 
   // 1. Independent first answers (critic never sees the generator's answer).
   const firstGenerator = await run("generator", 0, true, `Question: ${question}`);
   if (firstGenerator === null) {
-    return finish(question, roles, settings, transcript, cost, tokensUsed, tokenCeiling, roundsPlanned, 0, "token_ceiling", "the token ceiling was crossed during the generator's first answer; no judge ran", null);
+    return seal(finish(question, roles, settings, transcript, cost, tokensUsed, tokenCeiling, roundsPlanned, 0, "token_ceiling", "the token ceiling was crossed during the generator's first answer; no judge ran", null));
   }
   const firstCritic = await run("critic", 0, true, `Question: ${question}`);
   if (firstCritic === null) {
-    return finish(question, roles, settings, transcript, cost, tokensUsed, tokenCeiling, roundsPlanned, 0, "token_ceiling", "the token ceiling was crossed during the critic's first answer; no judge ran", null);
+    return seal(finish(question, roles, settings, transcript, cost, tokensUsed, tokenCeiling, roundsPlanned, 0, "token_ceiling", "the token ceiling was crossed during the critic's first answer; no judge ran", null));
   }
 
   // 2. The exchange: at most `roundsPlanned` rounds. Before each call the
@@ -648,7 +736,9 @@ export async function runDebate(input: DebateEngineInput): Promise<DebateOutcome
     judgeVerdict = judged.text;
   }
 
-  return finish(question, roles, settings, transcript, cost, tokensUsed, tokenCeiling, roundsPlanned, roundsRun, stopReason, stopDetail, judgeVerdict);
+  return seal(
+    finish(question, roles, settings, transcript, cost, tokensUsed, tokenCeiling, roundsPlanned, roundsRun, stopReason, stopDetail, judgeVerdict),
+  );
 }
 
 function finish(
@@ -744,4 +834,107 @@ export function renderDebateResultDocument(outcome: DebateOutcome): string {
   lines.push(outcome.judgeVerdict ?? "_No verdict: the debate stopped before the judge ran._");
   lines.push("");
   return lines.join("\n");
+}
+
+// ── The round protocol document (OPE-12096) ─────────────────────────────────
+
+/**
+ * One round replica of the debate protocol document (OPE-12096): the JSON the
+ * document's fenced ```json block carries, keyed by the replica's place in the
+ * debate. Keyed by index (not array) so appends are idempotent per replica.
+ */
+export interface DebateProtocolDoc {
+  question: string;
+  /** The debate run this protocol belongs to. */
+  runId: string;
+  /** Debate state at the time of the write: `running`, then `finished`. */
+  status: "running" | "finished";
+  /** Caste the debate ran for, or null for a part-A run. */
+  casteKey: string | null;
+  /** Round replicas in debate order: "r0" = the independent first answers. */
+  rounds: Record<string, DebateProtocolEntry>;
+  /** Rounds the debate planned and how many actually ran. */
+  roundsPlanned: number;
+  roundsRun: number;
+  stopReason: string | null;
+}
+
+/**
+ * The protocol body the service writes: a fenced ```json block inside a
+ * markdown document. Markdown is the platform's only document format, so the
+ * JSON lives in a fenced block — a plain reader sees the header, a program
+ * reads the block. OPE-12096 acceptance: GET of the document returns this
+ * body and JSON.parse of the block yields the round replicas in order.
+ */
+export function renderDebateProtocolDocument(input: {
+  question: string;
+  runId: string;
+  status: DebateProtocolDoc["status"];
+  casteKey: string | null;
+  rounds: Record<string, DebateProtocolEntry>;
+  roundsPlanned: number;
+  roundsRun: number;
+  stopReason: string | null;
+}): string {
+  const doc: DebateProtocolDoc = {
+    question: input.question,
+    runId: input.runId,
+    status: input.status,
+    casteKey: input.casteKey,
+    rounds: input.rounds,
+    roundsPlanned: input.roundsPlanned,
+    roundsRun: input.roundsRun,
+    stopReason: input.stopReason,
+  };
+  return [
+    `# Debate protocol`,
+    "",
+    `Status: **${input.status}**. The JSON block below is the round protocol: one entry per debate replica in order ("r0" = the independent first answers).`,
+    "",
+    "```json",
+    JSON.stringify(doc, null, 2),
+    "```",
+    "",
+  ].join("\n");
+}
+
+/**
+ * The JSON protocol block out of a written protocol document body, for a
+ * reader (or a test) that wants the typed shape back. Returns null when the
+ * body carries no parseable protocol block.
+ */
+export function parseDebateProtocolDocument(body: string): DebateProtocolDoc | null {
+  const match = /```json\n([\s\S]*?)```/.exec(body);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1] ?? "") as DebateProtocolDoc;
+    if (typeof parsed !== "object" || parsed === null || typeof parsed.rounds !== "object" || parsed.rounds === null) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Merge one replica into the protocol's rounds map (OPE-12096): the entry
+ * index is `r${round}#${position}` — round, then the replica's position
+ * within the round. A replica's identity is its place in the debate
+ * (round, role, independent flag): rewriting an already recorded replica
+ * replaces its entry under the same key, so appends are idempotent; a new
+ * replica is appended after the ones its round already recorded.
+ */
+export function appendDebateProtocolEntry(
+  rounds: Record<string, DebateProtocolEntry>,
+  entry: DebateProtocolEntry,
+): Record<string, DebateProtocolEntry> {
+  const existing = Object.entries(rounds).find(
+    ([, recorded]) =>
+      recorded.round === entry.round && recorded.role === entry.role && recorded.independent === entry.independent,
+  );
+  if (existing) return { ...rounds, [existing[0]]: entry };
+  const position = Object.keys(rounds).filter((key) => key.startsWith(`r${entry.round}#`)).length;
+  const key = `r${entry.round}#${position}`;
+  return { ...rounds, [key]: entry };
 }

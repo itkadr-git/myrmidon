@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { asc, eq, inArray } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -18,12 +18,14 @@ import {
   issueComments,
   issueInboxArchives,
   issueDocuments,
+  issueLabels,
   issuePlanDecompositions,
   issueReadStates,
   issueRelations,
   issueThreadInteractions,
   issueWorkProducts,
   issues,
+  labels,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -41,6 +43,7 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  MAX_CHILD_ISSUES_CREATED_BY_HELPER,
 } from "../services/issues.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -423,6 +426,80 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     return companyId;
   }
 
+  function agentRow(companyId: string, input: {
+    id: string;
+    name: string;
+    status?: string;
+    reportsTo?: string | null;
+  }) {
+    return {
+      id: input.id,
+      companyId,
+      name: input.name,
+      role: "engineer",
+      status: input.status ?? "active",
+      reportsTo: input.reportsTo ?? null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    };
+  }
+
+  it("refreshes a stale open pull request before accepting done", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: assigneeAgentId,
+      name: "AssignedAgent",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Merged PR task",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    const workProductId = randomUUID();
+    await db.insert(issueWorkProducts).values({
+      id: workProductId,
+      companyId,
+      issueId: issue.id,
+      type: "pull_request",
+      provider: "github",
+      title: "company-a/example#123",
+      url: "https://github.com/company-a/example/pull/123",
+      status: "ready_for_review",
+      metadata: { repo: "company-a/example", number: 123, state: "open", draft: false },
+    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      title: "Merged PR",
+      state: "closed",
+      merged: true,
+      merged_at: "2026-10-28T00:00:00Z",
+      draft: false,
+      head: { ref: "fix", sha: "abc123" },
+      base: { ref: "main" },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await expect(svc.update(issue.id, { status: "done" })).resolves.toMatchObject({ status: "done" });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.github.com/repos/company-a/example/pulls/123",
+        expect.any(Object),
+      );
+      const [persistedProduct] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, workProductId));
+      expect(persistedProduct).toMatchObject({
+        status: "merged",
+        metadata: { state: "merged", draft: false },
+      });
+      const [persistedIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      expect(persistedIssue?.status).toBe("done");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not treat passive issue activity as touching it, but includes real user mutations", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issueId = randomUUID();
@@ -486,26 +563,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       expect.objectContaining({ id: issueId }),
     ]);
   });
-
-  function agentRow(companyId: string, input: {
-    id: string;
-    name: string;
-    status?: string;
-    reportsTo?: string | null;
-  }) {
-    return {
-      id: input.id,
-      companyId,
-      name: input.name,
-      role: "engineer",
-      status: input.status ?? "active",
-      reportsTo: input.reportsTo ?? null,
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    };
-  }
 
   it("rejects direct terminated assignees with structured conflict details", async () => {
     const companyId = await seedAssignableAgentCompany();
@@ -664,60 +721,98 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   it("expires pending thread interactions on any service-level terminal transition", async () => {
     const companyId = await seedAssignableAgentCompany();
-    const issue = await svc.create(companyId, {
-      title: "Close me with a pending card",
-      description: null,
-      status: "todo",
-      priority: "medium",
-    });
-    const interactionId = randomUUID();
-    await db.insert(issueThreadInteractions).values({
-      id: interactionId,
-      companyId,
-      issueId: issue.id,
-      kind: "ask_user_questions",
-      status: "pending",
-      continuationPolicy: "wake_assignee",
-      payload: {
-        version: 1,
-        questions: [{
-          id: "scope",
-          prompt: "Pick one",
-          selectionMode: "single",
-          options: [{ id: "a", label: "A" }],
-        }],
-      } as never,
-    });
+    for (const terminalStatus of ["done", "cancelled"] as const) {
+      const terminalIssue = await svc.create(companyId, {
+        title: `Close me with a pending card (${terminalStatus})`,
+        description: null,
+        status: "todo",
+        priority: "medium",
+      });
+      const pendingId = randomUUID();
+      const resolvedId = randomUUID();
+      const openId = randomUUID();
+      await db.insert(issueThreadInteractions).values([
+        {
+          id: pendingId,
+          companyId,
+          issueId: terminalIssue.id,
+          kind: "ask_user_questions",
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          payload: {
+            version: 1,
+            questions: [{
+              id: "scope",
+              prompt: "Pick one",
+              selectionMode: "single",
+              options: [{ id: "a", label: "A" }],
+            }],
+          } as never,
+        },
+        {
+          id: resolvedId,
+          companyId,
+          issueId: terminalIssue.id,
+          kind: "ask_user_questions",
+          status: "resolved",
+          continuationPolicy: "wake_assignee",
+          payload: { version: 1, questions: [] } as never,
+          result: { version: 1, outcome: "accepted" } as never,
+          resolvedAt: new Date(),
+        },
+      ]);
+      const openIssue = await svc.create(companyId, {
+        title: "Keep open interactions pending",
+        description: null,
+        status: "todo",
+        priority: "medium",
+      });
+      await db.insert(issueThreadInteractions).values({
+        id: openId,
+        companyId,
+        issueId: openIssue.id,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, questions: [] } as never,
+      });
 
-    // Direct service callers (tree control, recovery, pipelines, status cards)
-    // never pass through the HTTP routes, so the expiry must fire here.
-    const updated = await svc.update(issue.id, { status: "cancelled", actorUserId: "local-board" });
-    expect(updated?.status).toBe("cancelled");
+      const updated = await svc.update(terminalIssue.id, {
+        status: terminalStatus,
+        actorUserId: "local-board",
+      });
+      expect(updated?.status).toBe(terminalStatus);
 
-    const interaction = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, interactionId))
-      .then((rows) => rows[0] ?? null);
-    expect(interaction).toMatchObject({
-      status: "expired",
-      resolvedByUserId: "local-board",
-    });
-    expect(interaction?.result).toMatchObject({ version: 1, outcome: "issue_closed" });
-    expect(interaction?.resolvedAt).not.toBeNull();
+      const interactions = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(inArray(issueThreadInteractions.id, [pendingId, resolvedId, openId]));
+      expect(interactions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: pendingId,
+          status: "expired",
+          resolvedByUserId: "local-board",
+          result: expect.objectContaining({ version: 1, outcome: "issue_closed" }),
+        }),
+        expect.objectContaining({ id: resolvedId, status: "resolved" }),
+        expect.objectContaining({ id: openId, status: "pending" }),
+      ]));
+
+      await expect(svc.update(terminalIssue.id, { status: terminalStatus })).resolves.toMatchObject({
+        status: terminalStatus,
+      });
+      const expiredAgain = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, pendingId));
+      expect(expiredAgain[0]).toMatchObject({ status: "expired" });
+    }
 
     const logged = await db
       .select()
       .from(activityLog)
       .where(eq(activityLog.action, "issue.thread_interaction_expired"));
-    expect(logged).toHaveLength(1);
-    // details.source is dot-separated and trips the JWT-shaped redaction
-    // heuristic in sanitizeRecord, so assert the identifying fields instead.
-    expect(logged[0]?.details).toMatchObject({
-      interactionId,
-      interactionKind: "ask_user_questions",
-      interactionStatus: "expired",
-    });
+    expect(logged).toHaveLength(2);
   });
 
   it("expires superseded interactions when human comments are added through the service", async () => {
@@ -3002,6 +3097,40 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
+  it("inherits development execution policy only for opted-in projects", async () => {
+    const companyId = randomUUID();
+    const developmentProjectId = randomUUID();
+    const regularProjectId = randomUUID();
+    const developmentPolicy = {
+      mode: "normal" as const,
+      commentRequired: true,
+      stages: [{ type: "review" as const, participants: [{ type: "agent" as const, agentId: randomUUID() }] }],
+    };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values([
+      {
+        id: developmentProjectId,
+        companyId,
+        name: "Development project",
+        status: "in_progress",
+        developmentProcess: { enabled: true, executionPolicy: developmentPolicy, pipelineId: null },
+      },
+      { id: regularProjectId, companyId, name: "Regular project", status: "in_progress" },
+    ]);
+
+    const developmentIssue = await svc.create(companyId, { projectId: developmentProjectId, title: "Development task" });
+    const regularIssue = await svc.create(companyId, { projectId: regularProjectId, title: "Regular task" });
+
+    expect(developmentIssue.executionPolicy).toMatchObject(developmentPolicy);
+    expect(regularIssue.executionPolicy).toBeNull();
+  });
+
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -3127,6 +3256,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(parent.responsibleUserId).toBe(responsibleUserId);
     expect(child.responsibleUserId).toBe(responsibleUserId);
+    expect(child.assigneeAgentId).toBe(agentId);
   });
 
   it("only honors explicit responsibleUserId for trusted issue create callers", async () => {
@@ -3687,7 +3817,9 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const goalId = randomUUID();
+    const assigneeAgentId = randomUUID();
     const parentIssueId = randomUUID();
+    const reviewerAgentId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
 
@@ -3706,6 +3838,31 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       level: "task",
       status: "active",
     });
+
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Parent assignee",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Parent reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
 
     await db.insert(projects).values({
       id: projectId,
@@ -3745,12 +3902,11 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId,
       requestDepth: 1,
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: {
-        mode: "isolated_workspace",
-      },
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
 
     const { issue: child, parentBlockerAdded } = await svc.createChild(parentIssueId, {
@@ -3766,6 +3922,28 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.projectId).toBe(projectId);
     expect(child.goalId).toBe(goalId);
     expect(child.requestDepth).toBe(2);
+    expect(child.assigneeAgentId).toBe(assigneeAgentId);
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: reviewerAgentId })
+      .where(eq(issues.id, parentIssueId));
+    const { issue: reviewParentChild } = await svc.createChild(parentIssueId, {
+      title: "Caste-scoped child under reviewer",
+      status: "todo",
+      casteKey: "engineer",
+    });
+    expect(reviewParentChild.assigneeAgentId).toBeNull();
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId })
+      .where(eq(issues.id, parentIssueId));
+    const { issue: inheritedChild } = await svc.createChild(parentIssueId, {
+      title: "Eligible child under engineer",
+      status: "todo",
+    });
+    expect(inheritedChild.assigneeAgentId).toBe(assigneeAgentId);
     expect(child.description).toContain("## Acceptance Criteria");
     expect(child.description).toContain("- Uses the parent issue as parentId");
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
@@ -3819,6 +3997,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Accepted plan parent",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: null,
       executionWorkspaceSettings: {
         mode: "isolated_workspace",
         environmentId,
@@ -3834,6 +4013,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Accepted plan child",
       status: "todo",
       priority: "medium",
+      assigneeAgentId: null,
       executionWorkspaceInheritanceMode: "strategy_only",
     });
 
@@ -4302,7 +4482,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(child.blocks.map((relation) => relation.id)).toEqual([parentId]);
     expect(child.blocks[0]).toEqual(expect.objectContaining({
       title: "Parent",
-      status: "todo",
+      status: "blocked",
       priority: "medium",
     }));
     expect(child.blockedBy).toEqual([]);
@@ -4323,7 +4503,21 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const issueD = randomUUID();
     await db.insert(issues).values([
       { id: issueA, companyId, identifier: "PAP-1", title: "Issue A", status: "blocked", priority: "medium" },
-      { id: issueB, companyId, identifier: "PAP-2", title: "Issue B", status: "blocked", priority: "medium" },
+      {
+        id: issueB,
+        companyId,
+        identifier: "PAP-2",
+        title: "Issue B",
+        status: "blocked",
+        priority: "medium",
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: randomUUID() },
+          nextCheckAt: "2026-10-25T12:00:00.000Z",
+          timeoutAt: "2026-10-26T12:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      },
       { id: issueC, companyId, identifier: "PAP-3", title: "Issue C", status: "blocked", priority: "medium" },
       { id: issueD, companyId, identifier: "PAP-4", title: "Issue D", status: "todo", priority: "high" },
     ]);
@@ -4339,6 +4533,10 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: issueB,
       identifier: "PAP-2",
       title: "Issue B",
+      blockerMetadata: {
+        blockReason: "dependency",
+        nextCheckAt: "2026-10-25T12:00:00.000Z",
+      },
       terminalBlockers: [
         expect.objectContaining({
           id: issueD,
@@ -7242,5 +7440,148 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .from(issueComments)
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
+  });
+
+  it("createChild inherits release label from parent and defaults unassigned backlog to todo", async () => {
+    const [releaseLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.6.7",
+        color: "#112233",
+      })
+      .returning();
+
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent release task",
+      status: "in_progress",
+      issueNumber: 991,
+      identifier: "PAP-991",
+    });
+
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId: parentIssueId,
+      labelId: releaseLabel.id,
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Child subtask",
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.status).toBe("todo");
+    expect(child.labels?.map((l: any) => l.name)).toContain("1.6.7");
+  });
+
+  it("createChild does not overwrite explicit release label on child", async () => {
+    const [parentLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.6.6",
+        color: "#112233",
+      })
+      .returning();
+
+    const [childLabel] = await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: "1.7.0",
+        color: "#445566",
+      })
+      .returning();
+
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent release task 2",
+      status: "in_progress",
+      issueNumber: 992,
+      identifier: "PAP-992",
+    });
+
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId: parentIssueId,
+      labelId: parentLabel.id,
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Child with explicit release label",
+      labelIds: [childLabel.id],
+    });
+
+    expect(child.labels?.map((l: any) => l.name)).toEqual(["1.7.0"]);
+  });
+
+  it("createChild ignores done and cancelled child issues when checking MAX_CHILD_ISSUES_CREATED_BY_HELPER limit", async () => {
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue with closed children",
+      status: "in_progress",
+      issueNumber: 1991,
+      identifier: "PAP-1991",
+    });
+
+    const closedChildren = Array.from({ length: MAX_CHILD_ISSUES_CREATED_BY_HELPER }, (_, i) => ({
+      id: randomUUID(),
+      companyId,
+      parentId: parentIssueId,
+      title: `Closed child ${i + 1}`,
+      status: i % 2 === 0 ? "done" : "cancelled",
+      issueNumber: 2000 + i,
+      identifier: `PAP-${2000 + i}`,
+    }));
+    await db.insert(issues).values(closedChildren);
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "26th child after 25 closed",
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.title).toBe("26th child after 25 closed");
+    // Parent fixture has no assignee, so nothing is inherited and create()
+    // keeps its default status "backlog" (server/src/services/issues.ts).
+    expect(child.status).toBe("backlog");
+  });
+
+  it("createChild enforces MAX_CHILD_ISSUES_CREATED_BY_HELPER limit for active children", async () => {
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue with active children",
+      status: "in_progress",
+      issueNumber: 1992,
+      identifier: "PAP-1992",
+    });
+
+    const activeStatuses = ["todo", "in_progress", "blocked"] as const;
+    const activeChildren = Array.from({ length: MAX_CHILD_ISSUES_CREATED_BY_HELPER }, (_, i) => ({
+      id: randomUUID(),
+      companyId,
+      parentId: parentIssueId,
+      title: `Active child ${i + 1}`,
+      status: activeStatuses[i % activeStatuses.length],
+      issueNumber: 3000 + i,
+      identifier: `PAP-${3000 + i}`,
+    }));
+    await db.insert(issues).values(activeChildren);
+
+    await expect(
+      svc.createChild(parentIssueId, {
+        title: "26th active child",
+      }),
+    ).rejects.toThrow(
+      `Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`,
+    );
   });
 });

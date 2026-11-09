@@ -31,7 +31,14 @@ export async function writeReviewRoutingSettings(
   input: unknown,
 ): Promise<ReviewRoutingSettings> {
   const parsed = reviewRoutingSettingsSchema.parse(input);
-  const next = { ...parsed, reviewerRoles: [...new Set(parsed.reviewerRoles)] };
+  // myrmidon(OPE-11767): the PUT is the whole object. A client that does not
+  // know the `boardMerge` block (the settings screen before it learned the
+  // block) omits it, and the schema would then reset a stored value to the
+  // defaults — an operator's "merge off" must survive an unrelated save.
+  const sentBoardMerge =
+    typeof input === "object" && input !== null && !Array.isArray(input) && "boardMerge" in input;
+  const boardMerge = sentBoardMerge ? parsed.boardMerge : (await readReviewRoutingSettings(settings)).boardMerge;
+  const next = { ...parsed, boardMerge, reviewerRoles: [...new Set(parsed.reviewerRoles)] };
   await settings.updateGeneral({ [REVIEW_ROUTING_SETTINGS_KEY]: next });
   return next;
 }

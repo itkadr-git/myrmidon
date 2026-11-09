@@ -1,6 +1,7 @@
 // myrmidon(P6): broker candidate walk embedded into the launcher
 // myrmidon(GITHUB-SHARED-IDENTITY): plus the target-repository resolution a
 // non-container run needs to name the repository to the broker.
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import { githubBrokerCandidatesLauncherSource, githubBrokerRepositoryLauncherSource } from "./myrmidon-github-broker.js";
 import { GITHUB_CREDENTIAL_HELPER_PROGRAM, githubCredentialHelperSource } from "./github-credential-helper.js";
 
@@ -11,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
+const PRODUCT = ${JSON.stringify(PRODUCT_NAME)};
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
 const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
@@ -20,14 +22,59 @@ const executable = originalPath.map(p => path.join(p, program)).find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
 if (!['git', 'gh'].includes(program) || !executable) {
-  process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
+  process.stderr.write(PRODUCT + ': requested GitHub command is not installed.\n');
   process.exit(127);
 }
 ${githubBrokerCandidatesLauncherSource()}
 ${githubBrokerRepositoryLauncherSource()}
+function isPrCreate(args) {
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === "pr" && args[i + 1] === "create") return true;
+  }
+  return false;
+}
+
+function sanitizePrCreateBase(args) {
+  const result = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "-B" || arg === "--base") {
+      const val = args[i + 1];
+      if (val && val.startsWith("bot/")) {
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
+        result.push(arg, "main");
+        i++;
+      } else {
+        result.push(arg);
+      }
+    } else if (arg.startsWith("--base=")) {
+      const val = arg.slice("--base=".length);
+      if (val.startsWith("bot/")) {
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
+        result.push("--base=main");
+      } else {
+        result.push(arg);
+      }
+    } else if (arg.startsWith("-B=")) {
+      const val = arg.slice("-B=".length);
+      if (val.startsWith("bot/")) {
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
+        result.push("-B=main");
+      } else {
+        result.push(arg);
+      }
+    } else {
+      result.push(arg);
+    }
+  }
+  return result;
+}
+
 async function main() {
   let env = { ...process.env };
-  const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
+  const diagnostic = (code) => {
+    process.stderr.write(PRODUCT + ': GitHub ' + code + '; continuing without managed credentials.\n');
+  };
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
   // A missing/unwritable scratch directory must not break local Git. The
   // fallback deliberately cannot load the host's gh authentication files.
@@ -77,7 +124,8 @@ async function main() {
     // myrmidon(P6): walk up to six broker candidates instead of one URL.
     // myrmidon(GITHUB-SHARED-IDENTITY): and name the repository this command
     // targets, so an App identity serves it.
-    const brokerBaseUrls = paperclipBrokerCandidateUrls(env);
+      const candidateEnv = { ...env, MYRMIDON_BOT_BOARD_URL: env.MYRMIDON_BOT_BOARD_URL || 'http://paperclip-server-1:3100' };
+      const brokerBaseUrls = paperclipBrokerCandidateUrls(candidateEnv);
     try {
     let response;
     if (brokerBaseUrls.length > 0 && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
@@ -85,7 +133,7 @@ async function main() {
       const brokerAttempt = await paperclipRequestBrokerCredentials(env, brokerBaseUrls, undefined, repository);
       response = brokerAttempt.response;
       if (!response || !response.ok) {
-        if (brokerAttempt.tried.length > 0) process.stderr.write('Paperclip: GitHub broker candidates tried: ' + brokerAttempt.tried.join(', ') + '.\n');
+        if (brokerAttempt.tried.length > 0) process.stderr.write(PRODUCT + ': GitHub broker candidates tried: ' + brokerAttempt.tried.join(', ') + '.\n');
         if (!response) diagnostic('broker_transport_unavailable');
         else diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
       } else {
@@ -93,8 +141,8 @@ async function main() {
       if (result.status === 'unavailable') {
         const reason = typeof result.reason === 'string'
           ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)
-          : 'Check the GitHub connection in Paperclip';
-        process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
+          : 'Check the GitHub connection in ' + PRODUCT;
+        process.stderr.write(PRODUCT + ': GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
       }
       if (result.status === 'available' && configReady) {
         // The Git configuration above is the launcher's own: only the token,
@@ -117,12 +165,16 @@ async function main() {
   env.ZDOTDIR = configDirectory;
   env.BASH_ENV = '/dev/null';
   env.GIT_SSH_COMMAND = 'ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=none -o BatchMode=yes';
-  const child = spawn(executable, process.argv.slice(2), { env, stdio: 'inherit' });
+  let childArgs = process.argv.slice(2);
+  if (program === 'gh' && isPrCreate(childArgs)) {
+    childArgs = sanitizePrCreateBase(childArgs);
+  }
+  const child = spawn(executable, childArgs, { env, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
-  child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
+  child.once('error', () => { process.stderr.write(PRODUCT + ': GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
 }
-main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+main().catch(() => { process.stderr.write(PRODUCT + ': GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
 `;
 }
 

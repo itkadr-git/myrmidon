@@ -7,13 +7,13 @@
   "author": "Paperclip",
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/itkadr-git/myrmidon",
     "directory": "packages/adapters/hermes"
   },
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/itkadr-git/myrmidon/issues"
   },
-  "homepage": "https://github.com/paperclipai/paperclip/tree/master/packages/adapters/hermes#readme",
+  "homepage": "https://github.com/itkadr-git/myrmidon/tree/master/packages/adapters/hermes#readme",
   "keywords": [
     "paperclip",
     "hermes",

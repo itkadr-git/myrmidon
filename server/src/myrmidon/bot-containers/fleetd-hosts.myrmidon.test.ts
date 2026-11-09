@@ -64,6 +64,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
       ENTRY({
         hindsightUrl: "http://hindsight.internal:8890/",
         llmBaseUrl: " http://llm.internal:4000 ",
+        boardAddress: " board.internal:3100 ",
         boardExtraHost: "board.internal",
         volumeRoot: "/srv/bots",
         network: "bots-net",
@@ -76,6 +77,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
       tokenSecret: "secret-a",
       hindsightUrl: "http://hindsight.internal:8890",
       llmBaseUrl: "http://llm.internal:4000",
+      boardAddress: "board.internal:3100",
       boardExtraHost: "board.internal",
       volumeRoot: "/srv/bots",
       network: "bots-net",
@@ -87,6 +89,12 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
     expect(() => parseFleetHosts(ENTRY({ hindsightUrl: "https://hindsight.internal:8890" }))).toThrow(/hindsightUrl" must be http/);
     expect(() => parseFleetHosts(ENTRY({ llmBaseUrl: "llm.internal:4000" }))).toThrow(/llmBaseUrl" must be http/);
     expect(() => parseFleetHosts(ENTRY({ network: "   " }))).toThrow(/network" is empty/);
+  });
+
+  it("rejects malformed boardAddress instead of passing an unreachable URL to bots", () => {
+    for (const address of ["board.internal", "http://board.internal:3100", "board.internal:3100/path", " "]) {
+      expect(() => parseFleetHosts(ENTRY({ boardAddress: address }))).toThrow(/boardAddress/);
+    }
   });
 
   it("rejects a malformed boardExtraHost and a relative volumeRoot", () => {

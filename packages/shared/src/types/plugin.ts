@@ -653,6 +653,14 @@ export interface PluginModelProviderDeclaration {
   supportsChannels?: boolean;
 }
 
+/** Plugin-declared models provisioned into the company gateway on activation. */
+export interface PluginProviderModelDeclaration {
+  provider: string;
+  baseUrl: string;
+  credentialSecretName: string;
+  models: Array<{ id: string; name?: string }>;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -723,6 +731,8 @@ export interface PaperclipPluginManifestV1 {
   objectReferences?: PluginObjectReferenceProviderDeclaration[];
   /** Model provider connectors this plugin contributes. */
   modelProviders?: PluginModelProviderDeclaration[];
+  /** Explicit provider models and company-owned credential binding for gateway sync. */
+  providerModels?: PluginProviderModelDeclaration;
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.

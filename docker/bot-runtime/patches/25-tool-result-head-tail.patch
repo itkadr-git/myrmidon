@@ -1,0 +1,37 @@
+diff --git a/tools/tool_result_storage.py b/tools/tool_result_storage.py
+index f00a3a7..00264cb 100644
+--- a/tools/tool_result_storage.py
++++ b/tools/tool_result_storage.py
+@@ -253,14 +253,23 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
+     location succeeds."""
+     if threshold is None:
+         threshold = config.resolve_threshold(tool_name)
++    # myrmidon(G1): a result longer than the configured cap is shown as its head and tail (see
++    # agent/context_economy.py); the cap also lowers the persistence threshold of every tool but the
++    # pinned ones, so a 20 KB result no longer rides every later request in full.
++    from agent.context_economy import build_head_tail_message, effective_tool_result_threshold
++
++    threshold, head_tail_limits = effective_tool_result_threshold(threshold, tool_name)
+     if threshold == float("inf") or len(content) <= threshold:
+         return content
+     filename = _safe_result_filename(tool_use_id)
+     preview, has_more = generate_preview(content, max_chars=config.preview_size)
++    head_tail = head_tail_limits is not None and len(content) > head_tail_limits.max_chars
+ 
+     def _persisted(path: str, host_suffix: str = "") -> str:
+         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
+                     tool_name, tool_use_id, len(content), path, host_suffix)
++        if head_tail:
++            return build_head_tail_message(content, path, head_tail_limits)
+         return _build_persisted_message(preview, has_more, len(content), path)
+ 
+     # Always persist host-side first: cache/spillover is the single canonical home.
+@@ -282,6 +291,8 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
+             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+     logger.info("Inline-truncating large tool result: %s (%d chars, no sandbox write)",
+                 tool_name, len(content))
++    if head_tail:
++        return build_head_tail_message(content, None, head_tail_limits)
+     return (f"{preview}\n\n[Truncated: tool response was {len(content):,} chars. "
+             "Full output could not be saved to sandbox.]")
+ 

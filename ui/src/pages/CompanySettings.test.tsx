@@ -117,9 +117,15 @@ async function flushReact() {
   });
 }
 
-async function waitForAssertion(assertion: () => void) {
+// Re-run the assertion until it holds or the time budget is spent. The budget
+// is time, not a count of flush cycles: how many cycles the environment and
+// capability queries need to resolve depends on how loaded the machine is, so a
+// fixed count passes on a fast runner and reads a still-empty page on a slow one.
+// 3 s stays under the 5 s default test timeout.
+async function waitForAssertion(assertion: () => void, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
-  for (let i = 0; i < 20; i += 1) {
+  for (;;) {
     await flushReact();
     try {
       assertion();
@@ -127,8 +133,8 @@ async function waitForAssertion(assertion: () => void) {
     } catch (error) {
       lastError = error;
     }
+    if (Date.now() >= deadline) throw lastError;
   }
-  throw lastError;
 }
 
 const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
@@ -201,8 +207,11 @@ describe("CompanyEnvironments", () => {
     await act(async () => {
       root.render(renderCompanyEnvironments(queryClient));
     });
-    await flushReact();
-    await flushReact();
+    // Wait for the loaded page before asserting what it does not show: a page
+    // that is still loading would satisfy every "not" check below.
+    await waitForAssertion(() =>
+      expect(container.querySelector('[aria-label="Add environment"]')).toBeTruthy(),
+    );
 
     const optionLabels = Array.from(container.querySelectorAll("option")).map((option) => option.textContent?.trim());
 
@@ -239,28 +248,30 @@ describe("CompanyEnvironments", () => {
     await act(async () => {
       root.render(renderCompanyEnvironments(queryClient));
     });
-    await flushReact();
-    await flushReact();
-
+    await waitForAssertion(() =>
+      expect(container.querySelector('[aria-label="Add environment"]')).toBeTruthy(),
+    );
     const addEnvironmentButton = container.querySelector('[aria-label="Add environment"]');
-    expect(addEnvironmentButton).toBeTruthy();
 
     await act(async () => {
       click(addEnvironmentButton);
     });
 
-    await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeTruthy());
-    const dialog = getEnvironmentFormPage();
+    // The form opens as soon as the button is clicked, but the sandbox provider
+    // list comes from the capabilities query, which can resolve after it. Wait
+    // for the driver options to settle instead of reading them once.
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage();
+      const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
+        .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
+        | HTMLSelectElement
+        | undefined;
+      expect(driverSelect).toBeTruthy();
 
-    const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
-      .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
-      | HTMLSelectElement
-      | undefined;
-    expect(driverSelect).toBeTruthy();
-
-    const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
-    expect(driverOptionValues).not.toContain("local");
-    expect(driverOptionValues).toEqual(["sandbox", "ssh"]);
+      const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
+      expect(driverOptionValues).not.toContain("local");
+      expect(driverOptionValues).toEqual(["sandbox", "ssh"]);
+    });
 
     await act(async () => {
       root.unmount();
@@ -290,11 +301,8 @@ describe("CompanyEnvironments", () => {
     await act(async () => {
       root.render(renderCompanyEnvironments(queryClient));
     });
-    await flushReact();
-    await flushReact();
-
+    await waitForAssertion(() => expect(findAction(container, "Edit")).toBeTruthy());
     const editButton = findAction(container, "Edit");
-    expect(editButton).toBeTruthy();
 
     await act(async () => {
       click(editButton);
@@ -364,13 +372,10 @@ describe("CompanyEnvironments", () => {
     await act(async () => {
       root.render(renderCompanyEnvironments(queryClient));
     });
-    await flushReact();
-    await flushReact();
+    await waitForAssertion(() => expect(container.textContent).toContain("Secure Sandbox"));
 
-    expect(container.textContent).toContain("Secure Sandbox");
-
+    await waitForAssertion(() => expect(findAction(container, "Edit")).toBeTruthy());
     const editButton = findAction(container, "Edit");
-    expect(editButton).toBeTruthy();
 
     await act(async () => {
       click(editButton);
@@ -388,11 +393,12 @@ describe("CompanyEnvironments", () => {
       providerSelect!.value = "secure-plugin";
       providerSelect!.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await flushReact();
 
-    const templateInput = Array.from(dialog?.querySelectorAll("input") ?? [])
-      .find((input) => (input as HTMLInputElement).value === "saved-template") as HTMLInputElement | undefined;
-    expect(templateInput?.value).toBe("saved-template");
+    await waitForAssertion(() => {
+      const templateInput = Array.from(dialog?.querySelectorAll("input") ?? [])
+        .find((input) => (input as HTMLInputElement).value === "saved-template") as HTMLInputElement | undefined;
+      expect(templateInput?.value).toBe("saved-template");
+    });
 
     await act(async () => {
       root.unmount();

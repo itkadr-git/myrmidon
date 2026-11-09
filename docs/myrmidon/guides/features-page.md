@@ -52,7 +52,9 @@ so the module sweeps have run once.
 
 | Feature | Health signal |
 |---|---|
-| Swarm self-claim and idle wake | Claim lines in the activity log (24 h), the sweeper's own passes, the last pass's view of the queues (free agents next to ready work). |
+| Swarm self-claim and idle wake | Task assignments to free agents in activity log (24 h), sweep passes, queue state. |
+| SWARM scent classifier | Gateway configuration (base URL, key secret, model in LiteLLM) and classification error rate over 1 hour. |
+| Execution holds (HOLD-READY) | Open tasks held with replay=blocked, failing if oldest hold exceeds 24 h. |
 | Run admission | The live admission gate (host memory floor open, closed or unreadable) and the queued runs. |
 | Bot disk lifecycle | The sweep's own report on every maintenance tick (volume root unreadable, directories reaped). |
 | Shared package cache | The bot container reconciler: a refused bind mount, or a bot recreated with the binds. |

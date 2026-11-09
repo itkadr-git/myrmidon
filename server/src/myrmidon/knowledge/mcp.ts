@@ -127,7 +127,23 @@ export const KNOWLEDGE_TOOL_DEFINITIONS = [
         content: { type: "string" },
         kind: { type: "string", enum: ["note", "wiki", "answer", "task_outcome", "rule"] },
         folderPath: { type: "string" },
+        changeSummary: { type: "string", maxLength: 1000, description: "Short change note for the revision history." },
+        sources: {
+          type: "array",
+          maxItems: 50,
+          items: {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["task", "pr", "issue", "run", "document", "decision", "url"] },
+              ref: { type: "string", minLength: 1, maxLength: 2000 },
+              note: { type: "string", maxLength: 2000 },
+            },
+            required: ["kind", "ref"],
+          },
+        },
         submit: { type: "boolean", description: "Submit straight to review instead of leaving the revision as draft." },
+        force: { type: "boolean", description: "Bypass write protection for probe markers or drastic truncation." },
+        reason: { type: "string", description: "Mandatory justification if force is true." },
       },
       required: ["content"],
     },
@@ -358,7 +374,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             field: "sources",
           });
         }
-        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources });
+        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources, idempotencyKey: args.idempotencyKey });
         assertCleanWrite(input.body, "body");
         return {
           suggestion: await mod.suggest(actorRef, {
@@ -367,6 +383,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             targetSlug: input.targetSlug ?? undefined,
             sourceKind: input.sources[0]!.kind,
             sourceRef: input.sources[0]!.ref,
+            idempotencyKey: input.idempotencyKey ?? undefined,
           }),
         };
       }
@@ -377,7 +394,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             field: "sources",
           });
         }
-        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources });
+        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources, idempotencyKey: args.idempotencyKey });
         assertCleanWrite(input.body, "body");
         return {
           suggestion: await mod.suggest(actorRef, {
@@ -386,6 +403,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             targetSlug: input.targetSlug ?? undefined,
             sourceKind: input.sources[0]!.kind,
             sourceRef: input.sources[0]!.ref,
+            idempotencyKey: input.idempotencyKey ?? undefined,
           }),
         };
       }
@@ -398,6 +416,8 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
               content: String(args.content),
               changeSummary: typeof args.changeSummary === "string" ? args.changeSummary : null,
               sources: Array.isArray(args.sources) ? (args.sources as never) : undefined,
+              force: args.force === true,
+              reason: typeof args.reason === "string" ? args.reason : null,
             },
             actorRef,
           );
@@ -418,6 +438,8 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             tags: Array.isArray(args.tags) ? (args.tags as string[]) : [],
             approverKind: null,
             sources: Array.isArray(args.sources) ? (args.sources as never) : undefined,
+            force: args.force === true,
+            reason: typeof args.reason === "string" ? args.reason : null,
           },
           actorRef,
         );

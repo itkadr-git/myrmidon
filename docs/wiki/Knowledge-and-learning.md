@@ -69,8 +69,13 @@ and per role, and compares the window against the company's pinned baseline
 snapshot with per-row deltas — so a regression in delivery speed or rework
 rate is visible as a number, not a feeling.
 
+## ADM archive migration
+
+The opt-in ADM migration command produces a deterministic dry-run before any import. It requires explicit policy summaries and fails closed on scanner errors. Import creates drafts and submits rules for review; it never publishes them. The REST hook delivers bounded summaries with session dedup and byte metrics. It is not installed in production by the migration command. See the [EN/RU operator guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/adm-knowledge-migration.md) for environment variables, apply and rollback.
+
 ## In detail
 
+- [Knowledge seed corpus: decisions and product reference](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/knowledge-seed.md)
 - [Foraging: knowledge gathering from approved sources](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/foraging.md)
 - [Reference-task evals and the LLM judge](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/reference-task-evals.md)
 - [Evals: cross-family judge selection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/evals-judge-family-selection.md)

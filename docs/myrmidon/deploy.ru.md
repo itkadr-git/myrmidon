@@ -44,7 +44,43 @@ docker buildx imagetools inspect ghcr.io/itkadr-git/myrmidon:1.0.0 --format '{{j
 (`org.opencontainers.image.version`, `org.opencontainers.image.revision`). Их можно задать
 явно: `--expect-version`, `--expect-commit`.
 
-## Только образы из CI
+## Реестр миграций на production
+
+Файл `packages/db/src/migrations/.deployed.json` в репозитории содержит миграции, подтверждённые
+как применённые на production. Это источник истины для CI: нельзя определять применённое состояние
+по SQL-файлам в ветке или теге релиза — они могут включать миграции, которые не запускались.
+При отсутствующем или некорректном реестре CI завершается ошибкой.
+
+После выката оператор релиза отвечает за сверку реестра с журналом миграций production-БД.
+Изменяйте manifest через PR в репозитории продукта, не редактируйте его на хосте. Перед принятием
+изменения проверьте реальные имена и номера применённых миграций, ветку/тег релиза и время выката.
+Например, подтверждённая текущая версия записана так:
+
+```json
+{
+  "releaseBranch": "rel/1.6.6-rc.19",
+  "releaseTag": "myr-v1.6.6-rc.19",
+  "deployedAt": "2026-10-30T12:37:21Z",
+  "lastMigration": "0424_clear_stale_replay_holds.sql",
+  "migrations": [
+    { "number": "0423", "file": "0423_colorful_jazinda.sql", "pr": 1997 },
+    { "number": "0424", "file": "0424_clear_stale_replay_holds.sql", "pr": 2012 }
+  ]
+}
+```
+
+Скрипт обновления может предложить кандидатов из дерева релизной ветки, но это не доказательство,
+что каждая миграция действительно запускалась. Выполните `node scripts/myrmidon/ci/update-deployed-migrations.mjs --dry-run`,
+сравните список с журналом production-БД, затем обновите manifest и оформите PR. Не применяйте
+предложение dry-run без такой сверки. После подтверждения включите запись в PR на изменение
+реестра. Если пропустить реально применённую миграцию, CI может пропустить коллизию; если записать
+неприменённую — CI ложно заблокирует корректную работу. Оператор релиза должен исправить оба вида
+расхождений по журналу production-БД.
+
+Задача CI `deployed-migrations` проверяет добавленные миграции по этому реестру и входит в
+`CI result`. При коллизии она указывает занятый production-номер и имя файла; перенумерацию новой
+миграции согласуйте с порядком PR, которому принадлежит уже занятый номер.
+
 
 Решение владельца: на бой идёт только образ, собранный CI (workflow **Myrmidon image**) из `main`
 или из тега `myr-v*`. Срочное исправление тоже идёт через PR, пусть и ускоренный, а не образом,
@@ -627,7 +663,9 @@ Systemd-oneshot `myrmidon-post-boot.service` (шаблон:
 4. nginx, LiteLLM, RAGFlow и Hindsight отвечают на своих check-URL (пустой URL —
    проверка выключена, со строкой в логе; молча не пропускается ничего);
 5. DNS-имена, которыми пользуются другие сервисы, резолвятся в docker-сети
-   (`DNS_CHECK_NAMES`, по умолчанию `mysql es01 paperclip-server-1` — урок RAGFlow);
+   (`DNS_CHECK_NAMES`, по умолчанию `mysql es01 paperclip-server-1` — старое
+   имя резолвится через совместимый алиас; окно переименования rc.17 добавляет
+   `myrmidon-board`, см. `docs/myrmidon/board-rename-runbook.md`);
 6. `systemctl --failed` пуст.
 
 Каждый провал перечисляется (не только первый), скрипт завершается с кодом 1,
@@ -699,6 +737,34 @@ scripts/myrmidon/deploy/rollback-component.sh --config /path/to/deploy.env --com
 компонент `skip` остаётся своей процедуре (громкий SKIP). Как и `rollback.sh`, это аварийный путь: непроверенная цель предупреждает,
 но не блокирует. Откат доски не откатывает компоненты, откат компонента не трогает доску:
 после DEGRADED-выката вывод называет, какая сторона упала и какую команду запустить.
+
+### Откат на локальный образ (ROLLBACK-LOCAL)
+
+Образы до 1.1.0 не лежат в реестре, а реестр может быть недоступен именно в момент инцидента.
+`--local` откатывает на образ, который уже есть на хосте выката, **без скачивания**:
+
+```sh
+# локальный тег
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --local myrmidon-local:hotfix
+# тот же дайджест, что и обычно, но без pull
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --local sha256:<64 hex>
+# откат на --to/--to-image без pull
+scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to sha256:<old> --local
+```
+
+- Ссылка берётся из аргумента `--local` (тег или дайджест; голый дайджест дополняется до
+  `ghcr.io/itkadr-git/myrmidon@sha256:…`), из `MYRMIDON_ROLLBACK_LOCAL` в файле настроек
+  (действует, когда `--local` не передан), а голый `--local` без значения — из `--to`/`--to-image`.
+  Явный `--local <ссылка>` вместе с `--to`/`--to-image` — ошибка: ссылка одна.
+- Наличие образа проверяется через `docker image inspect` **до любых изменений**. Образа нет —
+  откат прекращается с ошибкой и списком локальных тегов/дайджестов этого репозитория
+  (`docker image ls <repo>`), чтобы опечатка в теге не превращалась в голое «No such image».
+- В этом режиме реестр не читается вовсе: ни `pull`, ни проверка «только из CI» — локальный
+  образ и так не мог пройти CI, а предупреждение о не-CI образе здесь бесполезно
+  (это его основной сценарий). Остальные шаги (maintenance, смена `image:`, health) — как в
+  обычном откате.
+- Помните: локальный образ на хосте ничем не защищён от подмены — право записи на хост
+  выката и есть граница доверия. `--dry-run` печатает план без изменений.
 
 ## Многопроцессный режим (BOARD-PROCESSES)
 
@@ -922,8 +988,8 @@ Release не создаётся (отменённый прогон CI тега �
 
 **Как устроено.** Workflow **Myrmidon release publish** (запускается пушем
 тега `myr-vX.Y.Z`) открывает задачу `release-freeze: <тег>`; задача в
-открытом состоянии и есть freeze. Проверка **Release freeze gate** (workflow
-[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+открытом состоянии и есть freeze. Проверка **Release freeze gate** (встроена
+напрямую в шаг `plan` основного workflow `Myrmidon CI`, [.github/workflows/myrmidon-ci.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci.yml))
 красная на каждом PR в `main`, пока freeze активен. Как только `Myrmidon CI`
 на теге позеленел, тот же tag-workflow закрывает задачу — freeze снят.
 Состояние выводится из GitHub (новейший тег + его CI + открытая

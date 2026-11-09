@@ -528,11 +528,11 @@ export function smokeLabService(db: Db, options: {
     }).map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}" />`).join("\n");
     return `<!doctype html>
 <html>
-<head><meta charset="utf-8" /><title>Paperclip Smoke OAuth</title></head>
+<head><meta charset="utf-8" /><title>${PN} Smoke OAuth</title></head>
 <body>
   <div role="banner" style="padding:12px;background:#7a3b00;color:white;font-weight:bold">${SMOKE_LAB_BANNER}</div>
   <main>
-    <h1>Paperclip Smoke OAuth login + consent</h1>
+    <h1>${PN} Smoke OAuth login + consent</h1>
     <p>This deterministic provider accepts <code>${SMOKE_LAB_DEMO_EMAIL}</code> / <code>${SMOKE_LAB_DEMO_PASSWORD}</code>.</p>
     <form method="post" action="/api/companies/${escapeHtml(input.companyId)}/smoke-lab/oauth/authorize">
       ${hidden}

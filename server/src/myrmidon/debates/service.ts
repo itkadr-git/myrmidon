@@ -14,11 +14,18 @@
 // accounting, model calls, settings read) comes in through deps, so the whole
 // flow runs verbatim in tests with fake models and fake storage.
 
+import { randomUUID } from "node:crypto";
 import {
   DEBATE_CASTES_KEY,
   DEBATE_CASTE_SETTINGS_ACTION,
   DEBATE_COMPLETED_ACTION,
+  DEBATE_DEFAULT_ROUNDS,
   DEBATE_RESULT_DOCUMENT_KEY,
+  DEBATE_PROTOCOL_TEXT_LIMIT,
+  DEBATE_PROTOCOL_DOCUMENT_KEY,
+  appendDebateProtocolEntry,
+  renderDebateProtocolDocument,
+  type DebateProtocolEntry,
   casteDebateGate,
   casteDebatePatchSchema,
   customPromptRoles,
@@ -127,8 +134,18 @@ export interface DebateServiceDeps {
   casteExists(input: { companyId: string; casteKey: string }): Promise<boolean>;
   /** The model call port — the gateway in production, fakes in tests. */
   callModel(companyId: string): Promise<DebateModelCall>;
-  /** Write the result document onto the task. */
-  writeDocument(input: { issueId: string; key: string; title: string; body: string; actorAgentId: string | null; actorUserId: string | null; runId: string | null }): Promise<void>;
+  /** Write a document onto the task. */
+  writeDocument(input: {
+    issueId: string;
+    key: string;
+    title: string;
+    body: string;
+    format?: "markdown";
+    changeSummary?: string;
+    actorAgentId: string | null;
+    actorUserId: string | null;
+    runId: string | null;
+  }): Promise<void>;
   /** Record the debate spend against the task and the agent (budget accounting). */
   recordCost(input: {
     companyId: string;
@@ -364,11 +381,47 @@ export function debateService(deps: DebateServiceDeps): DebateService {
     // debate, the operator fixes the configuration instead.
     const question = (input.question?.trim() || issue.title).slice(0, 2000);
     const call = await deps.callModel(input.companyId);
+
+    // Round protocol state (OPE-12096): the replicas the debate produced so
+    // far, keyed `r<round>#<position>`, and the debate run's id. The protocol
+    // document carries this state while the debate runs and after it finishes.
+    const runId = randomUUID();
+    let protocolRounds: Record<string, DebateProtocolEntry> = {};
+
     const outcome = await runDebate({
       question,
       settings,
       call,
       prompts,
+      onRoundComplete: async (entry) => {
+        // The documents contract caps a body at 512 KiB; with the per-entry
+        // text cap the whole protocol always fits (≤ 9 replicas × 50k). A
+        // longer replica is stored truncated and marked, never dropped.
+        const text =
+          entry.text.length > DEBATE_PROTOCOL_TEXT_LIMIT
+            ? `${entry.text.slice(0, DEBATE_PROTOCOL_TEXT_LIMIT)}…[protocol entry truncated at ${DEBATE_PROTOCOL_TEXT_LIMIT} chars]`
+            : entry.text;
+        protocolRounds = appendDebateProtocolEntry(protocolRounds, { ...entry, text, recordedAt: deps.now().toISOString() });
+        await deps.writeDocument({
+          issueId: issue.id,
+          key: DEBATE_PROTOCOL_DOCUMENT_KEY,
+          title: `Debate protocol — ${issue.identifier ?? issue.title}`,
+          body: renderDebateProtocolDocument({
+            question,
+            runId,
+            status: "running",
+            casteKey,
+            rounds: protocolRounds,
+            roundsPlanned: roundsPlannedOf(settings),
+            roundsRun: roundsOf(protocolRounds),
+            stopReason: null,
+          }),
+          changeSummary: `debate protocol: ${roundsOf(protocolRounds)} round(s) recorded`,
+          actorAgentId: actor.agentId,
+          actorUserId: actor.userId,
+          runId: actor.runId,
+        });
+      },
     });
     if (outcome.familyProblem) {
       throw new DebateConfigError("debate_config_rejected", outcome.familyProblem);
@@ -384,6 +437,30 @@ export function debateService(deps: DebateServiceDeps): DebateService {
       key: DEBATE_RESULT_DOCUMENT_KEY,
       title: `Debate result — ${issue.identifier ?? issue.title}`,
       body: documentBody,
+      actorAgentId: actor.agentId,
+      actorUserId: actor.userId,
+      runId: actor.runId,
+    });
+
+    // Round protocol (OPE-12096): the per-round JSON record lives on the task
+    // as its own `debate-protocol` document and grew while the debate ran (see
+    // the onRoundComplete sink below); this final write stamps the protocol as
+    // finished, with the rounds the debate actually ran and the stop reason.
+    await deps.writeDocument({
+      issueId: issue.id,
+      key: DEBATE_PROTOCOL_DOCUMENT_KEY,
+      title: `Debate protocol — ${issue.identifier ?? issue.title}`,
+      body: renderDebateProtocolDocument({
+        question,
+        runId,
+        status: "finished",
+        casteKey,
+        rounds: protocolRounds,
+        roundsPlanned: outcome.roundsPlanned,
+        roundsRun: outcome.roundsRun,
+        stopReason: outcome.stopReason,
+      }),
+      changeSummary: `debate protocol finished: ${outcome.roundsRun} round(s), ${outcome.stopReason ?? "n/a"}`,
       actorAgentId: actor.agentId,
       actorUserId: actor.userId,
       runId: actor.runId,
@@ -464,6 +541,19 @@ function debateSettingsCandidate(raw: unknown): { ok: true; settings: DebateSett
   const resolution = resolveDebateSettings({ stored: raw });
   if (resolution.settings) return { ok: true, settings: resolution.settings };
   return { ok: false, problem: resolution.problem ?? "the debate configuration is not usable" };
+}
+
+/**
+ * Rounds a protocol's rounds map covers (OPE-12096): the count of distinct
+ * `r<number>#` keys — the debate's live "rounds ran so far".
+ */
+function roundsOf(rounds: Record<string, DebateProtocolEntry>): number {
+  return new Set(Object.keys(rounds).map((key) => key.split("#")[0] ?? key)).size;
+}
+
+/** Planned rounds of a configuration, as the engine computes them. */
+function roundsPlannedOf(settings: DebateSettings): number {
+  return settings.rounds ?? DEBATE_DEFAULT_ROUNDS;
 }
 
 export type { DebateOutcome };

@@ -8,3 +8,4 @@ adapters/http/config-fields.tsx
 adapters/kimi-local/config-fields.tsx
 adapters/omp-local/config-fields.tsx
 adapters/openclaw-gateway/config-fields.tsx
+adapters/local-workspace-runtime-fields.tsx

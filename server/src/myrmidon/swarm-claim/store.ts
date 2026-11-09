@@ -9,6 +9,7 @@
 // interface the two parts agreed on.
 
 import { sql, and, asc, eq, inArray, isNull, isNotNull, exists, notExists, notInArray, lt, or } from "drizzle-orm";
+import { swarmClaimMetrics } from "./metrics.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import { issueClaims, issues, heartbeatRuns, type Db } from "@myrmidon/db";
 import {
@@ -198,7 +199,10 @@ export async function insertClaim(
     .from(issueClaims)
     .where(and(eq(issueClaims.issueId, input.issueId), isNull(issueClaims.releasedAt)))
     .limit(1);
-  if (existing.length > 0) return null;
+  if (existing.length > 0) {
+    swarmClaimMetrics.conflict();
+    return null;
+  }
 
   const inserted = await db
     .insert(issueClaims)
@@ -219,7 +223,10 @@ export async function insertClaim(
     // (issue_id WHERE released_at IS NULL) is the real gate, and 23505 is the losing side
     // of the race, not a failure: same null = «занято» as the pre-check returns.
     .catch((err: unknown) => {
-      if (isUniqueViolation(err)) return [];
+      if (isUniqueViolation(err)) {
+        swarmClaimMetrics.conflict();
+        return [];
+      }
       throw err;
     });
   const row = inserted[0];
@@ -414,6 +421,7 @@ export async function releaseClaim(
     .set({ releasedAt: now, releaseReason: input.reason })
     .where(and(eq(issueClaims.id, input.claimId), isNull(issueClaims.releasedAt)))
     .returning({ id: issueClaims.id });
+  swarmClaimMetrics.recover(input.reason, updated.length);
   return updated.length > 0;
 }
 
@@ -428,6 +436,7 @@ export async function releaseClaimsForIssue(
     .set({ releasedAt: now, releaseReason: input.reason })
     .where(and(eq(issueClaims.issueId, input.issueId), isNull(issueClaims.releasedAt)))
     .returning({ id: issueClaims.id });
+  swarmClaimMetrics.recover(input.reason, updated.length);
   return updated.map((row) => row.id);
 }
 
@@ -448,6 +457,7 @@ export async function releaseClaimsForAgent(
       ),
     )
     .returning({ id: issueClaims.id });
+  swarmClaimMetrics.recover(input.reason, updated.length);
   return updated.map((row) => row.id);
 }
 

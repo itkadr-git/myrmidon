@@ -20,8 +20,6 @@ export interface EnrollFormValues {
   name: string;
   url: string;
   tokenSecret: string;
-  caCert: string;
-  clientCertSecretKey: string;
   maxCpus: string;
   maxMemoryMb: string;
   maxBots: string;
@@ -33,8 +31,6 @@ export const EMPTY_ENROLL_FORM: EnrollFormValues = {
   name: "",
   url: "",
   tokenSecret: "",
-  caCert: "",
-  clientCertSecretKey: "",
   maxCpus: "",
   maxMemoryMb: "",
   maxBots: "",
@@ -48,8 +44,6 @@ export interface EnrollBody {
   name: string;
   url: string;
   tokenSecret: string;
-  caCert: string;
-  clientCertSecretKey: string;
   capacity: { maxCpus: number; maxMemoryMb: number; maxBots?: number };
   gatewayPortStart: number;
   gatewayPortEnd: number;
@@ -76,9 +70,8 @@ export function buildEnrollBody(
   const url = form.url.trim();
   if (!url) return { ok: false, field: "url", problem: "required" };
   if (!/^https:\/\/[^/\s]+\/?$/i.test(url)) return { ok: false, field: "url", problem: "url" };
-  for (const field of ["tokenSecret", "caCert", "clientCertSecretKey"] as const) {
-    if (!form[field].trim()) return { ok: false, field, problem: "required" };
-  }
+  if (!form.tokenSecret.trim()) return { ok: false, field: "tokenSecret", problem: "required" };
+
   const maxCpus = positiveNumber(form.maxCpus);
   if (maxCpus === null) return { ok: false, field: "maxCpus", problem: form.maxCpus.trim() ? "number" : "required" };
   const maxMemoryMb = positiveInt(form.maxMemoryMb);
@@ -100,8 +93,6 @@ export function buildEnrollBody(
       name,
       url: url.replace(/\/+$/, ""),
       tokenSecret: form.tokenSecret.trim(),
-      caCert: form.caCert.trim(),
-      clientCertSecretKey: form.clientCertSecretKey.trim(),
       capacity: { maxCpus, maxMemoryMb, ...(maxBots !== undefined ? { maxBots } : {}) },
       gatewayPortStart: start,
       gatewayPortEnd: end,

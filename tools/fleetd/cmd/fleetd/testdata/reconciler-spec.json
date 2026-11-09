@@ -1,0 +1,17 @@
+{
+  "spec": {
+    "botKey": "2b5b878c-0000-0000-0000-000000000000",
+    "image": "ghcr.io/itkadr-git/myrmidon-bot@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "cpus": 2,
+    "memoryMb": 4096,
+    "pidsLimit": 512,
+    "network": "myrmidon-bot-net",
+    "mounts": [
+      {
+        "source": "/srv/myrmidon-shared",
+        "destination": "/opt/shared",
+        "readOnly": true
+      }
+    ]
+  }
+}

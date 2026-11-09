@@ -127,7 +127,7 @@ export function launchdServiceName(instanceId: string): string {
 
 export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {
   return `[Unit]
-Description=Paperclip AI (${escapeSystemd(input.instanceId)})
+Description=Myrmidon AI (${escapeSystemd(input.instanceId)})
 After=network.target
 StartLimitIntervalSec=60
 StartLimitBurst=5
