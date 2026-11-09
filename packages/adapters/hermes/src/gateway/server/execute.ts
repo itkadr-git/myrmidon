@@ -144,6 +144,8 @@ type ExecutionState = {
     count: number;
     lastError: string;
   } | null;
+  /** The single RunGuard correction queued for this gateway run. */
+  runGuardHintSent: { reason: "repeated_tool_call" | "model_call_limit" } | null;
 };
 
 type TextRedactor = (value: string) => string;
@@ -941,6 +943,7 @@ function createExecutionState(runId: string): ExecutionState {
     guardModelTurnObserved: false,
     guardPendingToolCalls: 0,
     consecutiveToolErrors: null,
+    runGuardHintSent: null,
   };
 }
 
@@ -1074,7 +1077,65 @@ function popGuardToolArguments(state: ExecutionState, name: string): unknown {
   return args;
 }
 
-async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
+// myrmidon(RUN-GUARD-HINT): part B — the adapter renders the guard's single
+// hint-before-stop decision as one correction message queued into the running
+// agent dialog (POST /v1/runs/{id}/steer), using the epic's phrasing. The hint
+// fires exactly once per run (RunGuard refuses to hint the same reason twice
+// and state.runGuardHintSent blocks a second steer).
+export function buildRunGuardHintMessage(hint: {
+  reason: "repeated_tool_call" | "model_call_limit";
+  tool?: string;
+  repeatCount?: number;
+  modelCalls?: number;
+}): string {
+  if (hint.reason === "repeated_tool_call") {
+    const tool = hint.tool ?? "инструмент";
+    const count = hint.repeatCount ?? 3;
+    return `Защита: вызываешь ${tool} с теми же аргументами ${count}-й раз — смени подход: читай другое место или другим инструментом, переходи к правке по задаче`;
+  }
+  return "Защита: лимит вызовов модели, записей не было — переходи к правке по месту из задачи или опиши блокер в комментарии";
+}
+
+async function sendRunGuardHint(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  redactText: TextRedactor;
+  hint: {
+    reason: "repeated_tool_call" | "model_call_limit";
+    tool?: string;
+    repeatCount?: number;
+  };
+}): Promise<void> {
+  const message = buildRunGuardHintMessage(input.hint);
+  try {
+    await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.state.runId)}/steer`), {
+      method: "POST",
+      headers: input.headers,
+      body: JSON.stringify({ input: message }),
+    });
+    await input.ctx.onLog(
+      "stdout",
+      `[hermes-gateway] run guard hint delivered (${input.hint.reason})\n`,
+    );
+  } catch (err) {
+    // The hint is advisory: a failed steer must not fail the run.
+    await input.ctx.onLog(
+      "stderr",
+      `[hermes-gateway] run guard hint delivery failed: ${redactErrorMessage(err, input.redactText)}\n`,
+    );
+  }
+}
+
+async function observeModelTurn(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  redactText: TextRedactor;
+}): Promise<void> {
+  const { ctx, state } = input;
   if (!ctx.runGuard || state.guardModelTurnObserved) return;
   state.guardModelTurnObserved = true;
   // myrmidon(RUN-GUARD-LOOPS): a stopped guard keeps answering stop; report the
@@ -1082,6 +1143,10 @@ async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionSt
   const alreadyStopped = ctx.runGuard.stopped;
   const decision = ctx.runGuard.modelCall();
   if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
+  else if (!decision.stop && decision.hint && !state.runGuardHintSent) {
+    state.runGuardHintSent = { reason: decision.hint.reason };
+    await sendRunGuardHint({ ...input, hint: decision.hint });
+  }
 }
 
 async function observeRunGuardEvent(input: {
@@ -1089,6 +1154,9 @@ async function observeRunGuardEvent(input: {
   state: ExecutionState;
   eventName: string | null;
   record: Record<string, unknown> | null;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  redactText: TextRedactor;
 }): Promise<void> {
   const { ctx, state, eventName, record } = input;
   const guard = ctx.runGuard;
@@ -1098,7 +1166,7 @@ async function observeRunGuardEvent(input: {
     if (state.guardPendingToolCalls === 1) {
       guard.pauseIdle();
     }
-    await observeModelTurn(ctx, state);
+    await observeModelTurn(input);
     const name = toolNameFromEvent(record);
     const args = record?.input ?? record?.arguments ?? record?.preview;
     if (args !== undefined) pushGuardToolArguments(state, name, args);
@@ -1109,6 +1177,10 @@ async function observeRunGuardEvent(input: {
     const alreadyStopped = guard.stopped;
     const decision = guard.toolStarted(name, args);
     if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
+    else if (!decision.stop && decision.hint && !state.runGuardHintSent) {
+      state.runGuardHintSent = { reason: decision.hint.reason };
+      await sendRunGuardHint({ ...input, hint: decision.hint });
+    }
     return;
   }
   if (eventName === "tool.completed") {
@@ -1136,7 +1208,7 @@ async function observeRunGuardEvent(input: {
       eventName === "llm.started") &&
     state.guardPendingToolCalls === 0
   ) {
-    await observeModelTurn(ctx, state);
+    await observeModelTurn(input);
   }
   guard.event();
 }
@@ -1398,7 +1470,15 @@ async function handleEvent(input: {
   // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
   // liveness watch (when enabled) reads this stamp instead of the wall clock.
   touchRunLiveness(state);
-  await observeRunGuardEvent({ ctx, state, eventName, record });
+  await observeRunGuardEvent({
+    ctx,
+    state,
+    eventName,
+    record,
+    baseUrl,
+    headers: approvalHeaders,
+    redactText,
+  });
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);
@@ -2217,6 +2297,10 @@ export function mapFinalResultForTest(input: {
   modelAttemptId?: string | null;
   /** Digests of static wake blocks to persist for delta computation on next turn. */
   wakeBlockDigests?: Record<string, string>;
+  /** myrmidon(RUN-GUARD-HINT) part B: set when the run reached its final stop
+   * after the guard's hint-before-stop correction was queued — the server
+   * persists it into resultJson for the part-D measurement. */
+  runGuardHint?: { reason: "repeated_tool_call" | "model_call_limit" } | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -2415,6 +2499,10 @@ export function mapFinalResultForTest(input: {
       // providerErrorAsContent, not only the "No reply" sentinel. Replay safety
       // is a separate question, answered by executionRecovery above.
       ...(providerErrorAsContent ? { model_unavailable: true } : {}),
+      // myrmidon(RUN-GUARD-HINT) part B: a run stopped after the guard's
+      // hint-before-stop correction carries the hint reason in resultJson for
+      // the part-D measurement and debugging.
+      ...(input.runGuardHint ? { runGuardHint: input.runGuardHint } : {}),
     },
   };
 }
@@ -3677,6 +3765,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const toolResultChars = state.toolResultCharsAccum ?? null;
   const toolResultTokens = state.toolResultTokensAccum ?? null;
 
+  // myrmidon(RUN-GUARD-HINT) part B: a run that was hinted and then reached a
+  // final stop (the guard stopped it, or the run ended non-completed after the
+  // correction) records the hint reason in resultJson for the part-D
+  // measurement and emits a run-log event for debugging.
+  let runGuardHint: { reason: "repeated_tool_call" | "model_call_limit" } | null = null;
+  if (state.runGuardHintSent && (ctx.runGuard?.stopped || outcome.status !== "completed")) {
+    runGuardHint = { reason: state.runGuardHintSent.reason };
+    await ctx.onEvent?.({
+      eventType: "run_guard_hint_stop",
+      stream: "system",
+      level: "warn",
+      message: `Run stopped after run guard hint (${runGuardHint.reason})`,
+      payload: {
+        runGuardHint: { reason: runGuardHint.reason },
+        runGuardStopReason: ctx.runGuard?.stopReason ?? runGuardHint.reason,
+      },
+    });
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] run guard stop after hint (${runGuardHint.reason})\n`,
+    );
+  }
+
   const finalResult = mapFinalResultForTest({
     terminal: outcome,
     outputChunks: state.outputChunks,
@@ -3695,6 +3806,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     toolResultChars,
     toolResultTokens,
     wakeBlockDigests: body.wakeBlockDigests,
+    ...(runGuardHint ? { runGuardHint } : {}),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's

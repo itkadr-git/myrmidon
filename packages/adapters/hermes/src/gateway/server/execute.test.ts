@@ -4,11 +4,22 @@ import path from "node:path";
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
+import { RunGuard } from "@myrmidon/adapter-utils";
 import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
 } from "@myrmidon/adapter-utils/github-launcher";
-import { execute, errorResult, isHermesNoReplySentinel, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveEffectiveSessionKeyStrategy, resolveSessionKey } from "./execute.js";
+import {
+  buildRunGuardHintMessage,
+  execute,
+  errorResult,
+  isHermesNoReplySentinel,
+  isProviderErrorAsContent,
+  mapFinalResultForTest,
+  parseSseFramesForTest,
+  resolveEffectiveSessionKeyStrategy,
+  resolveSessionKey,
+} from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
   CREATE_CANCEL_GRACE_MS,
@@ -4779,5 +4790,190 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     // mapFinalResultForTest preserves the adapter's null (no structured hint),
     // distinct from undefined: null says "cooldown confirmed, no retry hint".
     expect(result.retryNotBefore).toBeNull();
+  });
+});
+
+// myrmidon(RUN-GUARD-HINT / OPE-12191, part B): the adapter renders the guard's
+// hint-before-stop decision as exactly one correction message steered into the
+// running dialog (POST /v1/runs/{id}/steer) and records resultJson.runGuardHint
+// when the run still reaches its final stop afterwards. A hinted run that
+// recovers and completes carries no runGuardHint marker.
+describe("execute — run guard hint-before-stop (RUN-GUARD-HINT B)", () => {
+  const makeGuardCtx = (config: Record<string, unknown>): AdapterExecutionContext => {
+    const ctx = makeCtx(config);
+    ctx.runGuard = new RunGuard({ repeatedToolCallLimit: 3, modelCallLimit: 50 });
+    ctx.onRunGuardStop = vi.fn(async () => undefined);
+    ctx.onEvent = vi.fn(async () => undefined);
+    return ctx;
+  };
+
+  const toolStartedFrame = (tool: string, args: Record<string, unknown>): string =>
+    `event: tool.started\ndata: ${JSON.stringify({ tool, arguments: args })}\n\n`;
+  const toolCompletedFrame = (tool: string): string =>
+    `event: tool.completed\ndata: ${JSON.stringify({ tool })}\n\n`;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("buildRunGuardHintMessage renders the epic's phrasing for both reasons", () => {
+    expect(buildRunGuardHintMessage({ reason: "repeated_tool_call", tool: "read_file", repeatCount: 3 })).toBe(
+      "Защита: вызываешь read_file с теми же аргументами 3-й раз — смени подход: читай другое место или другим инструментом, переходи к правке по задаче",
+    );
+    expect(buildRunGuardHintMessage({ reason: "model_call_limit", modelCalls: 40 })).toBe(
+      "Защита: лимит вызовов модели, записей не было — переходи к правке по месту из задачи или опиши блокер в комментарии",
+    );
+  });
+
+  it("steers one correction on the third repeated tool call, keeps the run going, and omits runGuardHint when the run completes normally", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const repeatedArgs = { path: "/workspace/big/file.ts" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hint-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-hint-1", accepted: true }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/events")) {
+        // Three identical read_file tool calls: the third trips the guard's
+        // repeat limit (3) and must produce a hint (no stop), then a terminal
+        // completed event ends the run before a fourth call could happen.
+        const frames = [
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          "event: run.completed",
+          'data: {"status":"completed","output":"done"}',
+          "",
+        ].join("\n");
+        return new Response(sseStream(frames), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeGuardCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "sk-test", timeoutSec: 5 });
+    const result = await execute(ctx);
+
+    // The correction was steered exactly once, with the epic's phrasing.
+    expect(steerBodies).toEqual([
+      {
+        input:
+          "Защита: вызываешь read_file с теми же аргументами 3-й раз — смени подход: читай другое место или другим инструментом, переходи к правке по задаче",
+      },
+    ]);
+    // No stop was reported to the platform on the hint turn.
+    expect(ctx.onRunGuardStop).not.toHaveBeenCalled();
+    // The guard did not stop the run; it completed normally after the hint.
+    expect(ctx.runGuard?.stopped).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson?.runGuardHint).toBeUndefined();
+    expect(
+      (ctx.onEvent as ReturnType<typeof vi.fn>).mock.calls.some(
+        (call) => (call[0] as { eventType: string }).eventType === "run_guard_hint_stop",
+      ),
+    ).toBe(false);
+  });
+
+  it("records resultJson.runGuardHint and a run_guard_hint_stop event when the run stops after the hint", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const repeatedArgs = { path: "/workspace/big/file.ts" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hint-2", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-hint-2", accepted: true }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/events")) {
+        // Three repeats trigger the hint; the fourth repeat trips the stopped
+        // guard's stop, the run fails (as after onRunGuardStop), and the final
+        // result must carry the hint marker.
+        const frames = [
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          "event: run.failed",
+          'data: {"status":"failed","error":"run guard: repeated_tool_call"}',
+          "",
+        ].join("\n");
+        return new Response(sseStream(frames), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "failed", error: "run guard: repeated_tool_call" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeGuardCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "sk-test", timeoutSec: 5 });
+    const result = await execute(ctx);
+
+    // Still exactly one correction even though the run later stopped.
+    expect(steerBodies).toHaveLength(1);
+    // The stop was reported once with the guard's reason.
+    expect(ctx.onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(ctx.onRunGuardStop).toHaveBeenCalledWith("repeated_tool_call");
+    // The final result carries the hint marker and the run-log event fired.
+    expect(result.resultJson?.runGuardHint).toEqual({ reason: "repeated_tool_call" });
+    const hintEvents = (ctx.onEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call) => (call[0] as { eventType: string }).eventType === "run_guard_hint_stop",
+    );
+    expect(hintEvents).toHaveLength(1);
+    expect((hintEvents[0][0] as { payload: { runGuardStopReason: string } }).payload.runGuardStopReason).toBe(
+      "repeated_tool_call",
+    );
+  });
+
+  it("never steers a second hint in the same run even when the guard hints again", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const repeatedArgs = { path: "/workspace/big/file.ts" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hint-3", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-hint-3", accepted: true }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/events")) {
+        // Six repeats: hint on the third, the stopped guard answers stop on the
+        // fourth — the fifth and sixth must neither hint nor steer again.
+        const frames = [
+          ...Array.from({ length: 6 }, () => [
+            toolStartedFrame("read_file", repeatedArgs),
+            toolCompletedFrame("read_file"),
+          ]).flat(),
+          "event: run.failed",
+          'data: {"status":"failed","error":"run guard: repeated_tool_call"}',
+          "",
+        ].join("\n");
+        return new Response(sseStream(frames), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "failed", error: "run guard: repeated_tool_call" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeGuardCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "sk-test", timeoutSec: 5 });
+    await execute(ctx);
+
+    expect(steerBodies).toHaveLength(1);
   });
 });
