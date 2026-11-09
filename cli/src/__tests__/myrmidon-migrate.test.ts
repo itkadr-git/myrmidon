@@ -27,7 +27,7 @@ import {
   type VendorOnlyIndex,
   type VendorRelease,
 } from "../commands/myrmidon-migrate-vendor-chain.js";
-import type { ColumnInfo, TableInfo } from "../commands/myrmidon-migrate-db.js";
+import { introspectTables, tableDigest, type ColumnInfo, type TableInfo } from "../commands/myrmidon-migrate-db.js";
 import {
   copyManifest,
   inventoryDirectory,
@@ -45,8 +45,10 @@ import {
 } from "../commands/myrmidon-migrate-secrets.js";
 import {
   checkCompatibility,
+  checkNarrowing,
   deterministicUuid,
   mapLifecycleEventAction,
+  parseRangeBound,
   runMigration,
   type MigrationOptions,
 } from "../commands/myrmidon-migrate.js";
@@ -466,6 +468,18 @@ describe("myrmidon:migrate pure guards", () => {
     await expect(plaintextHash(WRONG_KEY, collectEnvelopes(nested)[0]!)).rejects.toThrow();
     expect(redact("postgres://u:hunter2@h/db failed", ["postgres://u:hunter2@h/db", "hunter2"])).toBe("[redacted] failed");
   });
+  it("parses range bounds exactly with directional rounding for bounds checking", () => {
+    expect(parseRangeBound("0.0000000", "lo")).toBe(0n);
+    expect(parseRangeBound("0.0000000", "hi")).toBe(0n);
+    expect(parseRangeBound("100", "lo")).toBe(100n);
+    expect(parseRangeBound("100", "hi")).toBe(100n);
+    expect(parseRangeBound("0.5", "hi")).toBe(1n);
+    expect(parseRangeBound("0.5", "lo")).toBe(0n);
+    expect(parseRangeBound("-0.5", "lo")).toBe(-1n);
+    expect(parseRangeBound("-0.5", "hi")).toBe(0n);
+    expect(parseRangeBound("2147483647.1", "hi")).toBe(2147483648n);
+    expect(parseRangeBound("-2147483648.1", "lo")).toBe(-2147483649n);
+  });
 });
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -862,6 +876,63 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     expect(text).not.toContain(WRONG_KEY);
     expect(text).not.toContain(secretUrl);
   }, T);
+  it("migrates integral numeric values (0.0000000 -> 0) into integer target and preserves bigints", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.0000000'::numeric where id = '${COMPANY_A}'`);
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '12345.0000000'::numeric where id = '${COMPANY_B}'`);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    expect(result.verification.countsAndContentMatch).toBe(true);
+
+    const valA = await scalar(f.targetUrl, `select spent_monthly_cents::text from companies where id = '${COMPANY_A}'`);
+    const valB = await scalar(f.targetUrl, `select spent_monthly_cents::text from companies where id = '${COMPANY_B}'`);
+    expect(valA).toBe("0");
+    expect(valB).toBe("12345");
+  }, T * 2);
+
+  it("fails closed when numeric source column going to integer target contains non-integer value (0.5)", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.5'::numeric where id = '${COMPANY_A}'`);
+
+    await expect(runMigration(f.options)).rejects.toThrow(/value-not-integer-in-target:companies\.spent_monthly_cents/);
+    // The schema is applied before the narrowing check; no data may be copied.
+    expect(await scalar(f.targetUrl, "select count(*) from companies")).toBe("0");
+    expect(existsSync(f.targetDir)).toBe(false);
+  }, T * 2);
+
+  it("catches differing values in digest comparison for narrowed columns", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.0000000'::numeric where id = '${COMPANY_A}'`);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    expect(result.verification.countsAndContentMatch).toBe(true);
+
+    const srcDb = createDb(f.sourceUrl);
+    const tgtDb = createDb(f.targetUrl);
+    try {
+      const srcTables = await introspectTables(srcDb);
+      const tgtTables = await introspectTables(tgtDb);
+      const compSrc = srcTables.get("companies")!;
+      const compTgt = tgtTables.get("companies")!;
+
+      const srcDigest = await tableDigest(srcDb, "companies", compSrc, new Set(), new Set(["spent_monthly_cents"]));
+      const tgtDigest = await tableDigest(tgtDb, "companies", compTgt, new Set());
+      expect(srcDigest.digest).toBe(tgtDigest.digest);
+
+      // Tamper with the integer value in the target table
+      await tgtDb.execute(sql.raw(`update "companies" set "spent_monthly_cents" = 999 where id = '${COMPANY_A}'`));
+      const tamperedDigest = await tableDigest(tgtDb, "companies", compTgt, new Set());
+      expect(srcDigest.digest).not.toBe(tamperedDigest.digest);
+    } finally {
+      await closeRegisteredClients(f.sourceUrl);
+      await closeRegisteredClients(f.targetUrl);
+    }
+  }, T * 2);
 
   it("migrates empty resource_lifecycle_events without --accept-vendor-only-data", async () => {
     const f = await fixture();

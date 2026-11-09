@@ -1,10 +1,10 @@
 {
   "version": "1.0.0",
   "vendorRelease": {
-    "tag": "v2026.1023.0",
-    "sha": "1b4c803816e82b0265c8422e1a804327a7ed8c54",
-    "lastMigration": "0333_normal_wild_pack",
-    "migrationCount": 332
+    "tag": "v2026.1106.0",
+    "sha": "d69631b01b9c658f80bf8bed389863dce82643e1",
+    "lastMigration": "0374_rare_wolfpack",
+    "migrationCount": 373
   },
   "entityCounts": {
     "companies": 1,

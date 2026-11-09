@@ -10,14 +10,19 @@
 //       [--base <sha> --head <sha>] [--root <dir>]
 //
 // Modes:
-//   pull_request (event file present): the diff is base.sha..head.sha of the
-//     event. Shared documents must be untouched unless the same diff deletes
-//     at least one fragment (that is the release-cut PR). Fragments are never
-//     mandatory: a PR without registry changes needs none.
+//   pull_request (event file present): the diff is
+//     merge-base(base.sha, head.sha)..head.sha of the event. base.sha in a
+//     pull_request event is the tip of the base branch at event time, NOT the
+//     merge point (a classic GitHub Actions trap): registry edits merged to
+//     main after the PR branched would otherwise land in the base.sha..head.sha
+//     range and fail the gate on commits this PR never made. Shared documents
+//     must be untouched unless the same diff deletes at least one fragment
+//     (that is the release-cut PR). Fragments are never mandatory: a PR
+//     without registry changes needs none.
 //   push / local: with explicit --base/--head the same check runs against
-//     that range (used by tests). Without them and without an event file the
-//     check is a no-op (a push to main carries merged, already-reviewed
-//     content — including the release cut).
+//     that range as given (used by tests). Without them and without an event
+//     file the check is a no-op (a push to main carries merged, already-
+//     reviewed content — including the release cut).
 //
 // Output on violation: the hint naming the fragment format and the release
 // procedure. Exit 0 clean / no-op, 1 violations, 2 usage. Node built-ins only.
@@ -70,6 +75,26 @@ export function diffNameStatus(root, base, head) {
     });
 }
 
+/**
+ * The merge point of base and head, or null when git cannot compute one
+ * (unrelated histories, a fetched-away base — then the caller falls back to
+ * the base as given). Runs with a merged history available? Prefer this over
+ * a raw event base.sha: in a pull_request event base.sha is the tip of the
+ * base branch, not the commit the PR forked from.
+ */
+export function mergeBase(root, base, head) {
+  try {
+    const out = execFileSync("git", ["merge-base", base, head], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    const sha = out.trim();
+    return /^[0-9a-f]{7,40}$/i.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The verdict for one change set: { ok, violations[], deletedFragments[] }. */
 export function judge(changes) {
   const deletedFragments = changes.filter(
@@ -88,7 +113,16 @@ export function check({ root = process.cwd(), eventFile = null, base = null, hea
   if (!range && eventFile) {
     const event = JSON.parse(fs.readFileSync(eventFile, "utf8"));
     if (event.pull_request?.base?.sha && event.pull_request?.head?.sha) {
+      // In a pull_request event base.sha is the tip of the base branch at
+      // event time, not the commit the PR forked from. Diffing base.sha..head
+      // would drag in everything that merged to the base branch since the PR
+      // was opened (the OPE-11991 false positive: a docs-only PR failed with
+      // registry edits it never made). Judge the PR's own diff instead:
+      // merge-base(base.sha, head.sha)..head.sha, falling back to base.sha
+      // when git cannot compute a merge point.
       range = { base: event.pull_request.base.sha, head: event.pull_request.head.sha };
+      const mb = mergeBase(root, range.base, range.head);
+      range.base = mb ?? range.base;
       eventName = "pull_request";
     }
   }

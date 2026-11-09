@@ -247,6 +247,47 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(checked).toBe(true);
   });
 
+  it.each(["queued", "claimed"])("does not promote follow-up after operator stops an unstarted %s run", async (stage) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    await db.update(agentWakeupRequests).set({ status: stage }).where(eq(agentWakeupRequests.id, wakeId));
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({
+      startedAt: null,
+      wakeupRequestId: wakeId,
+      resultJson: { executionCancellation: { source: { code: "board_operator" }, state: "requested" } },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const followupId = await seedDeferredWake({ companyId, agentId, issueId });
+    // cancelRunInternal settles the originating wake before calling releaseIssueExecutionAndPromote.
+    // Model that boundary here rather than making the release adapter cancel an already stopped wake.
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, wakeId));
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: {
+        deferReviewParticipantReleaseForCi: async () => false,
+        escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
+        escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
+      },
+    });
+
+    const result = await release({ companyId, runId, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({
+      executionRunId: null, checkoutRunId: null,
+    });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toMatchObject({
+      status: "cancelled",
+    });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, followupId)))[0]).toMatchObject({
+      status: "deferred_issue_execution", runId: null,
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+  });
+
   it.each([false, true])("rechecks disabled chat mode before interrupted queue promotion (conversation=%s)", async (conversation) => {
     const settings = instanceSettingsService(db);
     const original = (await settings.getExperimental()).enableAgentChat;

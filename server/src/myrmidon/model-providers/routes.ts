@@ -34,6 +34,9 @@ import {
   poolAccountOAuthCompleteSchema,
   poolAccountOAuthRefreshSchema,
   setModelProviderModelsSchema,
+  addPoolAccountSchema,
+  startCodexOAuthSchema,
+  completeCodexOAuthSchema,
 } from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest } from "../../errors.js";
@@ -241,6 +244,36 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     res.json(result);
   });
 
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(addPoolAccountSchema, bodyOf(req));
+    const account = await deps.service.addAccount(companyId, providerId, body);
+    res.status(201).json({ ok: true, account });
+  });
+
+  router.delete("/myrmidon/companies/:companyId/model-providers/:id/channels/:accountNumber", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    const accountNumber = parseInt(req.params.accountNumber as string, 10);
+    assertCompanyAdmin(req, companyId);
+    if (isNaN(accountNumber)) {
+      throw badRequest("accountNumber must be a valid integer");
+    }
+    await deps.service.deleteAccount(companyId, providerId, accountNumber);
+    res.status(200).json({ ok: true });
+  });
+
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/start", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(startCodexOAuthSchema, bodyOf(req));
+    const result = await deps.service.startOAuth(companyId, providerId, body);
+    res.status(200).json(result);
+  });
+
   router.post("/myrmidon/companies/:companyId/model-providers/:id/account-status", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
@@ -316,9 +349,16 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAdmin(req, companyId);
-    const body = parse(poolAccountOAuthCompleteSchema, bodyOf(req));
-    const result = await deps.service.oauthComplete(companyId, id, body);
-    res.status(200).json(result);
+    const raw = bodyOf(req);
+    if (raw && typeof raw === "object" && "accountNumber" in raw) {
+      const body = parse(poolAccountOAuthCompleteSchema, raw);
+      const result = await deps.service.oauthComplete(companyId, id, body);
+      res.status(200).json(result);
+      return;
+    }
+    const body = parse(completeCodexOAuthSchema, raw);
+    const account = await deps.service.completeOAuth(companyId, id, body);
+    res.status(201).json({ ok: true, account });
   };
   router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/complete", oauthCompleteHandler);
   router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/complete", oauthCompleteHandler);

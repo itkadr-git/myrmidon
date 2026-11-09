@@ -2391,6 +2391,144 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     );
   });
 
+  it("schedules one delayed retry for a deployment cooldown window and succeeds after recovery", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-22T22:29:00.000Z");
+    const cooldownUntil = new Date("2026-04-22T22:34:00.000Z");
+
+    const inspectContainer = vi.fn(async () => {
+      throw new Error("dockergate: denied (bot_not_enrolled)");
+    });
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false }));
+    setIdleStopServiceForTest({ ensureStartedAndHealthy: inspectContainer } as any);
+    registerServerAdapter({
+      type: "omp_local",
+      execute,
+      testEnvironment: async () => ({ adapterType: "omp_local", status: "pass", checks: [], testedAt: new Date().toISOString() }),
+    });
+
+    try {
+      await seedRetryFixture({
+        runId,
+        companyId,
+        agentId,
+        now,
+        errorCode: "adapter_failed",
+        errorFamily: "transient_upstream",
+        adapterType: "omp_local",
+        retryNotBefore: cooldownUntil.toISOString(),
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: { wakeReason: "issue_assigned" } })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now,
+        random: () => 0.5,
+      });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+      expect(scheduled.dueAt).toEqual(cooldownUntil);
+
+      const duplicate = await heartbeat.scheduleBoundedRetry(runId, {
+        now,
+        random: () => 0.5,
+      });
+      expect(duplicate.outcome).toBe("scheduled");
+      if (duplicate.outcome !== "scheduled") return;
+      expect(duplicate.run.id).toBe(scheduled.run.id);
+      expect(duplicate.dueAt).toEqual(cooldownUntil);
+
+      const retries = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      expect(retries).toHaveLength(2);
+      expect(retries.filter((retry) => retry.status === "scheduled_retry")).toHaveLength(1);
+
+      const promoted = await heartbeat.promoteDueScheduledRetries(cooldownUntil);
+      expect(promoted.promoted).toBe(1);
+      const [retry] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, scheduled.run.id));
+      expect(retry?.status).toBe("queued");
+
+      await heartbeat.dispatchRunStart(agentId);
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      const retried = await heartbeat.getRun(scheduled.run.id);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(retried?.status).toBe("succeeded");
+    } finally {
+      unregisterServerAdapter("omp_local");
+    }
+  });
+
+  it("honors HTTP 429 Retry-After hint precedence over default backoff and falls back when absent", async () => {
+    const companyIdWithHint = randomUUID();
+    const agentIdWithHint = randomUUID();
+    const runIdWithHint = randomUUID();
+    const now = new Date("2026-04-22T10:00:00.000Z");
+    const retryAfterDate = new Date("2026-04-22T10:05:00.000Z");
+
+    await seedRetryFixture({
+      runId: runIdWithHint,
+      companyId: companyIdWithHint,
+      agentId: agentIdWithHint,
+      now,
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "transient_upstream",
+      retryNotBefore: retryAfterDate.toISOString(),
+      resultJson: {
+        status: "failed",
+        errorCode: "hermes_gateway_rate_limited",
+        errorFamily: "transient_upstream",
+        retryNotBefore: retryAfterDate.toISOString(),
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    });
+
+    const scheduledWithHint = await heartbeat.scheduleBoundedRetry(runIdWithHint, {
+      now,
+      random: () => 0.5,
+    });
+    expect(scheduledWithHint.outcome).toBe("scheduled");
+    if (scheduledWithHint.outcome !== "scheduled") return;
+    expect(scheduledWithHint.dueAt.getTime()).toBe(retryAfterDate.getTime());
+
+    const companyIdNoHint = randomUUID();
+    const agentIdNoHint = randomUUID();
+    const runIdNoHint = randomUUID();
+
+    await seedRetryFixture({
+      runId: runIdNoHint,
+      companyId: companyIdNoHint,
+      agentId: agentIdNoHint,
+      now,
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "transient_upstream",
+      retryNotBefore: null,
+      resultJson: {
+        status: "failed",
+        errorCode: "hermes_gateway_rate_limited",
+        errorFamily: "transient_upstream",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    });
+
+    const scheduledNoHint = await heartbeat.scheduleBoundedRetry(runIdNoHint, {
+      now,
+      random: () => 0.5,
+    });
+    expect(scheduledNoHint.outcome).toBe("scheduled");
+    if (scheduledNoHint.outcome !== "scheduled") return;
+    expect(scheduledNoHint.dueAt.getTime()).toBeGreaterThan(now.getTime());
+    expect(scheduledNoHint.dueAt.getTime() - now.getTime()).toBeLessThanOrEqual(60_000);
+  });
+
   it("schedules bounded retries for claude_transient_upstream and honors its retry-not-before hint", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

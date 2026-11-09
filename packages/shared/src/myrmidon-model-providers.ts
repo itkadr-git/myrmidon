@@ -38,6 +38,16 @@ export const POOL_MODEL_PROVIDER_TYPES = [
 /** Providers whose connector exposes per-account quota windows. */
 export type PoolModelProviderType = (typeof POOL_MODEL_PROVIDER_TYPES)[number];
 
+/**
+ * True for the subscription-pool provider types. A pool lives on its own
+ * gateway deployments (its router or proxy), so the board never registers,
+ * updates or deletes gateway deployments for it: it manages which models are
+ * visible, the fallback order and the agent key lists, not the deployments.
+ */
+export function isPoolModelProviderType(type: string | null | undefined): type is PoolModelProviderType {
+  return typeof type === "string" && (POOL_MODEL_PROVIDER_TYPES as readonly string[]).includes(type);
+}
+
 /** Statically known provider types for type safety. */
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
@@ -130,6 +140,26 @@ export const DEFAULT_CHATGPT_POOL_MODELS = [
   "gpt-5.6-luna",
 ] as const;
 
+/**
+ * Default models for the closed antigravity-pool connector. Each id is the
+ * name of the gateway model group, so it carries no provider-type prefix.
+ */
+export const DEFAULT_ANTIGRAVITY_POOL_MODELS = [
+  "antigravity/gemini-3.8-flash-high",
+  "antigravity/gemini-3.8-flash-medium",
+  "antigravity/gemini-3.8-flash-low",
+  "antigravity/gemini-3.5-flash-lite",
+] as const;
+
+/**
+ * The gateway model-group name of one pool model. ChatGPT pool groups are
+ * `chatgpt-pool/<model>`; the model ids of the other pools already are group
+ * names (for example `antigravity/gemini-3.8-flash-high`) and stay as they are.
+ */
+export function poolModelLitellmName(type: string, modelName: string): string {
+  return type === "chatgpt-pool" ? `chatgpt-pool/${modelName}` : modelName;
+}
+
 /** The models-list path every supported provider speaks (OpenAI-compatible). */
 export const MODEL_PROVIDER_MODELS_PATH = "/models";
 
@@ -159,6 +189,32 @@ export function isK12Plan(plan?: string | null): boolean {
   if (!plan) return false;
   const p = plan.trim().toLowerCase();
   return p === "k-12" || p === "k12";
+}
+
+/** Default rolling quota window durations for Codex / ChatGPT subscription accounts. */
+export const CODEX_PRIMARY_WINDOW_MIN = 300; // 5 hours (300 minutes)
+export const CODEX_SECONDARY_WINDOW_MIN = 10080; // 1 week (7 days = 10080 minutes)
+
+export function normalizePoolAccountPlan(plan?: string | null): PoolAccountPlan {
+  if (!plan) return "plus";
+  const trimmed = plan.trim().toLowerCase();
+  if (trimmed === "pro") return "pro";
+  if (trimmed === "k12" || trimmed === "k-12") return "k12";
+  if (trimmed === "plus") return "plus";
+  return trimmed;
+}
+
+export function formatPoolAccountPlanLabel(plan?: string | null): string {
+  const normalized = normalizePoolAccountPlan(plan);
+  switch (normalized) {
+    case "pro":
+      return "Pro";
+    case "k12":
+      return "K-12";
+    case "plus":
+    default:
+      return "Plus";
+  }
 }
 
 /** A quota window on a subscription account (e.g. 5-hour rolling or weekly). */
@@ -215,6 +271,7 @@ export interface PoolAccountRoleSignal {
   accountNumber: number;
   label: string;
   kind: "banned" | "exhausted";
+  signalKind?: "banned" | "exhausted";
   severity: "critical" | "high" | "medium";
   title: string;
   whyNow: string;
@@ -355,3 +412,33 @@ export const setModelProviderModelsSchema = z.object({
     .max(500),
 });
 export type SetModelProviderModelsInput = z.infer<typeof setModelProviderModelsSchema>;
+
+/** POST /providers/{id}/channels body: add an account to the provider pool. */
+export const addPoolAccountSchema = z.object({
+  label: z.string().trim().min(1).max(128),
+  plan: z.string().trim().max(64).optional().default("plus"),
+  email: z.string().trim().email().max(256).optional().nullable(),
+  accessToken: z.string().trim().max(4096).optional(),
+  refreshToken: z.string().trim().max(4096).optional(),
+  expiresAt: z.number().int().optional(),
+  models: z.array(z.string().trim()).optional(),
+});
+export type AddPoolAccountInput = z.infer<typeof addPoolAccountSchema>;
+
+/** POST /providers/{id}/oauth/start body: initiate Codex OAuth flow. */
+export const startCodexOAuthSchema = z.object({
+  plan: z.string().trim().max(64).optional().default("plus"),
+  label: z.string().trim().max(128).optional(),
+});
+export type StartCodexOAuthInput = z.infer<typeof startCodexOAuthSchema>;
+
+/** POST /providers/{id}/oauth/complete body: complete Codex OAuth flow. */
+export const completeCodexOAuthSchema = z.object({
+  state: z.string().trim().min(1).max(256).optional(),
+  code: z.string().trim().min(1).max(2048).optional(),
+  label: z.string().trim().max(128).optional(),
+  plan: z.string().trim().max(64).optional(),
+  email: z.string().trim().email().max(256).optional().nullable(),
+  tokens: z.record(z.string(), z.unknown()).optional(),
+});
+export type CompleteCodexOAuthInput = z.infer<typeof completeCodexOAuthSchema>;

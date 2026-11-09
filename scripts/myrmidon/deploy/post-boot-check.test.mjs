@@ -40,7 +40,7 @@ esac
 `;
 
 // Fake curl: answers every URL from health.json (host-disk from
-// host-disk.json) unless the url is marked down.
+// host-disk.json, liveness from liveness.json) unless the url is marked down.
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 url="$3"
@@ -50,6 +50,7 @@ for a in "$@"; do case "$a" in (http*|/*) ;; esac; done
 if [ -e "$SANDBOX/down-urls" ] && grep -qF "$url" "$SANDBOX/down-urls"; then exit 7; fi
 case "$url" in
   */api/myrmidon/host-disk) cat "$SANDBOX/host-disk.json" ;;
+  */api/liveness) cat "$SANDBOX/liveness.json" ;;
   *) cat "$SANDBOX/health.json" ;;
 esac
 `;
@@ -65,6 +66,7 @@ esac
 
 function sandbox({
   health = { status: "ok", version: VERSION, commit: COMMIT },
+  liveness = { status: "ok", uptimeSec: 42, commit: COMMIT },
   hostDisk = {
     status: {
       usage: { measuredPath: "/paperclip", usedPercent: 41 },
@@ -95,6 +97,7 @@ function sandbox({
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(path.join(composeDir, "docker-compose.myrmidon-image.yml"), `services:\n  server:\n    image: ${PINNED}\n`);
   fs.writeFileSync(path.join(dir, "health.json"), JSON.stringify(health));
+  fs.writeFileSync(path.join(dir, "liveness.json"), JSON.stringify(liveness));
   fs.writeFileSync(path.join(dir, "host-disk.json"), JSON.stringify(hostDisk));
   fs.writeFileSync(path.join(dir, "bots-running"), botsRunning.join("\n") + "\n");
   fs.writeFileSync(path.join(dir, "bots-a"), botsRunning.join("\n") + "\n");
@@ -152,7 +155,25 @@ describe("post-boot-check.sh (POST-BOOT)", () => {
     assert.ok(json.passed.includes("board health vs pinned image"));
     assert.ok(json.passed.includes("bot containers running, no dockergate denies"));
     assert.ok(json.passed.includes("dns names resolve (mysql es01 paperclip-server-1)"));
+    assert.ok(json.passed.includes("board liveness (no-database probe)"));
     assert.ok(json.passed.includes("systemctl --failed is empty"));
+  });
+
+  it("fails the liveness check when the board does not answer /api/liveness", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "down-urls"), "http://127.0.0.1:3100/api/liveness\n");
+    const { code, out } = run(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /board liveness: no answer/);
+    assert.match(out, /board liveness \(no-database probe\) FAILED/);
+  });
+
+  it("fails the liveness check when /api/liveness answers without status ok", () => {
+    const sb = sandbox({ liveness: { status: "degraded" } });
+    const { code, out } = run(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /board liveness: .*answered without status ok/);
+    assert.match(out, /board liveness \(no-database probe\) FAILED/);
   });
 
   it("fails when the board runs a different image than the override pins (the 01.10 incident)", () => {

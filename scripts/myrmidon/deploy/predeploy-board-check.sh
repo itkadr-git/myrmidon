@@ -517,6 +517,20 @@ if ((board_ok != 1)); then
 fi
 log "PREDEPLOY-DB-CHECK: board ok on the copy ($last_seen)"
 
+# BOARD-LIVENESS (OPE-12211): prove the copy answers the no-database probe:
+# 200 while the process is alive, independent of PostgreSQL. The probe targets
+# the copy, not production — production still runs the old image here. Off
+# with MYRMIDON_PREDEPLOY_LIVENESS=off.
+if [[ "${MYRMIDON_PREDEPLOY_LIVENESS:-on}" != "off" ]]; then
+  code="$(curl -sS -o /dev/null -w '%{http_code}' "${auth[@]}" --max-time 10 "http://127.0.0.1:$board_port/api/liveness" 2>/dev/null)" || code=""
+  if [[ "$code" != "200" ]]; then
+    dump_logs "$board_ctr"
+    die "liveness probe /api/liveness on the copy did not answer 200 (got ${code:-no answer}); the board process is not serving, the deploy stops BEFORE the maintenance window"
+  fi
+  log "PREDEPLOY-DB-CHECK: liveness ok on the copy (/api/liveness, no database access)"
+else
+  log "PREDEPLOY-DB-CHECK: liveness check off (MYRMIDON_PREDEPLOY_LIVENESS=off)"
+fi
 # 6/6: the attention list and the main company routes, against the copy.
 log "PREDEPLOY-DB-CHECK: 6/6 the attention list and the main APIs"
 IFS=',' read -r -a paths <<<"$api_paths"

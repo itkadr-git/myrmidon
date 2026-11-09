@@ -12,13 +12,13 @@ export interface RetainMetadata {
   [key: string]: unknown;
 }
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+export const DEFAULT_TIMEOUT_MS = 60_000;
 
 export class HindsightClient {
   private readonly baseUrl: string;
   private readonly token: string | undefined;
   private readonly fetchImpl: FetchLike;
-  private readonly timeoutMs: number;
+  readonly timeoutMs: number;
 
   constructor(
     baseUrl: string,
@@ -31,7 +31,7 @@ export class HindsightClient {
     this.baseUrl = url.replace(/\/$/, "");
     this.token = token;
     this.fetchImpl = fetchImpl;
-    this.timeoutMs = timeoutMs;
+    this.timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   private headers(): Record<string, string> {

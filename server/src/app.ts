@@ -38,7 +38,7 @@ import {
   sweepAbandonedImportTransferSpools,
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
-import { healthRoutes } from "./routes/health.js";
+import { healthRoutes, livenessRoutes } from "./routes/health.js";
 import { haRoutes } from "./routes/ha.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
@@ -250,6 +250,7 @@ import {
   configureCorpusAdapters,
   createCorpusShadowSearch,
   buildTokensTraceRoutes,
+  myrmidonOnboardRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -1046,6 +1047,11 @@ export async function createApp(
   api.use(boardLoadRequestMiddleware());
   api.use(boardMutationGuard());
   api.use("/ha", haRoutes());
+  // BOARD-LIVENESS (OPE-12211): the no-database probe lives at /api/liveness,
+  // a sibling of /api/health (readiness). Mounted before any auth-bearing
+  // /api subtree — it reads no credentials and must answer even while the
+  // database (and therefore most of the API) is down.
+  api.use("/liveness", livenessRoutes());
   api.use(
     "/health",
     healthRoutes(db, {
@@ -1310,6 +1316,7 @@ export async function createApp(
   api.use(myrmidonLitellmChannelsRoutes(db)); // myrmidon(1.6.7 OPE-9854): LiteLLM channels /model/new|update|delete
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
+  api.use(myrmidonOnboardRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonFleetMoveRoutes(db, opts.fleetClientManager)); // myrmidon(1.6.6 REMOTE-SITES-T5)
   api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6 OPE-8999): enroll / list / delete execution sites
   api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges

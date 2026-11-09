@@ -50,6 +50,7 @@ import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmido
 import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
+  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
 // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
@@ -103,6 +104,7 @@ import { withDefaultEscalationChain } from "../services/review-escalation-chain.
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
+import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import {
   companies,
   activityLog,
@@ -3844,7 +3846,13 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
-  const workProductsSvc = workProductService(db);
+  const workProductsSvc = workProductService(db, {
+    // myrmidon(OPE-12397): UI reads that refresh PR metadata (the
+    // `refreshPullRequests=true` routes) count into the `ui-refresh` bucket —
+    // the default provider label would attribute them to `task-pr-sync` and
+    // hide the real spend in the rate-limit log.
+    resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db, { source: "ui-refresh" }),
+  });
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
   const companySkillsSvc = companySkillService(db);
@@ -9498,7 +9506,7 @@ export function issueRoutes(
       pullRequestsCi: [] as unknown[],
     };
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const prs = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -9525,7 +9533,7 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const pullRequests = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -14654,7 +14662,7 @@ export function issueRoutes(
           companyId: existing.companyId,
           issueId: existing.id,
         });
-        if (ci.state === "pending" || ci.state === "unknown") {
+        if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -15752,7 +15760,7 @@ export function issueRoutes(
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
-              if (ci.state === "pending" || ci.state === "unknown") {
+              if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
