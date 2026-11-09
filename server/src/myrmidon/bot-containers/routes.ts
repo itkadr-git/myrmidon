@@ -383,6 +383,7 @@ export async function buildBotContainerItemStatus(
       hasReleaseImage: hasReleaseBotImage(env),
     }),
     boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
+    ...effectiveConcurrencyFields(agent),
     gatewayConcurrency: null,
     gatewayConcurrencyNote: null,
     gatewayConcurrencyWarning: null,

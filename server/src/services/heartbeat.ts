@@ -19807,7 +19807,11 @@ export function heartbeatService(
     // created/exited container must be started before the gateway is contacted.
     // Keep this before any adapter execution so a failed start is not reported
     // as a gateway connection failure.
-    const idleStopService = getIdleStopService();
+    const idleStopService =
+      agent.adapterType === "hermes_gateway" &&
+      parseObject(parseObject(agent.adapterConfig).container).enabled === true
+        ? getIdleStopService()
+        : null;
     if (idleStopService) {
       try {
         await idleStopService.ensureStartedAndHealthy(claimed.agentId);
