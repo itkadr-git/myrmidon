@@ -594,6 +594,26 @@ loopback и стримит один кусок в секунду, чтобы п�
   Когда доска недоступна, botd не удаляет ничего. Состояние диска botd
   возвращает доске через `POST /api/myrmidon/bots/me/disk-report`.
 
+### Репак git-base на частичных клонах (1.6.7 OPE-12263)
+
+Базовые bare-репозитории бота (`git-base/<owner>/<repo>.git`) — **частичные
+клоны** (`partialclonefilter=blob:none`) без полного замыкания объектов,
+поэтому обычный `git repack -A -d` падает с ошибкой `Failed to write bitmap
+index. Packfile doesn't have full closure` и оставляет многогигабайтные
+`.tmp-*-pack-*` / `tmp_idx_*` в `objects/pack`; при числе pack больше 20 botd
+повторял попытку каждый цикл. С 1.6.7 botd:
+
+- запускает repack с `-c repack.writeBitmaps=false -c pack.writeBitmaps=false`
+  (плюс прежний `pack.threads=1`);
+- после неудачного repack и при старте botd удаляет устаревшие временные
+  pack-файлы (`.tmp-*-pack-*`, `tmp_pack_*`, `tmp_idx_*`, `tmp_rev_*` старше
+  30 минут) из `objects/pack` и не трогает репозиторий, где есть живые
+  lock-файлы git;
+- после неудачи пишет метку `.myrmidon-repack-failed` с текстом ошибки git и
+  делает паузу 6 часов (`REPACK_FAILURE_BACKOFF_MS`) до следующей попытки —
+  триггер по числу pack паузу не обходит — и пишет причину в журнал;
+- снимает метку неудачи после успешного repack.
+
 ## Что ещё не проверено
 
 Этот Dockerfile и entrypoint написаны по чтению эталонной выгрузки `hermes-agent` и

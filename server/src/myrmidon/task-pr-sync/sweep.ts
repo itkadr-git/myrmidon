@@ -23,6 +23,7 @@
 import { and, asc, desc, eq, gt, inArray, notInArray, or, sql } from "drizzle-orm";
 import {
   approvals,
+  externalObjects,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -54,6 +55,10 @@ import {
   type TaskPrSyncPrFact,
 } from "./policy.js";
 import { readTaskPrSyncSettings, type TaskPrSyncSettings } from "./settings.js";
+import {
+  extractPullRequestIssueIdentifier,
+  pullRequestWorkProductData,
+} from "./linking.js";
 
 /**
  * The service layer is loaded lazily. This module sits in the server entry
@@ -265,6 +270,104 @@ export async function reconcileClosedIssuePullRequests(input: {
   }
 
   return { scanned: candidates.length, synced };
+}
+
+/**
+ * myrmidon(OPE-12483): PRs the bot opened before this linking existed have no
+ * pull_request work product, so the done gate and the review merge path never
+ * saw them. Backfill from the company's GitHub external-object snapshots: every
+ * open PR whose branch is `bot/<KEY>` or whose title carries `<KEY>` is linked
+ * to that task through the ordinary work-product service. Idempotent: a PR
+ * already linked (externalId present anywhere in the company) is skipped, so a
+ * pass costs one select over the company's open GitHub PR snapshots.
+ */
+export async function backfillPullRequestWorkProducts(input: {
+  db: Db;
+  limit?: number;
+  now?: Date;
+}): Promise<{ scanned: number; linked: number; failed: number }> {
+  const snapshots = await input.db
+    .select({
+      id: externalObjects.id,
+      companyId: externalObjects.companyId,
+      externalId: externalObjects.externalId,
+      data: externalObjects.data,
+    })
+    .from(externalObjects)
+    .where(and(
+      eq(externalObjects.providerKey, "github"),
+      eq(externalObjects.objectType, "pull_request"),
+      eq(externalObjects.isTerminal, false),
+    ))
+    .orderBy(asc(externalObjects.updatedAt))
+    .limit(input.limit ?? 500);
+  let linked = 0;
+  let failed = 0;
+  const { extractGitHubPullRequestReferences, workProductService } = await loadTaskPrSyncServices();
+  for (const snapshot of snapshots) {
+    try {
+      const data = snapshot.data && typeof snapshot.data === "object" && !Array.isArray(snapshot.data)
+        ? snapshot.data as Record<string, unknown>
+        : {};
+      const reference = extractGitHubPullRequestReferences([
+        typeof data.url === "string" ? data.url : null,
+        snapshot.externalId,
+      ])[0];
+      // "owner/repo#pull/N" carries the repo and number the service requires.
+      if (!reference) continue;
+      const repository = typeof data.owner === "string" && typeof data.repo === "string"
+        ? `${data.owner}/${data.repo}`
+        : null;
+      const number = typeof data.number === "number" ? data.number : null;
+      if (!repository || !number) continue;
+
+      const alreadyLinked = await input.db
+        .select({ id: issueWorkProducts.id })
+        .from(issueWorkProducts)
+        .where(and(
+          eq(issueWorkProducts.companyId, snapshot.companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+          sql`lower(${issueWorkProducts.externalId}) = lower(${snapshot.externalId})`,
+        ))
+        .limit(1);
+      if (alreadyLinked.length > 0) continue;
+
+      const key = extractPullRequestIssueIdentifier({
+        headRef: typeof data.headRef === "string" ? data.headRef : null,
+        title: typeof data.title === "string" ? data.title : null,
+      });
+      if (!key) continue;
+      const [issueRow] = await input.db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, snapshot.companyId), eq(issues.identifier, key)))
+        .limit(1);
+      if (!issueRow) continue;
+
+      const state = typeof data.state === "string" ? data.state : "open";
+      const merged = data.merged === true;
+      const created = await workProductService(input.db).createForIssue(issueRow.id, snapshot.companyId, pullRequestWorkProductData({
+        repository,
+        number,
+        url: typeof data.url === "string" ? data.url : null,
+        title: typeof data.title === "string" ? data.title : null,
+        headRef: typeof data.headRef === "string" ? data.headRef : null,
+        headSha: typeof data.headSha === "string" ? data.headSha : null,
+        state,
+        merged,
+      }));
+      if (created) linked += 1;
+      else failed += 1;
+    } catch (err) {
+      failed += 1;
+      logger.warn(
+        { errorKind: "task_pr_backfill_failed", errorName: err instanceof Error ? err.name : typeof err, externalObjectId: snapshot.id },
+        "could not backfill a pull request work product",
+      );
+    }
+  }
+  return { scanned: snapshots.length, linked, failed };
 }
 
 /** Map the resolver's answer to the state the policy understands. */
