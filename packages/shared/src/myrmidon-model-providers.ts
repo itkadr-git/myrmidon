@@ -165,10 +165,6 @@ export function isK12Plan(plan?: string | null): boolean {
 export const CODEX_PRIMARY_WINDOW_MIN = 300; // 5 hours (300 minutes)
 export const CODEX_SECONDARY_WINDOW_MIN = 10080; // 1 week (7 days = 10080 minutes)
 
-/** Supported subscription plans in the Codex / ChatGPT pool. */
-export const POOL_ACCOUNT_PLANS = ["plus", "pro", "k12"] as const;
-export type PoolAccountPlan = (typeof POOL_ACCOUNT_PLANS)[number] | string;
-
 export function normalizePoolAccountPlan(plan?: string | null): PoolAccountPlan {
   if (!plan) return "plus";
   const trimmed = plan.trim().toLowerCase();
