@@ -238,6 +238,22 @@ export function collectVerdictMarkers(
 }
 
 /**
+ * Cheap pre-read for the sweep's candidate narrowing (OPE-12397): does the
+ * candidate look like it may carry a verdict? The full freshness logic
+ * (head-acks, verdict-vs-ack ordering) stays in `decideReviewRework`; this
+ * only answers "is this row worth a GitHub read at all", so a false positive
+ * costs one ordinary pass and a false negative is impossible (the store
+ * computes the flag with the same `verdict`-keyword EXISTS the candidate
+ * query filters on; `decideReviewRework` still runs the real parser over the
+ * real comments before any move).
+ */
+export function rowHasOutstandingVerdict(
+  row: { verdictPresent?: boolean },
+): boolean {
+  return row.verdictPresent ?? false;
+}
+
+/**
  * The last head-ack recorded per PR: a `HEAD-ACK <prKey>: <sha>` line written
  * by a previous unblock. A verdict older than the ack is answered — the author
  * already pushed against it and the reviewer has been woken.
