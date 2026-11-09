@@ -242,7 +242,7 @@ PSI cpu `some avg10`. Load average уходит в конец как явно в
 
 ### Изоляция процесса `hermes_local`
 
-Изоляция включается отдельно для агента в конфигурации адаптера Hermes (`adapterConfig`), а не переменной окружения инстанса. Если не заданы `filesystemScope` и `networkScope`, выполнение остаётся без песочницы. Задайте `filesystemScope: "workspace"` для границы Bubblewrap только на workspace. `filesystemSandboxCommand` выбирает исполняемый файл (по умолчанию `bwrap`), а `filesystemExtraPaths` перечисляет дополнительные доступные песочнице пути. Для сети задайте `networkScope: "deny"` или `"allowlist"` вместе с `networkAllowlist`, содержащим разрешённые хосты/origin. URL API control plane доверен для runtime-соединения адаптера. Эти настройки действуют на `hermes_local` и, начиная с 1.6.7 (OMP-HARDEN), на `omp_local` (новые агенты `omp_local` по умолчанию получают `filesystemScope: "workspace"`); Bubblewrap должен быть установлен на хосте агента.
+Изоляция включается отдельно для агента в конфигурации адаптера Hermes (`adapterConfig`), а не переменной окружения инстанса. Если не заданы `filesystemScope` и `networkScope`, выполнение остаётся без песочницы. Задайте `filesystemScope: "workspace"` для границы Bubblewrap только на workspace. `filesystemSandboxCommand` выбирает исполняемый файл (по умолчанию `bwrap`), а `filesystemExtraPaths` перечисляет дополнительные доступные песочнице пути. Для сети задайте `networkScope: "deny"` или `"allowlist"` вместе с `networkAllowlist`, содержащим разрешённые хосты/origin. URL API control plane доверен для runtime-соединения адаптера. Эти настройки действуют только на `hermes_local`; Bubblewrap должен быть установлен на хосте агента.
 
 ## Трек 4 — чаты и навыки
 
