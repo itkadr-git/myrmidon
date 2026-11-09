@@ -249,13 +249,14 @@ export function checkCheckList({ registry, smoke, fixtures, baseReleases = [BASE
   return problems;
 }
 
-function runCheckCheckList() {
-  const problems = checkCheckList();
+export function runCheckCheckList(opts) {
+  const problems = checkCheckList(opts);
   if (problems.length > 0) {
     for (const p of problems) console.error(`check-list: ${p}`);
     throw new Error(`Vendor release check list failed with ${problems.length} problem(s)`);
   }
-  console.log(`Vendor release check list is consistent: registry ${checkListTags().registry.length} release(s), all smoke-covered and fixture-covered.`);
+  const count = opts?.registry ? opts.registry.length : checkListTags().registry.length;
+  console.log(`Vendor release check list is consistent: registry ${count} release(s), all smoke-covered and fixture-covered.`);
 }
 
 function main(argv) {
@@ -265,6 +266,7 @@ function main(argv) {
     return;
   }
   if (args.includes("--check-latest")) {
+    runCheckCheckList();
     const releases = JSON.parse(gh([`repos/${UPSTREAM}/releases?per_page=100`]).toString("utf8"));
     const latestRelease = selectLatestStableRelease(releases);
     if (!latestRelease) throw new Error("Paperclip has no stable release tag");

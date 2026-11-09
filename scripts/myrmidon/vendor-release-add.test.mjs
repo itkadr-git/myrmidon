@@ -9,6 +9,7 @@ import {
   formatUnsupportedRelease,
   isStableReleaseTag,
   parseMigrationSql,
+  runCheckCheckList,
   sanitizeMigrationColumns,
   selectLatestStableRelease,
 } from "./vendor-release-add.mjs";
@@ -192,6 +193,18 @@ describe("vendor-release-add --check-check-list", () => {
     assert.ok(
       problems.some((p) => p.includes("v2026.1023.0") && p.includes("smoke matrix")),
       `expected a missing-from-smoke-matrix problem, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  it("runCheckCheckList throws an error when a release lacks smoke coverage", () => {
+    assert.throws(
+      () =>
+        runCheckCheckList({
+          registry: ["v2026.1005.0", "v2026.1023.0"],
+          smoke: ["v2026.1005.0"],
+          fixtures: ["v2026.1005.0", "v2026.1023.0"],
+        }),
+      /Vendor release check list failed with 1 problem\(s\)/,
     );
   });
 
