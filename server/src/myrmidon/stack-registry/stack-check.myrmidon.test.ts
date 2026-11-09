@@ -696,7 +696,8 @@ describeEmbeddedPostgres("stack release check", () => {
   it("retries once after the configured delay on 403 before declaring stale", async () => {
     await writeStackDocument(db, documentWithOnlyCheckable("langfuse", { langfuse: { version: "langfuse/langfuse:3.0.0" } }));
     let calls = 0;
-    const port: StackFetchJson = async () => {
+    const port: StackFetchJson = async (url) => {
+      if (!url.includes("repos/langfuse/langfuse/releases")) return { status: 404, json: null };
       calls += 1;
       if (calls === 1) return { status: 403, json: null };
       return { status: 200, json: langfuseReleases() };
@@ -750,7 +751,7 @@ describeEmbeddedPostgres("stack release check", () => {
       },
     });
 
-    const doc = await checkStackReleases(db, { fetchJson: port, now: NOW });
+    const doc = await checkStackReleases(db, { fetchJson: port, now: NOW, collect: false });
     const litellm = doc.components.find((c) => c.name === "litellm")!;
     expect(litellm.vulnerabilities).toBeDefined();
     expect(litellm.vulnerabilities).toHaveLength(1);
@@ -782,7 +783,7 @@ describeEmbeddedPostgres("stack release check", () => {
       },
     });
 
-    const doc = await checkStackReleases(db, { fetchJson: port, now: NOW });
+    const doc = await checkStackReleases(db, { fetchJson: port, now: NOW, collect: false });
     const litellm = doc.components.find((c) => c.name === "litellm")!;
     expect(litellm.upstreamState?.latest).toBe("v1.52.0");
     expect(litellm.vulnerabilities).toBeUndefined();
@@ -807,6 +808,7 @@ describeEmbeddedPostgres("stack release check", () => {
     await checkStackReleases(db, {
       fetchJson: port,
       now: NOW,
+      collect: false,
       createDraft: async (cid, draft) => {
         drafts.push({ companyId: cid, draft });
       },
@@ -934,112 +936,5 @@ describe("stack lag escalation (STACK-WATCH-LIVE)", () => {
     const digestLines = cardsForDigest(withStates, now);
     expect(digestLines).toHaveLength(1);
     expect(digestLines[0]).toContain("hindsight");
-  });
-
-  it("marks components with known CVEs in checkStackReleases and preserves clean components", async () => {
-    await writeStackDocument(
-      db,
-      documentWithLocal({
-        litellm: { version: "ghcr.io/berriai/litellm:v1.50.0" },
-        langfuse: { version: "langfuse/langfuse:3.0.0" },
-      }),
-    );
-    const port = fakePort({
-      "repos/BerriAI/litellm/releases": {
-        status: 200,
-        json: [{ tag_name: "v1.52.0", published_at: "2026-10-01T00:00:00Z", body: "release" }],
-      },
-      "repos/langfuse/langfuse/releases": {
-        status: 200,
-        json: [{ tag_name: "3.2.0", published_at: "2026-10-01T00:00:00Z", body: "release" }],
-      },
-      [OSV_QUERY_BATCH_PATH]: {
-        status: 200,
-        json: {
-          results: [
-            {
-              // litellm query result (index 0)
-              vulns: [
-                {
-                  id: "GHSA-litellm-proxy-cve",
-                  aliases: ["CVE-2026-8888"],
-                  severity: "CRITICAL",
-                  summary: "Privilege escalation in LiteLLM proxy",
-                },
-              ],
-            },
-            {
-              // langfuse query result (index 1) - clean, no vulns
-              vulns: [],
-            },
-          ],
-        },
-      },
-    });
-
-    const doc = await checkStackReleases(db, { fetchJson: port, now: NOW });
-    const litellm = doc.components.find((c) => c.name === "litellm")!;
-    expect(litellm.vulnerabilities).toBeDefined();
-    expect(litellm.vulnerabilities).toHaveLength(1);
-    expect(litellm.vulnerabilities![0]).toMatchObject({
-      id: "CVE-2026-8888",
-      cveId: "CVE-2026-8888",
-      severity: "CRITICAL",
-    });
-
-    const langfuse = doc.components.find((c) => c.name === "langfuse")!;
-    expect(langfuse.vulnerabilities).toBeUndefined();
-  });
-
-  it("degrades advisory lookup when OSV is 500 or unreachable without failing the release check", async () => {
-    await writeStackDocument(
-      db,
-      documentWithLocal({
-        litellm: { version: "ghcr.io/berriai/litellm:v1.50.0" },
-      }),
-    );
-    const port = fakePort({
-      "repos/BerriAI/litellm/releases": {
-        status: 200,
-        json: [{ tag_name: "v1.52.0", published_at: "2026-10-01T00:00:00Z", body: "release" }],
-      },
-      [OSV_QUERY_BATCH_PATH]: {
-        status: 500,
-        json: { error: "OSV down" },
-      },
-    });
-
-    const doc = await checkStackReleases(db, { fetchJson: port, now: NOW });
-    const litellm = doc.components.find((c) => c.name === "litellm")!;
-    expect(litellm.upstreamState?.latest).toBe("v1.52.0");
-    expect(litellm.vulnerabilities).toBeUndefined();
-  });
-
-  it("creates backlog draft tasks when releases lag or carry security notes, respecting deduplication", async () => {
-    const drafts: Array<{ companyId: string; draft: StackBacklogDraft }> = [];
-    const port = fakePort({
-      "repos/langfuse/langfuse/releases": { status: 200, json: langfuseReleases() },
-      "repos/NousResearch/hermes-agent/releases": {
-        status: 200,
-        json: [{ tag_name: "v2026.10.1", published_at: "2026-10-01T00:00:00Z", body: null }],
-      },
-    });
-    const baseDoc = documentWithLocal({ langfuse: { version: "langfuse/langfuse:3.0.0" } });
-    await writeStackDocument(db, baseDoc);
-
-    const companyId = randomUUID();
-    const { companies } = await import("@myrmidon/db");
-    await db.insert(companies).values({ id: companyId, name: "Test Co", issuePrefix: "TC" }).onConflictDoNothing();
-
-    await checkStackReleases(db, {
-      fetchJson: port,
-      now: NOW,
-      createDraft: async (cid, draft) => {
-        drafts.push({ companyId: cid, draft });
-      },
-    });
-
-    expect(drafts.length).toBeGreaterThan(0);
-    expect(drafts.some((d) => d.draft.component === "langfuse")).toBe(true);
   });
 });
