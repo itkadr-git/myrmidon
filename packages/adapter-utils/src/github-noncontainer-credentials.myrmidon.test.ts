@@ -442,7 +442,7 @@ if (args[0] === 'config' && args[1] === '--get' && args[2] === 'remote.origin.ur
   });
 
   it("falls back to the image libexec git when MYRMIDON_GIT_REAL is unset and PATH holds only wrappers", async () => {
-    const { launcherBin, repo, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const { launcherBin, nodeBin, repo, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
     // Only the launcher's own directory plus a node directory for the env
     // shebangs: no wrapper stand-in and no real git on the fixture path, so the
     // launcher's PATH-walk finds no candidate at all and must land on the
