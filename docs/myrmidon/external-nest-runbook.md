@@ -16,7 +16,11 @@ Wave-1 operational runbook for provisioning, configuring, verifying isolation, a
    - **Host Operator**: manages container environments and host secrets.
    - **Client**: end-user connecting via external channels (Telegram chat, web widget); has no direct access to Myrmidon API or board UI (board UI is not exposed externally).
 3. **Execution Isolation**:
-   - The external bot agent is restricted to client projects using `agent_nests`. An agent with nests is physically prevented from picking up tasks from other projects or companies (`agentNestAllowsProject`).
+   - The external bot agent is restricted to client projects using `agent_nests`.
+   - **Critical Scope Boundary**: SQL matcher `agentNestsAllowSql` (`server/src/myrmidon/castes/resolve.ts:87–92`) verifies:
+     `not exists (select 1 from agent_nests n where n.agent_id = ${agent}) or ${args.projectId} is null or exists (select 1 from agent_nests n where n.agent_id = ${agent} and n.project_id = ${args.projectId})`.
+     An agent bound to project P1 refuses tasks assigned to project P2, but **does match project-less tasks (`projectId IS NULL`)** within the company (confirmed by test `server/src/myrmidon/castes/castes-default-and-nests.db.myrmidon.test.ts:257–277`).
+     Therefore, `agent_nests` alone does **not** provide complete task isolation against project-less tasks. In tenant companies with external bot agents, mandatory operational controls must ensure all issues have `projectId` explicitly set, and project-less tasks are prevented from using external bot castes.
 
 ---
 
@@ -176,12 +180,12 @@ Content-Type: application/json
 
 **Expected Response:** HTTP 200 OK with the saved limit object (`BudgetLimitView`).
 
-**Invariants:**
-- `mode: "hard"`: on limit overrun, task admission is strictly refused (`refuse`).
-- `mode: "soft"`: on limit overrun, the agent is paused (`pause`) and a notification card is generated for the owner.
+**Invariants and Enforcement Boundaries:**
+- `mode: "hard"`: on limit overrun, run admission is strictly refused (`evaluateBudgetLimitAdmission` in `server/src/myrmidon/budget-limits/admission.ts:15–16`, verified in `admission.unit.test.ts:31` and `admission.db.myrmidon.test.ts:123`).
+- `mode: "soft"`: on limit overrun, `admission.ts:17–18` explicitly does **not** refuse admission (`a soft limit never refuses on admission`); pausing is handled asynchronously via incident/pause machinery (BUDGET-CONFIG-B), which generates a notification card for the owner. The live agent pause / incident trigger under soft mode is an expected live check result (live run not executed on production).
 - `period`: valid options are `"calendar_month_utc"` and `"lifetime"`.
 - Live usage is readable via `GET /api/myrmidon/companies/:companyId/budget-limits/usage`.
-- Every limit mutation is audited in `GET /api/myrmidon/companies/:companyId/budget-limits/journal` (table `budget_limit_changes`).
+- Every limit configuration mutation is audited in `GET /api/myrmidon/companies/:companyId/budget-limits/journal` (table `budget_limit_changes`, verified in `server/src/myrmidon/budget-limits/routes.myrmidon.test.ts`).
 
 #### 5.2. Configure Daily and Weekly Token Quotas (`project_token_quotas`)
 The project token quota endpoint (`server/src/myrmidon/project-token-quota/routes.ts`, `packages/shared/src/myrmidon-project-token-quota.ts`) uses the singular route:
@@ -201,13 +205,16 @@ Content-Type: application/json
 
 **Expected Response:** HTTP 200 OK with quota configuration and status.
 
-**Invariants:**
-- Quota status and window usage counters are retrieved via `GET /api/myrmidon/companies/:companyId/projects/:projectId/token-quota`.
-- When token limits are exceeded, the scheduler skips task execution with system reason `project.token_quota_exceeded` (`PROJECT_TOKEN_QUOTA_SKIP_REASON`), and records the event in `project_token_usage_events`. This is an internal task skip, not an HTTP 429 response to callers.
+**Invariants and Enforcement Boundaries:**
+- Quota configuration and status are retrieved via `GET /api/myrmidon/companies/:companyId/projects/:projectId/token-quota` (verified in `server/src/myrmidon/project-token-quota/routes.ts`).
+- Decision logic is verified in `server/src/myrmidon/project-token-quota/project-token-quota.myrmidon.test.ts:163`: when daily or weekly limit is reached or exceeded, `getProjectTokenQuotaBlock` returns a non-null block identifying the exceeded window (`daily` evaluated before `weekly`).
+- Integration with the run loop is implemented in `server/src/services/heartbeat.ts:31700–31726`: when `getProjectTokenQuotaBlock` returns a block, enqueue is refused with `PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE` (`project.token_quota_exceeded`), and a skip event is written. The live database transition on an active runner is an expected live check result (live run not executed on production).
 
 ---
 
-### Step 6. Provision Company Secrets
+### Step 6. Provision Company Secrets and Agent Secret Bindings
+
+#### 6.1. Create Company-Scoped Secret
 Secrets are created in the tenant company scope via `POST /api/companies/:companyId/secrets` (`packages/shared/src/validators/secret.ts`, `server/src/routes/secrets.ts`). The `provider` field identifies the secure storage mechanism (`SECRET_PROVIDERS = local_encrypted | aws_secrets_manager | gcp_secret_manager | vault`), not the LLM service brand:
 
 ```http
@@ -223,12 +230,38 @@ Content-Type: application/json
 }
 ```
 
-**Expected Response:** HTTP 201 Created with secret metadata (field `value` is omitted from the API response).
+**Expected Response:** HTTP 201 Created with secret metadata (`id` = `secretId`; field `value` is omitted from the API response).
+
+#### 6.2. Bind Secret to the External Bot Agent (`agent secret binding`)
+In Myrmidon, secret bindings connect stored company secrets to an agent runtime environment (`company_secret_bindings` table). The binding is provisioned via `PATCH /api/agents/:agentId` by declaring a `secret_ref` in `adapterConfig.env`:
+
+```http
+PATCH /api/agents/:agentId
+Authorization: Bearer $MYRMIDON_API_KEY
+Content-Type: application/json
+
+{
+  "adapterConfig": {
+    "env": {
+      "OPENAI_API_KEY": {
+        "type": "secret_ref",
+        "secretId": "<secretId-from-step-6.1>",
+        "version": "latest"
+      }
+    }
+  }
+}
+```
+
+**Expected Response:** HTTP 200 OK with the updated agent configuration.
 
 **Invariants:**
+- Upon saving `adapterConfig`, `agentService.update` invokes `syncAgentSecretBindings` (`server/src/services/agents.ts:703`), calling `syncSecretRefsForTarget` (`server/src/services/secrets.ts:4821`).
+- The platform validates that `secretId` belongs to `companyId` (cross-tenant secret references are rejected).
+- A binding record is created in `company_secret_bindings` and an activity event `secret.binding.created` is emitted (verified in `server/src/__tests__/agents-service-secret-bindings.test.ts:78–127`).
+- Active bindings can be inspected by the operator via `GET /api/secrets/:secretId/usage`.
 - Secret values are encrypted at rest and never exposed via `GET /api/companies/:companyId/secrets`.
-- Secret access is granted solely through server-side `secret-ref` resolution within the same `company_id`.
-- All decryption and read events are recorded in `secret_access_events`.
+- Read and decryption events during agent execution are recorded in `secret_access_events` (`server/src/__tests__/qa-routine-secrets-e2e.test.ts:8,158`, `server/src/__tests__/secrets-service.test.ts:4668`). Runtime resolution logging during an actual agent run is an expected live check result.
 
 ---
 
@@ -324,12 +357,36 @@ Content-Type: application/json
 }
 ```
 
-### Step R3. Invalidate and Delete Secrets
+### Step R3. Revoke Secret Bindings and Delete Secrets
+
+#### R3.1. Revoke Agent Secret Binding
+To detach secrets from the bot runtime and prevent credential injection, clear the secret reference from the agent's `adapterConfig.env`:
+
+```http
+PATCH /api/agents/:agentId
+Authorization: Bearer $MYRMIDON_API_KEY
+Content-Type: application/json
+
+{
+  "adapterConfig": {
+    "env": {}
+  }
+}
+```
+
+**Expected Response:** HTTP 200 OK.
+`agentService.update` invokes `syncAgentSecretBindings` (`server/src/services/agents.ts:703`), calling `syncSecretRefsForTarget` with `{ replaceAll: true }`. Because no secret references remain in `adapterConfig.env`, matching rows in `company_secret_bindings` are immediately purged (verified by test `server/src/__tests__/agents-service-secret-bindings.test.ts:304–326`), stripping environment variable injection from any future run container.
+
+#### R3.2. Delete Company Secret Definition
+Delete the encrypted secret definition from company storage:
+
 ```http
 DELETE /api/secrets/:secretId
 Authorization: Bearer $MYRMIDON_API_KEY
 ```
-*(Or rotate to invalid values via secrets management).* Future resolution attempts fail closed.
+
+**Expected Response:** HTTP 200 OK / HTTP 204 No Content.
+*(Alternatively rotate to invalid dummy values).* The secret record is purged from `company_secrets`. All future resolution attempts fail closed.
 
 ### Step R4. Project Nest Access Revocation
 > **WARNING! CRITICAL SECURITY INVARIANT:**
@@ -353,14 +410,14 @@ The operator inspects audit trails:
 
 | # | Checked Invariant | Verification Method / Query | Expected Result | Verified by Code / Tests |
 |---|---|---|---|---|
-| 1 | Nest Confinement | Create issue in company B or in un-nested project in company A | Acme Bot agent is not matched by scheduler (excluded from candidates) | `server/src/myrmidon/castes/resolve.ts` (`resolveTaskCaste`), test `server/src/myrmidon/castes/castes-default-and-nests.db.myrmidon.test.ts` |
+| 1 | Nest Task Confinement (with project-less task boundary) | Create issue in company B, in un-nested project P2 in company A, or project-less task in company A | Acme Bot agent is excluded from other companies and other projects. **Boundary Exception:** `agentNestsAllowSql` allows tasks where `projectId IS NULL`; agent will match project-less tasks unless operational controls enforce project assignment. | SQL matcher `server/src/myrmidon/castes/resolve.ts:87–92`, verified in tests `server/src/myrmidon/castes/castes-default-and-nests.db.myrmidon.test.ts:257–277` and `resolve.myrmidon.test.ts` |
 | 2 | Cross-Tenant Nest Prevention | `PUT /api/myrmidon/companies/:companyA/agents/:agentA/nests` with project from company B | HTTP 400 Bad Request, nest update refused | Test `server/src/myrmidon/castes/nests-api.myrmidon.test.ts: nests: another company's project is unknown (400)` |
 | 3 | Secret Redaction in API | `GET /api/companies/:companyId/secrets` | Metadata returned, `value` field strictly omitted | `server/src/routes/secrets.ts`, test `server/src/__tests__/board-key-tenant-confinement.test.ts` |
 | 4 | Cross-Tenant Secret Confinement | Attempt to read company A secrets using company B token/context | HTTP 404 Not Found (non-disclosure) or HTTP 403 Forbidden | `packages/shared/src/validators/secret.ts`, `server/src/routes/secrets.ts`, test `server/src/__tests__/agent-cross-tenant-authz-routes.test.ts` |
-| 5 | `budget_limits` Enforcement | Overrun nest-level project spend limit | `mode: "hard"` refuses task admission; `mode: "soft"` pauses agent and raises owner card | `server/src/myrmidon/budget-limits/admission.ts`, test `server/src/myrmidon/budget-limits/routes.myrmidon.test.ts` |
-| 6 | `project_token_quotas` Enforcement | Overrun `dailyTokenLimit` or `weeklyTokenLimit` | Task skipped with reason `project.token_quota_exceeded` | `server/src/myrmidon/project-token-quota/service.ts`, `server/src/myrmidon/project-token-quota/routes.ts` |
-| 7 | Secret Access Auditing | Agent invocation requiring bound secret | Entry created in `secret_access_events` with actor, consumer, issue, outcome | Test `server/src/__tests__/agent-cross-tenant-authz-routes.test.ts`, table `secret_access_events` |
-| 8 | Revocation Audit Trail | Execute revocation sequence R1–R5 | Deactivation recorded in `activity`, limit modifications in `budget_limit_changes` | Test `server/src/__tests__/agent-cross-tenant-authz-routes.test.ts`, `server/src/myrmidon/budget-limits/routes.myrmidon.test.ts` |
+| 5 | `budget_limits` Configuration & Enforcement | 1) Configure nest spend limit via `PUT .../limits/nest/:projectId`. 2) Test run admission overrun with `mode: "hard"` and `mode: "soft"`. | 1) Limit persisted and audited in `budget_limit_changes`. 2) `mode: "hard"` strictly refuses run admission (`refuse`). 3) `mode: "soft"` does not refuse admission (`admission.ts:17-18`); asynchronous pause & incident card is an expected live check result. | Config & journal verified by `server/src/myrmidon/budget-limits/routes.myrmidon.test.ts`. Hard refuse verified by `server/src/myrmidon/budget-limits/admission.unit.test.ts:31` and `admission.db.myrmidon.test.ts:123`. Soft live pause is expected live result (live run not executed on production). |
+| 6 | `project_token_quotas` Configuration & Enforcement | 1) Configure daily/weekly token quota via `PUT .../token-quota`. 2) Evaluate quota window overrun. | 1) Quota saved and returned via `routes.ts`. 2) Quota overrun identified by `getProjectTokenQuotaBlock`. 3) Run enqueue refusal with `project.token_quota_exceeded` in `heartbeat.ts:31700` is an expected live check result. | Route verified by `server/src/myrmidon/project-token-quota/routes.ts`. Decision logic verified by `server/src/myrmidon/project-token-quota/project-token-quota.myrmidon.test.ts:163`. Execution loop skip is expected live result (live run not executed on production). |
+| 7 | Secret Binding & Access Auditing | 1) Bind secret to agent via `PATCH /api/agents/:agentId`. 2) Bot execution resolving secret. | 1) Row inserted in `company_secret_bindings` and `secret.binding.created` logged to `activity_log`. 2) Runtime resolution logs event in `secret_access_events`. | Binding creation & activity verified by `server/src/__tests__/agents-service-secret-bindings.test.ts:78–127`. Decryption audit verified by `server/src/__tests__/qa-routine-secrets-e2e.test.ts:8,158` and `secrets-service.test.ts:4668`. Agent run logging is expected live result. |
+| 8 | Revocation & Audit Trail | Execute revocation sequence R1–R5 (pause agent, purge bindings via `adapterConfig.env: {}`, delete secret) | Agent paused/terminated, bindings purged from `company_secret_bindings`, secret removed from `company_secrets`. | Binding purge on adapterConfig update verified by `server/src/__tests__/agents-service-secret-bindings.test.ts:304–326`. Secret deletion verified by `routes/secrets.ts`. Full live teardown audit trail is expected live result (live run not executed on production). |
 
 ---
 

@@ -16,7 +16,11 @@
    - **Оператор стенда**: управляет контейнерами и секретами платформы.
    - **Клиент**: конечный пользователь внешнего канала (Telegram-чат, веб-виджет); не имеет прямого доступа к API или UI доски Myrmidon, UI наружу не публикуется.
 3. **Изоляция исполнения**:
-   - Агент внешнего бота привязывается к проектам клиента через `agent_nests`. Агент с гнездами физически не может брать задачи из других проектов или других компаний (`agentNestAllowsProject`).
+   - Агент внешнего бота привязывается к проектам клиента через `agent_nests`.
+   - **Критическая граница применимости**: SQL-матчер `agentNestsAllowSql` (`server/src/myrmidon/castes/resolve.ts:87–92`) содержит условие:
+     `not exists (select 1 from agent_nests n where n.agent_id = ${agent}) or ${args.projectId} is null or exists (select 1 from agent_nests n where n.agent_id = ${agent} and n.project_id = ${args.projectId})`.
+     Агент с гнездом P1 не берет задачи из проекта P2, но **берет задачи без проекта (`projectId IS NULL`)** внутри компании (подтверждено тестом `server/src/myrmidon/castes/castes-default-and-nests.db.myrmidon.test.ts:257–277`).
+     Следовательно, механизм `agent_nests` сам по себе **не гарантирует** полную изоляцию от задач без проекта. В компании-арендаторе с внешним ботом обязателен административный регламент: всем задачам явно назначается `projectId`, а project-less задачи исключаются из каст внешнего бота.
 
 ---
 
@@ -176,12 +180,12 @@ Content-Type: application/json
 
 **Ожидаемый ответ:** HTTP 200 OK с сохраненным объектом лимита (`BudgetLimitView`).
 
-**Инварианты:**
-- `mode: "hard"`: при превышении лимита планировщик жестко блокирует допуск задач к исполнению (`refuse`).
-- `mode: "soft"`: при превышении лимита агент приостанавливается (`pause`), а владельцу выставляется карточка с возможностью расширить лимит или остановить работу.
+**Инварианты и границы применения:**
+- `mode: "hard"`: при превышении лимита планировщик жестко блокирует допуск прогона к исполнению (`refuse`, функция `evaluateBudgetLimitAdmission` в `server/src/myrmidon/budget-limits/admission.ts:15–16`, подтверждено тестами `admission.unit.test.ts:31` и `admission.db.myrmidon.test.ts:123`).
+- `mode: "soft"`: при превышении лимита `admission.ts:17–18` явно **не** блокирует допуск прогона (`a soft limit never refuses on admission`); приостановка агента (`pause`) и карточка владельцу инициируются асинхронно через подсистему инцидентов (BUDGET-CONFIG-B). Живая пауза агента при soft-превышении является ожидаемым результатом live-проверки (live-прогон на проде не выполнялся).
 - `period`: допустимы значения `"calendar_month_utc"` и `"lifetime"`.
 - Текущее потребление доступно через `GET /api/myrmidon/companies/:companyId/budget-limits/usage`.
-- Все изменения лимитов журналируются в `GET /api/myrmidon/companies/:companyId/budget-limits/journal` (таблица `budget_limit_changes`).
+- Все изменения лимитов журналируются в `GET /api/myrmidon/companies/:companyId/budget-limits/journal` (таблица `budget_limit_changes`, подтверждено тестом `server/src/myrmidon/budget-limits/routes.myrmidon.test.ts`).
 
 #### 5.2. Установка суточных и недельных квот токенов (`project_token_quotas`)
 Реальный эндпоинт квот токенов проекта (`server/src/myrmidon/project-token-quota/routes.ts`, `packages/shared/src/myrmidon-project-token-quota.ts`) использует путь в единственном числе:
@@ -201,13 +205,16 @@ Content-Type: application/json
 
 **Ожидаемый ответ:** HTTP 200 OK со сводкой квоты и текущего статуса.
 
-**Инварианты:**
-- Статус квоты и текущий расход окон проверяются вызовом `GET /api/myrmidon/companies/:companyId/projects/:projectId/token-quota`.
-- При превышении лимита задачи проекта не исполняются: планировщик пропускает задачу с системной причиной `project.token_quota_exceeded` (`PROJECT_TOKEN_QUOTA_SKIP_REASON`), факт фиксируется в `project_token_usage_events`. Это внутренний пропуск задачи, а не HTTP-ответ 429 вызывающей стороне.
+**Инварианты и границы применения:**
+- Статус квоты и конфигурация проверяются вызовом `GET /api/myrmidon/companies/:companyId/projects/:projectId/token-quota` (подтверждено в `server/src/myrmidon/project-token-quota/routes.ts`).
+- Логика проверки квоты подтверждена тестом `server/src/myrmidon/project-token-quota/project-token-quota.myrmidon.test.ts:163`: при исчерпании лимита `getProjectTokenQuotaBlock` возвращает непустой блок с указанием превышенного окна.
+- Интеграция с циклом исполнения реализована в `server/src/services/heartbeat.ts:31700–31726`: при блокировке квоты задача отклоняется с кодом `PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE` (`project.token_quota_exceeded`), и пишется событие в `project_token_usage_events`. Переход в БД на активном раннере является ожидаемым результатом live-проверки (live-прогон на проде не выполнялся).
 
 ---
 
-### Шаг 6. Настройка секретов компании и привязка к потребителю
+### Шаг 6. Настройка секретов компании и привязка к агенту (Secret Bindings)
+
+#### 6.1. Создание секрета компании
 Секреты создаются в скоупе компании-арендатора через `POST /api/companies/:companyId/secrets` (`packages/shared/src/validators/secret.ts`, `server/src/routes/secrets.ts`). Поле `provider` задает механизм безопасного хранения (`SECRET_PROVIDERS = local_encrypted | aws_secrets_manager | gcp_secret_manager | vault`), а не название LLM-сервиса:
 
 ```http
@@ -223,11 +230,38 @@ Content-Type: application/json
 }
 ```
 
-**Ожидаемый ответ:** HTTP 201 Created с метаданными секрета (поле `value` из ответа API исключено).
+**Ожидаемый ответ:** HTTP 201 Created с метаданными секрета (`id` = `secretId`; поле `value` из ответа API исключено).
+
+#### 6.2. Назначение привязки секрета к агенту (`agent secret binding`)
+Привязка секрета к среде исполнения агента выполняется через объявление `secret_ref` в конфигурации адаптера `PATCH /api/agents/:agentId`:
+
+```http
+PATCH /api/agents/:agentId
+Authorization: Bearer $MYRMIDON_API_KEY
+Content-Type: application/json
+
+{
+  "adapterConfig": {
+    "env": {
+      "OPENAI_API_KEY": {
+        "type": "secret_ref",
+        "secretId": "<secretId-из-шага-6.1>",
+        "version": "latest"
+      }
+    }
+  }
+}
+```
+
+**Ожидаемый ответ:** HTTP 200 OK с обновленной конфигурацией агента.
 
 **Инварианты:**
+- При обновлении `adapterConfig` сервис агентов вызывает `syncAgentSecretBindings` (`server/src/services/agents.ts:703`), передавая декларации в `syncSecretRefsForTarget` (`server/src/services/secrets.ts:4821`).
+- Платформа валидирует принадлежность `secretId` той же компании (кросс-компанейские ссылки отклоняются).
+- В таблице `company_secret_bindings` создается запись, а в аудит-лог пишется событие `secret.binding.created` (подтверждено тестом `server/src/__tests__/agents-service-secret-bindings.test.ts:78–127`).
+- Просмотр активных привязок секрета доступен оператору через `GET /api/secrets/:secretId/usage`.
 - Значения секретов шифруются в базе данных и никогда не возвращаются в ответах API (`GET /api/companies/:companyId/secrets`).
-- Обращение к секрету разрешено только через серверный механизм связывания `secret-ref` в контексте той же `company_id`.
+- Расшифровка и чтение секрета при исполнении фиксируются в `secret_access_events` (`server/src/__tests__/qa-routine-secrets-e2e.test.ts:8,158`, `server/src/__tests__/secrets-service.test.ts:4668`). Журналирование реального прогона внешнего бота является ожидаемым результатом live-проверки.
 - Все обращения к секрету во время прогонов логируются в таблице `secret_access_events`.
 
 ---
@@ -324,12 +358,34 @@ Content-Type: application/json
 }
 ```
 
-### Шаг R3. Инвалидация и удаление секретов
+### Шаг R3. Снятие привязок секретов и удаление секрета
+
+#### R3.1. Снятие привязки секрета с агента (Secret Binding Revocation)
+Чтобы исключить секрет из окружения агента и остановить передачу учетных данных в контейнер, очистите ссылку на секрет в `adapterConfig.env`:
+
+```http
+PATCH /api/agents/:agentId
+Authorization: Bearer $MYRMIDON_API_KEY
+Content-Type: application/json
+
+{
+  "adapterConfig": {
+    "env": {}
+  }
+}
+```
+
+**Ожидаемый ответ:** HTTP 200 OK.
+`agentService.update` вызывает `syncAgentSecretBindings` (`server/src/services/agents.ts:703`), который выполняет `syncSecretRefsForTarget` с опцией `{ replaceAll: true }`. Так как список ссылок пуст, платформа немедленно удаляет записи привязок данного агента из таблицы `company_secret_bindings` (подтверждено тестом `server/src/__tests__/agents-service-secret-bindings.test.ts:304–326`), прекращая внедрение переменной окружения при последующих запусках.
+
+#### R3.2. Удаление определения секрета компании
 ```http
 DELETE /api/secrets/:secretId
 Authorization: Bearer $MYRMIDON_API_KEY
 ```
-*(Либо ротация на недействительное значение через интерфейс управления секретами).* Все последующие попытки использования удаленного секрета терпят неудачу (fail-closed).
+
+**Ожидаемый ответ:** HTTP 200 OK / HTTP 204 No Content.
+*(Либо ротация на недействительное значение через интерфейс управления секретами).* Запись удаляется из `company_secrets`. Все последующие попытки использования удаленного секрета терпят неудачу (fail-closed).
 
 ### Шаг R4. Отзыв проектного доступа и изоляция гнезда
 > **ВНИМАНИЕ! КРИТИЧЕСКИЙ ИНВАРИАНТ БЕЗОПАСНОСТИ:**
@@ -353,14 +409,14 @@ Authorization: Bearer $MYRMIDON_API_KEY
 
 | # | Проверяемый критерий | Метод проверки / запрос | Ожидаемый результат | Чем подтверждено в коде/тестах |
 |---|---|---|---|---|
-| 1 | Изоляция задач (Nest confinement) | Создать задачу в компании B или в проекте компании A вне nests агента | Агент Acme Bot не матчится планировщиком (исключен из выборки) | `server/src/myrmidon/castes/resolve.ts` (`resolveTaskCaste`), тест `server/src/myrmidon/castes/castes-default-and-nests.db.myrmidon.test.ts` |
+| 1 | Изоляция задач (Nest task confinement) с границей project-less | Создать задачу в компании B, в неразрешенном проекте P2 компании A или задачу без проекта в компании A | Агент Acme Bot исключается из выборки задач других компаний и других проектов. **Граница применимости:** `agentNestsAllowSql` разрешает задачи с `projectId IS NULL`; агент возьмет задачу без проекта, если регламентом не запрещено создание задач без проекта. | SQL-матчер `server/src/myrmidon/castes/resolve.ts:87–92`, тесты `server/src/myrmidon/castes/castes-default-and-nests.db.myrmidon.test.ts:257–277` и `resolve.myrmidon.test.ts` |
 | 2 | Запрет кросс-арендных гнезд | `PUT /api/myrmidon/companies/:companyA/agents/:agentA/nests` с `projectIds` компании B | HTTP 400 Bad Request, гнездо не создается | Тест `server/src/myrmidon/castes/nests-api.myrmidon.test.ts: nests: another company's project is unknown (400)` |
 | 3 | Сокрытие значений секретов | `GET /api/companies/:companyId/secrets` | В ответе список метаданных, поле `value` отсутствует | `server/src/routes/secrets.ts`, тест `server/src/__tests__/board-key-tenant-confinement.test.ts` |
 | 4 | Межарендная изоляция секретов | Попытка чтения секрета компании A токеном/контекстом компании B | HTTP 404 Not Found (сокрытие существования) или HTTP 403 Forbidden | `packages/shared/src/validators/secret.ts`, `server/src/routes/secrets.ts`, тест `server/src/__tests__/agent-cross-tenant-authz-routes.test.ts` |
-| 5 | Применение `budget_limits` | Превышение лимита проекта уровня `nest` | При `mode: "hard"` — блокировка допуска (`refuse`); при `mode: "soft"` — пауза агента и карточка владельцу | `server/src/myrmidon/budget-limits/admission.ts`, тест `server/src/myrmidon/budget-limits/routes.myrmidon.test.ts` |
-| 6 | Применение `project_token_quotas` | Превышение лимита `dailyTokenLimit` / `weeklyTokenLimit` | Пропуск задач с системной причиной `project.token_quota_exceeded` | `server/src/myrmidon/project-token-quota/service.ts`, `server/src/myrmidon/project-token-quota/routes.ts` |
-| 7 | Аудит доступа к секретам | Вызов бота с использованием привязанного секрета | В таблице `secret_access_events` создается запись с `actor_id`, `consumer`, `issue_id`, `outcome: "success"` | Тест `server/src/__tests__/agent-cross-tenant-authz-routes.test.ts`, таблица `secret_access_events` |
-| 8 | Аудит отзыва доступа | Выполнение шагов R1–R5 | Записи деактивации в `activity`, изменения лимитов в `budget_limit_changes` | Тест `server/src/__tests__/agent-cross-tenant-authz-routes.test.ts`, `server/src/myrmidon/budget-limits/routes.myrmidon.test.ts` |
+| 5 | Конфигурация и применение `budget_limits` | 1) Установка лимита `PUT .../limits/nest/:projectId`. 2) Превышение лимита в режимах `hard` и `soft`. | 1) Лимит сохранен и зафиксирован в журнале `budget_limit_changes`. 2) При `mode: "hard"` — жесткий отказ допуска прогона (`refuse`). 3) При `mode: "soft"` — допуск не блокируется (`admission.ts:17-18`); асинхронная пауза агента и карточка владельцу — ожидаемый результат live-проверки. | Конфигурация и журнал проверены тестом `server/src/myrmidon/budget-limits/routes.myrmidon.test.ts`. Блокировка hard проверена тестами `admission.unit.test.ts:31` и `admission.db.myrmidon.test.ts:123`. Живая пауза soft — ожидаемый результат live-проверки (live-прогон на проде не выполнялся). |
+| 6 | Конфигурация и применение `project_token_quotas` | 1) Установка квот `PUT .../token-quota`. 2) Оценка превышения лимитов окон. | 1) Квота сохраняется и отдается через `routes.ts`. 2) Блокировка окна выявляется `getProjectTokenQuotaBlock`. 3) Пропуск запуска в `heartbeat.ts:31700` с `project.token_quota_exceeded` — ожидаемый результат live-проверки. | Маршрут проверен в `server/src/myrmidon/project-token-quota/routes.ts`. Логика блокировки проверена тестом `project-token-quota.myrmidon.test.ts:163`. Пропуск раннера — ожидаемый результат live-проверки (live-прогон на проде не выполнялся). |
+| 7 | Привязка секретов и аудит доступа | 1) Привязка секрета к агенту `PATCH /api/agents/:agentId`. 2) Исполнение прогона с обращением к секрету. | 1) Запись в `company_secret_bindings` и событие `secret.binding.created` в `activity_log`. 2) Расшифровка фиксируется в `secret_access_events`. | Создание привязки и аудит проверены тестом `server/src/__tests__/agents-service-secret-bindings.test.ts:78–127`. Фиксация доступа к секрету проверена тестами `qa-routine-secrets-e2e.test.ts:8,158` и `secrets-service.test.ts:4668`. Событие прогона — ожидаемый результат live-проверки. |
+| 8 | Аудит отзыва доступа | Выполнение шагов R1–R5 (пауза, очистка привязок через `adapterConfig.env: {}`, удаление секрета) | Агент деактивирован, привязки удалены из `company_secret_bindings`, секрет удален из `company_secrets`. | Очистка привязок проверена тестом `server/src/__tests__/agents-service-secret-bindings.test.ts:304–326`. Удаление секрета проверено в `routes/secrets.ts`. Полный live-след отзыва — ожидаемый результат live-проверки (live-прогон на проде не выполнялся). |
 
 ---
 
