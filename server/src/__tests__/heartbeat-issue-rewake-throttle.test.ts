@@ -374,7 +374,6 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
 
     // Run 2 stale cancelled -> wake 2 encounters streak of 2 stale cancellations -> freeze engaged!
-    await seedStaleCancelledRun(60);
     const wake2 = await staleWake();
     expect(wake2).toBeNull();
 
@@ -384,7 +383,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .where(eq(issues.id, issueId));
     expect(frozenIssue?.blocker?.issueRewakeFreeze).toMatchObject({
       agentId,
-      noProgressStreak: 3,
+      noProgressStreak: 2,
     });
 
     const comments = await db
@@ -392,7 +391,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("3 прогонов по задаче без прогресса");
+    expect(comments[0]?.body).toContain("2 прогонов по задаче без прогресса");
 
     // Third auto-wake is suppressed because issue is frozen
     const wake3 = await staleWake();
