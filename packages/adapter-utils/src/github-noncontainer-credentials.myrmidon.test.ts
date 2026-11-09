@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -446,5 +446,40 @@ if (args[0] === 'config' && args[1] === '--get' && args[2] === 'remote.origin.ur
     // real /usr/bin/git of the test host, which the fallback execs directly).
     expect(result.stdout).toContain("git version");
     expect(result.stdout).not.toContain("real-git-marker");
+  });
+
+  it("answers direct `git config --get remote.origin.url` through the wrapper without recursion", async () => {
+    const { launcherBin, repo, requests, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const result = await exec(path.join(launcherBin, "git"), ["config", "--get", "remote.origin.url"], { cwd: repo, env, timeout: 30_000 });
+    expect(result.stdout.trim()).toBe("https://github.com/owner-a/repo-a.git");
+    expect(result.stderr).not.toContain("wrapper-reentry");
+    // Direct invocation does not trigger broker loop
+    expect(requests.length).toBeLessThanOrEqual(1);
+  });
+
+  it("bypasses broker and spawns real git directly on re-entrant invocation (PAPERCLIP_GITHUB_OPERATION_ACTIVE=1)", async () => {
+    const { launcherBin, repo, requests, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const reentrantEnv: NodeJS.ProcessEnv = {
+      ...env,
+      PAPERCLIP_GITHUB_OPERATION_ACTIVE: "1",
+    };
+    const result = await exec(path.join(launcherBin, "git"), ["config", "--get", "remote.origin.url"], { cwd: repo, env: reentrantEnv, timeout: 30_000 });
+    expect(result.stdout.trim()).toBe("https://github.com/owner-a/repo-a.git");
+    expect(result.stderr).not.toContain("wrapper-reentry");
+    // In re-entrant mode, the broker was never called at all
+    expect(requests).toEqual([]);
+  });
+
+  it("rejects MYRMIDON_GIT_REAL when it is a symlink pointing back to the wrapper", async () => {
+    const { root, launcherBin, repo, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    const symlinkWrapper = path.join(root, "symlink-wrapper");
+    await symlink(path.join(launcherBin, "git"), symlinkWrapper);
+    const symlinkEnv: NodeJS.ProcessEnv = {
+      ...env,
+      MYRMIDON_GIT_REAL: symlinkWrapper,
+    };
+    // Must resolve realpath, reject the wrapper symlink, and use fallback without recursion or timeout
+    const result = await exec(path.join(launcherBin, "git"), ["status", "--short"], { cwd: repo, env: symlinkEnv, timeout: 30_000 });
+    expect(result.stderr).not.toContain("wrapper-reentry");
   });
 });

@@ -25,7 +25,12 @@ const gitWrapperPaths = new Set([
 ].map(p => { try { return fs.realpathSync(path.join(p, 'git')); } catch { return ''; } }).filter(Boolean));
 function realGitExecutable() {
   const configured = process.env.MYRMIDON_GIT_REAL;
-  if (configured && !gitWrapperPaths.has(path.resolve(configured))) return configured;
+  if (configured) {
+    try {
+      const resolved = fs.realpathSync(path.resolve(configured));
+      if (!gitWrapperPaths.has(resolved)) return configured;
+    } catch {}
+  }
   return '/opt/paperclip/libexec/git';
 }
 const executable = program === 'git' ? realGitExecutable() : originalPath.map(p => path.join(p, program)).find(p => {
@@ -35,6 +40,9 @@ if (!['git', 'gh'].includes(program) || !executable) {
   process.stderr.write(PRODUCT + ': requested GitHub command is not installed.\n');
   process.exit(127);
 }
+// Re-entry guard: when already inside a wrapper/operation, never re-enter
+// broker resolution or nested wrapper logic. Run the real binary directly.
+const isReentrant = process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE === '1';
 ${githubBrokerCandidatesLauncherSource()}
 ${githubBrokerRepositoryLauncherSource()}
 function isPrCreate(args) {
@@ -170,6 +178,7 @@ async function main() {
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
   env.PATH = originalPath.join(path.delimiter);
+  env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = '1';
   // Nested shell aliases must not reload the parent launcher profile and
   // recapture a newer identity. All ordinary descendants stay in this operation.
   env.ZDOTDIR = configDirectory;
@@ -184,7 +193,15 @@ async function main() {
   child.once('error', () => { process.stderr.write(PRODUCT + ': GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
 }
-main().catch(() => { process.stderr.write(PRODUCT + ': GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+if (isReentrant && program === 'git') {
+  // A nested invocation must bypass repository detection and the broker.
+  const child = spawn(executable, process.argv.slice(2), { env: process.env, stdio: 'inherit' });
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
+  child.once('error', () => { process.stderr.write(PRODUCT + ': GitHub command could not start.\n'); process.exitCode = 1; });
+  child.once('exit', (code) => { process.exitCode = code === null ? 128 : code; });
+} else {
+  main().catch(() => { process.stderr.write(PRODUCT + ': GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+}
 `;
 }
 

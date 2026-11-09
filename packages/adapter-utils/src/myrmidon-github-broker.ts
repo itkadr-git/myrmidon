@@ -208,19 +208,34 @@ function paperclipRepositoryFromGitArgs(args) {
 // /usr/local/bin shadow. The variable 'directory' below is the launcher
 // script's staged directory, set by the surrounding launcher script.
 function paperclipRealGitExecutable(env) {
+  const fs = require('node:fs');
   const path = require('node:path');
   const configured = env && typeof env.MYRMIDON_GIT_REAL === 'string' ? env.MYRMIDON_GIT_REAL.trim() : '';
-  const candidate = configured ? path.resolve(configured) : '';
-  const wrapperPaths = new Set(['/opt/paperclip/bin/git', '/usr/local/bin/git']);
-  if (typeof directory === 'string' && directory) wrapperPaths.add(path.join(directory, 'git'));
-  return candidate && !wrapperPaths.has(candidate) ? configured : '/opt/paperclip/libexec/git';
+  const wrapperPaths = new Set(['/opt/paperclip/bin/git', '/usr/local/bin/git'].map(p => {
+    try { return fs.realpathSync(p); } catch { return p; }
+  }));
+  if (typeof directory === 'string' && directory) {
+    const staged = path.join(directory, 'git');
+    try { wrapperPaths.add(fs.realpathSync(staged)); } catch { wrapperPaths.add(staged); }
+  }
+  if (configured) {
+    try {
+      const candidate = fs.realpathSync(path.resolve(configured));
+      if (!wrapperPaths.has(candidate)) return configured;
+    } catch {}
+  }
+  return '/opt/paperclip/libexec/git';
 }
 
 function paperclipRepositoryFromOrigin(cwd, env, originalPath) {
   try {
     const cp = require('node:child_process');
+    const childEnv = Object.assign({}, env, {
+      PATH: originalPath.join(require('node:path').delimiter),
+      PAPERCLIP_GITHUB_OPERATION_ACTIVE: '1',
+    });
     const result = cp.spawnSync(paperclipRealGitExecutable(env), ['config', '--get', 'remote.origin.url'], {
-      cwd, env: Object.assign({}, env, { PATH: originalPath.join(require('node:path').delimiter) }),
+      cwd, env: childEnv,
       encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
     });
     return result.status === 0 ? paperclipNormalizeRepository(result.stdout) : null;

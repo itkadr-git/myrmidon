@@ -46,7 +46,12 @@ const gitWrapperPaths = new Set([
 ].map((p) => { try { return fs.realpathSync(path.join(p, "git")); } catch { return ""; } }).filter(Boolean));
 function realGitExecutable() {
   const configured = process.env.MYRMIDON_GIT_REAL;
-  if (configured && !gitWrapperPaths.has(path.resolve(configured))) return configured;
+  if (configured) {
+    try {
+      const resolved = fs.realpathSync(path.resolve(configured));
+      if (!gitWrapperPaths.has(resolved)) return configured;
+    } catch {}
+  }
   return "/opt/paperclip/libexec/git";
 }
 const executable = originalPath.map((p) => path.join(p, "gh")).find((p) => {
@@ -150,7 +155,7 @@ function targetRepository(args, env) {
   if (fromEndpoint) return fromEndpoint;
   try {
     const result = spawnSync(realGitExecutable(), ["config", "--get", "remote.origin.url"], {
-      env: { ...env, PATH: originalPath.join(path.delimiter) },
+      env: { ...env, PATH: originalPath.join(path.delimiter), PAPERCLIP_GITHUB_OPERATION_ACTIVE: "1" },
       encoding: "utf8",
       timeout: 5_000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -311,6 +316,14 @@ function sanitizePrCreateBase(args) {
 
 async function main() {
   const env = { ...process.env };
+  if (env.PAPERCLIP_GITHUB_OPERATION_ACTIVE === "1") {
+    env.PATH = originalPath.join(path.delimiter);
+    const child = spawn(executable, process.argv.slice(2), { env, stdio: "inherit" });
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
+    child.once("error", () => { process.stderr.write("paperclip: gh could not start.\n"); process.exitCode = 1; });
+    child.once("exit", (code) => { process.exitCode = code === null ? 128 : code; });
+    return;
+  }
   const capability = (env.PAPERCLIP_GITHUB_BROKER_TOKEN || "").trim();
   if (capability) {
     const repository = targetRepository(process.argv.slice(2), env);
@@ -351,6 +364,7 @@ async function main() {
   }
   // Only this invocation and its children inherit the resolved token.
   env.PATH = originalPath.join(path.delimiter);
+  env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = "1";
   let childArgs = process.argv.slice(2);
   if (isPrCreate(childArgs)) {
     childArgs = sanitizePrCreateBase(childArgs);
