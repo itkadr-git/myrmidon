@@ -67,16 +67,18 @@ export async function resolveForagingEffectiveSettings(
   // myrmidon(OPE-12124): the master switch folds into the same `enabled` the
   // sweep tick gates on, so a UI-off applies with the next pass.
   const masterEnabled = foragingMasterEnabled(env);
-  const settings = masterEnabled ? resolved.settings : { ...resolved.settings, enabled: false };
+  const effectiveSettings = masterEnabled
+    ? resolved.settings
+    : { ...resolved.settings, enabled: false };
   return {
     ...resolved,
-    settings,
+    settings: effectiveSettings,
     keySecret,
-    intervalMs: settings.intervalSec * 1000,
-    minHostIntervalMs: settings.minHostIntervalSec * 1000,
+    intervalMs: effectiveSettings.intervalSec * 1000,
+    minHostIntervalMs: effectiveSettings.minHostIntervalSec * 1000,
     budget: {
-      maxCostCents: settings.passBudgetCents ?? 0,
-      enabled: settings.passBudgetCents !== null,
+      maxCostCents: effectiveSettings.passBudgetCents ?? 0,
+      enabled: effectiveSettings.passBudgetCents !== null,
     },
   };
 }
