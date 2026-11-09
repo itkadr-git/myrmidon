@@ -193,7 +193,7 @@ function runGitMigration({ migrationEnabled, gitMigrationMod, idle, log }) {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod, hygieneMod, repackMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod, hygieneMod, normalizeMod, repackMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -207,9 +207,20 @@ async function main() {
     tryImport("repair.js"),
     tryImport("git-migration.js"),
     tryImport("hygiene.js"),
+    tryImport("normalize-git-bases.js"),
     tryImport("repack.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
+  // One-time merge of legacy mixed-case git-base directories into their
+  // canonical lower-case names before the first loop pass reads the bases.
+  if (normalizeMod && typeof normalizeMod.normalizeGitBases === "function") {
+    try {
+      const normalized = normalizeMod.normalizeGitBases(BASE_DIR, { gitBin: GIT_BIN, log });
+      if (normalized.length > 0) log(`botd: normalized ${normalized.length} git-base path(s) to lower-case`);
+    } catch (err) {
+      log(`botd: git-base normalization failed: ${err.message}`);
+    }
+  }
   // One attention signal per path per TTL (botd-attention.json); the uid of the
   // owner that blocks us goes into the text. chown is never attempted here.
   const attention = cacheMod.createAttention(ATTENTION_PATH, { log });
@@ -339,15 +350,24 @@ async function main() {
   const owned = (p) => legacyMod.inRegistry((readJson(REGISTRY_PATH, { entries: [] }).entries) || [], p);
   // A path under /workspace that the registry does not list (an old clone, a task directory
   // from before myr-ws): `myr-ws close` would fail with "no open copy", so archive it here.
-  const legacyRemove = (a) =>
-    legacyMod.archiveThenRemove(a, {
-      archiveMod,
-      isGit: (p) => fs.existsSync(path.join(p, ".git")),
-      remove: (p) => removePath(p, roots),
-      probe: probeRemoval(roots),
-      archiveRoot: ARCHIVE_DIR,
-      nestedGit: legacyMod.findNestedGit,
-    });
+  const legacyRemove = (a) => {
+    try {
+      return legacyMod.archiveThenRemove(a, {
+        archiveMod,
+        isGit: (p) => fs.existsSync(path.join(p, ".git")),
+        remove: (p) => removePath(p, roots),
+        probe: probeRemoval(roots),
+        archiveRoot: ARCHIVE_DIR,
+        nestedGit: legacyMod.findNestedGit,
+      });
+    } catch (err) {
+      if (err && err.deferred === "foreign-uid") {
+        signalForeignUid(a.path, { reason: "foreign-uid in archive", uid: err.uid });
+        return { deferred: err.deferred, detail: err.message };
+      }
+      throw err;
+    }
+  };
   const executor = createWorkspaceExecutor({
     isWorkspace,
     owned,

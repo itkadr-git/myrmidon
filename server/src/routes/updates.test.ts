@@ -211,6 +211,121 @@ describe("updates routes (OPE-10268)", () => {
       expect(patchRes.body.canary.sharePercent).toBe(40);
     });
 
+    it("PUT /api/updates/settings accepts a valid 5-field cron (OPE-12087)", async () => {
+      const app = createApp();
+      const putRes = await request(app)
+        .put("/api/updates/settings")
+        .send({
+          window: {
+            cron: "30 3 * * 0",
+            durationMinutes: 120,
+          },
+        });
+
+      expect(putRes.status).toBe(200);
+      expect(putRes.body.window.cron).toBe("30 3 * * 0");
+
+      const getRes = await request(app).get("/api/updates/settings");
+      expect(getRes.status).toBe(200);
+      expect(getRes.body.window.cron).toBe("30 3 * * 0");
+    });
+
+    it("PATCH /api/updates/settings accepts a valid flat cron alias (OPE-12087)", async () => {
+      const app = createApp();
+      const patchRes = await request(app)
+        .patch("/api/updates/settings")
+        .send({ cron: "15 4 * * 1-5" });
+
+      expect(patchRes.status).toBe(200);
+      expect(patchRes.body.cron).toBe("15 4 * * 1-5");
+    });
+
+    it("PUT /api/updates/settings returns 400 with field path for invalid cron (OPE-12087)", async () => {
+      const app = createApp();
+      const res = await request(app)
+        .put("/api/updates/settings")
+        .send({
+          window: {
+            cron: "0 3 * * 0 extra",
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("Validation error");
+      const paths = (res.body.details as any[]).map((d) => d.path.join("."));
+      expect(paths.some((p) => p.includes("cron"))).toBe(true);
+    });
+
+    it("PUT /api/updates/settings returns 400 for flat invalid cron (OPE-12087)", async () => {
+      const app = createApp();
+      const res = await request(app)
+        .put("/api/updates/settings")
+        .send({ cron: "not-a-cron" });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("Validation error");
+      const paths = (res.body.details as any[]).map((d) => d.path.join("."));
+      expect(paths.some((p) => p === "cron")).toBe(true);
+    });
+
+    it("PATCH /api/updates/settings returns 400 for cron field out of bounds (OPE-12087)", async () => {
+      const app = createApp();
+      const res = await request(app)
+        .patch("/api/updates/settings")
+        .send({
+          window: {
+            cron: "60 3 * * 0",
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("Validation error");
+      const paths = (res.body.details as any[]).map((d) => d.path.join("."));
+      expect(paths.some((p) => p.includes("cron"))).toBe(true);
+    });
+
+    it("POST /api/updates/settings accepts valid maintenanceWindow cron and rejects invalid (OPE-12087)", async () => {
+      const app = createApp();
+      const validRes = await request(app)
+        .post("/api/updates/settings")
+        .send({
+          maintenanceWindow: "30 3 * * 0",
+        });
+
+      expect(validRes.status).toBe(200);
+      expect(validRes.body.cron).toBe("30 3 * * 0");
+
+      const invalidRes = await request(app)
+        .post("/api/updates/settings")
+        .send({
+          maintenanceWindow: "not-a-valid-cron",
+        });
+
+      expect(invalidRes.status).toBe(400);
+      expect(invalidRes.body.error).toBe("Validation error");
+    });
+
+    it("PUT /api/updates/settings accepts valid maintenanceWindow cron and rejects invalid (OPE-12087)", async () => {
+      const app = createApp();
+      const validRes = await request(app)
+        .put("/api/updates/settings")
+        .send({
+          maintenanceWindow: "15 4 * * 1-5",
+        });
+
+      expect(validRes.status).toBe(200);
+      expect(validRes.body.cron).toBe("15 4 * * 1-5");
+
+      const invalidRes = await request(app)
+        .put("/api/updates/settings")
+        .send({
+          maintenanceWindow: "0 25 * * 0",
+        });
+
+      expect(invalidRes.status).toBe(400);
+      expect(invalidRes.body.error).toBe("Validation error");
+    });
+
     it("supports /api/updates alias", async () => {
       const app = createApp();
       const res = await request(app).get("/api/updates");

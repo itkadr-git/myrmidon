@@ -31,6 +31,7 @@ export {
   type DebateService,
   type DebateServiceDeps,
 } from "./service.js";
+export * from "./domain/index.js";
 export {
   DebateRoundRunner,
   DebateRoundError,

@@ -15,3 +15,10 @@ export const unblockUserSchema = z.object({
 });
 
 export type UnblockUserInput = z.infer<typeof unblockUserSchema>;
+
+export const patchUserBlockSchema = z.object({
+  blocked: z.boolean().default(true),
+  reason: z.string().trim().max(1000).optional(),
+});
+
+export type PatchUserBlockInput = z.infer<typeof patchUserBlockSchema>;

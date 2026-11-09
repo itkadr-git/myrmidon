@@ -138,6 +138,7 @@
       "runsQueue": "Runs and queue",
       "system": "System",
       "language": "Language",
+      "channels": "Channels",
       "placeholderTitle": "Not in this wave yet",
       "placeholderBody": "This screen is part of the UI 2.0 rollout plan and lands with its wave. The current data lives on the existing screen; this placeholder exists so the 2.0 frame and routing are real from day one.",
       "placeholderLegacyLink": "Continue to the current screen",
@@ -157,7 +158,8 @@
       "guards": "Guardrails",
       "castes": "Castes and models",
       "system": "System",
-      "language": "Language"
+      "language": "Language",
+      "channels": "Channels"
     },
     "shell": {
       "activeChannel": {

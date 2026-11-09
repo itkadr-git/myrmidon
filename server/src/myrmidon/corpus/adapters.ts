@@ -66,7 +66,7 @@ export function createSqlExecutor(db: DbOrTx): SqlExecutor {
  * RAGFlow importer keeps its provenance there too — so the refresh interval in `metadata` is the
  * marker; the address itself stays in `source_uri`, the hash in `content_hash`.
  */
-function sourceFields(row: { sourceUri: string | null; contentHash: string | null; metadata: unknown }): Pick<CorpusDocumentRecord, "sourceUrl" | "refreshIntervalHours" | "contentHash" | "lastFetchedAt" | "sourceError" | "previousBlobRef"> {
+function sourceFields(row: { sourceUri: string | null; contentHash: string | null; metadata: unknown }): Pick<CorpusDocumentRecord, "sourceUrl" | "refreshIntervalHours" | "contentHash" | "lastFetchedAt" | "lastAttemptedAt" | "sourceFailCount" | "sourceError" | "previousBlobRef"> {
   const meta = (row.metadata ?? {}) as Record<string, unknown>;
   const interval = typeof meta.sourceRefreshIntervalHours === "number" ? meta.sourceRefreshIntervalHours : null;
   const isUrlSource = interval !== null && !!row.sourceUri;
@@ -75,6 +75,8 @@ function sourceFields(row: { sourceUri: string | null; contentHash: string | nul
     refreshIntervalHours: isUrlSource ? interval : null,
     contentHash: row.contentHash,
     lastFetchedAt: isUrlSource && typeof meta.sourceFetchedAt === "string" ? meta.sourceFetchedAt : null,
+    lastAttemptedAt: isUrlSource && typeof meta.sourceAttemptedAt === "string" ? meta.sourceAttemptedAt : null,
+    sourceFailCount: isUrlSource && typeof meta.sourceFailCount === "number" ? meta.sourceFailCount : (isUrlSource ? 0 : null),
     sourceError: isUrlSource && typeof meta.sourceError === "string" ? meta.sourceError : null,
     previousBlobRef: typeof meta.sourcePreviousBlobRef === "string" ? meta.sourcePreviousBlobRef : null,
   };
@@ -223,7 +225,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
           ...(input.source ? {
             sourceUri: input.source.url,
             contentHash: input.source.contentHash,
-            metadata: { sourceRefreshIntervalHours: input.source.refreshIntervalHours, sourceFetchedAt: input.source.fetchedAt },
+            metadata: { sourceRefreshIntervalHours: input.source.refreshIntervalHours, sourceFetchedAt: input.source.fetchedAt, sourceAttemptedAt: input.source.fetchedAt, sourceFailCount: 0 },
           } : {}),
         });
         return (await documentRecord(input.companyId, row))!;
@@ -237,9 +239,18 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
           await store.updateDocumentStatus(companyId, id, patch.status, { parseError: patch.error, parserVersion: "v1" });
         }
         // OPE-12000: the fetch bookkeeping of a URL source lives in `metadata`; merge it, never replace it.
+        const meta = (row.metadata ?? {}) as Record<string, unknown>;
+        const currentFailCount = typeof meta.sourceFailCount === "number" ? meta.sourceFailCount : 0;
+        const nextFailCount = patch.sourceFailCount !== undefined
+          ? patch.sourceFailCount
+          : patch.sourceError !== undefined
+            ? (patch.sourceError !== null ? currentFailCount + 1 : 0)
+            : undefined;
         const metadataPatch: Record<string, unknown> = {
           ...(patch.lastFetchedAt !== undefined ? { sourceFetchedAt: patch.lastFetchedAt } : {}),
+          ...(patch.lastAttemptedAt !== undefined ? { sourceAttemptedAt: patch.lastAttemptedAt } : {}),
           ...(patch.sourceError !== undefined ? { sourceError: patch.sourceError } : {}),
+          ...(nextFailCount !== undefined ? { sourceFailCount: nextFailCount } : {}),
           ...(patch.previousBlobRef !== undefined ? { sourcePreviousBlobRef: patch.previousBlobRef } : {}),
         };
         const updated = await db.update(corpusDocuments).set({
@@ -272,7 +283,13 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       // every page of a dataset must not load every chunk embedding. `chunkCount` and `attempts`
       // are therefore 0 here — nothing in the refresh reads them.
       async listSourceDocuments({ companyId, datasetId, dueAt, limit }) {
-        const fetchedAt = drizzleSql`coalesce((${corpusDocuments.metadata} ->> 'sourceFetchedAt')::timestamptz, ${corpusDocuments.createdAt})`;
+        const attemptedAt = drizzleSql`coalesce((${corpusDocuments.metadata} ->> 'sourceAttemptedAt')::timestamptz, (${corpusDocuments.metadata} ->> 'sourceFetchedAt')::timestamptz, ${corpusDocuments.createdAt})`;
+        const intervalHours = drizzleSql`coalesce((${corpusDocuments.metadata} ->> 'sourceRefreshIntervalHours')::int, 168)`;
+        const failCount = drizzleSql`coalesce((${corpusDocuments.metadata} ->> 'sourceFailCount')::int, 0)`;
+        // A source that keeps failing backs off: 2^n hours after n consecutive failures, never past its
+        // own period — so a permanently broken address cannot crowd healthy ones out of the batch.
+        const backoffHours = drizzleSql`case when ${failCount} > 0 then least(power(2, least(${failCount}, 20))::int, ${intervalHours}) else ${intervalHours} end`;
+        const dueTimestamp = drizzleSql`${attemptedAt} + (${backoffHours} * interval '1 hour')`;
         const conditions: SQL[] = [
           isNotNull(corpusDocuments.sourceUri),
           drizzleSql`(${corpusDocuments.metadata} ->> 'sourceRefreshIntervalHours') is not null`,
@@ -280,9 +297,9 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
         if (companyId) conditions.push(eq(corpusDocuments.companyId, companyId));
         if (datasetId) conditions.push(eq(corpusDocuments.datasetId, datasetId));
         if (dueAt) {
-          conditions.push(drizzleSql`${fetchedAt} + ((${corpusDocuments.metadata} ->> 'sourceRefreshIntervalHours')::int * interval '1 hour') <= ${dueAt.toISOString()}::timestamptz`);
+          conditions.push(drizzleSql`${dueTimestamp} <= ${dueAt.toISOString()}::timestamptz`);
         }
-        const rows = await db.select().from(corpusDocuments).where(and(...conditions)).orderBy(asc(fetchedAt)).limit(limit);
+        const rows = await db.select().from(corpusDocuments).where(and(...conditions)).orderBy(asc(dueTimestamp)).limit(limit);
         return rows.map((row): CorpusDocumentRecord => ({
           id: row.id, companyId: row.companyId, datasetId: row.datasetId, filename: row.title, mimeType: row.contentType, byteSize: row.byteSize ?? 0, blobRef: row.blobKey ?? "",
           status: (row.status === "embedding" ? "parsing" : row.status) as CorpusDocumentRecord["status"], chunkCount: 0, error: row.parseError, attempts: 0,

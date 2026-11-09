@@ -663,6 +663,7 @@ run("production corpus adapters", () => {
     const fetchedAt = new Date().toISOString();
     const updated = await ports.store.updateDocument(companyId, daily.id, {
       lastFetchedAt: fetchedAt,
+      lastAttemptedAt: fetchedAt,
       sourceError: "boom",
       contentHash: "h3",
       byteSize: 77,
@@ -694,6 +695,79 @@ run("production corpus adapters", () => {
     expect((await ports.store.getDocument(companyId, daily.id))?.parsedAt).not.toBeNull();
     const requeued = await ports.store.updateDocument(companyId, daily.id, { status: "queued", error: null, attempts: 0, parsedAt: null });
     expect(requeued).toMatchObject({ status: "queued", parsedAt: null, refreshIntervalHours: 24, sourceUrl: "https://docs.example.com/a" });
+    await db.$client.end();
+  });
+
+  // myrmidon(1.6.7 OPE-12071): starvation prevention & exponential backoff on fetch failures.
+  it("51 documents with 404 do not crowd healthy documents out of limit=50, and fail count resets on success", async () => {
+    const db = createDb(database!.connectionString);
+    const companyId = randomUUID();
+    await db.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'url-starvation', 'UST')`);
+    const settings: CorpusPortContext["settings"] = {
+      enabled: true,
+      parserBaseUrl: "http://parser.invalid",
+      parserTimeoutMs: 1000,
+      parserMaxRunMs: 6 * 60 * 60 * 1000,
+      parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
+      embedderModel: "corpus-embed-pplx-0.6b",
+      embedderDimensions: 3,
+      embedderBaseUrl: null,
+      maxDocumentBytes: 1024,
+      maxDocumentsPerDataset: 100,
+      parseConcurrency: 1,
+      maxParseAttempts: 2,
+      searchTopK: 5,
+    };
+    const ports = createCorpusPorts(db, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+    const dataset = await ports.store.createDataset({ companyId, name: "starvation", description: null });
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 3_600_000).toISOString();
+    const base = { companyId, datasetId: dataset.id, mimeType: "text/html", byteSize: 5, blobRef: "b", maxAttempts: 2 };
+
+    // 51 failing documents attempted 1 hour ago (404 error -> failCount=1 -> backoff min(2^1, 24) = 2h -> due in 1 hour).
+    const failingDocs = [];
+    for (let i = 0; i < 51; i++) {
+      const doc = await ports.store.createDocument({
+        ...base,
+        filename: `fail-${i}.html`,
+        source: { url: `https://docs.example.com/fail/${i}`, refreshIntervalHours: 24, contentHash: `h-fail-${i}`, fetchedAt: oneHourAgo },
+      });
+      const updated = await ports.store.updateDocument(companyId, doc.id, {
+        lastAttemptedAt: oneHourAgo,
+        sourceError: "HTTP 404 Not Found",
+      });
+      expect(updated?.sourceFailCount).toBe(1);
+      expect(updated?.lastAttemptedAt).toBe(oneHourAgo);
+      failingDocs.push(doc);
+    }
+
+    // 1 healthy document fetched 25 hours ago with 24h interval (due 1 hour ago).
+    const twentyFiveHoursAgo = new Date(now.getTime() - 25 * 3_600_000).toISOString();
+    const healthy = await ports.store.createDocument({
+      ...base,
+      filename: "healthy.html",
+      source: { url: "https://docs.example.com/healthy", refreshIntervalHours: 24, contentHash: "h-healthy", fetchedAt: twentyFiveHoursAgo },
+    });
+
+    // 1) The 51 failing documents backed off and are not due now, so the healthy document is listed alone.
+    const dueBatch = await ports.store.listSourceDocuments({ companyId, dueAt: now, limit: 50 });
+    expect(dueBatch.map((d) => d.id)).toEqual([healthy.id]);
+
+    // 2) Even if dueAt is far in the future, healthy doc has earlier due time and is not displaced from limit=50.
+    const future = new Date(now.getTime() + 48 * 3_600_000);
+    const futureBatch = await ports.store.listSourceDocuments({ companyId, dueAt: future, limit: 50 });
+    expect(futureBatch).toHaveLength(50);
+    expect(futureBatch.map((d) => d.id)).toContain(healthy.id);
+
+    // 3) After a successful fetch, sourceFailCount resets to 0 and sourceError clears to null.
+    const reset = await ports.store.updateDocument(companyId, failingDocs[0].id, {
+      lastAttemptedAt: now.toISOString(),
+      lastFetchedAt: now.toISOString(),
+      sourceError: null,
+    });
+    expect(reset?.sourceFailCount).toBe(0);
+    expect(reset?.sourceError).toBeNull();
+
     await db.$client.end();
   });
 });

@@ -13,6 +13,12 @@
 // journal entry under `general.reviewReworkJournal` so the settings screen can
 // answer "who turned this off, and when", and writes the
 // `instance.review_rework.updated` activity row.
+//
+// 1.6.7 (REVIEW-REWORK-SETTINGS-500): an instance setting has no company_id,
+// and `activity_log.company_id` is NOT NULL — the old single row with an
+// empty company died in persistActivity after the settings had already been
+// saved (the 08.11 500). Instance-level changes are audited as one activity
+// row per company instead, the same rule workspace-hygiene limits follow.
 
 import type { Db } from "@myrmidon/db";
 import {
@@ -36,17 +42,30 @@ export interface ReviewReworkJournalEntry {
   patch: ReviewReworkSettingsPatch;
 }
 
+/** One per-company audit row for an instance-level settings change. */
+export interface ReviewReworkActivityInput {
+  companyId: string;
+  actorType: string;
+  actorId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, unknown>;
+}
+
 export interface ReviewReworkSettingsPorts {
   settings: Pick<ReturnType<typeof instanceSettingsService>, "getGeneral" | "updateGeneral">;
-  logActivity?: (input: {
-    companyId: string;
-    actorType: string;
-    actorId: string;
-    action: string;
-    entityType: string;
-    entityId: string;
-    details: Record<string, unknown>;
-  }) => Promise<void>;
+  /**
+   * The audit seam for settings changes: one `instance.review_rework.updated`
+   * row per company (`activity_log.company_id` is NOT NULL and an instance
+   * setting has no company, so a single row cannot represent the change).
+   * Unwired in the scheduler — the sweep's own entries already carry the
+   * issue's company.
+   */
+  activity?: {
+    listCompanyIds(): Promise<string[]>;
+    logActivity(input: ReviewReworkActivityInput): Promise<unknown>;
+  };
 }
 
 export interface ReviewReworkSettingsService {
@@ -125,7 +144,7 @@ export function reviewReworkSettingsService(
         patch,
       };
       // One atomic updateGeneral write carries both the settings and the
-      // journal entry — they cannot disagree.
+      // journal entry — they cannot disagree: either both land or neither.
       await ports.settings.updateGeneral({
         [REVIEW_REWORK_SETTINGS_KEY]: next,
         [REVIEW_REWORK_JOURNAL_KEY]: appendJournal(
@@ -133,15 +152,25 @@ export function reviewReworkSettingsService(
           entry,
         ),
       });
-      await ports.logActivity?.({
-        companyId: "",
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        action: REVIEW_REWORK_SETTINGS_UPDATED_ACTION,
-        entityType: "instance_settings",
-        entityId: REVIEW_REWORK_SETTINGS_KEY,
-        details: { settings: next, patch },
-      });
+      // REVIEW-REWORK-SETTINGS-500: the audit row must never carry an empty
+      // company — one row per company over real ids (the workspace-hygiene
+      // rule), written after the settings+journal write has landed.
+      if (ports.activity) {
+        const companyIds = await ports.activity.listCompanyIds();
+        await Promise.all(
+          companyIds.map((companyId) =>
+            ports.activity!.logActivity({
+              companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              action: REVIEW_REWORK_SETTINGS_UPDATED_ACTION,
+              entityType: "instance_settings",
+              entityId: REVIEW_REWORK_SETTINGS_KEY,
+              details: { settings: next, patch },
+            }),
+          ),
+        );
+      }
       return next;
     },
   };

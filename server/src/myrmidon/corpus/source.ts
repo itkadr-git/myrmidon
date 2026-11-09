@@ -98,7 +98,7 @@ export async function refreshSourceDocument(input: {
 
   const fail = async (error: string): Promise<CorpusSourceOutcome> => {
     logger.warn({ ...logContext, error }, "corpus: a URL source could not be refreshed");
-    await ports.store.updateDocument(companyId, document.id, { sourceError: error }).catch(() => null);
+    await ports.store.updateDocument(companyId, document.id, { sourceError: error, lastAttemptedAt: fetchedAt }).catch(() => null);
     return { kind: "failed", error };
   };
 
@@ -113,7 +113,7 @@ export async function refreshSourceDocument(input: {
   // another go on every look at its address, the way a person would press "parse again".
   const sameContent = fetched.contentHash === document.contentHash;
   if (sameContent && document.status !== "failed") {
-    await ports.store.updateDocument(companyId, document.id, { lastFetchedAt: fetchedAt, sourceError: null });
+    await ports.store.updateDocument(companyId, document.id, { lastFetchedAt: fetchedAt, lastAttemptedAt: fetchedAt, sourceError: null });
     return { kind: "unchanged" };
   }
 
@@ -164,6 +164,7 @@ export async function refreshSourceDocument(input: {
     mimeType: fetched.contentType ?? document.mimeType,
     contentHash: fetched.contentHash,
     lastFetchedAt: fetchedAt,
+    lastAttemptedAt: fetchedAt,
     sourceError: null,
     status: "queued",
     error: null,

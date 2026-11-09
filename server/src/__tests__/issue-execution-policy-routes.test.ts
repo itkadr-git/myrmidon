@@ -1588,4 +1588,33 @@ describe("issue execution policy routes", () => {
       expect(mockIssueService.addComment.mock.calls[0][1]).toBe("Test comment");
     });
   });
+
+  describe("concurrent status and executionPolicy update validation (vendor #13178 / OPE-12207)", () => {
+    it("rejects updating executionPolicy and status to 'done' in the same PATCH request", async () => {
+      const issue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "normal",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(issue);
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({
+          status: "done",
+          executionPolicy: null,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain(
+        "Cannot update executionPolicy and transition status to 'done' in the same request",
+      );
+    });
+  });
 });

@@ -112,6 +112,8 @@ import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBlockedHasReason, isAutoUnblockCandidate } from "../myrmidon/blocked-reason-guard.js";
 import { extractReleasePrefix } from "../myrmidon/board-janitor/policy.js";
 import { isForeignKeyViolation } from "../db-errors.js";
+import { assertTaskCardReady } from "../myrmidon/task-card-readiness/guard.js";
+import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -11061,6 +11063,8 @@ export function issueService(db: Db) {
         actorUserId?: string | null;
         companyGuard?: string;
         commentBody?: string;
+        /** Set only for an explicit client request to move the issue to todo. */
+        taskCardGate?: boolean;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -11088,6 +11092,33 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      // Only explicit API transitions opt in. Auto-unblock, imports and internal
+      // recovery updates use the same service but must remain unaffected.
+      if (data.taskCardGate && existing.status !== "todo" && data.status === "todo") {
+        const requestedLabels = data.labelIds === undefined
+          ? await dbOrTx
+              .select({ name: labels.name })
+              .from(issueLabels)
+              .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+              .where(and(eq(issueLabels.companyId, existing.companyId), eq(issueLabels.issueId, id)))
+              .then((rows: Array<{ name: string }>) => rows.map((row) => row.name))
+          : data.labelIds.length === 0
+            ? []
+            : await dbOrTx
+                .select({ name: labels.name })
+                .from(labels)
+                .where(and(eq(labels.companyId, existing.companyId), inArray(labels.id, data.labelIds)))
+                .then((rows: Array<{ name: string }>) => rows.map((row) => row.name));
+        if (requiresEngineer({
+          casteKey: data.casteKey === undefined ? existing.casteKey : data.casteKey,
+          labels: requestedLabels,
+        })) {
+          assertTaskCardReady({
+            title: data.title === undefined ? existing.title : data.title,
+            description: data.description === undefined ? existing.description : data.description,
+          });
+        }
+      }
       if (
         existing.status !== "done" &&
         data.status === "done" &&
@@ -11144,6 +11175,7 @@ export function issueService(db: Db) {
         actorUserId,
         companyGuard,
         commentBody: _commentBody,
+        taskCardGate: _taskCardGate,
         ...issueData
       } = data;
       if (
@@ -11902,6 +11934,32 @@ export function issueService(db: Db) {
           { deferMs: dbOrTx === db ? 0 : 1_000 },
         );
       }
+      // myrmidon(1.7 POST-TASK-REFLECT, OPE-12095): outbox queue post-task-reflect job on transition to done
+      if (result && (result as { status?: string | null }).status === "done") {
+        const fromStatus = existing.status;
+        const toStatus = (result as { status?: string | null }).status ?? "done";
+        try {
+          const { handleIssueStatusChange, createPostgresReflectJobRepository } = await import("../modules/issues/index.js");
+          const repo = createPostgresReflectJobRepository(dbOrTx ?? db);
+          await handleIssueStatusChange(
+            {
+              companyId: existing.companyId,
+              issueId: id,
+              fromStatus,
+              toStatus,
+              assigneeAgentId: (result as { assigneeAgentId?: string | null }).assigneeAgentId ?? existing.assigneeAgentId ?? null,
+              role: null,
+            },
+            { repository: repo },
+          );
+        } catch (reflectErr) {
+          logger.warn(
+            { err: reflectErr, issueId: id, fromStatus, toStatus },
+            "post-task-reflect job enqueue on done transition failed; caught safely",
+          );
+        }
+      }
+
       return result;
     },
 

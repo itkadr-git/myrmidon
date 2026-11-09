@@ -235,4 +235,79 @@ describePostgres("user block API with audit (OPE-10215)", () => {
     expect(auditEntry.reason).toBe(blockReason);
     expect(auditEntry.details.reason).toBe(blockReason);
   });
+
+  describe("PATCH /api/users/:id/block and POST /api/users/:id/reset-password (OPE-12116)", () => {
+    it("returns 404 when target user does not exist", async () => {
+      const adminApp = createApp(db, admin);
+      const nonExistentUserId = "00000000-0000-0000-0000-000000000000";
+      const blockRes = await request(adminApp)
+        .patch(`/api/users/${nonExistentUserId}/block`)
+        .send({ blocked: true });
+      expect(blockRes.status).toBe(404);
+
+      const resetRes = await request(adminApp)
+        .post(`/api/users/${nonExistentUserId}/reset-password`);
+      expect(resetRes.status).toBe(404);
+    });
+
+    it("blocks, unblocks, and resets password for target user", async () => {
+      const adminApp = createApp(db, admin);
+      // The OPE-8985 admin user route is the canonical way to create a managed
+      // user without a password (one-time set link, no SMTP).
+      const created = await request(adminApp)
+        .post("/api/myrmidon/users-admin-a/users")
+        .send({
+          username: `user-block-flow-${Date.now()}`,
+          name: "Flow User",
+          role: "member",
+        });
+      expect(created.status).toBe(201);
+      const targetUserId = created.body.id;
+
+      // 1. PATCH block
+      const blockRes = await request(adminApp)
+        .patch(`/api/users/${targetUserId}/block`)
+        .send({ blocked: true, reason: "Temporary freeze" });
+      expect(blockRes.status).toBe(200);
+      expect(blockRes.body.blocked).toBe(true);
+      expect(blockRes.body.reason).toBe("Temporary freeze");
+
+      // Verify the blocked flag through the managed-user listing: the block
+      // must appear in both user_blocks and the instance settings blocklist.
+      const listAfterBlock = await request(adminApp).get("/api/myrmidon/users-admin-a/users");
+      expect(listAfterBlock.status).toBe(200);
+      const blockedEntry = listAfterBlock.body.users.find(
+        (user: { id: string; blocked: boolean }) => user.id === targetUserId,
+      );
+      expect(blockedEntry).toBeDefined();
+      expect(blockedEntry.blocked).toBe(true);
+
+      // 2. PATCH unblock
+      const unblockRes = await request(adminApp)
+        .patch(`/api/users/${targetUserId}/block`)
+        .send({ blocked: false });
+      expect(unblockRes.status).toBe(200);
+      expect(unblockRes.body.blocked).toBe(false);
+
+      // Verify the unblocked flag through the managed-user listing.
+      const listAfterUnblock = await request(adminApp).get("/api/myrmidon/users-admin-a/users");
+      expect(listAfterUnblock.status).toBe(200);
+      const unblockedEntry = listAfterUnblock.body.users.find(
+        (user: { id: string; blocked: boolean }) => user.id === targetUserId,
+      );
+      expect(unblockedEntry).toBeDefined();
+      expect(unblockedEntry.blocked).toBe(false);
+
+      // 3. POST reset-password
+      const resetRes = await request(adminApp)
+        .post(`/api/users/${targetUserId}/reset-password`);
+      expect(resetRes.status).toBe(200);
+      expect(resetRes.body.ok).toBe(true);
+      expect(resetRes.body.userId).toBe(targetUserId);
+      expect(typeof resetRes.body.token).toBe("string");
+      expect(resetRes.body.token.length).toBeGreaterThan(10);
+      expect(resetRes.body.resetToken).toBe(resetRes.body.token);
+      expect(resetRes.body.passwordSetLink).toContain(resetRes.body.token);
+    });
+  });
 });
