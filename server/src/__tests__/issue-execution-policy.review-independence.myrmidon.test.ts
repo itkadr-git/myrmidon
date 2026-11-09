@@ -62,7 +62,13 @@ describe("review stage selection never picks the executor (OPE-12231)", () => {
     const policy = reviewPolicy([reviewerAgentId, engineerAgentId]);
 
     const result = applyIssueExecutionPolicyTransition({
-      issue: baseIssue({ executionPolicy: policy }),
+      // Mirror the route enrichment (issues.ts): the review roster is exposed to
+      // the transition as executionReviewParticipantAgentIds, which feeds
+      // safeReturnAssignee's reviewer detection.
+      issue: baseIssue({
+        executionPolicy: policy,
+        executionReviewParticipantAgentIds: [reviewerAgentId, engineerAgentId],
+      }),
       policy,
       requestedStatus: "in_review",
       requestedAssigneePatch: {},
