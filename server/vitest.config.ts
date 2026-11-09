@@ -17,14 +17,15 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
     // Each server suite boots + tears down its own embedded Postgres in
-    // beforeAll/afterAll. Under the loaded serial shard (maxWorkers=1) the
-    // graceful shutdown can occasionally cross vitest's default 10s hookTimeout,
-    // producing flaky "Hook timed out in 10000ms" afterAll failures on CI. Give
-    // the boot/teardown hooks generous headroom; 30s is far above the observed
-    // worst-case teardown yet still catches a genuinely hung hook. teardownTimeout
+    // beforeAll/afterAll. Under the loaded serial shard (maxWorkers=1) that
+    // boot can occasionally cross 30s when several server shards initialize
+    // concurrently on the runner, producing flaky "Hook timed out in 30000ms"
+    // beforeAll failures on CI (chat-channels.integration on 2026-11-09). Give
+    // the boot/teardown hooks generous headroom; 60s is far above the observed
+    // worst case yet still catches a genuinely hung hook. teardownTimeout
     // mirrors it for the same reason.
-    hookTimeout: 30000,
-    teardownTimeout: 30000,
+    hookTimeout: 60000,
+    teardownTimeout: 60000,
     // The route/authz suites import very large modules (for example
     // src/routes/issues.ts and its dependency graph). The first test in each
     // file pays the one-time transform cost inside its own timeout budget. On
