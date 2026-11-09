@@ -46,6 +46,7 @@ export { myrmidonModelProviderRoutes, createPluginProviderModelSync } from "./mo
 export { bindModelProviderPluginLifecycle } from "./model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 export { myrmidonAgentExchangeRoutes } from "./agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 export { myrmidonAgentExchangeFeedRoutes } from "./agent-exchange/feed-wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-B)
+export { myrmidonBillingWebhookRoutes } from "./billing-webhook/index.js"; // myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093)
 export { myrmidonBaselineRoutes } from "./baseline/routes.js"; // myrmidon(1.6-BASELINE)
 export { myrmidonBotEgressRoutes } from "./bot-containers/egress-wiring.js"; // myrmidon(EGRESS-B)
 export { myrmidonBotCanaryRoutes } from "./bot-containers/canary-index.js"; // myrmidon(R5-B)

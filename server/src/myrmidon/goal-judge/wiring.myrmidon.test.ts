@@ -244,9 +244,9 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
       };
 
       const result = await evaluateGoalJudge(deps, {
-        criteria: ["Criterion A"],
-        diff: "+ code changes for Criterion A",
-        testOutput: "PASS Criterion A test",
+        criteria: ["Criterion `judge-routing-check` verified"],
+        diff: "+ code changes for judge-routing-check",
+        testOutput: "PASS judge-routing-check test",
       });
 
       expect(result.executed).toBe(true);
@@ -307,9 +307,12 @@ describe("Goal Judge Model Port & Wiring (myrmidon 1.7 GOAL-JUDGE)", () => {
           models: mockModelPort,
         },
         {
-          criteria: ["Criterion A", "Criterion B"],
-          diff: "+ Criterion A implemented",
-          testOutput: "PASS Criterion A",
+          criteria: [
+            "Criterion `retry-parse-check` implemented and verified",
+            "Criterion `retry-round-b` verified",
+          ],
+          diff: "+ retry-parse-check implemented\n+ retry-round-b handled",
+          testOutput: "PASS retry-parse-check\nPASS retry-round-b",
         },
       );
 

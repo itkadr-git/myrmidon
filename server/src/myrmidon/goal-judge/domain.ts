@@ -7,6 +7,8 @@
 // Strict JSON parsing, round limits (MAX_ROUNDS=3), and invariant enforcement:
 // complete=true is forbidden if missing is non-empty.
 
+import { buildGoalJudgeRetryPrompt, buildGoalJudgeUserPrompt } from "./prompts.js";
+
 /** Maximum number of evaluation rounds permitted for the goal judge. */
 export const MAX_ROUNDS = 3;
 
@@ -166,13 +168,16 @@ export function normalizeCriteria(input: string[] | string): string[] {
 }
 
 const COMMON_STOPWORDS = new Set([
+  // English common words & schema keywords
   "criterion",
   "criteria",
   "task",
   "item",
   "check",
+  "checks",
   "verify",
   "verified",
+  "verification",
   "test",
   "tests",
   "testing",
@@ -211,6 +216,16 @@ const COMMON_STOPWORDS = new Set([
   "after",
   "again",
   "against",
+  // connectives & auxiliaries (never constitute evidence on their own)
+  "and",
+  "the",
+  "for",
+  "not",
+  "all",
+  "any",
+  "are",
+  "was",
+  "has",
   "more",
   "most",
   "some",
@@ -236,30 +251,121 @@ const COMMON_STOPWORDS = new Set([
   "removes",
   "ensure",
   "ensures",
+  "true",
+  "false",
+  "score",
+  "complete",
+  "missing",
+  "summary",
+  "json",
+  "system",
+  "user",
+  "round",
+  "rounds",
+  // Russian common words & schema keywords
+  "задача",
+  "задачи",
+  "критерий",
+  "критерии",
+  "критерия",
+  "пункт",
+  "пункты",
+  "проверка",
+  "проверки",
+  "проверен",
+  "проверено",
+  "проверены",
+  "проверить",
+  "тест",
+  "тесты",
+  "тестов",
+  "тестирование",
+  "код",
+  "кода",
+  "сделано",
+  "добавлено",
+  "реализовано",
+  "это",
+  "этот",
+  "эта",
+  "эти",
+  "для",
+  "при",
+  "как",
+  "так",
+  "что",
+  "чтобы",
+  "быть",
+  "был",
+  "была",
+  "было",
+  "были",
+  "будет",
+  "будут",
+  "если",
+  "или",
+  "все",
+  "всё",
+  "всех",
+  "только",
+  "тоже",
+  "также",
+  "после",
+  "через",
+  "один",
+  "одна",
+  "одно",
+  "одного",
+  "свой",
+  "свои",
+  "своих",
+  "нужно",
+  "надо",
+  "должен",
+  "должна",
+  "должно",
+  "должны",
+  "нет",
+  "есть",
+  "без",
+  "под",
+  "над",
 ]);
 
 /**
  * Extracts searchable keywords / identifiers from a criterion text.
+ * Supports Unicode letters (Latin, Cyrillic, etc.) via \p{L}.
  */
 export function extractCriterionKeywords(criterion: string): string[] {
-  // Extract identifiers, backtick quotes, or significant words (>3 letters not in stopwords)
-  const backtickMatches = criterion.match(/`([^`]+)`/g)?.map((s) => s.slice(1, -1)) ?? [];
-  const words = criterion
+  // Extract identifiers inside backticks verbatim (e.g. `GoalJudgeSession`)
+  const backtickMatches =
+    criterion.match(/`([^`]+)`/g)?.map((s) => s.slice(1, -1).trim()).filter((s) => s.length > 0) ?? [];
+
+  // Extract Unicode word tokens (letters, digits, underscores, dashes, dots)
+  // \p{L} matches any Unicode letter (including Russian / Cyrillic)
+  const tokens = criterion
     .toLowerCase()
-    .replace(/[^a-z0-9_.\-]/g, " ")
+    .replace(/[^\p{L}0-9_.\\-]/gu, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !COMMON_STOPWORDS.has(w));
 
-  if (words.length === 0 && backtickMatches.length === 0) {
-    // Fallback: words with length >= 4
-    return criterion
-      .toLowerCase()
-      .replace(/[^a-z0-9_.\-]/g, " ")
-      .split(/\s+/)
-      .filter((w) => w.length >= 4);
-  }
+  const unique = Array.from(new Set([...backtickMatches, ...tokens]));
+  return unique;
+}
 
-  return Array.from(new Set([...backtickMatches, ...words]));
+/**
+ * Checks if a candidate keyword exists in target text as a distinct word token
+ * or bounded identifier, preventing accidental substring false-positives.
+ */
+function matchesKeyword(text: string, kw: string): boolean {
+  const kwLower = kw.toLowerCase();
+  const textLower = text.toLowerCase();
+
+  // If keyword contains non-alphanumeric punctuation (like a symbol, dot, or dash), match escaped
+  const escaped = kwLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Bounded by non-word/non-letter characters (Unicode aware)
+  const pattern = new RegExp(`(^|[^\\p{L}0-9_])${escaped}([^\\p{L}0-9_]|$)`, "u");
+  return pattern.test(textLower);
 }
 
 /**
@@ -279,31 +385,55 @@ export function hasEvidenceForCriterion(
     return false;
   }
 
-  // If test output indicates failure or complete skip without passes, tests provide no proof.
+  // Check test output:
+  // 1. Failing tests disqualify proof: e.g. "1 failed", "FAIL", "failing", "error during test run"
   const hasFailingTests =
-    /\b(FAIL|failed|failing|error during test run)\b/i.test(testText) &&
-    !/\b(0 failed|passed|passing)\b/i.test(testText);
-  const testsSkippedOnly =
-    /\b(SKIPPED|all tests skipped|0 passed)\b/i.test(testText) &&
-    !/\b[1-9]\d* passed\b/i.test(testText);
+    /\b(FAIL|failing|error during test run)\b/i.test(testText) ||
+    /\b[1-9]\d*\s+failed\b/i.test(testText);
 
-  if (hasFailingTests || (testsSkippedOnly && diffText.length === 0)) {
+  if (hasFailingTests) {
     return false;
   }
 
-  const keywords = extractCriterionKeywords(criterion);
-  if (keywords.length === 0) {
-    return diffText.length > 0 && testText.length > 0 && !hasFailingTests;
+  // 2. Skipped-only tests do not prove anything, even if diff is present
+  const testsSkippedOnly =
+    /\b(SKIPPED|all tests skipped|0 passed)\b/i.test(testText) &&
+    !/\b[1-9]\d*\s+passed\b/i.test(testText);
+
+  if (testsSkippedOnly && testText.length > 0) {
+    return false;
   }
 
-  const diffLower = diffText.toLowerCase();
-  const testLower = testText.toLowerCase();
+  const backtickMatches = new Set(
+    criterion.match(/`([^`]+)`/g)?.map((s) => s.slice(1, -1).toLowerCase().trim()) ?? []
+  );
 
-  // Evidence exists if at least one key identifier or concept is represented in diff or tests
-  const inDiff = keywords.some((kw) => diffLower.includes(kw.toLowerCase()));
-  const inTests = keywords.some((kw) => testLower.includes(kw.toLowerCase()));
+  const keywords = extractCriterionKeywords(criterion);
+  // If no keywords could be extracted from the criterion, we have no proof (cannot verify).
+  if (keywords.length === 0) {
+    return false;
+  }
 
-  return inDiff || inTests;
+  const matchedKeywords = new Set(
+    keywords.filter(
+      (kw) =>
+        (diffText.length > 0 && matchesKeyword(diffText, kw)) ||
+        (testText.length > 0 && matchesKeyword(testText, kw)),
+    ),
+  );
+
+  // Strict evidence threshold:
+  // If there is only 1 keyword, it must be explicitly quoted in backticks OR match in both diff AND testOutput.
+  // If there are multiple keywords, require at least 2 distinct matching keywords to prevent single-word false positives.
+  if (keywords.length === 1) {
+    const singleKw = keywords[0]!;
+    const isBacktick = backtickMatches.has(singleKw);
+    const matchedInBoth = diffText.length > 0 && testText.length > 0 && matchesKeyword(diffText, singleKw) && matchesKeyword(testText, singleKw);
+    return isBacktick || matchedInBoth;
+  }
+
+  const requiredMatches = Math.min(2, keywords.length);
+  return matchedKeywords.size >= requiredMatches;
 }
 
 /**
@@ -338,14 +468,12 @@ export function applyUnverifiedRule(
   let score = verdict.score;
 
   if (missing.length > 0) {
-    // If there are missing items, score cannot be 1.0 (or 100)
-    if (score >= 1.0 && score <= 1.0) {
-      score = Math.max(0, 1.0 - missing.length / Math.max(candidateItems.length, 1));
-    } else if (score >= 100) {
-      score = Math.max(
-        0,
-        Math.round(100 - (missing.length / Math.max(candidateItems.length, 1)) * 100),
-      );
+    const penaltyRatio = missing.length / Math.max(candidateItems.length, 1);
+    // If there are missing items, complete is false and score is penalized proportionally
+    if (score <= 1.0) {
+      score = Math.max(0, Math.min(score, 1.0 - penaltyRatio));
+    } else {
+      score = Math.max(0, Math.min(score, Math.round(100 - penaltyRatio * 100)));
     }
   }
 
@@ -448,9 +576,18 @@ export async function runGoalJudgeRounds(
 
   while (session.canContinue()) {
     const nextRound = session.currentRound + 1;
-    const prompt = options?.buildPrompt
-      ? options.buildPrompt(nextRound, lastError)
-      : `Evaluation round ${nextRound}`;
+    let prompt: string;
+    if (options?.buildPrompt) {
+      prompt = options.buildPrompt(nextRound, lastError);
+    } else if (lastError && nextRound > 1) {
+      prompt = buildGoalJudgeRetryPrompt(lastError, nextRound);
+    } else {
+      prompt = buildGoalJudgeUserPrompt(input, {
+        round: nextRound,
+        maxRounds: session.maxRounds,
+        previousFeedback: lastError,
+      });
+    }
 
     let response: string;
     try {
