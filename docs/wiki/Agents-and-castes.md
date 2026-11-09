@@ -107,6 +107,11 @@ agent's adapter instead of raw `adapterConfig` JSON
   parsers the run path uses, because the adapters silently ignore bad values;
   changing a sandbox or permission key needs an instance admin (also on agent
   create and hire). The create form's permission defaults are not a change.
+- **OMP local** — filesystem sandbox (workspace scope, extra paths) and
+  network sandbox (deny or allowlist) using Bubblewrap, with the create form
+  defaulting to workspace filesystem scope. The adapter reads no timeout
+  keys. Sandbox keys are validated on save and editing them requires an
+  instance admin, same as Claude / Codex local.
 - **Hermes local** — a switch for including the configured MCP servers; the
   values set on the create form (toolsets, sandbox, timeouts) are stored, and
   comma-separated sandbox lists are honoured at run time.
