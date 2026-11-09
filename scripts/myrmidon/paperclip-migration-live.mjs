@@ -91,6 +91,9 @@ export function expectedSkipped(source, target) {
   const out = [];
   for (const table of Object.keys(source.tables).sort()) {
     if (!target.tables[table]) {
+      if (table === "resource_lifecycle_events" && target.tables.activity_log) {
+        continue;
+      }
       out.push({ table, rows: source.tables[table].rows });
       continue;
     }
@@ -195,15 +198,56 @@ export function verifyTarget({ manifest, sourceSnapshot, sourceUrl, targetUrl, t
   // Every source table the target has: same rows (hash over whole rows is not
   // comparable once the target has extra columns, so compare the id sets).
   const skipped = new Set(expectedSkipped(sourceSnapshot, targetSnapshot).filter((e) => !e.column).map((e) => e.table));
+  const hasMappedLifecycle =
+    Boolean(sourceSnapshot.tables.resource_lifecycle_events) &&
+    (sourceSnapshot.tables.resource_lifecycle_events.rows ?? 0) > 0 &&
+    Boolean(targetSnapshot.tables.activity_log);
+
   for (const [table, src] of Object.entries(sourceSnapshot.tables)) {
     if (skipped.has(table)) continue;
     const tgt = targetSnapshot.tables[table];
     if (!tgt) continue;
+    if (table === "activity_log" && hasMappedLifecycle) {
+      const origRows = Number(
+        psql(
+          targetUrl,
+          `select count(*) from public."activity_log" where details->>'source' is distinct from 'resource_lifecycle_events'`,
+        ).trim(),
+      );
+      if (origRows !== src.rows) {
+        problems.push(`row count differs in activity_log: source ${src.rows}, target original ${origRows}`);
+      }
+      const mappedRows = Number(
+        psql(
+          targetUrl,
+          `select count(*) from public."activity_log" where details->>'source' = 'resource_lifecycle_events'`,
+        ).trim(),
+      );
+      const expectedMapped = sourceSnapshot.tables.resource_lifecycle_events.rows;
+      if (mappedRows !== expectedMapped) {
+        problems.push(
+          `mapped resource_lifecycle_events row count differs: source ${expectedMapped}, target activity_log ${mappedRows}`,
+        );
+      }
+      continue;
+    }
     if (tgt.rows !== src.rows) problems.push(`row count differs in ${table}: source ${src.rows}, target ${tgt.rows}`);
   }
   for (const table of Object.keys(sourceSnapshot.tables)) {
-    if (skipped.has(table) || !(sourceSnapshot.columns[table] ?? []).includes("id")) continue;
+    if (skipped.has(table) || !targetSnapshot.tables[table] || !(sourceSnapshot.columns[table] ?? []).includes("id")) continue;
     if (!IDENT.test(table)) continue;
+    if (table === "activity_log" && hasMappedLifecycle) {
+      const srcHash = psql(
+        sourceUrl,
+        `select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from public."activity_log"`,
+      ).trim();
+      const tgtHash = psql(
+        targetUrl,
+        `select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from public."activity_log" where details->>'source' is distinct from 'resource_lifecycle_events'`,
+      ).trim();
+      if (srcHash !== tgtHash) problems.push(`id set differs in activity_log`);
+      continue;
+    }
     const idHash = (url) =>
       psql(url, `select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from public."${table}"`).trim();
     if (idHash(sourceUrl) !== idHash(targetUrl)) problems.push(`id set differs in ${table}`);
