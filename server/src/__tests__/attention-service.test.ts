@@ -2347,6 +2347,7 @@ describeEmbeddedPostgres("attention service", () => {
     lastUsedAt?: Date | null;
     revokedAt?: Date | null;
     tokenHash?: string;
+    tokenPrefix?: string;
   }) {
     const [profile] = await db.insert(toolProfiles).values({
       companyId: input.companyId,
@@ -2365,6 +2366,7 @@ describeEmbeddedPostgres("attention service", () => {
       companyId: input.companyId,
       gatewayId: gateway!.id,
       name: input.name,
+      tokenPrefix: input.tokenPrefix ?? `pfx_${randomUUID().slice(0, 6)}`,
       tokenHash: input.tokenHash ?? randomUUID().replace(/-/g, "").padEnd(64, "0"),
       expiresAt: input.expiresAt,
       lastUsedAt: input.lastUsedAt ?? null,
@@ -2530,14 +2532,16 @@ describeEmbeddedPostgres("attention service", () => {
       const { companyId } = await seedCompany("GTH");
       const now = Date.now();
       const tokenHash = `secret-hash-${randomUUID().replace(/-/g, "")}`;
+      const tokenPrefix = `secret-pfx-${randomUUID().slice(0, 8)}`;
       const { gateway, token } = await seedGatewayToken({
         companyId,
         name: "leak-check",
         expiresAt: new Date(now + 86_400_000),
         lastUsedAt: new Date(now - 60_000),
         tokenHash,
+        tokenPrefix,
       });
-      const tokenPrefix = token!.tokenPrefix;
+      expect(token!.tokenPrefix).toBe(tokenPrefix);
 
       const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
       const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
