@@ -615,15 +615,7 @@ describe("review rework sweep", () => {
       const row = candidateRow(reviewTask());
       store.rows = [row];
       store.comments = verdictComment();
-      let resolveCalled = false;
-      const { sweep } = build({
-        store,
-        snapshot,
-        resolvePr: async () => {
-          resolveCalled = true;
-          return null;
-        },
-      });
+      const { sweep, getResolveCalls } = build({ store, snapshot });
 
       // When rate-limited, isGitHubRateLimited() is true
       setGitHubRateLimitForTests(Math.floor(Date.now() / 1000) + 3600, 0);
@@ -631,7 +623,7 @@ describe("review rework sweep", () => {
       const result = await sweep.sweep(PASS_AT, { force: true });
 
       expect(result.skippedPass).toBe(true);
-      expect(resolveCalled).toBe(false);
+      expect(getResolveCalls()).toBe(0);
       expect(store.created).toHaveLength(0);
     });
 
