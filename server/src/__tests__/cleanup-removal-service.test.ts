@@ -10,6 +10,7 @@ import {
   createDb,
   documents,
   documentRevisions,
+  costEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(companySkills);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(routines);
@@ -299,6 +301,34 @@ describeEmbeddedPostgres("cleanup removal services", () => {
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(updatedIssue?.lastStatusDecisionId).toBeNull();
+  });
+
+  it("rejects deleting an agent with recorded cost_events and preserves financial records", async () => {
+    const { agentId, companyId, runId } = await seedFixture();
+
+    await db.insert(costEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet",
+      costCents: 150,
+      occurredAt: new Date(),
+    });
+
+    await expect(agentService(db).remove(agentId)).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/terminated/i),
+      details: {
+        code: "agent_has_cost_events",
+      },
+    });
+
+    // Verify financial records, heartbeat runs, and agent remain intact
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(1);
+    await expect(db.select().from(costEvents).where(eq(costEvents.agentId, agentId))).resolves.toHaveLength(1);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(1);
   });
 
   it("removes issue read states and activity rows before deleting the company", async () => {
