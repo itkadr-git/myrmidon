@@ -81,4 +81,15 @@ describe("provider-garbage", () => {
     expect(hits[0]?.knownSignature).toBe(true);
     expect(hits[0]?.signature).toBe("server overloaded");
   });
+
+  it("safely handles non-string and unknown outcome values", () => {
+    expect(normalizeProviderGarbageOutcomeText(undefined)).toBe("");
+    expect(normalizeProviderGarbageOutcomeText(null)).toBe("");
+    expect(normalizeProviderGarbageOutcomeText(123)).toBe("");
+    expect(normalizeProviderGarbageOutcomeText({ foo: "bar" })).toBe("");
+    expect(normalizeProviderGarbageOutcomeText("  hello   world  ")).toBe("hello world");
+
+    const res = classifyProviderGarbageOutcome({ text: "not a string" });
+    expect(res.suspect).toBe(false);
+  });
 });

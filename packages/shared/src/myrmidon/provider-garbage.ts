@@ -81,7 +81,7 @@ export interface ProviderGarbageRunInput {
   agentId: string;
   modelGroup: string | null;
   finishedAt: Date | number;
-  outcomeText: string | null | undefined;
+  outcomeText: unknown;
 }
 
 export interface ProviderGarbageHit {
@@ -218,9 +218,9 @@ export function resolveProviderGarbageSettings(
 }
 
 export function normalizeProviderGarbageOutcomeText(
-  value: string | null | undefined,
+  value: unknown,
 ): string {
-  return (value ?? "").replace(/\s+/g, " ").trim();
+  return (typeof value === "string" ? value : "").replace(/\s+/g, " ").trim();
 }
 
 function codePointLength(text: string): number {
@@ -247,7 +247,7 @@ function matchKnownSignature(
  * detector, not here).
  */
 export function classifyProviderGarbageOutcome(
-  outcomeText: string | null | undefined,
+  outcomeText: unknown,
   settings: {
     signatures?: string[];
     maxOutcomeChars?: number;

@@ -29597,7 +29597,7 @@ export function heartbeatService(
                   finishedAt: recent.finishedAt ?? new Date(),
                   outcomeText:
                     normalizeProviderGarbageOutcomeText(
-                      parseObject(recent.resultJson)?.summary,
+                      readNonEmptyString(parseObject(recent.resultJson)?.summary),
                     ) || recent.error || "",
                 })),
                 {
