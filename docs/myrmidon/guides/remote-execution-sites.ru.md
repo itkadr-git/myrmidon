@@ -70,6 +70,7 @@
 | `POST` | `/v1/bots/{botKey}/restart` | Перезапуск шлюза контейнера |
 | `POST` | `/v1/bots/{botKey}/stop` | Остановка контейнера |
 | `GET` | `/v1/bots/{botKey}/logs?tail=N` | Чтение ограниченного и очищенного от секретов лога |
+| `POST` | `/v1/bots/{botKey}/cleanup` | Очистка контейнера и удаление каталога данных бота на хосте (также принимает `DELETE`) |
 | `POST` | `/v1/leases/claim` | Захват или продление lease выполнения с защитой от сплит-брейна |
 | `POST` | `/v1/leases/release` | Освобождение lease после завершения задачи |
 
@@ -228,6 +229,22 @@
 
 Ответ при отводе (fencing):
 `{"acquired": false, "leaseEpoch": 14, "expiresAt": "", "fenced": true, "reason": "site_fenced"}`.
+
+#### 2.2.6 `POST /v1/bots/{botKey}/cleanup` и `DELETE /v1/bots/{botKey}`
+
+Останавливает и удаляет контейнер `fleet-<botKey>`, а также очищает каталог данных бота (`volumeRoot/<botKey>`) на хосте площадки:
+
+```json
+{
+  "status": "cleaned",
+  "botKey": "work-qa"
+}
+```
+
+Поведение и гарантии:
+- **Маршруты**: Принимается через `POST /v1/bots/{botKey}/cleanup`, `DELETE /v1/bots/{botKey}/cleanup` или `DELETE /v1/bots/{botKey}` (а также action `destroy`).
+- **Идемпотентность**: Отсутствие контейнера в Docker (404) или уже удалённый каталог считаются успешным результатом (`cleaned`).
+- **Fail-closed жизненный цикл**: При завершении (`POST /api/agents/:id/terminate`) или удалении (`DELETE /api/agents/:id`) агента с включённой карточкой контейнера Myrmidon вызывает cleanup до внесения изменений в базу данных. В случае сбоя драйвера или fleetd удаление агента прерывается, сохраняя запись в БД для повторной попытки и исключая появление забытых (orphaned) контейнеров.
 
 ---
 

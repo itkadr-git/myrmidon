@@ -70,6 +70,7 @@ Request and response bodies are JSON (`Content-Type: application/json; charset=u
 | `POST` | `/v1/bots/{botKey}/restart` | Restart container gateway |
 | `POST` | `/v1/bots/{botKey}/stop` | Stop container gateway |
 | `GET` | `/v1/bots/{botKey}/logs?tail=N` | Fetch bounded, redacted container stdout/stderr |
+| `POST` | `/v1/bots/{botKey}/cleanup` | Clean up container and remove bot data directory (also accepts `DELETE`) |
 | `POST` | `/v1/leases/claim` | Acquire or renew an execution lease with epoch fencing |
 | `POST` | `/v1/leases/release` | Explicitly release an execution lease upon task completion |
 
@@ -239,6 +240,22 @@ Response:
 
 If the site was fenced or the lease epoch is stale:
 `{"acquired": false, "leaseEpoch": 14, "expiresAt": "", "fenced": true, "reason": "site_fenced"}`.
+
+#### 2.2.6 `POST /v1/bots/{botKey}/cleanup` and `DELETE /v1/bots/{botKey}`
+
+Stops and removes the `fleet-<botKey>` container and removes the bot data directory (`volumeRoot/<botKey>`) on the site host:
+
+```json
+{
+  "status": "cleaned",
+  "botKey": "work-qa"
+}
+```
+
+Behavior and guarantees:
+- **Routes**: Accepted via `POST /v1/bots/{botKey}/cleanup`, `DELETE /v1/bots/{botKey}/cleanup`, or `DELETE /v1/bots/{botKey}` (and action `destroy`).
+- **Idempotency**: A missing container (Docker 404) or already-deleted data directory counts as success.
+- **Fail-closed lifecycle**: When terminating (`POST /api/agents/:id/terminate`) or deleting (`DELETE /api/agents/:id`) an agent with an enabled container card, Myrmidon calls cleanup before any database mutation. If the driver or fleetd fails, the terminate or delete operation aborts and keeps the agent record intact for retry instead of leaving an orphaned running container.
 
 ---
 
