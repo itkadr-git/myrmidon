@@ -388,6 +388,14 @@ export function fleetdBotContainerDriver(
       });
     },
 
+    async cleanup(botKey: string): Promise<void> {
+      await callVoid({
+        method: "POST",
+        path: `/bots/${encodeURIComponent(botKey)}/cleanup`,
+        timeoutMs: START_TIMEOUT_MS,
+      });
+    },
+
     async getOomEvents(sinceNano?: number): Promise<DriverOomEvent[]> {
       const q = sinceNano ? `?since=${sinceNano}` : "";
       return callJson<DriverOomEvent[]>({

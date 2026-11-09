@@ -516,6 +516,14 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 	}
 	botKey := parts[0]
 	if len(parts) == 1 {
+		if r.Method == http.MethodDelete {
+			if !s.enrolled(botKey) {
+				http.Error(w, "bot_not_enrolled", http.StatusForbidden)
+				return
+			}
+			s.handleCleanup(w, r, botKey)
+			return
+		}
 		http.Error(w, "route_not_allowed", http.StatusForbidden)
 		return
 	}
@@ -616,6 +624,8 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		s.handleRestore(w, r, botKey)
 	case action == "quarantine" && r.Method == http.MethodPost:
 		s.handleQuarantine(w, r, botKey)
+	case (action == "cleanup" || action == "destroy") && (r.Method == http.MethodPost || r.Method == http.MethodDelete):
+		s.handleCleanup(w, r, botKey)
 	default:
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
 			http.Error(w, "route_not_allowed", http.StatusForbidden)
@@ -1038,6 +1048,24 @@ func (s *server) handleQuarantine(w http.ResponseWriter, r *http.Request, botKey
 	}
 
 	writeJSON(w, map[string]string{"status": "quarantined", "path": target})
+}
+
+func (s *server) handleCleanup(w http.ResponseWriter, r *http.Request, botKey string) {
+	ctx := r.Context()
+	// 1. Remove docker container if present
+	if err := s.docker.remove(ctx, botKey); err != nil && !strings.Contains(err.Error(), "404") {
+		http.Error(w, fmt.Sprintf("failed to remove container: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Remove bot data directory if present
+	dir := filepath.Join(s.volumeRoot(), botKey)
+	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+		http.Error(w, fmt.Sprintf("failed to remove bot datadir: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "cleaned", "botKey": botKey})
 }
 
 func (s *server) enrolled(botKey string) bool {
