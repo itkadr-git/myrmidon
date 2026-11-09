@@ -627,6 +627,7 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
     expect(withPrune[WS_PROFILE_ENV.hermesPruneDays]).toBe("14");
     expect(withPrune[WS_PROFILE_ENV.gitMigrationEnabled]).toBe("1");
     expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.hermesPruneEnabled);
+    expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.hermesPruneDays);
   });
 
   it("is deterministic: the same mechanics and board give byte-identical entries", () => {
