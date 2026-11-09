@@ -147,6 +147,77 @@ describe("summarizeCheckRuns", () => {
     expect(incSummary.conclusion).toBe("incomplete");
   });
 
+  it("distinguishes required checks from optional checks (such as main-green)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 1,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/1",
+        startedAt: null,
+        completedAt: "2026-11-09T18:00:00Z",
+      },
+      {
+        id: 2,
+        name: "hot files review",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/2",
+        startedAt: null,
+        completedAt: "2026-11-09T18:05:00Z",
+      },
+      {
+        id: 3,
+        name: "main-green",
+        status: "completed",
+        conclusion: "failure",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/3",
+        startedAt: null,
+        completedAt: "2026-11-09T18:10:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("success");
+    expect(summary.failedRuns).toBe(0);
+    expect(summary.failedJobs).toEqual([]);
+    expect(summary.optionalFailedJobs).toHaveLength(1);
+    expect(summary.optionalFailedJobs?.[0].name).toBe("main-green");
+    expect(summary.summary).toContain("success");
+    expect(summary.summary).toContain("optional failed (не влияет)");
+  });
+
+  it("fails conclusion when a required check fails", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 1,
+        name: "CI result",
+        status: "completed",
+        conclusion: "failure",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/1",
+        startedAt: null,
+        completedAt: "2026-11-09T18:00:00Z",
+      },
+      {
+        id: 2,
+        name: "main-green",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/2",
+        startedAt: null,
+        completedAt: "2026-11-09T18:05:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("failure");
+    expect(summary.failedRuns).toBe(1);
+    expect(summary.failedJobs[0].name).toBe("CI result");
+  });
+
   it("returns in_progress and pending when some checks are running without failures", () => {
     const runs: PullRequestCiJob[] = [
       {

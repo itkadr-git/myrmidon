@@ -43,6 +43,7 @@ export interface PullRequestFailedJob {
   conclusion: string;
   url: string;
   completedAt: string | null;
+  required?: boolean;
 }
 
 export type PullRequestCiStatus =
@@ -88,12 +89,22 @@ export interface PullRequestCiResult {
   successfulRuns: number;
   failedRuns: number;
   failedJobs: PullRequestFailedJob[];
+  optionalFailedJobs?: PullRequestFailedJob[];
   runs: PullRequestCiJob[];
+}
+
+export const DEFAULT_REQUIRED_CHECKS: readonly string[] = ["CI result", "hot files review"];
+
+export interface SummarizeCheckRunsOptions {
+  headSha?: string | null;
+  repository?: string;
+  pullNumber?: number;
+  requiredChecks?: readonly string[];
 }
 
 export function summarizeCheckRuns(
   runs: readonly PullRequestCiJob[],
-  _options?: { headSha?: string | null; repository?: string; pullNumber?: number },
+  options?: SummarizeCheckRunsOptions,
 ): {
   status: PullRequestCiStatus;
   conclusion: PullRequestCiConclusion;
@@ -104,6 +115,7 @@ export function summarizeCheckRuns(
   successfulRuns: number;
   failedRuns: number;
   failedJobs: PullRequestFailedJob[];
+  optionalFailedJobs?: PullRequestFailedJob[];
 } {
   const meta = runs as unknown as {
     authoritative?: boolean;
@@ -130,6 +142,7 @@ export function summarizeCheckRuns(
       successfulRuns: 0,
       failedRuns: 0,
       failedJobs: [],
+      optionalFailedJobs: [],
     };
   }
 
@@ -145,12 +158,45 @@ export function summarizeCheckRuns(
       successfulRuns: 0,
       failedRuns: 0,
       failedJobs: [],
+      optionalFailedJobs: [],
     };
   }
 
+  const configuredRequired =
+    options?.requiredChecks ??
+    (process.env.CI_REQUIRED_CHECKS
+      ? process.env.CI_REQUIRED_CHECKS.split(",").map((s) => s.trim()).filter(Boolean)
+      : process.env.PULL_REQUEST_CI_REQUIRED_CHECKS
+        ? process.env.PULL_REQUEST_CI_REQUIRED_CHECKS.split(",").map((s) => s.trim()).filter(Boolean)
+        : DEFAULT_REQUIRED_CHECKS);
+
+  const requiredNamesSet = new Set(configuredRequired.map((s) => s.trim().toLowerCase()));
+
+  const isKnownOptional = (name: string) => {
+    const lower = name.trim().toLowerCase();
+    return lower === "main-green" || lower.startsWith("main-green");
+  };
+
+  const hasConfiguredRequiredInRuns = runs.some((r) =>
+    requiredNamesSet.has(r.name.trim().toLowerCase()),
+  );
+
+  const isCheckRequired = (run: PullRequestCiJob): boolean => {
+    if (isKnownOptional(run.name)) {
+      return false;
+    }
+    if (options?.requiredChecks !== undefined || hasConfiguredRequiredInRuns) {
+      return requiredNamesSet.has(run.name.trim().toLowerCase());
+    }
+    return true;
+  };
+
   const failedJobs: PullRequestFailedJob[] = [];
+  const optionalFailedJobs: PullRequestFailedJob[] = [];
   let successfulRuns = 0;
+  let successfulRequiredRuns = 0;
   let inProgressCount = 0;
+  let inProgressRequiredCount = 0;
   let latestCompletedAt: string | null = null;
 
   for (const run of runs) {
@@ -160,35 +206,36 @@ export function summarizeCheckRuns(
       }
     }
 
+    const required = isCheckRequired(run);
+
     if (run.status !== "completed") {
       inProgressCount++;
+      if (required) {
+        inProgressRequiredCount++;
+      }
       continue;
     }
 
     const conclusion = run.conclusion;
     if (conclusion === "success" || conclusion === "skipped" || conclusion === "neutral") {
       successfulRuns++;
-    } else if (
-      conclusion === "failure" ||
-      conclusion === "timed_out" ||
-      conclusion === "action_required" ||
-      conclusion === "cancelled"
-    ) {
-      failedJobs.push({
-        id: run.id,
-        name: run.name,
-        conclusion: conclusion ?? "failure",
-        url: run.url,
-        completedAt: run.completedAt,
-      });
+      if (required) {
+        successfulRequiredRuns++;
+      }
     } else {
-      failedJobs.push({
+      const failedJob: PullRequestFailedJob = {
         id: run.id,
         name: run.name,
-        conclusion: conclusion ?? "unknown",
+        conclusion: conclusion ?? (conclusion === null ? "unknown" : "failure"),
         url: run.url,
         completedAt: run.completedAt,
-      });
+        required,
+      };
+      if (required) {
+        failedJobs.push(failedJob);
+      } else {
+        optionalFailedJobs.push(failedJob);
+      }
     }
   }
 
@@ -199,16 +246,20 @@ export function summarizeCheckRuns(
 
   if (failedRuns > 0) {
     conclusion = "failure";
-    status = inProgressCount > 0 ? "in_progress" : "completed";
-    summary = `failure (${failedRuns} failed, ${successfulRuns} passed${inProgressCount > 0 ? `, ${inProgressCount} running` : ""})`;
-  } else if (inProgressCount > 0) {
+    status = inProgressRequiredCount > 0 ? "in_progress" : "completed";
+    summary = `failure (${failedRuns} failed, ${successfulRequiredRuns} passed${inProgressRequiredCount > 0 ? `, ${inProgressRequiredCount} running` : ""})`;
+  } else if (inProgressRequiredCount > 0) {
     status = "in_progress";
     conclusion = "pending";
-    summary = `in progress (${inProgressCount} running, ${successfulRuns} passed)`;
+    summary = `in progress (${inProgressRequiredCount} running, ${successfulRequiredRuns} passed)`;
   } else {
     status = "completed";
     conclusion = "success";
-    summary = `success (${successfulRuns}/${totalRuns} passed)`;
+    if (optionalFailedJobs.length > 0) {
+      summary = `success (${successfulRuns}/${totalRuns} passed, ${optionalFailedJobs.length} optional failed (не влияет))`;
+    } else {
+      summary = `success (${successfulRuns}/${totalRuns} passed)`;
+    }
   }
 
   return {
@@ -221,6 +272,7 @@ export function summarizeCheckRuns(
     successfulRuns,
     failedRuns,
     failedJobs,
+    optionalFailedJobs,
   };
 }
 
