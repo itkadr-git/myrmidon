@@ -12,11 +12,13 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { ModelProvidersScreenView } from "./ModelProvidersScreen";
 import {
   modelProvidersApi,
   sortModels,
   type ModelProviderModelView,
+  type ModelProviderChannelsView,
   type ModelProvidersView,
 } from "./modelProvidersApi";
 
@@ -499,8 +501,10 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
         live: 2,
         exhausted: 0,
         banned: 0,
+        error: 0,
         disabled: 1,
         nextResetAt: null,
+        nextResetText: null,
       },
     });
 
@@ -543,7 +547,7 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
       providerType: "chatgpt-pool",
       channels: [],
       signals: [],
-      summary: { total: 0, live: 0, exhausted: 0, banned: 0, disabled: 0, nextResetAt: null },
+      summary: { total: 0, live: 0, exhausted: 0, banned: 0, error: 0, disabled: 0, nextResetAt: null, nextResetText: null },
     });
 
     const poolView: ModelProvidersView = {
@@ -740,7 +744,10 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     root = r; await flushReact();
     const entry = container.querySelector('[data-testid="myrmidon-model-providers-changelog-entry"]');
     expect(entry?.textContent).toContain("model_provider_models_updated");
-    expect(entry?.textContent).toContain("board:user-123");
+    // myrmidon(OPE-12361): actor now renders as a display name (when the server
+    // carries one) or a localized role label + id — not `type:id`.
+    expect(entry?.textContent).toContain("board · user-123");
+    expect(entry?.textContent).not.toContain("board:user-123");
     expect(entry?.textContent).toContain("MODELS");
     const rollbackBtn = container.querySelector('[data-testid="myrmidon-model-providers-changelog-rollback"]');
     expect(rollbackBtn).not.toBeNull();
@@ -749,6 +756,87 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     expect(confirmBtn).not.toBeNull();
     await act(async () => confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onRollback).toHaveBeenCalledWith("audit-1");
+  });
+
+  describe("myrmidon(OPE-12361): Russian locale strings and pool counters", () => {
+    beforeEach(() => {
+      void i18n.changeLanguage("ru");
+    });
+
+    afterEach(() => {
+      void i18n.changeLanguage("en");
+    });
+
+    it("renders table headers, pool status badges, counters, and no OAuth button on antigravity pool in Russian", async () => {
+      const antiView: ModelProvidersView = {
+        providers: [
+          {
+            id: "prov-antigravity",
+            type: "antigravity-pool",
+            name: "Antigravity Pool",
+            baseUrl: "https://antigravity.test",
+            hasKey: true,
+            free: true,
+            createdAt: "2026-10-01T10:00:00.000Z",
+            updatedAt: "2026-10-02T12:00:00.000Z",
+          },
+        ],
+        changeLog: [],
+      };
+
+      const channelsData: ModelProviderChannelsView = {
+        providerId: "prov-antigravity",
+        providerType: "antigravity-pool",
+        channels: [
+          {
+            n: 1, label: "", state: "active", stateRu: "Активен",
+            limitedUntil: null, lastOk: null, windows: { primary: null, secondary: null },
+            isBanned: false, isExhausted: false,
+          },
+          {
+            n: 2, label: "Acc 2", state: "error", stateRu: "Ошибка",
+            error: "TOS violation", limitedUntil: null, lastOk: null,
+            windows: { primary: null, secondary: null },
+            isBanned: false, isExhausted: false,
+          },
+        ],
+        summary: {
+          total: 2, live: 1, exhausted: 0, banned: 0, disabled: 0,
+          error: 1, nextResetAt: null, nextResetText: null,
+        },
+        signals: [
+          {
+            dedupKey: "banned:2", accountNumber: 2, label: "Acc 2",
+            kind: "banned", severity: "high", title: "Account banned",
+            whyNow: "TOS violation", summaryExcerpt: "TOS violation",
+            resetsAt: null, activityAt: "2026-11-08T00:00:00Z",
+          },
+        ],
+      };
+
+      vi.mocked(modelProvidersApi.channels).mockResolvedValue(channelsData);
+      const { root: r } = render({
+        view: antiView,
+      });
+      root = r;
+      await flushReact();
+
+      const text = container.textContent ?? "";
+      // Russian headers and pool badges
+      expect(text).toContain("Учётка №1");
+      expect(text).toContain("Тариф");
+      expect(text).toContain("Действия");
+      expect(text).toContain("1 живых / 2 всего");
+      expect(text).toContain("1 в ошибке");
+      // Antigravity pool MUST NOT show Codex OAuth Login button
+      expect(text).not.toContain("Codex OAuth Login");
+      expect(text).not.toContain("Войти через Codex OAuth");
+      // Signals should be rendered in Russian
+      expect(text).toContain("заблокирована / токен истёк");
+      // No raw unparsed keys
+      expect(text).not.toContain("modelProviders.channels.plan");
+      expect(text).not.toContain("modelProviders.channels.actions");
+    });
   });
 
 });

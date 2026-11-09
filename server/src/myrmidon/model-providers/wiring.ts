@@ -49,6 +49,11 @@ export async function recordModelProviderActivity(
   if (!sanitizedDetails.category) {
     sanitizedDetails.category = "models";
   }
+  // myrmidon(OPE-12361): persist the display name so the change log renders
+  // the author as a name instead of `user:<id>`.
+  if (entry.actor?.name && !sanitizedDetails.actorName) {
+    sanitizedDetails.actorName = entry.actor.name;
+  }
   await logActivity(db, {
     companyId: entry.companyId,
     actorType: entry.actor?.type === "agent" ? "agent" : "user",

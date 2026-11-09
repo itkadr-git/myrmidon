@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import {
   AlertTriangle,
   ArrowRight,
@@ -31,6 +32,23 @@ import {
   type GatewayFallbackModelInfo,
 } from "./litellmKeysApi";
 
+/**
+ * myrmidon(OPE-12361): the shared validators return English copy for the
+ * board; render locale-keyed text by machine reason instead and keep the
+ * server message only as a fallback for unknown codes.
+ */
+function fallbackValidationText(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  kind: "diversity" | "order",
+  reason: string | undefined,
+  fallback: string,
+  params: Record<string, string>,
+): string {
+  const key = reason ? `modelProviders.fallbacks.warn.${kind}.${reason}` : "";
+  const localized = key ? t(key, params) : "";
+  return localized && !localized.includes("modelProviders.fallbacks.warn.") ? localized : fallback;
+}
+
 interface GatewayFallbacksEditorProps {
   companyId: string;
   initialChains: FallbackChain[];
@@ -38,12 +56,22 @@ interface GatewayFallbacksEditorProps {
   knownModels?: GatewayFallbackModelInfo[];
 }
 
+/**
+ * Model groups backed by subscription pools (board channel registry). The
+ * LiteLLM provider for every pool deployment is the generic "openai" prefix,
+ * so the single-provider / paid-fallback heuristics produce false alarms for
+ * them; their real provider is the pool type, and pool targets are
+ * subscription-backed rather than per-token paid.
+ */
+const POOL_PROVIDER_TYPES = new Set(["chatgpt-pool", "antigravity-pool", "google-ai-pool"]);
+
 export function GatewayFallbacksEditor({
   companyId,
   initialChains,
   cycles: initialCycles,
   knownModels = [],
 }: GatewayFallbacksEditorProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [chains, setChains] = useState<FallbackChain[]>(() => initialChains);
   const [isDirty, setIsDirty] = useState(false);
@@ -88,10 +116,10 @@ export function GatewayFallbacksEditor({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: litellmFallbacksKey(companyId) });
       setIsDirty(false);
-      setStatusMessage({ type: "success", text: "Fallback topology successfully saved to LiteLLM /config/update and database." });
+      setStatusMessage({ type: "success", text: t("modelProviders.fallbacks.saveSuccess") });
     },
     onError: (err: Error) => {
-      setStatusMessage({ type: "error", text: err.message || "Failed to save fallback chains." });
+      setStatusMessage({ type: "error", text: err.message || t("modelProviders.fallbacks.saveFailed") });
     },
   });
 
@@ -99,7 +127,10 @@ export function GatewayFallbacksEditor({
     const trimmed = newModelName.trim();
     if (!trimmed) return;
     if (chains.some((c) => c.model === trimmed)) {
-      setStatusMessage({ type: "error", text: `Chain for model group '${trimmed}' already exists.` });
+      setStatusMessage({
+        type: "error",
+        text: t("modelProviders.fallbacks.chainExists", { model: trimmed }),
+      });
       return;
     }
     setChains([...chains, { model: trimmed, targets: [] }]);
@@ -186,14 +217,16 @@ export function GatewayFallbacksEditor({
     <div className="space-y-4 pt-2">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
         <div className="text-xs text-muted-foreground">
-          Source of truth: <span className="font-semibold text-foreground">LiteLLM DB & /config/update</span>
-          {" "}({chains.length} configured groups)
+          {t("modelProviders.fallbacks.sourceOfTruth")}{" "}
+          <span className="font-semibold text-foreground">{t("modelProviders.fallbacks.sourceOfTruthValue")}</span>
+          {" "}
+          ({t("modelProviders.fallbacks.configuredGroups", { count: chains.length })})
         </div>
         <div className="flex items-center gap-2">
           {isDirty && (
             <Button size="xs" variant="ghost" onClick={handleReset} disabled={mutation.isPending}>
               <RefreshCw className="size-3" />
-              Reset
+              {t("modelProviders.fallbacks.reset")}
             </Button>
           )}
           <Button
@@ -203,7 +236,7 @@ export function GatewayFallbacksEditor({
             disabled={!isDirty || mutation.isPending || activeCycles.length > 0}
           >
             <Save className="size-3" />
-            {mutation.isPending ? "Saving..." : "Save Changes"}
+            {mutation.isPending ? t("modelProviders.fallbacks.saving") : t("modelProviders.fallbacks.save")}
           </Button>
         </div>
       </div>
@@ -225,7 +258,7 @@ export function GatewayFallbacksEditor({
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
           <div className="flex items-center gap-1.5 font-medium">
             <AlertTriangle className="size-4 shrink-0" />
-            <span>Cycle detected in topology! Saving is disabled until cycles are resolved:</span>
+            <span>{t("modelProviders.fallbacks.cycleDetected")}</span>
           </div>
           <ul className="mt-1.5 list-inside list-disc space-y-0.5">
             {activeCycles.map((c, idx) => (
@@ -241,7 +274,7 @@ export function GatewayFallbacksEditor({
         <div className="rounded-md border border-border bg-muted/50 p-2.5 text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5 font-medium text-foreground">
             <AlertTriangle className="size-3.5 shrink-0 text-amber-500" />
-            <span>Unknown model groups ({unknownGroups.length}) not present in LiteLLM catalog:</span>
+            <span>{t("modelProviders.fallbacks.unknownGroups", { count: unknownGroups.length })}</span>
           </div>
           <div className="mt-1.5 flex flex-wrap gap-1">
             {unknownGroups.map((group) => (
@@ -255,10 +288,20 @@ export function GatewayFallbacksEditor({
 
       <div className="space-y-3">
         {chains.map((chain) => {
-          const diversity = validateFallbackDiversity(chain, modelCatalog);
-          const orderValidation = validateFallbackOrder(chain, modelCatalog);
           const primaryInfo = modelCatalog.get(chain.model);
+          const primaryProvider = primaryInfo?.provider?.toLowerCase() ?? null;
+          const isPoolChain = primaryProvider !== null && POOL_PROVIDER_TYPES.has(primaryProvider);
           const isPrimaryUnknown = !knownNamesSet.has(chain.model);
+
+          // Pool-backed groups are subscription channels: the LiteLLM catalog
+          // carries the generic "openai" prefix for them, so the paid/single-
+          // provider heuristics misfire. Their real provider is the pool type.
+          const diversity: { valid: boolean; error?: string; providers: string[]; reason?: string } = isPoolChain
+            ? { valid: true, providers: [] as string[], error: undefined, reason: undefined }
+            : validateFallbackDiversity(chain, modelCatalog);
+          const orderValidation: { valid: boolean; error?: string; warning?: string; reason?: string } = isPoolChain
+            ? { valid: true, warning: undefined, reason: undefined }
+            : validateFallbackOrder(chain, modelCatalog);
 
           return (
             <div
@@ -273,14 +316,14 @@ export function GatewayFallbacksEditor({
                       {primaryInfo.provider}
                     </Badge>
                   )}
-                  {primaryInfo?.isFree && (
+                  {primaryInfo?.isFree && !isPoolChain && (
                     <Badge variant="outline" className="text-xs text-green-600 dark:text-green-400">
-                      Free
+                      {t("modelProviders.fallbacks.freeBadge")}
                     </Badge>
                   )}
                   {isPrimaryUnknown && (
                     <Badge variant="destructive" className="text-xs">
-                      Unknown Group
+                      {t("modelProviders.fallbacks.unknownGroupBadge")}
                     </Badge>
                   )}
                 </div>
@@ -290,50 +333,70 @@ export function GatewayFallbacksEditor({
                       size="xs"
                       variant="ghost"
                       onClick={() => handleAutoOrder(chain.model)}
-                      title="Sort targets: free first, then cheap on different provider"
+                      title={t("modelProviders.fallbacks.autoOrderTitle")}
                     >
                       <Wand2 className="size-3" />
-                      Auto-order
+                      {t("modelProviders.fallbacks.autoOrder")}
                     </Button>
                   )}
                   <Button
                     size="icon-xs"
                     variant="ghost"
                     onClick={() => handleDeleteChain(chain.model)}
-                    title="Delete chain"
+                    title={t("modelProviders.fallbacks.deleteChain")}
                   >
                     <Trash2 className="size-3 text-destructive" />
                   </Button>
                 </div>
               </div>
 
+              {isPoolChain && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span>
+                    {t("modelProviders.fallbacks.poolProviderNote", { provider: primaryInfo?.provider ?? "" })}
+                  </span>
+                </div>
+              )}
+
               {!diversity.valid && (
                 <div className="flex items-center gap-1.5 text-xs text-destructive">
                   <AlertTriangle className="size-3.5 shrink-0" />
-                  <span>{diversity.error}</span>
+                  <span>
+                    {fallbackValidationText(t, "diversity", diversity.reason, diversity.error ?? "", {
+                      model: chain.model,
+                      provider: primaryInfo?.provider ?? "",
+                    })}
+                  </span>
                 </div>
               )}
 
               {!orderValidation.valid && (
                 <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
                   <AlertTriangle className="size-3.5 shrink-0" />
-                  <span>{orderValidation.warning}</span>
+                  <span>
+                    {fallbackValidationText(t, "order", orderValidation.reason, orderValidation.warning ?? orderValidation.error ?? "", {
+                      model: chain.model,
+                      provider: primaryInfo?.provider ?? "",
+                    })}
+                  </span>
                 </div>
               )}
 
               <div className="space-y-1.5">
                 <div className="text-xs font-medium text-muted-foreground">
-                  Fallback Chain:
+                  {t("modelProviders.fallbacks.chainLabel")}
                 </div>
                 {chain.targets.length === 0 ? (
                   <div className="text-xs italic text-muted-foreground">
-                    No fallbacks configured (single point of failure).
+                    {t("modelProviders.fallbacks.noFallbacks")}
                   </div>
                 ) : (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="font-mono text-xs text-muted-foreground">{chain.model}</span>
                     {chain.targets.map((target, idx) => {
                       const targetInfo = modelCatalog.get(target);
+                      const targetProvider = targetInfo?.provider?.toLowerCase() ?? null;
+                      const isTargetPool = targetProvider !== null && POOL_PROVIDER_TYPES.has(targetProvider);
                       const isTargetUnknown = !knownNamesSet.has(target);
 
                       return (
@@ -346,14 +409,14 @@ export function GatewayFallbacksEditor({
                                 {targetInfo.provider}
                               </Badge>
                             )}
-                            {targetInfo?.isFree && (
+                            {targetInfo?.isFree && !isTargetPool && (
                               <Badge variant="secondary" className="text-xs text-green-600 dark:text-green-400">
-                                Free
+                                {t("modelProviders.fallbacks.freeBadge")}
                               </Badge>
                             )}
                             {isTargetUnknown && (
                               <Badge variant="destructive" className="text-xs">
-                                Unknown
+                                {t("modelProviders.fallbacks.unknownBadge")}
                               </Badge>
                             )}
                             <div className="ml-1 flex items-center">
@@ -362,7 +425,7 @@ export function GatewayFallbacksEditor({
                                 className="rounded-xs p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
                                 disabled={idx === 0}
                                 onClick={() => handleMoveTarget(chain.model, idx, "up")}
-                                title="Move up"
+                                title={t("modelProviders.fallbacks.moveUp")}
                               >
                                 <ArrowUp className="size-3" />
                               </button>
@@ -371,7 +434,7 @@ export function GatewayFallbacksEditor({
                                 className="rounded-xs p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
                                 disabled={idx === chain.targets.length - 1}
                                 onClick={() => handleMoveTarget(chain.model, idx, "down")}
-                                title="Move down"
+                                title={t("modelProviders.fallbacks.moveDown")}
                               >
                                 <ArrowDown className="size-3" />
                               </button>
@@ -379,7 +442,7 @@ export function GatewayFallbacksEditor({
                                 type="button"
                                 className="rounded-xs p-0.5 text-muted-foreground hover:text-destructive"
                                 onClick={() => handleRemoveTarget(chain.model, idx)}
-                                title="Remove target"
+                                title={t("modelProviders.fallbacks.removeTarget")}
                               >
                                 <Trash2 className="size-3" />
                               </button>
@@ -395,7 +458,7 @@ export function GatewayFallbacksEditor({
               <div className="flex items-center gap-2 pt-1">
                 <Input
                   className="h-7 text-xs"
-                  placeholder="Add fallback target model/group..."
+                  placeholder={t("modelProviders.fallbacks.addTargetPlaceholder")}
                   value={targetInputs[chain.model] ?? ""}
                   onChange={(e) => setTargetInputs({ ...targetInputs, [chain.model]: e.target.value })}
                   onKeyDown={(e) => {
@@ -407,7 +470,7 @@ export function GatewayFallbacksEditor({
                 />
                 <Button size="xs" variant="secondary" onClick={() => handleAddTarget(chain.model)}>
                   <Plus className="size-3" />
-                  Add
+                  {t("modelProviders.fallbacks.add")}
                 </Button>
               </div>
             </div>
@@ -418,7 +481,7 @@ export function GatewayFallbacksEditor({
       <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 p-2.5">
         <Input
           className="h-8 text-xs"
-          placeholder="New model group name (e.g. gpt-4o, zephyr-beta)..."
+          placeholder={t("modelProviders.fallbacks.newGroupPlaceholder")}
           value={newModelName}
           onChange={(e) => setNewModelName(e.target.value)}
           onKeyDown={(e) => {
@@ -430,7 +493,7 @@ export function GatewayFallbacksEditor({
         />
         <Button size="sm" variant="secondary" onClick={handleAddChain}>
           <Plus className="size-4" />
-          Add Model Group
+          {t("modelProviders.fallbacks.addGroup")}
         </Button>
       </div>
     </div>

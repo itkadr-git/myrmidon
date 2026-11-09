@@ -1809,7 +1809,6 @@
     "colRule": "Правило",
     "colMode": "Режим",
     "colLevel": "Уровень",
-    "colAgent": "Агент",
     "colDecision": "Решение",
     "colSurface": "Точка",
     "colRun": "Прогон",
@@ -1836,5 +1835,92 @@
       "off": "выкл"
     }
   },
-  "ui2.nav.group.plugins": "Плагины"
+  "ui2.nav.group.plugins": "Плагины",
+  "modelProviders": {
+    "channels": {
+      "plan": "Тариф",
+      "actions": "Действия",
+      "oauthLogin": "Вход по OAuth (Codex)",
+      "oauthStarting": "Запускаю OAuth...",
+      "oauthCardTitle": "OAuth-авторизация Codex (учётка №{{accountNumber}})",
+      "oauthCode": "Код",
+      "oauthUrl": "Адрес",
+      "oauthComplete": "Завершить авторизацию",
+      "oauthCompleting": "Завершаю...",
+      "oauthRefresh": "Обновить",
+      "addAccount": "Подключить аккаунт Codex (OAuth)",
+      "connectCodexOAuth": "Подключение аккаунта Codex по OAuth",
+      "accountLabel": "Метка",
+      "accountEmail": "Email (опционально)",
+      "delete": "Удалить",
+      "accountFallback": "Учётка №{{n}}",
+      "subscription": "Подписка",
+      "summaryLive": "{{live}} живых / {{total}} всего",
+      "summaryExhausted": "{{count}} исчерпано",
+      "summaryDisabled": "{{count}} отключено",
+      "summaryError": "{{count}} в ошибке",
+      "summaryNextReset": "Сброс {{at}}"
+    },
+    "changeLog": {
+      "secretsRedacted": "Секреты скрыты в записях журнала",
+      "actor": "Автор",
+      "actorAgent": "агент",
+      "actorBoard": "доска",
+      "actorSystem": "система",
+      "actorUser": "пользователь",
+      "showDiff": "Показать дифф",
+      "hideDiff": "Скрыть дифф",
+      "after": "После",
+      "before": "До",
+      "rollback": "Откатить",
+      "rollbackConfirm": "Откатить эту запись?",
+      "rollingBack": "Откатываю..."
+    },
+    "fallbacks": {
+      "sourceOfTruth": "Источник истины:",
+      "sourceOfTruthValue": "БД LiteLLM и файл конфигурации",
+      "configuredGroups": "{{count}} настроенных групп",
+      "reset": "Сбросить",
+      "save": "Сохранить изменения",
+      "saving": "Сохраняю...",
+      "saveSuccess": "Топология резервов сохранена в БД LiteLLM и конфигурации.",
+      "saveFailed": "Не удалось сохранить цепочки резервов.",
+      "cycleDetected": "В топологии обнаружен цикл! Сохранение отключено, пока циклы не устранены:",
+      "unknownGroups": "Неизвестные группы моделей ({{count}}), отсутствующие в каталоге LiteLLM:",
+      "freeBadge": "Бесплатно",
+      "unknownGroupBadge": "Неизвестная группа",
+      "unknownBadge": "Неизвестно",
+      "autoOrder": "Автопорядок",
+      "autoOrderTitle": "Сортировка целей: сначала бесплатные, затем дешёвые на другом провайдере",
+      "deleteChain": "Удалить цепочку",
+      "chainLabel": "Цепочка резервов:",
+      "noFallbacks": "Резервы не настроены (единая точка отказа).",
+      "moveUp": "Переместить вверх",
+      "moveDown": "Переместить вниз",
+      "removeTarget": "Убрать цель",
+      "addTargetPlaceholder": "Добавить целевую модель/группу резервов...",
+      "add": "Добавить",
+      "newGroupPlaceholder": "Название новой группы моделей (например, gpt-4o)...",
+      "addGroup": "Добавить группу моделей",
+      "chainExists": "Цепочка для группы моделей «{{model}}» уже существует.",
+      "poolProviderNote": "Провайдер пула: {{provider}}",
+      "warn": {
+        "diversity": {
+          "single_provider": "Цепочка «{{model}}» использует единственного провайдера ({{provider}}). Для резервирования хотя бы одна цель должна быть на другом провайдере."
+        },
+        "order": {
+          "free_after_paid": "Бесплатные каналы должны идти раньше платных в цепочке «{{model}}»: канал {{provider}} стоит после платных.",
+          "paid_same_provider": "Платный резерв в цепочке «{{model}}» использует того же провайдера ({{provider}}), что и основная модель. Платные резервы должны быть на другом провайдере.",
+          "paid_same_provider_repeat": "Повторный платный резерв в цепочке «{{model}}» использует провайдера {{provider}}, который уже участвует в цепочке. Платные резервы должны чередовать провайдеров.",
+          "cheaper_after_expensive": "В цепочке «{{model}}» более дешёвый канал стоит после более дорогого. Дешёвые каналы должны идти раньше."
+        }
+      }
+    },
+    "signals": {
+      "bannedTitle": "Учётка №{{n}} ({{label}}) пула Codex/ChatGPT: заблокирована / токен истёк",
+      "bannedWhy": "Токен учётки №{{n}} ({{label}}) истёк или доступ отозван. Учётка выведена из ротации — перелогиньтесь или замените учётные данные.",
+      "exhaustedTitle": "Учётка №{{n}} ({{label}}) пула Codex/ChatGPT: квота исчерпана",
+      "exhaustedWhy": "Учётка №{{n}} ({{label}}) достигла 100% квоты и выведена из ротации до сброса окна лимита."
+    }
+  }
 }
