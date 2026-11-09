@@ -303,7 +303,7 @@ export async function backfillPullRequestWorkProducts(input: {
     .limit(input.limit ?? 500);
   let linked = 0;
   let failed = 0;
-  const { extractGitHubPullRequestReferences } = await loadTaskPrSyncServices();
+  const { extractGitHubPullRequestReferences, workProductService } = await loadTaskPrSyncServices();
   for (const snapshot of snapshots) {
     try {
       const data = snapshot.data && typeof snapshot.data === "object" && !Array.isArray(snapshot.data)
