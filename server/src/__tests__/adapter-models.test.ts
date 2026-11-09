@@ -378,6 +378,30 @@ describe("adapter model listing", () => {
       ]);
     });
 
+    it("respects empty model list from LiteLLM without falling back to PAPERCLIP_ADAPTER_MODELS (removal criterion)", async () => {
+      process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        hermes_gateway: [{ id: "stale-model", label: "stale-model" }],
+      });
+
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/v1/models")) {
+          return new Response(
+            JSON.stringify({ object: "list", data: [] }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      const models = await listAdapterModels("hermes_gateway");
+      expect(models).toEqual([]);
+
+      const refreshed = await refreshAdapterModels("hermes_gateway");
+      expect(refreshed).toEqual([]);
+    });
+
     it("passes API key in Authorization header when configured", async () => {
       process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
       process.env.MYRMIDON_LITELLM_API_KEY = "test-sk-key";

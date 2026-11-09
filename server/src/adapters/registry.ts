@@ -1092,7 +1092,7 @@ export async function listAdapterModels(type: string, companyId?: string): Promi
   if (adapter?.listModels) {
     try {
       const discovered = await adapter.listModels();
-      if (discovered.length > 0) return discovered;
+      if (Array.isArray(discovered)) return discovered;
     } catch {
       // Fall back to declared models or static list if dynamic discovery fails
     }
@@ -1110,7 +1110,7 @@ export async function refreshAdapterModels(type: string): Promise<{ id: string; 
   if (adapter?.refreshModels) {
     try {
       const refreshed = await adapter.refreshModels();
-      if (refreshed.length > 0) return refreshed;
+      if (Array.isArray(refreshed)) return refreshed;
     } catch {
       // Fall through to listModels or static fallbacks
     }
@@ -1118,7 +1118,7 @@ export async function refreshAdapterModels(type: string): Promise<{ id: string; 
   if (adapter?.listModels) {
     try {
       const discovered = await adapter.listModels();
-      if (discovered.length > 0) return discovered;
+      if (Array.isArray(discovered)) return discovered;
     } catch {
       // Fall through to declared models or static list
     }
