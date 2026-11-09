@@ -93,6 +93,12 @@ type HermesHttpError = Error & {
   body?: unknown;
 };
 
+/**
+ * Test-facing mirror of HermesHttpError so the error-classification tests can
+ * build the same shape without reaching into execute()'s internal state.
+ */
+export type HermesHttpErrorLike = HermesHttpError;
+
 type TerminalState = {
   runId: string;
   status: string;
@@ -1834,7 +1840,7 @@ export function readGatewayFallbackModels(value: unknown): string[] {
 }
 
 const LITELLM_DEPLOYMENT_COOLDOWN_RE =
-  /\b(?:no deployments available|deployments are in cooldown)\b/i;
+  /\b(?:no deployments available|(?:all )?deployments(?: [^\r\n.]{0,120}?)? (?:are )?in cooldown)\b/i;
 
 function parseRetryAfterSeconds(value: unknown): number | null {
   if (typeof value === "number" && !Number.isNaN(value) && value > 0) return value;
@@ -2744,22 +2750,19 @@ export function errorResult(
     ? `${baseMessage}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
     : baseMessage;
 
-  const isCooldown =
-    hermesError.status === 429 ||
-    errorBody?.error_code === 429 ||
-    errorBody?.error_code === "rate_limit_error" ||
-    nestedError?.code === 429 ||
-    nestedError?.code === "rate_limit_error" ||
-    nestedError?.type === "rate_limit_error" ||
-    (errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage));
-  // A plain HTTP 429 is rate limiting, not necessarily a deployment pool
-  // cooldown. Only the explicit LiteLLM deployment signature maps to the
-  // provider-quota family; generic 429s remain transient_upstream.
   const isDeploymentCooldown =
     errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage);
 
+  const isCooldown =
+    isDeploymentCooldown ||
+    usageLimitError ||
+    errorBody?.cooldown === true ||
+    nestedError?.cooldown === true ||
+    errorBody?.error_type === "cooldown_error" ||
+    nestedError?.type === "cooldown_error";
+
   const rawRetryNotBefore =
-    (usageLimitError ? extractCooldownRetryNotBefore(errorBody ?? {}) : null) ??
+    (isCooldown ? extractCooldownRetryNotBefore(errorBody ?? {}) : null) ??
     hermesError.retryNotBefore ??
     nonEmpty(errorBody?.retry_not_before) ??
     nonEmpty(errorBody?.retryNotBefore) ??
@@ -2775,10 +2778,10 @@ export function errorResult(
   // classification, or every structured cooldown arriving on HTTP 429 would
   // be misfiled as transient_upstream.
   const errorFamily =
-    (isDeploymentCooldown || usageLimitError || (isCooldown && !hermesError.status)
+    (isCooldown
       ? "provider_quota"
       : classified?.family) ??
-    (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
+    (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
 
   const modelResponseStarted =
     typeof stateOrModelResponseStarted === "boolean"
