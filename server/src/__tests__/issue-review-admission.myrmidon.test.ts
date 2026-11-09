@@ -329,7 +329,8 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: "head-abc" });
 
     const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
-      resolveReviewPullRequestCi: async () => ({ state: "success", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+      resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "unknown", reason: "not_under_test" }),
     });
     const res = await request(routeApp(ctx.db, actor, routesWithSuccessCi as any))
       .patch(`/api/issues/${issueId}`)
@@ -418,6 +419,9 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       createdByAgentId: authorAgentId,
       executionPolicy: policy,
     });
+    // myrmidon(OPE-12177): the head the admission gate reads from the stored
+    // work product must match the CI stub's head below.
+    await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: "head-fail" });
 
     const routesWithFailureCi = (db: any, storage: any) => issueRoutes(db, storage, {
       resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-fail", finalCheckConclusion: "failure" }),
@@ -509,6 +513,9 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       createdByAgentId: authorAgentId,
       executionPolicy: policy,
     });
+    // myrmidon(OPE-12177): the head the admission gate reads from the stored
+    // work product must match the CI stub's head below.
+    await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: "head-fail" });
 
     const routesWithFailureCi = (db: any, storage: any) => issueRoutes(db, storage, {
       resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-fail", finalCheckConclusion: "failure" }),
@@ -576,9 +583,13 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       priority: "medium",
       executionPolicy: policy,
     });
+    // myrmidon(OPE-12177): both PATCHes below dedup on the stored PR head;
+    // the CI stub confirms the same head so the admission gate admits.
+    await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: "head-abc" });
 
     const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
       resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "unknown", reason: "not_under_test" }),
     });
     const app = routeApp(ctx.db, actor, routesWithSuccessCi as any);
 
@@ -657,6 +668,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
         pullRequestUrl: "https://github.com/acme/app/pull/7",
         headSha: storedHead,
       }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "unknown" as const, reason: "not_under_test" }),
     });
     const app = routeApp(ctx.db, actor, routes as any);
     const sameHeadKey = reviewAdmissionDedupKey({ issueId, headSha: "head-abc", agentId: reviewerAgentId });
