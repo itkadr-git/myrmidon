@@ -465,7 +465,14 @@ export async function readReviewPullRequestHeadSha(input: {
 }): Promise<string | null> {
   try {
     const products = await input.db
-      .select({ metadata: issueWorkProducts.metadata })
+      .select({
+        id: issueWorkProducts.id,
+        type: issueWorkProducts.type,
+        status: issueWorkProducts.status,
+        isPrimary: issueWorkProducts.isPrimary,
+        updatedAt: issueWorkProducts.updatedAt,
+        metadata: issueWorkProducts.metadata,
+      })
       .from(issueWorkProducts)
       .where(
         and(

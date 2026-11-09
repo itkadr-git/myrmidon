@@ -12,6 +12,7 @@ import {
   agentWakeupRequests,
   agentTaskSessions,
   issueComments,
+  issueWorkProducts,
   issues,
 } from "@myrmidon/db";
 import {
@@ -26,6 +27,31 @@ import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, reviewAdmissionDedupKey } from "../myrmidon/review-stage-recovery/policy.js";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
+
+/**
+ * myrmidon(OPE-12177): seeds the issue's open pull_request work product whose
+ * metadata carries the head SHA the real `readReviewPullRequestHeadSha` reads.
+ * `readReviewPullRequestHeadSha` may only be stubbed in tests that assert the
+ * fallback when nothing is readable.
+ */
+async function insertPullRequestWorkProduct(input: {
+  db: typeof ctx.db;
+  companyId: string;
+  issueId: string;
+  headSha: string;
+}) {
+  await input.db.insert(issueWorkProducts).values({
+    companyId: input.companyId,
+    issueId: input.issueId,
+    type: "pull_request",
+    provider: "github",
+    title: "Review admission PR",
+    url: `https://github.com/acme/app/pull/7`,
+    status: "open",
+    isPrimary: true,
+    metadata: { repo: "acme/app", number: 7, headSha: input.headSha },
+  });
+}
 
 // myrmidon(REVIEW-ADMISSION): issue transition to in_review and reviewer wake
 // must be written in the same database transaction via PATCH /api/issues/:id.
@@ -298,6 +324,9 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       priority: "medium",
       executionPolicy: policy,
     });
+    // myrmidon(OPE-12177): the dedup key tail is the stored PR head; the CI
+    // resolver stub below confirms the same head.
+    await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: "head-abc" });
 
     const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
       resolveReviewPullRequestCi: async () => ({ state: "success", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
@@ -617,19 +646,17 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       priority: "medium",
       executionPolicy: policy,
     });
-
-    // The legacy agent-keyed row the fallback must target when no head SHA is
-    // readable: the route's CI stub also returns headSha, but without a PR
-    // work product the stored-metadata read has nothing to refresh the key
-    // from — and the stub only serves the CI-gated candidate block.
-    let routesHead: string | null = "head-abc";
+    // The dedup key tail is the exact PR head kept in the work-product
+    // metadata; the real `readReviewPullRequestHeadSha` reads it. The CI
+    // resolver stub only serves the admission gate and confirms the head.
+    let storedHead = "head-abc";
+    await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: storedHead });
     const routes = (db: any, storage: any) => issueRoutes(db, storage, {
       resolveReviewPullRequestCi: async () => ({
         state: "complete" as const,
         pullRequestUrl: "https://github.com/acme/app/pull/7",
-        headSha: routesHead,
+        headSha: storedHead,
       }),
-      resolveReviewAdmissionHeadSha: async () => routesHead,
     });
     const app = routeApp(ctx.db, actor, routes as any);
     const sameHeadKey = reviewAdmissionDedupKey({ issueId, headSha: "head-abc", agentId: reviewerAgentId });
@@ -659,8 +686,19 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
         .where(eq(agentWakeupRequests.idempotencyKey, sameHeadKey)),
     ).toHaveLength(1);
 
-    // The head moved (a pushed fix): the new head must produce a new wake.
-    routesHead = "head-def";
+    // The head moved (a pushed fix): the reviewer returns the task to the
+    // executor (a board decision clears the pending stage), the metadata is
+    // refreshed to the new head, and the next submission to review builds a
+    // fresh key from that new head and wakes again.
+    const returnRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress", body: "REQUEST CHANGES: fix the failing check" });
+    expect(returnRes.status).toBe(200);
+    storedHead = "head-def";
+    await ctx.db
+      .update(issueWorkProducts)
+      .set({ metadata: { repo: "acme/app", number: 7, headSha: "head-def" }, updatedAt: new Date() })
+      .where(eq(issueWorkProducts.issueId, issueId));
     const movedRes = await request(app)
       .patch(`/api/issues/${issueId}`)
       .send({ status: "in_review", executionPolicy: policy });
@@ -674,11 +712,18 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
 
     // No SHA readable at all: the legacy agent-keyed key is used so such
     // boards keep deduplicating exactly as before.
-    routesHead = null;
+    await ctx.db
+      .update(issueWorkProducts)
+      .set({ metadata: { repo: "acme/app", number: 7 }, updatedAt: new Date() })
+      .where(eq(issueWorkProducts.issueId, issueId));
     const fallbackRes = await request(app)
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "in_review", executionPolicy: policy });
+      .send({ status: "in_progress", body: "REQUEST CHANGES: still broken" });
     expect(fallbackRes.status).toBe(200);
+    const fallbackResubmit = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy });
+    expect(fallbackResubmit.status).toBe(200);
     const fallbackWakes = await ctx.db
       .select()
       .from(agentWakeupRequests)
