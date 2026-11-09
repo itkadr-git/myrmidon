@@ -72,6 +72,25 @@ describe("vendor-release-add parseMigrationSql", () => {
     const sql = 'UPDATE "tool_connections" SET "agent_instructions" = \'{"enabled": true}\';';
     assert.deepEqual(parseMigrationSql(sql), { tables: [], columns: [] });
   });
+  it("parses ALTER TABLE statements wrapped in DO blocks or preceded by comments", () => {
+    const sql = `
+-- Add column to cases
+DO $case_foundation$
+BEGIN
+  ALTER TABLE "cases" ADD COLUMN "work_issue_id" uuid;
+  ALTER TABLE "cases" ADD COLUMN "phase" text;
+  ALTER TABLE "cases" ADD COLUMN "handoff_version" integer DEFAULT 0 NOT NULL;
+END $case_foundation$;
+`;
+    assert.deepEqual(parseMigrationSql(sql), {
+      tables: [],
+      columns: [
+        "cases.handoff_version",
+        "cases.phase",
+        "cases.work_issue_id",
+      ],
+    });
+  });
 });
 
 describe("vendor-release-add v2026.1106.0 registry entry (OPE-12237)", () => {
@@ -95,7 +114,7 @@ describe("vendor-release-add v2026.1106.0 registry entry (OPE-12237)", () => {
     const tables = new Set(last41.flatMap((e) => e.tables));
     const columns = new Set(last41.flatMap((e) => e.columns));
     assert.equal(tables.size, 25, "25 new tables introduced by 0334..0374");
-    assert.equal(columns.size, 57, "57 new columns introduced by 0334..0374");
+    assert.equal(columns.size, 60, "60 new columns introduced by 0334..0374");
   });
 });
 

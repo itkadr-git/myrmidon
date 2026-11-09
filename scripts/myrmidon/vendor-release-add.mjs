@@ -65,14 +65,15 @@ export function parseMigrationSql(text) {
     for (const m of stmt.matchAll(new RegExp(String.raw`CREATE TABLE (?:IF NOT EXISTS )?${qualTable}`, "gi"))) {
       tables.add(m[1] || m[2]);
     }
-    const alter = new RegExp(String.raw`^ALTER TABLE (?:ONLY )?(?:IF EXISTS )?${qualTable}`, "i").exec(stmt);
-    if (alter) {
-      const table = alter[1] || alter[2];
-      for (const m of stmt.matchAll(new RegExp(String.raw`ADD COLUMN (?:IF NOT EXISTS )?${ident}`, "gi"))) {
-        columns.add(`${table}.${m[1] || m[2]}`);
+    const alterRegex = new RegExp(String.raw`ALTER TABLE (?:ONLY )?(?:IF EXISTS )?${qualTable}([\s\S]*?)(?=ALTER TABLE|CREATE TABLE|--> statement-breakpoint|;|\$\$)`, "gi");
+    for (const m of stmt.matchAll(alterRegex)) {
+      const table = m[1] || m[2];
+      const body = m[3] || "";
+      for (const add of body.matchAll(new RegExp(String.raw`ADD COLUMN (?:IF NOT EXISTS )?${ident}`, "gi"))) {
+        columns.add(`${table}.${add[1] || add[2]}`);
       }
-      for (const m of stmt.matchAll(new RegExp(String.raw`RENAME COLUMN (?:(?:"[^"]+")|[a-zA-Z0-9_]+) TO ${ident}`, "gi"))) {
-        columns.add(`${table}.${m[1] || m[2]}`);
+      for (const ren of body.matchAll(new RegExp(String.raw`RENAME COLUMN (?:(?:"[^"]+")|[a-zA-Z0-9_]+) TO ${ident}`, "gi"))) {
+        columns.add(`${table}.${ren[1] || ren[2]}`);
       }
     }
   }

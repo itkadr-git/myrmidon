@@ -1301,7 +1301,7 @@ export const VENDOR_EXTRA_RELEASES: ReadonlyArray<VendorReleaseExtra> = [
         sha256: "b9270a6d233463f808aba4360f4478f30eba4604e0d105ecc53970191671c6d8",
         when: 1792514123930,
         tables: ["case_access_sources", "case_handoffs"],
-        columns: [],
+        columns: ["cases.handoff_version", "cases.phase", "cases.work_issue_id"],
       },
       {
         tag: "0364_clear_maria_hill",
