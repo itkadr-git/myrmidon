@@ -29485,7 +29485,7 @@ export function heartbeatService(
         // decided the cancellation (operator cancel writes its own heartbeat
         // activity in the route and skips this live writer).
         if (cancellationCause && persistedRunWrite.run?.status === "cancelled") {
-          await db.insert(activityLog).values({
+          await logActivity(db, {
             companyId: run.companyId,
             actorType: cancellationCause.source.actor === "board" ? "user" : "system",
             actorId: cancellationCause.source.actor,
@@ -30236,7 +30236,7 @@ export function heartbeatService(
         // run as `cancelled` through the failure branch; record the same
         // activity trace as the live writer path.
         if (cancellationFailureCause && failedRunWrite.run?.status === "cancelled") {
-          await db.insert(activityLog).values({
+          await logActivity(db, {
             companyId: run.companyId,
             actorType: cancellationFailureCause.source.actor === "board" ? "user" : "system",
             actorId: cancellationFailureCause.source.actor,
