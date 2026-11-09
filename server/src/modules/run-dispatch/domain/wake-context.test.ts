@@ -31,9 +31,16 @@ describe("wake context", () => {
   });
 
   it("keeps ordered, unique, non-empty wake comment ids", () => {
-    expect(extractWakeCommentIds({
-      wakeCommentIds: ["comment-1", "", null, "comment-2", "comment-1"],
-    })).toEqual(["comment-1", "comment-2"]);
+    expect(
+      extractWakeCommentIds({
+        wakeCommentIds: ["valid-1", "", "   ", null, undefined, 123, "valid-2"],
+      }),
+    ).toEqual(["valid-1", "valid-2"]);
+    expect(
+      extractWakeCommentIds({
+        wakeCommentIds: ["   ", "\t\n  "],
+      }),
+    ).toEqual([]);
     expect(extractWakeCommentIds({ wakeCommentIds: "comment-1" })).toEqual([]);
     expect(extractWakeCommentIds(undefined)).toEqual([]);
   });

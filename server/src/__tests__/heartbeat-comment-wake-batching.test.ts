@@ -4281,4 +4281,194 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(issueRow?.executionRunId).toBe(runId);
     expect(runs).toHaveLength(1);
   });
+
+  it("does not block deferred wake queue progression when a wake contains a malformed commentId", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "eng-agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_gateway",
+      adapterConfig: {
+        url: "http://gateway.test",
+        headers: { "x-openclaw-token": "gateway-token" },
+        payloadTemplate: { message: "wake now" },
+        waitTimeoutMs: 2_000,
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Batch wake malformed commentId test",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const commentValid = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorUserId: "user-1",
+        body: "Valid comment to process",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    // First run wakes and stays active
+    const firstRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: commentValid.id },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId: commentValid.id,
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(firstRun).not.toBeNull();
+    await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+    // Now enqueue a wake with malformed commentId
+    const malformedRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: "   " as unknown as string },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId: "   " as unknown as string,
+        wakeCommentIds: ["   ", null, undefined, 12345] as unknown as string[],
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+    expect(malformedRun).toBeNull();
+
+    // Now enqueue a second valid comment wake
+    const commentFollowUp = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorUserId: "user-1",
+        body: "Follow-up valid comment",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    const followUpRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: commentFollowUp.id },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId: commentFollowUp.id,
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+    expect(followUpRun).toBeNull();
+
+    // Verify deferred wake contains only valid commentId and isolates malformed ones
+    await waitFor(async () => {
+      const deferred = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      return Boolean(deferred);
+    });
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    const deferredContext = (
+      deferredWake?.payload as Record<string, unknown> | null
+    )?._paperclipWakeContext as Record<string, unknown> | undefined;
+    expect(deferredContext?.wakeCommentIds).toEqual([commentFollowUp.id]);
+
+    // Release first run and verify second run is promoted and progresses normally
+    gateway.releaseFirstWait();
+
+    await waitFor(() => gateway.getAgentPayloads().length === 2);
+    const secondPayload = gateway.getAgentPayloads()[1] ?? {};
+    const secondRunId =
+      typeof secondPayload.idempotencyKey === "string"
+        ? secondPayload.idempotencyKey
+        : null;
+    expect(secondRunId).not.toBeNull();
+
+    await waitFor(async () => {
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      const statusesByRunId = new Map(
+        runs.map((run) => [run.id, run.status]),
+      );
+      return (
+        statusesByRunId.get(firstRun!.id) === "succeeded" &&
+        statusesByRunId.get(secondRunId!) === "succeeded"
+      );
+    }, 90_000);
+
+    const promotedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, secondRunId!))
+      .then((rows) => rows[0]);
+    const promotedTaskMarkdown = String(
+      (promotedRun.contextSnapshot as Record<string, unknown> | null)
+        ?.paperclipTaskMarkdown ?? "",
+    );
+    expect(promotedTaskMarkdown).toContain("Follow-up valid comment");
+  });
 });
