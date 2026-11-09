@@ -383,6 +383,18 @@ describe("loop: the rhythm cache and the pass summary", () => {
     assert.equal(calls, 2);
   });
 
+  it("deferred foreign-owner actions retry once per day, then become eligible", () => {
+    const file = path.join(tmp, "deferred-cooldown", "botd-cooldown.json");
+    let clock = Date.parse("2026-10-08T12:00:00Z");
+    const cooldown = createCooldown(file, { now: () => new Date(clock) });
+    cooldown.record("/workspace/ABC-888", "remove", "deferred");
+    assert.equal(cooldown.deferredRecent("/workspace/ABC-888", "remove"), true);
+    clock += DEFAULT_TTL_MS + 1000;
+    assert.equal(cooldown.deferredRecent("/workspace/ABC-888", "remove"), true, "ordinary one-hour TTL must not cause hourly retry");
+    clock += 23 * DEFAULT_TTL_MS;
+    assert.equal(cooldown.deferredRecent("/workspace/ABC-888", "remove"), false, "after 24 hours the next pass can retry");
+  });
+
   it("without the cooldown module every action runs (behaviour unchanged)", async () => {
     let calls = 0;
     const { loop } = loopRig({ actions: [{ op: "remove", path: "/scratch/y", reason: "age" }], executor: { remove: async () => { calls += 1; return "removed"; } } });
