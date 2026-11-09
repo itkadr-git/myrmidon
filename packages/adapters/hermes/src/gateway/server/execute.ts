@@ -93,6 +93,12 @@ type HermesHttpError = Error & {
   body?: unknown;
 };
 
+/**
+ * Test-facing mirror of HermesHttpError so the error-classification tests can
+ * build the same shape without reaching into execute()'s internal state.
+ */
+export type HermesHttpErrorLike = HermesHttpError;
+
 type TerminalState = {
   runId: string;
   status: string;
@@ -1834,7 +1840,7 @@ export function readGatewayFallbackModels(value: unknown): string[] {
 }
 
 const LITELLM_DEPLOYMENT_COOLDOWN_RE =
-  /\b(?:no deployments available|deployments are in cooldown)\b/i;
+  /\b(?:no deployments available|(?:all )?deployments(?: [^\r\n.]{0,120}?)? (?:are )?in cooldown)\b/i;
 
 function parseRetryAfterSeconds(value: unknown): number | null {
   if (typeof value === "number" && !Number.isNaN(value) && value > 0) return value;
@@ -2759,7 +2765,7 @@ export function errorResult(
     errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage);
 
   const rawRetryNotBefore =
-    (usageLimitError ? extractCooldownRetryNotBefore(errorBody ?? {}) : null) ??
+    ((usageLimitError || isDeploymentCooldown) ? extractCooldownRetryNotBefore(errorBody ?? {}) : null) ??
     hermesError.retryNotBefore ??
     nonEmpty(errorBody?.retry_not_before) ??
     nonEmpty(errorBody?.retryNotBefore) ??

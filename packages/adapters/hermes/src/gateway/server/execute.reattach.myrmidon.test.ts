@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
-import { execute, probeGatewayRunForBoard, readReattachGatewayRunIdForTest, stopGatewayRunForBoard } from "./execute.js";
+import { errorResult, execute, probeGatewayRunForBoard, readReattachGatewayRunIdForTest, stopGatewayRunForBoard } from "./execute.js";
 
 // myrmidon(HERMES-RUN-REATTACH): after a board restart, the reattach sweep
 // re-dispatches the same heartbeat run with the gateway run id it persisted
@@ -239,6 +239,52 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
     const diffSec = Math.round((retryDate - Date.now()) / 1000);
     expect(diffSec).toBeGreaterThanOrEqual(5);
     expect(diffSec).toBeLessThanOrEqual(10);
+  });
+
+  // myrmidon(WAKE-5 / OPE-9497): the gateway error path must recognize the
+  // deployment-pool cooldown wordings the board classifier already accepts —
+  // including "all deployments in cooldown" and "All deployments for selected
+  // model are in cooldown" — so the failure is filed as provider_quota with a
+  // Retry-After-based retryNotBefore instead of a plain upstream error, and
+  // the bounded retry waits out the window instead of re-waking immediately.
+  it("classifies deployment cooldown wordings as provider_quota with the Retry-After hint", () => {
+    const wordings = [
+      "No deployments available",
+      "all deployments in cooldown",
+      "all deployments are in cooldown",
+      "All deployments for selected model are in cooldown",
+      "All deployments (openai/chatgpt) are in cooldown",
+      "deployments are in cooldown",
+    ];
+    for (const message of wordings) {
+      // Use a non-429 response so provider_quota proves the deployment
+      // signature was matched, rather than inheriting the generic 429 rule.
+      const err = new Error(`Hermes gateway HTTP 500`) as import("./execute.js").HermesHttpErrorLike;
+      err.status = 500;
+      err.code = "hermes_gateway_upstream_error";
+      err.retryNotBefore = "90";
+      err.body = { error: { message, code: 429 } };
+      const result = errorResult(err);
+      expect(result.errorFamily).toBe("provider_quota");
+      expect(result.resultJson.cooldown).toBe(true);
+      expect(result.retryNotBefore).not.toBeNull();
+      const retryDate = new Date(result.retryNotBefore!).getTime();
+      expect(Number.isNaN(retryDate)).toBe(false);
+      const diffSec = Math.round((retryDate - Date.now()) / 1000);
+      expect(diffSec).toBeGreaterThanOrEqual(85);
+      expect(diffSec).toBeLessThanOrEqual(95);
+    }
+  });
+
+  it("leaves a generic 429 without the cooldown signature in transient_upstream", () => {
+    const err = new Error(`Hermes gateway HTTP 429`) as import("./execute.js").HermesHttpErrorLike;
+    err.status = 429;
+    err.code = "hermes_gateway_rate_limited";
+    err.retryNotBefore = "7";
+    err.body = { error: { message: "gateway busy", code: 429 } };
+    const result = errorResult(err);
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.resultJson.cooldown).toBeUndefined();
   });
 
   it("stopGatewayRunForBoard posts a bounded stop for an unsupervised run", async () => {
