@@ -27,6 +27,16 @@ describe("provider-garbage", () => {
       env: { MYRMIDON_PROVIDER_GARBAGE_RETRY_MAX_ATTEMPTS: "0" },
     });
     expect(settings.retryMaxAttempts).toBe(0);
+    // myrmidon(OPE-12286 review 2 п.4): 0 disables the retries only —
+    // detection thresholds stay at their defaults so classification and the
+    // P1 signal keep working.
+    expect(settings.distinctAgents).toBe(
+      DEFAULT_PROVIDER_GARBAGE_SETTINGS.distinctAgents,
+    );
+    expect(settings.maxOutcomeChars).toBe(
+      DEFAULT_PROVIDER_GARBAGE_SETTINGS.maxOutcomeChars,
+    );
+    expect(settings.signatures.length).toBeGreaterThan(0);
   });
 
   it("classifies known stub signatures and short outcomes", () => {
@@ -55,6 +65,27 @@ describe("provider-garbage", () => {
     expect(hits).toHaveLength(1);
     expect(hits[0]?.runCount).toBe(5);
     expect(hits[0]?.agentIds).toHaveLength(5);
+    expect(hits[0]?.modelGroup).toBe("nexus-grok");
+  });
+
+  // myrmidon(PROVIDER-GARBAGE / OPE-12286 review 2 п.5): the burst group is
+  // per (outcome, model group) — runs with the same short text served by a
+  // different channel never merge into one hit.
+  it("does not merge same-outcome runs from different model groups", () => {
+    const now = new Date("2026-11-08T12:00:00Z");
+    const runs = [
+      { runId: "r1", agentId: "agent-1", modelGroup: "nexus-grok", finishedAt: new Date("2026-11-08T11:55:00Z"), outcomeText: "service maintenance" },
+      { runId: "r2", agentId: "agent-2", modelGroup: "nexus-grok", finishedAt: new Date("2026-11-08T11:56:00Z"), outcomeText: "service maintenance" },
+      { runId: "r3", agentId: "agent-3", modelGroup: "nexus-grok", finishedAt: new Date("2026-11-08T11:57:00Z"), outcomeText: "service maintenance" },
+      { runId: "r4", agentId: "agent-4", modelGroup: "other-channel", finishedAt: new Date("2026-11-08T11:58:00Z"), outcomeText: "service maintenance" },
+      { runId: "r5", agentId: "agent-5", modelGroup: "other-channel", finishedAt: new Date("2026-11-08T11:59:00Z"), outcomeText: "service maintenance" },
+    ];
+
+    const hits = detectProviderGarbageGroups(runs, { distinctAgents: 5, sameAgentRuns: 5, now });
+    expect(hits).toHaveLength(0);
+    expect(
+      detectProviderGarbageGroups(runs, { distinctAgents: 3, sameAgentRuns: 5, now }).map((h) => h.modelGroup),
+    ).toEqual(["nexus-grok", "other-channel"]);
   });
 
   it("does not report a group hit for isolated runs matching a stub signature below the burst threshold", () => {

@@ -294,9 +294,11 @@ export function classifyProviderGarbageOutcome(
  * cross the alert threshold: the same normalised outcome produced by at
  * least {@link ProviderGarbageSettings.distinctAgents} distinct agents, or
  * repeated at least {@link ProviderGarbageSettings.sameAgentRuns} times on a
- * single agent. A known stub signature marks each individual run as
- * provider_garbage but does not by itself open a P1 incident.
- * One hit per normalised outcome text, most recent group first.
+ * single agent. Runs are grouped by normalised outcome text AND model group,
+ * so a hit never mixes unrelated channels. A known stub signature marks each
+ * individual run as provider_garbage but does not by itself open a P1
+ * incident.
+ * One hit per (outcome text, model group) pair, most recent group first.
  */
 export function detectProviderGarbageGroups(
   runs: ProviderGarbageRunInput[],
@@ -323,7 +325,12 @@ export function detectProviderGarbageGroups(
         modelGroup: run.modelGroup ?? null,
         finished,
         text,
-        key: text.toLocaleLowerCase(),
+        // myrmidon(PROVIDER-GARBAGE / OPE-12286 review 2): group by outcome
+        // text AND model group, so a burst hit never mixes runs from unrelated
+        // model groups and the reported group matches the broken channel.
+        key: `${text.toLocaleLowerCase()}\u0000${(run.modelGroup ?? "")
+          .trim()
+          .toLocaleLowerCase()}`,
       };
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null)

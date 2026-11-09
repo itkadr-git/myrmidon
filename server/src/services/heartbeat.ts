@@ -173,6 +173,11 @@ import {
   resolveProviderGarbageSettings,
 } from "@myrmidon/shared";
 import {
+  providerGarbageBurstKey,
+  providerGarbageBurstKeyFromPayload,
+  providerGarbageRunDetectorInput,
+} from "./heartbeat-provider-garbage.js";
+import {
   COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
   buildLongTaskContextResetNotice,
   evaluateLongTaskContextReset,
@@ -1577,6 +1582,9 @@ function readTransientRecoveryContractFromRun(
     : null;
 }
 
+// myrmidon(PROVIDER-GARBAGE / OPE-12286): burst-key helpers live in
+// heartbeat-provider-garbage.ts (imported below) so tests can exercise
+// the dedup/path logic without loading this module.
 function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
@@ -29361,15 +29369,16 @@ export function heartbeatService(
         // through the failed/transient retry path (bounded retries with a
         // pause) instead of being counted as a successful run with a stub
         // outcome; the group detector on the finalized run raises one P1
-        // event per burst.
+        // event per burst. Classification and the P1 signal stay enabled when
+        // MYRMIDON_PROVIDER_GARBAGE_RETRY_MAX_ATTEMPTS=0 — that setting only
+        // disables the retries, not the detection (review 2, п.4).
         const providerGarbageSettings = resolveProviderGarbageSettings({
           env: runtimeEnv as Record<string, string | undefined>,
         });
         if (
           outcome === "succeeded" &&
           !runGuardStopReason &&
-          !adapterResult.nativeFinalization &&
-          providerGarbageSettings.retryMaxAttempts > 0
+          !adapterResult.nativeFinalization
         ) {
           const adapterResultJson = parseObject(adapterResult.resultJson);
           const outcomeCandidate =
@@ -29490,6 +29499,8 @@ export function heartbeatService(
           adapterResult.summary ?? null,
         );
 
+        const runProviderModelGroup =
+          readNonEmptyString(adapterResult.model) ?? configuredModel;
         const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
           finishedAt: new Date(),
           error: runErrorMessage,
@@ -29497,7 +29508,17 @@ export function heartbeatService(
           exitCode: adapterResult.exitCode,
           signal: adapterResult.signal,
           usageJson,
-          resultJson: persistedResultJson,
+          // myrmidon(PROVIDER-GARBAGE / OPE-12286 review 2 п.2): persist the
+          // actual LiteLLM model group of this run (adapter-reported model,
+          // falling back to the agent's configured model) so the burst
+          // detector groups runs by the channel that actually served them
+          // instead of the coarse light/strong model tier.
+          resultJson: runProviderModelGroup
+            ? {
+                ...(persistedResultJson ?? {}),
+                providerModelGroup: runProviderModelGroup,
+              }
+            : persistedResultJson,
           sessionIdAfter:
             nextSessionState.displayId ?? nextSessionState.legacySessionId,
           stdoutExcerpt,
@@ -29659,104 +29680,113 @@ export function heartbeatService(
           }
           const livenessRun = finalizedRun;
           // myrmidon(PROVIDER-GARBAGE / OPE-12286): one P1 event per burst.
-          // After a provider_garbage-marked run finalizes, look back through
-          // the sliding window of recent runs: when the same short stub
-          // outcome crosses the settings' distinct-agents (or same-agent)
-          // threshold, append one health event carrying the stub text, the
-          // model group and the run count. Env thresholds tune this without a
-          // restart; failures here never affect the finalized run itself.
+          // After every finalized run (any status — review 2 п.2: unknown stub
+          // outcomes finalize succeeded and must still be counted), look back
+          // through the sliding window of recent runs: when the same short
+          // outcome on the same model group crosses the settings'
+          // distinct-agents (or same-agent) threshold, append one health event
+          // carrying the stub text, the model group and the run count. The
+          // (outcome, modelGroup, window) burst key deduplicates: a burst
+          // already reported inside the window does not emit a second event on
+          // every later finalized run (review 2 п.3). Env thresholds tune this
+          // without a restart; failures here never affect the finalized run.
           try {
-            const isGarbageMarkedRun =
-              livenessRun.errorCode === "provider_garbage" ||
-              outcome === "failed" && runErrorCode === "provider_garbage";
-            if (isGarbageMarkedRun) {
-              const settings = resolveProviderGarbageSettings({
+            const providerGarbageWindowSettings =
+              resolveProviderGarbageSettings({
                 env: runtimeEnv as Record<string, string | undefined>,
               });
-              const recentRuns = await db
-                .select({
-                  id: heartbeatRuns.id,
-                  agentId: heartbeatRuns.agentId,
-                  finishedAt: heartbeatRuns.finishedAt,
-                  error: heartbeatRuns.error,
-                  resultJson: heartbeatRuns.resultJson,
-                })
-                .from(heartbeatRuns)
-                .where(
-                  and(
-                    eq(heartbeatRuns.companyId, livenessRun.companyId),
-                    eq(heartbeatRuns.status, "failed"),
-                    gt(
-                      heartbeatRuns.finishedAt,
-                      new Date(Date.now() - settings.windowMs),
+            const burstWindowStart = new Date(
+              Date.now() - providerGarbageWindowSettings.windowMs,
+            );
+            const recentRuns = await db
+              .select({
+                id: heartbeatRuns.id,
+                agentId: heartbeatRuns.agentId,
+                finishedAt: heartbeatRuns.finishedAt,
+                error: heartbeatRuns.error,
+                resultJson: heartbeatRuns.resultJson,
+              })
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, livenessRun.companyId),
+                  gt(heartbeatRuns.finishedAt, burstWindowStart),
+                ),
+              )
+              .orderBy(desc(heartbeatRuns.finishedAt))
+              .limit(400);
+            const burstReportedKeys = new Set(
+              (
+                await db
+                  .select({ payload: heartbeatRunEvents.payload })
+                  .from(heartbeatRunEvents)
+                  .where(
+                    and(
+                      eq(
+                        heartbeatRunEvents.companyId,
+                        livenessRun.companyId,
+                      ),
+                      eq(
+                        heartbeatRunEvents.eventType,
+                        "run.provider_garbage.detected",
+                      ),
+                      gt(heartbeatRunEvents.createdAt, burstWindowStart),
                     ),
-                    isNotNull(heartbeatRuns.error),
-                  ),
+                  )
+                  .limit(100)
+              )
+                .map((event) =>
+                  providerGarbageBurstKeyFromPayload(event.payload),
                 )
-                .orderBy(desc(heartbeatRuns.finishedAt))
-                .limit(200);
-              const agentModelGroups = new Map<string, string | null>();
-              for (const recent of recentRuns) {
-                if (!agentModelGroups.has(recent.agentId)) {
-                  const recentAgent = await getAgent(recent.agentId);
-                  agentModelGroups.set(
-                    recent.agentId,
-                    readNonEmptyString(recentAgent?.modelTier) ?? null,
-                  );
-                }
+                .filter((key): key is string => key !== null),
+            );
+            const hits = detectProviderGarbageGroups(
+              recentRuns.map(providerGarbageRunDetectorInput),
+              {
+                windowMs: providerGarbageWindowSettings.windowMs,
+                distinctAgents: providerGarbageWindowSettings.distinctAgents,
+                sameAgentRuns: providerGarbageWindowSettings.sameAgentRuns,
+                maxOutcomeChars:
+                  providerGarbageWindowSettings.maxOutcomeChars,
+                signatures: providerGarbageWindowSettings.signatures,
+              },
+            );
+            for (const hit of hits) {
+              // myrmidon(PROVIDER-GARBAGE / OPE-12286 review 2 п.3): one P1
+              // event per burst window, not one per finalized run — skip
+              // groups whose (outcome, modelGroup) burst was already
+              // reported inside the current window.
+              if (
+                burstReportedKeys.has(
+                  providerGarbageBurstKey(hit.outcomeText, hit.modelGroup),
+                )
+              ) {
+                continue;
               }
-              const hits = detectProviderGarbageGroups(
-                recentRuns.map((recent) => {
-                  const summaryVal = parseObject(recent.resultJson)?.summary;
-                  const outcomeCandidate =
-                    typeof summaryVal === "string"
-                      ? summaryVal
-                      : typeof recent.error === "string"
-                        ? recent.error
-                        : null;
-                  return {
-                    runId: recent.id,
-                    agentId: recent.agentId,
-                    modelGroup: agentModelGroups.get(recent.agentId) ?? null,
-                    finishedAt: recent.finishedAt ?? new Date(),
-                    outcomeText:
-                      normalizeProviderGarbageOutcomeText(outcomeCandidate) || "",
-                  };
-                }),
-                {
-                  windowMs: settings.windowMs,
-                  distinctAgents: settings.distinctAgents,
-                  sameAgentRuns: settings.sameAgentRuns,
-                  maxOutcomeChars: settings.maxOutcomeChars,
-                  signatures: settings.signatures,
+              await appendHeartbeatRunEvent(db, {
+                companyId: livenessRun.companyId,
+                runId: livenessRun.id,
+                agentId: livenessRun.agentId,
+                eventType: "run.provider_garbage.detected",
+                stream: "system",
+                level: "critical",
+                message: `Provider garbage burst: ${hit.runCount} runs across ${hit.agentIds.length} agents received the same short outcome`,
+                payload: {
+                  outcomeText: hit.sample,
+                  outcomeNormalized: hit.outcomeText,
+                  outcomeChars: Array.from(hit.sample).length,
+                  modelGroup: hit.modelGroup,
+                  agentIds: hit.agentIds,
+                  runIds: hit.runIds,
+                  runCount: hit.runCount,
+                  knownSignature: hit.knownSignature,
+                  signatureSource: hit.signatureSource,
+                  signature: hit.signature,
+                  windowStart: hit.windowStart.toISOString(),
+                  windowEnd: hit.windowEnd.toISOString(),
                 },
-              );
-              for (const hit of hits) {
-                await appendHeartbeatRunEvent(db, {
-                  companyId: livenessRun.companyId,
-                  runId: livenessRun.id,
-                  agentId: livenessRun.agentId,
-                  eventType: "run.provider_garbage.detected",
-                  stream: "system",
-                  level: "critical",
-                  message: `Provider garbage burst: ${hit.runCount} runs across ${hit.agentIds.length} agents received the same short outcome`,
-                  payload: {
-                    outcomeText: hit.sample,
-                    outcomeNormalized: hit.outcomeText,
-                    outcomeChars: Array.from(hit.sample).length,
-                    modelGroup: hit.modelGroup,
-                    agentIds: hit.agentIds,
-                    runIds: hit.runIds,
-                    runCount: hit.runCount,
-                    knownSignature: hit.knownSignature,
-                    signatureSource: hit.signatureSource,
-                    signature: hit.signature,
-                    windowStart: hit.windowStart.toISOString(),
-                    windowEnd: hit.windowEnd.toISOString(),
-                  },
-                });
-                break; // one P1 event per finalized run is enough
-              }
+              });
+              break; // one P1 event per finalized run is enough
             }
           } catch (err) {
             logger.warn(
