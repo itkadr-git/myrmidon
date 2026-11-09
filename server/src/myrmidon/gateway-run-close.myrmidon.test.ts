@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -132,6 +133,7 @@ describeEmbeddedPostgres("myrmidon(HERMES-GATEWAY-CLOSE) close the gateway run o
 
   afterEach(async () => {
     registerServerAdapter(originalAdapter);
+    await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
