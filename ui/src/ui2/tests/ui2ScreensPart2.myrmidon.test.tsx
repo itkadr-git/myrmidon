@@ -595,7 +595,13 @@ describe("myrmidon(OPE-3918) UI-2.0 screens part 2 — screen-map §2.19 coverag
 
   it("switches Channels to the access tab: the access reads fire and the allowlist renders", async () => {
     const settings: ChannelSettingsView = {
-      channelAccessMode: { value: "allowlist", overridden: false },
+      channelAccessMode: {
+        value: "allowlist",
+        source: "ui",
+        default: "sponsor",
+        envName: "MYRMIDON_CHANNEL_ACCESS_MODE",
+        overridden: false,
+      },
     };
     const allowedUsers: ChannelAllowedUser[] = [
       {
