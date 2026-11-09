@@ -372,15 +372,6 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     res.status(200).json(result);
   });
 
-  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/complete", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    const providerId = req.params.id as string;
-    assertCompanyAdmin(req, companyId);
-    const body = parse(completeCodexOAuthSchema, bodyOf(req));
-    const account = await deps.service.completeOAuth(companyId, providerId, body);
-    res.status(201).json({ ok: true, account });
-  });
-
   router.post("/myrmidon/companies/:companyId/model-providers/:id/account-status", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
@@ -456,9 +447,18 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAdmin(req, companyId);
-    const body = parse(poolAccountOAuthCompleteSchema, bodyOf(req));
-    const result = await deps.service.oauthComplete(companyId, id, body);
-    res.status(200).json(result);
+    // 1.6.7 port fix (OPE-10775 into rel): one handler for the Codex and the pool account
+    // completion on this path, dispatched by the body, as on main.
+    const raw = bodyOf(req);
+    if (raw && typeof raw === "object" && "accountNumber" in raw) {
+      const body = parse(poolAccountOAuthCompleteSchema, raw);
+      const result = await deps.service.oauthComplete(companyId, id, body);
+      res.status(200).json(result);
+      return;
+    }
+    const body = parse(completeCodexOAuthSchema, raw);
+    const account = await deps.service.completeOAuth(companyId, id, body);
+    res.status(201).json({ ok: true, account });
   };
   router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/complete", oauthCompleteHandler);
   router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/complete", oauthCompleteHandler);
