@@ -1,8 +1,27 @@
 // server/src/myrmidon/litellm-channels/client.ts
 //
 // myrmidon(1.6.7 OPE-9854): LiteLLM channel management client.
-// Calls LiteLLM /model/new, /model/update, /model/delete, /model/info.
+// Calls LiteLLM /model/new, /model/update, /model/delete, /model/block,
+// /model/unblock, /model/info.
+//
+// What LiteLLM v1.104.1 actually does with a channel (verified in its code):
+//  - It has no secret manager on our deployments: `api_key` is sent as a VALUE.
+//    The board resolves a company secret name to its value before it gets here
+//    (service.ts); a `secrets/<name>` reference is refused, never forwarded.
+//  - `/model/update` persists `litellm_params` only (merged over the stored
+//    ones); `model_info` is ignored. So routing order is `litellm_params.order`
+//    (lowest first; a deployment WITHOUT an order is only used when no ordered
+//    deployment of the group is healthy) and `weight` is `litellm_params.weight`.
+//    `priority`, `disabled` and `provider` are not LiteLLM parameters: never sent.
+//  - There is no `disabled` flag in `litellm_params`. A channel is switched off
+//    with `POST /model/block { model_id }` and back on with `/model/unblock`:
+//    the router filters blocked deployments out before it picks one (order
+//    filtering included), the definition and the stored key stay in the
+//    gateway, and `/model/info` reports `model_info.blocked`. Only deployments
+//    stored in the gateway database can be paused (not static config ones), and
+//    the admin key must be a proxy admin key.
 
+import { randomUUID } from "node:crypto";
 import { badGateway, unprocessable } from "../../errors.js";
 import type {
   AddChannelInput,
@@ -17,12 +36,38 @@ export interface LitellmChannelsClientDeps {
   litellmAdminKey: string;
 }
 
+const SECRET_REFERENCE_PREFIX = "secrets/";
+
+/** The params the board hands back to callers: never a credential, not even a masked one. */
+function withoutApiKey(params: Record<string, unknown>): Record<string, unknown> {
+  const visible = { ...params };
+  delete visible.api_key;
+  return visible;
+}
+
 function extractSecretName(apiKey: string | undefined | null): string | null {
   if (!apiKey || typeof apiKey !== "string") {
     return null;
   }
   const match = apiKey.match(/^secrets\/(.+)$/);
   return match ? match[1] : null;
+}
+
+/** The upstream model id: as given, or prefixed with the provider when only a bare name and a provider are known. */
+function upstreamModelOf(input: { providerModel?: string; modelName?: string; providerType?: string }): string | undefined {
+  const model = input.providerModel || input.modelName;
+  if (!model) return undefined;
+  if (input.providerType && !model.includes("/")) return `${input.providerType}/${model}`;
+  return model;
+}
+
+/** A credential must travel as a value: LiteLLM would store a reference verbatim and send it upstream. */
+function assertCredentialValue(apiKey: string | null | undefined): void {
+  if (apiKey && apiKey.startsWith(SECRET_REFERENCE_PREFIX)) {
+    throw unprocessable("LiteLLM has no secret manager: send the credential value, not a secrets/<name> reference", {
+      code: "litellm_credential_reference",
+    });
+  }
 }
 
 export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): LitellmChannelsPort {
@@ -96,24 +141,22 @@ export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): Li
     const id = String(modelInfo.id || model.id || model.model_name || "");
     const modelName = String(model.model_name || model.id || "");
     const providerModel = String(litellmParams.model || model.model_name || "");
-    const providerType = litellmParams.provider ? String(litellmParams.provider) : null;
+    const upstreamPrefix = providerModel.includes("/") ? providerModel.split("/")[0] : "";
+    const providerRaw = litellmParams.provider || litellmParams.custom_llm_provider || upstreamPrefix;
+    const providerType = providerRaw ? String(providerRaw) : null;
     const baseUrl = litellmParams.api_base ? String(litellmParams.api_base) : null;
     const credentialSecretName = extractSecretName(litellmParams.api_key);
 
-    const rawOrder = modelInfo.order ?? modelInfo.priority ?? litellmParams.order ?? litellmParams.priority ?? 0;
+    // The router reads `litellm_params` first and `model_info` only as a
+    // fallback for dynamically added models.
+    const rawOrder = litellmParams.order ?? modelInfo.order ?? 0;
     const order = Number.isFinite(Number(rawOrder)) ? Number(rawOrder) : 0;
 
-    const rawWeight = modelInfo.weight ?? litellmParams.weight ?? 0;
+    const rawWeight = litellmParams.weight ?? modelInfo.weight ?? 0;
     const weight = Number.isFinite(Number(rawWeight)) ? Number(rawWeight) : 0;
 
-    let disabled = false;
-    if (modelInfo.disabled !== undefined) {
-      disabled = Boolean(modelInfo.disabled);
-    } else if (modelInfo.mode !== undefined) {
-      disabled = modelInfo.mode === "disabled";
-    } else if (litellmParams.disabled !== undefined) {
-      disabled = Boolean(litellmParams.disabled);
-    }
+    // The only switch-off the router honors is the deployment's `blocked` flag.
+    const disabled = modelInfo.blocked === true;
 
     return {
       id,
@@ -125,43 +168,104 @@ export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): Li
       order,
       weight,
       disabled,
-      litellmParams,
+      litellmParams: withoutApiKey(litellmParams),
       modelInfo,
+    };
+  }
+
+  async function listAll(): Promise<LitellmChannelView[]> {
+    const data = await callLiteLLM<any>("/model/info", { method: "GET" });
+    const list = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+    return list.map((item: Record<string, any>) => parseChannelFromDeployment(item));
+  }
+
+  /** The `litellm_params` an update writes: only what the caller set, only keys LiteLLM understands. */
+  function updateParams(input: UpdateChannelInput): Record<string, unknown> {
+    assertCredentialValue(input.apiKey);
+    const model = upstreamModelOf(input);
+    return {
+      ...(model ? { model } : {}),
+      ...(input.baseUrl ? { api_base: input.baseUrl } : {}),
+      ...(input.apiKey ? { api_key: input.apiKey } : {}),
+      ...(input.order !== undefined ? { order: input.order } : {}),
+      ...(input.weight !== undefined ? { weight: input.weight } : {}),
+      ...input.additionalConfig,
+    };
+  }
+
+  /** Writes the parameter changes of one channel (`/model/update`), without re-reading it. */
+  async function applyUpdate(input: UpdateChannelInput): Promise<void> {
+    const litellmParams = updateParams(input);
+    if (Object.keys(litellmParams).length > 0 || input.modelName) {
+      await callLiteLLM("/model/update", {
+        method: "POST",
+        body: {
+          model_info: { id: input.channelId },
+          ...(input.modelName ? { model_name: input.modelName } : {}),
+          ...(Object.keys(litellmParams).length > 0 ? { litellm_params: litellmParams } : {}),
+        },
+      });
+    }
+    if (input.disabled !== undefined) {
+      await setBlocked(input.channelId, input.disabled);
+    }
+  }
+
+  async function setBlocked(channelId: string, blocked: boolean): Promise<void> {
+    await callLiteLLM(blocked ? "/model/block" : "/model/unblock", {
+      method: "POST",
+      body: { model_id: channelId },
+    });
+  }
+
+  /** One channel as the gateway reports it now; null when `/model/info` does not list it. */
+  async function readChannel(channelId: string): Promise<LitellmChannelView | null> {
+    return (await listAll()).find((channel) => channel.id === channelId) ?? null;
+  }
+
+  async function updateChannel(input: UpdateChannelInput): Promise<LitellmChannelView> {
+    await applyUpdate(input);
+    const current = await readChannel(input.channelId);
+    if (current) return current;
+    // The gateway accepted the change but does not list the deployment (a
+    // lagging read): answer what was written rather than failing a success.
+    return {
+      id: input.channelId,
+      modelName: input.modelName ?? "",
+      providerModel: upstreamModelOf(input) ?? "",
+      providerType: input.providerType ?? null,
+      baseUrl: input.baseUrl ?? null,
+      credentialSecretName: input.credentialSecretName ?? null,
+      order: input.order ?? 0,
+      weight: input.weight ?? 0,
+      disabled: input.disabled ?? false,
+      modelInfo: { id: input.channelId },
     };
   }
 
   return {
     async listChannels(): Promise<LitellmChannelView[]> {
-      const data = await callLiteLLM<any>("/model/info", { method: "GET" });
-      const list = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
-      return list.map((item: Record<string, any>) => parseChannelFromDeployment(item));
+      return listAll();
     },
 
     async addChannel(input: AddChannelInput): Promise<LitellmChannelView> {
+      assertCredentialValue(input.apiKey);
+      // A channel created paused needs its id before the first call, so the
+      // pause can never miss the deployment it belongs to.
+      const channelId = input.channelId || (input.disabled ? randomUUID() : null);
       const litellmParams: Record<string, unknown> = {
-        model: input.providerModel || input.modelName,
-        ...(input.providerType ? { provider: input.providerType } : {}),
+        model: upstreamModelOf(input),
         ...(input.baseUrl ? { api_base: input.baseUrl } : {}),
-        ...(input.credentialSecretName ? { api_key: `secrets/${input.credentialSecretName}` } : {}),
         ...(input.apiKey ? { api_key: input.apiKey } : {}),
-        ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+        ...(input.order !== undefined ? { order: input.order } : {}),
         ...(input.weight !== undefined ? { weight: input.weight } : {}),
-        ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
         ...input.additionalConfig,
-      };
-
-      const modelInfo: Record<string, unknown> = {
-        ...(input.channelId ? { id: input.channelId } : {}),
-        order: input.order ?? 0,
-        priority: input.order ?? 0,
-        weight: input.weight ?? 0,
-        disabled: Boolean(input.disabled),
       };
 
       const payload = {
         model_name: input.modelName,
         litellm_params: litellmParams,
-        model_info: modelInfo,
+        model_info: channelId ? { id: channelId } : {},
       };
 
       const res = await callLiteLLM<any>("/model/new", {
@@ -169,79 +273,53 @@ export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): Li
         body: payload,
       });
 
-      const returnedId = input.channelId || res?.data?.model_info?.id || res?.data?.id || res?.model_info?.id || res?.id || input.modelName;
+      const returnedId = String(
+        channelId ||
+          res?.data?.model_info?.id ||
+          res?.data?.id ||
+          res?.model_info?.id ||
+          res?.model_id ||
+          res?.id ||
+          input.modelName,
+      );
+
+      if (input.disabled) {
+        try {
+          await setBlocked(returnedId, true);
+        } catch (err) {
+          // Never leave a channel that was meant to be off serving traffic.
+          try {
+            await callLiteLLM("/model/delete", { method: "POST", body: { id: returnedId } });
+          } catch {
+            // the original failure is the one worth reporting
+          }
+          throw err;
+        }
+      }
 
       return {
-        id: String(returnedId),
+        id: returnedId,
         modelName: input.modelName,
-        providerModel: input.providerModel || input.modelName,
+        providerModel: String(litellmParams.model ?? input.modelName),
         providerType: input.providerType ?? null,
         baseUrl: input.baseUrl ?? null,
-        credentialSecretName: input.credentialSecretName ?? extractSecretName(input.apiKey),
+        credentialSecretName: input.credentialSecretName ?? null,
         order: input.order ?? 0,
         weight: input.weight ?? 0,
         disabled: Boolean(input.disabled),
-        litellmParams,
-        modelInfo: {
-          ...modelInfo,
-          id: returnedId,
-        },
+        litellmParams: withoutApiKey(litellmParams),
+        modelInfo: { id: returnedId, ...(input.disabled ? { blocked: true } : {}) },
       };
     },
 
-    async updateChannel(input: UpdateChannelInput): Promise<LitellmChannelView> {
-      const modelInfo: Record<string, unknown> = {
-        id: input.channelId,
-        ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
-        ...(input.weight !== undefined ? { weight: input.weight } : {}),
-        ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
-      };
-
-      const litellmParams: Record<string, unknown> = {
-        ...(input.providerModel ? { model: input.providerModel } : {}),
-        ...(input.providerType ? { provider: input.providerType } : {}),
-        ...(input.baseUrl !== undefined ? { api_base: input.baseUrl || undefined } : {}),
-        ...(input.credentialSecretName ? { api_key: `secrets/${input.credentialSecretName}` } : {}),
-        ...(input.apiKey ? { api_key: input.apiKey } : {}),
-        ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
-        ...(input.weight !== undefined ? { weight: input.weight } : {}),
-        ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
-        ...input.additionalConfig,
-      };
-
-      const payload: Record<string, unknown> = {
-        model_info: modelInfo,
-        ...(input.modelName ? { model_name: input.modelName } : {}),
-        ...(Object.keys(litellmParams).length > 0 ? { litellm_params: litellmParams } : {}),
-      };
-
-      const res = await callLiteLLM<any>("/model/update", {
-        method: "POST",
-        body: payload,
-      });
-
-      const returnedModel = res?.data || res?.model || {};
-      const parsed = parseChannelFromDeployment({
-        ...returnedModel,
-        model_info: {
-          ...(returnedModel.model_info || {}),
-          id: input.channelId,
-          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
-          ...(input.weight !== undefined ? { weight: input.weight } : {}),
-          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
-        },
-        model_name: input.modelName || returnedModel.model_name || "",
-      });
-
-      return parsed;
-    },
+    updateChannel,
 
     async disableChannel(channelId: string): Promise<LitellmChannelView> {
-      return this.updateChannel({ channelId, disabled: true });
+      return updateChannel({ channelId, disabled: true });
     },
 
     async enableChannel(channelId: string): Promise<LitellmChannelView> {
-      return this.updateChannel({ channelId, disabled: false });
+      return updateChannel({ channelId, disabled: false });
     },
 
     async deleteChannel(channelId: string): Promise<void> {
@@ -252,15 +330,12 @@ export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): Li
     },
 
     async reorderChannels(orders: ReorderChannelInput[]): Promise<LitellmChannelView[]> {
-      const results: LitellmChannelView[] = [];
       for (const item of orders) {
-        const updated = await this.updateChannel({
-          channelId: item.channelId,
-          order: item.order,
-        });
-        results.push(updated);
+        await applyUpdate({ channelId: item.channelId, order: item.order });
       }
-      return results;
+      // One read for the whole batch.
+      const ids = new Set(orders.map((item) => item.channelId));
+      return (await listAll()).filter((channel) => ids.has(channel.id));
     },
   };
 }

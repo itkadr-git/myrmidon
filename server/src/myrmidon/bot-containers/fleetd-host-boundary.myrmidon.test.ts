@@ -407,14 +407,14 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
       JSON.stringify([
         {
           name: "site-worker",
-          url: "http://site-worker.internal:9100",
+          url: "http://10.0.0.30:9100",
           tokenSecret: "site-token",
         },
       ]),
     );
     expect(parsed.get("site-worker")).toEqual({
       name: "site-worker",
-      url: "http://site-worker.internal:9100",
+      url: "http://10.0.0.30:9100",
       tokenSecret: "site-token",
     });
 

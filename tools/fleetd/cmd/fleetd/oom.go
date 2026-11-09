@@ -170,7 +170,7 @@ func (s *server) consumeDockerEvents(ctx context.Context, socketPath string) err
 		}
 		name := raw.Actor.Attributes["name"]
 		cleanName := strings.TrimPrefix(name, "/")
-		if !strings.HasPrefix(cleanName, "myrmidon-bot-") {
+		if !hasBotContainerPrefix(cleanName) {
 			continue
 		}
 		botKey := extractBotKey(name)
@@ -196,14 +196,30 @@ func (s *server) consumeDockerEvents(ctx context.Context, socketPath string) err
 	return scanner.Err()
 }
 
+// botContainerPrefixes are the name prefixes of bot containers. fleetd names its
+// own "fleet-<botKey>" (dockerClient.name); the board's local driver names its
+// own "myrmidon-bot-<botKey>". A site daemon sees the first, a board host the
+// second, so both count.
+var botContainerPrefixes = []string{"fleet-", "myrmidon-bot-"}
+
+func hasBotContainerPrefix(name string) bool {
+	for _, prefix := range botContainerPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func extractBotKey(name string) string {
 	name = strings.TrimPrefix(name, "/")
-	if strings.HasPrefix(name, "myrmidon-bot-") {
-		rest := strings.TrimPrefix(name, "myrmidon-bot-")
-		if idx := strings.Index(rest, "."); idx != -1 {
-			return rest[:idx]
+	for _, prefix := range botContainerPrefixes {
+		if rest, ok := strings.CutPrefix(name, prefix); ok {
+			if idx := strings.Index(rest, "."); idx != -1 {
+				return rest[:idx]
+			}
+			return rest
 		}
-		return rest
 	}
 	return ""
 }

@@ -10,6 +10,8 @@ import {
 import {
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
   REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
+  REVIEW_ADMISSION_KEY_PREFIX,
+  reviewAdmissionDedupKey,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import { isPendingCiForOpenPr } from "../myrmidon/stranded-autopolicy.js";
 // myrmidon(PR-WAIT-MONITOR, OPE-11949): a due monitor that waits for a pull request is
@@ -19800,7 +19802,9 @@ export function heartbeatService(
               eq(agentWakeupRequests.agentId, claimed.agentId),
               eq(agentWakeupRequests.status, "queued"),
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${claimedIssueId}`,
-              sql`${agentWakeupRequests.idempotencyKey} like 'issue-review-admission:%'`,
+              // myrmidon(OPE-12177): the suffix matches both key formats — the
+              // SHA-keyed `{issueId}:{headSha}` and the legacy `{issueId}:{agentId}`.
+              sql`${agentWakeupRequests.idempotencyKey} like ${`${REVIEW_ADMISSION_KEY_PREFIX}%`}`,
               sql`${agentWakeupRequests.createdAt} <= ${claimedAt.toISOString()}::timestamptz`,
               claimed.wakeupRequestId
                 ? sql`${agentWakeupRequests.id} <> ${claimed.wakeupRequestId}`
@@ -24004,7 +24008,11 @@ export function heartbeatService(
       readNonEmptyString(payload?.issueId) ??
       readNonEmptyString(payload?.taskId);
     const key = opts.idempotencyKey ??
-      `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
+      // myrmidon(OPE-12177): callers that know the PR head pass the full
+      // `issue-review-admission:{issueId}:{headSha}` key themselves (built with
+      // reviewAdmissionDedupKey). This fallback keeps the legacy agent-keyed
+      // format for callers without a head.
+      reviewAdmissionDedupKey({ issueId: resolvedIssueId ?? "unknown", agentId });
     if (typeof tx.select === "function") {
       try {
         const agent = await tx
@@ -31005,7 +31013,9 @@ export function heartbeatService(
       throw err;
     } finally {
       const key = opts.idempotencyKey;
-      if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
+      // myrmidon(OPE-12177): the prefix matches both key formats — the
+      // SHA-keyed `{issueId}:{headSha}` and the legacy `{issueId}:{agentId}`.
+      if (typeof key === "string" && key.startsWith(REVIEW_ADMISSION_KEY_PREFIX)) {
         try {
           await closeUnservedReviewAdmission(agentId, key);
         } catch (err) {

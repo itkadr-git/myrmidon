@@ -46,6 +46,8 @@ import {
 import {
   checkCompatibility,
   checkNarrowing,
+  deterministicUuid,
+  mapLifecycleEventAction,
   parseRangeBound,
   runMigration,
   type MigrationOptions,
@@ -57,6 +59,88 @@ const SOURCE_KEY = randomBytes(32).toString("base64");
 const TARGET_KEY = randomBytes(32).toString("base64");
 const WRONG_KEY = randomBytes(32).toString("base64");
 const SECRET_VALUE = "fixture-secret-value";
+
+function splitSqlStatements(sqlText: string): string[] {
+  const statements: string[] = [];
+  let buffer = "";
+  let inString = false;
+  for (let i = 0; i < sqlText.length; i += 1) {
+    const ch = sqlText[i]!;
+    if (inString) {
+      if (ch === "'" && sqlText[i + 1] === "'") {
+        buffer += "''";
+        i += 1;
+      } else {
+        buffer += ch;
+        if (ch === "'") inString = false;
+      }
+    } else if (ch === "'") {
+      inString = true;
+      buffer += ch;
+    } else if (ch === ";") {
+      statements.push(buffer);
+      buffer = "";
+    } else {
+      buffer += ch;
+    }
+  }
+  if (buffer.trim()) statements.push(buffer);
+  return statements;
+}
+
+function stripSqlLineComments(sqlText: string): string {
+  return sqlText.replace(/(^|\n)\s*--[^\n]*/g, "$1");
+}
+
+function fixtureSeedClaims(seedSql: string): { rows: Map<string, number>; columns: Map<string, Set<string>> } {
+  const rows = new Map<string, number>();
+  const columns = new Map<string, Set<string>>();
+  for (const statement of splitSqlStatements(stripSqlLineComments(seedSql))) {
+    const match = statement.match(/INSERT\s+INTO\s+"([A-Za-z0-9_]+)"\s*\(([^)]*)\)/i);
+    if (!match) continue;
+    const table = match[1]!;
+    columns.set(table, new Set(match[2]!.split(",").map((column) => column.trim().replace(/^"|"$/g, ""))));
+    const values = statement.match(/\bVALUES\b([\s\S]*)/i)?.[1] ?? "";
+    const valuesWithoutConflict = values.split(/\bON\s+CONFLICT\b/i, 1)[0]!;
+    let depth = 0;
+    let tupleCount = 0;
+    let inString = false;
+    for (let i = 0; i < valuesWithoutConflict.length; i += 1) {
+      const ch = valuesWithoutConflict[i]!;
+      if (inString) {
+        if (ch === "'" && valuesWithoutConflict[i + 1] === "'") i += 1;
+        else if (ch === "'") inString = false;
+      } else if (ch === "'") inString = true;
+      else if (ch === "(") {
+        if (depth === 0) tupleCount += 1;
+        depth += 1;
+      } else if (ch === ")") depth -= 1;
+    }
+    rows.set(table, (rows.get(table) ?? 0) + tupleCount);
+  }
+  return { rows, columns };
+}
+
+function fixtureDdlClaims(schemaSql: string): Map<string, Set<string>> {
+  const tables = new Map<string, Set<string>>();
+  for (const statement of splitSqlStatements(stripSqlLineComments(schemaSql))) {
+    const create = statement.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"?(?:public|drizzle)"?\.)?"?([A-Za-z0-9_]+)"?\s*\(/i);
+    if (create && create[1] !== "__drizzle_migrations") {
+      const body = statement.slice(create.index! + create[0].length);
+      const columns = new Set<string>();
+      for (const column of body.matchAll(/^\s*"([A-Za-z0-9_]+)"\s+[A-Za-z]/gm)) columns.add(column[1]!);
+      const existing = tables.get(create[1]!) ?? new Set<string>();
+      for (const column of columns) existing.add(column);
+      tables.set(create[1]!, existing);
+    }
+    for (const alter of statement.matchAll(/ALTER\s+TABLE\s+(?:ONLY\s+)?"?([A-Za-z0-9_]+)"?\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([A-Za-z0-9_]+)"?/gi)) {
+      const existing = tables.get(alter[1]!) ?? new Set<string>();
+      existing.add(alter[2]!);
+      tables.set(alter[1]!, existing);
+    }
+  }
+  return tables;
+}
 
 describe("myrmidon:migrate pure guards", () => {
   it("derives the vendor hash chain from the migration files on disk", async () => {
@@ -327,6 +411,26 @@ describe("myrmidon:migrate pure guards", () => {
       expect(accepted.exclusions).toEqual([{ kind: "table", name: "custom_extension", reason: "unknown source table accepted by flag" }]);
     });
 
+    it("allows resource_lifecycle_events without --accept-vendor-only-data when target has activity_log", () => {
+      // Empty input
+      const emptyAnalysis = analysisOf([table("resource_lifecycle_events", [col("id")])], { resource_lifecycle_events: 0 });
+      const target = new Map([["activity_log", table("activity_log", [col("id")])]]);
+      const emptyResult = checkCompatibility(emptyAnalysis, target, index);
+      expect(emptyResult.problems).toEqual([]);
+      expect(emptyResult.vendorOnly).toEqual([]);
+
+      // Populated input (10 sample rows)
+      const populatedAnalysis = analysisOf([table("resource_lifecycle_events", [col("id")])], { resource_lifecycle_events: 10 });
+      const populatedResult = checkCompatibility(populatedAnalysis, target, index);
+      expect(populatedResult.problems).toEqual([]);
+      expect(populatedResult.vendorOnly).toEqual([]);
+
+      // Target lacks activity_log
+      const missingTarget = new Map();
+      const missingResult = checkCompatibility(populatedAnalysis, missingTarget, index);
+      expect(missingResult.problems).toEqual(["table-missing-in-target:activity_log"]);
+    });
+
     it("reports v2026.1106.0 vendor-only tables and columns with descriptions and requires flag when they hold data", () => {
       const v1106Index = buildVendorOnlyIndex();
       const v1106Tables = [
@@ -382,6 +486,28 @@ describe("myrmidon:migrate pure guards", () => {
     });
   });
 
+  describe("resource_lifecycle_events helpers", () => {
+    it("maps actions to activity_log convention", () => {
+      expect(mapLifecycleEventAction("project", "create")).toBe("project.created");
+      expect(mapLifecycleEventAction("project", "update")).toBe("project.updated");
+      expect(mapLifecycleEventAction("project", "delete")).toBe("project.deleted");
+      expect(mapLifecycleEventAction("agent", "pause")).toBe("agent.paused");
+      expect(mapLifecycleEventAction("agent", "resume")).toBe("agent.resumed");
+      expect(mapLifecycleEventAction("agent", "terminate")).toBe("agent.terminated");
+      expect(mapLifecycleEventAction("project", "custom.action")).toBe("custom.action");
+      expect(mapLifecycleEventAction("project", "archive")).toBe("project.archive");
+    });
+
+    it("produces deterministic uuid v4 formatted identifiers", () => {
+      const u1 = deterministicUuid("seed-1");
+      const u2 = deterministicUuid("seed-1");
+      const u3 = deterministicUuid("seed-2");
+      expect(u1).toBe(u2);
+      expect(u1).not.toBe(u3);
+      expect(u1).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    });
+  });
+
   it("guards object keys and manifest paths against traversal", () => {
     expect(normalizeObjectKey("a\\b/c.txt")).toBe("a/b/c.txt");
     expect(normalizeObjectKey("../x")).toBeNull();
@@ -411,6 +537,96 @@ describe("myrmidon:migrate pure guards", () => {
       await expect(inventoryDirectory(src)).rejects.toThrow(/symlink/);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("asserts v2026.1106.0 fixture rows and columns without allowing empty vendor claims", () => {
+    const fixtureRoot = path.join(path.dirname(MIGRATIONS_DIR), "../../../tests/fixtures/paperclip-migration/releases/v2026.1106.0");
+    const manifest = JSON.parse(readFileSync(path.join(fixtureRoot, "manifest.json"), "utf8")) as {
+      vendorRelease: { tag: string; sha: string; lastMigration: string; migrationCount: number };
+      entityCounts: Record<string, number>;
+      vendorGapCounts: Record<string, number>;
+    };
+    const vendorRelease = JSON.parse(readFileSync(path.join(fixtureRoot, "../..", "vendor-release.json"), "utf8")) as {
+      tag: string;
+      sha: string;
+      lastMigration: string;
+      migrationCount: number;
+      extraTables: string[];
+      extraColumns: string[];
+    };
+    expect(manifest.vendorRelease).toEqual({
+      tag: "v2026.1106.0",
+      sha: "d69631b01b9c658f80bf8bed389863dce82643e1",
+      lastMigration: "0374_rare_wolfpack",
+      migrationCount: 373,
+    });
+    expect(vendorRelease).toMatchObject(manifest.vendorRelease);
+
+    const fixtureDir = path.join(path.dirname(fixtureRoot), "..");
+    const registry = JSON.parse(readFileSync(path.join(fixtureDir, "vendor-releases.json"), "utf8")) as {
+      supportedReleases: Array<{
+        tag: string;
+        sha: string;
+        lastMigration: string;
+        migrationCount: number;
+        extraTables: string[];
+        extraColumns: string[];
+      }>;
+    };
+    const registryRelease = registry.supportedReleases.find((entry) => entry.tag === manifest.vendorRelease.tag);
+    expect(registryRelease, "v2026.1106.0 is registered in the fixture registry").toBeDefined();
+    expect(registryRelease).toEqual(expect.objectContaining(manifest.vendorRelease));
+    expect(registryRelease!.extraTables.length).toBeGreaterThan(0);
+    expect(registryRelease!.extraColumns.length).toBeGreaterThan(0);
+
+    const rootManifest = JSON.parse(readFileSync(path.join(fixtureDir, "manifest.json"), "utf8"));
+    expect(rootManifest).toEqual(manifest);
+    expect(readFileSync(path.join(fixtureRoot, "schema.sql"), "utf8")).toBe(
+      readFileSync(path.join(fixtureDir, "schema-paperclip-v2026.1106.0.sql"), "utf8"),
+    );
+    expect(readFileSync(path.join(fixtureRoot, "seed.sql"), "utf8")).toBe(
+      readFileSync(path.join(fixtureDir, "seed-paperclip-v2026.1106.0.sql"), "utf8"),
+    );
+    expect(readFileSync(path.join(fixtureRoot, "manifest.json"), "utf8")).toBe(
+      readFileSync(path.join(fixtureDir, "manifest-v2026.1106.0.json"), "utf8"),
+    );
+
+    const { rows, columns } = fixtureSeedClaims(readFileSync(path.join(fixtureRoot, "seed.sql"), "utf8"));
+    const ddl = fixtureDdlClaims(readFileSync(path.join(fixtureRoot, "schema.sql"), "utf8"));
+    expect(rows.size, "fixture contains seeded vendor/entity data").toBeGreaterThan(0);
+    for (const [table, actual] of rows) {
+      expect(actual, `${table} must not be an empty vendor/entity claim`).toBeGreaterThan(0);
+    }
+    for (const [table, expected] of Object.entries(manifest.entityCounts)) {
+      expect(rows.get(table), `${table} entity rows`).toBe(expected);
+    }
+    for (const [table, expected] of Object.entries(manifest.vendorGapCounts)) {
+      expect(rows.get(table), `${table} vendor-gap rows`).toBe(expected);
+      expect(expected, `${table} must not be an empty vendor claim`).toBeGreaterThan(0);
+    }
+    for (const [table, seededColumns] of columns) {
+      expect(ddl.has(table), `${table} is present in the DDL`).toBe(true);
+      for (const column of seededColumns) expect(ddl.get(table)!.has(column), `${table}.${column} is present in the DDL`).toBe(true);
+    }
+    for (const table of vendorRelease.extraTables) expect(ddl.has(table), `${table} vendor table is present in the DDL`).toBe(true);
+    for (const qualifiedColumn of vendorRelease.extraColumns) {
+      const [table, column] = qualifiedColumn.split(".", 2);
+      expect(ddl.get(table!), `${qualifiedColumn} table is present in the DDL`).toBeDefined();
+      expect(ddl.get(table!)!.has(column!), `${qualifiedColumn} is present in the DDL`).toBe(true);
+    }
+    // Every DDL table that the fixture actually seeds must be pinned in the manifest
+    // (entityCounts or vendorGapCounts). A table seeded but not counted would let the
+    // manifest drift from the seed while the counts keep passing.
+    const countedTables = new Set([...Object.keys(manifest.entityCounts), ...Object.keys(manifest.vendorGapCounts)]);
+    const seeded = [...rows.keys()].sort();
+    const counted = [...countedTables].sort();
+    expect(seeded, "every seeded table is pinned in the manifest (no silent extra seeds)").toEqual(counted);
+    // The pinned vendor data is exactly the registry's DDL coverage for this release,
+    // and each pinned table is non-empty: a vendor claim with zero rows is a silent loss.
+    for (const table of counted) {
+      expect(ddl.has(table), `${table} is present in the DDL`).toBe(true);
+      expect(rows.get(table), `${table} must not be an empty vendor claim`).toBeGreaterThan(0);
     }
   });
 
@@ -498,6 +714,16 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     // Model a newer Paperclip source: it carries the two columns Myrmidon now preserves.
     await db.execute(sql.raw('alter table "agents" add column if not exists "appearance" jsonb'));
     await db.execute(sql.raw('alter table "issues" add column if not exists "title_needs_generation" boolean not null default false'));
+    await db.execute(sql.raw(`
+      create table if not exists "resource_lifecycle_events" (
+        "id" bigserial primary key,
+        "company_id" uuid not null,
+        "resource_type" text not null,
+        "resource_id" uuid not null,
+        "action" text not null,
+        "created_at" timestamp with time zone not null default now()
+      )
+    `));
 
     const envelope = await encryptWithKey(SOURCE_KEY, SECRET_VALUE);
     const seed = async (query: string) => db.execute(sql.raw(query));
@@ -879,4 +1105,53 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
       await closeRegisteredClients(f.targetUrl);
     }
   }, T * 2);
+
+  it("migrates empty resource_lifecycle_events without --accept-vendor-only-data", async () => {
+    const f = await fixture();
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    const count = await scalar(f.targetUrl, "select count(*) from activity_log where details->>'source' = 'resource_lifecycle_events'");
+    expect(count).toBe("0");
+  }, T);
+
+  it("migrates 10 sample resource_lifecycle_events into activity_log preserving project associations and counts", async () => {
+    const f = await fixture();
+    const projectId = await scalar(f.sourceUrl, "select id::text from projects limit 1");
+    expect(projectId).toBeTruthy();
+
+    const seedSql = `
+      insert into resource_lifecycle_events (company_id, resource_type, resource_id, action, created_at)
+      values
+        ('${COMPANY_A}', 'project', '${projectId}', 'create', '2026-10-12 10:00:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:05:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:10:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:15:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:20:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:25:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:30:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:35:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:40:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'delete', '2026-10-12 10:45:00+00')
+    `;
+    await scalar(f.sourceUrl, seedSql);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+
+    const totalMapped = await scalar(f.targetUrl, "select count(*) from activity_log where details->>'source' = 'resource_lifecycle_events'");
+    expect(totalMapped).toBe("10");
+
+    const projectAssociated = await scalar(
+      f.targetUrl,
+      `select count(*) from activity_log where entity_type = 'project' and entity_id = '${projectId}' and company_id = '${COMPANY_A}' and details->>'source' = 'resource_lifecycle_events'`,
+    );
+    expect(projectAssociated).toBe("10");
+
+    const createdCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.created' and details->>'source' = 'resource_lifecycle_events'");
+    expect(createdCount).toBe("1");
+    const updatedCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.updated' and details->>'source' = 'resource_lifecycle_events'");
+    expect(updatedCount).toBe("8");
+    const deletedCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.deleted' and details->>'source' = 'resource_lifecycle_events'");
+    expect(deletedCount).toBe("1");
+  }, T);
 });
