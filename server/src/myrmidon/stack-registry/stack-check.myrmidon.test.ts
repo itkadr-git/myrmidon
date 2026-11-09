@@ -25,6 +25,7 @@ import {
   buildStackDigestLine,
   cardsForDigest,
   cardsForLagTasks,
+  fileStackLagTasks,
 } from "./escalation.js";
 import {
   compareContainsFix,
@@ -936,5 +937,100 @@ describe("stack lag escalation (STACK-WATCH-LIVE)", () => {
     const digestLines = cardsForDigest(withStates, now);
     expect(digestLines).toHaveLength(1);
     expect(digestLines[0]).toContain("hindsight");
+  });
+
+  it("includes components with security notes in cardsForLagTasks and cardsForDigest even without lag", () => {
+    const doc = documentWithLocal({
+      langfuse: { version: "langfuse/langfuse:3.2.0" },
+    });
+    const now = new Date("2026-10-02T03:00:00.000Z");
+    const components = doc.components.map((c) => {
+      if (c.name === "langfuse") {
+        return {
+          ...c,
+          upstreamState: {
+            checkedAt: "2026-10-02T03:00:00.000Z",
+            latest: "3.2.0",
+            latestPublishedAt: null,
+            firstSeenAt: "2026-10-01T03:00:00.000Z",
+            previousLatest: "3.2.0",
+            behindBy: 0,
+            notes: { hasSecurity: true, summary: "CVE-2026-1234" },
+            error: null,
+            staleSince: null,
+          },
+        };
+      }
+      return c;
+    });
+    const withSecurity: StackDocument = { ...doc, components };
+    const taskCards = cardsForLagTasks(withSecurity, now);
+    expect(taskCards.map((c) => c.component)).toEqual(["langfuse"]);
+    const digestLines = cardsForDigest(withSecurity, now);
+    expect(digestLines).toHaveLength(1);
+    expect(digestLines[0]).toContain("langfuse");
+  });
+
+  it("fileStackLagTasks creates tasks and handles deduplication via onDeduplicated", async () => {
+    const doc = documentWithLocal({
+      hindsight: { version: "1.1.0" },
+    });
+    const now = new Date("2026-10-02T03:00:00.000Z");
+    const components = doc.components.map((c) => {
+      if (c.name === "hindsight") {
+        return {
+          ...c,
+          upstreamState: {
+            checkedAt: "2026-10-02T03:00:00.000Z",
+            latest: "v1.2.0",
+            latestPublishedAt: null,
+            firstSeenAt: "2026-10-01T03:00:00.000Z",
+            previousLatest: "1.1.0",
+            behindBy: 1,
+            notes: null,
+            error: null,
+            staleSince: null,
+          },
+        };
+      }
+      return c;
+    });
+    const withStates: StackDocument = { ...doc, components };
+
+    // 1. Initial creation
+    let createdCalls = 0;
+    const mockIssueSvc1 = {
+      create: async (_companyId: string, _data: unknown) => {
+        createdCalls += 1;
+        return { id: "issue-1" };
+      },
+    };
+    const res1 = await fileStackLagTasks(
+      {} as any,
+      "company-1",
+      withStates,
+      now,
+      undefined,
+      mockIssueSvc1,
+    );
+    expect(res1).toEqual({ filed: 1, skipped: 0 });
+    expect(createdCalls).toBe(1);
+
+    // 2. Deduplicated creation (onDeduplicated called)
+    const mockIssueSvc2 = {
+      create: async (_companyId: string, data: any) => {
+        data.onDeduplicated?.();
+        return { id: "issue-existing" };
+      },
+    };
+    const res2 = await fileStackLagTasks(
+      {} as any,
+      "company-1",
+      withStates,
+      now,
+      undefined,
+      mockIssueSvc2,
+    );
+    expect(res2).toEqual({ filed: 0, skipped: 1 });
   });
 });

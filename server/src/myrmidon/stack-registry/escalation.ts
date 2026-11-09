@@ -71,7 +71,9 @@ export function buildStackDigestLine(card: StackAttentionCard): string {
 export function cardsForLagTasks(doc: StackDocument, now: Date): StackAttentionCard[] {
   return buildStackAttentionCards(doc).filter((card) => {
     if (card.behindBy != null && card.behindBy >= 1) return true;
+    if (card.severity === "high") return true;
     const upstream = doc.components.find((c) => c.name === card.component)?.upstreamState;
+    if (upstream?.notes?.hasSecurity === true) return true;
     return upstream ? stackUpstreamIsStale(upstream, now) : false;
   });
 }
@@ -80,9 +82,11 @@ export function cardsForLagTasks(doc: StackDocument, now: Date): StackAttentionC
 export function cardsForDigest(doc: StackDocument, now: Date): string[] {
   return buildStackAttentionCards(doc)
     .filter((card) => {
+      if (card.behindBy != null && card.behindBy >= 1) return true;
+      if (card.severity === "high") return true;
       const upstream = doc.components.find((c) => c.name === card.component)?.upstreamState;
-      const stale = upstream ? stackUpstreamIsStale(upstream, now) : false;
-      return (card.behindBy != null && card.behindBy >= 1) || stale;
+      if (upstream?.notes?.hasSecurity === true) return true;
+      return upstream ? stackUpstreamIsStale(upstream, now) : false;
     })
     .map(buildStackDigestLine);
 }
@@ -109,15 +113,16 @@ export async function fileStackLagTasks(
   doc: StackDocument,
   now: Date,
   log?: { warn(fields: object, message: string): void },
+  issueSvc?: { create: (cid: string, data: unknown) => Promise<unknown> },
 ): Promise<{ filed: number; skipped: number }> {
   const cards = cardsForLagTasks(doc, now);
   let filed = 0;
   let skipped = 0;
   for (const card of cards) {
     try {
-      const { issueService } = await loadIssueService();
-      const svc = issueService(db);
+      const svc = issueSvc ?? (await loadIssueService()).issueService(db);
       const task = buildStackLagTask(card, now);
+      let wasDeduped = false;
       const created = (await svc.create(companyId, {
         title: task.title,
         description: task.description,
@@ -125,8 +130,11 @@ export async function fileStackLagTasks(
         priority: task.priority,
         originKind: task.originKind,
         idempotencyKey: task.idempotencyKey,
+        onDeduplicated: () => {
+          wasDeduped = true;
+        },
       } as never)) as { id: string; identifier?: string | null } | null;
-      if (created) filed += 1;
+      if (created && !wasDeduped) filed += 1;
       else skipped += 1;
     } catch (err) {
       skipped += 1;
