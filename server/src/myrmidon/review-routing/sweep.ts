@@ -270,6 +270,10 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     for (const [agentId, load] of await deps.store.loadByAgent(companyId)) {
       liveByReviewer.set(agentId, load);
     }
+    // Per-pass snapshot of the loads the moves must reduce: the wake lane
+    // bumps them afterwards, and rebalancing must judge the queues the pass
+    // started with, not the lanes' own wake bumps.
+    const initialLoads = new Map(liveByReviewer);
     const activeStageIdsByIssue = new Map(pending.map(({ row }) => {
       const policy = typeof row.executionPolicy === "object" && row.executionPolicy !== null
         ? (row.executionPolicy as Record<string, unknown>)
@@ -305,6 +309,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     const reviewersWoken = new Set<string>();
     for (const { row, review } of orderedPending) {
       if (reviewersWoken.has(review.reviewerAgentId)) continue;
+      // A reviewer with a healthy queue (above idle, within queueThreshold) is
+      // owned by the queue-offload/rebalance lanes, which wake the *new*
+      // reviewer on a move; the liveness lane nudges stale reviews sitting
+      // idle with nothing behind them or stuck behind an overloaded queue.
+      const reviewerLoad = initialLoads.get(review.reviewerAgentId) ?? 0;
+      if (reviewerLoad > 0 && reviewerLoad <= settings.queueThreshold) continue;
       try {
         const wakeState = await deps.store.reviewWakeState({
           companyId,
@@ -684,9 +694,18 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       for (const { row, review } of pending) {
         if (moves >= REVIEW_ROUTING_MAX_MOVES_PER_PASS) break;
         if (overdueIds.has(row.id)) continue;
-
+        // The wake liveness lane owns reviews of idle reviewers: rebalancing
+        // must not duplicate its single-dispatch budget, so only a reviewer
+        // actually holding a queue is a candidate for an idle-pool handoff.
+        if ((initialLoads.get(review.reviewerAgentId) ?? 0) <= 0) continue;
+        // Escalation lives in the raw execution state: any escalation marker
+        // (reason, target, policy revision) or an exhausted round circuit
+        // breaker means ADM owns the stage.
         const stateRecord = asRecord(row.executionState);
+        const escalatedRoundCount = typeof stateRecord?.changesRequestedCount === "number" &&
+          stateRecord.changesRequestedCount >= 3;
         if (
+          escalatedRoundCount ||
           stateRecord?.escalationToParticipant ||
           stateRecord?.escalationPolicyRevision ||
           stateRecord?.escalationReason

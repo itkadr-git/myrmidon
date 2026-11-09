@@ -833,11 +833,11 @@ function safeReturnAssignee(
   const isReviewerRole = (role: string | null | undefined) => role === "reviewer" || role === "lead";
   const isReviewer = (principal: IssueExecutionStagePrincipal | null) => {
     if (principal?.type !== "agent") return false;
-    const assignedAgentIsReviewer =
-      principal.agentId === issue.assigneeAgentId && isReviewerRole(issue.assigneeAgentRole);
+    const isCurrentAssignee = principal.agentId === issue.assigneeAgentId;
+    const assignedAgentIsReviewer = isCurrentAssignee && isReviewerRole(issue.assigneeAgentRole);
     return assignedAgentIsReviewer ||
-      (reviewStage ? stageHasParticipant(reviewStage, principal) : false) ||
-      reviewerIds.includes(principal.agentId ?? "");
+      reviewerIds.includes(principal.agentId ?? "") ||
+      (!isCurrentAssignee && (reviewStage ? stageHasParticipant(reviewStage, principal) : false));
   };
   if (!isReviewer(currentAssignee)) return currentAssignee;
   if (currentAssignee?.type === "agent" &&
@@ -1031,7 +1031,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       }
       return { patch };
     }
-    if (!escalatedHold && !stageHasParticipant(activeStage, currentParticipant)) {
+    if (!escalatedHold &&
+        !stageHasParticipant(activeStage, currentParticipant) &&
+        !principalsEqual(currentParticipant, actor)) {
       const participant = selectStageParticipant(activeStage, {
         preferred: explicitAssignee ?? existingState?.currentParticipant ?? null,
         exclude: existingState?.returnAssignee ?? null,
