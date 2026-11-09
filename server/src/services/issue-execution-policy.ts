@@ -1452,16 +1452,6 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     ],
     candidateLoads: input.candidateLoads,
   });
-  if (!participant && pendingStage.type === "review" && excludedExecutors.length > 0) {
-    participant = selectStageParticipant(pendingStage, {
-      preferred:
-        existingState?.status === CHANGES_REQUESTED_STATUS
-          ? explicitAssignee ?? existingState.currentParticipant ?? null
-          : explicitAssignee ?? input.restartPreferredParticipant ?? null,
-      exclude: [returnAssignee ?? participantExclusion],
-      candidateLoads: input.candidateLoads,
-    });
-  }
   while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })) {
     skippedStageIds.push(pendingStage.id);
     pendingStage = nextPendingStage(
