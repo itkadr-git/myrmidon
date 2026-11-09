@@ -7280,8 +7280,18 @@ function getActorIdentityPart(req: Request): string {
     assertCompanyAccess(req, companyId);
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
-    const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const rawLimit = req.query.limit;
+    if (rawLimit !== undefined && (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit) || !Number.isSafeInteger(Number(rawLimit)) || Number(rawLimit) < 1)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
+      return;
+    }
+    const limit = Math.min(1000, rawLimit === undefined ? 200 : Number(rawLimit));
+    const rawBefore = req.query.before;
+    if (rawBefore !== undefined && (typeof rawBefore !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(rawBefore) || !Number.isFinite(Date.parse(rawBefore)) || new Date(rawBefore).toISOString() !== new Date(Date.parse(rawBefore)).toISOString())) {
+      res.status(400).json({ error: "before must be an ISO timestamp" });
+      return;
+    }
+    const before = rawBefore === undefined ? undefined : new Date(rawBefore);
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
     const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
@@ -7295,11 +7305,21 @@ function getActorIdentityPart(req: Request): string {
     ]);
     // Compute the validator before fetching and redacting the response body.
     const vk = (wakeReason !== undefined || hasResult)
-      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult)
-      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult, before)
+      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, undefined, false, before);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult, before });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
+    // Cursor pagination: when the page is exactly `limit` rows, expose the
+    // createdAt of the last row so clients can fetch the next page with
+    // ?before=<cursor>. Array shape is unchanged for existing callers.
+    if (redactedRuns.length >= limit) {
+      const last = redactedRuns[redactedRuns.length - 1] as { createdAt?: string | Date | null };
+      const createdAt = last?.createdAt;
+      if (createdAt) {
+        res.setHeader("X-Next-Cursor", new Date(createdAt).toISOString());
+      }
+    }
     res.json(redactedRuns);
   });
 

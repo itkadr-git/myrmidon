@@ -2,6 +2,7 @@
 // sources, the patch-closed rule over the compare API, the attention cards and
 // the route permissions. No live network: the JSON port is injected.
 
+import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -55,6 +56,7 @@ import {
 } from "./advisory.js";
 import { readStackDocument, writeStackDocument } from "./store.js";
 import { stackRegistryRoutes } from "./routes.js";
+import type { StackBacklogDraft } from "./backlog-draft.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -904,5 +906,33 @@ describe("stack lag escalation (STACK-WATCH-LIVE)", () => {
     const litellm = doc.components.find((c) => c.name === "litellm")!;
     expect(litellm.upstreamState?.latest).toBe("v1.52.0");
     expect(litellm.vulnerabilities).toBeUndefined();
+  });
+
+  it("creates backlog draft tasks when releases lag or carry security notes, respecting deduplication", async () => {
+    const drafts: Array<{ companyId: string; draft: StackBacklogDraft }> = [];
+    const port = fakePort({
+      "repos/langfuse/langfuse/releases": { status: 200, json: langfuseReleases() },
+      "repos/NousResearch/hermes-agent/releases": {
+        status: 200,
+        json: [{ tag_name: "v2026.10.1", published_at: "2026-10-01T00:00:00Z", body: null }],
+      },
+    });
+    const baseDoc = documentWithLocal({ langfuse: { version: "langfuse/langfuse:3.0.0" } });
+    await writeStackDocument(db, baseDoc);
+
+    const companyId = randomUUID();
+    const { companies } = await import("@myrmidon/db");
+    await db.insert(companies).values({ id: companyId, name: "Test Co", issuePrefix: "TC" }).onConflictDoNothing();
+
+    await checkStackReleases(db, {
+      fetchJson: port,
+      now: NOW,
+      createDraft: async (cid, draft) => {
+        drafts.push({ companyId: cid, draft });
+      },
+    });
+
+    expect(drafts.length).toBeGreaterThan(0);
+    expect(drafts.some((d) => d.draft.component === "langfuse")).toBe(true);
   });
 });

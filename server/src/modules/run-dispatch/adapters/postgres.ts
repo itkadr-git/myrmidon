@@ -959,6 +959,8 @@ export function createPostgresRunDispatchAdapter(
             timeoutConfigured: false,
             timeoutSource: "stale_queued_run_gate",
             timeoutFired: false,
+            failedBeforeModel: true,
+            failed_before_model: true,
           },
           updatedAt: now,
         })
@@ -1009,12 +1011,33 @@ export function createPostgresRunDispatchAdapter(
           );
           const replayBlocked =
             parseObject(evidence.automaticRecovery).replay === "blocked";
+          // The parked intent must carry the issue scope: every serving path
+          // (release drain, stranded-wake reconcile, terminal cleanup) reads
+          // `payload ->> 'issueId'`. A resurrection without it could never be
+          // served or cleaned up, so it is not created at all.
+          const wakeIssueId =
+            readNonEmptyString((payload as Record<string, unknown> | null)?.issueId) ?? issueId;
 
           if (
             originalWakeup &&
             (originalWakeup.resurrectionCount ?? 0) < 1 &&
-            !replayBlocked
+            !replayBlocked &&
+            wakeIssueId
           ) {
+            // myrmidon(WAKE-STALL-ROOT-A): park as ordinary deferred queue
+            // input — `deferred_issue_execution` scoped by
+            // `payload ->> 'issueId'`, WITHOUT an `executionWait` marker. A
+            // bare `pending` row is read by no scheduler, so the wake
+            // stranded and the agent idled; an `executionWait` row is
+            // intentionally exempt from the stranded-wake reconcile and
+            // would strand again once the hold clears. Unmarked, the row is
+            // served by the existing bounded paths: the release drain
+            // promotes it through full admission once the lock is free, the
+            // stranded-wake reconcile cancels it on a terminal task or
+            // expires it after 30 minutes and re-wakes the agent. A hold
+            // that re-appears at promotion time skips this row terminally
+            // (its resurrection_count is already 1), so the loop stays
+            // bounded.
             await tx
               .insert(agentWakeupRequests)
               .values({
@@ -1024,8 +1047,11 @@ export function createPostgresRunDispatchAdapter(
                 source: originalWakeup.source,
                 triggerDetail: originalWakeup.triggerDetail,
                 reason: "resurrection_execution_reconciliation_required",
-                payload: originalWakeup.payload,
-                status: "pending",
+                payload: {
+                  ...(payload as Record<string, unknown> | null),
+                  issueId: wakeIssueId,
+                },
+                status: "deferred_issue_execution",
                 requestedByActorType: originalWakeup.requestedByActorType,
                 requestedByActorId: originalWakeup.requestedByActorId,
                 idempotencyKey: `${originalWakeup.idempotencyKey ?? originalWakeup.id}:resurrection:${randomUUID()}`,

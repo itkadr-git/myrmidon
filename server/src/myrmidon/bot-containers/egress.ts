@@ -63,6 +63,17 @@ const PROXY_URL_PASSWORD = "egress";
  *  host's, and a request to it never leaves the container. */
 const BUILTIN_NO_PROXY_HOSTS: readonly string[] = ["localhost", "127.0.0.1", "::1"];
 
+/** The bot's own Telegram API traffic never goes through the egress proxy.
+ *
+ *  A browser inside the bot container can exhaust the proxy's per-client
+ *  tunnel cap (EGRESS_PROXY_MAX_TUNNELS_PER_CLIENT), which would block the
+ *  gateway's sendChatAction ("typing…") calls and make the dialog feel dead.
+ *  Routing api.telegram.org directly keeps the typing indicator alive even
+ *  when the browser holds every proxy slot. The destination is already known
+ *  to the journal from the first observation period, so no inventory value is
+ *  lost by excluding it. */
+const TELEGRAM_API_NO_PROXY_HOSTS: readonly string[] = ["api.telegram.org"];
+
 function nonEmpty(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
@@ -163,6 +174,7 @@ export function botEgressNoProxy(settings: BotEgressSettings, boardUrl: string |
   const hosts = [...BUILTIN_NO_PROXY_HOSTS];
   const boardHost = boardUrlHost(boardUrl);
   if (boardHost !== null) hosts.push(boardHost);
+  hosts.push(...TELEGRAM_API_NO_PROXY_HOSTS);
   hosts.push(...settings.extraNoProxy);
   return [...new Set(hosts)];
 }

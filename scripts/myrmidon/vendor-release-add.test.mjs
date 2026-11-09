@@ -57,6 +57,31 @@ describe("vendor-release-add parseMigrationSql", () => {
   });
 });
 
+describe("vendor-release-add v2026.1106.0 registry entry (OPE-12237)", () => {
+  it("carries the 41 migrations 0334..0374 with non-empty tables/columns", () => {
+    const tsFile = path.resolve(import.meta.dirname, "../../cli/src/commands/myrmidon-migrate-vendor-releases.ts");
+    const content = fs.readFileSync(tsFile, "utf8");
+    const m = /export const VENDOR_EXTRA_RELEASES[^=]*= (\[[\s\S]*\]);\s*$/.exec(content);
+    assert.ok(m, "VENDOR_EXTRA_RELEASES found in vendor-releases.ts");
+    const releases = new Function(`return ${m[1]}`)();
+    const r1106 = releases.find((r) => r.release === "v2026.1106.0");
+    assert.ok(r1106, "v2026.1106.0 entry present");
+    assert.equal(r1106.extra.length, 95, "1106 carries all 95 extras since idx 280");
+    const last41 = r1106.extra.slice(-41);
+    assert.equal(last41[0].tag, "0334_rare_slipstream");
+    assert.equal(last41[40].tag, "0374_rare_wolfpack");
+    for (const e of last41) {
+      assert.match(e.sha256, /^[0-9a-f]{64}$/, `${e.tag} sha256`);
+      assert.ok(Number.isInteger(e.when) && e.when > 0, `${e.tag} when`);
+      assert.ok(Array.isArray(e.tables) && Array.isArray(e.columns), `${e.tag} tables/columns arrays`);
+    }
+    const tables = new Set(last41.flatMap((e) => e.tables));
+    const columns = new Set(last41.flatMap((e) => e.columns));
+    assert.equal(tables.size, 25, "25 new tables introduced by 0334..0374");
+    assert.equal(columns.size, 57, "57 new columns introduced by 0334..0374");
+  });
+});
+
 describe("vendor-release-add PR #1702 manual splice preservation (--regen)", () => {
   it("defines approved columns to preserve from PR #1702", () => {
     assert.ok(PRESERVED_MIGRATION_COLUMNS.has("agents.appearance"));

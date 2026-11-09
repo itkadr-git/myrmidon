@@ -78,6 +78,8 @@ export interface ReviewPullRequestCiFacts {
   state: ReviewPullRequestCiState;
   pullRequestUrl: string | null;
   headSha: string | null;
+  /** The authoritative final `CI result` check's conclusion, when complete. */
+  finalCheckConclusion?: string | null;
   /** Why the state is "unknown"; a short code, never a token or a header. */
   reason?: string | null;
   /**
@@ -123,6 +125,33 @@ export function decideStalledReviewRecovery(facts: StalledReviewRecoveryFacts): 
     kind: "escalate",
     reason: waiting ? "ci_wait_exhausted" : "decision_retries_exhausted",
   };
+}
+
+/**
+ * myrmidon(OPE-12176): may the reviewer of a task be woken now? A reviewer is
+ * admitted only when the `CI result` check of the exact head is green: while CI
+ * is still running (or unreadable) the review waits for CI, and a finished head
+ * with a red check waits for the fix instead of waking a reviewer onto a known
+ * red head. A critical issue keeps the old behaviour and reviews in parallel
+ * with CI.
+ */
+export type ReviewAdmissionDecision = "admit" | "wait_for_ci" | "wait_red";
+
+export interface ReviewAdmissionFacts {
+  /** CI of the exact head the review decision is made on. */
+  ci: ReviewPullRequestCiState;
+  /** Result of the exact-head `CI result` check, if CI has completed. */
+  headFinalCheck: "green" | "red" | "unknown";
+  /** A critical issue is reviewed in parallel with CI. */
+  critical: boolean;
+}
+
+export function decideReviewAdmission(facts: ReviewAdmissionFacts): ReviewAdmissionDecision {
+  if (facts.critical) return "admit";
+  if (isReviewCiWaiting(facts.ci)) return "wait_for_ci";
+  if (facts.ci === "complete" && facts.headFinalCheck === "unknown") return "wait_for_ci";
+  if (facts.ci === "complete" && facts.headFinalCheck === "red") return "wait_red";
+  return "admit";
 }
 
 /** Error code of a run the maintenance drain interrupted (myrmidon/maintenance/domain.ts). */
@@ -206,12 +235,48 @@ const FINISHED_CHECK_RUN_STATUS = "completed";
 const NOT_A_VERDICT_CONCLUSIONS: ReadonlySet<string> = new Set(["cancelled", "skipped", "stale"]);
 
 /**
+ * CI state of one head commit from ALL of its check runs (the latest run of
+ * every check name). Repositories without the aggregate `CI result` check
+ * (anything that is not the Myrmidon workflow) still have a finished CI: it is
+ * the moment when no check of the head is queued, in progress or waiting
+ * anymore. Whatever the conclusions, a finished CI is a verdict the reviewer
+ * may act on; zero check runs means CI has not started yet.
+ * A missing check list means the read failed: "unknown".
+ */
+export function pullRequestHeadCiStateFromAllChecks(input: {
+  checkRuns: readonly unknown[] | null;
+}): "pending" | "complete" | "unknown" {
+  if (!input.checkRuns) return "unknown";
+  if (input.checkRuns.length === 0) return "pending";
+  const allFinished = input.checkRuns.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const run = entry as Record<string, unknown>;
+    return run.status === FINISHED_CHECK_RUN_STATUS;
+  });
+  return allFinished ? "complete" : "pending";
+}
+
+/**
  * CI state of one head commit from its check runs. CI of the head is finished
  * only when the final `CI result` check exists and is completed: the other
  * checks are ignored, so a failed `checks` or `freeze` with `typecheck` and
  * `tests` still queued is not a finished CI. A missing check list means the
  * read failed: "unknown".
  */
+export function pullRequestHeadFinalCheckConclusion(input: {
+  checkRuns: readonly unknown[] | null;
+}): string | null {
+  if (!input.checkRuns) return null;
+  for (const entry of input.checkRuns) {
+    if (!entry || typeof entry !== "object") continue;
+    const run = entry as Record<string, unknown>;
+    if (run.name !== REVIEW_CI_FINAL_CHECK_NAME || run.status !== FINISHED_CHECK_RUN_STATUS) continue;
+    if (typeof run.conclusion !== "string" || NOT_A_VERDICT_CONCLUSIONS.has(run.conclusion)) continue;
+    return run.conclusion;
+  }
+  return null;
+}
+
 export function pullRequestHeadCiStateFromChecks(input: {
   checkRuns: readonly unknown[] | null;
 }): "pending" | "complete" | "unknown" {

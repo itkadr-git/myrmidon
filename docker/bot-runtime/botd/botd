@@ -339,15 +339,24 @@ async function main() {
   const owned = (p) => legacyMod.inRegistry((readJson(REGISTRY_PATH, { entries: [] }).entries) || [], p);
   // A path under /workspace that the registry does not list (an old clone, a task directory
   // from before myr-ws): `myr-ws close` would fail with "no open copy", so archive it here.
-  const legacyRemove = (a) =>
-    legacyMod.archiveThenRemove(a, {
-      archiveMod,
-      isGit: (p) => fs.existsSync(path.join(p, ".git")),
-      remove: (p) => removePath(p, roots),
-      probe: probeRemoval(roots),
-      archiveRoot: ARCHIVE_DIR,
-      nestedGit: legacyMod.findNestedGit,
-    });
+  const legacyRemove = (a) => {
+    try {
+      return legacyMod.archiveThenRemove(a, {
+        archiveMod,
+        isGit: (p) => fs.existsSync(path.join(p, ".git")),
+        remove: (p) => removePath(p, roots),
+        probe: probeRemoval(roots),
+        archiveRoot: ARCHIVE_DIR,
+        nestedGit: legacyMod.findNestedGit,
+      });
+    } catch (err) {
+      if (err && err.deferred === "foreign-uid") {
+        signalForeignUid(a.path, { reason: "foreign-uid in archive", uid: err.uid });
+        return { deferred: err.deferred, detail: err.message };
+      }
+      throw err;
+    }
+  };
   const executor = createWorkspaceExecutor({
     isWorkspace,
     owned,

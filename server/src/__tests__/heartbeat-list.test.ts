@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -446,6 +447,41 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect(vkAssigned).not.toBe(vkAll);
     expect(vkWithResult).not.toBe(vkAll);
     expect(vkAssigned).not.toBe(vkWithResult);
+  });
+  it("caps unbounded lists and pages older rows with a window-scoped version key", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Myrmidon",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Worker", role: "engineer", status: "running",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    const first = new Date("2026-05-01T00:00:00.000Z");
+    const values = Array.from({ length: 203 }, (_, i) => ({
+      id: randomUUID(), companyId, agentId, status: "succeeded" as const,
+      createdAt: new Date(first.getTime() + i * 1000),
+      updatedAt: new Date(first.getTime() + i * 1000),
+    }));
+    await db.insert(heartbeatRuns).values(values);
+    const service = heartbeatService(db);
+    const page1 = await service.list(companyId);
+    expect(page1).toHaveLength(200);
+    const before = page1.at(-1)!.createdAt;
+    const page2 = await service.list(companyId, undefined, undefined, { before });
+    expect(page2).toHaveLength(3);
+    expect(page2.map((row) => row.id)).not.toContain(page1[0]?.id);
+    expect(new Set([...page1, ...page2].map((row) => row.id)).size).toBe(203);
+    const key1 = await service.listVersionKey(companyId);
+    const key2 = await service.listVersionKey(companyId, undefined, undefined, false, undefined, undefined, false, before);
+    expect(key1).not.toBe(key2);
+    // Mutating a run outside the visible window must not invalidate page one.
+    await db.update(heartbeatRuns).set({ updatedAt: new Date("2026-06-01T00:00:00.000Z") }).where(eq(heartbeatRuns.id, page2[0]!.id));
+    expect(await service.listVersionKey(companyId)).toBe(key1);
   });
 });
 

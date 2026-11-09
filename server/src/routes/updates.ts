@@ -60,18 +60,52 @@ class InMemoryUpdateSettingsService implements UpdateSettingsService {
   }
 
   async replace(settings: UpdateSettings): Promise<UpdateSettings> {
-    this.settings = JSON.parse(JSON.stringify(settings));
+    const cron =
+      settings.cron ??
+      (typeof settings.maintenanceWindow === "string"
+        ? settings.maintenanceWindow
+        : undefined);
+    const windowObj =
+      typeof settings.maintenanceWindow === "object"
+        ? settings.maintenanceWindow
+        : undefined;
+    const window = settings.window
+      ? { ...settings.window, ...(windowObj ?? {}) }
+      : windowObj;
+    if (cron && window) {
+      window.cron = cron;
+    }
+    const normalized: UpdateSettings = {
+      ...settings,
+      ...(window ? { window } : {}),
+      ...(cron ? { cron } : {}),
+    };
+    this.settings = JSON.parse(JSON.stringify(normalized));
     return this.get();
   }
 
   async update(patch: Partial<UpdateSettings>): Promise<UpdateSettings> {
     const current = await this.get();
+    const windowPatch =
+      patch.window ??
+      (typeof patch.maintenanceWindow === "object"
+        ? patch.maintenanceWindow
+        : undefined);
+    const cronPatch =
+      patch.cron ??
+      (typeof patch.maintenanceWindow === "string"
+        ? patch.maintenanceWindow
+        : undefined);
+    const mergedWindow = windowPatch
+      ? { ...(current.window ?? DEFAULT_UPDATE_SETTINGS.window!), ...windowPatch }
+      : current.window;
+    if (cronPatch && mergedWindow) {
+      mergedWindow.cron = cronPatch;
+    }
     const merged: UpdateSettings = {
       ...current,
       ...patch,
-      window: patch.window
-        ? { ...(current.window ?? DEFAULT_UPDATE_SETTINGS.window!), ...patch.window }
-        : current.window,
+      window: mergedWindow,
       canary: patch.canary
         ? { ...(current.canary ?? DEFAULT_UPDATE_SETTINGS.canary!), ...patch.canary }
         : current.canary,
@@ -107,6 +141,26 @@ class DbUpdateSettingsService implements UpdateSettingsService {
   }
 
   async replace(settings: UpdateSettings): Promise<UpdateSettings> {
+    const cron =
+      settings.cron ??
+      (typeof settings.maintenanceWindow === "string"
+        ? settings.maintenanceWindow
+        : undefined);
+    const windowObj =
+      typeof settings.maintenanceWindow === "object"
+        ? settings.maintenanceWindow
+        : undefined;
+    const window = settings.window
+      ? { ...settings.window, ...(windowObj ?? {}) }
+      : windowObj;
+    if (cron && window) {
+      window.cron = cron;
+    }
+    const normalized: UpdateSettings = {
+      ...settings,
+      ...(window ? { window } : {}),
+      ...(cron ? { cron } : {}),
+    };
     try {
       await this.db.transaction(async (tx) => {
         await tx
@@ -128,25 +182,39 @@ class DbUpdateSettingsService implements UpdateSettingsService {
           await tx
             .update(instanceSettings)
             .set({
-              general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), ${`{${UPDATE_SETTINGS_GENERAL_KEY}}`}::text[], ${JSON.stringify(settings)}::jsonb, true)`,
+              general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), ${`{${UPDATE_SETTINGS_GENERAL_KEY}}`}::text[], ${JSON.stringify(normalized)}::jsonb, true)`,
             })
             .where(eq(instanceSettings.id, row.id));
         }
       });
-      return settings;
+      return normalized;
     } catch {
-      return settings;
+      return normalized;
     }
   }
 
   async update(patch: Partial<UpdateSettings>): Promise<UpdateSettings> {
     const current = await this.get();
+    const windowPatch =
+      patch.window ??
+      (typeof patch.maintenanceWindow === "object"
+        ? patch.maintenanceWindow
+        : undefined);
+    const cronPatch =
+      patch.cron ??
+      (typeof patch.maintenanceWindow === "string"
+        ? patch.maintenanceWindow
+        : undefined);
+    const mergedWindow = windowPatch
+      ? { ...(current.window ?? DEFAULT_UPDATE_SETTINGS.window!), ...windowPatch }
+      : current.window;
+    if (cronPatch && mergedWindow) {
+      mergedWindow.cron = cronPatch;
+    }
     const merged: UpdateSettings = {
       ...current,
       ...patch,
-      window: patch.window
-        ? { ...(current.window ?? DEFAULT_UPDATE_SETTINGS.window!), ...patch.window }
-        : current.window,
+      window: mergedWindow,
       canary: patch.canary
         ? { ...(current.canary ?? DEFAULT_UPDATE_SETTINGS.canary!), ...patch.canary }
         : current.canary,
@@ -212,6 +280,7 @@ export function updatesRoutes(
 
   // Standard paths
   router.get("/updates/settings", getHandler);
+  router.post("/updates/settings", validate(putUpdateSettingsSchema), putHandler);
   router.put("/updates/settings", validate(putUpdateSettingsSchema), putHandler);
   router.patch(
     "/updates/settings",
@@ -226,11 +295,17 @@ export function updatesRoutes(
 
   // Direct aliases on /updates
   router.get("/updates", getHandler);
+  router.post("/updates", validate(putUpdateSettingsSchema), putHandler);
   router.put("/updates", validate(putUpdateSettingsSchema), putHandler);
   router.patch("/updates", validate(patchUpdateSettingsSchema), patchHandler);
 
   // Myrmidon scoped aliases
   router.get("/myrmidon/updates/settings", getHandler);
+  router.post(
+    "/myrmidon/updates/settings",
+    validate(putUpdateSettingsSchema),
+    putHandler,
+  );
   router.put(
     "/myrmidon/updates/settings",
     validate(putUpdateSettingsSchema),

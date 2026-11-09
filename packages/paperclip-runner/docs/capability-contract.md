@@ -8,9 +8,9 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 
 ## Baseline Counts
 
-- Skill/reference headings: 163
+- Skill/reference headings: 164
 - Eval cases: 106 across 16 groups
-- Total normative rows: 269
+- Total normative rows: 270
 - Legacy MCP aliases folded into normative rows: 42
 
 | Eval group | Cases |
@@ -62,6 +62,7 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/tasks-blockers-approvals.md:managing-a-user-s-inbox:11 | control_plane_owned | skills/paperclip/references/tasks-blockers-approvals.md:11 |
 | skill:skills/paperclip/references/tasks-blockers-approvals.md:issue-dependencies-blockers:19 | control_plane_owned | skills/paperclip/references/tasks-blockers-approvals.md:19 |
 | skill:skills/paperclip/references/tasks-blockers-approvals.md:requesting-board-approval:44 | optional_agent_tool | skills/paperclip/references/tasks-blockers-approvals.md:44 |
+| skill:skills/paperclip/references/tasks-blockers-approvals.md:engineer-gate-422-naming-the-caste-and-re-casting-the-task:65 | optional_agent_tool | skills/paperclip/references/tasks-blockers-approvals.md:65 |
 | skill:skills/paperclip/references/interactions-and-decisions.md:issue-thread-interactions:3 | optional_agent_tool | skills/paperclip/references/interactions-and-decisions.md:3 |
 | skill:skills/paperclip/references/interactions-and-decisions.md:standalone-decisions:32 | optional_agent_tool | skills/paperclip/references/interactions-and-decisions.md:32 |
 | skill:skills/paperclip/references/interactions-and-decisions.md:mcp-tool-approval-gates:136 | optional_agent_tool | skills/paperclip/references/interactions-and-decisions.md:136 |
