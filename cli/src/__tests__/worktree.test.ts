@@ -45,7 +45,6 @@ import {
   resolveWorktreeReseedTargetPaths,
   resolveGitWorktreeAddArgs,
   resolvePnpmInstallInvocation,
-  installDependenciesBestEffort,
   resolveCurrentWorktreeEndpoint,
   resolveWorktreeSeedMigrationRevision,
   resolveWorktreeSeedBackupEngine,
@@ -369,15 +368,6 @@ describe("worktree helpers", () => {
       command: "pnpm",
       argsPrefix: [],
     });
-  });
-
-  it("skips dependency installation when targetPath has no package.json", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-no-pkg-"));
-    try {
-      expect(() => installDependenciesBestEffort(tempRoot)).not.toThrow();
-    } finally {
-      fs.rmSync(tempRoot, { recursive: true, force: true });
-    }
   });
 
   it("builds git worktree add args for new and existing branches", () => {

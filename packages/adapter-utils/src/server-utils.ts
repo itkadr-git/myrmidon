@@ -5036,13 +5036,10 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (stdin) {
-          stdin.on("error", () => {});
-        }
         if (opts.stdin != null && stdin) {
           void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed || !stdin.writable) return;
-            stdin.write(opts.stdin as string, () => {});
+            if (child.killed || stdin.destroyed) return;
+            stdin.write(opts.stdin as string);
             stdin.end();
           });
         }
