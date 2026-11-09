@@ -153,13 +153,49 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     if (!baseUrl && !present) throw embedderNotConfigured();
     const endpoint = baseUrl ?? context.env.MYRMIDON_LLM_GATEWAY_BASE_URL ?? "http://127.0.0.1:3000/v1";
     // The key is resolved (or taken from the cache) once per call; the batches below reuse it.
+    const isTransientError = (err: unknown): boolean => {
+      if (signal?.aborted) return false;
+      if (err instanceof Error) {
+        if ((err.name === "AbortError" || err.name === "TimeoutError") && !signal?.aborted) return true; // timeout abort
+        const status = (err as { status?: number }).status;
+        if (status === 429 || (status !== undefined && status >= 500 && status < 600)) return true;
+        const msg = err.message.toLowerCase();
+        if (msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("504") || msg.includes("429")) return true;
+        if (msg.includes("timeout") || msg.includes("fetch failed") || msg.includes("econnreset") || msg.includes("network")) return true;
+      }
+      return false;
+    };
     const embedBatch = async (batch: readonly string[]): Promise<number[][]> => {
-      const response = await fetch(`${endpoint.replace(/\/+$/, "")}/embeddings`, { method: "POST", headers: { "content-type": "application/json", ...(apiKey ? { authorization: "Bearer " + apiKey } : {}) }, body: JSON.stringify({ model, input: batch, dimensions }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS) });
-      if (!response.ok) throw new Error(`corpus embeddings request failed (${response.status})`);
-      const result = await response.json() as { data?: Array<{ index?: number; embedding?: number[] }> };
-      const vectorResults = result.data?.sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((item) => item.embedding);
-      if (!vectorResults || vectorResults.length !== batch.length || vectorResults.some((v) => !v || v.length !== dimensions)) throw new Error("corpus embeddings response has invalid dimensions");
-      return vectorResults as number[][];
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (signal?.aborted) throw signal.reason ?? new Error("Aborted");
+        try {
+          const response = await fetch(`${endpoint.replace(/\/+$/, "")}/embeddings`, {
+            method: "POST",
+            headers: { "content-type": "application/json", ...(apiKey ? { authorization: "Bearer " + apiKey } : {}) },
+            body: JSON.stringify({ model, input: batch, dimensions }),
+            signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS),
+          });
+          if (!response.ok) {
+            const err = new Error(`corpus embeddings request failed (${response.status})`);
+            (err as { status?: number }).status = response.status;
+            throw err;
+          }
+          const result = await response.json() as { data?: Array<{ index?: number; embedding?: number[] }> };
+          const vectorResults = result.data?.sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((item) => item.embedding);
+          if (!vectorResults || vectorResults.length !== batch.length || vectorResults.some((v) => !v || v.length !== dimensions)) throw new Error("corpus embeddings response has invalid dimensions");
+          return vectorResults as number[][];
+        } catch (err) {
+          lastError = err;
+          if (attempt === 0 && !signal?.aborted && isTransientError(err)) {
+            // Exponential backoff before retry (100ms)
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            continue;
+          }
+          break;
+        }
+      }
+      throw lastError;
     };
     return embedInBatches({ input, batchSize: CORPUS_EMBED_BATCH_SIZE, embedBatch });
   };

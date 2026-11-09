@@ -770,4 +770,114 @@ run("production corpus adapters", () => {
 
     await db.$client.end();
   });
+
+  it("retries embedding requests once on transient gateway failure and succeeds", async () => {
+    let calls = 0;
+    const server = http.createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/embeddings") {
+        calls += 1;
+        if (calls === 1) {
+          res.statusCode = 503;
+          res.end(JSON.stringify({ error: "service unavailable" }));
+          return;
+        }
+        let raw = "";
+        req.on("data", (c) => { raw += c; });
+        req.on("end", () => {
+          const body = JSON.parse(raw) as { input?: string[] };
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({
+            data: (body.input ?? []).map((_, index) => ({
+              index,
+              embedding: Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)),
+            })),
+          }));
+        });
+        return;
+      }
+      res.statusCode = 404;
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const dbInstance = createDb(database!.connectionString);
+      const companyId = randomUUID();
+      await dbInstance.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'retry-embed-test', 'REX')`);
+
+      const settings: CorpusPortContext["settings"] = {
+        enabled: true,
+        parserBaseUrl: "http://parser.invalid",
+        parserTimeoutMs: 1000,
+        parserMaxRunMs: 6 * 60 * 60 * 1000,
+        parserQueueTimeoutMs: 4 * 60 * 60 * 1000,
+        embedderModel: "corpus-embed-pplx-0.6b",
+        embedderDimensions: 1024,
+        embedderBaseUrl: baseUrl,
+        maxDocumentBytes: 1024,
+        maxDocumentsPerDataset: 5,
+        parseConcurrency: 1,
+        maxParseAttempts: 2,
+        searchTopK: 5,
+      };
+
+      const ports = createCorpusPorts(dbInstance, { env: {}, settings }, { storageLocalDiskBaseDir: storageDir! } as Config);
+      const dataset = await ports.store.createDataset({ companyId, name: "retry dataset", description: null });
+      const document = await ports.store.createDocument({
+        companyId,
+        datasetId: dataset.id,
+        filename: "retry.txt",
+        mimeType: "text/plain",
+        byteSize: 10,
+        blobRef: "b1",
+        maxAttempts: 2,
+      });
+
+      const indexedCount = await ports.index.indexDocument({
+        companyId,
+        datasetId: dataset.id,
+        documentId: document.id,
+        chunks: [{ text: "retry test text", index: 0 }],
+        embedderModel: settings.embedderModel,
+        embedderDimensions: settings.embedderDimensions,
+        embedderBaseUrl: baseUrl,
+      });
+
+      expect(indexedCount).toBe(1);
+      expect(calls).toBe(2); // First failed with 503, second succeeded
+
+      // Verify that non-transient error (e.g. 400 Bad Request) is NOT retried
+      calls = 0;
+      server.removeAllListeners("request");
+      server.on("request", (req, res) => {
+        if (req.method === "POST" && req.url === "/embeddings") {
+          calls += 1;
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: "bad request" }));
+          return;
+        }
+        res.statusCode = 404;
+        res.end("{}");
+      });
+
+      await expect(
+        ports.index.indexDocument({
+          companyId,
+          datasetId: dataset.id,
+          documentId: document.id,
+          chunks: [{ text: "non-retryable", index: 0 }],
+          embedderModel: settings.embedderModel,
+          embedderDimensions: settings.embedderDimensions,
+          embedderBaseUrl: baseUrl,
+        })
+      ).rejects.toThrow("failed (400)");
+      expect(calls).toBe(1); // Not retried
+
+      await dbInstance.$client.end();
+    } finally {
+      server.close();
+    }
+  });
 });
