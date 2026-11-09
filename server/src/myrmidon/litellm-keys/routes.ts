@@ -18,6 +18,8 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@myrmidon/db";
 import { missingGatewayEnv, readGatewayKeySettings, type GatewayKeySettings } from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
+import { modelProviderModels, modelProviders } from "@myrmidon/db";
+import { eq } from "drizzle-orm";
 import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import {
   assertAgentMayReadOwnGatewayKey,
@@ -69,6 +71,78 @@ function readChainsBody(body: unknown): FallbackChain[] {
     }
     return { model, targets: targets as string[] };
   });
+}
+
+/** The provider kinds that are subscription pools, not per-token paid APIs. */
+const POOL_PROVIDER_TYPES = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"] as const;
+
+/**
+ * LiteLLM carries every pool deployment under the generic "openai" provider
+ * prefix, so provider-based heuristics (single-provider diversity, paid
+ * fallback ordering) misfire on pool model groups. The real provider is the
+ * board channel registry's pool type — join model_provider_models with
+ * model_providers and map litellm model names to it (OPE-12361).
+ */
+export async function readPoolGroupProviders(
+  db: Db,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    const rows = await db
+      .select({
+        litellmModelName: modelProviderModels.litellmModelName,
+        providerType: modelProviders.type,
+      })
+      .from(modelProviderModels)
+      .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id));
+    for (const row of rows) {
+      if ((POOL_PROVIDER_TYPES as readonly string[]).includes(row.providerType)) {
+        map.set(row.litellmModelName, row.providerType);
+      }
+    }
+  } catch {
+    // Registry tables not ready — treat every group as a regular LiteLLM model.
+  }
+  return map;
+}
+
+/** Applies pool provider types to the catalog copy used by the UI heuristics. */
+export function withPoolProviders<T extends { modelName: string; provider: string | null }>(
+  models: T[],
+  poolGroups: Map<string, string>,
+): T[] {
+  return models.map((m) => {
+    const poolType = poolGroups.get(m.modelName);
+    return poolType ? { ...m, provider: poolType } : m;
+  });
+}
+
+/**
+ * Catalog copy for one known model — the shape the fallback editor uses to
+ * judge provider diversity and free/paid ordering (OPE-12361). A missing cost
+ * (null) is NOT a free model: only explicit zero pricing marks a group free,
+ * so paid gateways that do not report costs (kie-gpt-6-luna) never show
+ * «Бесплатно».
+ */
+export function fallbackCatalogEntry(m: {
+  modelName: string;
+  provider: string | null;
+  inputCostPerToken: number | null;
+  outputCostPerToken: number | null;
+}) {
+  return {
+    modelName: m.modelName,
+    provider: m.provider,
+    inputCostPerToken: m.inputCostPerToken,
+    outputCostPerToken: m.outputCostPerToken,
+    isFree: m.inputCostPerToken === 0 && m.outputCostPerToken === 0,
+  };
+}
+
+/** Audit actor carrying the display name when the request has one (OPE-12361). */
+function auditActor(actor: ReturnType<typeof getActorInfo>, req: Request) {
+  const name = req.actor.userName ?? req.actor.userEmail ?? null;
+  return { type: actor.actorType, id: actor.actorId, name };
 }
 
 export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
@@ -190,7 +264,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const actor = getActorInfo(req);
     await auditService.record({
       companyId, category: "keys", action: "litellm_key_created", entityId: agentId,
-      actor: { type: actor.actorType, id: actor.actorId }, before: null,
+      actor: auditActor(actor, req), before: null,
       after: { agentId, allowedModels: created.view.models },
       summary: `Created gateway key for agent ${agentId}`, canRollback: false,
     });
@@ -214,7 +288,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       category: "keys",
       action: "litellm_key_rotated",
       entityId: agentId,
-      actor: { type: actor.actorType, id: actor.actorId },
+      actor: auditActor(actor, req),
       before: { rotated: false },
       after: { rotated: true, allowedModels: rotated.models },
       summary: `Rotated gateway key for agent ${agentId}`,
@@ -271,14 +345,9 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     }
     const report = await readGatewayFallbackTopology(input.deps, { companyId, settings: current });
     try {
+      const poolGroups = await readPoolGroupProviders(db);
       const known = await listCatalog();
-      report.models = known.map((m) => ({
-        modelName: m.modelName,
-        provider: m.provider,
-        inputCostPerToken: m.inputCostPerToken,
-        outputCostPerToken: m.outputCostPerToken,
-        isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
-      }));
+      report.models = withPoolProviders(known, poolGroups).map(fallbackCatalogEntry);
     } catch {
       // models are optional if litellmModels table is unpopulated
     }
@@ -304,18 +373,10 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const chains = readChainsBody(req.body);
     let catalog: Map<string, KnownModelInfo> | undefined;
     try {
+      const poolGroups = await readPoolGroupProviders(db);
       const known = await listCatalog();
       catalog = new Map(
-        known.map((m) => [
-          m.modelName,
-          {
-            modelName: m.modelName,
-            provider: m.provider,
-            inputCostPerToken: m.inputCostPerToken,
-            outputCostPerToken: m.outputCostPerToken,
-            isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
-          },
-        ]),
+        withPoolProviders(known, poolGroups).map((m) => [m.modelName, fallbackCatalogEntry(m)]),
       );
     } catch {
       catalog = new Map();

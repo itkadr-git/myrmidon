@@ -49,7 +49,8 @@ export function litellmAuditRoutes(deps: LitellmAuditRoutesDeps): Router {
     const actor = {
       type: actorInfo.actorType,
       id: actorInfo.actorId,
-      name: "userId" in req.actor ? (req.actor.userId as string) : actorInfo.actorId,
+      // myrmidon(OPE-12361): prefer a real display name; fall back to the id.
+      name: req.actor.userName ?? req.actor.userEmail ?? ("userId" in req.actor ? (req.actor.userId as string) : actorInfo.actorId),
     };
 
     const result = await deps.service.rollback(

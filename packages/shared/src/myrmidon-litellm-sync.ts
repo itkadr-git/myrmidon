@@ -386,7 +386,7 @@ export function getModelCost(modelName: string, catalog?: Map<string, KnownModel
 export function validateFallbackDiversity(
   chain: FallbackChain,
   catalog?: Map<string, KnownModelInfo>,
-): { valid: boolean; error?: string; providers: string[] } {
+): { valid: boolean; error?: string; providers: string[]; reason?: string } {
   if (chain.targets.length === 0) {
     return { valid: true, providers: [] };
   }
@@ -404,6 +404,7 @@ export function validateFallbackDiversity(
     const single = [...effectiveProviders][0] || primaryProvider;
     return {
       valid: false,
+      reason: "single_provider",
       error: `Fallback chain for '${chain.model}' relies on a single provider (${single}). At least one fallback target must use a different provider for redundancy.`,
       providers: [...allProviders],
     };
@@ -427,6 +428,9 @@ export type FallbackIssueKind =
   | "same_provider_as_earlier_paid"
   | "single_provider"
   | "unknown_provider";
+
+/** Backward-compatibility alias for fallback order issue kinds (OPE-12361). */
+export type FallbackOrderIssue = FallbackIssueKind;
 
 export interface FallbackIssue {
   kind: FallbackIssueKind;
@@ -530,10 +534,16 @@ function collectFallbackOrderFindings(
 export function validateFallbackOrder(
   chain: FallbackChain,
   catalog?: Map<string, KnownModelInfo>,
-): { valid: boolean; error?: string; warning?: string } {
+): { valid: boolean; error?: string; warning?: string; reason?: string } {
   const first = collectFallbackOrderFindings(chain, catalog)[0];
   if (!first) return { valid: true };
-  return { valid: false, error: first.error, warning: first.warning };
+  const reason =
+    first.kind === "same_provider_as_primary"
+      ? "paid_same_provider"
+      : first.kind === "same_provider_as_earlier_paid"
+        ? "paid_same_provider_repeat"
+        : first.kind;
+  return { valid: false, error: first.error, warning: first.warning, reason };
 }
 
 /**
