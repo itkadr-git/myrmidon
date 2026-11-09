@@ -1,4 +1,4 @@
-# `@paperclipai/plugin-exe-dev`
+# `@myrmidon/plugin-exe-dev`
 
 Published exe.dev sandbox provider plugin for Paperclip.
 
@@ -9,7 +9,7 @@ This package lives in the Paperclip monorepo, but it is intentionally excluded f
 From a Paperclip instance, install:
 
 ```text
-@paperclipai/plugin-exe-dev
+@myrmidon/plugin-exe-dev
 ```
 
 ## Configuration

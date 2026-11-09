@@ -1,4 +1,4 @@
-# @paperclipai/plugin-kubernetes (alpha)
+# @myrmidon/plugin-kubernetes (alpha)
 
 First-party Paperclip sandbox-provider plugin for Kubernetes.
 

@@ -1,4 +1,4 @@
-# `@paperclipai/plugin-modal`
+# `@myrmidon/plugin-modal`
 
 First-party Modal sandbox provider plugin for Paperclip.
 
@@ -9,7 +9,7 @@ Like the other sandbox-provider packages in this repo, it lives inside the Paper
 From a Paperclip instance, install:
 
 ```text
-@paperclipai/plugin-modal
+@myrmidon/plugin-modal
 ```
 
 The host plugin installer runs `npm install` into the managed plugin directory, so the `modal` SDK dependency is pulled in during installation.
