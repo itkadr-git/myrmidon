@@ -8353,6 +8353,68 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("records heartbeat_run.cancelled in activity_log when a legacy run loses its controller lease", async () => {
+    const { runId } = await seedRunFixture({
+      runtimeMode: "legacy",
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    mockAdapterExecute.mockImplementationOnce(async (input: any) => {
+      await input?.onCancellationReady?.();
+      const leaseError = new Error("Legacy controller lease lost");
+      leaseError.name = "ControllerLeaseLost";
+      const control = adapterExecutionControls.get(runId);
+      control?.controller.abort(leaseError);
+      return {
+        exitCode: 1,
+        signal: "SIGTERM",
+        timedOut: false,
+        errorMessage: "aborted",
+        summary: null,
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions().catch(() => undefined);
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.resultJson).toMatchObject({
+      executionCancellation: {
+        source: { code: "controller_lease_lost", actor: "system" },
+        reason: "Legacy controller lease lost",
+      },
+    });
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.entityId, runId),
+          eq(activityLog.action, "heartbeat_run.cancelled"),
+        ),
+      );
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      action: "heartbeat_run.cancelled",
+      actorType: "system",
+      actorId: "system",
+      entityType: "heartbeat_run",
+      entityId: runId,
+      details: expect.objectContaining({
+        reason: "Legacy controller lease lost",
+        source: {
+          code: "controller_lease_lost",
+          actor: "system",
+        },
+      }),
+    });
+  });
+
   it("records operator interrupt cancellation metadata without changing terminal status", async () => {
     const { runId, issueId } = await seedRunFixture({
       agentStatus: "running",

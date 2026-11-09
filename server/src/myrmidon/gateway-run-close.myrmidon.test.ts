@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -132,6 +133,7 @@ describeEmbeddedPostgres("myrmidon(HERMES-GATEWAY-CLOSE) close the gateway run o
 
   afterEach(async () => {
     registerServerAdapter(originalAdapter);
+    await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -517,5 +519,46 @@ describeEmbeddedPostgres("myrmidon(HERMES-GATEWAY-CLOSE) close the gateway run o
     expect(columns(failedAfter!)).toEqual(failedBefore);
     expect(columns(retryAfter!)).toEqual(retryBefore);
     expect(await ledger(retry.id)).toHaveLength(0);
+  });
+
+  // myrmidon(OPE-12484): a run the lease watcher cancelled carries the real
+  // cause in resultJson.executionCancellation; the close must forward that
+  // cause instead of the board_cancelled placeholder.
+  it("a lease-lost cancellation forwards its recorded cause to the gateway, not board_cancelled", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const run = await createRun(db, agent, {
+      status: "cancelled",
+      errorCode: "cancelled",
+      externalRunId: "gw-lease-lost",
+      finishedAt: new Date(),
+      resultJson: {
+        executionCancellation: {
+          state: "acknowledged",
+          correlationId: "corr-lease-1",
+          source: { code: "controller_lease_lost", actor: "system" },
+          reason: "Legacy controller lease lost",
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.sweepTerminalGatewayRunCloses();
+
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toMatchObject({
+      gatewayRunId: "gw-lease-lost",
+      cancellation: {
+        correlationId: "corr-lease-1",
+        source: { code: "controller_lease_lost", actor: "system" },
+        reason: "Legacy controller lease lost",
+      },
+    });
+    const events = await ledger(run.id);
+    expect(events.at(-1)?.payload).toMatchObject({
+      outcome: "stopped",
+      trigger: "sweep",
+      source: { code: "controller_lease_lost", actor: "system" },
+    });
   });
 });
