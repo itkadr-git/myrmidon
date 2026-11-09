@@ -17,7 +17,9 @@ permissions:
 
 jobs:
   check-acceptance-scenarios:
-    runs-on: ubuntu-latest
+    # 09.11: one light job per PR push; on the shared cloud pool these were ~30 of ~100 queued jobs and held the
+    # release PRs' CI back. Light runners like the other quick gates.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - name: Checkout base branch (never PR code)
@@ -29,15 +31,6 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
         with:
           node-version: '20'
-
-      - name: Generate bot token
-        id: token
-        run: |
-          TOKEN=$(node .github/scripts/get-bot-token.mjs)
-          echo "::add-mask::$TOKEN"
-          echo "value=$TOKEN" >> $GITHUB_OUTPUT
-        env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
 
       - name: Run acceptance scenarios check
         run: |
@@ -148,7 +141,8 @@ jobs:
             });
           '
         env:
-          GH_TOKEN: ${{ steps.token.outputs.value }}
+          # The job token reads the PR (pull-requests: read); the upstream COMMITPERCLIP bot key does not exist in this repo.
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}

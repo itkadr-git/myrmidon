@@ -775,7 +775,9 @@ describe("myrmidon-bot-image.yml", () => {
 
     it("the wrapper's default real git is the libexec path (a wrapper that execs itself would loop)", () => {
       const wrapper = fs.readFileSync(path.join(IMAGE_DIR, "git-reference/git"), "utf8");
-      assert.match(wrapper, /process\.env\.MYRMIDON_GIT_REAL \|\| "\/opt\/paperclip\/libexec\/git"/);
+      assert.match(wrapper, /const IMAGE_GIT = process\.env\.MYRMIDON_GIT_IMAGE \|\| "\/opt\/paperclip\/libexec\/git"/);
+      // a re-entered wrapper (MYRMIDON_GIT_WRAPPED=1) ignores MYRMIDON_GIT_REAL and runs the image git (09.11 fork loop)
+      assert.match(wrapper, /process\.env\.MYRMIDON_GIT_WRAPPED !== "1" && process\.env\.MYRMIDON_GIT_REAL\) \|\| IMAGE_GIT/);
       assert.doesNotMatch(wrapper, /MYRMIDON_GIT_REAL \|\| "\/usr\/bin\/git"/);
       const entry = fs.readFileSync(path.join(IMAGE_DIR, "entrypoint.sh"), "utf8");
       assert.match(entry, /MYRMIDON_GIT_REAL:-\/opt\/paperclip\/libexec\/git/);

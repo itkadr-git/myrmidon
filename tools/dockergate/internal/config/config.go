@@ -168,7 +168,7 @@ type Config struct {
 	// BotRuntimeRoot is the host directory of the shared bot runtime of the
 	// bots (myrmidon 1.6.5-BOT-DISK-H11, the board's instance setting of the
 	// same path). Under it, and only there, a bot may mount the fixed runtime
-	// subdirectories read-only at their fixed mount points
+	// subdirectory read-only at its fixed mount point
 	// (policy.BotRuntimeMounts). Empty or missing (the default) allows none.
 	BotRuntimeRoot string `json:"botRuntimeRoot"`
 	// ScopeRoot is the host directory of shared isolation-scope instances
