@@ -30,13 +30,16 @@ import {
   getModelProviderConnector,
   isK12Plan,
   isModelProviderTypeAvailable,
+  isPoolModelProviderType,
   listAvailableModelProviderTypes,
   MODEL_PROVIDER_DEFAULT_BASE_URLS,
   MODEL_PROVIDER_MODELS_PATH,
   modelProviderAccountSecretName,
   modelProviderSecretName,
+  poolModelLitellmName,
   type CreateModelProviderInput,
   type ModelProviderChannelsView,
+  type ModelProviderConnectorRegistration,
   type ModelProviderPackageWarning,
   type ModelProviderType,
   type PatchModelProviderInput,
@@ -48,6 +51,9 @@ import {
   type PoolAccountOAuthRefreshInput,
   type PoolAccountOAuthStatusResult,
   type PoolAccountRoleSignal,
+  type AddPoolAccountInput,
+  type StartCodexOAuthInput,
+  type CompleteCodexOAuthInput,
 } from "@myrmidon/shared";
 import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
@@ -59,6 +65,13 @@ import {
   recordPoolAccountSignals,
   type ModelProviderPackageSignal,
 } from "./signals.js";
+import {
+  deleteRegisteredPoolAccount,
+  getRegisteredPoolAccounts,
+  registerPoolAccount,
+  startCodexOAuth,
+  completeCodexOAuth,
+} from "./pool-registry.js";
 
 export interface ModelProviderKeyRotationSnapshot {
   secretId: string;
@@ -264,7 +277,24 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
    * is derived there — the store records what the provider answered.
    */
   function litellmModelNameOf(provider: ProviderRow, modelName: string): string {
-    return `${provider.type}/${modelName}`;
+    // A pool model id is (or maps to) the name of the pool's own gateway model
+    // group; only the other provider types get the `<type>/` prefix.
+    return isPoolModelProviderType(provider.type)
+      ? poolModelLitellmName(provider.type, modelName)
+      : `${provider.type}/${modelName}`;
+  }
+
+  /**
+   * The model list a connector provider starts with. A connector that declares
+   * no list gets none: only the ChatGPT pool falls back to the ChatGPT models,
+   * so a connector of another type never inherits them.
+   */
+  function connectorDefaultModels(
+    type: string,
+    connector: ModelProviderConnectorRegistration | null,
+  ): string[] {
+    if (connector?.defaultModels) return [...connector.defaultModels];
+    return type === "chatgpt-pool" ? [...DEFAULT_CHATGPT_POOL_MODELS] : [];
   }
 
   async function hasKeyFor(row: ProviderRow): Promise<boolean> {
@@ -296,7 +326,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
             if (error instanceof ProviderAuthError) throw error;
           }
         }
-        return connector?.defaultModels ? [...connector.defaultModels] : [...DEFAULT_CHATGPT_POOL_MODELS];
+        return connectorDefaultModels(input.type, connector);
       }
 
       const { models } = await deps.catalog.listModels({ baseUrl, apiKey: input.key });
@@ -968,36 +998,35 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       };
     }
 
-    if (!provider.credentialSecretName) {
-      return {
-        providerId: provider.id,
-        providerType: provider.type,
-        channels: [],
-        signals: [],
-      };
-    }
-
-    const apiKey = await deps.secrets.readSecretValue(
-      companyId,
-      provider.credentialSecretName,
-    );
-    if (!apiKey) {
-      return {
-        providerId: provider.id,
-        providerType: provider.type,
-        channels: [],
-        signals: [],
-      };
-    }
-
-    const baseUrl = effectiveBaseUrl(provider.type, provider.baseUrl);
+    const registered = getRegisteredPoolAccounts(companyId, provider.id);
     let rawAccounts: any[] = [];
-    if (deps.catalog.listAccounts) {
-      const res = await deps.catalog.listAccounts({ baseUrl, apiKey });
-      rawAccounts = res.accounts;
+
+    if (provider.credentialSecretName) {
+      const apiKey = await deps.secrets.readSecretValue(
+        companyId,
+        provider.credentialSecretName,
+      );
+      if (apiKey && deps.catalog.listAccounts) {
+        try {
+          const baseUrl = effectiveBaseUrl(provider.type, provider.baseUrl);
+          const res = await deps.catalog.listAccounts({ baseUrl, apiKey });
+          rawAccounts = res.accounts;
+        } catch {
+          // If external provider is unreachable, use registered accounts
+        }
+      }
     }
 
-    const channels = rawAccounts.map(mapRawAccountToChannel);
+    const catalogChannels = rawAccounts.map(mapRawAccountToChannel);
+    const combinedMap = new Map<number, PoolAccountChannelView>();
+    for (const ch of catalogChannels) {
+      combinedMap.set(ch.n, ch);
+    }
+    for (const reg of registered) {
+      combinedMap.set(reg.n, reg);
+    }
+    const channels = Array.from(combinedMap.values()).sort((a, b) => a.n - b.n);
+
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
     const summary = {
@@ -1027,6 +1056,42 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       signals,
       summary,
     };
+  }
+
+  async function addAccount(
+    companyId: string,
+    providerId: string,
+    input: AddPoolAccountInput,
+  ): Promise<PoolAccountChannelView> {
+    const provider = await loadProvider(companyId, providerId);
+    return registerPoolAccount(companyId, provider.id, input);
+  }
+
+  async function deleteAccount(
+    companyId: string,
+    providerId: string,
+    accountNumber: number,
+  ): Promise<void> {
+    const provider = await loadProvider(companyId, providerId);
+    deleteRegisteredPoolAccount(companyId, provider.id, accountNumber);
+  }
+
+  async function startOAuth(
+    companyId: string,
+    providerId: string,
+    input?: StartCodexOAuthInput,
+  ) {
+    const provider = await loadProvider(companyId, providerId);
+    return startCodexOAuth(companyId, provider.id, input);
+  }
+
+  async function completeOAuth(
+    companyId: string,
+    providerId: string,
+    input: CompleteCodexOAuthInput,
+  ): Promise<PoolAccountChannelView> {
+    const provider = await loadProvider(companyId, providerId);
+    return completeCodexOAuth(companyId, provider.id, input);
   }
 
   async function syncPoolSignals(
@@ -1294,6 +1359,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     oauthStatus,
     oauthComplete,
     oauthRefresh,
+    addAccount,
+    deleteAccount,
+    startOAuth,
+    completeOAuth,
   };
 }
 

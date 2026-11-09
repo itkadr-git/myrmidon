@@ -84,6 +84,7 @@ describe("classifyChanges", () => {
         [{ name: "@myrmidon/server", dir: "server", vitestProject: true }],
         [
           { file: "server/src/__tests__/app-private-hostname-gate.test.ts", source: "" },
+          { file: "server/src/myrmidon/app-plugin.myrmidon.test.ts", source: "" },
           { file: "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts", source: "" },
         ],
       );
@@ -91,9 +92,45 @@ describe("classifyChanges", () => {
         package: "@myrmidon/server",
         files: [
           "server/src/__tests__/app-private-hostname-gate.test.ts",
+          "server/src/myrmidon/app-plugin.myrmidon.test.ts",
           "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
         ],
       }]);
+    }
+  });
+
+  it("selects app-plugin static guard when only server/src/app.ts changes (OPE-12295)", () => {
+    const pkgs = [{ name: "@myrmidon/server", dir: "server", vitestProject: true }];
+    const tests = [
+      { file: "server/src/myrmidon/app-plugin.myrmidon.test.ts", source: "" },
+      { file: "server/src/__tests__/unrelated.test.ts", source: 'import { y } from "../services/other.js";' },
+    ];
+    const result = selectTests(["server/src/app.ts"], pkgs, tests);
+    assert.deepEqual(result.files, [{
+      package: "@myrmidon/server",
+      files: ["server/src/myrmidon/app-plugin.myrmidon.test.ts"],
+    }]);
+  });
+
+  it("selects app-plugin static guard when app-plugin*.ts sources change (OPE-12295)", () => {
+    const pkgs = [{ name: "@myrmidon/server", dir: "server", vitestProject: true }];
+    const tests = [
+      { file: "server/src/myrmidon/app-plugin.myrmidon.test.ts", source: "" },
+      { file: "server/src/__tests__/unrelated.test.ts", source: 'import { y } from "../services/other.js";' },
+    ];
+    for (const changedFile of [
+      "server/src/myrmidon/app-plugin.ts",
+      "server/src/myrmidon/app-plugin-routes.ts",
+    ]) {
+      const result = selectTests([changedFile], pkgs, tests);
+      assert.deepEqual(
+        result.files,
+        [{
+          package: "@myrmidon/server",
+          files: ["server/src/myrmidon/app-plugin.myrmidon.test.ts"],
+        }],
+        `Expected app-plugin.myrmidon.test.ts to be selected for ${changedFile}`,
+      );
     }
   });
 

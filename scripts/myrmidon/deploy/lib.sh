@@ -409,6 +409,13 @@ load_config() {
   : "${COMPOSE_FILES:=docker-compose.yml}"
   : "${COMPOSE_OVERRIDE_FILE:=docker-compose.myrmidon-image.yml}"
   : "${HEALTH_URL:?HEALTH_URL is required}"
+  # BOARD-LIVENESS (OPE-12211): optional liveness URL next to HEALTH_URL.
+  # Empty derives it from HEALTH_URL (…/api/health -> …/api/liveness); when
+  # HEALTH_URL does not end in /health the liveness checks are skipped.
+  : "${LIVENESS_URL:=}"
+  if [[ -z "$LIVENESS_URL" && "$HEALTH_URL" == */health ]]; then
+    LIVENESS_URL="${HEALTH_URL%/health}/liveness"
+  fi
   : "${HEALTH_TIMEOUT_SEC:=300}"
   : "${HEALTH_TOKEN_FILE:=}"
   : "${STATE_DIR:=$COMPOSE_DIR/.myrmidon-deploy}"

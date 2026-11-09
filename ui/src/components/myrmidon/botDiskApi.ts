@@ -31,8 +31,8 @@ export interface BotDiskView {
     uvLinkMode?: "clone" | "hardlink" | "copy";
     /**
      * The host directory of the shared bot runtime (1.6.5-BOT-DISK-H11):
-     * every bot on the default host mounts its bin, lazy-packages and lsp
-     * read-only over its own runtime paths. Absent: one copy per bot.
+     * every bot on the default host mounts its bin subdirectory
+     * read-only over its own runtime path. Absent: one copy per bot.
      */
     sharedBotRuntimePath?: string;
     // myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle numbers of

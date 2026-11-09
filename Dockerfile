@@ -197,11 +197,12 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 # bwrap sandbox the local adapters confine agent processes with.
 # BUN_INSTALL=/usr/local makes Bun place its global bins (omp) directly into
 # /usr/local/bin for all image users instead of root's ~/.bun/bin.
+# release downloads retry: github.com answers 504 to anonymous downloads while GitHub throttles anonymous traffic.
 ENV BUN_INSTALL=/usr/local
 RUN set -eu \
-  && curl -fsSL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
   && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
-  && curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/SHASUMS256.txt" | grep "  bun-linux-x64.zip$" | sed "s|  bun-linux-x64.zip|  /tmp/bun.zip|" | sha256sum -c - \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/SHASUMS256.txt" | grep "  bun-linux-x64.zip$" | sed "s|  bun-linux-x64.zip|  /tmp/bun.zip|" | sha256sum -c - \
   && unzip -q /tmp/bun.zip -d /tmp/bun-extract \
   && install -m 0755 "/tmp/bun-extract/bun-linux-x64/bun" /usr/local/bin/bun \
   && rm -rf /tmp/bun.zip /tmp/bun-extract \
@@ -257,6 +258,15 @@ EXPOSE 3100
 # cgroup pid limit is exhausted and *every* fork() in the container fails.
 # tini reaps adopted orphans and forwards signals, so the exec chain below and
 # graceful shutdown are unchanged. Mirrors docker/agent-runtime/Dockerfile.base.
+# Board liveness probe (OPE-12211): the runtime checks /api/liveness, a probe
+# with no database access — it answers 200 as long as the process is alive and
+# listening, even while PostgreSQL is down. Readiness (the database probe, used
+# by the deploy scripts' HEALTH_URL) is /api/health and stays out of the
+# HEALTHCHECK so a database outage cannot get a live process restarted.
+# curl is installed in the base stage; PORT is pinned to 3100 above.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT}/api/liveness" || exit 1
+
 ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
 

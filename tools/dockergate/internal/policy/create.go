@@ -51,8 +51,8 @@ type Env struct {
 	PackageCacheRoot string
 	// BotRuntimeRoot is the host directory of the shared bot runtime
 	// (configuration key "botRuntimeRoot", myrmidon 1.6.5-BOT-DISK-H11). Its
-	// bin/lazy-packages/lsp subdirectories are mounted read-only over the bot's
-	// own runtime paths. Empty allows no such mount.
+	// bin subdirectory is mounted read-only over the bot's own runtime path.
+	// Empty allows no such mount.
 	BotRuntimeRoot string
 	// ScopeRoot is the host directory of shared isolation-scope instances
 	// (configuration key "scopeRoot", BOT-DISK-F), and ScopeInstances the
@@ -281,9 +281,7 @@ func isCachePair(pairs map[string]string, root, source, target string) bool {
 // server/src/myrmidon/bot-containers/template.ts. These pairs are accepted only
 // as "ro" and need no mountSources entry.
 var BotRuntimeMounts = map[string]string{
-	"bin":           "/data/hermes/bin",
-	"lazy-packages": "/data/hermes/lazy-packages",
-	"lsp":           "/data/hermes/lsp",
+	"bin": "/data/hermes/bin",
 }
 
 // OwnerDataContainerRoots are the subtrees of a bot's own hermes volume that

@@ -10,6 +10,10 @@
         "fallbackPlaceholder": "Empty = the role queue claims it",
         "fallbackHint": "The rework first goes to the PR's author (the review's return assignee), then to the assignee of the task the PR delivers. This is the last rung; empty means nobody — an unassigned todo task, which the role queue of SWARM-CLAIM claims.",
         "fallbackError": "Enter an agent UUID, or leave it empty for the role queue",
+        "intervalLabel": "Sweep interval (seconds)",
+        "intervalHint": "How often the loop re-checks the candidate reviews' pull requests. 60–3600 s; the default is 300 s. Saving applies without a restart.",
+        "intervalError": "Enter an integer between {{min}} and {{max}} seconds",
+        "intervalEnvOverride": "{{name}} forces the interval to {{value}} s — clear the env variable to edit it here",
         "saving": "Saving…",
         "changes": "Changes"
       },
