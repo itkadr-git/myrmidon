@@ -294,7 +294,8 @@ export function classifyProviderGarbageOutcome(
  * cross the alert threshold: the same normalised outcome produced by at
  * least {@link ProviderGarbageSettings.distinctAgents} distinct agents, or
  * repeated at least {@link ProviderGarbageSettings.sameAgentRuns} times on a
- * single agent, or matching a known stub signature on any short outcome.
+ * single agent. A known stub signature marks each individual run as
+ * provider_garbage but does not by itself open a P1 incident.
  * One hit per normalised outcome text, most recent group first.
  */
 export function detectProviderGarbageGroups(
@@ -362,9 +363,12 @@ export function detectProviderGarbageGroups(
     const maxSameAgentRuns = Math.max(0, ...perAgentCounts.values());
     const signature = matchKnownSignature(shortGroup[0]!.text, signatures);
 
+    // A known signature marks each run as provider_garbage, but the P1 health
+    // signal still requires the configured burst threshold. This prevents one
+    // isolated maintenance response from opening a fleet incident.
     const crossesDistinct = agentIds.length >= distinctAgents;
     const crossesSameAgent = maxSameAgentRuns >= sameAgentRuns;
-    if (!crossesDistinct && !crossesSameAgent && signature === null) continue;
+    if (!crossesDistinct && !crossesSameAgent) continue;
 
     const latest = shortGroup[shortGroup.length - 1]!;
     hits.push({

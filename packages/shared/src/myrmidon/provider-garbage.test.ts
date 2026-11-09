@@ -48,4 +48,37 @@ describe("provider-garbage", () => {
     expect(hits[0]?.runCount).toBe(5);
     expect(hits[0]?.agentIds).toHaveLength(5);
   });
+
+  it("does not report a group hit for isolated runs matching a stub signature below the burst threshold", () => {
+    const now = new Date("2026-11-08T12:00:00Z");
+    const singleRun = [
+      {
+        runId: "r1",
+        agentId: "agent-1",
+        modelGroup: "nexus-grok",
+        finishedAt: new Date("2026-11-08T11:59:00Z"),
+        outcomeText: "tạm thời bảo trì để nâng cấp và sẽ bù ngày - token",
+      },
+    ];
+
+    const hits = detectProviderGarbageGroups(singleRun, { distinctAgents: 5, sameAgentRuns: 5, now });
+    expect(hits).toHaveLength(0);
+  });
+
+  it("detects groups when same agent runs cross the sameAgentRuns threshold", () => {
+    const now = new Date("2026-11-08T12:00:00Z");
+    const repeatedRuns = [
+      { runId: "r1", agentId: "agent-1", modelGroup: "nexus-grok", finishedAt: new Date("2026-11-08T11:50:00Z"), outcomeText: "server overloaded" },
+      { runId: "r2", agentId: "agent-1", modelGroup: "nexus-grok", finishedAt: new Date("2026-11-08T11:52:00Z"), outcomeText: "server overloaded" },
+      { runId: "r3", agentId: "agent-1", modelGroup: "nexus-grok", finishedAt: new Date("2026-11-08T11:54:00Z"), outcomeText: "server overloaded" },
+      { runId: "r4", agentId: "agent-1", modelGroup: "nexus-grok", finishedAt: new Date("2026-11-08T11:56:00Z"), outcomeText: "server overloaded" },
+      { runId: "r5", agentId: "agent-1", modelGroup: "nexus-grok", finishedAt: new Date("2026-11-08T11:58:00Z"), outcomeText: "server overloaded" },
+    ];
+
+    const hits = detectProviderGarbageGroups(repeatedRuns, { distinctAgents: 5, sameAgentRuns: 5, now });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.runCount).toBe(5);
+    expect(hits[0]?.knownSignature).toBe(true);
+    expect(hits[0]?.signature).toBe("server overloaded");
+  });
 });

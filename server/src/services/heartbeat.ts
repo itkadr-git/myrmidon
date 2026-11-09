@@ -159,6 +159,12 @@ import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-
 import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
 import { resolveAgentTeamLiveness } from "@myrmidon/shared";
 import {
+  classifyProviderGarbageOutcome,
+  detectProviderGarbageGroups,
+  normalizeProviderGarbageOutcomeText,
+  resolveProviderGarbageSettings,
+} from "@myrmidon/shared";
+import {
   COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
   buildLongTaskContextResetNotice,
   evaluateLongTaskContextReset,
@@ -1549,11 +1555,15 @@ function readTransientRetryNotBeforeFromRun(
 function readTransientRecoveryContractFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
+  // myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider_garbage run reuses the
+  // transient-recovery scheduling path (bounded attempts, paused re-dispatch)
+  // even though it carries no adapter retryNotBefore hint.
   const errorFamily = readHeartbeatRunErrorFamily(run);
   return errorFamily === "transient_upstream" ||
-    errorFamily === "provider_quota"
+    errorFamily === "provider_quota" ||
+    run.errorCode === "provider_garbage"
     ? {
-        errorFamily,
+        errorFamily: errorFamily ?? "transient_upstream",
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
       }
     : null;
@@ -16715,9 +16725,14 @@ export function heartbeatService(
       opts?.retryReason ??
       (isGatewayConnectFailed
         ? CONNECT_FAILED_TRANSIENT_RETRY_REASON
-        : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
+        : run.errorCode === "provider_garbage"
+          ? "provider_garbage"
+          : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
-      opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+      opts?.wakeReason ??
+      (run.errorCode === "provider_garbage"
+        ? "provider_garbage_retry"
+        : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON);
     // myrmidon(HERMES-RUN-REATTACH): the gateway answered 429 "busy" with a
     // Retry-After. That is a resource wait like ai_connection_busy, not a
     // provider failure: the wait follows the gateway's own hint (retryNotBefore,
@@ -16736,17 +16751,28 @@ export function heartbeatService(
     const isModelUnavailable =
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
       isModelUnavailableRun(run);
+    // myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider stub burst is an
+    // upstream outage, not a per-run error — retries pause (default 5 min)
+    // for the provider's own attempt budget instead of the fast 30 s pair.
+    const isProviderGarbageRetry = run.errorCode === "provider_garbage";
+    const providerGarbageRetrySettings = isProviderGarbageRetry
+      ? resolveProviderGarbageSettings({
+          env: runtimeEnv as Record<string, string | undefined>,
+        })
+      : null;
     const maxAttempts = Math.max(
       0,
       Math.floor(
         opts?.maxAttempts ??
           (isGatewayConnectFailed
             ? CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS
-            : isModelUnavailable
-              ? MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS
-              : transientRetryNotBeforeHint
-                ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
-                : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+            : isProviderGarbageRetry
+              ? (providerGarbageRetrySettings?.retryMaxAttempts ?? 0)
+              : isModelUnavailable
+                ? MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS
+                : transientRetryNotBeforeHint
+                  ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
+                  : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const nextAttempt =
@@ -16781,7 +16807,19 @@ export function heartbeatService(
         )
       : null;
     const computedBaseSchedule =
-      retryDelayMs != null
+      isProviderGarbageRetry
+        ? nextAttempt <= maxAttempts
+          ? {
+              attempt: nextAttempt,
+              baseDelayMs: providerGarbageRetrySettings?.retryDelayMs ?? 0,
+              delayMs: providerGarbageRetrySettings?.retryDelayMs ?? 0,
+              dueAt: new Date(
+                now.getTime() + (providerGarbageRetrySettings?.retryDelayMs ?? 0),
+              ),
+              maxAttempts,
+            }
+          : null
+        : retryDelayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
@@ -29141,7 +29179,7 @@ export function heartbeatService(
           usageBasis: adapterResult.usageBasis ?? null,
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
-        const runErrorMessage =
+        let runErrorMessage =
           outcome === "cancelled"
             ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
             : outcome === "succeeded"
@@ -29153,7 +29191,7 @@ export function heartbeatService(
                 );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-        const runErrorCode = runGuardStopReason ?? (
+        let runErrorCode = runGuardStopReason ?? (
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
@@ -29191,7 +29229,7 @@ export function heartbeatService(
           }
         }
 
-        const status =
+        let status: "succeeded" | "cancelled" | "timed_out" | "failed" =
           outcome === "succeeded"
             ? "succeeded"
             : outcome === "cancelled"
@@ -29201,6 +29239,39 @@ export function heartbeatService(
                 : "failed";
 
         const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+        // myrmidon(PROVIDER-GARBAGE / OPE-12286): reject known short provider
+        // stubs even when the upstream returned HTTP 200 and the adapter exited
+        // cleanly. Downgrade before the status is persisted so the run goes
+        // through the failed/transient retry path (bounded retries with a
+        // pause) instead of being counted as a successful run with a stub
+        // outcome; the group detector on the finalized run raises one P1
+        // event per burst.
+        const providerGarbageSettings = resolveProviderGarbageSettings({
+          env: runtimeEnv as Record<string, string | undefined>,
+        });
+        if (
+          outcome === "succeeded" &&
+          !runGuardStopReason &&
+          !adapterResult.nativeFinalization &&
+          providerGarbageSettings.retryMaxAttempts > 0
+        ) {
+          const adapterResultJson = parseObject(adapterResult.resultJson);
+          const outcomeCandidate =
+            readNonEmptyString(adapterResultJson?.summary) ??
+            readNonEmptyString(adapterResultJson?.result) ??
+            readNonEmptyString(adapterResultJson?.message) ??
+            readNonEmptyString(adapterResultJson?.text);
+          const garbage = classifyProviderGarbageOutcome(
+            outcomeCandidate,
+            providerGarbageSettings,
+          );
+          if (garbage.suspect) {
+            outcome = "failed";
+            status = "failed";
+            runErrorCode = "provider_garbage";
+            runErrorMessage = `Provider returned a stub reply (${garbage.outcomeChars} chars): ${garbage.outcomeText}`;
+          }
+        }
         // myrmidon(1.6.5 PROMPT-BUDGET A): the adapter's estimated
         // per-section prompt-token breakdown, carried on resultJson by the
         // hermes-gateway adapter (see its execute.ts). Written here into
@@ -29471,6 +29542,105 @@ export function heartbeatService(
             );
           }
           const livenessRun = finalizedRun;
+          // myrmidon(PROVIDER-GARBAGE / OPE-12286): one P1 event per burst.
+          // After a provider_garbage-marked run finalizes, look back through
+          // the sliding window of recent runs: when the same short stub
+          // outcome crosses the settings' distinct-agents (or same-agent)
+          // threshold, append one health event carrying the stub text, the
+          // model group and the run count. Env thresholds tune this without a
+          // restart; failures here never affect the finalized run itself.
+          try {
+            const isGarbageMarkedRun =
+              livenessRun.errorCode === "provider_garbage" ||
+              outcome === "failed" && runErrorCode === "provider_garbage";
+            if (isGarbageMarkedRun) {
+              const settings = resolveProviderGarbageSettings({
+                env: runtimeEnv as Record<string, string | undefined>,
+              });
+              const recentRuns = await db
+                .select({
+                  id: heartbeatRuns.id,
+                  agentId: heartbeatRuns.agentId,
+                  finishedAt: heartbeatRuns.finishedAt,
+                  error: heartbeatRuns.error,
+                  resultJson: heartbeatRuns.resultJson,
+                })
+                .from(heartbeatRuns)
+                .where(
+                  and(
+                    eq(heartbeatRuns.companyId, livenessRun.companyId),
+                    eq(heartbeatRuns.status, "failed"),
+                    gt(
+                      heartbeatRuns.finishedAt,
+                      new Date(Date.now() - settings.windowMs),
+                    ),
+                    isNotNull(heartbeatRuns.error),
+                  ),
+                )
+                .orderBy(desc(heartbeatRuns.finishedAt))
+                .limit(200);
+              const agentModelGroups = new Map<string, string | null>();
+              for (const recent of recentRuns) {
+                if (!agentModelGroups.has(recent.agentId)) {
+                  const recentAgent = await getAgent(recent.agentId);
+                  agentModelGroups.set(
+                    recent.agentId,
+                    readNonEmptyString(recentAgent?.modelTier) ?? null,
+                  );
+                }
+              }
+              const hits = detectProviderGarbageGroups(
+                recentRuns.map((recent) => ({
+                  runId: recent.id,
+                  agentId: recent.agentId,
+                  modelGroup: agentModelGroups.get(recent.agentId) ?? null,
+                  finishedAt: recent.finishedAt ?? new Date(),
+                  outcomeText:
+                    normalizeProviderGarbageOutcomeText(
+                      parseObject(recent.resultJson)?.summary,
+                    ) || recent.error || "",
+                })),
+                {
+                  windowMs: settings.windowMs,
+                  distinctAgents: settings.distinctAgents,
+                  sameAgentRuns: settings.sameAgentRuns,
+                  maxOutcomeChars: settings.maxOutcomeChars,
+                  signatures: settings.signatures,
+                },
+              );
+              for (const hit of hits) {
+                await appendHeartbeatRunEvent(db, {
+                  companyId: livenessRun.companyId,
+                  runId: livenessRun.id,
+                  agentId: livenessRun.agentId,
+                  eventType: "run.provider_garbage.detected",
+                  stream: "system",
+                  level: "critical",
+                  message: `Provider garbage burst: ${hit.runCount} runs across ${hit.agentIds.length} agents received the same short outcome`,
+                  payload: {
+                    outcomeText: hit.sample,
+                    outcomeNormalized: hit.outcomeText,
+                    outcomeChars: Array.from(hit.sample).length,
+                    modelGroup: hit.modelGroup,
+                    agentIds: hit.agentIds,
+                    runIds: hit.runIds,
+                    runCount: hit.runCount,
+                    knownSignature: hit.knownSignature,
+                    signatureSource: hit.signatureSource,
+                    signature: hit.signature,
+                    windowStart: hit.windowStart.toISOString(),
+                    windowEnd: hit.windowEnd.toISOString(),
+                  },
+                });
+                break; // one P1 event per finalized run is enough
+              }
+            }
+          } catch (err) {
+            logger.warn(
+              { err, runId: livenessRun.id },
+              "provider garbage burst detection failed without affecting run finalization",
+            );
+          }
           await refreshContinuationSummaryForRun(livenessRun, agent);
           const skipRunIssueComment =
             parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
@@ -29601,7 +29771,13 @@ export function heartbeatService(
             outcome === "failed" &&
             readTransientRecoveryContractFromRun(livenessRun)
           ) {
-            await scheduleBoundedRetryForRun(livenessRun, agent);
+            await scheduleBoundedRetryForRun(livenessRun, agent, {
+              // provider_garbage has no adapter error-family metadata, but is
+              // still an upstream transient and receives its configured pause.
+              ...(livenessRun.errorCode === "provider_garbage"
+                ? { retryReason: "provider_garbage", wakeReason: "provider_garbage_retry" }
+                : {}),
+            });
           } else if (
             outcome === "failed" &&
             !legacyExecutionNeedsReconciliation(livenessRun)
