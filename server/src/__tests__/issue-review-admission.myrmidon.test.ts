@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -752,20 +752,39 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .patch(`/api/issues/${issueId}`)
       .send({ status: "in_progress", comment: "REQUEST CHANGES: still broken" });
     expect(fallbackRes.status).toBe(200);
-    if (fallbackRes.status !== 200) {
-      console.error("DEBUG fallback return rejection:", {
-        status: fallbackRes.status,
-        body: fallbackRes.body,
-      });
-    }
     const fallbackResubmit = await request(app)
       .patch(`/api/issues/${issueId}`)
       .send({ status: "in_review", executionPolicy: policy });
     expect(fallbackResubmit.status).toBe(200);
+    if (process.env.OPE12177_DEBUG) {
+      const allIssueWakes = await ctx.db
+        .select({
+          idempotencyKey: agentWakeupRequests.idempotencyKey,
+          agentId: agentWakeupRequests.agentId,
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+          source: agentWakeupRequests.source,
+          runId: agentWakeupRequests.runId,
+        })
+        .from(agentWakeupRequests)
+        .where(sql`${agentWakeupRequests.idempotencyKey} like ${`%${issueId}%`}`);
+      console.error("DEBUG OPE-12177 fallback rows:", JSON.stringify(allIssueWakes, null, 1));
+    }
     const fallbackWakes = await ctx.db
       .select()
       .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.idempotencyKey, legacyKey));
+      .where(
+        and(
+          eq(agentWakeupRequests.idempotencyKey, legacyKey),
+          // Reviewer-admission rows only. Recovery/continuation wakes of the
+          // author-executor reuse the legacy fallback key tail but have a
+          // different agent id; disposition outcomes of the reviewer's own
+          // admission (liveness `failed`/`skipped`, OPE-12335 heartbeat
+          // `coalesced`) carry the same key but are not a second admission.
+          eq(agentWakeupRequests.agentId, reviewerAgentId),
+          notInArray(agentWakeupRequests.status, ["failed", "skipped", "coalesced"]),
+        ),
+      );
     expect(fallbackWakes).toHaveLength(1);
     expect(fallbackWakes[0]?.agentId).toBe(reviewerAgentId);
   });
