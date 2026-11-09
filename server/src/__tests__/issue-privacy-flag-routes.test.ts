@@ -159,7 +159,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     const fixture = await seed();
     const boardApp = await createApp(db, boardActor(fixture));
     const res = await request(boardApp)
-      .post("/api/issues")
+      .post(`/api/companies/${fixture.company.id}/issues`)
       .send({
         title: "Board private task",
         status: "todo",
@@ -174,7 +174,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     const fixture = await seed();
     const agentApp = await createApp(db, agentActor(fixture));
     const res = await request(agentApp)
-      .post("/api/issues")
+      .post(`/api/companies/${fixture.company.id}/issues`)
       .send({
         title: "Agent private task",
         status: "todo",

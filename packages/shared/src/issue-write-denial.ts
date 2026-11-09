@@ -301,13 +301,13 @@ export function describeIssueWriteDenial(
         boundary: "Issue privacy flag",
         title: "Only board actors can change the privacy flag",
         description:
-          `\`isPrivate\` marks a task as hidden from agent swarm matching and ` +
-          `agent-facing read paths. Agents cannot set or clear it, no matter who they ` +
-          `act for — the flag is a board-only control.`,
+          `\`isPrivate\` marks this task as hidden from agent swarm matching and ` +
+          `agent-facing read paths. This agent cannot set or clear it, no matter who it ` +
+          `acts for — the flag is a board-only control.`,
         whoCanAct:
           `A board member (or any board actor).`,
         sanctionedPath:
-          `Ask a board member to toggle the flag, or file a child issue describing the ` +
+          `Ask a board member to toggle the flag on this task, or file a child issue describing the ` +
           `privacy need so the board can decide.`,
       };
   }
