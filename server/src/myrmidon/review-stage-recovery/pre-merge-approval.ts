@@ -11,6 +11,7 @@
 import { and, eq } from "drizzle-orm";
 import { issueWorkProducts, issues, issueComments, externalObjects, type Db } from "@myrmidon/db";
 import { selectOpenPullRequestWorkProduct, OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "./policy.js";
+import { extractPullRequestIssueIdentifier } from "../task-pr-sync/linking.js";
 
 export const REVIEW_APPROVAL_PENDING_MERGE_CODE = "review_approval_pending_merge";
 
@@ -56,6 +57,7 @@ export async function findApprovalPendingMergePullRequest(
       type: issueWorkProducts.type,
       status: issueWorkProducts.status,
       url: issueWorkProducts.url,
+      title: issueWorkProducts.title,
       isPrimary: issueWorkProducts.isPrimary,
       updatedAt: issueWorkProducts.updatedAt,
       metadata: issueWorkProducts.metadata,
@@ -90,6 +92,7 @@ export async function findApprovalPendingMergePullRequest(
       type: issueWorkProducts.type,
       status: issueWorkProducts.status,
       url: issueWorkProducts.url,
+      title: issueWorkProducts.title,
       isPrimary: issueWorkProducts.isPrimary,
       updatedAt: issueWorkProducts.updatedAt,
       metadata: issueWorkProducts.metadata,
@@ -126,7 +129,13 @@ export async function findApprovalPendingMergePullRequest(
   const branchMatch = openPrs.find((p) => {
     const meta = (p.metadata && typeof p.metadata === "object" ? p.metadata : {}) as Record<string, unknown>;
     const branch = String(meta.branch ?? meta.headRefName ?? meta.headBranch ?? "");
-    return branch === targetBranch;
+    if (branch === targetBranch) return true;
+    const title = String(p.title ?? meta.title ?? "");
+    const identifiedKey = extractPullRequestIssueIdentifier({
+      headRef: branch,
+      title,
+    });
+    return identifiedKey === key;
   });
 
   if (branchMatch) {
@@ -138,7 +147,12 @@ export async function findApprovalPendingMergePullRequest(
       ? p.data as Record<string, unknown>
       : {};
     const branch = typeof data.headRef === "string" ? data.headRef : "";
-    return branch === targetBranch;
+    if (branch === targetBranch) return true;
+    const identifiedKey = extractPullRequestIssueIdentifier({
+      headRef: data.headRef,
+      title: data.title,
+    });
+    return identifiedKey === key;
   });
 
   if (unlinkedOpenPr) {

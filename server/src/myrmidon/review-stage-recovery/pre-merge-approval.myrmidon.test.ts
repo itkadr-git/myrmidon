@@ -184,6 +184,52 @@ describeEmbeddedPostgres("pre-merge approval findApprovalPendingMergePullRequest
     expect(result?.url).toBe("https://github.com/itkadr-git/myrmidon/pull/105");
   });
 
+  it("finds unlinked open pull request from externalObjects by title issue key", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "company-title", issuePrefix: "TEST" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-title",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TEST-98",
+      title: "Task 98",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.insert(externalObjects).values({
+      id: randomUUID(),
+      companyId,
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "itkadr-git/myrmidon#pull/2612",
+      sanitizedCanonicalUrl: "https://github.com/itkadr-git/myrmidon/pull/2612",
+      isTerminal: false,
+      data: {
+        number: 2612,
+        headRef: "feature/unrelated",
+        title: "TEST-98: protect the done gate",
+        url: "https://github.com/itkadr-git/myrmidon/pull/2612",
+      },
+    });
+
+    const result = await findApprovalPendingMergePullRequest(db, companyId, issueId);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe("https://github.com/itkadr-git/myrmidon/pull/2612");
+  });
+
   it("finds unlinked open pull request from externalObjects by branch bot/<KEY>", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
