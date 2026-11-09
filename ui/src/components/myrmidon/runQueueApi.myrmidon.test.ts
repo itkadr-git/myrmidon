@@ -228,7 +228,7 @@ describe("describeRunQueuePosition — 'position N of M, waiting: <reason>'", ()
         waitDetail: { limit: 5, limitSource: "board", running: 5 },
       },
       t,
-    )).toBe("waiting: priority");
+    )).toBe("waiting: higher-priority runs are ahead");
   });
 });
 

@@ -197,9 +197,13 @@ export function describeRunQueuePosition(
         limit,
         source: source ?? "",
       });
-      parts.push(`${reason} — ${limitText}`);
+      parts.push(translate("runQueue.waiting", { reason: `${reason} — ${limitText}` }));
     } else if (running != null) {
-      parts.push(`${reason} — ${translate("runQueue.waitDetailRunning", { running })}`);
+      parts.push(
+        translate("runQueue.waiting", {
+          reason: `${reason} — ${translate("runQueue.waitDetailRunning", { running })}`,
+        }),
+      );
     } else {
       parts.push(translate("runQueue.waiting", { reason }));
     }

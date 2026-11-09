@@ -43,7 +43,9 @@ export function effectiveAgentRunLimitSource(input: EffectiveAgentRunLimitInput)
   const memoryCeiling = input.memoryMb == null || (input.runMemoryMb ?? DEFAULT_RUN_MEMORY_MB) <= 0
     ? Number.POSITIVE_INFINITY
     : Math.floor(input.memoryMb / (input.runMemoryMb ?? DEFAULT_RUN_MEMORY_MB));
-  if (input.gatewayLimit != null && input.gatewayLimit <= Math.min(input.boardLimit, memoryCeiling)) return "gateway";
+  // "Binds" means strictly below the board value: a ceiling equal to the board
+  // clamps nothing, so the effective limit is still what the board asked for.
+  if (input.gatewayLimit != null && input.gatewayLimit < input.boardLimit && input.gatewayLimit <= memoryCeiling) return "gateway";
   if (memoryCeiling < input.boardLimit) return "memory";
   return "board";
 }

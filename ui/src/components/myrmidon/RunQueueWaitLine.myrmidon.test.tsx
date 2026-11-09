@@ -29,6 +29,32 @@ vi.mock("@/api/client", async (importOriginal) => {
   };
 });
 
+// The i18n mock reads like the runQueueApi formatter suite: a stand-in catalog
+// with the strings this component line composes, so the rendered text is
+// asserted as text, not as raw keys.
+const catalogT = (key: string, options?: Record<string, unknown>) => {
+  const catalog: Record<string, string> = {
+    "runQueue.waiting": "waiting: {{reason}}",
+    "runQueue.waitReason.agent_concurrency": "the agent's own concurrency limit is full",
+    "runQueue.waitReason.host_cpu": "the host CPU ceiling is closed",
+    "runQueue.waitReason.host_memory": "the host free-memory floor is closed",
+    "runQueue.waitReason.priority": "higher-priority runs are ahead",
+    "runQueue.position.of": "Queue position {{position}} of {{total}}",
+    "runQueue.position.only": "Queue position {{position}}",
+    "runQueue.waitDetailLimit": "limit {{limit}}{{source}}",
+    "runQueue.waitDetailRunning": "{{running}} running",
+    "runQueue.limitSource.gateway": " (gateway)",
+    "runQueue.limitSource.memory": " (memory)",
+    "runQueue.limitSource.board": " (board)",
+  };
+  let text = catalog[key] ?? key;
+  for (const [name, value] of Object.entries(options ?? {})) {
+    text = text.replace(new RegExp(`{{\\s*${name}\\s*}}`, "g"), String(value));
+  }
+  return text;
+};
+vi.mock("@/i18n", () => ({ useTranslation: () => ({ t: catalogT }) }));
+
 import { RunQueueWaitLine } from "./RunQueueWaitLine";
 
 let container: HTMLDivElement;
