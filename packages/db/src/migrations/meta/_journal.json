@@ -2739,6 +2739,13 @@
       "when": 1794185558199,
       "tag": "0467_loose_thundra",
       "breakpoints": true
+    },
+    {
+      "idx": 469,
+      "version": "7",
+      "when": 1794202044743,
+      "tag": "0469_blushing_daimon_hellstrom",
+      "breakpoints": true
     }
   ]
 }
