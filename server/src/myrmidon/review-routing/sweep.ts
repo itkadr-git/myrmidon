@@ -703,7 +703,6 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
 
         const candidates = await pool();
         const excluded = excludedReviewerIds(row, [
-          ...(routed?.reviewerAgentIds ?? []),
           review.reviewerAgentId,
           ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
         ]);
@@ -1241,13 +1240,17 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     try {
       const stageId = typeof state?.currentStageId === "string" ? state.currentStageId : "review";
       const requestedAt = new Date().toISOString();
-      const lastWakeState = await deps.store.reviewWakeState({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId });
+      const lastWakeState = deps.store.reviewWakeState
+        ? await deps.store.reviewWakeState({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId })
+        : { attempts: 0, lastAt: null };
       if (lastWakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
         log.warn({ issueId: row.id, reviewerId, attempts: lastWakeState.attempts }, "review routing wake retry limit reached");
         return null;
       }
       const attempt = lastWakeState.attempts + 1;
-      await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at: new Date(requestedAt), attempt });
+      if (deps.store.recordReviewWake) {
+        await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at: new Date(requestedAt), attempt });
+      }
       await deps.wakeReviewer(reviewerId, {
         issueId: row.id,
         reason: "execution_review_requested",

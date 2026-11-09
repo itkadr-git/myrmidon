@@ -1294,7 +1294,7 @@ describe("review rebalancing", () => {
     expect(t.comments[0].body).toContain("rebalanced to @" + LEAD);
     expect(t.activities).toContainEqual(
       expect.objectContaining({
-        action: "issue.execution_reviewer_reassigned",
+        action: REVIEW_ROUTING_REASSIGNED_ACTION,
         details: expect.objectContaining({
           reviewerAgentId: LEAD,
           reviewerRole: "lead",
