@@ -67,7 +67,14 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
   const totalTimeoutMs = (limits && limits.totalTimeoutMs) || ${GITHUB_BROKER_TOTAL_TIMEOUT_MS};
   const retryDelayMs = (limits && limits.retryDelayMs) || ${GITHUB_BROKER_CONFLICT_RETRY_DELAY_MS};
   const body = typeof repository === 'string' && repository ? JSON.stringify({ repository }) : '{}';
-  const deadline = Date.now() + totalTimeoutMs;
+  // myrmidon(OPE-12446): a fresh, in-window cached credential answers this
+  // invocation without contacting the broker at all.
+  const now = Date.now();
+  const cached = paperclipLoadCachedBrokerCredential(env, repository || '', now);
+  if (cached && paperclipCachedBrokerCredentialIsFresh(cached, now)) {
+    return { response: paperclipCachedResponse(cached), tried: [] };
+  }
+  const deadline = now + totalTimeoutMs;
   const tried = [];
   let lastResponse = null;
   for (const base of candidateUrls) {
@@ -102,7 +109,16 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
       response = null;
       outcome = error && error.name === 'TimeoutError' ? 'timeout' : 'no_response';
     }
-    if (response && response.ok) return { response, tried };
+    if (response && response.ok) {
+      // myrmidon(OPE-12446): the broker issued (or reused) a credential for
+      // this run+repository — remember it for the following invocations.
+      try {
+        const clone = response.clone();
+        const result = await clone.json();
+        paperclipStoreBrokerCredential(env, repository || '', result, now);
+      } catch {}
+      return { response, tried };
+    }
     if (response) {
       lastResponse = response;
       await response.arrayBuffer().catch(() => undefined);
@@ -112,6 +128,108 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
   }
   return { response: lastResponse, tried };
 }
+
+// myrmidon(OPE-12446): a run-scoped on-disk cache of the issued credential.
+// Every git/gh invocation is a NEW launcher/helper process, so an in-process
+// memo cannot hold a token across calls. The cache file lives in the directory
+// named by MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR (canonical) or
+// PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR (legacy alias) — a per-run directory
+// the gateway sets alongside the capability — keyed by a hash of the
+// capability and the target repository. While the entry is inside its validity
+// window the broker is not contacted at all; the runaway that drained the
+// GitHub App budget (852 requests in 10 minutes) was one request per git/gh
+// call.
+//
+// Token hygiene: the capability is hashed (sha256) into the file name, the
+// file carries mode 0600 inside a 0700 directory, and the entry is removed as
+// soon as it is no longer usable — the token never outlives its validity on
+// disk. A missing, stale or unwritable cache degrades to the ordinary broker
+// walk and never breaks the operation.
+const PAPERCLIP_BROKER_CACHE_DEFAULT_TTL_MS = 45 * 60 * 1000;
+const PAPERCLIP_BROKER_CACHE_EXPIRY_MARGIN_MS = 60 * 1000;
+function paperclipBrokerCacheRoot(env) {
+  for (const name of ['MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR', 'PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR']) {
+    const value = typeof env[name] === 'string' ? env[name].trim() : '';
+    if (!value) continue;
+    try {
+      const nodeFs = require('node:fs');
+      const nodePath = require('node:path');
+      const root = nodePath.join(value, '.paperclip-broker-cache');
+      nodeFs.mkdirSync(root, { recursive: true, mode: 0o700 });
+      return root;
+    } catch { return null; }
+  }
+  // No per-run directory named: the cache stays OFF and every call walks the
+  // broker exactly as before (the gateway sets the directory alongside the
+  // capability, so real runs always have it). The require call is reached only
+  // when a cache directory is actually configured, so a sandboxed VM harness
+  // without require keeps the cache OFF and the walk intact.
+  return null;
+}
+function paperclipBrokerCachePath(env, repository) {
+  const root = paperclipBrokerCacheRoot(env);
+  if (!root) return null;
+  const nodePath = require('node:path');
+  const key = require('node:crypto').createHash('sha256')
+    .update(String(env.PAPERCLIP_GITHUB_BROKER_TOKEN || '') + '|' + String(repository || ''))
+    .digest('hex')
+    .slice(0, 32);
+  return nodePath.join(root, key + '.json');
+}
+function paperclipLoadCachedBrokerCredential(env, repository, now) {
+  const file = paperclipBrokerCachePath(env, repository);
+  if (!file) return null;
+  try {
+    const nodeFs = require('node:fs');
+    const parsed = JSON.parse(nodeFs.readFileSync(file, 'utf8'));
+    const issuedAt = Number(parsed.issuedAt);
+    const expiresAt = Number(parsed.expiresAt);
+    const token = parsed.env && typeof parsed.env.GH_TOKEN === 'string' ? parsed.env.GH_TOKEN : '';
+    if (!token || !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)
+        || expiresAt - PAPERCLIP_BROKER_CACHE_EXPIRY_MARGIN_MS <= now
+        || now - issuedAt > PAPERCLIP_BROKER_CACHE_DEFAULT_TTL_MS) {
+      try { nodeFs.rmSync(file, { force: true }); } catch {}
+      return null;
+    }
+    return parsed;
+  } catch { return null; }
+}
+function paperclipStoreBrokerCredential(env, repository, result, now) {
+  const file = paperclipBrokerCachePath(env, repository);
+  if (!file) return;
+  try {
+    if (!result || result.status !== 'available' || !result.env || typeof result.env.GH_TOKEN !== 'string') return;
+    // The same allow-list the launcher applies to the broker's env, so a
+    // cached call carries the same identity (commit author/committer included)
+    // as the broker call it replaces.
+    const cachedEnv = {};
+    for (const [key, value] of Object.entries(result.env)) {
+      if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL))$/.test(key) && typeof value === 'string') cachedEnv[key] = value;
+    }
+    if (!cachedEnv.GH_TOKEN) return;
+    let expiresAt = now + PAPERCLIP_BROKER_CACHE_DEFAULT_TTL_MS;
+    const declared = Date.parse(String(result.expiresAt || ''));
+    if (Number.isFinite(declared)) expiresAt = Math.min(declared, expiresAt);
+    require('node:fs').writeFileSync(file, JSON.stringify({
+      issuedAt: now, expiresAt, status: result.status,
+      env: cachedEnv,
+    }), { mode: 0o600 });
+  } catch { /* an unwritable cache must not break the operation */ }
+}
+function paperclipCachedBrokerCredentialIsFresh(entry, now) {
+  return Boolean(entry) && Number(entry.expiresAt) - PAPERCLIP_BROKER_CACHE_EXPIRY_MARGIN_MS > now;
+}
+// A cached entry answers the same shape the walk returns: an object with the
+// fields ok, status and json.
+// Callers only read status/ok and call json() once.
+function paperclipCachedResponse(entry) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => entry,
+  };
+}
+
 `;
 }
 
