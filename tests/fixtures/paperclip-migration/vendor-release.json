@@ -130,6 +130,7 @@
     "mcp_oauth_grants.purpose",
     "mcp_oauth_requests.requested_company_id",
     "projects.personal_owner_user_id",
+    "projects.privacy_owner_user_id",
     "projects.visibility",
     "routine_triggers.archived",
     "routine_triggers.last_webhook_delivery",

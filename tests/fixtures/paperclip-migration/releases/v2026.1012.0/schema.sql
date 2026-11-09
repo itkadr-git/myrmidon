@@ -1,5 +1,5 @@
--- Canonical Paperclip vendor schema DDL for v2026.1012.0
--- Generated from tag v2026.1012.0 (migrations 0000..0305)
+-- Canonical Paperclip vendor schema DDL for v2026.1023.0
+-- Generated from tag v2026.1023.0 (migrations 0000..0333)
 
 CREATE SCHEMA IF NOT EXISTS "drizzle";
 CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (

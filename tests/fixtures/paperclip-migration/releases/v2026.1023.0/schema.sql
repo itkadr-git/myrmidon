@@ -13794,10 +13794,10 @@ DO $$ BEGIN
     ALTER TABLE "workspace_operations" ADD CONSTRAINT "workspace_operations_issue_id_issues_id_fk" FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id") ON DELETE set null ON UPDATE no action;
   END IF;
 END $$;--> statement-breakpoint
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_company_issue_created_idx" ON "heartbeat_runs" USING btree ("company_id","issue_id","created_at");--> statement-breakpoint
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "issues_company_privacy_parent_idx" ON "issues" USING btree ("company_id","privacy_parent_issue_id");--> statement-breakpoint
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "issues_company_privacy_root_idx" ON "issues" USING btree ("company_id","privacy_root_issue_id");--> statement-breakpoint
-CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "projects_company_personal_owner_uq" ON "projects" USING btree ("company_id","personal_owner_user_id") WHERE "projects"."personal_owner_user_id" is not null;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_issue_created_idx" ON "heartbeat_runs" USING btree ("company_id","issue_id","created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "issues_company_privacy_parent_idx" ON "issues" USING btree ("company_id","privacy_parent_issue_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "issues_company_privacy_root_idx" ON "issues" USING btree ("company_id","privacy_root_issue_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "projects_company_personal_owner_uq" ON "projects" USING btree ("company_id","personal_owner_user_id") WHERE "projects"."personal_owner_user_id" is not null;--> statement-breakpoint
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'heartbeat_runs_scope_binding_check' AND conrelid = 'public.heartbeat_runs'::regclass) THEN
     ALTER TABLE "heartbeat_runs" ADD CONSTRAINT "heartbeat_runs_scope_binding_check" CHECK (("heartbeat_runs"."scope_kind" = 'company' AND "heartbeat_runs"."issue_id" IS NULL)
@@ -14874,7 +14874,7 @@ ALTER TABLE "cost_events" ADD CONSTRAINT "cost_events_usage_kind_check" CHECK ("
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- >>> Migration: 0332_little_night_nurse.sql <<<
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "agent_wakeup_requests_question_response_history_idx" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE "agent_wakeup_requests"."idempotency_key" LIKE 'question-response:%';
+CREATE INDEX IF NOT EXISTS "agent_wakeup_requests_question_response_history_idx" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE "agent_wakeup_requests"."idempotency_key" LIKE 'question-response:%';
 
 -- >>> Migration: 0333_normal_wild_pack.sql <<<
 CREATE INDEX "cost_events_data_quality_idx" ON "cost_events" USING btree ("company_id","occurred_at" DESC NULLS LAST,"id") WHERE "cost_events"."billing_type" = 'unknown' or ("cost_events"."cost_status" = 'unpriced' and "cost_events"."billing_type" <> 'subscription_included');--> statement-breakpoint

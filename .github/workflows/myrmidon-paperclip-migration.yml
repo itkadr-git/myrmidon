@@ -7,7 +7,8 @@ name: Paperclip Migration Verification
 #   - v2026.1001.0 (282 migrations, chat_github_reviews gap)
 #   - v2026.1005.0 (292 migrations, browser_use_runs gap)
 #   - v2026.1012.0 (304 migrations, mcp_oauth_tokens gap)
-#
+#   - v2026.1023.0 (333 migrations)
+#   - v2026.1106.0 (374 migrations)
 # The matrix job builds the PRODUCTION CLI from this checkout (no standalone fallback) and runs
 # dry-run (database URL and plain pg_dump), refused runs, real migration (URL and dump) and
 # rollback. Every verdict is read back from the databases and the copied files:
@@ -64,6 +65,10 @@ jobs:
         run: |
           node scripts/myrmidon/paperclip-migration-generate-fixture.mjs
 
+      - name: Vendor release check list (registry, smoke matrix and fixtures must agree)
+        run: |
+          node scripts/myrmidon/vendor-release-add.mjs --check-check-list
+
   db-migration-smoke:
     name: Synthetic DB Migration Smoke (${{ matrix.release }})
     runs-on: ubuntu-24.04
@@ -77,7 +82,7 @@ jobs:
           - "v2026.1001.0"
           - "v2026.1005.0"
           - "v2026.1012.0"
-
+          - "v2026.1023.0"
     services:
       postgres:
         image: postgres:16

@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 
 import {
   PRESERVED_MIGRATION_COLUMNS,
+  checkCheckList,
   formatUnsupportedRelease,
   isStableReleaseTag,
   parseMigrationSql,
@@ -48,6 +49,22 @@ describe("vendor-release-add parseMigrationSql", () => {
     assert.deepEqual(parseMigrationSql(sql), {
       tables: ["browser_use_runs", "chat_task_handoffs"],
       columns: ["agents.appearance", "browser_use_runs.a", "browser_use_runs.b", "routine_triggers.archived"],
+    });
+  });
+  it("parses unquoted table and column names (0313_private_task_access pattern)", () => {
+    const sql = [
+      'ALTER TABLE projects ADD COLUMN IF NOT EXISTS privacy_owner_user_id text;',
+      'CREATE TABLE custom_metrics ("id" uuid PRIMARY KEY);',
+      'ALTER TABLE ONLY public.projects ADD COLUMN notes text;',
+      'ALTER TABLE tasks RENAME COLUMN old_name TO new_name;',
+    ].join("\n--> statement-breakpoint\n");
+    assert.deepEqual(parseMigrationSql(sql), {
+      tables: ["custom_metrics"],
+      columns: [
+        "projects.notes",
+        "projects.privacy_owner_user_id",
+        "tasks.new_name",
+      ],
     });
   });
 
@@ -131,6 +148,77 @@ describe("vendor-release-add PR #1702 manual splice preservation (--regen)", () 
         );
       }
     }
+  });
+});
+
+describe("vendor-release-add --check-check-list", () => {
+  const all = {
+    registry: ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0"],
+    smoke: ["v2026.916.0", "v2026.916.1", "v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0"],
+    fixtures: ["v2026.916.0", "v2026.916.1", "v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0"],
+  };
+
+  it("passes when every registry release is smoke-covered and fixture-covered", () => {
+    assert.deepEqual(checkCheckList(all), []);
+  });
+
+  it("fails when the vendor-watch check could mark a release supported without a smoke run", () => {
+    // The OPE-12241 regression: v2026.1023.0 was in the registry on main but absent
+    // from the db-migration-smoke matrix, so "supported" had no smoke proof.
+    const problems = checkCheckList({
+      registry: ["v2026.1005.0", "v2026.1023.0"],
+      smoke: ["v2026.1005.0"],
+      fixtures: all.fixtures,
+    });
+    assert.ok(
+      problems.some((p) => p.includes("v2026.1023.0") && p.includes("smoke matrix")),
+      `expected a missing-from-smoke-matrix problem, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  it("fails when the smoke matrix names a release the registry does not support", () => {
+    const problems = checkCheckList({
+      registry: ["v2026.1005.0"],
+      smoke: ["v2026.916.0", "v2026.916.1", "v2026.1005.0", "v2026.1099.0"],
+      fixtures: all.fixtures,
+    });
+    assert.ok(
+      problems.some((p) => p.includes("v2026.1099.0") && p.includes("smoke matrix")),
+      `expected an unsupported-smoke problem, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  it("fails when a fixture release is not in the registry", () => {
+    const problems = checkCheckList({
+      registry: ["v2026.1005.0"],
+      smoke: ["v2026.916.0", "v2026.916.1", "v2026.1005.0"],
+      fixtures: ["v2026.916.0", "v2026.916.1", "v2026.1005.0", "v2026.1099.0"],
+    });
+    assert.ok(
+      problems.some((p) => p.includes("v2026.1099.0") && p.includes("fixture release")),
+      `expected an unsupported-fixture problem, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  it("keeps the real repository consistent: registry, smoke matrix and fixtures agree today", () => {
+    const tsFile = path.resolve(import.meta.dirname, "../../cli/src/commands/myrmidon-migrate-vendor-releases.ts");
+    const releasesLine = fs.readFileSync(tsFile, "utf8").split("\n").find((l) => l.startsWith("// releases:"));
+    const registry = releasesLine ? releasesLine.replace("// releases:", "").trim().split(/\s+/).filter(Boolean) : [];
+    const workflow = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../../.github/workflows/myrmidon-paperclip-migration.yml"),
+      "utf8",
+    );
+    const matrix = /matrix:[\s\S]*?release:\n((?:\s+-\s+"v[\d.]+"\n)+)/.exec(workflow);
+    assert.ok(matrix, "release matrix found in the migration workflow");
+    const smoke = [...matrix[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const generator = fs.readFileSync(
+      path.join(import.meta.dirname, "paperclip-migration-generate-fixture.mjs"),
+      "utf8",
+    );
+    const block = /export const SUPPORTED_RELEASES = \[([\s\S]*?)\n\];/.exec(generator);
+    assert.ok(block, "SUPPORTED_RELEASES found in the fixture generator");
+    const fixtures = [...block[1].matchAll(/tag: "([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(checkCheckList({ registry, smoke, fixtures }), []);
   });
 });
 

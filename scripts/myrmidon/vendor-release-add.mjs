@@ -5,6 +5,7 @@
 //   node scripts/myrmidon/vendor-release-add.mjs v2026.1012.0   # add (or refresh) one release
 //   node scripts/myrmidon/vendor-release-add.mjs --regen        # rebuild the file from its own list
 //   node scripts/myrmidon/vendor-release-add.mjs --check-latest # exit 1 if the newest Paperclip release is not listed
+//   node scripts/myrmidon/vendor-release-add.mjs --check-check-list # prove every registry release has smoke + fixture
 //
 // What it does for a release tag: reads the migration journal and the migration
 // folder of paperclipai/paperclip at that tag (through `gh api`), proves that the
@@ -24,6 +25,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const MIGRATIONS_DIR = path.join(ROOT, "packages/db/src/migrations");
 const OUT_FILE = path.join(ROOT, "cli/src/commands/myrmidon-migrate-vendor-releases.ts");
 const UPSTREAM = process.env.PAPERCLIP_UPSTREAM_REPO || "paperclipai/paperclip";
+const MIGRATION_WORKFLOW = path.join(ROOT, ".github/workflows/myrmidon-paperclip-migration.yml");
+const FIXTURES_GENERATOR = path.join(ROOT, "scripts/myrmidon/paperclip-migration-generate-fixture.mjs");
+const FIXTURES_DIR = path.join(ROOT, "tests/fixtures/paperclip-migration");
 const BASE_RELEASE = "v2026.916.1";
 const BASE_LAST_IDX = 279;
 const BASE_LENGTH = 278;
@@ -54,15 +58,22 @@ const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 export function parseMigrationSql(text) {
   const tables = new Set();
   const columns = new Set();
-  const name = String.raw`(?:"public"\.)?"([^"]+)"`;
+  const ident = String.raw`(?:"([^"]+)"|([a-zA-Z0-9_]+))`;
+  const qualTable = String.raw`(?:(?:"public"|public)\.)?${ident}`;
   for (const raw of text.split("--> statement-breakpoint")) {
     const stmt = raw.trim();
-    for (const m of stmt.matchAll(new RegExp(String.raw`CREATE TABLE (?:IF NOT EXISTS )?${name}`, "gi"))) tables.add(m[1]);
-    const alter = new RegExp(String.raw`^ALTER TABLE (?:ONLY )?(?:IF EXISTS )?${name}`, "i").exec(stmt);
+    for (const m of stmt.matchAll(new RegExp(String.raw`CREATE TABLE (?:IF NOT EXISTS )?${qualTable}`, "gi"))) {
+      tables.add(m[1] || m[2]);
+    }
+    const alter = new RegExp(String.raw`^ALTER TABLE (?:ONLY )?(?:IF EXISTS )?${qualTable}`, "i").exec(stmt);
     if (alter) {
-      const table = alter[1];
-      for (const m of stmt.matchAll(/ADD COLUMN (?:IF NOT EXISTS )?"([^"]+)"/gi)) columns.add(`${table}.${m[1]}`);
-      for (const m of stmt.matchAll(/RENAME COLUMN "[^"]+" TO "([^"]+)"/gi)) columns.add(`${table}.${m[1]}`);
+      const table = alter[1] || alter[2];
+      for (const m of stmt.matchAll(new RegExp(String.raw`ADD COLUMN (?:IF NOT EXISTS )?${ident}`, "gi"))) {
+        columns.add(`${table}.${m[1] || m[2]}`);
+      }
+      for (const m of stmt.matchAll(new RegExp(String.raw`RENAME COLUMN (?:(?:"[^"]+")|[a-zA-Z0-9_]+) TO ${ident}`, "gi"))) {
+        columns.add(`${table}.${m[1] || m[2]}`);
+      }
     }
   }
   return { tables: [...tables].sort(), columns: [...columns].sort() };
@@ -188,8 +199,70 @@ function loadExisting(file) {
   return new Map(releases.map((r) => [r.release, r]));
 }
 
+function checkListTags() {
+  const workflow = readFileSync(MIGRATION_WORKFLOW, "utf8");
+  const matrix = /matrix:[\s\S]*?release:\n((?:\s+-\s+"v[\d.]+"\n)+)/.exec(workflow);
+  if (!matrix) throw new Error(`No release matrix found in ${path.relative(ROOT, MIGRATION_WORKFLOW)}`);
+  const smoke = [...matrix[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+
+  const generator = readFileSync(FIXTURES_GENERATOR, "utf8");
+  const block = /export const SUPPORTED_RELEASES = \[([\s\S]*?)\n\];/.exec(generator);
+  if (!block) throw new Error(`SUPPORTED_RELEASES not found in ${path.relative(ROOT, FIXTURES_GENERATOR)}`);
+  const fixtures = [...block[1].matchAll(/tag: "([^"]+)"/g)].map((m) => m[1]);
+
+  return { registry: readListedTags(OUT_FILE), smoke, fixtures };
+}
+
+// The check list: every supported release must be proved by the synthetic migration
+// smoke matrix and by fixture generation, not merely listed in the registry.
+// Otherwise vendor-watch could mark a release "supported" without any smoke run.
+export function checkCheckList({ registry, smoke, fixtures, baseReleases = [BASE_RELEASE, "v2026.916.0"] } = {}) {
+  if (registry === undefined) ({ registry, smoke, fixtures } = checkListTags());
+  const problems = [];
+  const registrySet = new Set(registry);
+  const smokeSet = new Set(smoke);
+  const fixtureSet = new Set(fixtures);
+  const baseSet = new Set(baseReleases);
+
+  for (const tag of registry) {
+    if (!smokeSet.has(tag)) {
+      problems.push(`${tag}: in the vendor registry but missing from the migration smoke matrix (${path.relative(ROOT, MIGRATION_WORKFLOW)})`);
+    }
+    if (!fixtureSet.has(tag)) {
+      problems.push(`${tag}: in the vendor registry but missing from fixture SUPPORTED_RELEASES (paperclip-migration-generate-fixture.mjs)`);
+    }
+  }
+
+  for (const tag of smoke) {
+    if (!registrySet.has(tag) && !baseSet.has(tag)) {
+      problems.push(`${tag}: in the smoke matrix but not in the vendor registry`);
+    }
+  }
+
+  for (const tag of fixtures) {
+    if (!registrySet.has(tag) && !baseSet.has(tag)) {
+      problems.push(`${tag}: fixture release is not in the vendor registry`);
+    }
+  }
+
+  return problems;
+}
+
+function runCheckCheckList() {
+  const problems = checkCheckList();
+  if (problems.length > 0) {
+    for (const p of problems) console.error(`check-list: ${p}`);
+    throw new Error(`Vendor release check list failed with ${problems.length} problem(s)`);
+  }
+  console.log(`Vendor release check list is consistent: registry ${checkListTags().registry.length} release(s), all smoke-covered and fixture-covered.`);
+}
+
 function main(argv) {
   const args = argv.slice(2);
+  if (args.includes("--check-check-list")) {
+    runCheckCheckList();
+    return;
+  }
   if (args.includes("--check-latest")) {
     const releases = JSON.parse(gh([`repos/${UPSTREAM}/releases?per_page=100`]).toString("utf8"));
     const latestRelease = selectLatestStableRelease(releases);
@@ -213,7 +286,7 @@ function main(argv) {
   const want = new Set([...listed, ...tags]);
   want.delete(BASE_RELEASE);
   if (tags.length === 0 && !regen) {
-    console.error("usage: vendor-release-add.mjs <tag>... | --regen | --check-latest");
+    console.error("usage: vendor-release-add.mjs <tag>... | --regen | --check-latest | --check-check-list");
     process.exit(2);
   }
   const local = readLocalJournal();

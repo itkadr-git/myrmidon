@@ -280,6 +280,7 @@ export const SUPPORTED_RELEASES = [
       "mcp_oauth_grants.purpose",
       "mcp_oauth_requests.requested_company_id",
       "projects.personal_owner_user_id",
+      "projects.privacy_owner_user_id",
       "projects.visibility",
       "routine_triggers.archived",
       "routine_triggers.last_webhook_delivery",
@@ -610,7 +611,9 @@ export function sliceCanonicalSchema(canonicalText, lastTag) {
     throw new Error(`Migration marker for ${lastTag} not found in canonical schema.`);
   }
   const nextMarkerIdx = canonicalText.indexOf("-- >>> Migration: ", idx + marker.length);
-  return nextMarkerIdx === -1 ? canonicalText : canonicalText.slice(0, nextMarkerIdx);
+  const sliced = nextMarkerIdx === -1 ? canonicalText : canonicalText.slice(0, nextMarkerIdx);
+  // CREATE INDEX CONCURRENTLY cannot run inside a transaction block (e.g. psql -1 in CI smoke tests).
+  return sliced.replace(/\bCREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/gi, (m, u) => "CREATE " + (u || "") + "INDEX");
 }
 
 export function generateAllFixtures() {

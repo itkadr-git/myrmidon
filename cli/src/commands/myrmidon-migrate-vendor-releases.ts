@@ -568,7 +568,7 @@ export const VENDOR_EXTRA_RELEASES: ReadonlyArray<VendorReleaseExtra> = [
         sha256: "2a5aa13cbc46477e30fea63b9ae988849759cc0f700facbdacd860d95da56617",
         when: 1791371746435,
         tables: ["issue_access_grants", "project_access_members"],
-        columns: ["heartbeat_runs.issue_id", "heartbeat_runs.scope_kind", "issues.privacy_parent_issue_id", "issues.privacy_root_issue_id", "issues.visibility", "projects.personal_owner_user_id", "projects.visibility"],
+        columns: ["heartbeat_runs.issue_id", "heartbeat_runs.scope_kind", "issues.privacy_parent_issue_id", "issues.privacy_root_issue_id", "issues.visibility", "projects.personal_owner_user_id", "projects.privacy_owner_user_id", "projects.visibility"],
       },
       {
         tag: "0314_private_task_draft_assets",
@@ -951,7 +951,7 @@ export const VENDOR_EXTRA_RELEASES: ReadonlyArray<VendorReleaseExtra> = [
         sha256: "2a5aa13cbc46477e30fea63b9ae988849759cc0f700facbdacd860d95da56617",
         when: 1791371746435,
         tables: ["issue_access_grants", "project_access_members"],
-        columns: ["heartbeat_runs.issue_id", "heartbeat_runs.scope_kind", "issues.privacy_parent_issue_id", "issues.privacy_root_issue_id", "issues.visibility", "projects.personal_owner_user_id", "projects.visibility"],
+        columns: ["heartbeat_runs.issue_id", "heartbeat_runs.scope_kind", "issues.privacy_parent_issue_id", "issues.privacy_root_issue_id", "issues.visibility", "projects.personal_owner_user_id", "projects.privacy_owner_user_id", "projects.visibility"],
       },
       {
         tag: "0314_private_task_draft_assets",
