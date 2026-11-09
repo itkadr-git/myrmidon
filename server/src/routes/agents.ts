@@ -279,6 +279,11 @@ import {
   assertInheritProcessEnvChangeAllowed,
   assertMyrmidonAgentConfigChange,
 } from "../myrmidon/agent-self-update.js";
+import {
+  defaultAgentGatewayKeyDeps,
+  extendAgentGatewayKeyAllowlist,
+  type AgentGatewayKeyDeps,
+} from "../myrmidon/litellm-keys/agent-keys.js";
 // myrmidon(L3): operator pause drains instead of cancelling; resume wakes stranded work
 import {
   readCancelActiveRequested,
@@ -546,8 +551,10 @@ export function agentRoutes(
      * then a no-op, which keeps the pre-directory behavior exactly.
      */
     casteDirectory?: AgentCasteDirectoryPort;
+    gatewayKeyDeps?: AgentGatewayKeyDeps;
   } = {},
 ) {
+  const gatewayKeyDeps = options.gatewayKeyDeps ?? defaultAgentGatewayKeyDeps(db);
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -5938,6 +5945,30 @@ function getActorIdentityPart(req: Request): string {
       entityId: agent.id,
       details: summarizeAgentUpdateDetails(patchData),
     });
+
+    const patchedConfig = patchData.adapterConfig as Record<string, unknown> | null | undefined;
+    if (patchedConfig) {
+      const modelsToCheck: string[] = [];
+      if (typeof patchedConfig.model === "string" && patchedConfig.model.trim()) {
+        modelsToCheck.push(patchedConfig.model.trim());
+      }
+      if (Array.isArray(patchedConfig["models.fallbacks"])) {
+        for (const m of patchedConfig["models.fallbacks"]) {
+          if (typeof m === "string" && m.trim()) modelsToCheck.push(m.trim());
+        }
+      }
+      if (modelsToCheck.length > 0) {
+        try {
+          await extendAgentGatewayKeyAllowlist(gatewayKeyDeps, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            newModels: modelsToCheck,
+          });
+        } catch (err) {
+          logger.warn({ err, agentId: agent.id }, "failed to extend gateway key allowlist on agent update");
+        }
+      }
+    }
 
     res.json(redactAgentRowForResponse(agent));
   });
