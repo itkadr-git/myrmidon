@@ -177,7 +177,33 @@ export function archiveThenRemove(a, deps) {
   const own = isGit(a.path) && (deps.isRepo ?? isUsableRepo)(a.path);
   const newVerifiedEntries = [];
   const check = (what, r) => {
-    if (!r || r.ok !== true) throw new Error(`archive-incomplete: ${what}: ${String((r && r.reason) || "unknown").slice(0, 300)}, not removed`);
+    if (!r || r.ok !== true) {
+      const reason = String((r && r.reason) || "unknown");
+      if (/Permission denied|EACCES/i.test(reason)) {
+        const err = new Error(`archive-incomplete: ${what}: ${reason.slice(0, 300)}, not removed`);
+        err.deferred = "foreign-uid";
+        let uid = null;
+        const m = reason.match(/(?:cannot open|open|stat|lstat|read|fatal:.*)?\s*['"]?([^\s:'"]+\/\.git[^\s:'"]*)/i);
+        const candidate = m ? m[1] : null;
+        if (candidate) {
+          try {
+            uid = fs.lstatSync(path.resolve(a.path, candidate)).uid;
+          } catch {
+            uid = null;
+          }
+        }
+        if (uid === null) {
+          try {
+            uid = fs.lstatSync(path.join(a.path, ".git", "index")).uid;
+          } catch {
+            uid = null;
+          }
+        }
+        err.uid = uid;
+        throw err;
+      }
+      throw new Error(`archive-incomplete: ${what}: ${reason.slice(0, 300)}, not removed`);
+    }
     if (r.entry && r.entry.truncatedUntracked === true) {
       throw new Error(`archive-incomplete: ${what}: untracked files over the cap were not archived, not removed`);
     }

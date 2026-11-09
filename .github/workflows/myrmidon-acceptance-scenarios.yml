@@ -1,0 +1,150 @@
+name: Myrmidon Acceptance Scenarios CI Gate
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# One run per PR: a new push supersedes the queued/running check of the old head
+# (without this every synchronize event queued another run — 09.11: 66 queued, 15 duplicates).
+concurrency:
+  group: myrmidon-acceptance-scenarios-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: read
+
+jobs:
+  check-acceptance-scenarios:
+    # 09.11: one light job per PR push; on the shared cloud pool these were ~30 of ~100 queued jobs and held the
+    # release PRs' CI back. Light runners like the other quick gates.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout base branch (never PR code)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version: '20'
+
+      - name: Run acceptance scenarios check
+        run: |
+          # Fetch PR body via GitHub API, extract issue keys (OPE-xxxx), fetch their acceptance-scenarios documents from Paperclip API, and run check-acceptance-scenarios.mjs
+          node -e '
+            const https = require("node:https");
+            const fs = require("node:fs");
+            const { execSync } = require("node:child_process");
+
+            async function ghApi(path) {
+              return new Promise((resolve, reject) => {
+                const req = https.request({
+                  hostname: "api.github.com",
+                  path: path,
+                  method: "GET",
+                  headers: {
+                    "User-Agent": "myrmidon-acceptance-scenarios-action",
+                    "Authorization": "Bearer " + process.env.GH_TOKEN,
+                    "Accept": "application/vnd.github+json"
+                  }
+                }, res => {
+                  let data = "";
+                  res.on("data", chunk => data += chunk);
+                  res.on("end", () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                      resolve(JSON.parse(data));
+                    } else {
+                      reject(new Error(`GitHub API ${path} failed with status ${res.statusCode}: ${data}`));
+                    }
+                  });
+                });
+                req.on("error", reject);
+                req.end();
+              });
+            }
+
+            async function paperclipApi(path) {
+              const apiBase = process.env.PAPERCLIP_API_URL || "http://paperclip-server-1:3100";
+              const url = apiBase.replace(/\/$/, "") + path;
+              const res = await fetch(url, {
+                headers: {
+                  "Authorization": "Bearer " + process.env.PAPERCLIP_API_KEY
+                }
+              });
+              if (!res.ok) {
+                throw new Error(`Paperclip API ${path} failed with status ${res.status}`);
+              }
+              return await res.json();
+            }
+
+            async function main() {
+              const repo = process.env.GH_REPO;
+              const prNumber = process.env.PR_NUMBER;
+              const token = process.env.GH_TOKEN;
+
+              console.log(`Checking PR #${prNumber} in ${repo}...`);
+              const pr = await ghApi(`/repos/${repo}/pulls/${prNumber}`);
+              const body = pr.body || "";
+              const title = pr.title || "";
+              const combined = body + " " + title;
+
+              const matches = combined.match(/OPE-\d+/g) || [];
+              const uniqueIssues = [...new Set(matches)];
+              console.log(`Found issue keys in PR: ${uniqueIssues.join(", ") || "none"}`);
+
+              if (uniqueIssues.length === 0) {
+                console.log("No OPE issue keys found in PR body or title. Skipping acceptance scenario check.");
+                process.exit(0);
+              }
+
+              // Try to fetch documents from Paperclip API if possible, or fallback to finding issue via identifier
+              // Since Paperclip API might not be reachable from public GitHub Actions without tunneling, let us check if PAPERCLIP_API_URL is configured or if we can query issues by identifier.
+              // Alternatively, if paperclip is running internally, let us try to fetch the issue list or documents.
+              let checkedAny = false;
+              for (const issueKey of uniqueIssues) {
+                try {
+                  console.log(`Fetching issue ${issueKey} from Paperclip API...`);
+                  // First find issue id by identifier
+                  const issues = await paperclipApi(`/api/issues?identifier=${issueKey}`);
+                  if (!issues || issues.length === 0) {
+                    console.log(`Issue ${issueKey} not found on Paperclip board.`);
+                    continue;
+                  }
+                  const issueId = issues[0].id;
+                  const docRes = await paperclipApi(`/api/issues/${issueId}/documents/acceptance-scenarios`);
+                  if (docRes && docRes.body) {
+                    const docFilePath = `/tmp/${issueKey}-acceptance-scenarios.json`;
+                    fs.writeFileSync(docFilePath, docRes.body);
+                    console.log(`Running check-acceptance-scenarios for ${issueKey}...`);
+                    execSync(`node scripts/check-acceptance-scenarios.mjs ${docFilePath} --ref origin/${process.env.BASE_REF || "master"}`, { stdio: "inherit" });
+                    checkedAny = true;
+                  } else {
+                    console.log(`No acceptance-scenarios document found for ${issueKey}.`);
+                  }
+                } catch (err) {
+                  console.warn(`Could not check acceptance scenarios for ${issueKey}: ${err.message}`);
+                }
+              }
+
+              if (!checkedAny) {
+                console.log("No acceptance scenarios documents could be verified from Paperclip API for the linked issues.");
+              }
+            }
+
+            main().catch(err => {
+              console.error(err);
+              process.exit(1);
+            });
+          '
+        env:
+          # The job token reads the PR (pull-requests: read); the upstream COMMITPERCLIP bot key does not exist in this repo.
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}

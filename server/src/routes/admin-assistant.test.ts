@@ -490,5 +490,29 @@ describe("admin assistant routes and health collection", () => {
       expect(res.body[0].agentId).toBe("agent-1");
       expect(res.body[0].suggestedAction).toBeDefined();
     });
+
+    it("requires instance admin for unscoped /admin-assistant/stuck-runs", async () => {
+      const app = buildApp(nonAdminAgentActor, mockDb({}));
+      const res = await request(app).get("/admin-assistant/stuck-runs");
+      expect(res.status).toBe(403);
+    });
+
+    it("allows company-scoped access via query parameter for company agents", async () => {
+      const app = buildApp(nonAdminAgentActor, mockDb({}));
+      const res = await request(app).get("/admin-assistant/stuck-runs?companyId=company-1");
+      expect(res.status).toBe(200);
+    });
+
+    it("allows company-scoped access via path parameter for company agents", async () => {
+      const app = buildApp(nonAdminAgentActor, mockDb({}));
+      const res = await request(app).get("/companies/company-1/admin-assistant/stuck-runs");
+      expect(res.status).toBe(200);
+    });
+
+    it("rejects company-scoped access for agents belonging to a different company", async () => {
+      const app = buildApp(nonAdminAgentActor, mockDb({}));
+      const res = await request(app).get("/companies/company-2/admin-assistant/stuck-runs");
+      expect(res.status).toBe(403);
+    });
   });
 });

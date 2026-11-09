@@ -71,6 +71,7 @@ export { myrmidonBotImageRolloutRoutes } from "./bot-containers/bot-image-rollou
 export { myrmidonMetricsApp } from "./monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 export { boardLoadApp, boardLoadLaneTagMiddleware, boardLoadRequestMiddleware } from "./monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
 export { myrmidonMonitoringAlertsRoutes } from "./monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
+export { myrmidonZabbixSinkRoutes } from "./monitoring/zabbix-sink/index.js"; // myrmidon(1.7-ZABBIX-SINK / OPE-12126)
 export { swarmClaimApp } from "./swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 export { createCasteDirectoryReader } from "./castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
 export { myrmidonEmergencyStopRoutes } from "./emergency-stop.js";
@@ -90,6 +91,7 @@ export { myrmidonLitellmWorkersRoutes } from "./litellm-workers/routes.js"; // m
 export { myrmidonLitellmChannelsRoutes } from "./litellm-channels/index.js"; // myrmidon(1.6.7 OPE-9854)
 export { agentInstructionsRevisionsRoutes } from "./agent-instructions-revisions/index.js"; // myrmidon(H2)
 export { myrmidonFleetConsoleRoutes } from "./fleet-console/index.js"; // myrmidon(SC1)
+export { myrmidonOnboardRoutes } from "./server-onboard/index.js"; // myrmidon(SC1)
 export { myrmidonFleetSiteRoutes } from "./bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
 export { myrmidonFleetSiteManageRoutes } from "./bot-containers/fleet-site-manage-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T8)
 export { myrmidonFleetMoveRoutes } from "./bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
@@ -109,6 +111,7 @@ export { sweepTelegramNotifyProactivity } from "./channel-connectors/bridge/noti
 export { accessHubRoutes } from "./access-hub/routes.js"; // myrmidon(SEC1)
 export { ui2LanguageRoutes } from "./ui2-language/routes.js"; // myrmidon(UI2-I18N)
 export { localeUploadRoutes } from "./locale-upload/routes.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187)
+export { localeModuleRoutes } from "../modules/locale/index.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-12117): /api/locale upload+current
 export { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes, myrmidonForagingPassRoutes } from "./foraging/index.js"; // myrmidon(1.6-FORAGE, 1.6.3-FORAGING-IDLE-GATE)
 export { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes, myrmidonHindsightModelsRoutes } from "./agent-memory/index.js"; // myrmidon(MEMORY-UI)
 export { myrmidonToolPolicyCacheRoutes } from "./tool-policy-cache/index.js"; // myrmidon(DB-PERF-C-P4)

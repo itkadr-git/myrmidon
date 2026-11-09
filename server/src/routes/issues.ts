@@ -50,6 +50,7 @@ import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmido
 import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
+  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
 // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
@@ -14489,6 +14490,11 @@ export function issueRoutes(
           });
       }
       if (req.body.executionPolicy !== undefined) {
+        if (req.body.status !== undefined && req.body.status === "done") {
+          throw unprocessable(
+            `Cannot update executionPolicy and transition status to '${req.body.status}' in the same request`,
+          );
+        }
         updateFields.executionPolicy = applyActorMonitorScheduledBy(
           normalizeIssueExecutionPolicy(req.body.executionPolicy),
           actor.actorType,
@@ -14649,7 +14655,7 @@ export function issueRoutes(
           companyId: existing.companyId,
           issueId: existing.id,
         });
-        if (ci.state === "pending" || ci.state === "unknown") {
+        if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -15747,7 +15753,7 @@ export function issueRoutes(
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
-              if (ci.state === "pending" || ci.state === "unknown") {
+              if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."

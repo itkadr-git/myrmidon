@@ -206,6 +206,11 @@ exit 0
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
+  # BOARD-LIVENESS (OPE-12211): the predeploy liveness probe on the copy reads
+  # -w %{http_code} (a plain curl prints the body); answer 200 / ok body.
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *api/health*) cat "$SANDBOX/health.json" ;;
   *bot-container/status*)
     id=""

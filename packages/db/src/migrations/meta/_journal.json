@@ -2732,6 +2732,13 @@
       "when": 1794175196510,
       "tag": "0466_slim_thunderbolt_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 467,
+      "version": "7",
+      "when": 1794185558199,
+      "tag": "0467_loose_thundra",
+      "breakpoints": true
     }
   ]
 }
