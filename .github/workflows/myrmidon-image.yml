@@ -211,7 +211,7 @@ jobs:
           versions="$(docker run --rm --entrypoint /bin/sh "$REF" -c 'bun --version && omp --version && bwrap --version && fd --version')"
           printf '%s\n' "$versions"
           [ "$(printf '%s\n' "$versions" | sed -n '1p')" = "1.3.14" ] || { echo "::error::bun version mismatch"; exit 1; }
-          printf '%s\n' "$versions" | sed -n '2p' | grep -Eq '^18\.' || { echo "::error::omp version mismatch (expected 18.9.2)"; exit 1; }
+          printf '%s\n' "$versions" | sed -n '2p' | grep -Eq '^(omp/)?18\.' || { echo "::error::omp version mismatch (expected 18.9.2)"; exit 1; }
 
       - name: Smoke test diagnostic env masking through docker exec
         if: ${{ github.event_name == 'pull_request' }}
