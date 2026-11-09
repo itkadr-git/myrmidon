@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -345,6 +346,18 @@ server.listen(${SANDBOX_PROXY_PORT}, "127.0.0.1", () => {
 });
 `;
   return source.trimStart();
+}
+
+export async function assertLocalProcessSandboxUserNamespaces(command: string): Promise<void> {
+  const probe = spawnSync(command, [
+    "--unshare-user", "--uid", "0", "--gid", "0", "--", "/bin/true",
+  ], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "ignore", "pipe"] });
+  if (probe.error || probe.status !== 0) {
+    const detail = (probe.stderr ?? "").trim().split(/\r?\n/).find(Boolean);
+    throw new Error(
+      `Local process sandbox requires Linux user namespaces, but Bubblewrap could not create one${detail ? `: ${detail}` : "."} Enable user namespaces for this container (seccomp/AppArmor) or disable the requested sandbox scopes. The process was not started without confinement.`,
+    );
+  }
 }
 
 export async function buildLocalProcessSandboxSpawnTarget(input: {
