@@ -11258,6 +11258,9 @@ export function issueService(db: Db) {
         issueData.status &&
         issueData.status !== "blocked"
       ) {
+        // Block metadata is valid only while the issue is blocked. Clear the
+        // descriptor and its reason atomically with every transition out.
+        patch.blockerMetadata = null;
         patch.unblockDescriptor = null;
         patch.blockedTransitionAt = null;
         patch.blockedOwnerNotifiedAt = null;
