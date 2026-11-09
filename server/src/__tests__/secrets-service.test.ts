@@ -4735,4 +4735,56 @@ describeEmbeddedPostgres("secretService", () => {
       listedSecretCount: 1,
     });
   });
+
+  it("rejects plain env bindings containing the redaction sentinel, not only exact matches (OPE-12270)", async () => {
+    const companyId = await seedCompany("R");
+    const svc = secretService(db);
+
+    // Exact sentinel match: the pre-existing guard.
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, {
+        API_KEY: { type: "plain", value: "***REDACTED***" },
+      }),
+    ).rejects.toThrow(/redacted placeholder.*send the original value/i);
+
+    // Sentinel embedded in a JSON-string env value, as produced by a
+    // GET → edit → PATCH roundtrip over adapterConfig.env.PAPERCLIP_OMP_PROVIDERS.
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, {
+        PAPERCLIP_OMP_PROVIDERS: {
+          type: "plain",
+          value: JSON.stringify({ providers: { litellm: { apiKey: "***REDACTED***" } } }),
+        },
+      }),
+    ).rejects.toThrow(/redacted placeholder.*send the original value/i);
+
+    // Sentinel as a substring anywhere in the value.
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, {
+        PROMPT: { type: "plain", value: "prefix ***REDACTED*** suffix" },
+      }),
+    ).rejects.toThrow(/redacted placeholder/i);
+  });
+
+  it("rejects adapter config secret fields containing the redaction sentinel (OPE-12270)", async () => {
+    const companyId = await seedCompany("R2");
+    const svc = secretService(db);
+
+    // hermes_gateway.apiKey falls back to a schema secret field, so a plain
+    // value goes through normalizeSchemaSecretFieldForPersistence.
+    await expect(
+      svc.normalizeAdapterConfigForPersistence(
+        companyId,
+        { apiKey: "***REDACTED***" },
+        { adapterType: "hermes_gateway" },
+      ),
+    ).rejects.toThrow(/redacted placeholder.*send the original value/i);
+
+    // Exact match keeps the pre-existing rejection too.
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, {
+        TOKEN: { type: "plain", value: "***REDACTED***" },
+      }),
+    ).rejects.toThrow(/redacted placeholder/i);
+  });
 });
