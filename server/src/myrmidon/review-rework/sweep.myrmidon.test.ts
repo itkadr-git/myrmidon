@@ -142,12 +142,16 @@ function build(input: {
   intervalMs?: number;
   env?: NodeJS.ProcessEnv;
   isLeader?: () => boolean;
+  resolvePr?: ReviewReworkPrResolver;
 }) {
   const wakes: WakeCall[] = [];
   const activities: Array<{ action: string; details: Record<string, unknown> }> = [];
   let resolveCalls = 0;
-  const resolvePr: ReviewReworkPrResolver = async () => {
+  const resolvePr: ReviewReworkPrResolver = async (companyId, reference) => {
     resolveCalls += 1;
+    if (input.resolvePr) {
+      return input.resolvePr(companyId, reference);
+    }
     return input.snapshot ?? { state: "unknown", headSha: null, reviewDecision: null, updatedAt: null };
   };
   const deps: ReviewReworkSweepDeps = {

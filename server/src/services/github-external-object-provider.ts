@@ -21,7 +21,7 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface GitHubExternalObjectProviderOptions {
   fetch?: FetchLike;
-  tokenProvider?: (companyId: string, repository: string) => Promise<string | null> | string | null;
+  tokenProvider?: ((companyId: string, repository: string) => Promise<string | null> | string | null) | string | null;
   secretNames?: readonly string[];
   /**
    * myrmidon(OPE-12397): the rate-limit accounting bucket this provider's

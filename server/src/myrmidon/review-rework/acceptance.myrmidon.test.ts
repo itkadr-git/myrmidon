@@ -184,7 +184,7 @@ describe("OPE-12397 acceptance: GitHub rate limit and REVIEW-REWORK budget", () 
     setGitHubRateLimitForTests(START_SEC + 3600, 0);
 
     const fetch = vi.fn(async () => pullResponse());
-    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: null, source: "review-rework" });
+    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: () => null, source: "review-rework" });
 
     // Directly calling the provider resolver when rate limited
     const facts = await resolver("company-1", { owner: "acme", repo: "repo", number: 484 });
@@ -215,7 +215,7 @@ describe("OPE-12397 acceptance: GitHub rate limit and REVIEW-REWORK budget", () 
 
   it("acceptance 2: repeat resolve of the same PR inside TTL does not hit the network", async () => {
     const fetch = vi.fn(async () => pullResponse());
-    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: null, source: "review-rework" });
+    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: () => null, source: "review-rework" });
 
     const first = await resolver("company-1", { owner: "acme", repo: "repo", number: 484 });
     expect(first).toEqual({
@@ -240,7 +240,7 @@ describe("OPE-12397 acceptance: GitHub rate limit and REVIEW-REWORK budget", () 
       }
       return pullResponse({}, '"v1"');
     });
-    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: null, source: "review-rework" });
+    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: () => null, source: "review-rework" });
 
     const first = await resolver("company-1", { owner: "acme", repo: "repo", number: 484 });
     expect(first.state).toBe("open");
@@ -259,7 +259,7 @@ describe("OPE-12397 acceptance: GitHub rate limit and REVIEW-REWORK budget", () 
 
   it("acceptance 4: REVIEW-REWORK reads each PR at most once per pass and evaluates every candidate task", async () => {
     const fetch = vi.fn(async () => pullResponse());
-    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: null, source: "review-rework" });
+    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: () => null, source: "review-rework" });
 
     const store = new FakeStore();
     const task1 = reviewTask({ id: "review-1", identifier: "OPE-4417" });
@@ -285,7 +285,7 @@ describe("OPE-12397 acceptance: GitHub rate limit and REVIEW-REWORK budget", () 
 
   it("acceptance 5: provider requests record against the review-rework source bucket", async () => {
     const fetch = vi.fn(async () => pullResponse({}, '"v1"', { "x-ratelimit-remaining": "4990" }));
-    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: null, source: "review-rework" });
+    const resolver = createPullRequestReviewFactsResolver({} as never, { fetch, tokenProvider: () => null, source: "review-rework" });
 
     await resolver("company-1", { owner: "acme", repo: "repo", number: 484 });
 
