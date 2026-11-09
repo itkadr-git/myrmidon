@@ -12374,7 +12374,16 @@ export function heartbeatService(
                     wakeReason:
                       EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
                   }
-                : {}),
+                : monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+                  ? {
+                      retryReason: "provider_quota_recovery",
+                      // Provider outages are an external wait, so this wake
+                      // starts a fresh bounded attempt instead of inheriting
+                      // the exhausted provider-failure counter.
+                      maxAttempts: 1,
+                      delayMs: 0,
+                    }
+                  : {}),
             },
           );
           if (scheduled.outcome === "not_scheduled")
@@ -16771,6 +16780,7 @@ export function heartbeatService(
         ? 1
         : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
             retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
+            retryReason === "provider_quota_recovery" ||
             retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
             retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON
             ? (run.scheduledRetryAttempt ?? 0)

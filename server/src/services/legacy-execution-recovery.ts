@@ -41,6 +41,22 @@ export function legacyExecutionNeedsReconciliation(
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
+  // myrmidon(PROVIDER-OUTAGE-RECOVERY): a classified provider outage (429/402/503
+  // "no deployments available" / "insufficient_quota") is an external channel
+  // failure with its own durable quota monitor. Do not turn it into a
+  // reconciliation hold after the retry budget is exhausted: the monitor wake
+  // must be allowed to issue the bounded retry once the provider recovers.
+  // Runs without persisted outage evidence keep the conservative hold.
+  const resultJson = run.resultJson as Record<string, unknown> | null | undefined;
+  const errorFamily = typeof resultJson?.errorFamily === "string" ? resultJson.errorFamily : null;
+  const providerErrorText = [
+    run.errorCode ?? "",
+    JSON.stringify(resultJson ?? {}),
+  ].join("\n");
+  if (
+    errorFamily === "provider_quota" ||
+    /(?:insufficient[_ ]quota|no deployments available|all deployments[^\n]{0,120}cooldown|provider quota|usage limit|quota (?:limit )?exceeded)/i.test(providerErrorText)
+  ) return false;
   if (
     run.errorCode === "hermes_gateway_connect_failed" ||
     run.scheduledRetryReason === "connect_failed_transient_retry"

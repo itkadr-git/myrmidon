@@ -519,6 +519,34 @@ it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated"])("does no
   expect(legacyExecutionNeedsReconciliation({ ...run, errorCode: "setup_failed" })).toBe(true);
 });
 
+it.each([
+  "HTTP 429: All deployments in cooldown",
+  "HTTP 402 insufficient_quota: billing limit reached",
+  "HTTP 503: no deployments available",
+])("does not hold provider outage %s after the retry budget is exhausted", (message) => {
+  expect(legacyExecutionNeedsReconciliation({
+    runtimeMode: "legacy",
+    status: "failed",
+    errorCode: "hermes_gateway_run_failed",
+    scheduledRetryAttempt: 3,
+    resultJson: {
+      errorMessage: message,
+      errorFamily: "provider_quota",
+      providerQuotaRetryNotBefore: "2030-04-22T21:00:00.000Z",
+    },
+  })).toBe(false);
+});
+
+it("retains reconciliation for an exhausted ordinary gateway failure", () => {
+  expect(legacyExecutionNeedsReconciliation({
+    runtimeMode: "legacy",
+    status: "failed",
+    errorCode: "hermes_gateway_run_failed",
+    scheduledRetryAttempt: 3,
+    resultJson: { errorMessage: "HTTP 500 internal server error" },
+  })).toBe(true);
+});
+
 it("permits subscription waits only with explicit evidence that provider work never started", () => {
   const waiting = {
     runtimeMode: "legacy", status: "cancelled", errorCode: "ai_connection_busy", scheduledRetryAttempt: 12,
