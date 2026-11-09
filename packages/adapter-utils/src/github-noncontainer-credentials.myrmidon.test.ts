@@ -358,11 +358,17 @@ describe("git shim recursion guard (GIT-SHIM-RECURSION)", () => {
     const launcherBin = path.join(root, "launcher");
     const imageWrapperBin = path.join(root, "image-wrapper");
     const realBin = path.join(root, "real");
+    const nodeBin = path.join(root, "node-bin");
     const repo = path.join(root, "repo");
     await mkdir(launcherBin, { recursive: true });
     await mkdir(imageWrapperBin, { recursive: true });
     await mkdir(realBin, { recursive: true });
+    await mkdir(nodeBin, { recursive: true });
     await mkdir(repo, { recursive: true });
+    // Every staged program here carries an /usr/bin/env node shebang: the
+    // fixture PATH must keep node reachable (the bot image guarantees it), and
+    // a runner may have node only in its own tool directories.
+    await symlink(process.execPath, path.join(nodeBin, "node"));
     await exec("git", ["init", repo]);
     if (options.originUrl) await exec("git", ["-C", repo, "remote", "add", "origin", options.originUrl]);
     await writeFile(path.join(launcherBin, "git"), githubLauncherSource(), { mode: 0o700 });
@@ -418,12 +424,12 @@ if (args[0] === 'config' && args[1] === '--get' && args[2] === 'remote.origin.ur
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: root,
-      PATH: `${launcherBin}${path.delimiter}${imageWrapperBin}${path.delimiter}${realBin}${path.delimiter}${process.env.PATH}`,
+      PATH: `${launcherBin}${path.delimiter}${imageWrapperBin}${path.delimiter}${realBin}${path.delimiter}${nodeBin}${path.delimiter}${process.env.PATH}`,
       PAPERCLIP_GITHUB_BROKER_URL: `http://127.0.0.1:${port}`,
       PAPERCLIP_GITHUB_BROKER_TOKEN: "run-capability-value",
     };
     delete env.MYRMIDON_GIT_REAL;
-    return { root, launcherBin, imageWrapperBin, realBin, repo, requests, env };
+    return { root, launcherBin, imageWrapperBin, realBin, nodeBin, repo, requests, env };
   }
 
   it("answers `git status` from the real binary and never re-enters the image git wrapper", async () => {
@@ -437,13 +443,21 @@ if (args[0] === 'config' && args[1] === '--get' && args[2] === 'remote.origin.ur
 
   it("falls back to the image libexec git when MYRMIDON_GIT_REAL is unset and PATH holds only wrappers", async () => {
     const { launcherBin, repo, env } = await stagedImageLikeRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    // Only the launcher's own directory plus a node directory for the env
+    // shebangs: no wrapper stand-in and no real git on the fixture path, so the
+    // launcher's PATH-walk finds no candidate at all and must land on the
+    // image fallback (/opt/paperclip/libexec/git here, /usr/bin/git on the
+    // runner). /usr/bin and /bin stay OFF the path: the container's
+    // /usr/bin/git is the wrapper symlink and the runner's is the real binary,
+    // so either would blur the contract under test.
     const wrapperOnly: NodeJS.ProcessEnv = {
       ...env,
-      PATH: `${launcherBin}${path.delimiter}${launcherBin}${path.delimiter}/usr/bin:/bin`,
+      PATH: `${launcherBin}${path.delimiter}${nodeBin}`,
     };
     const result = await exec(path.join(launcherBin, "git"), ["--version"], { cwd: repo, env: wrapperOnly, timeout: 30_000 });
-    // The libexec fallback answered (its --version output goes through the
-    // real /usr/bin/git of the test host, which the fallback execs directly).
+    // The libexec fallback answered (here /opt/paperclip/libexec/git is the
+    // container's real git; on the runner the fallback is /usr/bin/git), so the
+    // output is a real `git version` line and never the stand-in's marker.
     expect(result.stdout).toContain("git version");
     expect(result.stdout).not.toContain("real-git-marker");
   });
