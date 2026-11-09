@@ -11,8 +11,6 @@ generator client {
 model Company {
   id          String        @id @default(uuid())
   name        String
-  tier        String        @default("free")
-  agentQuota  Int           @default(5)
   companyTier CompanyTier?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
