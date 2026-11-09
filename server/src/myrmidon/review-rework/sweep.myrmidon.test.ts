@@ -636,7 +636,12 @@ describe("review rework sweep", () => {
   });
 
   describe("the sweep interval is a setting with an env override (OPE-12397)", () => {
-    const snapshot = { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null };
+    const snapshot: ReviewReworkPrSnapshot = {
+      state: "open",
+      headSha: HEAD_OLD,
+      reviewDecision: null,
+      updatedAt: null,
+    };
 
     function seeded(store: FakeStore) {
       store.rows = [candidateRow(reviewTask())];
