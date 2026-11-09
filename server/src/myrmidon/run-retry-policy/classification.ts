@@ -46,12 +46,14 @@ export type RunFailureClassificationReason =
  * not a property of the work itself.
  */
 export const TRANSIENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "hermes_gateway_rate_limited",
   "adapter_failed",
   "codex_transient_upstream",
   "codex_harness_crash",
   "claude_transient_upstream",
   "hermes_transient_upstream",
   "provider_quota",
+  "provider_garbage",
   "timeout",
   "continuation_source_context_missing",
   "controller_lease_lost",

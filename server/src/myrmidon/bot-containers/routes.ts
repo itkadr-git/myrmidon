@@ -55,6 +55,12 @@ import {
   type GatewayConcurrencyStatus,
 } from "./concurrency-sync.js";
 import { readMaxConcurrentRuns } from "./profile-input.js";
+import {
+  effectiveAgentRunLimit,
+  effectiveAgentRunLimitSource,
+  savedAgentRunLimits,
+  type EffectiveAgentRunLimitSource,
+} from "../effective-run-limit.js";
 import { hasReleaseBotImage, resolveBotImageRolloutStatus, type BotImageRolloutStatus } from "@myrmidon/shared";
 import {
   parseCloneReport,
@@ -155,6 +161,13 @@ export interface BotContainerItemStatus {
    *  exactly as the profile compiler normalizes it. Always answered, so the card can
    *  show the board's value even for a gateway the board does not manage. */
   boardMaxConcurrentRuns: number;
+  /** myrmidon(1.6.7 RUN-LIMITS): the ceiling the board's scheduler actually admits
+   *  against: min(board, saved gateway, floor(memoryMb / 600 MB per run)). Always
+   *  answered for hermes_gateway agents. */
+  effectiveMaxConcurrentRuns: number;
+  /** Which ceiling binds the effective value above: the card, the saved gateway
+   *  limit, or the container memory. */
+  effectiveMaxConcurrentRunsSource: "board" | "gateway" | "memory";
   /** Board value against the value the bot's applied profile carries. Null when there
    *  is no applied state to compare (no container yet, gateway not managed by the
    *  board, or the runtime did not answer) — see gatewayConcurrencyNote. */
@@ -274,6 +287,29 @@ export const BOT_CONTAINER_STATUS_CONCURRENCY = 8;
 
 const MAX_MESSAGE_CHARS = 500;
 
+/**
+ * myrmidon(1.6.7 RUN-LIMITS): the effective concurrency ceiling of an agent card,
+ * from the same saved values the heartbeat scheduler admits against
+ * (savedAgentRunLimits + effectiveAgentRunLimit). The source names which ceiling
+ * binds, so the card can say why the effective value is below the board's.
+ */
+export function effectiveConcurrencyFields(agent: {
+  adapterConfig: Record<string, unknown>;
+  runtimeConfig: Record<string, unknown>;
+}): {
+  effectiveMaxConcurrentRuns: number;
+  effectiveMaxConcurrentRunsSource: EffectiveAgentRunLimitSource;
+} {
+  const limits = savedAgentRunLimits({
+    boardLimit: readMaxConcurrentRuns(agent.runtimeConfig),
+    adapterConfig: agent.adapterConfig,
+  });
+  return {
+    effectiveMaxConcurrentRuns: effectiveAgentRunLimit(limits),
+    effectiveMaxConcurrentRunsSource: effectiveAgentRunLimitSource(limits),
+  };
+}
+
 function clip(message: string): string {
   return message.length > MAX_MESSAGE_CHARS ? `${message.slice(0, MAX_MESSAGE_CHARS)}…` : message;
 }
@@ -365,6 +401,7 @@ export async function buildBotContainerItemStatus(
       hasReleaseImage: hasReleaseBotImage(env),
     }),
     boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
+    ...effectiveConcurrencyFields(agent),
     gatewayConcurrency: null,
     gatewayConcurrencyNote: null,
     gatewayConcurrencyWarning: null,
@@ -562,6 +599,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
             imageTracking: { category: "not_applicable", image: null, reason: "Status query failed" },
             imageRollout: { onReleaseImage: false, targetImage: null, reason: "Status query failed" },
             boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
+            ...effectiveConcurrencyFields(agent),
             gatewayConcurrency: null,
             gatewayConcurrencyNote: null,
             gatewayConcurrencyWarning: null,

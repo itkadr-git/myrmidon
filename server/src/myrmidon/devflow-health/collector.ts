@@ -7,16 +7,19 @@ import {
   issueExecutionDecisions,
   issues,
   issueWorkProducts,
+  heartbeatRunEvents,
   projects,
   type Db,
 } from "@myrmidon/db";
 import { parseReviewReworkVerdictMarkers } from "@myrmidon/shared";
-import { and, eq, ilike, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, gt, ilike, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { issueNeedsReviewer } from "../review-routing/policy.js";
 import { isDevProjectCodeIssue } from "../guard-return/domain.js";
+import { PROVIDER_GARBAGE_SIGNAL_WINDOW_MS } from "./thresholds.js";
 import {
   approvedPrSince,
   buildDevflowSignals,
+  buildProviderGarbageSignals,
   extractPrNumber,
   redCiSince,
   staleMarkerSince,
@@ -24,6 +27,7 @@ import {
   stalledRouterSince,
   type DevflowSample,
   type DevflowSignal,
+  type ProviderGarbageEvent,
   type PrMarkerState,
   type ReviewVerdict,
 } from "./signals.js";
@@ -448,6 +452,26 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
       since: lastMergeSince.toISOString(),
     });
   }
+
+  // 5. Provider garbage: one card per burst of run.provider_garbage.detected events.
+  // myrmidon(PROVIDER-GARBAGE / OPE-12286): heartbeat persists the burst into
+  // heartbeat_run_events; the collector surfaces it as a critical devflow signal.
+  const garbageEventRows = await db
+    .select({
+      id: heartbeatRunEvents.id,
+      agentId: heartbeatRunEvents.agentId,
+      createdAt: heartbeatRunEvents.createdAt,
+      payload: heartbeatRunEvents.payload,
+    })
+    .from(heartbeatRunEvents)
+    .where(
+      and(
+        eq(heartbeatRunEvents.companyId, companyId),
+        eq(heartbeatRunEvents.eventType, "run.provider_garbage.detected"),
+        gt(heartbeatRunEvents.createdAt, new Date(now.getTime() - PROVIDER_GARBAGE_SIGNAL_WINDOW_MS)),
+      ),
+    );
+  samples.push(...buildProviderGarbageSignals(garbageEventRows, companyId, now, PROVIDER_GARBAGE_SIGNAL_WINDOW_MS));
 
   const candidateIssues = await db
     .select({

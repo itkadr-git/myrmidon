@@ -446,6 +446,30 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     };
   }
 
+  it("clears block metadata when leaving blocked", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Stale blocked metadata",
+      status: "blocked",
+      priority: "medium",
+      blockerMetadata: {
+        blockReason: "human_decision",
+        owner: { userId: "owner-user" },
+        nextCheckAt: new Date(Date.now() + 60_000).toISOString(),
+        timeoutAt: new Date(Date.now() + 3_600_000).toISOString(),
+        escalationPolicy: "notify_owner",
+      },
+      unblockDescriptor: { owner: "board", action: "Review the decision" },
+    });
+
+    const updated = await svc.update(issue.id, { status: "todo" });
+
+    expect(updated?.status).toBe("todo");
+    expect(updated?.blockerMetadata).toBeNull();
+    expect(updated?.unblockDescriptor).toBeNull();
+    expect(updated?.blockedTransitionAt).toBeNull();
+  });
+
   it("refreshes a stale open pull request before accepting done", async () => {
     const companyId = await seedAssignableAgentCompany();
     const assigneeAgentId = randomUUID();

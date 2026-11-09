@@ -146,9 +146,6 @@ set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-# myrmidon(F-05): the journal opens with the exact version of these scripts.
-log_script_version
-
 config="" digest="" expect_version="" expect_commit="" force=0 release_tag="" urgent=0 urgent_reason=""
 DRY_RUN=0
 while (($#)); do
@@ -177,6 +174,20 @@ if ((urgent)); then
   log "URGENT deploy (OPE-10414): $urgent_reason"
 fi
 load_config "$config"
+
+# myrmidon(F-05): the journal opens with the exact version of these scripts.
+log_script_version
+
+# myrmidon(DEPLOY-LOCK, OPE-12335): the exclusive deploy lock is taken before
+# every precheck and before anything changes — the only way a second run of
+# deploy.sh cannot slide into the maintenance window of the first one. Only the
+# option/config resolution above (which locates $STATE_DIR for the lock file)
+# runs ahead of it; MYRMIDON_DEPLOY_LOCK_FILE can override the default
+# ($STATE_DIR/deploy.lock), MYRMIDON_DEPLOY_LOCK_WAIT_SEC sets how long a
+# second run waits for the holder to finish (0 = refuse at once, exit code 42).
+# --dry-run never takes the lock, it only warns when a deploy is running. The
+# trap in acquire_deploy_lock releases it on every exit path (error, INT, TERM).
+acquire_deploy_lock "$MYRMIDON_DEPLOY_LOCK_FILE" "$MYRMIDON_DEPLOY_LOCK_WAIT_SEC" "${DRY_RUN:-0}" "$STATE_DIR"
 if ((urgent)); then
   # Urgent mode has a fixed, short drain. A deploy.env value must not silently
   # turn a critical deploy back into a long wait.

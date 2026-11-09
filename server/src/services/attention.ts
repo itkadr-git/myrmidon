@@ -4308,15 +4308,26 @@ async function buildAttentionFeedSnapshot(
 
       // myrmidon(DEVFLOW): deterministic persisted-source alerts, refreshed by
       // the existing attention runtime. Recovery removes the card automatically.
+      // myrmidon(PROVIDER-GARBAGE / OPE-12286): provider garbage bursts carry
+      // the stub outcome text, model group and severity from the signal itself.
       for (const signal of await collectDevflowHealth(db, companyId, new Date(now))) {
-        const whyNow = `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
+        const isProviderGarbage = signal.metric === "providerGarbageP1";
+        const whyNow = isProviderGarbage
+          ? `Provider garbage burst: ${signal.detail?.runCount ?? "?"} run(s) received the stub outcome "${signal.detail?.outcomeText ?? ""}"${signal.detail?.modelGroup ? ` on model group ${signal.detail.modelGroup}` : ""}.`
+          : `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
         add(createItem({
           companyId,
           sourceKind: "agent_error_alert",
           subject: { kind: signal.subjectKind, id: signal.subjectId, companyId,
             title: signal.title, identifier: null, status: "warning",
             href: `/${prefix}/${signal.subjectKind === "agent" ? "agents" : "issues"}/${signal.subjectId}`,
-            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs } },
+            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs,
+              ...(isProviderGarbage ? {
+                providerGarbage: true,
+                outcomeText: signal.detail?.outcomeText,
+                modelGroup: signal.detail?.modelGroup,
+                runCount: signal.detail?.runCount,
+              } : {}) } },
           whyNow,
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Inspect the affected engineer or issue." },
@@ -4325,7 +4336,7 @@ async function buildAttentionFeedSnapshot(
           inlineResolvable: true,
           entryRule: "a persisted DEVFLOW duration reaches its configured threshold.",
           exitRule: "the engineer resumes, review ends, CI recovers, or the row is dismissed.",
-          dedupKey: signal.dedupKey, severity: "medium",
+          dedupKey: signal.dedupKey, severity: signal.severity ?? "medium",
           activityAt: signal.since, createdAt: signal.since, updatedAt: signal.since,
           relatedIssue: null,
           detail: { kind: "generic", summaryExcerpt: whyNow, images: [] },

@@ -71,7 +71,12 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
   }
   let stopped = false;
   let pending = false;
-  const lost = () => { if (!stopped) controller.abort(new Error("Legacy controller lease lost")); };
+  const lost = () => {
+    if (stopped) return;
+    const error = new Error("Legacy controller lease lost");
+    error.name = "ControllerLeaseLost";
+    controller.abort(error);
+  };
   let deadline = setTimeout(lost, Math.max(0,
     (run.controllerLeaseExpiresAt?.getTime() ?? 0) - Date.now()));
   deadline.unref();

@@ -251,6 +251,8 @@ describe("myrmidon(W2b) bot container routes: status", () => {
         reason: expect.stringContaining("pinned"),
       },
       boardMaxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+      effectiveMaxConcurrentRuns: 3,
+      effectiveMaxConcurrentRunsSource: "memory",
       gatewayConcurrency: {
         board: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
         applied: null,

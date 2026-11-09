@@ -1135,6 +1135,53 @@ func TestQuarantine(t *testing.T) {
 	}
 }
 
+func TestCleanup(t *testing.T) {
+	tempRoot := t.TempDir()
+	s, _, fake := newServerWithDocker(t)
+	s.cfg.VolumeRoot = tempRoot
+	key := s.cfg.Bots[0].BotKey
+
+	botDir := filepath.Join(tempRoot, key)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "test.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.mu.Lock()
+	fake.containers["fleet-"+key] = map[string]any{"Image": "test-image"}
+	fake.mu.Unlock()
+
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/cleanup", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cleanup failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := os.Stat(botDir); !os.IsNotExist(err) {
+		t.Fatalf("bot directory still exists at original path: %v", err)
+	}
+
+	fake.mu.Lock()
+	_, containerExists := fake.containers["fleet-"+key]
+	fake.mu.Unlock()
+	if containerExists {
+		t.Fatalf("docker container still exists after cleanup")
+	}
+
+	// Idempotency: second cleanup when container and datadir are already gone succeeds
+	rec2 := routeRequest(s, http.MethodDelete, "/v1/bots/"+key+"/cleanup", s.cfg.Token, "")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("idempotent cleanup failed: %d %s", rec2.Code, rec2.Body.String())
+	}
+
+	// DELETE /v1/bots/:botKey bare endpoint also triggers cleanup
+	rec3 := routeRequest(s, http.MethodDelete, "/v1/bots/"+key, s.cfg.Token, "")
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("direct delete cleanup failed: %d %s", rec3.Code, rec3.Body.String())
+	}
+}
+
 // chownLog records the owner changes restore asks for; tests do not run as root,
 // so the real os.Lchown would be refused.
 var chownMu sync.Mutex

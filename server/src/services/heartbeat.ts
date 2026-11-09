@@ -169,6 +169,17 @@ import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-
 import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
 import { resolveAgentTeamLiveness } from "@myrmidon/shared";
 import {
+  classifyProviderGarbageOutcome,
+  detectProviderGarbageGroups,
+  normalizeProviderGarbageOutcomeText,
+  resolveProviderGarbageSettings,
+} from "@myrmidon/shared";
+import {
+  providerGarbageBurstKey,
+  providerGarbageBurstKeyFromPayload,
+  providerGarbageRunDetectorInput,
+} from "./heartbeat-provider-garbage.js";
+import {
   COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
   buildLongTaskContextResetNotice,
   evaluateLongTaskContextReset,
@@ -914,6 +925,12 @@ import {
   recordSwarmClaimOnCheckoutImpl,
   releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
+import {
+  effectiveAgentRunLimit,
+  effectiveAgentRunLimitSource,
+  savedAgentRunLimits,
+  type EffectiveAgentRunLimitSource,
+} from "../myrmidon/effective-run-limit.js";
 import { dbAdmissionAllowsClaim, usesDatabaseAdmission } from "../myrmidon/db-run-admission.js";
 import {
   // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share rule and the sweep order.
@@ -1517,6 +1534,7 @@ function readHeartbeatRunErrorFamily(
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
     run.errorCode === "hermes_transient_upstream" ||
+    run.errorCode === "hermes_gateway_rate_limited" ||
     run.errorCode === "codex_harness_crash" ||
     run.errorCode === "continuation_source_context_missing" ||
     run.errorCode === "controller_lease_lost" ||
@@ -1559,16 +1577,23 @@ function readTransientRetryNotBeforeFromRun(
 function readTransientRecoveryContractFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
+  // myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider_garbage run reuses the
+  // transient-recovery scheduling path (bounded attempts, paused re-dispatch)
+  // even though it carries no adapter retryNotBefore hint.
   const errorFamily = readHeartbeatRunErrorFamily(run);
   return errorFamily === "transient_upstream" ||
-    errorFamily === "provider_quota"
+    errorFamily === "provider_quota" ||
+    run.errorCode === "provider_garbage"
     ? {
-        errorFamily,
+        errorFamily: errorFamily ?? "transient_upstream",
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
       }
     : null;
 }
 
+// myrmidon(PROVIDER-GARBAGE / OPE-12286): burst-key helpers live in
+// heartbeat-provider-garbage.ts (imported below) so tests can exercise
+// the dedup/path logic without loading this module.
 function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
@@ -16734,9 +16759,14 @@ export function heartbeatService(
       opts?.retryReason ??
       (isGatewayConnectFailed
         ? CONNECT_FAILED_TRANSIENT_RETRY_REASON
-        : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
+        : run.errorCode === "provider_garbage"
+          ? "provider_garbage"
+          : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
-      opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+      opts?.wakeReason ??
+      (run.errorCode === "provider_garbage"
+        ? "provider_garbage_retry"
+        : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON);
     // myrmidon(HERMES-RUN-REATTACH): the gateway answered 429 "busy" with a
     // Retry-After. That is a resource wait like ai_connection_busy, not a
     // provider failure: the wait follows the gateway's own hint (retryNotBefore,
@@ -16755,17 +16785,28 @@ export function heartbeatService(
     const isModelUnavailable =
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
       isModelUnavailableRun(run);
+    // myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider stub burst is an
+    // upstream outage, not a per-run error — retries pause (default 5 min)
+    // for the provider's own attempt budget instead of the fast 30 s pair.
+    const isProviderGarbageRetry = run.errorCode === "provider_garbage";
+    const providerGarbageRetrySettings = isProviderGarbageRetry
+      ? resolveProviderGarbageSettings({
+          env: runtimeEnv as Record<string, string | undefined>,
+        })
+      : null;
     const maxAttempts = Math.max(
       0,
       Math.floor(
         opts?.maxAttempts ??
           (isGatewayConnectFailed
             ? CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS
-            : isModelUnavailable
-              ? MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS
-              : transientRetryNotBeforeHint
-                ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
-                : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+            : isProviderGarbageRetry
+              ? (providerGarbageRetrySettings?.retryMaxAttempts ?? 0)
+              : isModelUnavailable
+                ? MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS
+                : transientRetryNotBeforeHint
+                  ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
+                  : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const nextAttempt =
@@ -16800,7 +16841,19 @@ export function heartbeatService(
         )
       : null;
     const computedBaseSchedule =
-      retryDelayMs != null
+      isProviderGarbageRetry
+        ? nextAttempt <= maxAttempts
+          ? {
+              attempt: nextAttempt,
+              baseDelayMs: providerGarbageRetrySettings?.retryDelayMs ?? 0,
+              delayMs: providerGarbageRetrySettings?.retryDelayMs ?? 0,
+              dueAt: new Date(
+                now.getTime() + (providerGarbageRetrySettings?.retryDelayMs ?? 0),
+              ),
+              maxAttempts,
+            }
+          : null
+        : retryDelayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
@@ -18470,14 +18523,21 @@ export function heartbeatService(
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const boardLimit = normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns);
+    const limits = savedAgentRunLimits({
+      boardLimit,
+      adapterConfig: parseObject(agent.adapterConfig),
+    });
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(
-        heartbeat.maxConcurrentRuns,
-      ),
+      maxConcurrentRuns: effectiveAgentRunLimit(limits),
+      // myrmidon(1.6.7 RUN-LIMITS): which ceiling binds the effective limit
+      // above — the board, the saved gateway limit, or the container memory.
+      // Reported on held runs so a wait says its limit, not just its gate.
+      maxConcurrentRunsSource: effectiveAgentRunLimitSource(limits),
       skipTimerWhenNoActionableWork: asBoolean(
         heartbeat.skipTimerWhenNoActionableWork ??
           heartbeat.requireActionableTimerWork ??
@@ -21175,6 +21235,11 @@ export function heartbeatService(
         externalRunId: heartbeatRuns.externalRunId,
         errorCode: heartbeatRuns.errorCode,
         cancellationCorrelationId: sql<string | null>`${heartbeatRuns.resultJson}->'executionCancellation'->>'correlationId'`,
+        // myrmidon(OPE-12484): keep the structured cancellation cause the
+        // board stamped on the run instead of deriving a board_cancelled
+        // placeholder for every terminal cancelled run.
+        cancellationSource: sql<{ code: string; endpoint?: string; actor?: string } | null>`${heartbeatRuns.resultJson}->'executionCancellation'->'source'`,
+        cancellationReason: sql<string | null>`${heartbeatRuns.resultJson}->'executionCancellation'->>'reason'`,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
@@ -22234,9 +22299,22 @@ export function heartbeatService(
     await writeQueuedRunWaitReason(needsReason, reason);
   }
 
+  type QueuedRunWaitDetail = {
+    limit: number;
+    limitSource: EffectiveAgentRunLimitSource;
+    running: number;
+  };
+
+  function omitQueuedRunWaitDetail(context: Record<string, unknown>) {
+    if (context.waitDetail === undefined) return context;
+    const { waitDetail: _dropped, ...rest } = context;
+    return rest;
+  }
+
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
     waitReason: QueuedRunWaitReason,
+    waitDetail?: QueuedRunWaitDetail,
   ): Promise<void> {
     if (runIds.length === 0) return;
     const rows = await db
@@ -22246,10 +22324,25 @@ export function heartbeatService(
     const at = new Date();
     for (const row of rows) {
       const context = parseObject(row.contextSnapshot);
-      if (context.waitReason === waitReason) continue;
+      if (
+        context.waitReason === waitReason &&
+        (waitDetail === undefined ||
+          (typeof context.waitDetail === "object" &&
+            context.waitDetail !== null &&
+            (context.waitDetail as Record<string, unknown>).limit === waitDetail.limit &&
+            (context.waitDetail as Record<string, unknown>).limitSource === waitDetail.limitSource &&
+            (context.waitDetail as Record<string, unknown>).running === waitDetail.running))
+      ) {
+        continue;
+      }
+      const next = waitDetail === undefined
+        // myrmidon(1.6.7 RUN-LIMITS): the detail belongs to the concurrency
+        // hold alone — any other reason (or a rewrite without numbers) drops it.
+        ? omitQueuedRunWaitDetail(context)
+        : { ...context, waitDetail: { ...waitDetail } };
       await db
         .update(heartbeatRuns)
-        .set({ contextSnapshot: { ...context, waitReason }, updatedAt: at })
+        .set({ contextSnapshot: { ...next, waitReason }, updatedAt: at })
         .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
     }
   }
@@ -22267,7 +22360,8 @@ export function heartbeatService(
       if (
         context.waitReason === undefined &&
         context.queuePosition === undefined &&
-        context.queueLength === undefined
+        context.queueLength === undefined &&
+        context.waitDetail === undefined
       ) {
         continue;
       }
@@ -22275,6 +22369,7 @@ export function heartbeatService(
         waitReason: _clearedReason,
         queuePosition: _clearedPosition,
         queueLength: _clearedLength,
+        waitDetail: _clearedDetail,
         ...rest
       } = context;
       await db
@@ -23556,11 +23651,19 @@ export function heartbeatService(
       if (queuedRuns.length === 0) return [];
 
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling holds these runs;
-      // name the wait on them.
+      // name the wait on them. myrmidon(1.6.7 RUN-LIMITS): the hold also says
+      // the effective limit and which ceiling binds it (board, gateway, or
+      // container memory), so the card can show "limit 2 (gateway)" instead of
+      // a bare "the agent's own concurrency limit is full".
       if (availableSlots <= 0) {
         await writeQueuedRunWaitReason(
           queuedRuns.map((run) => run.id),
           "agent_concurrency",
+          {
+            limit: policy.maxConcurrentRuns,
+            limitSource: policy.maxConcurrentRunsSource,
+            running: runningCount,
+          },
         );
         return [];
       }
@@ -29252,6 +29355,24 @@ export function heartbeatService(
           outcome = "failed";
         }
 
+        // myrmidon(OPE-12484): a cancellation that did not go through
+        // cancelRunInternal (lease expiry, run guard, an adapter abort) must
+        // still carry a structured cause instead of the board_cancelled
+        // placeholder the gateway close derives later.
+        const cancellationCause = outcome === "cancelled"
+          ? runGuardStopReason
+            ? { source: { code: "run_guard", actor: "system" }, reason: `Run stopped by guard: ${runGuardStopReason}` }
+            : executionControl.controller.signal.reason instanceof Error &&
+                /lease lost/i.test(executionControl.controller.signal.reason.message)
+              ? { source: { code: "controller_lease_lost", actor: "system" }, reason: executionControl.controller.signal.reason.message }
+              : parseObject(parseObject(latestRun?.resultJson).executionCancellation).source
+                ? {
+                    source: parseObject(parseObject(latestRun?.resultJson).executionCancellation).source as { code: string; endpoint?: string; actor?: string },
+                    reason: readNonEmptyString(parseObject(parseObject(latestRun?.resultJson).executionCancellation).reason) ?? "Run cancelled",
+                  }
+                : { source: { code: "control_plane", actor: "system" }, reason: "Run cancelled" }
+          : null;
+
         const nextSessionState = resolveNextSessionState({
           adapterType: agent.adapterType,
           codec: sessionCodec,
@@ -29271,7 +29392,7 @@ export function heartbeatService(
           usageBasis: adapterResult.usageBasis ?? null,
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
-        const runErrorMessage =
+        let runErrorMessage =
           outcome === "cancelled"
             ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
             : outcome === "succeeded"
@@ -29283,7 +29404,7 @@ export function heartbeatService(
                 );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-        const runErrorCode = runGuardStopReason ?? (
+        let runErrorCode = runGuardStopReason ?? (
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
@@ -29321,7 +29442,7 @@ export function heartbeatService(
           }
         }
 
-        const status =
+        let status: "succeeded" | "cancelled" | "timed_out" | "failed" =
           outcome === "succeeded"
             ? "succeeded"
             : outcome === "cancelled"
@@ -29331,6 +29452,40 @@ export function heartbeatService(
                 : "failed";
 
         const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+        // myrmidon(PROVIDER-GARBAGE / OPE-12286): reject known short provider
+        // stubs even when the upstream returned HTTP 200 and the adapter exited
+        // cleanly. Downgrade before the status is persisted so the run goes
+        // through the failed/transient retry path (bounded retries with a
+        // pause) instead of being counted as a successful run with a stub
+        // outcome; the group detector on the finalized run raises one P1
+        // event per burst. Classification and the P1 signal stay enabled when
+        // MYRMIDON_PROVIDER_GARBAGE_RETRY_MAX_ATTEMPTS=0 — that setting only
+        // disables the retries, not the detection (review 2, п.4).
+        const providerGarbageSettings = resolveProviderGarbageSettings({
+          env: runtimeEnv as Record<string, string | undefined>,
+        });
+        if (
+          outcome === "succeeded" &&
+          !runGuardStopReason &&
+          !adapterResult.nativeFinalization
+        ) {
+          const adapterResultJson = parseObject(adapterResult.resultJson);
+          const outcomeCandidate =
+            readNonEmptyString(adapterResultJson?.summary) ??
+            readNonEmptyString(adapterResultJson?.result) ??
+            readNonEmptyString(adapterResultJson?.message) ??
+            readNonEmptyString(adapterResultJson?.text);
+          const garbage = classifyProviderGarbageOutcome(
+            outcomeCandidate,
+            providerGarbageSettings,
+          );
+          if (garbage.suspect) {
+            outcome = "failed";
+            status = "failed";
+            runErrorCode = "provider_garbage";
+            runErrorMessage = `Provider returned a stub reply (${garbage.outcomeChars} chars): ${garbage.outcomeText}`;
+          }
+        }
         // myrmidon(1.6.5 PROMPT-BUDGET A): the adapter's estimated
         // per-section prompt-token breakdown, carried on resultJson by the
         // hermes-gateway adapter (see its execute.ts). Written here into
@@ -29422,6 +29577,17 @@ export function heartbeatService(
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
                   : {}),
+                ...(cancellationCause
+                  ? {
+                      executionCancellation: {
+                        ...parseObject(parseObject(latestRun?.resultJson).executionCancellation),
+                        state: "acknowledged",
+                        acknowledgedAt: new Date().toISOString(),
+                        correlationId: parseObject(parseObject(latestRun?.resultJson).executionCancellation).correlationId ?? randomUUID(),
+                        ...cancellationCause,
+                      },
+                    }
+                  : {}),
                 configFreshness: configFreshnessResultMetadata,
               },
               errorFamily: adapterResult.errorFamily ?? null,
@@ -29433,6 +29599,8 @@ export function heartbeatService(
           adapterResult.summary ?? null,
         );
 
+        const runProviderModelGroup =
+          readNonEmptyString(adapterResult.model) ?? configuredModel;
         const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
           finishedAt: new Date(),
           error: runErrorMessage,
@@ -29440,7 +29608,17 @@ export function heartbeatService(
           exitCode: adapterResult.exitCode,
           signal: adapterResult.signal,
           usageJson,
-          resultJson: persistedResultJson,
+          // myrmidon(PROVIDER-GARBAGE / OPE-12286 review 2 п.2): persist the
+          // actual LiteLLM model group of this run (adapter-reported model,
+          // falling back to the agent's configured model) so the burst
+          // detector groups runs by the channel that actually served them
+          // instead of the coarse light/strong model tier.
+          resultJson: runProviderModelGroup
+            ? {
+                ...(persistedResultJson ?? {}),
+                providerModelGroup: runProviderModelGroup,
+              }
+            : persistedResultJson,
           sessionIdAfter:
             nextSessionState.displayId ?? nextSessionState.legacySessionId,
           stdoutExcerpt,
@@ -29454,6 +29632,33 @@ export function heartbeatService(
           status,
           finalRunPatch,
         );
+        // myrmidon(OPE-12484): every transition into `cancelled` must leave an
+        // activity trace naming the initiator and the reason, whichever path
+        // decided the cancellation (operator cancel writes its own heartbeat
+        // activity in the route and skips this live writer).
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
+        if (cancellationCause && persistedRunWrite.run?.status === "cancelled") {
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType:
+              cancellationCause.source.actor === "board" ||
+              cancellationCause.source.code === "board_operator"
+                ? "user"
+                : "system",
+            actorId: cancellationCause.source.actor ?? "system",
+            action: "heartbeat_run.cancelled",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            details: {
+              runId: run.id,
+              agentId: run.agentId,
+              reason: cancellationCause.reason,
+              errorCode: runErrorCode,
+              source: cancellationCause.source,
+            },
+          });
+        }
         let persistedRun: typeof heartbeatRuns.$inferSelect | null =
           persistedRunWrite.run;
         if (!persistedRunWrite.updated) {
@@ -29601,6 +29806,121 @@ export function heartbeatService(
             );
           }
           const livenessRun = finalizedRun;
+          // myrmidon(PROVIDER-GARBAGE / OPE-12286): one P1 event per burst.
+          // After every finalized run (any status — review 2 п.2: unknown stub
+          // outcomes finalize succeeded and must still be counted), look back
+          // through the sliding window of recent runs: when the same short
+          // outcome on the same model group crosses the settings'
+          // distinct-agents (or same-agent) threshold, append one health event
+          // carrying the stub text, the model group and the run count. The
+          // (outcome, modelGroup, window) burst key deduplicates: a burst
+          // already reported inside the window does not emit a second event on
+          // every later finalized run (review 2 п.3). Env thresholds tune this
+          // without a restart; failures here never affect the finalized run.
+          try {
+            const providerGarbageWindowSettings =
+              resolveProviderGarbageSettings({
+                env: runtimeEnv as Record<string, string | undefined>,
+              });
+            const burstWindowStart = new Date(
+              Date.now() - providerGarbageWindowSettings.windowMs,
+            );
+            const recentRuns = await db
+              .select({
+                id: heartbeatRuns.id,
+                agentId: heartbeatRuns.agentId,
+                finishedAt: heartbeatRuns.finishedAt,
+                error: heartbeatRuns.error,
+                resultJson: heartbeatRuns.resultJson,
+              })
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, livenessRun.companyId),
+                  gt(heartbeatRuns.finishedAt, burstWindowStart),
+                ),
+              )
+              .orderBy(desc(heartbeatRuns.finishedAt))
+              .limit(400);
+            const burstReportedKeys = new Set(
+              (
+                await db
+                  .select({ payload: heartbeatRunEvents.payload })
+                  .from(heartbeatRunEvents)
+                  .where(
+                    and(
+                      eq(
+                        heartbeatRunEvents.companyId,
+                        livenessRun.companyId,
+                      ),
+                      eq(
+                        heartbeatRunEvents.eventType,
+                        "run.provider_garbage.detected",
+                      ),
+                      gt(heartbeatRunEvents.createdAt, burstWindowStart),
+                    ),
+                  )
+                  .limit(100)
+              )
+                .map((event) =>
+                  providerGarbageBurstKeyFromPayload(event.payload),
+                )
+                .filter((key): key is string => key !== null),
+            );
+            const hits = detectProviderGarbageGroups(
+              recentRuns.map(providerGarbageRunDetectorInput),
+              {
+                windowMs: providerGarbageWindowSettings.windowMs,
+                distinctAgents: providerGarbageWindowSettings.distinctAgents,
+                sameAgentRuns: providerGarbageWindowSettings.sameAgentRuns,
+                maxOutcomeChars:
+                  providerGarbageWindowSettings.maxOutcomeChars,
+                signatures: providerGarbageWindowSettings.signatures,
+              },
+            );
+            for (const hit of hits) {
+              // myrmidon(PROVIDER-GARBAGE / OPE-12286 review 2 п.3): one P1
+              // event per burst window, not one per finalized run — skip
+              // groups whose (outcome, modelGroup) burst was already
+              // reported inside the current window.
+              if (
+                burstReportedKeys.has(
+                  providerGarbageBurstKey(hit.outcomeText, hit.modelGroup),
+                )
+              ) {
+                continue;
+              }
+              await appendHeartbeatRunEvent(db, {
+                companyId: livenessRun.companyId,
+                runId: livenessRun.id,
+                agentId: livenessRun.agentId,
+                eventType: "run.provider_garbage.detected",
+                stream: "system",
+                level: "critical",
+                message: `Provider garbage burst: ${hit.runCount} runs across ${hit.agentIds.length} agents received the same short outcome`,
+                payload: {
+                  outcomeText: hit.sample,
+                  outcomeNormalized: hit.outcomeText,
+                  outcomeChars: Array.from(hit.sample).length,
+                  modelGroup: hit.modelGroup,
+                  agentIds: hit.agentIds,
+                  runIds: hit.runIds,
+                  runCount: hit.runCount,
+                  knownSignature: hit.knownSignature,
+                  signatureSource: hit.signatureSource,
+                  signature: hit.signature,
+                  windowStart: hit.windowStart.toISOString(),
+                  windowEnd: hit.windowEnd.toISOString(),
+                },
+              });
+              break; // one P1 event per finalized run is enough
+            }
+          } catch (err) {
+            logger.warn(
+              { err, runId: livenessRun.id },
+              "provider garbage burst detection failed without affecting run finalization",
+            );
+          }
           await refreshContinuationSummaryForRun(livenessRun, agent);
           const skipRunIssueComment =
             parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
@@ -29731,7 +30051,13 @@ export function heartbeatService(
             outcome === "failed" &&
             readTransientRecoveryContractFromRun(livenessRun)
           ) {
-            await scheduleBoundedRetryForRun(livenessRun, agent);
+            await scheduleBoundedRetryForRun(livenessRun, agent, {
+              // provider_garbage has no adapter error-family metadata, but is
+              // still an upstream transient and receives its configured pause.
+              ...(livenessRun.errorCode === "provider_garbage"
+                ? { retryReason: "provider_garbage", wakeReason: "provider_garbage_retry" }
+                : {}),
+            });
           } else if (
             outcome === "failed" &&
             !legacyExecutionNeedsReconciliation(livenessRun)
@@ -30135,6 +30461,14 @@ export function heartbeatService(
         const stopMessage = stopReason ? `Run stopped by guard: ${stopReason}` : message;
         const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
         const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
+        const cancellationFailureCause = failureOutcome === "cancelled"
+          ? stopReason
+            ? { source: { code: "run_guard", actor: "system" }, reason: stopMessage }
+            : executionControl.controller.signal.reason instanceof Error &&
+                /lease lost/i.test(executionControl.controller.signal.reason.message)
+              ? { source: { code: "controller_lease_lost", actor: "system" }, reason: executionControl.controller.signal.reason.message }
+              : { source: { code: "control_plane", actor: "system" }, reason: stopMessage }
+          : null;
         const failedRunWrite = await setRunStatusIfRunning(run.id, failureOutcome, {
           error: stopMessage,
           errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
@@ -30146,6 +30480,17 @@ export function heartbeatService(
               ...parseObject(stopSnapshot?.resultJson),
               ...(stopReason
                 ? { runGuardStopReason: stopReason, runGuardStats: runGuard.stats() }
+                : {}),
+              ...(cancellationFailureCause
+                ? {
+                    executionCancellation: {
+                      ...parseObject(parseObject(stopSnapshot?.resultJson).executionCancellation),
+                      state: "acknowledged",
+                      acknowledgedAt: new Date().toISOString(),
+                      correlationId: parseObject(parseObject(stopSnapshot?.resultJson).executionCancellation).correlationId ?? randomUUID(),
+                      ...cancellationFailureCause,
+                    },
+                  }
                 : {}),
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
@@ -30166,6 +30511,32 @@ export function heartbeatService(
           logSha256: logSummary?.sha256,
           logCompressed: logSummary?.compressed ?? false,
         });
+        // myrmidon(OPE-12484): the guard/lease abort that lands here ends the
+        // run as `cancelled` through the failure branch; record the same
+        // activity trace as the live writer path.
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
+        if (cancellationFailureCause && failedRunWrite.run?.status === "cancelled") {
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType:
+              cancellationFailureCause.source.actor === "board" ||
+              cancellationFailureCause.source.code === "board_operator"
+                ? "user"
+                : "system",
+            actorId: cancellationFailureCause.source.actor ?? "system",
+            action: "heartbeat_run.cancelled",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            details: {
+              runId: run.id,
+              agentId: run.agentId,
+              reason: cancellationFailureCause.reason,
+              errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
+              source: cancellationFailureCause.source,
+            },
+          });
+        }
         if (
           !failedRunWrite.updated &&
           !(
@@ -35281,6 +35652,29 @@ export function heartbeatService(
           level: "warn",
           message: options.eventMessage ?? "run cancelled",
           ...(options.eventPayload ? { payload: options.eventPayload } : {}),
+        });
+        // myrmidon(OPE-12484): every transition into `cancelled` must leave an
+        // activity trace naming the initiator and the reason.
+        // Note: runId and agentId are kept in details to avoid FK constraint
+        // violations when heartbeat_runs/agents are cleaned up in tests.
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType:
+            cancellationSource.actor === "board" ||
+            cancellationSource.code === "board_operator"
+              ? "user"
+              : "system",
+          actorId: cancellationSource.actor ?? "system",
+          action: "heartbeat_run.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          details: {
+            runId: cancelled.id,
+            agentId: cancelled.agentId,
+            reason,
+            errorCode,
+            source: cancellationSource,
+          },
         });
         // myrmidon(P1): release run environment leases before promotion, like finalization
         await releaseEnvironmentLeasesForRun({
