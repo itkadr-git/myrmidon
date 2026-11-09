@@ -157,7 +157,7 @@ export interface BotContainerItemStatus {
   /** The gateway is limiting runs below the board's limit (unmanaged gateway with
    *  recently rate-limited runs). Null when there is nothing to warn about. */
   gatewayConcurrencyWarning: string | null;
-  idleStopMode: "on_demand" | "always_on";
+  idleStopMode: "on_demand" | "always_on" | "off";
   idleStopRuntime: {
     idleStopped: boolean;
     lastStoppedAt: string | null;
@@ -348,7 +348,10 @@ export async function buildBotContainerItemStatus(
     gatewayConcurrency: null,
     gatewayConcurrencyNote: null,
     gatewayConcurrencyWarning: null,
-    idleStopMode: ((agent.adapterConfig.container as { idleStopMode?: string } | undefined)?.idleStopMode === "always_on" ? "always_on" : "on_demand"),
+    idleStopMode: (() => {
+      const saved = (agent.adapterConfig.container as { idleStopMode?: string } | undefined)?.idleStopMode;
+      return saved === "always_on" || saved === "off" ? saved : "on_demand";
+    })(),
     idleStopRuntime: null,
     profileUpdatePendingSince: null,
   };
@@ -509,7 +512,10 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
             gatewayConcurrency: null,
             gatewayConcurrencyNote: null,
             gatewayConcurrencyWarning: null,
-            idleStopMode: "on_demand",
+            idleStopMode: (() => {
+              const saved = (agent.adapterConfig?.container as { idleStopMode?: string } | undefined)?.idleStopMode;
+              return saved === "always_on" || saved === "off" ? saved : "on_demand";
+            })(),
             idleStopRuntime: null,
             profileUpdatePendingSince: null,
           };
