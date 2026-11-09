@@ -14,6 +14,7 @@ import { PostgresCorpusSettingsStore } from "./postgres/settings.js";
 import { installPgvectorIntoEmbeddedCluster, type PgvectorInstall } from "./test-pgvector.js";
 import {
   CORPUS_EMBEDDING_DIMENSIONS,
+  PARSE_JOB_INTERRUPTED_ERROR,
   type CorpusDocument,
 } from "./domain.js";
 
@@ -260,6 +261,44 @@ d("corpus store/queue on embedded Postgres", () => {
     expect(requeued.status).toBe("queued");
   });
 
+  it("re-enqueue with reset re-arms the job of a re-parse whatever its status is", async () => {
+    const { store, queue } = fixture;
+    const companyId = crypto.randomUUID();
+    const db = createDb(testDb.connectionString);
+    await db.execute(rawSql`
+      insert into companies (id, name, issue_prefix) values (${companyId}, 'reparse-co', 'RP')
+    `);
+    const dataset = await store.createDataset({ companyId, name: "reparse" });
+    const doc = await store.createDocument({ companyId, datasetId: dataset.id, title: "book.pdf" });
+    const job = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1", maxAttempts: 3 });
+
+    // A pending job that failed once sits in its backoff with one attempt used.
+    await queue.claimNext(companyId);
+    const backoff = await queue.fail(companyId, job.id, "parser timed out");
+    expect(backoff).toMatchObject({ status: "pending", attempts: 1 });
+    expect(backoff.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+    // Without the flag a re-enqueue leaves such a job alone ...
+    const untouched = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1" });
+    expect(untouched).toMatchObject({ id: job.id, status: "pending", attempts: 1 });
+    // ... with it the attempts and the backoff start over.
+    const reset = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1", reset: true });
+    expect(reset).toMatchObject({ id: job.id, status: "pending", attempts: 0, lastError: null });
+    expect(reset.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+
+    // A job left `running` (the process that held it died) and a `done` one come back too.
+    for (const stale of ["running", "done"] as const) {
+      await db.execute(rawSql`
+        update corpus_parse_jobs set status = ${stale}, attempts = 2, last_error = 'old', finished_at = now()
+        where id = ${job.id}
+      `);
+      const rearmed = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1", reset: true });
+      expect(rearmed).toMatchObject({ id: job.id, status: "pending", attempts: 0, lastError: null, finishedAt: null });
+      expect(await queue.listJobsForDocument(companyId, doc.id)).toHaveLength(1);
+    }
+    const claimed = await queue.claimNext(companyId);
+    expect(claimed?.id).toBe(job.id);
+  });
+
   it("enforces company scoping and legal transitions", async () => {
     const { store, queue, companyId, datasetId } = fixture;
     const otherCompany = crypto.randomUUID();
@@ -277,6 +316,89 @@ d("corpus store/queue on embedded Postgres", () => {
     expect(await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1" })).toBeTruthy();
 
     await expect(store.updateDocumentStatus(companyId, doc.id, "ready")).rejects.toThrow(/illegal/);
+  });
+
+  describe("jobs left running by a worker that is gone (OPE-12057)", () => {
+    async function freshCompany(prefix: string) {
+      const { store } = fixture;
+      const companyId = crypto.randomUUID();
+      const db = createDb(testDb.connectionString);
+      await db.execute(rawSql`
+        insert into companies (id, name, issue_prefix) values (${companyId}, ${`restart-${prefix}`}, ${prefix})
+      `);
+      const dataset = await store.createDataset({ companyId, name: `restart-${prefix}` });
+      return { companyId, datasetId: dataset.id, db };
+    }
+
+    it("releaseRunning puts running jobs back to pending and fails the ones with no attempts left", async () => {
+      const { store, queue } = fixture;
+      const { companyId, datasetId, db } = await freshCompany("RR1");
+      const other = await freshCompany("RR2");
+      const enqueue = async (owner: { companyId: string; datasetId: string }, title: string, maxAttempts: number) => {
+        const doc = await store.createDocument({ companyId: owner.companyId, datasetId: owner.datasetId, title });
+        return queue.enqueue({ companyId: owner.companyId, documentId: doc.id, parserVersion: "v1", maxAttempts });
+      };
+      const retried = await enqueue({ companyId, datasetId }, "retried.pdf", 3);
+      const lastChance = await enqueue({ companyId, datasetId }, "last-chance.pdf", 1);
+      const otherJob = await enqueue(other, "other.pdf", 3);
+      // Two jobs of this company and one of another company are claimed; then the worker dies.
+      expect((await queue.claimNext(companyId))?.id).toBe(retried.id);
+      expect((await queue.claimNext(companyId))?.id).toBe(lastChance.id);
+      expect((await queue.claimNext(other.companyId))?.id).toBe(otherJob.id);
+      // A job that was never claimed and a finished one are not "left running".
+      const waiting = await enqueue({ companyId, datasetId }, "waiting.pdf", 3);
+      const finished = await enqueue({ companyId, datasetId }, "finished.pdf", 3);
+      await db.execute(rawSql`update corpus_parse_jobs set status = 'done', finished_at = now() where id = ${finished.id}`);
+
+      const released = await queue.releaseRunning({ companyId });
+
+      expect(released.map((job) => job.id).sort()).toEqual([retried.id, lastChance.id].sort());
+      const back = released.find((job) => job.id === retried.id)!;
+      expect(back).toMatchObject({ status: "pending", attempts: 1, lastError: PARSE_JOB_INTERRUPTED_ERROR, startedAt: null, finishedAt: null });
+      expect(back.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000); // due at once, no backoff
+      const spent = released.find((job) => job.id === lastChance.id)!;
+      expect(spent).toMatchObject({ status: "failed", attempts: 1, lastError: PARSE_JOB_INTERRUPTED_ERROR });
+      expect(spent.finishedAt).not.toBeNull();
+      // The others are as they were: another company's running job, the waiting job, the done one.
+      expect((await queue.getJob(other.companyId, otherJob.id))?.status).toBe("running");
+      expect((await queue.getJob(companyId, waiting.id))?.status).toBe("pending");
+      expect((await queue.getJob(companyId, finished.id))?.status).toBe("done");
+
+      // The released job is claimable again straight away, and that is a new attempt.
+      const claimedAgain: string[] = [];
+      for (let claimed = await queue.claimNext(companyId); claimed; claimed = await queue.claimNext(companyId)) {
+        claimedAgain.push(claimed.id);
+        if (claimed.id === retried.id) expect(claimed.attempts).toBe(2);
+      }
+      expect(claimedAgain.sort()).toEqual([retried.id, waiting.id].sort());
+
+      // Without a company the whole queue is settled.
+      const all = await queue.releaseRunning();
+      expect(all.map((job) => job.id)).toEqual(expect.arrayContaining([retried.id, waiting.id, otherJob.id]));
+      expect((await queue.getJob(other.companyId, otherJob.id))?.status).toBe("pending");
+      expect(await queue.releaseRunning({ companyId })).toHaveLength(0);
+      expect(await queue.releaseRunning({ companyId: other.companyId })).toHaveLength(0);
+    });
+
+    it("release gives a running job back with its attempt refunded, and only a running one", async () => {
+      const { store, queue } = fixture;
+      const { companyId, datasetId } = await freshCompany("RR3");
+      const doc = await store.createDocument({ companyId, datasetId, title: "stopping.pdf" });
+      const job = await queue.enqueue({ companyId, documentId: doc.id, parserVersion: "v1", maxAttempts: 3 });
+
+      expect(await queue.release(companyId, job.id, "stopping")).toBeNull(); // pending: nothing to give back
+      const claimed = await queue.claimNext(companyId);
+      expect(claimed).toMatchObject({ id: job.id, status: "running", attempts: 1 });
+
+      expect(await queue.release(crypto.randomUUID(), job.id, "stopping")).toBeNull(); // another company's call
+      const given = await queue.release(companyId, job.id, "stopping");
+      expect(given).toMatchObject({ id: job.id, status: "pending", attempts: 0, lastError: "stopping", startedAt: null });
+      expect(given!.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+      expect(await queue.release(companyId, job.id, "stopping")).toBeNull(); // twice is harmless
+
+      // The next worker takes it at once, as its first attempt, not its second.
+      expect(await queue.claimNext(companyId)).toMatchObject({ id: job.id, attempts: 1 });
+    });
   });
 
   it("keeps per-company module settings", async () => {

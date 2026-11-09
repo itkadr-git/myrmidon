@@ -2,6 +2,14 @@
 
 The localization catalog upload API enables instance owners and board members to upload custom JSON translation catalogs, validate them against the reference English catalog, and store them per instance with automatic versioning and checksums.
 
+## Upload from the board UI
+
+Open UI 2.0 **Language and formats**, then the custom locale upload section. Enter a locale code (for example, `fr`), select a `.json` catalog, or paste its JSON into the text area. If the locale field is empty when you select a file, the UI uses its filename without `.json` as the locale code. The catalog must be a JSON object of translation keys and values.
+
+Before applying, inspect the validation status and coverage against the English UI catalog. The preview shows matched, missing, and extra keys with their existing and proposed values; filter by status or search for a key. Invalid catalogs cannot be applied. When the preview looks right, select **Apply**. The catalog is applied in the current browser session immediately, and the selected language switches without restarting the app. The language switcher also lists custom locales registered in this session.
+
+The UI attempts to upload the catalog to the server, but currently falls back to applying it only in the browser if the upload fails. A success message therefore does **not** prove that the catalog was saved on the server; verify persistence with `GET /api/myrmidon/locales/custom/:locale` if required. Client-side custom catalog entries are not guaranteed to survive a page reload.
+
 ## Endpoints
 
 ### 1. Upload Catalog

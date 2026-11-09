@@ -44,6 +44,18 @@
 превышает порог (`MYRMIDON_GUARDRAILS_INJECTION_SCORE`, по умолчанию 0.6).
 Слой помечает, но не блокирует.
 
+## Режимы маскирования
+
+API ограждений также маскирует найденные сущности, а не только помечает их:
+`POST /api/myrmidon/guardrails/redact` принимает режимы `reversible`
+(оригиналы хранятся в базе сервиса с истечением, возвращается `redactionId`),
+`irreversible` (только токены, ничего не сохраняется) и `flag` (текст не
+меняется, возвращаются найденные диапазоны), а
+`POST /api/myrmidon/guardrails/restore` возвращает оригиналы, пока они не
+истекли. Подробности — в
+[руководстве по режимам маскирования](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.ru.md)
+([английском](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.md)).
+
 ## Аварийная остановка
 
 Пауза оператора даёт активным запускам агента завершиться (пауза с
@@ -76,4 +88,5 @@
 - [Матрица автономии: пауза, возобновление, пробуждение](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-pause-wake-enforcement.md)
 - [Матрица автономии: удаление](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-delete-enforcement.md)
 - [Аварийная остановка запусков после дренирующей паузы](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/emergency-stop.md)
+- [Режимы маскирования](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.ru.md)
 - Хранилище и API матрицы: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), разделы «AUTONOMY-MATRIX» и «GUARDRAILS»

@@ -1,6 +1,6 @@
 import { buildContinuationKey } from "@myrmidon/shared";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueContinuationKeys, issues, type Db } from "@myrmidon/db";
 import { heartbeatService } from "./heartbeat.js";
@@ -159,12 +159,12 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("expired key can be claimed again", async () => {
     const key = `expiring-key-${randomUUID()}`;
-    // Claim with a short TTL (50ms)
+    // Claim with a long TTL
     const firstClaim = await tryClaimContinuationKey(db, {
       companyId,
       key,
       issueId,
-      ttl: 50,
+      ttl: 60_000,
     });
     expect(firstClaim).toBe("created");
 
@@ -177,8 +177,14 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     expect(immediateRepeat).toBe("deduped");
 
-    // Wait for the original 50ms TTL to expire
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // Insert an expired key record directly to simulate expiration
+    await db.delete(issueContinuationKeys).where(and(eq(issueContinuationKeys.companyId, companyId), eq(issueContinuationKeys.key, key)));
+    await db.insert(issueContinuationKeys).values({
+      companyId,
+      key,
+      issueId,
+      expiresAt: new Date(Date.now() - 1000),
+    });
 
     // After expiration, claiming again should succeed with 'created'
     const afterExpiration = await tryClaimContinuationKey(db, {
@@ -234,6 +240,24 @@ const support = await getEmbeddedPostgresTestSupport();
         assigneeAgentId: hbAgentId,
         responsibleUserId: "responsible-user",
       });
+    });
+
+    // myrmidon(OPE-11948): the scenarios share one issue. A run of an earlier
+    // scenario fails on the unconfigured test adapter, and the release recovery
+    // then parks the shared issue as blocked. An automatic continuation is not
+    // admitted for a blocked issue, so each scenario starts from the in_progress
+    // issue it is written for.
+    beforeEach(async () => {
+      await db
+        .update(issues)
+        .set({
+          status: "in_progress",
+          assigneeAgentId: hbAgentId,
+          blockerMetadata: null,
+          unblockDescriptor: null,
+          blockedTransitionAt: null,
+        })
+        .where(eq(issues.id, hbIssueId));
     });
 
     it("absence of new event after prior run does not wake model (skipped with no_new_issue_input)", async () => {

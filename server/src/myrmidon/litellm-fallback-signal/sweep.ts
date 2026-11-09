@@ -39,6 +39,8 @@ import {
   shareTripsSignal,
   readFallbackSignalSettings,
   recordModelFallbackSignals,
+  recordModelFallbackDeadendSignals,
+  FALLBACK_DEADEND_DEDUP_PREFIX,
   resetModelFallbackSignals,
   toFallbackSignalSettings,
   type FallbackCall,
@@ -114,6 +116,23 @@ export async function sweepModelFallbackSignals(
         signals.push(fallbackSignalForShare(share, settings, to.toISOString()));
       }
       recordModelFallbackSignals(companyId, signals);
+      const deadends = entries.flatMap((entry) => {
+        if (entry.status?.toLowerCase() !== "failure" || !entry.requestId || !entry.attemptedFallbacks) return [];
+        const agentId = entry.apiKey ? keys.get(entry.apiKey) : undefined;
+        if (!agentId) return [];
+        return [{
+          agentId,
+          requestId: entry.requestId,
+          model: entry.model,
+          title: `LLM fallback exhausted: ${entry.model}`,
+          whyNow: `A live gateway request failed after routing to ${entry.model}. Inspect the model fallback chain.`,
+          summaryExcerpt: `Request ${entry.requestId} failed; gateway model ${entry.model}.`,
+          dedupKey: `${FALLBACK_DEADEND_DEDUP_PREFIX}${agentId}`,
+          severity: "high" as const,
+          activityAt: entry.startTime,
+        }];
+      });
+      recordModelFallbackDeadendSignals(companyId, [...new Map(deadends.map((item) => [item.agentId, item])).values()]);
       // myrmidon(BOT-RUNTIME-TUNING D2): the rows behind the cards, recorded on
       // every pass — above or below the threshold — so the agent card can show
       // the live share and go quiet again when the fallback stops.

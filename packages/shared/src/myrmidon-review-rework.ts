@@ -121,6 +121,8 @@ export const REVIEW_REWORK_REOPENED_ACTION = "issue.review_rework.reopened";
 export const REVIEW_REWORK_BLOCKED_ACTION = "issue.review_rework.review_blocked";
 export const REVIEW_REWORK_UNBLOCKED_ACTION = "issue.review_rework.review_unblocked";
 export const REVIEW_REWORK_CLOSED_ACTION = "issue.review_rework.review_closed";
+/** The merged task handed back for a live/operator acceptance instead of done. */
+export const REVIEW_REWORK_ACCEPTANCE_ACTION = "issue.review_rework.acceptance_pending";
 /** The settings-change audit row (mirrors `instance.swarm_claim.updated`). */
 export const REVIEW_REWORK_SETTINGS_UPDATED_ACTION = "instance.review_rework.updated";
 

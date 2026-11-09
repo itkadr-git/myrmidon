@@ -1,4 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// myrmidon(OPE-12182): the real logActivity needs a full drizzle/instance-settings
+// mock; the unit mock db here is intentionally minimal. Tests assert on the
+// recorded calls instead.
+const logActivityMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("./activity-log.js", () => ({
+  logActivity: logActivityMock,
+}));
+
 import {
   headMatches,
   parseReviewedHead,
@@ -8,6 +17,7 @@ import {
   createDefaultGitHubApprovalClient,
   propagateReviewApprovalToPullRequest,
   REVIEW_APPROVED_LABEL,
+  BOARD_REVIEW_CHECK_RUN_NAME,
   PR_APPROVAL_ACTIVITY_PROPAGATED,
   PR_APPROVAL_ACTIVITY_SKIPPED,
   PR_APPROVAL_ACTIVITY_FAILED,
@@ -56,6 +66,20 @@ describe("pull-request-approval-propagation", () => {
     it("returns null if no head reference is present", () => {
       expect(parseReviewedHead("VERDICT: APPROVE looks good to me")).toBe(null);
       expect(parseReviewedHead(null)).toBe(null);
+    });
+
+    // myrmidon(OPE-11767): the reviewers write `APPROVE PR #N <sha>`; the explicit
+    // `head <sha>` spelling alone left PR #2449 and #2467 with `missing_reviewed_head`.
+    it("reads the bare sha of an `APPROVE PR #N <sha>` verdict", () => {
+      const sha = "28f15c1be15204153f0e06464842d88875c373f8";
+      expect(parseReviewedHead(`APPROVE PR #2467 ${sha}\nГолова: ${sha}. CI завершён успешно.`)).toBe(sha);
+      expect(parseReviewedHead("APPROVE PR #2449 d75e816fcea7d115ababc4dad032687ffc8ed14c\nТочный head подтверждён")).toBe(
+        "d75e816fcea7d115ababc4dad032687ffc8ed14c",
+      );
+      // The explicit spelling still wins over a bare sha earlier in the text.
+      expect(parseReviewedHead("old 1111aaa rejected; APPROVE head 2222bbb")).toBe("2222bbb");
+      // A plain number is not a sha.
+      expect(parseReviewedHead("APPROVE PR #2467, issue 1234567890")).toBe(null);
     });
   });
 
@@ -398,6 +422,7 @@ describe("pull-request-approval-propagation", () => {
           labels: [REVIEW_APPROVED_LABEL, "ready"], // Already has review-approved!
         }),
         addLabel: vi.fn(),
+        removeLabel: vi.fn(),
         submitReview: vi.fn(),
         listReviews: vi.fn().mockResolvedValue([
           { id: 1, state: "APPROVED", commitId: defaultHeadSha },
@@ -424,6 +449,7 @@ describe("pull-request-approval-propagation", () => {
       expect(result.action).toBe("noop");
       expect(result.reason).toBe("already_labeled");
       expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.removeLabel).not.toHaveBeenCalled();
       expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
@@ -463,6 +489,107 @@ describe("pull-request-approval-propagation", () => {
       expect(mockClient.submitReview).toHaveBeenCalled();
     });
 
+    // myrmidon(OPE-12024, OPE-9646): when the head moved after an earlier
+    // approval, the label sits on the old head and the labeled-triggered
+    // hot-files-review workflow never fires on the new one. The propagation
+    // must reseat the label (remove + add) so the labeled event fires on the
+    // current head.
+    it("reseats review-approved when the PR head moved after an earlier approval", async () => {
+      const db = createMockDb();
+      const oldHeadSha = "old-head-sha";
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: defaultHeadSha,
+          labels: [REVIEW_APPROVED_LABEL],
+        }),
+        addLabel: vi.fn(),
+        removeLabel: vi.fn(),
+        submitReview: vi.fn(),
+        listReviews: vi.fn().mockResolvedValue([
+          // Approval pinned to the pre-rebuild head — the head moved after it.
+          { id: 0, state: "APPROVED", commitId: oldHeadSha },
+          // Re-approval on the current head after the rebuild.
+          { id: 1, state: "APPROVED", commitId: defaultHeadSha },
+        ]),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          headSha: defaultHeadSha,
+          decisionOutcome: "approved",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe("propagated");
+      expect(result.labelAdded).toBe(true);
+      expect(mockClient.removeLabel).toHaveBeenCalledWith({
+        repository: "itkadr-git/myrmidon",
+        number: 123,
+        label: REVIEW_APPROVED_LABEL,
+        token: "mock-token",
+      });
+      expect(mockClient.addLabel).toHaveBeenCalledWith({
+        repository: "itkadr-git/myrmidon",
+        number: 123,
+        label: REVIEW_APPROVED_LABEL,
+        token: "mock-token",
+      });
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
+    });
+
+    it("keeps noop already_labeled when the client cannot reseat the label", async () => {
+      const db = createMockDb();
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: defaultHeadSha,
+          labels: [REVIEW_APPROVED_LABEL],
+        }),
+        addLabel: vi.fn(),
+        submitReview: vi.fn(),
+        listReviews: vi.fn().mockResolvedValue([
+          { id: 1, state: "APPROVED", commitId: defaultHeadSha },
+        ]),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          headSha: defaultHeadSha,
+          decisionOutcome: "approved",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe("noop");
+      expect(result.reason).toBe("already_labeled");
+      expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
+    });
+
     it("authorization: fails safely and logs failure when no token is available", async () => {
       const db = createMockDb();
       const mockClient: GitHubApprovalClient = {
@@ -500,6 +627,312 @@ describe("pull-request-approval-propagation", () => {
       const headSha = defaultHeadSha;
       const matches = !taskHeadSha ? false : (taskHeadSha as string).toLowerCase().startsWith(headSha.toLowerCase());
       expect(matches).toBe(false);
+    });
+
+    // myrmidon(OPE-12182, REVIEW-CHECKS-NATIVE B): the formal decision writes a
+    // "Board review" check run on the reviewed head commit.
+    describe("Board review check run", () => {
+      beforeEach(() => {
+        logActivityMock.mockClear();
+      });
+
+      function clientWithCheckRun(overrides: Partial<GitHubApprovalClient> = {}): GitHubApprovalClient {
+        return {
+          getPullRequest: vi.fn().mockResolvedValue({
+            state: "open",
+            draft: false,
+            merged: false,
+            headSha: defaultHeadSha,
+            labels: [],
+          }),
+          addLabel: vi.fn().mockResolvedValue(undefined),
+          submitReview: vi.fn().mockResolvedValue({ id: 7 }),
+          createCheckRun: vi.fn().mockResolvedValue({ id: 42 }),
+          listCheckRuns: vi.fn().mockResolvedValue([]),
+          ...overrides,
+        };
+      }
+
+      it("APPROVE posts a completed success check run on the current head", async () => {
+        const db = createMockDb();
+        const mockClient = clientWithCheckRun();
+
+        const result = await propagateReviewApprovalToPullRequest(
+          {
+            db: db as any,
+            client: mockClient,
+            tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+            boardBaseUrl: "https://board.example.com",
+          },
+          {
+            companyId,
+            issueId,
+            repository: "itkadr-git/myrmidon",
+            number: 123,
+            headSha: defaultHeadSha,
+            decisionOutcome: "approved",
+            verdictBody: `VERDICT #123: APPROVE (head ${defaultHeadSha.slice(0, 7)})`,
+          },
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.action).toBe("propagated");
+        expect(result.checkRunCreated).toBe(true);
+        expect(result.checkRunFailed).toBe(false);
+        expect(mockClient.createCheckRun).toHaveBeenCalledTimes(1);
+        expect(mockClient.createCheckRun).toHaveBeenCalledWith({
+          repository: "itkadr-git/myrmidon",
+          headSha: defaultHeadSha,
+          name: BOARD_REVIEW_CHECK_RUN_NAME,
+          conclusion: "success",
+          detailsUrl: `https://board.example.com/issues/${issueId}`,
+          title: "Board review: approved",
+          summary: expect.stringContaining("APPROVE"),
+          token: "mock-token",
+        });
+      });
+
+      it("REQUEST CHANGES posts a failure check run on the current head, still without label or approval", async () => {
+        const db = createMockDb();
+        const mockClient = clientWithCheckRun();
+
+        const result = await propagateReviewApprovalToPullRequest(
+          {
+            db: db as any,
+            client: mockClient,
+            tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+          },
+          {
+            companyId,
+            issueId,
+            repository: "itkadr-git/myrmidon",
+            number: 123,
+            headSha: defaultHeadSha,
+            decisionOutcome: "changes_requested",
+            verdictBody: "VERDICT: REQUEST CHANGES fix the typo",
+          },
+        );
+
+        expect(result.action).toBe("skipped");
+        expect(result.reason).toBe("non_approval");
+        expect(mockClient.addLabel).not.toHaveBeenCalled();
+        expect(mockClient.submitReview).not.toHaveBeenCalled();
+        expect(mockClient.createCheckRun).toHaveBeenCalledTimes(1);
+        expect(mockClient.createCheckRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            repository: "itkadr-git/myrmidon",
+            headSha: defaultHeadSha,
+            name: BOARD_REVIEW_CHECK_RUN_NAME,
+            conclusion: "failure",
+          }),
+        );
+      });
+
+      it("does not post the check run when the reviewed head mismatches the PR head", async () => {
+        const db = createMockDb();
+        const movedHeadSha = "ffffffffffffffffffffffffffffffffffffffff";
+        const mockClient = clientWithCheckRun({
+          getPullRequest: vi.fn().mockResolvedValue({
+            state: "open",
+            draft: false,
+            merged: false,
+            headSha: movedHeadSha,
+            labels: [],
+          }),
+        });
+
+        const result = await propagateReviewApprovalToPullRequest(
+          {
+            db: db as any,
+            client: mockClient,
+            tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+          },
+          {
+            companyId,
+            issueId,
+            repository: "itkadr-git/myrmidon",
+            number: 123,
+            reviewedHeadSha: defaultHeadSha,
+            decisionOutcome: "approved",
+            verdictBody: `APPROVE PR #123 ${defaultHeadSha.slice(0, 7)}`,
+          },
+        );
+
+        expect(result.action).toBe("skipped");
+        expect(result.reason).toBe("head_mismatch");
+        expect(mockClient.createCheckRun).not.toHaveBeenCalled();
+        expect(mockClient.addLabel).not.toHaveBeenCalled();
+      });
+
+      it("HTTP 403 (no checks:write yet, part D) degrades to warn + activity, never throws", async () => {
+        const db = createMockDb();
+        const error403 = new Error("GitHub createCheckRun failed with HTTP 403");
+        (error403 as any).status = 403;
+        const mockClient = clientWithCheckRun({
+          createCheckRun: vi.fn().mockRejectedValue(error403),
+        });
+
+        const result = await propagateReviewApprovalToPullRequest(
+          {
+            db: db as any,
+            client: mockClient,
+            tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+          },
+          {
+            companyId,
+            issueId,
+            repository: "itkadr-git/myrmidon",
+            number: 123,
+            headSha: defaultHeadSha,
+            decisionOutcome: "approved",
+            verdictBody: `APPROVE PR #123 ${defaultHeadSha.slice(0, 7)}`,
+          },
+        );
+
+        // The propagation itself still succeeded (label + review written).
+        expect(result.success).toBe(true);
+        expect(result.action).toBe("propagated");
+        expect(result.labelAdded).toBe(true);
+        expect(result.checkRunCreated).toBe(false);
+        expect(result.checkRunFailed).toBe(true);
+        // Warn + activity, not a raised error.
+        const failure = logActivityMock.mock.calls.map((c) => c[1] as { action: string; details?: Record<string, unknown> })
+          .find((entry) => entry.action === PR_APPROVAL_ACTIVITY_FAILED);
+        expect(failure).toBeDefined();
+        expect(failure!.details?.reason).toBe("check_run_failed");
+        const propagated = logActivityMock.mock.calls.map((c) => c[1] as { action: string; details?: Record<string, unknown> })
+          .find((entry) => entry.action === PR_APPROVAL_ACTIVITY_PROPAGATED);
+        expect(propagated).toBeDefined();
+        expect(propagated!.details?.checkRunFailed).toBe(true);
+      });
+
+      it("repeated APPROVE of the same head does not duplicate the check run", async () => {
+        const db = createMockDb();
+        const mockClient = clientWithCheckRun({
+          listCheckRuns: vi.fn().mockResolvedValue([
+            { id: 42, conclusion: "success" },
+          ]),
+        });
+
+        const result = await propagateReviewApprovalToPullRequest(
+          {
+            db: db as any,
+            client: mockClient,
+            tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+          },
+          {
+            companyId,
+            issueId,
+            repository: "itkadr-git/myrmidon",
+            number: 123,
+            headSha: defaultHeadSha,
+            decisionOutcome: "approved",
+          },
+        );
+
+        expect(result.success).toBe(true);
+        expect(mockClient.createCheckRun).not.toHaveBeenCalled();
+        expect(mockClient.listCheckRuns).toHaveBeenCalledWith({
+          repository: "itkadr-git/myrmidon",
+          headSha: defaultHeadSha,
+          name: BOARD_REVIEW_CHECK_RUN_NAME,
+          token: "mock-token",
+        });
+      });
+
+      it("without createCheckRun on the client the propagation stays a plain label/review write", async () => {
+        const db = createMockDb();
+        const mockClient: GitHubApprovalClient = {
+          getPullRequest: vi.fn().mockResolvedValue({
+            state: "open",
+            draft: false,
+            merged: false,
+            headSha: defaultHeadSha,
+            labels: [],
+          }),
+          addLabel: vi.fn().mockResolvedValue(undefined),
+          submitReview: vi.fn().mockResolvedValue({ id: 7 }),
+        };
+
+        const result = await propagateReviewApprovalToPullRequest(
+          {
+            db: db as any,
+            client: mockClient,
+            tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+          },
+          {
+            companyId,
+            issueId,
+            repository: "itkadr-git/myrmidon",
+            number: 123,
+            headSha: defaultHeadSha,
+            decisionOutcome: "approved",
+          },
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.checkRunCreated).toBe(false);
+        expect(result.checkRunFailed).toBe(false);
+        const failures = logActivityMock.mock.calls.map((c) => c[1] as { action: string })
+          .filter((entry) => entry.action === PR_APPROVAL_ACTIVITY_FAILED);
+        expect(failures).toHaveLength(0);
+      });
+
+      it("default client implements createCheckRun/listCheckRuns over fetch", async () => {
+        const calls: Array<{ url: string; init?: RequestInit }> = [];
+        const mockFetch = vi.fn(async (url: string, init?: RequestInit) => {
+          calls.push({ url, init });
+          if (calls.length === 1) {
+            // createCheckRun POST
+            return {
+              ok: true,
+              status: 201,
+              json: async () => ({ id: 4242 }),
+            } as Response;
+          }
+          // listCheckRuns GET
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ total_count: 1, check_runs: [{ id: 4242, conclusion: "success" }] }),
+          } as Response;
+        });
+        const client = createDefaultGitHubApprovalClient(mockFetch as any);
+
+        await expect(
+          client.createCheckRun!({
+            repository: "owner/repo",
+            headSha: defaultHeadSha,
+            name: BOARD_REVIEW_CHECK_RUN_NAME,
+            conclusion: "success",
+            detailsUrl: "https://board.example.com/issues/iss-1",
+            title: "Board review: approved",
+            summary: "summary",
+            token: "tok",
+          }),
+        ).resolves.toEqual({ id: 4242 });
+
+        await expect(
+          client.listCheckRuns!({ repository: "owner/repo", headSha: defaultHeadSha, name: BOARD_REVIEW_CHECK_RUN_NAME, token: "tok" }),
+        ).resolves.toEqual([{ id: 4242, conclusion: "success" }]);
+
+        const post = calls[0]!;
+        expect(post.url).toBe("https://api.github.com/repos/owner/repo/check-runs");
+        expect(post.init?.method).toBe("POST");
+        const postBody = JSON.parse(String(post.init?.body));
+        expect(postBody).toEqual({
+          name: BOARD_REVIEW_CHECK_RUN_NAME,
+          head_sha: defaultHeadSha,
+          status: "completed",
+          conclusion: "success",
+          details_url: "https://board.example.com/issues/iss-1",
+          output: { title: "Board review: approved", summary: "summary" },
+        });
+        const get = calls[1]!;
+        expect(get.url).toBe(
+          `https://api.github.com/repos/owner/repo/commits/${defaultHeadSha}/check-runs?check_name=${encodeURIComponent(BOARD_REVIEW_CHECK_RUN_NAME)}&filter=latest&per_page=100`,
+        );
+      });
     });
   });
 });

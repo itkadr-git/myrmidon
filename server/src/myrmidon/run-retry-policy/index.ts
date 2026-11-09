@@ -65,3 +65,16 @@ export {
   type RunRetryDecisionReason,
   type RunRetryScheduleSnapshot,
 } from "./policy.js";
+
+export {
+  MODEL_UNAVAILABLE_RETRY_BASE_DELAY_MS,
+  MODEL_UNAVAILABLE_RETRY_ISSUE_STATUSES,
+  MODEL_UNAVAILABLE_RETRY_MAX_ATTEMPTS,
+  MODEL_UNAVAILABLE_RETRY_MAX_DELAY_MS,
+  MODEL_UNAVAILABLE_RETRY_MULTIPLIER,
+  computeModelUnavailableRetryDelayMs,
+  decideModelUnavailableRetryIssue,
+  isModelUnavailableRun,
+  isReplayableModelUnavailableRun,
+  type ModelUnavailableRetryIssueDecision,
+} from "./model-unavailable.js";

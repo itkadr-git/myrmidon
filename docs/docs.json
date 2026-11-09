@@ -112,6 +112,21 @@
         ]
       },
       {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Agents and execution",
+            "pages": [
+              "architecture/agent-adapters",
+              "architecture/execution-workspaces",
+              "architecture/agent-chat",
+              "architecture/debates",
+              "architecture/agent-exchange"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "API Reference",
         "groups": [
           {

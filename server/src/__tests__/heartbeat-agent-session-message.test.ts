@@ -138,4 +138,81 @@ describe("agent session wake messages", () => {
     expect(prompt).toContain('````text\n{\n  "untrustedToolResults"');
   });
 
+  it("keeps the engineer's session messages and continuation out of an isolated developer reviewer wake", async () => {
+    const contextSnapshot = {
+      wakeReason: "execution_review_requested",
+      executionStage: {
+        wakeRole: "reviewer",
+        stageType: "review",
+        allowedActions: ["approve", "request_changes"],
+      },
+      paperclipAgentMessage: {
+        text: "engineer transcript line",
+        source: "plugin_session",
+        pluginKey: "paperclip.gateway",
+        sessionId: "engineer-session-1",
+      },
+      livenessContinuationState: "stalled",
+      livenessContinuationInstruction: "engineer liveness instruction",
+      sourceRunId: "engineer-run-1",
+    };
+    const continuationSummary = {
+      key: "continuation-summary",
+      title: "Handoff",
+      body: "engineer continuation notes",
+      updatedAt: new Date("2026-11-05T00:00:00.000Z"),
+    };
+
+    // Not isolated (every non-developer reviewer): the wake is unchanged.
+    const full = await buildPaperclipWakePayload({
+      db: {} as never,
+      companyId: "company-1",
+      contextSnapshot,
+      continuationSummary,
+    });
+    expect(full).toMatchObject({
+      agentMessage: { text: "engineer transcript line" },
+      continuationSummary: { body: "engineer continuation notes" },
+      livenessContinuation: { state: "stalled" },
+      sourceRunId: "engineer-run-1",
+    });
+
+    const isolated = await buildPaperclipWakePayload({
+      db: {} as never,
+      companyId: "company-1",
+      contextSnapshot,
+      continuationSummary,
+      isolateReviewerWake: true,
+    });
+    expect(isolated).toMatchObject({
+      agentMessage: null,
+      continuationSummary: null,
+      livenessContinuation: null,
+      sourceRunId: null,
+      executionStage: { wakeRole: "reviewer" },
+    });
+    const serialized = JSON.stringify(isolated);
+    for (const engineerContent of [
+      "engineer transcript line",
+      "engineer-session-1",
+      "engineer continuation notes",
+      "engineer liveness instruction",
+      "engineer-run-1",
+    ]) {
+      expect(serialized).not.toContain(engineerContent);
+    }
+
+    // The isolation applies to the reviewer role only.
+    const executorWake = await buildPaperclipWakePayload({
+      db: {} as never,
+      companyId: "company-1",
+      contextSnapshot: { ...contextSnapshot, executionStage: { wakeRole: "executor" } },
+      continuationSummary,
+      isolateReviewerWake: true,
+    });
+    expect(executorWake).toMatchObject({
+      agentMessage: { text: "engineer transcript line" },
+      continuationSummary: { body: "engineer continuation notes" },
+    });
+  });
 });

@@ -53,6 +53,13 @@ import {
 } from "@myrmidon/adapter-utils/server-utils";
 import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@myrmidon/adapter-utils/myrmidon-run-env";
 import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+  parseLocalProcessNetworkAllowlist,
+  parseLocalProcessSandboxExtraPaths,
+  type LocalProcessSandboxOptions,
+} from "@myrmidon/adapter-utils/local-process-sandbox";
+import {
   promptArgumentOverflowResult,
   writePromptFile,
   type PromptFile,
@@ -174,15 +181,25 @@ function executionCwdsMatch(saved: string, current: string, remote: boolean): bo
   return normalizeExecutionCwd(saved, remote) === normalizeExecutionCwd(current, remote);
 }
 
+const SESSION_HEADER_SCAN_LINE_COUNT = 10;
+
 function readSessionHeaderCwd(raw: string): string | null {
   const headerLine = raw
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find(Boolean);
+    .filter(Boolean)
+    .slice(0, SESSION_HEADER_SCAN_LINE_COUNT)
+    .find((line) => {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        return parsed.type === "session";
+      } catch {
+        return false;
+      }
+    });
   if (!headerLine) return null;
   try {
     const parsed = JSON.parse(headerLine) as Record<string, unknown>;
-    if (parsed.type !== "session") return null;
     const cwd = typeof parsed.cwd === "string" ? parsed.cwd.trim() : "";
     return cwd.length > 0 ? cwd : null;
   } catch {
@@ -213,7 +230,7 @@ async function readSavedSessionCwd(input: {
     const sessionHeader = await runAdapterExecutionTargetShellCommand(
       input.runId,
       input.executionTarget,
-      `if [ -f ${shellQuote(input.sessionPath)} ]; then head -n 1 ${shellQuote(input.sessionPath)}; fi`,
+      `if [ -f ${shellQuote(input.sessionPath)} ]; then head -n ${SESSION_HEADER_SCAN_LINE_COUNT} ${shellQuote(input.sessionPath)}; fi`,
       {
         cwd: input.cwd,
         env: input.env,
@@ -525,6 +542,62 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return asStringArray(config.args);
     })();
 
+    // myrmidon(1.6.7 OPE-12266): the tool list is adapter-configurable. The default
+    // matches omp 18.9.2 built-ins verified via `omp --help`/`omp --tools`: `ls` is
+    // not a built-in tool (hard error) and `find` needs the `fd` binary in PATH.
+    const ompTools = (() => {
+      const raw = asString(config.tools, "").trim();
+      if (!raw) return "read,bash,edit,write,grep";
+      const entries = raw.split(",").map((item) => item.trim()).filter(Boolean);
+      return entries.length > 0 ? entries.join(",") : "read,bash,edit,write,grep";
+    })();
+
+    // myrmidon(1.6.7 OPE-12266): local process confinement, mirroring codex_local.
+    // The omp session dir (--session-dir) and the managed agent-config dir are
+    // read/write managed paths; local runs only (remote targets confine on the host).
+    const targetWorkspaceRealization = executionTarget?.workspaceRealization ?? null;
+    const localFilesystemScope = executionTargetIsRemote
+      ? null
+      : parseLocalProcessFilesystemScope(config.filesystemScope);
+    const localNetworkScope = executionTargetIsRemote
+      ? null
+      : parseLocalProcessNetworkScope(config.networkScope);
+    const localProcessSandbox: LocalProcessSandboxOptions | null =
+      (localFilesystemScope || localNetworkScope) && !executionTargetIsRemote
+        ? {
+            workspaceDir: effectiveExecutionCwd,
+            filesystemScope: localFilesystemScope,
+            managedPaths: [
+              { path: isolatedSessionDir, access: "rw" },
+              ...(localAgentConfigDir ? [{ path: localAgentConfigDir, access: "rw" as const }] : []),
+            ],
+            extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            pathAliases: targetWorkspaceRealization?.mode === "copy"
+              ? targetWorkspaceRealization.pathAliases
+              : [],
+            outboundRestorePaths: targetWorkspaceRealization?.outboundRestorePaths ?? [],
+            homeDir: localFilesystemScope ? path.dirname(isolatedSessionDir) : null,
+            networkScope: localNetworkScope,
+            networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+            networkTrustedUrls: [
+              buildPaperclipEnv(agent).PAPERCLIP_API_URL,
+            ].filter((url): url is string => Boolean(url)),
+            command: asString(config.filesystemSandboxCommand, "bwrap"),
+          }
+        : null;
+    if (localProcessSandbox) {
+      const scopes = [
+        localFilesystemScope ? "workspace filesystem" : null,
+        localNetworkScope ? `${localNetworkScope} network` : null,
+      ]
+        .filter(Boolean)
+        .join(" and ");
+      await onLog(
+        "stdout",
+        `[paperclip] Confining OMP with ${scopes} scope.\n`,
+      );
+    }
+
     let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
     let remoteRuntimeRootDir: string | null = null;
     let localSkillsDir: string | null = null;
@@ -813,7 +886,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (modelId) args.push("--model", modelId);
       if (thinking) args.push("--thinking", thinking);
 
-      args.push("--tools", "read,bash,edit,write,grep,find,ls");
+      args.push("--tools", ompTools);
 
       if (sessionToResume) {
         args.push("--session", sessionToResume);
@@ -872,6 +945,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog: bufferedOnLog,
         runLogTail: paperclipBridge?.runLogTail,
         settleRunDisposition: paperclipBridge?.settleRunDisposition,
+        localProcessSandbox,
       });
 
       if (stdoutBuffer) {

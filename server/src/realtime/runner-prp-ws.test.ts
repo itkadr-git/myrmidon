@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, type Duplex } from "node:stream";
+import { WebSocket, WebSocketServer } from "ws";
 
 import { DurablePrpControlPlane } from "@myrmidon/paperclip-runner";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +19,60 @@ import {
 
 describe("runner PRP websocket route", () => {
   afterEach(() => runnerPrpWebSocketInternals.resetForTests());
+
+  it.each(["split worker", "single process"])(
+    "connects runnerd to the local %s listener and delivers run.prepare",
+    async (mode) => {
+      const publicServer = createServer();
+      const workerServer = mode === "split worker" ? createServer() : publicServer;
+      const target = workerServer;
+      if (mode === "split worker") {
+        await new Promise<void>((resolve) => publicServer.listen(0, "127.0.0.1", resolve));
+      }
+      await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+      setupRunnerPrpWebSocketServer(target);
+      const runId = "00000000-0000-4000-8000-000000000783";
+      const prepare = { type: "run.prepare", payload: { driver: "codex_app_server" } };
+      const received = vi.fn();
+      const registration = await registerRunnerPrpAuthority({
+        companyId: "company-1",
+        runId,
+        authority: {
+          handleUpgrade(request: IncomingMessage, socket: Duplex, _path: string, head: Buffer) {
+            const wss = new WebSocketServer({ noServer: true });
+            wss.handleUpgrade(request, socket, head, (client) => {
+              client.send(JSON.stringify(prepare));
+              client.once("message", (message) => received(JSON.parse(message.toString())));
+              client.once("close", () => wss.close());
+            });
+          },
+        } as unknown as DurablePrpControlPlane,
+      });
+      const socket = new WebSocket(registration.connectUrl);
+      try {
+        expect(registration.connectUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/api\/runner\/v1\/connect\//);
+        if (mode === "split worker") {
+          const publicAddress = publicServer.address();
+          expect(typeof publicAddress === "string" || !publicAddress).toBe(false);
+          expect(registration.connectUrl).not.toContain(`:${(publicAddress as { port: number }).port}/`);
+        }
+        const command = await new Promise<Record<string, unknown>>((resolve, reject) => {
+          socket.once("message", (data) => resolve(JSON.parse(data.toString())));
+          socket.once("error", reject);
+        });
+        expect(command).toEqual(prepare);
+        socket.send(JSON.stringify({ type: "run.prepare.completed" }));
+        await vi.waitFor(() => expect(received).toHaveBeenCalledWith({ type: "run.prepare.completed" }));
+      } finally {
+        socket.close();
+        await registration.release();
+        await new Promise<void>((resolve) => target.close(() => resolve()));
+        if (mode === "split worker") {
+          await new Promise<void>((resolve) => publicServer.close(() => resolve()));
+        }
+      }
+    },
+  );
 
   it("routes only the registered run and releases it by generation", async () => {
     const server = createServer();

@@ -29,6 +29,7 @@ import type { IssueRecoveryActionKind, RecoveryFactoryMetrics as RecoveryFactory
 import { recordSwarmClaimSignal, resetSwarmClaimSignals } from "./swarm-signals.js";
 import { resetStaleBlockSignals, recordStaleBlockSignal } from "../../stale-block/attention.js";
 import { resetTracingHealthSignals } from "../../tracing-health/attention.js";
+import { resetAgentSpendWindowsCache } from "../../litellm-keys/key-spend.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -49,6 +50,8 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetSwarmClaimSignals();
     resetStaleBlockSignals();
     resetTracingHealthSignals();
+    // The per-agent spend read is cached per database handle; every case seeds its own rows.
+    resetAgentSpendWindowsCache();
     await db.delete(litellmCostEvents);
     await db.delete(issueClaims);
     await db.delete(issueRecoveryActions);
@@ -507,6 +510,18 @@ describeEmbeddedPostgres("metrics collector", () => {
       occurredAt: new Date(NOW.getTime() - 10 * 3600 * 1000),
       requestId: randomUUID(),
     });
+    await db.insert(litellmCostEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      provider: "provider-a",
+      model: "model-a",
+      inputTokens: 10,
+      outputTokens: 20,
+      costCents: 400,
+      occurredAt: new Date(NOW.getTime() - 48 * 3600 * 1000),
+      requestId: randomUUID(),
+    });
 
     const snapshot = await collectMetricsSnapshot({
       db,
@@ -515,6 +530,10 @@ describeEmbeddedPostgres("metrics collector", () => {
       latencyWindowSec: 3600,
     });
     expect(snapshot.llmCostCentsWindow).toBe(300);
+    expect(snapshot.llmKeySpend).toEqual([
+      { companyId, agentId, window: "24h", cents: 1299 },
+      { companyId, agentId, window: "7d", cents: 1699 },
+    ]);
   });
 
   it("counts agent error signals from the attention registries", async () => {

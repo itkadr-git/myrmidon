@@ -20,11 +20,32 @@ import {
 } from "@myrmidon/shared";
 import {
   adaptKeyBudgetProjection,
+  keyBudgetUsage,
   type AgentKeyBudgetView,
   type CompanyKeyBudgetsReport,
 } from "./key-budget-adapter.js";
 
 const COMPANY = "company-test-123";
+
+describe("myrmidon(OPE-11776) key budget usage", () => {
+  const start = new Date("2026-11-04T00:00:00.000Z");
+  it("marks 80% near-cap and 100% exhausted, with cents-to-USD conversion", () => {
+    expect(keyBudgetUsage(799, 10, start, { capSpentCents: 799 }).status).toBe("ok");
+    expect(keyBudgetUsage(800, 10, start, { capSpentCents: 800, weeklySpentCents: 1200, zeroCostEvents: 2 })).toMatchObject({
+      spentCents: 800, weeklySpentCents: 1200, zeroCostEvents: 2, utilizationPercent: 80, status: "near_cap",
+    });
+    expect(keyBudgetUsage(1000, 10, start, { capSpentCents: 1000 })).toMatchObject({
+      windowStart: start.toISOString(), utilizationPercent: 100, status: "exhausted",
+    });
+  });
+  it("does not divide by zero for an uncapped key", () => {
+    expect(keyBudgetUsage(0, 0, start)).toMatchObject({ utilizationPercent: null, status: "unknown" });
+    expect(keyBudgetUsage(500, 10, start)).toMatchObject({ utilizationPercent: null, status: "unknown" });
+    expect(keyBudgetUsage(500, 10, start, { capSpentCents: 850 })).toMatchObject({
+      spentCents: 500, utilizationPercent: 85, status: "near_cap",
+    });
+  });
+});
 
 describe("myrmidon(OPE-9859) key budget projection adapter", () => {
   it("projects caste budget limits onto agent keys with signalOnly soft enforcement", () => {

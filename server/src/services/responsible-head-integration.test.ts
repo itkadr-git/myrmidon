@@ -240,7 +240,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
   });
 
   describe("3. Questions / Confirmation routing (behavioral issueThreadInteractionService)", () => {
-    it("auto-addresses interaction without addressee from subordinate agent to responsibleAgentId", async () => {
+    it("auto-addresses a question without addressee from a subordinate agent to its direct manager (reportsTo), not the issue head", async () => {
       const issueId = randomUUID();
       const goalId = randomUUID();
       const runId = randomUUID();
@@ -298,8 +298,15 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         { agentId: engAgentId },
       );
 
-      expect(interaction.addresseeAgentId).toBe(admAgentId);
+      // eng-23 reports to lead-dev, lead-dev reports to adm: the question goes to the nearest manager.
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
       expect(interaction.addresseeUserId).toBeNull();
+      // The rest of the reportsTo chain is stored so the card climbs it on timeout,
+      // and it never ends at the owner.
+      expect(interaction.escalationChain).toEqual([
+        { recipient: { agentId: leadAgentId }, afterMinutes: 0 },
+        { recipient: { agentId: admAgentId }, afterMinutes: 30 },
+      ]);
 
       // Idempotency test: repeating the exact same create call returns the existing interaction without error
       const secondCall = await svc.create(
@@ -308,7 +315,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         { agentId: engAgentId },
       );
       expect(secondCall.id).toBe(interaction.id);
-      expect(secondCall.addresseeAgentId).toBe(admAgentId);
+      expect(secondCall.addresseeAgentId).toBe(leadAgentId);
     });
 
     it("does not self-address when head agent creates an interaction without addressee", async () => {
@@ -373,7 +380,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(interaction.addresseeAgentId).toBeNull();
     });
 
-    it("does not auto-address to paused head agent", async () => {
+    it("routes a question to the direct manager and ignores a paused responsible agent", async () => {
       const issueId = randomUUID();
       const goalId = randomUUID();
       const runId = randomUUID();
@@ -431,13 +438,14 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         { agentId: engAgentId },
       );
 
-      // Does not address paused agent; addresseeAgentId remains null
-      expect(interaction.addresseeAgentId).toBeNull();
+      // The paused responsible agent is never addressed; the nearest invokable manager is.
+      expect(interaction.addresseeAgentId).not.toBe(pausedAgentId);
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
     });
   });
 
   describe("4. Wakeup and queued dispatch on unaddressed subordinate interaction", () => {
-    it("wakes direction head with interaction_pending when subordinate creates unaddressed question", async () => {
+    it("wakes the direct manager with interaction_pending when a subordinate creates an unaddressed question", async () => {
       const issueId = randomUUID();
       const goalId = randomUUID();
       const runId = randomUUID();
@@ -495,8 +503,8 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         { agentId: engAgentId },
       );
 
-      // RESPONSIBLE-HEAD auto-addresses to domain head (adm)
-      expect(interaction.addresseeAgentId).toBe(admAgentId);
+      // OPE-11751: an unaddressed agent question goes to the direct manager (lead-dev)
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
       expect(interaction.addresseeUserId).toBeNull();
 
       // Guardrail: prior to waking addressee, no queued run exists for the head agent
@@ -505,7 +513,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         .from(heartbeatRuns)
         .where(
           and(
-            eq(heartbeatRuns.agentId, admAgentId),
+            eq(heartbeatRuns.agentId, leadAgentId),
             eq(heartbeatRuns.status, "queued"),
           ),
         );
@@ -536,16 +544,16 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         },
       });
 
-      // Head agent was idle: directly queued
+      // Manager was idle: directly queued
       expect(wakeResult).not.toBeNull();
       expect(wakeResult?.status).toBe("queued");
-      expect(wakeResult?.agentId).toBe(admAgentId);
+      expect(wakeResult?.agentId).toBe(leadAgentId);
       expect(wakeResult?.responsibleUserId).toBe(ownerUserId);
       expect((wakeResult?.contextSnapshot as any)?.interactionId).toBe(interaction.id);
       expect((wakeResult?.contextSnapshot as any)?.issueId).toBe(issueId);
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
 
-      const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
+      const targetRun = await waitForQueuedRun(db, leadAgentId, wakeResult!.id);
       expect(targetRun).toBeDefined();
       expect(targetRun?.wakeupRequestId).toBeDefined();
 
@@ -559,7 +567,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
             eq(heartbeatRuns.status, "queued"),
           ),
         );
-      expect(allQueuedRuns.every((r) => r.agentId === admAgentId)).toBe(true);
+      expect(allQueuedRuns.every((r) => r.agentId === leadAgentId)).toBe(true);
     });
 
     it("wakes direction head with interaction_pending for unaddressed request_confirmation", async () => {
@@ -650,7 +658,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(targetRun?.wakeupRequestId).toBeDefined();
     });
 
-    it("queued dispatch: defers wake when head is busy and does not fail with 422 responsible_user_unresolved", async () => {
+    it("queued dispatch: defers wake when the manager is busy and does not fail with 422 responsible_user_unresolved", async () => {
       const issueId = randomUUID();
       const goalId = randomUUID();
       const runId = randomUUID();
@@ -668,7 +676,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         id: issueId,
         companyId,
         goalId,
-        title: "Task with busy head agent",
+        title: "Task with busy manager agent",
         status: "in_progress",
         priority: "medium",
         responsibleAgentId: admAgentId,
@@ -685,11 +693,11 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         startedAt: new Date(),
       });
 
-      // Head agent is currently busy running on another task
+      // Manager (lead-dev) is currently busy running on another task
       await db.insert(heartbeatRuns).values({
         id: headActiveRunId,
         companyId,
-        agentId: admAgentId,
+        agentId: leadAgentId,
         invocationSource: "manual",
         status: "running",
         startedAt: new Date(),
@@ -698,11 +706,11 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       await db.insert(issues).values({
         id: activeHeadIssueId,
         companyId,
-        title: "Active head run task",
+        title: "Active manager run task",
         status: "in_progress",
         priority: "medium",
         responsibleAgentId: admAgentId,
-        assigneeAgentId: admAgentId,
+        assigneeAgentId: leadAgentId,
         executionRunId: headActiveRunId,
       });
 
@@ -730,10 +738,10 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         input,
         { agentId: engAgentId },
       );
-      expect(interaction.addresseeAgentId).toBe(admAgentId);
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
 
       const heartbeat = heartbeatService(db);
-      // Waking the busy head agent must not throw 422 responsible_user_unresolved
+      // Waking the busy manager must not throw 422 responsible_user_unresolved
       const wakeResult = await heartbeat.wakeup(interaction.addresseeAgentId!, {
         source: "automation",
         triggerDetail: "system",
@@ -762,7 +770,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(wakeResult?.status).toBe("queued");
 
       // Verify wakeup request was parked in agentWakeupRequests and not lost
-      const targetRequest = await waitForDeferredWakeRequest(db, admAgentId, interaction.id);
+      const targetRequest = await waitForDeferredWakeRequest(db, leadAgentId, interaction.id);
       expect(targetRequest).toBeDefined();
       expect(["deferred_issue_execution", "queued", "claimed"]).toContain(targetRequest?.status);
       expect((targetRequest?.payload as any)?.issueId).toBe(issueId);
@@ -868,7 +876,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect((queuedRun?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
     });
 
-    it("does not wake head agent when interaction has null addressee (paused head)", async () => {
+    it("never wakes a paused responsible agent; the question goes to the direct manager instead", async () => {
       const issueId = randomUUID();
       await db.insert(issues).values({
         id: issueId,
@@ -895,8 +903,8 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         { agentId: engAgentId },
       );
 
-      // addresseeAgentId is null because head is paused
-      expect(interaction.addresseeAgentId).toBeNull();
+      // The paused responsible agent is not addressed; the nearest invokable manager is.
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
 
       // No wake dispatched: no run created for pausedAgentId
       const pausedRuns = await db

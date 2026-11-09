@@ -7,6 +7,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -19,6 +20,7 @@ import (
 	"hash"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -104,6 +106,14 @@ type config struct {
 	GatewayPortEnd   int           `json:"gatewayPortEnd,omitempty"`
 	Bots             []bot         `json:"bots"`
 	Memory           *memoryConfig `json:"memory,omitempty"`
+
+	// WritableMountRoots lists the host directories in which an extra mount may
+	// be read-write (for example a shared package cache). A mount without
+	// readOnly is accepted only when its source, with symlinks resolved, is
+	// inside one of them. As for every extra mount, the source as written must
+	// also be inside AllowedMounts. Empty (the default): every extra mount is
+	// read-only.
+	WritableMountRoots []string `json:"writableMountRoots,omitempty"`
 }
 
 type bot struct {
@@ -121,7 +131,7 @@ func strictDecode(data []byte, out any) error {
 	if err := dec.Decode(out); err != nil {
 		return err
 	}
-	if dec.More() {
+	if err := dec.Decode(new(any)); err != io.EOF {
 		return fmt.Errorf("trailing JSON content")
 	}
 	return nil
@@ -256,6 +266,28 @@ func validate(cfg *config) error {
 	}
 	if cfg.Upstream == "" {
 		cfg.Upstream = "/var/run/docker.sock"
+	}
+	if cfg.GatewayPortStart != 0 || cfg.GatewayPortEnd != 0 {
+		if strings.TrimSpace(cfg.GatewayBindIP) == "" {
+			return fmt.Errorf("gatewayBindIp is required when gatewayPortStart/gatewayPortEnd is configured")
+		}
+	}
+	if cfg.GatewayBindIP != "" {
+		ip := net.ParseIP(cfg.GatewayBindIP)
+		if ip == nil {
+			return fmt.Errorf("gatewayBindIp %q is not a valid IP address", cfg.GatewayBindIP)
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("gatewayBindIp %q is unspecified (0.0.0.0 or :: is not allowed; must be a specific interface IP or loopback)", cfg.GatewayBindIP)
+		}
+	}
+	for i, root := range cfg.WritableMountRoots {
+		if !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" || strings.ContainsAny(root, ":,") {
+			return fmt.Errorf("writableMountRoots[%d] %q must be a clean absolute path other than /", i, root)
+		}
+		if cfg.VolumeRoot != "" && (pathWithin(cfg.VolumeRoot, root) || pathWithin(root, cfg.VolumeRoot)) {
+			return fmt.Errorf("writableMountRoots[%d] %q overlaps volumeRoot", i, root)
+		}
 	}
 	if len(cfg.Bots) == 0 {
 		return fmt.Errorf("at least one bots[] entry is required")
@@ -802,8 +834,13 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 				return http.StatusBadRequest, fmt.Errorf("invalid archive: %v", err)
 			}
 			var m snapshotManifest
-			if err := json.Unmarshal(body, &m); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&m); err != nil {
 				return http.StatusBadRequest, fmt.Errorf("invalid manifest: %v", err)
+			}
+			if err := dec.Decode(new(any)); err != io.EOF {
+				return http.StatusBadRequest, fmt.Errorf("invalid manifest: trailing data")
 			}
 			manifest = &m
 			continue
@@ -1061,7 +1098,13 @@ func (s *server) checkSpec(botKey string, sp *spec) error {
 func decodeBody(r *http.Request, out any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	return dec.Decode(out)
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("trailing JSON content")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, body any) {

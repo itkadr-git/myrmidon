@@ -292,5 +292,8 @@ func decodeMemoryBody(r *http.Request, out any) error {
 	if err := dec.Decode(out); err != nil {
 		return fmt.Errorf("invalid memory request")
 	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("invalid memory request")
+	}
 	return nil
 }

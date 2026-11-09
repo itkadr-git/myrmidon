@@ -1,6 +1,10 @@
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 // myrmidon(B1): product name in the notice bodies below; see product.ts.
 import { productSaid } from "../../myrmidon/product.js";
+// myrmidon(RUN-GUARD-LOOPS): runs stopped by the run guard are never retried.
+import { buildRunGuardStopComment, buildRunGuardStopNotice, readRunGuardStopReason } from "../../myrmidon/run-guard-stop.js";
+// myrmidon(RUN-GUARD-ESCALATE): a task blocked by a final guard stop wakes its manager.
+import { wakeManagerForRunGuardStop as wakeManagerForRunGuardStopImpl } from "../../myrmidon/run-guard-escalation.js";
 // myrmidon(1.6.6 RUN-RETRY-POLICY): transient/permanent classification, the
 // exponential backoff and the attempt ceiling of a failed run's retry.
 import {
@@ -191,6 +195,7 @@ import {
   countStrandedAutoPolicyAttemptsInWindow,
   decideStrandedAutoPolicy,
   findActiveManagerAgentId,
+  findStrandedDispositionOwnerAgentId,
   isStrandedAutoPolicyCause,
   isStrandedAutoPolicyManagerHandoffAlreadyApplied,
   issueHasExistingExecutionWorkflow,
@@ -210,9 +215,11 @@ import {
   REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
   REVIEW_STAGE_RECOVERY_WINDOW_MS,
   countStalledReviewDeferrals,
+  isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
   type ReviewPullRequestCiFacts,
 } from "../../myrmidon/review-stage-recovery/policy.js";
+import { orphanBlockerFitsCreator } from "../../myrmidon/recovery/orphan-blocker-caste.js";
 import type { ReviewPullRequestCiResolver } from "../../myrmidon/review-stage-recovery/github-ci.js";
 import {
   createGitHubPrHeadResolver,
@@ -2220,6 +2227,11 @@ export function recoveryService(
         // Failure recovery shares the durable incident budget and delay. It
         // cannot fall through into the productive-work continuation queue.
         if (predecessor.runtimeMode === "native") return null;
+        // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard is never
+        // retried or continued automatically: the same task and context repeat
+        // the behaviour that tripped the guard. The issue is blocked for a new
+        // input when the run is stopped (heartbeat) or when the sweep reaches it.
+        if (readRunGuardStopReason(predecessor)) return null;
         // myrmidon(WAKE-2): recovery through the stranded-issue sweep should not
         // be blocked by the bounded transient retry scheduler. The scheduler is
         // designed for failure retries (transient errors) and has many checks
@@ -2559,6 +2571,7 @@ export function recoveryService(
         identifier: issues.identifier,
         status: issues.status,
         createdByAgentId: issues.createdByAgentId,
+        casteKey: issues.casteKey,
       })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2599,6 +2612,12 @@ export function recoveryService(
         creatorAgent.companyId !== candidate.companyId ||
         !(await isAgentInvokable(creatorAgent))
       ) {
+        skipped += 1;
+        continue;
+      }
+      // myrmidon(OPE-12220): a caste-bound subtask is not handed back to a creator
+      // of another caste (the lead that sliced the epic); the caste matcher assigns it.
+      if (!orphanBlockerFitsCreator({ issueCasteKey: candidate.casteKey, creatorRole: creatorAgent.role })) {
         skipped += 1;
         continue;
       }
@@ -4441,7 +4460,11 @@ export function recoveryService(
     const latestRun = input.latestRun;
     // Only a reviewer run that ended normally without a decision. Failed or
     // cancelled runs keep their own retry budget and escalation.
-    if (!latestRun || latestRun.status !== "succeeded") return false;
+    // myrmidon(OPE-12201): except a run the maintenance drain interrupted (a
+    // deploy draining the board or the bot): the reviewer is woken again without
+    // spending the decision budget instead of the stage moving to `blocked`.
+    const interruptedByMaintenance = isMaintenanceInterruptedRun(latestRun);
+    if (!latestRun || (latestRun.status !== "succeeded" && !interruptedByMaintenance)) return false;
     const state = parseIssueExecutionState(input.issue.executionState);
     if (state?.status !== "pending") return false;
     const participant = state.currentParticipant;
@@ -4476,17 +4499,19 @@ export function recoveryService(
       companyId: input.issue.companyId,
       issueId: input.issue.id,
     });
-    const decision = decideStalledReviewRecovery({
-      ci: ci.state,
-      ciWaitsUsed: deferrals.ciWaits,
-      // The release tail's own review-participant retry was the first re-wake.
-      decisionRewakesUsed: 1 + deferrals.decisionRetries,
-    });
+    const decision: ReturnType<typeof decideStalledReviewRecovery> = interruptedByMaintenance
+      ? { kind: "retry_decision", attempt: 1 + deferrals.decisionRetries, maxAttempts: 1 + deferrals.decisionRetries }
+      : decideStalledReviewRecovery({
+          ci: ci.state,
+          ciWaitsUsed: deferrals.ciWaits,
+          // The release tail's own review-participant retry was the first re-wake.
+          decisionRewakesUsed: 1 + deferrals.decisionRetries,
+        });
     if (decision.kind === "escalate") return false;
 
     const activityDetails = {
       identifier: input.issue.identifier,
-      kind: decision.kind === "wait_for_ci" ? "ci_wait" : "decision_retry",
+      kind: decision.kind === "wait_for_ci" ? "ci_wait" : interruptedByMaintenance ? "maintenance_retry" : "decision_retry",
       attempt: decision.attempt,
       maxAttempts: decision.maxAttempts,
       stageId,
@@ -4835,6 +4860,16 @@ export function recoveryService(
       const escalationTarget =
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
+      // myrmidon(OPE-12265): the `disposition_blocked` owner is the nearest
+      // lead/manager above the assignee, not the direct reviewer. `adm` (the
+      // chain fallback) stays the owner when no lead exists in the chain.
+      const dispositionOwnerAgentId =
+        !assigneePaused && !retriesLeft
+          ? await findStrandedDispositionOwnerAgentId(db, {
+              companyId: input.issue.companyId,
+              assigneeAgentId,
+            })
+          : null;
 
       let hasPendingCi = input.hasPendingCi ?? false;
       if (!hasPendingCi && openPrProduct) {
@@ -4865,6 +4900,7 @@ export function recoveryService(
         maxAttemptsPerDay,
         managerAgentId,
         escalationAgentId,
+        dispositionOwnerAgentId,
         targetIsAdm,
         requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
@@ -5257,7 +5293,7 @@ export function recoveryService(
       } else if (autoPolicyDecision.kind === "disposition_blocked") {
         // myrmidon(OPE-9072): the issue has its own workflow (policy, monitor
         // or execution state): never take it over and never change the
-        // assignee. Block it with complete metadata owned by a senior agent
+        // assignee. Block it with complete metadata owned by the nearest lead
         // and wake that agent once. The wake key ties it to this successful
         // run, so a repeat pass stands down instead of waking again.
         const ownerAgentId = autoPolicyDecision.ownerAgentId;
@@ -5326,7 +5362,7 @@ export function recoveryService(
             {},
             {
               authorType: "system",
-              presentation: compactRecoveryPresentation("Escalated to a senior agent"),
+              presentation: compactRecoveryPresentation("Escalated to the nearest lead"),
               metadata: recoveryNoticeMetadata({
                 cause: recoveryCause,
                 latestRun,
@@ -7278,7 +7314,9 @@ export function recoveryService(
             issue,
             previousStatus: "in_progress",
             latestRun,
-            notice: {
+            // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard says why
+            // and what is needed instead of the generic non-retryable wording.
+            notice: buildRunGuardStopNotice(latestRun) ?? {
               body:
                 productSaid("detected a non-retryable failure on this issue's continuation run ") +
                 `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
@@ -7288,6 +7326,15 @@ export function recoveryService(
             },
           });
           if (updated) {
+            // myrmidon(RUN-GUARD-ESCALATE): the sweep blocks a guard-stopped run's task too.
+            if (latestRun && readRunGuardStopReason(latestRun)) {
+              await wakeManagerForRunGuardStop({ issue, latestRun }).catch((error) => {
+                logger.warn(
+                  { error: error instanceof Error ? error.message : String(error), issueId: issue.id },
+                  "run guard stop: could not wake the manager",
+                );
+              });
+            }
             result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
@@ -8084,11 +8131,39 @@ export function recoveryService(
     return result;
   }
 
+  // myrmidon(RUN-GUARD-ESCALATE): after the escalation blocked a task whose run the
+  // run guard stopped, wake the assignee's manager (reports_to, else `adm`) with
+  // `run_guard_stop_needs_input`, once per issue per 30 minutes. Callers: the guard
+  // stop handling in heartbeat.ts and the stranded sweep below.
+  async function wakeManagerForRunGuardStop(input: {
+    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    latestRun: { id: string; errorCode?: string | null; resultJson?: unknown };
+    stopText?: string | null;
+  }) {
+    const stopReason = readRunGuardStopReason(input.latestRun);
+    if (!stopReason) return null;
+    // Only a task the escalation actually blocked is worth the manager's attention: a
+    // deferred review stage or a rerouted task keeps its status and its own path.
+    const current = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
+      .then((rows) => rows[0] ?? null);
+    if (current?.status !== "blocked") return null;
+    return wakeManagerForRunGuardStopImpl(db, deps.enqueueWakeup, {
+      issue: input.issue,
+      latestRun: input.latestRun,
+      stopReason,
+      stopText: input.stopText ?? buildRunGuardStopComment(input.latestRun),
+    });
+  }
+
   return {
     buildRunOutputSilence,
     deferReviewParticipantReleaseForCi,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
+    wakeManagerForRunGuardStop,
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,

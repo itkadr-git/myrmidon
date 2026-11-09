@@ -27,8 +27,6 @@ export async function escalateInteractionStep(
     if (!parsed.success || parsed.data.length < 2) throw new Error("Invalid escalation chain");
     const chain = parsed.data;
     if (level >= chain.length) return "unchanged";
-    const terminal = chain[chain.length - 1]?.recipient;
-    if (!terminal || !("serviceQueue" in terminal)) throw new Error("Escalation chain must end in a service queue");
     const next = chain[level]?.recipient;
     if (!next || (card.routeType === "code_review" && "userId" in next)) {
       throw new Error("Invalid escalation recipient");
