@@ -802,6 +802,10 @@ const hermesGatewayAdapter: ServerAdapterModule = {
   runtimeToolDelivery: "invocation_context",
   listModels: listGatewayModels,
   refreshModels: refreshGatewayModels,
+  // LiteLLM /v1/models is the live catalog for hermes_gateway: a successful
+  // empty answer means every model was removed, so `[]` must suppress the
+  // declared-env and static fallbacks instead of acting as a failure signal.
+  modelsAreAuthoritativeWhenEmpty: true,
 };
 
 setFleetSiteSecurityResolver((siteName: string, companyId?: string) => {
@@ -1092,9 +1096,16 @@ export async function listAdapterModels(type: string, companyId?: string): Promi
   if (adapter?.listModels) {
     try {
       const discovered = await adapter.listModels();
-      if (Array.isArray(discovered)) return discovered;
+      // An empty dynamic result is authoritative only for adapters that opted
+      // in (e.g. hermes_gateway, where LiteLLM /v1/models is the live catalog
+      // and `[]` means models were removed). Discovery helpers that return []
+      // on failure (CLI adapters, unreachable gateways) must fall through to
+      // declared env models and static fallbacks below.
+      if (Array.isArray(discovered) && (discovered.length > 0 || adapter.modelsAreAuthoritativeWhenEmpty)) {
+        return discovered;
+      }
     } catch {
-      // Fall back to declared models or static list if dynamic discovery fails
+      // Fall through to declared models or static list if dynamic discovery fails
     }
   }
   const declaredModels = getDeclaredAdapterModels();
@@ -1110,7 +1121,9 @@ export async function refreshAdapterModels(type: string): Promise<{ id: string; 
   if (adapter?.refreshModels) {
     try {
       const refreshed = await adapter.refreshModels();
-      if (Array.isArray(refreshed)) return refreshed;
+      if (Array.isArray(refreshed) && (refreshed.length > 0 || adapter.modelsAreAuthoritativeWhenEmpty)) {
+        return refreshed;
+      }
     } catch {
       // Fall through to listModels or static fallbacks
     }
@@ -1118,7 +1131,9 @@ export async function refreshAdapterModels(type: string): Promise<{ id: string; 
   if (adapter?.listModels) {
     try {
       const discovered = await adapter.listModels();
-      if (Array.isArray(discovered)) return discovered;
+      if (Array.isArray(discovered) && (discovered.length > 0 || adapter.modelsAreAuthoritativeWhenEmpty)) {
+        return discovered;
+      }
     } catch {
       // Fall through to declared models or static list
     }
