@@ -109,6 +109,7 @@ export { sweepTelegramNotifyProactivity } from "./channel-connectors/bridge/noti
 export { accessHubRoutes } from "./access-hub/routes.js"; // myrmidon(SEC1)
 export { ui2LanguageRoutes } from "./ui2-language/routes.js"; // myrmidon(UI2-I18N)
 export { localeUploadRoutes } from "./locale-upload/routes.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187)
+export { localeModuleRoutes } from "../modules/locale/index.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-12117): /api/locale upload+current
 export { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes, myrmidonForagingPassRoutes } from "./foraging/index.js"; // myrmidon(1.6-FORAGE, 1.6.3-FORAGING-IDLE-GATE)
 export { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes, myrmidonHindsightModelsRoutes } from "./agent-memory/index.js"; // myrmidon(MEMORY-UI)
 export { myrmidonToolPolicyCacheRoutes } from "./tool-policy-cache/index.js"; // myrmidon(DB-PERF-C-P4)
