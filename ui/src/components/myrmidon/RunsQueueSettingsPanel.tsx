@@ -222,10 +222,10 @@ export function RunsQueueSettingsPanel() {
           }}
           onBlur={() => {
             if (rawVal !== settings[key]) {
-              const next = key === "runsQueue.infraInterrupt.codes" ||
+              const next: BehaviorSettingValue = key === "runsQueue.infraInterrupt.codes" ||
                            key === "runsQueue.autoResume.backoffMs"
                 ? String(rawVal).split(",").map((s) => s.trim()).filter(Boolean)
-                : rawVal;
+                : (rawVal as BehaviorSettingValue);
               setSavingKey(key);
               updateMutation.mutate({ [key]: next }, {
                 onSettled: () => setSavingKey(null),
