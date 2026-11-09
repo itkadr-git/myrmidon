@@ -917,6 +917,52 @@ describe("request timeout and latency (OPE-8150)", () => {
     }
   });
 
+  it("aborts hindsight_recall when latency exceeds configured requestTimeoutMs even if below default 60s", async () => {
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const delayedFetch: FetchLike = async (url, init) => {
+        if (url.includes("/health")) return jsonResponse({ ok: true });
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            resolve(jsonResponse({ results: [{ text: "found memory" }] }));
+          }, 35_000);
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            clearTimeout(timer);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      };
+
+      const harness = createTestHarness({
+        manifest: manifest as PaperclipPluginManifestV1,
+        config: {
+          hindsightApiUrl: API_URL,
+          requestTimeoutMs: 30_000,
+          recallOnRunStart: "never",
+        },
+      });
+      harness.seed({
+        agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      });
+      const plugin = createHindsightPlugin({ fetchImpl: delayedFetch });
+      await plugin.definition.setup(harness.ctx);
+
+      const toolPromise = harness.executeTool(
+        "hindsight_recall",
+        { query: "delayed test" },
+        { agentId: AGENT_ADM, runId: "run-lat-timeout", companyId: COMPANY, projectId: PROJECT },
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      const toolResult = await toolPromise;
+      assert.equal(aborted, true);
+      assert.match(toolResult.content, /Memory recall failed.*(?:AbortError|abort)/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("validates and propagates requestTimeoutMs to HindsightClient in onValidateConfig", async () => {
     const fetchImpl: FetchLike = async () => jsonResponse({ ok: true });
     const plugin = createHindsightPlugin({ fetchImpl });
