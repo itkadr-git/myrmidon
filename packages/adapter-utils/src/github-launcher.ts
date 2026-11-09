@@ -18,7 +18,17 @@ const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
+const gitWrapperPaths = new Set([
+  directory,
+  '/opt/paperclip/bin',
+  '/usr/local/bin',
+].map(p => { try { return fs.realpathSync(path.join(p, 'git')); } catch { return ''; } }).filter(Boolean));
+function realGitExecutable() {
+  const configured = process.env.MYRMIDON_GIT_REAL;
+  if (configured && !gitWrapperPaths.has(path.resolve(configured))) return configured;
+  return '/opt/paperclip/libexec/git';
+}
+const executable = program === 'git' ? realGitExecutable() : originalPath.map(p => path.join(p, program)).find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
 if (!['git', 'gh'].includes(program) || !executable) {

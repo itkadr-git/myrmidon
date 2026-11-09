@@ -202,10 +202,15 @@ function paperclipRepositoryFromGitArgs(args) {
 
 // The 'origin' remote of the working directory; the real git binary, never the
 // launcher itself (originalPath excludes the launcher's own directory).
+function paperclipRealGitExecutable(env) {
+  const configured = env && typeof env.MYRMIDON_GIT_REAL === 'string' ? env.MYRMIDON_GIT_REAL.trim() : '';
+  return configured || '/opt/paperclip/libexec/git';
+}
+
 function paperclipRepositoryFromOrigin(cwd, env, originalPath) {
   try {
     const cp = require('node:child_process');
-    const result = cp.spawnSync('git', ['config', '--get', 'remote.origin.url'], {
+    const result = cp.spawnSync(paperclipRealGitExecutable(env), ['config', '--get', 'remote.origin.url'], {
       cwd, env: Object.assign({}, env, { PATH: originalPath.join(require('node:path').delimiter) }),
       encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
     });
