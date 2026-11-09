@@ -6,7 +6,7 @@
 //
 //   GET   /myrmidon/fleet/sites/overview?companyId=     sites: status, lastSeen, capacity used/total, bots, drift, key TTL
 //   GET   /myrmidon/fleet/sites/:name/bots?companyId=   the site's bots: state, image, drift, gateway address
-//   PATCH /myrmidon/fleet/sites/:name?companyId=        labels, capacity, address, privateNetwork/tunnel (admin)
+//   PATCH /myrmidon/fleet/sites/:name?companyId=        labels, capacity, address, privateNetwork/tunnel (owner)
 //   POST  /myrmidon/fleet/sites/:name/drain?companyId=  operator drain: no new placements (admin)
 //   POST  /myrmidon/fleet/sites/:name/resume?companyId= lifts a drain (admin)
 //   POST  /myrmidon/fleet/bots/:key/restart             restart the bot's container on its site (admin)
@@ -50,6 +50,11 @@ const patchBodySchema = z
     // it: the hermes adapter then refuses its plain-http gateway. Merged into the stored profile.
     privateNetwork: z.boolean().optional(),
     tunnel: z.boolean().optional(),
+    // myrmidon(fleet-site audit): the adapter opens plain http only to a port inside this range of the
+    // record, so the range is editable here: a site that came without one (the env bootstrap writes
+    // none) would otherwise be stuck. Send both ends, or one end to move the stored range.
+    gatewayPortStart: z.number().int().min(1024).max(65535).optional(),
+    gatewayPortEnd: z.number().int().min(1024).max(65535).optional(),
   })
   .strict();
 
@@ -304,13 +309,22 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
       }
       patch.capacity = body.capacity;
     }
-    if (body.privateNetwork !== undefined || body.tunnel !== undefined) {
+    const portRange = patchedPortRange(site, body);
+    if (portRange !== null && body.capacity === undefined) {
+      const maxBots = site.capacity.maxBots;
+      if (maxBots !== undefined && maxBots > portRange.end - portRange.start + 1) {
+        throw badRequest(`capacity.maxBots (${maxBots}) exceeds the gateway port range (${portRange.end - portRange.start + 1} ports)`);
+      }
+    }
+    if (body.privateNetwork !== undefined || body.tunnel !== undefined || portRange !== null) {
       patch.profile = {
         ...site.profile,
         ...(body.privateNetwork !== undefined ? { privateNetwork: body.privateNetwork } : {}),
         ...(body.tunnel !== undefined ? { tunnel: body.tunnel } : {}),
+        ...(portRange !== null ? { gatewayPortStart: portRange.start, gatewayPortEnd: portRange.end } : {}),
       };
     }
+    assertPrivateAddressRules(site, body, patch);
     const updated = await deps.updateSite(companyId, site.name, patch);
     if (!updated) throw notFound(`Site "${site.name}" not found`);
     res.json({ ok: true, site: updated.name });

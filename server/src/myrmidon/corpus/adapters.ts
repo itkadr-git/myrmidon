@@ -13,6 +13,25 @@ import type { Config } from "../../config.js";
 import { CORPUS_EMBED_BATCH_SIZE, embedInBatches } from "./embed-batches.js";
 import { CorpusRequestError } from "./service.js";
 import { logger } from "../../middleware/logger.js";
+import {
+  CORPUS_DATASET_LIST_CACHE_TTL_ENV,
+  CORPUS_EMBED_KEY_CACHE_TTL_ENV,
+  CORPUS_QUERY_EMBED_CACHE_TTL_ENV,
+  DEFAULT_DATASET_LIST_CACHE_TTL_SEC,
+  DEFAULT_EMBED_KEY_CACHE_TTL_SEC,
+  DEFAULT_QUERY_EMBED_CACHE_TTL_SEC,
+  createEmbedderKeyCache,
+  createEmbedderKeyResolver,
+  createQueryVectorCache,
+  queryVectorKey,
+  readCacheTtlMs,
+  withDatasetListCache,
+} from "./hot-path-cache.js";
+import {
+  CORPUS_STEP_TIMINGS_SAMPLE_ENV,
+  createStepTimingsSampler,
+  readStepTimingsSample,
+} from "./step-timings.js";
 
 /** How long one embedding request may take before it is aborted. A document is sent as many requests. */
 const CORPUS_EMBED_REQUEST_TIMEOUT_MS = 120_000;
@@ -133,7 +152,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     const { present, apiKey } = await embedderKeyResolver.resolve(companyId, embedKeyTtlMs);
     if (!baseUrl && !present) throw embedderNotConfigured();
     const endpoint = baseUrl ?? context.env.MYRMIDON_LLM_GATEWAY_BASE_URL ?? "http://127.0.0.1:3000/v1";
-    // The key is resolved once per call; the batches below reuse it.
+    // The key is resolved (or taken from the cache) once per call; the batches below reuse it.
     const isTransientError = (err: unknown): boolean => {
       if (signal?.aborted) return false;
       if (err instanceof Error) {
@@ -205,17 +224,22 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     },
     async deleteDocument(companyId: string, documentId: string) { await store.replaceDocumentChunks({ companyId, documentId, chunks: [] }); },
     async search(input: { companyId: string; datasetId?: string; datasetIds?: string[]; query: string; limit: number; mode: "hybrid" | "vector" | "fulltext"; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
-      // OPE-12272: step durations of one search, on the debug log, so a slow
-      // search on a stand can be attributed to the embedding call vs the SQL.
+      // OPE-12272: step durations of one search, so a slow search on a stand can be attributed to the
+      // embedding call vs the SQL. They go to the info log for one search in N (see `step-timings.ts`).
+      // The question is embedded first and both rankings of the index start after it: a full-text ranking
+      // that started earlier would race the 800 ms bound of its own statement against the embedding and
+      // make the ranking of the same question depend on timing.
       const embedStarted = performance.now();
       const vector = input.mode === "fulltext" ? undefined : await queryVector(input);
       const embedMs = Math.round(performance.now() - embedStarted);
       const indexStarted = performance.now();
       const hits = await searchIndex.search({ companyId: input.companyId, datasetId: input.datasetId, datasetIds: input.datasetIds, text: input.mode === "vector" ? "" : input.query, embedding: vector, limit: input.limit });
-      logger.debug(
-        { companyId: input.companyId, datasetId: input.datasetId ?? null, datasetIds: input.datasetIds ?? null, mode: input.mode, embedMs, indexMs: Math.round(performance.now() - indexStarted), hits: hits.length },
-        "corpus search: embed and index timings",
-      );
+      const timings = { companyId: input.companyId, datasetId: input.datasetId ?? null, datasetIds: input.datasetIds ?? null, mode: input.mode, embedMs, indexMs: Math.round(performance.now() - indexStarted), hits: hits.length };
+      if (indexTimingsSampler.next(readStepTimingsSample(context.env[CORPUS_STEP_TIMINGS_SAMPLE_ENV]))) {
+        logger.info(timings, "corpus search: embed and index timings");
+      } else {
+        logger.debug(timings, "corpus search: embed and index timings");
+      }
       return hits.map((hit) => ({ chunkId: hit.chunkId, documentId: hit.documentId, datasetId: hit.datasetId, score: hit.score, text: hit.content, metadata: hit.metadata }));
     },
     async countChunks(companyId: string, datasetId?: string) {
@@ -256,6 +280,11 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
         const rows = await db.select({ id: corpusDatasets.id }).from(corpusDatasets)
           .where(and(eq(corpusDatasets.companyId, companyId), eq(corpusDatasets.id, id))).limit(1);
         return rows.length > 0;
+      },
+      // OPE-12272: ids and names only, in `listDatasets` order. No per-dataset document and chunk counts.
+      async listDatasetNames(companyId) {
+        return db.select({ id: corpusDatasets.id, name: corpusDatasets.name }).from(corpusDatasets)
+          .where(eq(corpusDatasets.companyId, companyId)).orderBy(asc(corpusDatasets.createdAt));
       },
       async createDataset(input) { return (await datasetRecord(input.companyId, await store.createDataset({ companyId: input.companyId, name: input.name, description: input.description })))!; },
       async updateDataset(companyId, id, patch) {
@@ -500,7 +529,26 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
         // cite sources by book title instead of UUID (OPE-12028).
         // One company-scoped title query; do not load jobs/chunks for search hits.
         const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
+        const namesAt = performance.now();
         const documentNames = await ports.store.getDocumentNames(companyId, documentIds);
+        // OPE-12272: where the time of one MCP search goes; the embedding and index split is in
+        // "corpus search: embed and index timings". Info for one search in N, debug for the rest.
+        const mcpTimings = {
+          companyId,
+          datasets: targetIds.length,
+          topK: request.topK,
+          hits: hits.length,
+          settingsMs,
+          datasetNamesMs,
+          indexMs: Math.round(namesAt - indexStarted),
+          documentNamesMs: Math.round(performance.now() - namesAt),
+          totalMs: Math.round(performance.now() - startedAt),
+        };
+        if (mcpTimingsSampler.next(readStepTimingsSample(process.env[CORPUS_STEP_TIMINGS_SAMPLE_ENV]))) {
+          logger.info(mcpTimings, "corpus mcp search: handler step timings");
+        } else {
+          logger.debug(mcpTimings, "corpus mcp search: handler step timings");
+        }
 
         const filteredHits = hits
           .filter((hit) => request.minScore === null || hit.score >= request.minScore)

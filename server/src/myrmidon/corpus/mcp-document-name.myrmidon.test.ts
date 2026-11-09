@@ -70,7 +70,13 @@ function makePorts(overrides: {
           chunkCount: 1,
         }];
       },
-      async getDataset() { return null; },
+      async listDatasetNames() {
+        return [
+          { id: DATASET_ID, name: "bbq-craft" },
+          { id: OTHER_DATASET_ID, name: "cooking" },
+        ];
+      },
+      async getDataset() { spy.getDataset += 1; return null; },
       async hasDataset(_companyId: string, datasetId: string) { return datasetId === DATASET_ID; },
       async createDataset() { throw new Error("not used"); },
       async updateDataset() { return null; },

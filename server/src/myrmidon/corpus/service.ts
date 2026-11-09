@@ -861,10 +861,13 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
       // One company-scoped title query; do not load jobs/chunks for search hits.
       const documentIds = [...new Set(hits.map((hit) => hit.documentId))];
       const documentNames = await ports.store.getDocumentNames(companyId, documentIds);
-      logger.debug(
-        { companyId, datasetId, mode, limit, hits: hits.length, settingsMs, datasetMs, embedderCheckMs, indexMs, documentNamesMs: Math.round(performance.now() - namesStarted) },
-        "corpus search: handler step timings",
-      );
+      // OPE-12272: info for one search in N (see step-timings.ts), debug for the rest.
+      const timings = { companyId, datasetId, mode, limit, hits: hits.length, settingsMs, datasetMs, embedderCheckMs, indexMs, documentNamesMs: Math.round(performance.now() - namesStarted) };
+      if (searchTimingsSampler.next(readStepTimingsSample(env[CORPUS_STEP_TIMINGS_SAMPLE_ENV]))) {
+        logger.info(timings, "corpus search: handler step timings");
+      } else {
+        logger.debug(timings, "corpus search: handler step timings");
+      }
       return {
         datasetId,
         query,

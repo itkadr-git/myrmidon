@@ -15,7 +15,9 @@
 // company secret holding the gateway admin key). Either unset — reconciliation
 // is skipped with one log line per process: the board runs without a gateway,
 // nothing is dialled by default and the secret NAME is never sent as a key.
-// The admin key VALUE is resolved per company through the secret store.
+// The admin key VALUE is resolved per company through the secret store, and so
+// is every provider credential: LiteLLM has no secret manager, the registration
+// carries the key value (resolved on the board, per company), never the name.
 //
 // The agent key allowlists are only CHECKED at startup: the pass runs as a
 // dry run and logs how many keys it would change and which model names it would
@@ -41,6 +43,11 @@ export interface LitellmReconcilePorts {
   /** Resolves the admin key VALUE for one company; null when the store has no value. */
   readAdminKey(db: Db, companyId: string, secretName: string): Promise<string | null>;
   /**
+   * Resolves a provider credential VALUE by its secret name within one company;
+   * null when the store has no value.
+   */
+  resolveCredential(db: Db, companyId: string, secretName: string): Promise<string | null>;
+  /**
    * Checks the company's enabled-model allowlist against the agent gateway
    * keys and reports the differences. Must NOT change any key.
    */
@@ -64,12 +71,8 @@ const defaultPorts: LitellmReconcilePorts = {
     const rows = await db.select({ id: companies.id }).from(companies).where(isNotNull(companies.id));
     return rows.map((row) => row.id);
   },
-  async readAdminKey(db, companyId, secretName) {
-    const secrets = secretService(db);
-    const row = await secrets.getByName(companyId, secretName);
-    if (!row) return null;
-    return secrets.resolveSecretValue(companyId, row.id, "latest");
-  },
+  readAdminKey: readCompanySecretValue,
+  resolveCredential: readCompanySecretValue,
   async reportAgentAllowlists(db, companyId, env) {
     return updateAgentAllowlistsForCompany(
       db,
@@ -133,7 +136,14 @@ export async function startLitellmModelReconciliation(
           litellmBaseUrl: baseUrl,
           litellmAdminKey: adminKey,
         });
-        await createLitellmSyncService({ db, litellm: client }).reconcileWithLitellm(companyId);
+        // Same resolver as the board routes (model-providers/wiring.ts
+        // syncForCompany): without it the first enabled model of the company
+        // fails with "credential could not be resolved" and nothing registers.
+        await createLitellmSyncService({
+          db,
+          litellm: client,
+          resolveCredential: (ownerCompanyId, secretName) => ports.resolveCredential(db, ownerCompanyId, secretName),
+        }).reconcileWithLitellm(companyId);
         const allowlists = await ports.reportAgentAllowlists(db, companyId, env);
         ports.log.info(
           { companyId, ...summarizeAllowlistResult(allowlists as Parameters<typeof summarizeAllowlistResult>[0]) },

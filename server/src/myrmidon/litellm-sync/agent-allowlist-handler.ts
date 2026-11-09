@@ -47,6 +47,90 @@ import { agentKeySecretName, DISABLED_MODEL_SENTINEL, readGatewayKeySettings } f
 import { notFound, unprocessable } from "../../errors.js";
 import { type AgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 
+/** sha256 hex of a key value: the form the gateway stores (same as `gatewayKeyValueHash`). */
+function keyValueHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** The env name the card projects an agent's gateway key into when no instance setting names another. */
+const DEFAULT_AGENT_KEY_ENV = "MYRMIDON_LLM_API_KEY";
+
+/** How an agent's gateway key is addressed for one update. */
+interface AgentKeyRef {
+  /** The board-derived alias (`llm-gateway-key-<name>-<id>`). */
+  alias: string;
+  /** sha256 of the key value found through the card's bindings; absent: address by alias. */
+  keyHash?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A `secret_ref` binding -> the secret id and the version selector; null for anything else. */
+function secretRefOf(value: unknown): { secretId: string; version: number | "latest" } | null {
+  if (!isRecord(value) || value.type !== "secret_ref") return null;
+  const secretId = typeof value.secretId === "string" ? value.secretId.trim() : "";
+  if (!secretId) return null;
+  const version =
+    typeof value.version === "number" && Number.isInteger(value.version) && value.version > 0
+      ? value.version
+      : "latest";
+  return { secretId, version };
+}
+
+/** The key bindings of a card, in lookup order. */
+function cardKeyBindings(
+  adapterConfig: unknown,
+  agentKeyEnv: string | null,
+): Array<{ secretId: string; version: number | "latest" }> {
+  const config = isRecord(adapterConfig) ? adapterConfig : {};
+  const env = isRecord(config.env) ? config.env : {};
+  const bindings: Array<{ secretId: string; version: number | "latest" }> = [];
+  for (const name of new Set([agentKeyEnv, DEFAULT_AGENT_KEY_ENV])) {
+    const ref = name ? secretRefOf(env[name]) : null;
+    if (ref) bindings.push(ref);
+  }
+  if (bindings.length === 0) {
+    const ref = secretRefOf(config.apiKey);
+    if (ref) bindings.push(ref);
+  }
+  return bindings;
+}
+
+/**
+ * Finds how to address one agent's gateway key: through the card's bindings
+ * (secret value -> sha256) first, then the board-managed secret by alias.
+ * `bindingUnresolved` tells "the card names a key secret that holds no value"
+ * from "the agent has no key at all".
+ */
+async function resolveAgentKeyRef(
+  deps: AgentGatewayKeyDeps,
+  companyId: string,
+  agent: { id: string; name: string; adapterConfig?: unknown },
+  agentKeyEnv: string | null,
+): Promise<{ ref: AgentKeyRef | null; bindingUnresolved: boolean }> {
+  const alias = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
+  let bindingUnresolved = false;
+  if (deps.readSecretValueById) {
+    for (const binding of cardKeyBindings(agent.adapterConfig, agentKeyEnv)) {
+      const value = await deps.readSecretValueById(companyId, binding.secretId, binding.version);
+      if (value) return { ref: { alias, keyHash: keyValueHash(value) }, bindingUnresolved: false };
+      bindingUnresolved = true;
+    }
+  }
+  // An agent without a managed key yet has no allowlist to update; creating
+  // keys is M2-B's job (the board), not this pass's.
+  const secretId = await deps.findSecretId(companyId, alias);
+  if (secretId) return { ref: { alias }, bindingUnresolved: false };
+  return { ref: null, bindingUnresolved };
+}
+
+/** The address fields a gateway call takes. */
+function keyAddress(ref: AgentKeyRef): { alias: string; keyHash?: string } {
+  return ref.keyHash ? { alias: ref.alias, keyHash: ref.keyHash } : { alias: ref.alias };
+}
+
 /** What a pass would change on one agent key. */
 export interface AllowlistKeyChange {
   agentId: string;
@@ -155,7 +239,8 @@ export async function updateAgentAllowlistsForCompany(
     return skip("gateway-key-management-not-configured");
   }
 
-  const companyModels = options.includeRegistryModels === false ? [] : await listCompanyModels(db, companyId);
+  const companyModels: { name: string; enabled: boolean }[] =
+    options.includeRegistryModels === false ? [] : await listCompanyModels(db, companyId);
   const enabledNames = companyModels.filter((model) => model.enabled).map((model) => model.name);
   const models = [...new Set([
     ...enabledNames,
@@ -260,7 +345,7 @@ export async function updateAgentAllowlistsForCompany(
         }
         continue;
       }
-      const applied = await gateway.setKeyAllowedModels!({ alias, models: next });
+      const applied = await gateway.setKeyAllowedModels!({ ...keyAddress(ref), models: next });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
     } catch {

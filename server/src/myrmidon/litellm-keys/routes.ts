@@ -16,7 +16,8 @@
 
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@myrmidon/db";
-import { readGatewayKeySettings } from "@myrmidon/shared";
+import { missingGatewayEnv, readGatewayKeySettings, type GatewayKeySettings } from "@myrmidon/shared";
+import { badRequest } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import {
   assertAgentMayReadOwnGatewayKey,

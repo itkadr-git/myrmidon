@@ -8,6 +8,12 @@
 // Handles credential rotation by updating all models of a provider.
 // Updates agent key allowlists to include enabled models.
 //
+// Names: the registry's `litellmModelName` is the model GROUP clients call; the
+// provider's own spelling (`modelName`) is what LiteLLM sends upstream, so the
+// two can differ (`kimi/kimi-for-coding` -> `kimi-for-coding`). A registration
+// never duplicates a deployment the gateway already holds under the same group
+// name and api_base.
+//
 // Subscription pools (chatgpt-pool, antigravity-pool, google-ai-pool) are the
 // exception: a pool lives on its own gateway deployments (the pool's router
 // or proxy), so nothing in this module writes to the gateway for a pool
@@ -20,15 +26,6 @@ import { and, eq } from "drizzle-orm";
 import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { isPoolModelProviderType } from "@myrmidon/shared";
 import { LitellmSyncPort } from "./port.js";
-
-/** Compares two base URLs ignoring surrounding blanks and trailing slashes; null equals empty. */
-function sameBaseUrl(a: string | null | undefined, b: string | null | undefined): boolean {
-  const norm = (value: string | null | undefined): string | null => {
-    const trimmed = (value ?? "").trim().replace(/\/+$/, "");
-    return trimmed.length > 0 ? trimmed : null;
-  };
-  return norm(a) === norm(b);
-}
 
 export interface LitellmSyncServiceDeps {
   db: Db;
@@ -98,25 +95,21 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     }
 
     const model = modelRecords[0];
-
-    // The provider row tells a pool (never written to the gateway) from a
-    // gateway-owned provider, and carries the credential for an enable.
-    const providerRecords = await deps.db
-      .select()
-      .from(modelProviders)
-      .where(eq(modelProviders.id, providerId))
-      .limit(1);
-    const provider = providerRecords[0];
-
-    if (provider && isPoolModelProviderType(provider.type)) {
-      return;
-    }
-
+    
     if (enabled) {
-      if (!provider) {
+      // Fetch provider details to get credential information
+      const providerRecords = await deps.db
+        .select()
+        .from(modelProviders)
+        .where(eq(modelProviders.id, providerId))
+        .limit(1);
+
+      if (providerRecords.length === 0) {
         throw new Error(`Provider ${providerId} not found`);
       }
 
+      const provider = providerRecords[0];
+      if (isPoolModelProviderType(provider.type)) return;
       const providerCompanyId = companyId ?? provider.companyId;
 
       if (!provider.credentialSecretName) {
@@ -411,34 +404,22 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
 
   /**
    * Removes the gateway deployments of ONE removed provider: those in the given
-   * model groups that carry the provider's own `api_base`. Other deployments of
-   * the same group (another provider, a pool router, the gateway config file)
-   * stay. Deleting by group name would take all of them with it.
+   * model groups that carry the provider's own `api_base` (the port deletes by
+   * deployment id and never targets a deployment of the static gateway
+   * config). Other deployments of the same group - another provider's, a
+   * pool router's - stay; `unregisterModels` would take all of them with it.
    *
-   * A pool provider is a no-op. A deployment the gateway does not give an id
-   * for, or reports as a config-file deployment (`dbModel === false`), is left
-   * alone: the board can address only database deployments by id.
+   * A pool provider is a no-op.
    */
   async function unregisterProviderModels(
     provider: { type: string; baseUrl: string | null },
     litellmModelNames: string[],
-  ): Promise<{ removed: number }> {
-    if (isPoolModelProviderType(provider.type) || litellmModelNames.length === 0) {
-      return { removed: 0 };
+  ): Promise<void> {
+    if (isPoolModelProviderType(provider.type)) return;
+    for (const name of litellmModelNames) {
+      await deps.litellm.unregisterModel(name, { baseUrl: provider.baseUrl });
+      await trigger?.onModelUnregistered?.(name);
     }
-    const wanted = new Set(litellmModelNames);
-    const registered = await deps.litellm.listRegisteredModels();
-    let removed = 0;
-    for (const deployment of registered) {
-      if (!wanted.has(deployment.litellmModelName)) continue;
-      if (!deployment.modelId) continue;
-      if (deployment.dbModel === false) continue;
-      if (!sameBaseUrl(deployment.baseUrl, provider.baseUrl)) continue;
-      await deps.litellm.deleteDeployment(deployment.modelId);
-      await trigger?.onModelUnregistered?.(deployment.litellmModelName);
-      removed += 1;
-    }
-    return { removed };
   }
 
   /**
