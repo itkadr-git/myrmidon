@@ -43,6 +43,7 @@ import {
   type StackReleaseSource,
   type StackSnapshot,
 } from "./domain.js";
+import {
   DEFAULT_OSV_API_BASE,
   OSV_QUERY_BATCH_PATH,
   buildOsvBatchPayload,
@@ -52,7 +53,6 @@ import {
   parseOsvVulnerabilities,
   queryOsvAdvisories,
 } from "./advisory.js";
-import { seedStackDocument, type StackDocument, type StackLocalState } from "./domain.js";
 import { readStackDocument, writeStackDocument } from "./store.js";
 import { stackRegistryRoutes } from "./routes.js";
 
