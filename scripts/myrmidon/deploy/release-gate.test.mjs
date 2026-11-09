@@ -69,6 +69,29 @@ case "$1" in
     fi ;;
   ps) echo "cid-x"; exit 0 ;;
   inspect)
+    # A bot stopped by IDLE-STOP is a real Docker Exited(143), not merely a
+    # board-side stopped state. The smoke tests use this to exercise the
+    # deploy-start boundary and the idle-stop exception.
+    case "$*" in
+      *myrmidon-bot-22222222-2222-4222-8222-222222222222*)
+        if [ -e "$SANDBOX/bot-exited-143" ]; then
+          echo "exited|exited|143|false|2026-11-08T16:00:00.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-oom" ]; then
+          echo "exited|exited|1|true|2026-11-08T18:00:01.000000000Z"
+          exit 0
+        fi ;;
+      *myrmidon-bot-33333333-3333-4333-8333-333333333333*)
+        if [ -e "$SANDBOX/bot-exited-143-inwindow" ]; then
+          echo "exited|exited|143|false|2026-11-08T18:00:01.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-exit1" ]; then
+          echo "exited|exited|1|false|2026-11-08T18:00:01.000000000Z"
+          exit 0
+        fi ;;
+    esac
     # a container exists for every service and runs; its image is not recorded
     # here (the previous image then falls back to the override file)
     case "$*" in
@@ -423,8 +446,9 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     assert.match(log, /fleetd\/health/);
     assert.doesNotMatch(log, /dockergate\/health/);
     assert.match(out, /dockergate runs: version 1\.4\.0\+0123456789ab/);
-    // The smoke saw a running bot container.
-    assert.match(out, /re-applied after the deploy/);
+    // The smoke ran with MYRMIDON_BOT_IMAGE_ROLLOUT=0: no bot re-applies by
+    // design (DEPLOY-SMOKE-FALSE), the already-running gateways are verified.
+    assert.match(out, /no re-apply expected: --no-bot-rollout/);
     assert.match(out, /release gate passed/);
   });
 
@@ -490,7 +514,11 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     const sb = sandbox({ smoke: "created" });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
     assert.notEqual(code, 0);
-    assert.match(out, /DEGRADED: no bot container re-applied/i);
+    // MYRMIDON_BOT_IMAGE_ROLLOUT=0 (DEPLOY-SMOKE-FALSE): the smoke judges the
+    // already-running gateways, the re-apply message is gone.
+    assert.match(out, /DEGRADED: bot gateways failed post-deploy health check within 2s/i);
+    assert.match(out, /no bot rollout/);
+    assert.doesNotMatch(out, /no bot container re-applied/i);
     assert.match(out, /rollback\.sh --config/);
     assert.match(out, /rollback-component\.sh --config/);
     // The board and the components DID roll out; the failure is the smoke.
@@ -865,6 +893,111 @@ describe("bot-apply-smoke.sh", () => {
     ]);
     assert.equal(code, 0, out);
     assert.match(out, /all 1 bot gateways are idle-stopped/);
+  });
+
+  // DEPLOY-SMOKE-FALSE acceptance (OPE-12422, the 08.11 incidents): a deploy
+  // without the bot rollout succeeds while bots sit in Exited(143) from
+  // IDLE-STOP — both a stop from before the deploy began and an in-window one.
+  it("succeeds without the bot rollout while Exited(143) idle-stopped bots flank a healthy gateway", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    const bot3 = "33333333-3333-4333-8333-333333333333";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-idle-pre-deploy", status: "idle" },
+        { id: bot3, adapterType: "hermes_gateway", name: "bot-idle-in-window", status: "idle" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    const idleStatus = {
+      enabled: true,
+      container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+      idleStopRuntime: { idleStopped: true },
+      containerError: null,
+    };
+    fs.writeFileSync(path.join(sb.dir, `status-${bot2}.json`), JSON.stringify(idleStatus));
+    fs.writeFileSync(path.join(sb.dir, `status-${bot3}.json`), JSON.stringify(idleStatus));
+    // bot2: Exited(143) from 16:00, hours BEFORE the deploy started;
+    // bot3: Exited(143) at 18:00:01, after the deploy started at 18:00:00.
+    fs.writeFileSync(path.join(sb.dir, "bot-exited-143"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-exited-143-inwindow"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--no-bot-rollout",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.equal(code, 0, out);
+    assert.match(out, /no re-apply expected: --no-bot-rollout/);
+    assert.match(out, /1\/1 active bot gateways healthy, 2 idle-stopped/);
+  });
+
+  // DEPLOY-SMOKE-FALSE acceptance (OPE-12422): OOMKilled or a non-143 non-zero
+  // exit AFTER the deploy started is a real crash → DEPLOYED-DEGRADED.
+  it("fails with DEPLOYED-DEGRADED when a bot is OOMKilled or exits 1 after the deploy started", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    const bot3 = "33333333-3333-4333-8333-333333333333";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-oomed", status: "running" },
+        { id: bot3, adapterType: "hermes_gateway", name: "bot-exited", status: "running" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "exited", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot3}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "exited", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    // bot2: OOMKilled, exited 1 at 18:00:01; bot3: plain exit 1 at 18:00:01 —
+    // both after the deploy started at 18:00:00, neither idle-stop-flagged.
+    fs.writeFileSync(path.join(sb.dir, "bot-oom"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-exit1"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.notEqual(code, 0);
+    assert.match(out, /SMOKE FAILED: DEPLOYED-DEGRADED: 2 bot containers had abnormal exits \/ crashed within 2s/);
+    assert.match(out, /crashed:oom/);
+    assert.match(out, /crashed:exit_1/);
   });
 
   it("fails with DEPLOYED-DEGRADED when an abnormal exit / crash occurs", () => {
