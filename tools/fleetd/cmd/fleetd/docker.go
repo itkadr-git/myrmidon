@@ -14,12 +14,13 @@ import (
 )
 
 type dockerClient struct {
-	socket        string
-	api           string
-	volumeRoot    string
-	network       string
-	images        []string
-	gatewayBindIP string
+	socket         string
+	api            string
+	volumeRoot     string
+	network        string
+	images         []string
+	gatewayBindIP  string
+	boardExtraHost string
 }
 
 const dockerAPIVersion = "v1.41"
@@ -29,7 +30,7 @@ func newDockerClient(c *config) *dockerClient {
 	if api == "" {
 		api = strings.TrimPrefix(dockerAPIVersion, "v")
 	}
-	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP}
+	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP, boardExtraHost: c.BoardExtraHost}
 }
 func (d *dockerClient) prefix() string { return "v" + d.api }
 func (d *dockerClient) request(ctx context.Context, method, path string, body any, out any) error {
@@ -74,8 +75,14 @@ func (d *dockerClient) allowedImage(image string) bool {
 }
 
 // create makes the container. binds is the already validated list from
-// server.binds: the bot volume and read-only extra mounts; sp.Mounts is never
-// passed to Docker as is.
+// server.binds: the bot volume and the extra mounts (read-only, or read-write
+// inside a writable root); sp.Mounts is never passed to Docker as is.
+//
+// HostConfig is the same fixed template the local driver sends
+// (buildCreateContainerRequestBody in docker-driver.ts) and dockergate
+// accepts (policy/create.go): /tmp is a tmpfs, the init process is on, and the
+// restart policy is on-failure. MemorySwap equals Memory, so the memory limit
+// is also the limit with swap.
 func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) error {
 	if !d.allowedImage(sp.Image) {
 		return fmt.Errorf("image_not_allowed")
@@ -88,10 +95,19 @@ func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) erro
 		labels = map[string]string{}
 	}
 	labels["paperclip.botKey"] = sp.BotKey
-	host := map[string]any{"Memory": sp.MemoryMb * 1024 * 1024, "NanoCpus": int64(sp.Cpus * 1e9), "PidsLimit": sp.PidsLimit}
+	// A CPU limit that rounds to 0 NanoCpus is no limit at all for Docker.
+	nanoCpus := int64(sp.Cpus * 1e9)
+	if nanoCpus <= 0 {
+		return fmt.Errorf("spec_invalid")
+	}
+	memory := sp.MemoryMb * 1024 * 1024
+	host := map[string]any{"Memory": memory, "MemorySwap": memory, "NanoCpus": nanoCpus, "PidsLimit": sp.PidsLimit}
 	host["ReadonlyRootfs"] = true
 	host["CapDrop"] = []string{"ALL"}
 	host["SecurityOpt"] = []string{"no-new-privileges:true"}
+	host["Tmpfs"] = map[string]string{"/tmp": ""}
+	host["Init"] = true
+	host["RestartPolicy"] = map[string]string{"Name": "on-failure"}
 	host["ShmSize"] = int64(64 * 1024 * 1024)
 	if d.network != "" {
 		host["NetworkMode"] = d.network
@@ -102,8 +118,9 @@ func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) erro
 		}
 		host["PortBindings"] = map[string][]map[string]string{"8642/tcp": {{"HostIp": d.gatewayBindIP, "HostPort": fmt.Sprint(sp.GatewayPort)}}}
 	}
-	if sp.BoardExtraHost != "" {
-		host["ExtraHosts"] = []string{sp.BoardExtraHost}
+	// The board address is the site's own setting, never the spec's.
+	if d.boardExtraHost != "" {
+		host["ExtraHosts"] = []string{d.boardExtraHost}
 	}
 	if len(binds) > 0 {
 		host["Binds"] = binds
