@@ -14489,6 +14489,11 @@ export function issueRoutes(
           });
       }
       if (req.body.executionPolicy !== undefined) {
+        if (req.body.status !== undefined && req.body.status === "done") {
+          throw unprocessable(
+            `Cannot update executionPolicy and transition status to '${req.body.status}' in the same request`,
+          );
+        }
         updateFields.executionPolicy = applyActorMonitorScheduledBy(
           normalizeIssueExecutionPolicy(req.body.executionPolicy),
           actor.actorType,
