@@ -309,6 +309,7 @@ type LatestIssueRun =
       // myrmidon(L1): claimedAdapterType's input, so the L1 branch below can
       // gate hold suppression on the run's own adapter
       | "runnerProfileJson"
+      | "activeIdentityContextId"
     > & {
       resultJson?: unknown;
     })
@@ -1231,6 +1232,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1263,6 +1265,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -2126,6 +2129,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
