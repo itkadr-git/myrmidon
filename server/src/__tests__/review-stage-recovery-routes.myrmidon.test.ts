@@ -244,6 +244,20 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
     }
   });
 
+  it("allows REQUEST CHANGES when current-head CI is running or unavailable if the comment references code (path:line)", async () => {
+    for (const state of ["pending", "unknown"] as const) {
+      const s = await seed({ status: "in_review", pullRequestStatus: "open" });
+      const res = await request(createApp(reviewerActor(s), async () => ({ state, pullRequestUrl: PR_URL, headSha: "test-head" })))
+        .patch(`/api/issues/${s.issueId}`)
+        .send({ status: "in_progress", comment: "REQUEST CHANGES: repack.js:318 without cleanup after failure." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const issue = await readIssue(s.issueId);
+      expect(issue.status).toBe("in_progress");
+      expect(issue.executionState).toMatchObject({ status: "changes_requested", lastDecisionOutcome: "changes_requested" });
+    }
+  });
+
   it("allows REQUEST CHANGES without hosted CI after local checks on the PR head", async () => {
     const s = await seed({ status: "in_review", pullRequestStatus: "open" });
     const res = await request(createApp(reviewerActor(s), async () => ({

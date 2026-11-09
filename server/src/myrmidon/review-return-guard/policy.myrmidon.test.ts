@@ -10,6 +10,7 @@ import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
   repeatedReturnHead,
+  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "./policy.js";
 
@@ -117,6 +118,17 @@ describe("isCiOnlyReviewComment", () => {
     expect(isCiOnlyReviewComment(null)).toBe(false);
     expect(isCiOnlyReviewComment(undefined)).toBe(false);
     expect(isCiOnlyReviewComment(`CI is red. ${"The review continues. ".repeat(300)}`)).toBe(false);
+  });
+});
+
+describe("reviewCommentReferencesCode", () => {
+  it("identifies comments referencing code (path:line, file name, code fence)", () => {
+    expect(reviewCommentReferencesCode("repack.js:318 without cleanup after failure.")).toBe(true);
+    expect(reviewCommentReferencesCode("server/src/routes/issues.ts line 14592")).toBe(true);
+    expect(reviewCommentReferencesCode("Check the code:\n```ts\nconst x = 1;\n```")).toBe(true);
+    expect(reviewCommentReferencesCode("The CI result must be checked first.")).toBe(false);
+    expect(reviewCommentReferencesCode("")).toBe(false);
+    expect(reviewCommentReferencesCode(null)).toBe(false);
   });
 });
 
