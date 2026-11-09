@@ -48,6 +48,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const markerDir = mkdtempSync(path.join(tmpdir(), "maintenance-interrupt-ready-"));
+  let previousJwtSecret: string | undefined;
 
   beforeEach(() => {
     applyRunAdmissionLimits({
@@ -64,6 +65,10 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   });
 
   beforeAll(async () => {
+    previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    if (previousJwtSecret === undefined) {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-maintenance-interrupt-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
@@ -97,6 +102,11 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     resetSharedRunAdmissionForTests();
     rmSync(markerDir, { recursive: true, force: true });
     await tempDb?.cleanup();
+    if (previousJwtSecret === undefined) {
+      delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+    } else {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+    }
   });
 
   /** An agent working on an assigned issue, its run already started. */

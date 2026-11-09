@@ -40,6 +40,7 @@ describe("myrmidon(FLEETD-VMEXEC) placement — effective settings per host", ()
       ...HOST,
       hindsightUrl: "http://hindsight.internal:8890",
       llmBaseUrl: "http://llm.internal:4000",
+      boardAddress: "board.internal:3100",
       volumeRoot: "/srv/bots",
       network: "bots-net",
       imageAllowlist: ["ghcr.io/example/other@sha256:*"],
@@ -48,6 +49,7 @@ describe("myrmidon(FLEETD-VMEXEC) placement — effective settings per host", ()
     expect(effectiveBotSettings(INSTANCE, host)).toEqual({
       hindsightUrl: "http://hindsight.internal:8890",
       llmBaseUrl: "http://llm.internal:4000",
+      boardAddress: "board.internal:3100",
       volumeRoot: "/srv/bots",
       network: "bots-net",
       imageAllowlist: ["ghcr.io/example/other@sha256:*"],
@@ -83,7 +85,17 @@ describe("myrmidon(FLEETD-VMEXEC) placement — the card's gateway base URL", ()
     }
   });
 
-  it("refuses a non-http fleetd url", () => {
+  it("refuses a non-http fleetd url for env hosts", () => {
     expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 18642)).toThrow(/must be http/);
+    expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 18642, { source: "env" })).toThrow(/must be http/);
+    expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 18642, "env")).toThrow(/must be http/);
+  });
+
+  it("accepts an https fleetd url for registry sites and produces http://<host>:<port>", () => {
+    expect(fleetGatewayApiBaseUrl("https://192.0.2.110:9100", 18701, { source: "registry" })).toBe("http://192.0.2.110:18701");
+    expect(fleetGatewayApiBaseUrl("https://fleetd.example.com:9100", 18702, "registry")).toBe("http://fleetd.example.com:18702");
+    expect(fleetGatewayApiBaseUrl("https://192.0.2.110:9100", 18701, { allowHttps: true })).toBe("http://192.0.2.110:18701");
+    expect(fleetGatewayApiBaseUrl("http://192.0.2.110:9100", 18701, { source: "registry" })).toBe("http://192.0.2.110:18701");
+    expect(() => fleetGatewayApiBaseUrl("ftp://192.0.2.110:9100", 18701, { source: "registry" })).toThrow(/must be http:\/\/ or https:\/\//);
   });
 });

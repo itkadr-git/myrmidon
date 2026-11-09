@@ -32,7 +32,16 @@ export {
   recoveryService,
 } from "./service.js";
 export {
+  isIssueWaitingForPullRequestCi,
+} from "./pr-waiting.js";
+export type {
+  IsIssueWaitingForPullRequestCiParams,
+} from "./pr-waiting.js";
+export {
+  DEFAULT_MAX_EMPTY_RESPONSE_LIVENESS_CONTINUATION_ATTEMPTS,
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
+  DEFAULT_MAX_PLAN_ONLY_LIVENESS_CONTINUATION_ATTEMPTS,
+  EMPTY_RESPONSE_LIVENESS_CONTINUATION_INSTRUCTION,
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,

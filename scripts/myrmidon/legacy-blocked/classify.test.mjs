@@ -69,9 +69,9 @@ const cases = [
     expected: "unknown",
   },
   {
-    name: "resolved blocker alone does not establish a current class",
+    name: "resolved blocker establishes dependency evidence when no current evidence exists",
     facts: { links: [{ type: "issue", relation: "blocks", status: "done", label: "OPE-13" }] },
-    expected: "unknown",
+    expected: "dependency",
   },
   {
     name: "conflicting explicit facts remain unknown",

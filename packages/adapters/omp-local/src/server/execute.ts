@@ -174,15 +174,25 @@ function executionCwdsMatch(saved: string, current: string, remote: boolean): bo
   return normalizeExecutionCwd(saved, remote) === normalizeExecutionCwd(current, remote);
 }
 
+const SESSION_HEADER_SCAN_LINE_COUNT = 10;
+
 function readSessionHeaderCwd(raw: string): string | null {
   const headerLine = raw
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find(Boolean);
+    .filter(Boolean)
+    .slice(0, SESSION_HEADER_SCAN_LINE_COUNT)
+    .find((line) => {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        return parsed.type === "session";
+      } catch {
+        return false;
+      }
+    });
   if (!headerLine) return null;
   try {
     const parsed = JSON.parse(headerLine) as Record<string, unknown>;
-    if (parsed.type !== "session") return null;
     const cwd = typeof parsed.cwd === "string" ? parsed.cwd.trim() : "";
     return cwd.length > 0 ? cwd : null;
   } catch {
@@ -213,7 +223,7 @@ async function readSavedSessionCwd(input: {
     const sessionHeader = await runAdapterExecutionTargetShellCommand(
       input.runId,
       input.executionTarget,
-      `if [ -f ${shellQuote(input.sessionPath)} ]; then head -n 1 ${shellQuote(input.sessionPath)}; fi`,
+      `if [ -f ${shellQuote(input.sessionPath)} ]; then head -n ${SESSION_HEADER_SCAN_LINE_COUNT} ${shellQuote(input.sessionPath)}; fi`,
       {
         cwd: input.cwd,
         env: input.env,

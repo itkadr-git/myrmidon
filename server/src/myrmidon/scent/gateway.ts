@@ -107,6 +107,18 @@ const AGENT_SCENT_RESPONSE_FORMAT = {
   },
 } as const;
 
+/**
+ * Normalizes scent gateway baseUrl: trims whitespace and trailing slashes,
+ * and strips a trailing `/v1` so that appending `/v1/chat/completions` does
+ * not produce a duplicate `/v1/v1/chat/completions`.
+ */
+export function normalizeScentBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  return trimmed.endsWith("/v1")
+    ? trimmed.slice(0, -3).replace(/\/+$/, "")
+    : trimmed;
+}
+
 async function callChatCompletions(
   deps: ScentGatewayDeps,
   args: { model: string; system: string; user: string; timeoutSec: number; responseFormat: unknown },
@@ -114,7 +126,8 @@ async function callChatCompletions(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), args.timeoutSec * 1000);
   try {
-    const response = await deps.fetch(`${deps.baseUrl}/v1/chat/completions`, {
+    const url = `${normalizeScentBaseUrl(deps.baseUrl)}/v1/chat/completions`;
+    const response = await deps.fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",

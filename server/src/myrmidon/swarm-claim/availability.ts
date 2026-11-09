@@ -22,6 +22,8 @@
 // layer still refuses the wake, and the matcher then tries the next agent.
 
 import type { Db } from "@myrmidon/db";
+import { agents, heartbeatRuns } from "@myrmidon/db";
+import { and, eq, gte, lt, notInArray, sql } from "drizzle-orm";
 import { budgetService } from "../../services/budgets.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { readBudgetEnforcement } from "../budget-enforcement/settings.js";
@@ -41,7 +43,51 @@ export function swarmAgentAvailability(db: Db): SwarmAgentAvailability {
     try {
       if (await isAgentUnderMaintenance(db, agentId)) return false;
       const block = await budgets.getInvocationBlock(companyId, agentId);
-      return !block;
+      if (block) return false;
+
+      const [agent] = await db
+        .select({ runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+        .limit(1);
+      const runtimeConfig = agent?.runtimeConfig;
+      const heartbeat =
+        runtimeConfig && typeof runtimeConfig === "object" && !Array.isArray(runtimeConfig)
+          ? (runtimeConfig as Record<string, unknown>).heartbeat
+          : null;
+      const heartbeatConfig =
+        heartbeat && typeof heartbeat === "object" && !Array.isArray(heartbeat)
+          ? (heartbeat as Record<string, unknown>)
+          : null;
+      const configuredLimit =
+        heartbeatConfig?.maxDailyRuns ??
+        heartbeatConfig?.dailyRunLimit ??
+        heartbeatConfig?.dailyRunCap ??
+        heartbeatConfig?.maxRunsPerDay;
+      const dailyLimit =
+        configuredLimit === null || configuredLimit === undefined || configuredLimit === ""
+          ? null
+          : Math.floor(Number(configuredLimit));
+      if (dailyLimit !== null && Number.isFinite(dailyLimit) && dailyLimit >= 0) {
+        const now = new Date();
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+        const [row] = await db
+          .select({ total: sql<number>`count(*)::integer` })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              gte(heartbeatRuns.startedAt, start),
+              lt(heartbeatRuns.startedAt, end),
+              notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+              sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = false`,
+            ),
+          );
+        if (Number(row?.total ?? 0) >= dailyLimit) return false;
+      }
+      return true;
     } catch {
       return true;
     }

@@ -322,6 +322,7 @@
           "empty_model_catalog": "Каталог моделей",
           "queue_stall": "Застой очереди",
           "codex_pool_alert": "Тревога пула Codex",
+          "litellm_budget": "Бюджет LLM-ключа",
           "issue_monitor_overdue": "Просрочен монитор задачи"
         }
       }

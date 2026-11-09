@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "benchmark": {
+    "name": "deveff-harness-5tasks",
+    "version": "1.0.0",
+    "parentIssue": "OPE-9995",
+    "targetIssue": "OPE-10093",
+    "description": "Deterministic 5-task benchmark for comparative evaluation of 4 agent harnesses (Hermes, Claude Code, Codex CLI, Antigravity) against closed 1.6.x tasks with isolated oracles for 1.7 DEVEFF",
+    "release": "1.7",
+    "created": "2026-10-31T06:00:00Z",
+    "policy": {
+      "executionMode": "preflight_and_manifest_only",
+      "massRunExecuted": false
+    }
+  },
+  "budgetLimits": {
+    "perTaskRun": {
+      "maxTurns": 15,
+      "maxWallClockSeconds": 600,
+      "maxTotalTokens": 350000
+    },
+    "fullBenchmarkCeiling": {
+      "totalRuns": 20,
+      "harnessesCount": 4,
+      "tasksCount": 5,
+      "maxTurnsTotal": 300,
+      "maxTokensTotal": 7000000,
+      "maxCostUsdEstimate": 15.00
+    },
+    "stopRules": [
+      {
+        "id": "loop_detection",
+        "description": "Abort run if 3 consecutive turns produce identical tool errors or identical tool calls"
+      },
+      {
+        "id": "empty_turn_ceiling",
+        "description": "Abort run if 2 consecutive turns produce zero tool calls or empty responses"
+      },
+      {
+        "id": "hard_timeout",
+        "description": "Abort run if wall-clock duration exceeds 600 seconds"
+      },
+      {
+        "id": "turn_ceiling",
+        "description": "Abort run if agent reaches 15 turns without completing oracle check"
+      }
+    ]
+  },
+  "successCriteria": {
+    "primary": "pass_at_1_oracle",
+    "requirements": [
+      {
+        "metric": "oracle_test_pass",
+        "threshold": "100%",
+        "verification": "Deterministic test suite exits with code 0, 0 failures, 0 skipped/cancelled"
+      },
+      {
+        "metric": "clean_diff",
+        "threshold": "100%",
+        "verification": "git diff contains only relevant logic changes and unit test additions; no modified unrelated files, no secrets, no debug logs"
+      },
+      {
+        "metric": "empty_turn_rate",
+        "threshold": "0%",
+        "verification": "Zero turns spent polling status, idling, or producing duplicate outputs"
+      },
+      {
+        "metric": "turns_to_solve",
+        "threshold": "<= 15 turns",
+        "verification": "Harness completes task within turn budget"
+      },
+      {
+        "metric": "wall_clock_time",
+        "threshold": "<= 600 seconds",
+        "verification": "End-to-end task time within threshold"
+      }
+    ]
+  },
+  "harnesses": [
+    {
+      "id": "hermes",
+      "label": "Hermes Agent",
+      "version": "v0.21.5 (2026.9.24)",
+      "runtime": "Python 3.13.18, OpenAI SDK 2.24.0",
+      "adapterType": "hermes_gateway",
+      "executionMode": "Docker-isolated container worker, tool-calling loop (read_file, write_file, patch, terminal, search_files)",
+      "headlessSupported": true,
+      "targetModel": "antigravity/gemini-3.8-flash-medium",
+      "modelEndpoint": "http://localhost:4000/v1",
+      "fallbackModels": ["chatgpt-pool/gpt-6-sol", "nghi-claude-sonnet-5"],
+      "sandboxMode": "Docker container boundary + run-scoped scratch"
+    },
+    {
+      "id": "claude_code",
+      "label": "Claude Code",
+      "version": "@anthropic-ai/claude-code (npm)",
+      "runtime": "Node 24.11+",
+      "adapterType": "claude_local",
+      "executionMode": "ACP engine (@agentclientprotocol/claude-agent-acp) or CLI via PTY with --dangerously-skip-permissions",
+      "headlessSupported": true,
+      "targetModel": "nghi-claude-sonnet-5",
+      "modelEndpoint": "http://localhost:4000/v1",
+      "fallbackModels": ["claude-opus-5", "claude-haiku-4-5"],
+      "sandboxMode": "Bubblewrap / workspaceScope filesystem confinement"
+    },
+    {
+      "id": "codex_cli",
+      "label": "OpenAI Codex CLI",
+      "version": "@openai/codex (npm)",
+      "runtime": "Node 24.11+",
+      "adapterType": "codex_local",
+      "executionMode": "CLI engine via PTY (codex exec --sandbox workspace-write / danger-full-access)",
+      "headlessSupported": true,
+      "targetModel": "chatgpt-pool/gpt-6-sol",
+      "modelEndpoint": "http://localhost:4000/v1",
+      "fallbackModels": ["openai-gpt-5.6-sol", "chatgpt-pool/gpt-6-luna"],
+      "sandboxMode": "workspace-write sandbox / danger-full-access in container"
+    },
+    {
+      "id": "antigravity",
+      "label": "Antigravity CLI / Adapter",
+      "version": "agy 0.2.0 / antigravity_local",
+      "runtime": "Go / Node 24 binary",
+      "adapterType": "antigravity_local",
+      "executionMode": "Server process execution or headless CLI with --dangerously-skip-permissions",
+      "headlessSupported": true,
+      "targetModel": "antigravity/gemini-3.8-flash-medium",
+      "modelEndpoint": "http://localhost:4000/v1",
+      "fallbackModels": ["antigravity/gemini-3.8-flash-high", "kie-gemini-3.1-pro"],
+      "sandboxMode": "proceed-in-sandbox / server licensing module gate"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "TASK-1",
+      "issueIdentifier": "OPE-9679",
+      "title": "DEVFLOW: защита автовливания при красном main",
+      "historicalRelease": "1.6.6",
+      "domain": "DevFlow / Merge Queue Automation",
+      "complexity": "Medium",
+      "baseCommitSha": "6eefbdc04bae9f32ead5e0d2831fde2a59250fcc",
+      "resolutionCommitSha": "d189668f17c30d907f55ff520ca244b6aec7a11e",
+      "pullRequest": 2018,
+      "taskObjective": "Protect automatic merging against broken main CI branch. When reviewer approves green PR, check main CI status. If main CI is failure, hold auto-merge, increment pause/backoff, and resume only when main CI becomes green. If PR CI is pending, missing or queued, prevent labeling and auto-merge.",
+      "oracle": {
+        "command": "node --test scripts/myrmidon/review-approve-label.test.mjs",
+        "workingDirectory": ".",
+        "testFramework": "node:test",
+        "totalTests": 36,
+        "expectedExitCode": 0,
+        "typicalDurationMs": 260
+      },
+      "keyFiles": [
+        "scripts/myrmidon/review-approve-label.mjs",
+        "scripts/myrmidon/review-approve-label.test.mjs"
+      ]
+    },
+    {
+      "id": "TASK-2",
+      "issueIdentifier": "OPE-9072",
+      "title": "Escalate stranded successful runs to a senior agent instead of board users",
+      "historicalRelease": "1.6.6",
+      "domain": "Multi-Agent Lifecycle & Governance",
+      "complexity": "Low-Medium",
+      "baseCommitSha": "bd2f66bd58fa16af3379d8e54be37b8a0d5d576a",
+      "resolutionCommitSha": "7755328eadcf9421b989ce009e15189dd0023327",
+      "pullRequest": 1721,
+      "taskObjective": "When a run completes successfully but is stranded due to missing handoff or recovery transition, escalate the unblock descriptor along the agent management chain: assignee's manager first, then project lead, then adm agent. Never assign or escalate to human board users.",
+      "oracle": {
+        "command": "node --test scripts/myrmidon/escalate-stranded-disposition.test.mjs",
+        "workingDirectory": ".",
+        "testFramework": "node:test",
+        "totalTests": 7,
+        "expectedExitCode": 0,
+        "typicalDurationMs": 140
+      },
+      "keyFiles": [
+        "scripts/myrmidon/escalate-stranded-disposition.mjs",
+        "scripts/myrmidon/escalate-stranded-disposition.test.mjs"
+      ]
+    },
+    {
+      "id": "TASK-3",
+      "issueIdentifier": "OPE-7773",
+      "title": "/tmp hygiene policy and host profile janitor",
+      "historicalRelease": "1.6.6",
+      "domain": "Infrastructure Security & Resource Hygiene",
+      "complexity": "Medium-High",
+      "baseCommitSha": "ccb2fe8bb7c30501c2505376256acdaa3d6468c2",
+      "resolutionCommitSha": "bf8c61cf07f1521fac16e81fa2ee66bb2de1f8f6",
+      "pullRequest": 1325,
+      "taskObjective": "Implement host-level fail-closed tmp janitor script and tests to clean stale agent scratch/browser profile directories while strictly protecting active profiles. Janitor must validate TTL as positive integer, recursively check active file handles (lsof / Linux proc), protect whitelisted live profiles, and refuse to follow symlinks.",
+      "oracle": {
+        "command": "node --test scripts/myrmidon/janitor/myrmidon-tmp-janitor.test.mjs",
+        "workingDirectory": ".",
+        "testFramework": "node:test",
+        "totalTests": 16,
+        "expectedExitCode": 0,
+        "typicalDurationMs": 9900
+      },
+      "keyFiles": [
+        "scripts/myrmidon/janitor/myrmidon-tmp-janitor.sh",
+        "scripts/myrmidon/janitor/myrmidon-tmp-janitor.test.mjs"
+      ]
+    },
+    {
+      "id": "TASK-4",
+      "issueIdentifier": "OPE-9185",
+      "title": "P2.11 LEGACY-BLOCKED: классификатор legacy blocked (без домыслов)",
+      "historicalRelease": "1.6.6",
+      "domain": "Queue State Machine & NLP Classification",
+      "complexity": "Medium",
+      "baseCommitSha": "cfeb398e86af419f8ff233c030d2f0168734a1e9",
+      "resolutionCommitSha": "5585d659b6dbfdf6fbb967e86a2fb1e09e40c8c1",
+      "pullRequest": 1890,
+      "taskObjective": "Implement conservative table-driven classifier for legacy blocked tasks. Accurately classify blocked states based on explicit issue metadata, comments, and PR status without making speculative assumptions. Resolve conflicting or past-tense blocker statements safely to unknown.",
+      "oracle": {
+        "command": "node --test scripts/myrmidon/legacy-blocked/classify.test.mjs",
+        "workingDirectory": ".",
+        "testFramework": "node:test",
+        "totalTests": 19,
+        "expectedExitCode": 0,
+        "typicalDurationMs": 200
+      },
+      "keyFiles": [
+        "scripts/myrmidon/legacy-blocked/classify.ts",
+        "scripts/myrmidon/legacy-blocked/classify.test.mjs"
+      ]
+    },
+    {
+      "id": "TASK-5",
+      "issueIdentifier": "OPE-8844",
+      "title": "DEBRAND: brand release audit with exact allowlist",
+      "historicalRelease": "1.6.6",
+      "domain": "Release Governance & Code Quality Gate",
+      "complexity": "Medium",
+      "baseCommitSha": "adc7c6d86912a83ef864f708e219024e3e974f0c",
+      "resolutionCommitSha": "1f8f17188823aa985ab4bc1f8ac073008a54b594",
+      "pullRequest": 1607,
+      "taskObjective": "Implement static release audit gate to ensure complete debranding from upstream vendor names while allowing approved compatibility exceptions. Gate must enforce that package metadata points to Myrmidon, reject forbidden user-facing mentions, maintain exact non-glob allowlists, and prevent allowlist leakage.",
+      "oracle": {
+        "command": "node --test scripts/myrmidon/brand-release-audit.test.mjs",
+        "workingDirectory": ".",
+        "testFramework": "node:test",
+        "totalTests": 10,
+        "expectedExitCode": 0,
+        "typicalDurationMs": 670
+      },
+      "keyFiles": [
+        "scripts/myrmidon/brand-release-audit.mjs",
+        "scripts/myrmidon/brand-release-audit.test.mjs"
+      ]
+    }
+  ]
+}

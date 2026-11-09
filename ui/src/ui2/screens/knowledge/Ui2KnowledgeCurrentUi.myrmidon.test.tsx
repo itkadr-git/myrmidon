@@ -60,7 +60,11 @@ const REVISION = {
   status: "approved",
   content: "Hello body, see [[other]].",
   createdAt: "2026-10-20T10:00:00.000Z",
-  sources: [],
+  changeSummary: "Updated the deployment guidance.",
+  sources: [
+    { kind: "task", ref: "OPE-1", note: "Implementation task" },
+    { kind: "pr", ref: "itkadr-git/myrmidon#2187", note: "Pull request" },
+  ],
 };
 
 function route(url: string): unknown {
@@ -75,7 +79,7 @@ function route(url: string): unknown {
     };
   }
   if (url.endsWith("/revisions")) return { revisions: [REVISION] };
-  if (url.includes("/knowledge/items/")) return { item: ITEMS[0] };
+  if (url.includes("/knowledge/items/")) return { item: { ...ITEMS[0], revisions: [REVISION] } };
   if (url.includes("/knowledge/items")) return { items: ITEMS };
   throw new Error(`unexpected GET ${url}`);
 }
@@ -158,6 +162,17 @@ describe("Ui2KnowledgeCurrentUi (current UI, OPE-9222)", () => {
     expect(backlink?.getAttribute("href")).toBe("/OPE/wiki/ops/other");
     const inline = container.querySelector(".ui2-knowledge-link");
     expect(inline?.getAttribute("href")?.startsWith("/OPE/wiki/")).toBe(true);
+  });
+
+  it("shows the revision change note with task and PR source links in the page history", async () => {
+    await render("/OPE/wiki/ops/intro");
+    const row = container.querySelector(".ui2-knowledge-revision-row");
+    expect(row?.textContent).toContain("Updated the deployment guidance.");
+    const links = Array.from(row?.querySelectorAll("a.ui2-knowledge-revision-source-link") ?? []);
+    const task = links.find((a) => a.textContent === "OPE-1");
+    const pr = links.find((a) => a.textContent === "itkadr-git/myrmidon#2187");
+    expect(task?.getAttribute("href")).toBe("/OPE/issues/OPE-1");
+    expect(pr?.getAttribute("href")).toBe("https://github.com/itkadr-git/myrmidon/pull/2187");
   });
 
   it("navigates to a page from the tree through a /wiki route", async () => {

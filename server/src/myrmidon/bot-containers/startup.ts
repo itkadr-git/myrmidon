@@ -30,6 +30,7 @@ import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js"; // myrmidon(1.6.1-BOT-DISK-D)
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
+import { containerOomRecorder } from "./container-oom-store.js";
 import type { BotContainerDriver } from "./driver.js";
 import { fleetSiteKey } from "./fleetd-hosts.js";
 import { dockerBotContainerDriver, readDockerDriverConfig, type DockerDriverConfig } from "./docker-driver.js";
@@ -47,16 +48,20 @@ import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCol
 import { reportBotContainerEvent } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { startSiteScheduler } from "./site-scheduler-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
 import { startSiteHealth } from "./site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
+import { startFleetSiteCertRotation } from "./fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-9154)
 import { isSiteHealthEnabled } from "./site-health-flag.js";
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import {
   createFleetClientManager,
+  setActiveFleetClientManager,
+  getActiveFleetClientManager,
   bootstrapFleetSitesFromEnv,
   type FleetClientManager,
   type FleetClientManagerDeps,
 } from "./site-registry.js";
 import { fleetRoutingDriver } from "./fleetd-routing.js";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -65,7 +70,8 @@ const MAX_RECONCILE_INTERVAL_SEC = 3600;
 /** The sweep period. An unset, non-integer or out-of-range value falls back to the
  *  default (the same rule as the maintenance settings, R3). */
 export function readBotReconcileIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[BOT_RECONCILE_INTERVAL_ENV]?.trim();
+  const saved = env === process.env ? liveSavedSetting<number>("bot_reconcile_interval_sec") : undefined;
+  const raw = saved !== undefined ? String(saved) : env[BOT_RECONCILE_INTERVAL_ENV]?.trim();
   if (!raw) return DEFAULT_RECONCILE_INTERVAL_MS;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < MIN_RECONCILE_INTERVAL_SEC || value > MAX_RECONCILE_INTERVAL_SEC) {
@@ -147,6 +153,8 @@ export interface BotContainersStartupPorts {
    * stop is folded into the stop of this run.
    */
   startSiteHealth?: typeof startSiteHealth;
+  /** myrmidon(1.6.6 OPE-9154): unattended periodic client cert rotation. */
+  startFleetSiteCertRotation?: typeof startFleetSiteCertRotation;
   log: BotContainersLog;
 }
 
@@ -154,6 +162,7 @@ const defaultPorts: BotContainersStartupPorts = {
   readDriverConfig: (env) => readDockerDriverConfig(env),
   createDriver: (config, db) =>
     dockerBotContainerDriver(config, {
+      recordOom: containerOomRecorder(db),
       // myrmidon(BOT-DISK-F): the layout the owner applied (isolated unless a scope change was applied),
       // and the host-side move of a bot's directories when a recreate changes it.
       readScopeLayout: (botKey) => readAppliedScopeLayout(db, botKey),
@@ -179,6 +188,7 @@ const defaultPorts: BotContainersStartupPorts = {
   bootstrapFleetSitesFromEnv,
   startSiteScheduler,
   startSiteHealth,
+  startFleetSiteCertRotation,
   log: logger,
 };
 
@@ -203,6 +213,7 @@ export function startBotContainers(
   const started = build(db, env, intervalMs, ports);
   if (!started) return () => {};
   const { runtime, stopSweep, clientManager } = started;
+  setActiveFleetClientManager(clientManager);
   ports.registerRuntime(runtime);
   ports.log.info({ intervalMs, network: runtime.network }, "bot container reconciliation started");
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
@@ -215,9 +226,11 @@ export function startBotContainers(
     ports.log.error({ err }, "failed to start clone hygiene report collection");
   }
   // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
-  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
+  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env, clientManager }) ?? null;
   // myrmidon(1.6.6 REMOTE-SITES-T4): next to the scheduler; it reads the client manager's transports.
   const stopSiteHealth = ports.startSiteHealth?.(db, { env, clientManager }) ?? null;
+  // myrmidon(1.6.6 OPE-9154): unattended site client certificate rotation scheduler
+  const stopCertRotation = ports.startFleetSiteCertRotation?.(db, { env, log: ports.log }) ?? null;
 
   let stopped = false;
   const stop = () => {
@@ -226,8 +239,10 @@ export function startBotContainers(
     stopSweep();
     stopCollector?.();
     clientManager.close();
+    if (getActiveFleetClientManager() === clientManager) setActiveFleetClientManager(null);
     stopSiteScheduler?.();
     stopSiteHealth?.();
+    stopCertRotation?.();
     // Only clear the registry entry this run put there.
     if (ports.currentRuntime() === runtime) ports.registerRuntime(null);
     if (stopRunning === stop) stopRunning = null;

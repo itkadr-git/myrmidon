@@ -27,7 +27,7 @@ describe("PaperclipApiClient", () => {
 
     const headers = call[1].headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer token-123");
-    expect(headers["x-paperclip-run-id"]).toBe("run-abc");
+    expect(headers["x-myrmidon-run-id"]).toBe("run-abc");
     expect(headers["content-type"]).toBe("application/json");
   });
 
@@ -73,7 +73,7 @@ describe("PaperclipApiClient", () => {
       causeMessage: "fetch failed",
     } satisfies Partial<ApiConnectionError>);
     await expect(client.post("/api/companies/import/preview", {})).rejects.toThrow(
-      /Could not reach the Paperclip API\./,
+      /Could not reach the Myrmidon API\./,
     );
     await expect(client.post("/api/companies/import/preview", {})).rejects.toThrow(
       /curl http:\/\/localhost:3100\/api\/health/,

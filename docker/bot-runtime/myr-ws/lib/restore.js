@@ -236,7 +236,10 @@ function makeGit(ctx) {
 /** <home>/git-base/<owner>/<repo>.git (contract C1 layout of class-D bases). */
 function basePath(ctx, repo) {
   const [owner, name] = repo.split("/");
-  return path.join(ctx.home, "git-base", owner, `${name.replace(/\.git$/, "")}.git`);
+  // The CLI may be given mixed-case spelling after the base was normalized.
+  const base = path.join(ctx.home, "git-base", owner.toLowerCase(), `${name.replace(/\.git$/, "").toLowerCase()}.git`);
+  const legacy = path.join(ctx.home, "git-base", owner, `${name.replace(/\.git$/, "")}.git`);
+  return fs.existsSync(path.join(base, "HEAD")) || !fs.existsSync(path.join(legacy, "HEAD")) ? base : legacy;
 }
 
 function makeCtx(deps = {}) {

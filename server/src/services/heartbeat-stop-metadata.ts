@@ -10,6 +10,12 @@ export type HeartbeatRunStopReason =
   | "max_turns_exhausted"
   | "process_lost"
   | "unmanaged_background_task_stopped"
+  | "model_call_limit"
+  | "idle_timeout"
+  | "tool_retry_loop"
+  // myrmidon(RUN-GUARD-LOOPS): stops of the read-only / repeated-call checks.
+  | "no_progress_exploration"
+  | "repeated_tool_call"
   | "adapter_failed";
 
 export interface HeartbeatRunTimeoutPolicy {
@@ -89,6 +95,16 @@ export function inferHeartbeatRunStopReason(input: {
   const maxTurnStopReason = normalizeMaxTurnStopReason(input.errorCode);
   if (maxTurnStopReason) return maxTurnStopReason;
   if (input.outcome === "timed_out") return "timeout";
+  if (
+    input.errorCode === "model_call_limit" ||
+    input.errorCode === "idle_timeout" ||
+    input.errorCode === "tool_retry_loop" ||
+    // myrmidon(RUN-GUARD-LOOPS): the two new run guard stop reasons.
+    input.errorCode === "no_progress_exploration" ||
+    input.errorCode === "repeated_tool_call"
+  ) {
+    return input.errorCode;
+  }
   if (input.outcome === "failed" && input.errorCode === "unmanaged_background_task_stopped") return "unmanaged_background_task_stopped";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
   if (input.outcome === "cancelled") {

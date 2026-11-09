@@ -28,10 +28,12 @@ import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 import { ConnectorPanel } from "@/components/myrmidon/ConnectorPanel"; // myrmidon(EXTCASE-PANEL)
 import { GitHubSharedIdentityPanel } from "@/components/myrmidon/GitHubSharedIdentityPanel"; // myrmidon(GITHUB-SHARED-IDENTITY)
 import { FleetConsolePanel } from "../components/myrmidon/FleetConsolePanel"; // myrmidon(SC1)
+import { FleetGuardrailsSettingsPanel } from "@/components/myrmidon/FleetGuardrailsSettingsPanel";
 import { RemoteSitesSection } from "../components/myrmidon/RemoteSitesSection"; // myrmidon(1.6.6 REMOTE-SITES-T8)
 import { ReferenceTaskEvalsPanel } from "../components/myrmidon/evals/ReferenceTaskEvalsPanel"; // myrmidon(1.6.5 EVALS-JUDGE-FAMILY)
 import { TracingHealthCard } from "../components/myrmidon/tracing-health/TracingHealthCard"; // myrmidon(TRACING-HEALTH)
 import { TeamLivenessHealthCard } from "../components/myrmidon/TeamLivenessHealthCard"; // myrmidon(TEAM-LIVENESS-METRICS)
+import { CompanySkillPolicyEditor } from "@/components/skill-studio/CompanySkillPolicyEditor";
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
 export function CompanySettings() {
@@ -244,6 +246,7 @@ export function CompanySettings() {
         <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">{t("settings.general")}</h1>
       </div>
+      {selectedCompanyId ? <CompanySkillPolicyEditor key={selectedCompanyId} companyId={selectedCompanyId} /> : null}
 
       {/* General */}
       <div className="max-w-2xl space-y-4">
@@ -451,7 +454,7 @@ export function CompanySettings() {
       />
 
       <FleetConsolePanel /> {/* myrmidon(SC1) */}
-
+      <FleetGuardrailsSettingsPanel />
       <RemoteSitesSection /> {/* myrmidon(1.6.6 REMOTE-SITES-T8) */}
 
       {/* Reference-task results with the same-family judge badge

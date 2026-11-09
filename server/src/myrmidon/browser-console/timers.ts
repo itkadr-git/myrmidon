@@ -6,6 +6,8 @@
 // it); the hard ceiling closes it after M minutes regardless of activity.
 // The warning window is the last 60 seconds before whichever deadline wins.
 
+import { liveSavedSetting } from "../behavior-settings/live.js";
+
 export const BROWSER_IDLE_TIMEOUT_MIN_ENV = "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN";
 export const BROWSER_MAX_DURATION_MIN_ENV = "MYRMIDON_BROWSER_MAX_DURATION_MIN";
 
@@ -33,9 +35,16 @@ function readMinutes(env: NodeJS.ProcessEnv, name: string, fallback: number, min
 }
 
 export function readBrowserConsoleTimers(env: NodeJS.ProcessEnv = process.env): BrowserConsoleTimers {
+  // A value saved from the UI wins over the environment; the same bounds apply.
+  const saved = (key: string, min: number, max: number): number | undefined => {
+    const value = env === process.env ? liveSavedSetting<number>(key) : undefined;
+    return typeof value === "number" && value >= min && value <= max ? value : undefined;
+  };
   return {
-    idleTimeoutMs: readMinutes(env, BROWSER_IDLE_TIMEOUT_MIN_ENV, DEFAULT_IDLE_TIMEOUT_MIN, MIN_IDLE_TIMEOUT_MIN, MAX_IDLE_TIMEOUT_MIN) * 60_000,
-    maxDurationMs: readMinutes(env, BROWSER_MAX_DURATION_MIN_ENV, DEFAULT_MAX_DURATION_MIN, MIN_MAX_DURATION_MIN, MAX_MAX_DURATION_MIN) * 60_000,
+    idleTimeoutMs: (saved("browser_idle_timeout_min", MIN_IDLE_TIMEOUT_MIN, MAX_IDLE_TIMEOUT_MIN) ??
+      readMinutes(env, BROWSER_IDLE_TIMEOUT_MIN_ENV, DEFAULT_IDLE_TIMEOUT_MIN, MIN_IDLE_TIMEOUT_MIN, MAX_IDLE_TIMEOUT_MIN)) * 60_000,
+    maxDurationMs: (saved("browser_max_duration_min", MIN_MAX_DURATION_MIN, MAX_MAX_DURATION_MIN) ??
+      readMinutes(env, BROWSER_MAX_DURATION_MIN_ENV, DEFAULT_MAX_DURATION_MIN, MIN_MAX_DURATION_MIN, MAX_MAX_DURATION_MIN)) * 60_000,
   };
 }
 

@@ -1,0 +1,111 @@
+# myrmidon(1.6.6 CORPUS): production runtime services for corpus ingestion & search.
+#
+# Services:
+#   tei: text-embeddings-inference (OpenAI-compatible /v1/embeddings, dimensions=1024, auto-truncate, batch >= 2048)
+#   docling-serve: document conversion engine (PDF, DOCX, XLSX, HTML, images)
+#   document-parser: HTTP adapter implementing POST /v1/parse and GET /v1/parse/{jobId}
+#
+# Published endpoints (reachable from paperclip_default network and host gateway without localhost):
+#   - Embeddings:      http://${CORPUS_HOST_GATEWAY}:8090/v1
+#   - Document parser: http://${CORPUS_HOST_GATEWAY}:5001
+#
+# Startup:
+#   docker compose -f docker/corpus/docker-compose.yml up -d
+#
+name: myrmidon-corpus
+
+services:
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: myrmidon-corpus-tei
+    restart: unless-stopped
+    command:
+      - "--model-id"
+      - "${TEI_MODEL_ID:-BAAI/bge-m3}"
+      - "--auto-truncate"
+      - "--max-client-batch-size"
+      - "2048"
+      - "--max-batch-tokens"
+      - "16384"
+      - "--max-concurrent-requests"
+      - "8"
+      - "--port"
+      - "80"
+    ports:
+      # Bound to 0.0.0.0:8090 (accessible via host gateway ${CORPUS_HOST_GATEWAY}:8090 from paperclip_default)
+      - "0.0.0.0:8090:80"
+    environment:
+      - RUST_LOG=info
+    volumes:
+      - tei-models:/data
+    networks:
+      - corpus-net
+      - paperclip_default
+    mem_limit: 4g
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:80/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  docling-serve:
+    image: quay.io/ds4sd/docling-serve:latest
+    container_name: myrmidon-corpus-docling
+    restart: unless-stopped
+    environment:
+      - DOCLING_SERVE_ENGINES=cpu
+      - DOCLING_SERVE_PORT=5001
+    networks:
+      - corpus-net
+    mem_limit: 4g
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:5001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  document-parser:
+    build:
+      context: ../..
+      dockerfile: tools/document-parser/Dockerfile
+    image: ghcr.io/itkadr-git/myrmidon-document-parser:${IMAGE_TAG:-latest}
+    container_name: myrmidon-corpus-parser
+    restart: unless-stopped
+    depends_on:
+      docling-serve:
+        condition: service_healthy
+    ports:
+      # Bound to 0.0.0.0:5001 (accessible via host gateway ${CORPUS_HOST_GATEWAY}:5001 from paperclip_default)
+      - "0.0.0.0:5001:5001"
+    environment:
+      - PORT=5001
+      - HOST=0.0.0.0
+      - DOCLING_SERVE_URL=http://docling-serve:5001
+      - MAX_BODY_BYTES=157286400 # 150 MiB (~110 MiB base64 + JSON wrapper)
+      - CHUNK_MAX_CHARS=1500
+    networks:
+      - corpus-net
+      - paperclip_default
+    mem_limit: 2g
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:5001/health').then(r => process.exit(r.ok ? 0 : 1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  corpus-net:
+    name: myrmidon-corpus-net
+  paperclip_default:
+    external: true
+    name: paperclip_default
+
+volumes:
+  tei-models:
+    name: myrmidon-corpus-tei-models

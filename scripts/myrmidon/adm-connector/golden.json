@@ -1,0 +1,277 @@
+[
+  {
+    "source": "OPE-9258:ca6e8dac-0f16-4729-9499-b4cdb2fbc0ad",
+    "prompt": "Delivered: PR itkadr-git/myrmidon#1793, itkadr-git/myrmidon#1793 merged (24f0f0991faed94b0444da1691b0057bf8dc1076, 24f0f0991faed94b0444da1691b0057bf8dc1076); task closed by the periodic PR sync at 2026-10-27T14:10:32.365Z.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:aa97b38a-2f4c-44a0-90ea-27e84452af16",
+    "prompt": "Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry! | The server is (sometimes) overloaded due to high user traffic. Please retry!",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:ab7d6f96-463f-40a3-b774-5eed556719da",
+    "prompt": "Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry! | The server is (sometimes) overloaded due to high user traffic. Please retry!",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:959e3178-f2a7-4cba-a85b-783258e6395f",
+    "prompt": "APPROVE PR #1793 24f0f0991faed94b0444da1691b0057bf8dc1076\n\nVERDICT: APPROVE — PR #1793 на exact head 24f0f0991faed94b0444da1691b0057bf8dc1076.\n\nCI run 40388006362 на этом head полностью зелёный: CI result, checks, typecheck + build, все workspaces/serialized/server shards, tests other + runner, image, freeze, PR text scan, go tools и hot-files review pass; affected и report main status skipped по ",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:c1175ed9-1458-4f2c-b65b-04f1f81d4cc9",
+    "prompt": "Мониторинг: после update-branch новая голова 24f0f0991faed94b0444da1691b0057bf8dc1076. Отставание от main устранено; те же 6 файлов и 6 авторских коммитов. CI https://github.com/itkadr-git/myrmidon/actions/runs/40388006362 ещё выполняется: workspaces-b (контракт-тест), checks, typecheck + build, image прошли; server/serialized pending. Полного зелёного CI на новой голове пока нет, новый итоговый в",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:7a3e906f-eac8-4103-8cd2-fc4aea71f099",
+    "prompt": "APPROVE PR #1793 8df3bb3637c38234683cb07554712530e632bf27\n\nVERDICT: APPROVE — PR #1793 на exact head `8df3bb3637c38234683cb07554712530e632bf27`\n\n### Почему вердикт повторён на новой голове\nГолова сменилась только служебными merge-коммитами бота (`myrmidon-vm-core[bot]`), последний — `Merge branch 'main' into bot/OPE-9258`. Собственная правка PR не менялась: против `main` (`612d9423f81134965f4272a9",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:91cda159-838c-4f62-9710-ba6448ccc4cd",
+    "prompt": "## Мониторинг слияния PR #1793 (ADM Merge Automation) — перезапуск после расхождения с main\n\n### 1. Что обнаружено в этом пробуждении\n- PR #1793 был помечен `BEHIND`: голова `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`, а `main` ушёл вперёд (`28bafcdf8a598708d266565bf4a16cb495771462`, 15:38Z); сравнение `main...bot/OPE-9258` давало `diverged` (ahead 9 / behind 8). Автомат `Myrmidon PR autoupdate` в ",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:8c0388d6-e095-40dd-b3ea-d210163ad263",
+    "prompt": "## Мониторинг слияния PR #1793 (ADM Merge Automation)\n\n- **PR**: [#1793](https://github.com/itkadr-git/myrmidon/pull/1793), exact head `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`. Состояние: `OPEN`, `MERGEABLE` (`mergeable_state: behind`).\n- **Статус ревью**: Вердикт `APPROVE PR #1793 7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f` зафиксирован в репозитории и задаче. Метка `review-approved` активна, про",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:cfd8a927-e70c-47fc-ae00-096668803fe2",
+    "prompt": "## Мониторинг слияния PR #1793 (ADM Merge Automation)\n\n- **PR**: [#1793](https://github.com/itkadr-git/myrmidon/pull/1793), exact head `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`. Состояние: `OPEN`, `MERGEABLE` (`mergeable_state: behind`).\n- **Статус ревью**: Вердикт `APPROVE PR #1793 7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f` зафиксирован в репозитории и задаче. Метка `review-approved` активна, про",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:41519594-397d-4d2e-818b-bac554f40689",
+    "prompt": "## Мониторинг слияния PR #1793 (ADM Merge Automation)\n\n- **PR**: [#1793](https://github.com/itkadr-git/myrmidon/pull/1793), head `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`. Состояние: `OPEN`, `MERGEABLE`.\n- **Статус ревью**: Вердикт `APPROVE PR #1793 7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f` зафиксирован. Метка `review-approved` активна, проверка `hot-files-review` успешно пройдена (`no hot files ",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:87f5723f-24cb-4a56-b995-626f42ef4f05",
+    "prompt": "## Мониторинг слияния PR #1793 (ADM Merge Automation)\n\n- **PR**: [#1793](https://github.com/itkadr-git/myrmidon/pull/1793), head `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`. Состояние: `OPEN`, `MERGEABLE`.\n- **Статус ревью**: Вердикт `APPROVE PR #1793 7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f` зафиксирован. Метка `review-approved` активна, проверка `hot-files-review` пройдена.\n- **Статус CI**: В Act",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:10a71bae-0d3b-474c-84b5-e02ee6857dd6",
+    "prompt": "## Review Participant Recovery & Final Disposition\n\nВердикт `APPROVE PR #1793 7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f` зафиксирован, метка `review-approved` на PR #1793 выставлена.\n\n### Статус критериев приёмки (OPE-9258 / OPE-9247)\n1. **JSON Schema метаданных элемента знаний ADM**: подтверждено (`docs/myrmidon/adm-connector-contract/schema-v1.json`, тест `packages/shared/src/adm-connector-contra",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:6c45c86b-58f6-4eb6-a6ae-5f403ba9d1b8",
+    "prompt": "APPROVE PR #1793 7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f\n\nVERDICT: APPROVE — PR #1793 на head `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`\n\n### Анализ и соответствие ТЗ (OPE-9258 / OPE-9247)\n1. **JSON Schema метаданных элемента знаний ADM**: подтверждено (`docs/myrmidon/adm-connector-contract/schema-v1.json`, тест `packages/shared/src/adm-connector-contract.test.ts:28-33`). Все обязательные поля (`",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:045865ab-cad5-4cbc-a04c-51cb2122bd70",
+    "prompt": "Exact-head result for PR #1793: SHA `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`, CI run `40323681709` completed success; the transferred contract test passed in `tests (workspaces-b)`. All required test shards passed, plus checks, typecheck/build, go tools, plan, and image `40323658564`; PR text, freeze, and hot-files passed. `tests (affected)` and `report main status` are workflow-skipped. PR rema",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:d76eef5b-225c-4d88-959f-8025fbc903c8",
+    "prompt": "PR #1793 / exact head 7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f. Exact-head CI run 40323681709 completed success; contract test passed in tests (workspaces-b). All required remaining jobs passed, including server and serialized shards, checks, go tools, typecheck + build; image run 40323658564 success; PR text/freeze/hot-files checks passed. tests (affected) is skipped by the workflow. Review route",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:33889597-b9ef-418b-88ab-f7d677c94bd7",
+    "prompt": "Продолжение по CI: PR #1793 открыт, ready-for-review, mergeable; ветка `bot/OPE-9258` и PR совпадают на exact head `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`. На этом head run `40323681709` всё ещё queued: `go tools`, `checks`, `tests (server 2/3)` in_progress; остальные тестовые jobs (включая `tests (workspaces-b)` с контракт-тестом) ещё queued. Image run `40323658564` in_progress. Поэтому полный",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:59e59593-9191-48a7-ba27-4f93eaac0e78",
+    "prompt": "Дополнение к текущему CI-wait: предыдущий run `40316388985` на старом SHA `00a894fc6af2b5068ba92547654e4eb9245e39d0` теперь завершился success; контракт-тест был реально исполнен и прошёл в `tests (workspaces-b)`. Устранив отставание PR от main, я влил свежий main, запушил новый SHA `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`; новый CI ещё queued (run `40323681709`, image `40323658564`, freeze `403",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:e5920af4-1e60-4a07-975e-2582b2a6b9dc",
+    "prompt": "Fresh check-in: CI run `40316388985` завершился success на предшествующем head `00a894fc6af2b5068ba92547654e4eb9245e39d0`, включая контракт-тест `tests (workspaces-b)`; но этот PR был на 2 коммита позади main. Я влил свежий `origin/main` обычным merge, `git diff --check` прошёл, запушил task branch. Новый exact head PR #1793: `7bf7af3ceb21b8fa90d72c8079d1c4ffbabbf97f`. Новые проверки на этот SHA т",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:86f7b57f-d80e-4d34-af73-f905a81149b0",
+    "prompt": "Wake по завершённой дочерней проверке OPE-9279: перепроверил PR #1793 на exact head `00a894fc6af2b5068ba92547654e4eb9245e39d0`, открыт/ready-for-review/mergeable; ветка совпадает с `origin/bot/OPE-9258` и актуальна относительно origin/main `f1af9331537bb08f15170c4ef614bc9e216cbf4f`. В CI run `40316388985` всё ещё in_progress. Перенесённый контракт-тест реально прошёл: job `tests (workspaces-b)` `1",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:683e2155-7f63-44da-8511-cd00a1c2379d",
+    "prompt": "Обновил live-проверку PR #1793 на exact head `00a894fc6af2b5068ba92547654e4eb9245e39d0`; `origin/main`=`f1af9331537bb08f15170c4ef614bc9e216cbf4f`, ветка на базе актуального main. Тест контракта исполнился и прошёл в `tests (workspaces-b)` (run `40316388985`, job `121551832293`, шаг Run vitest success). Прошли также checks, typecheck/build, tests (other + runner), tests (workspaces-a), image, go to",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:3e6fdc86-b63c-4ab3-850e-03bd85ca82af",
+    "prompt": "На точном head PR #1793, `00a894fc6af2b5068ba92547654e4eb9245e39d0`, контракт-тест прошёл в CI (`tests (workspaces-b)`). `checks`, `tests (other + runner)`, typecheck/build и image тоже прошли. Run `40316388985` всё ещё выполняется: serialized 1/2 и 2/2, server 1/3, 2/3 и 3/3, а также workspaces-a остаются незавершёнными; полного зелёного результата пока нет.\n\nНе менял статус и review routing: тек",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:2b8948c2-c78c-4f52-957a-cfac615dc35e",
+    "prompt": "Проверил PR #1793 на точном head `00a894fc6af2b5068ba92547654e4eb9245e39d0` (PR открыт, ready-for-review, mergeable; текущая `origin/main` — `f1af9331537bb08f15170c4ef614bc9e216cbf4f`, ветка от неё не отстаёт). В CI run `40316388985` перенесённый тест реально исполнился: `tests (workspaces-b)` → `Run vitest (workspaces-b)` завершён success; typecheck/build и `checks` также success. Image `40316388",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:2b9fc47f-e607-44b6-878b-64d5fe56624d",
+    "prompt": "Обновление по PR #1793 / SHA `00a894fc6af2b5068ba92547654e4eb9245e39d0`: контрактный тест включён в исполняемый CI-путь `tests (workspaces-b)` (`121551832293`) и тест реально запущен; этот job пока in_progress. В run `40316388985` ещё выполняются checks (`121549929145`), tests other+runner (`121551832075`), serialized/server/workspaces Vitest jobs и typecheck/build (`121551832110`); `tests (affect",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:5840a9a1-8059-4df5-bf6a-64d4772204a4",
+    "prompt": "Продолжение PR #1793 на точном head `00a894fc6af2b5068ba92547654e4eb9245e39d0`: CI run `40316388985` остаётся queued (включая `tests (workspaces-b)` `121551832293`, где должен обнаруживаться перенесённый тест); image run `40316388920` in_progress. PR text `40316388929`, freeze `40316389186`, hot-files `40316389084` прошли. Результат CI ещё не зелёный, статус `in_progress` оставлен. Обновил и прочи",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:a29546e6-7c6a-47fb-98c5-8c4368351629",
+    "prompt": "PR #1793 / SHA 00a894fc6af2b5068ba92547654e4eb9245e39d0\n\nИсправил continuation после замечания CI: исходный failed run 40273631125 был на старой базе main (PR отставал; runner test конфликтовал с изменением credentials в main). Влил свежий origin/main в ветку и отправил обычный push. PR остаётся открыт и готов к ревью, mergeable; актуальная база включена. Новые проверки на точном head запущены: CI",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:7f3be04f-80b2-4b94-a24d-038c540d91f2",
+    "prompt": "REQUEST CHANGES PR #1793 938746b464d00d05094c74500b3e440b8bb10741\n\n## Результаты ревью PR #1793 (head `938746b464d00d05094c74500b3e440b8bb10741`)\n\n### 1. Анализ кода и соответствие ТЗ (OPE-9258 / OPE-9247)\n- **JSON Schema (`docs/myrmidon/adm-connector-contract/schema-v1.json`)**:\n  - Содержит все обязательные поля метаданных: `schema_version`, `slug`, `kind`, `title`, `summary`, `tags`, `triggers`",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:05838541-3220-44ec-a020-fe887f92dfa5",
+    "prompt": "PR #1793 / sha 938746b464d00d05094c74500b3e440b8bb10741 / run 40273631125\n\n- Синхронизирован `pnpm-lock.yaml` под зависимости `ajv` и `ajv-formats` в `packages/shared`.\n- Исправлена совместимость конструктора `Ajv2020` и вызова `addFormats` под NodeNext в `packages/shared/src/adm-connector-contract.test.ts`.\n- В описание PR #1793 добавлена таблица подтверждения критериев приёмки.\n- Запущен CI run ",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:2054168c-bcc8-47ee-86d2-857ca0d32b6a",
+    "prompt": "CI продолжение PR #1793 / SHA 94b42d58a4760d7d83b66dccd56c6054fbad3b52: локальный Vitest ранее прошёл (1 файл, 6 тестов). Проверил свежий CI run 40185255301: failure на `pnpm install --frozen-lockfile`, причина — pnpm-lock.yaml не обновлён под добавленные ajv и ajv-formats в packages/shared/package.json. Зафиксировал блокер исправления: штатный `devbuild pnpm install --lockfile-only --ignore-scrip",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:3239f2a1-f71f-4ec0-8e3d-9064432b244e",
+    "prompt": "Принял замечание ADM. Перенёс тест в `packages/shared/src/adm-connector-contract.test.ts`; он входит в Vitest include (`src/**/*.test.ts`), а `ajv`/`ajv-formats` добавлены в devDependencies shared. Удалил неисполнявшийся docs test. Проверил через devbuild: `cd packages/shared && pnpm exec vitest run src/adm-connector-contract.test.ts` — 1 файл, 6 тестов passed. PR #1793 обновлён, новый head `94b42",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:fb28a816-431f-4492-99f7-b861b56dbfc3",
+    "prompt": "Возобновил работу по ADM 25.10: проверил, что PR #1793 существует, и обновил его вместо создания дубля. Он был от origin/main; влил актуальный main и запушил обычным push (без force). Новый head: `0bfed1f6ee03cfc67ed8c746104cf84fefe5d0fb`; PR остаётся #1793, открыт и ready for review. На этом SHA созданы свежие Actions: CI run `40182922046`, hot-files `40182922040`, freeze `40182922044`, PR text `",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:b8eaf513-8148-4c80-89db-fd569450d65d",
+    "prompt": "Ревью ADM 25.10: PR #1793: контракт-тест `docs/myrmidon/adm-connector-contract/schema-v1.test.mjs` в CI не запускается (tests/typecheck SKIPPED), а ajv из docs/ не резолвится. Перенеси тест туда, где его подхватит vitest (например packages/shared с зависимостью ajv), и покажи прогон в CI. Схема и README по содержанию ок. Срок: код в main к 14:00 26.10 IRK.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:e377c51d-0f25-4ead-b6da-6623c7c589b9",
+    "prompt": "Принял ваш комментарий: recovery-блок снят, статус в эту итерацию выставлен в `todo`, assignee остаётся прежним. Проверил фактический PR: #1793 существует и открыт, ready for review, head `6381683ddb101e5130cf5136f352b92b3a1e534f`; run `40179116141` — completed/success, при этом тесты/typecheck docs-tier skipped. Поэтому я не стал создавать дублирующий PR или менять код: это создаст второй расходя",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:ae10f532-b9b7-4d7c-a647-2e851e821b98",
+    "prompt": "ADM 25.10: блок recovery без открытого блокера снят. PR нет → todo, исполнитель продолжает. Срок 1.6.6 — 26.10.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:c8cf5a38-57e8-4f1f-b09b-1ad064811ea0",
+    "prompt": "Myrmidon could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:ae8527d1-e20b-42a7-ad81-bb12a6e4c3d5",
+    "prompt": "Повторно сверил точный PR #1793: открыт, ready for review, head `6381683ddb101e5130cf5136f352b92b3a1e534f`; run `40179116141` завершён success (`checks` и `CI result` прошли; тестовые матрицы/typecheck skipped для docs-tier). GitHub `reviewRequests` пуст, PR assignee отсутствует. Paperclip reviewer `adm-dev-review-8` существует, но нет привязки к GitHub-пользователю; GitHub reviewer request не сох",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:0960c020-6390-4081-8fc4-102521d93e69",
+    "prompt": "Myrmidon needs a disposition before this issue can continue.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:43b9e0e0-2c35-4e09-8f1d-3d5293228f4f",
+    "prompt": "CI завершён для PR #1793 на SHA 6381683ddb101e5130cf5136f352b92b3a1e534f: run 40179116141 — completed/success; `checks` и `CI result` прошли, также прошли go tools, plan, PR text scan, freeze и hot-files review. Docs-tier тестовые матрицы/typecheck помечены skipped, они не выполнялись. PR переведён из draft в ready for review. Назначить рецензента GitHub как reviewer не удалось: репозиторий вернул",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:1b2f7af0-c9ef-497f-be0c-3cf660c2a962",
+    "prompt": "## Watchdog verification\n\nPR #1793 remains open at SHA `6381683ddb101e5130cf5136f352b92b3a1e534f`. Fresh `gh pr checks` confirms checks, go tools, PR text scan, freeze, hot-files review, and plan passed; tests/typecheck are skipped for docs-tier, and `CI result` remains pending.\n\n- The existing PR watchdog is the live continuation, configured for this exact SHA and run.\n- Restored issue status to ",
+    "expected": [
+      "paperclip-api",
+      "config-change"
+    ]
+  },
+  {
+    "source": "OPE-9258:1c84474e-0c1b-4853-9280-242bbd00c281",
+    "prompt": "Myrmidon could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:d2d80259-d4af-438e-89f7-d842c50fac35",
+    "prompt": "Fresh CI read for PR #1793 / SHA 6381683ddb101e5130cf5136f352b92b3a1e534f / run 40179116141: `checks` still in_progress (script tests currently running; setup, shellcheck passed); `go tools`, plan, PR text scan, freeze passed. Test/typecheck matrices are skipped due to docs-tier. Existing watchdog #b3891a19-8c72-41a1-a66d-8b1e7f337156 updated and read back active for this exact run/head. No CI fai",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:265a2691-460a-451a-bce6-05888be7c267",
+    "prompt": "Myrmidon needs a disposition before this issue can continue.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:b215520f-a81b-4a40-9724-71d249b3feea",
+    "prompt": "Проверил исправленный PR #1793 на head 6381683ddb101e5130cf5136f352b92b3a1e534f, run 40179116141. Предыдущая причина падения устранена. Сейчас checks и go tools выполняются, plan прошёл; test/typecheck матрицы пропущены из-за docs-tier и не считаются пройденными тестами. Обновил существующий watchdog #b3891a19-8c72-41a1-a66d-8b1e7f337156; проверил read-back, он активен на точный head/run. Ожидаю о",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:f83bcd81-4ab4-409c-bcee-f55f4a990f40",
+    "prompt": "По замечанию о красных CI исправил найденную причину: `checks` падал на branding guard из-за названия Paperclip в примере; проверено локально `node scripts/myrmidon/docs-branding-guard.mjs` — clean. PR #1793 теперь на SHA 6381683ddb101e5130cf5136f352b92b3a1e534f. Новый run 40179116141 ожидает checks / go tools / plan, остальные проверки тоже в очереди. Настроил и прочитал обратно watchdog #b3891a1",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:183079ac-2940-4c45-a697-6c507cc3f9d0",
+    "prompt": "Возвращено в работу: PR #1793: красные проверки «checks» и «CI result». Нужно исправить и получить зелёный CI. Срок 26.10, влитие до 14:00 Иркутск.",
+    "expected": [
+      "merge"
+    ]
+  },
+  {
+    "source": "OPE-9258:ce3d756f-4881-4a1c-bf08-9a707fa4a512",
+    "prompt": "Myrmidon could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:3a77e902-079c-49e6-8585-8902e487a5b8",
+    "prompt": "Implementation update: draft PR #1793 at SHA 590eda445453807b041ce48f8975e5fb90b0e162 is open. CI currently pending: checks, go tools, freeze, and plan; PR text scan and hot-files review passed. Docs/schema/examples/test are in docs/myrmidon/adm-connector-contract/. Local  passed; the contract test is delegated to CI because node_modules are absent. Keep this issue in_progress until CI is checked ",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:9d37ca86-98f8-4a1c-ac10-f1bb085fa43f",
+    "prompt": "Implementation is in draft PR #1793 at SHA 590eda445453807b041ce48f8975e5fb90b0e162. CI checks pending: PR text scan, checks, freeze, go tools (dockergate + fleetd), hot files review, plan. See docs/myrmidon/adm-connector-contract/. Local diff check passed; runtime test awaits CI. Issue remains in_progress for CI continuation.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:b376dcef-74bc-46b7-bb06-3a1de3a85240",
+    "prompt": "Implemented ADM connector contract in PR #1793 at SHA 590eda445453807b041ce48f8975e5fb90b0e162. PR is open as draft; CI checks are pending. Please monitor this exact head and act on CI results. Files: docs/myrmidon/adm-connector-contract/. Local diff check passed; runtime contract test awaits CI because dependencies are absent.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:bdd84660-4ac3-400d-a119-e92270fb7849",
+    "prompt": "Myrmidon needs a disposition before this issue can continue.",
+    "expected": []
+  },
+  {
+    "source": "OPE-9258:68dc6d61-75da-462c-8ce1-4bf648b41239",
+    "prompt": "Не удалось выполнить задачу в этом прогоне: рабочая ветка `bot/OPE-9258` совпадает с `origin/main`, поэтому PR создать нельзя — GitHub вернул `No commits between main and bot/OPE-9258`. Изменений и проверок нет; статус задачи и комментарий в Paperclip не обновлены.\n\nНужен доступный первоисточник OPE-9247 и новая рабочая копия или коммит, содержащий изменения. После этого можно подготовить схему, п",
+    "expected": []
+  }
+]

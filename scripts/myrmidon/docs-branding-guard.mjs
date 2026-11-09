@@ -53,7 +53,7 @@ const ALLOWLIST = [
   "\"Paperclip\"", "\"Paperclip …\"",
   "paperclip:2026.", "paperclipVersionMin",
   "Copyright (c) 2025 Paperclip",
-  "Based on Paperclip",
+  "Based on Paperclip", "Base: Paperclip",
   "Paperclip AI", // vendor company name (license/provenance sections)
   "PaperclipLockup", "PaperclipLoading", "AnimatedPaperclipIcon",
   "Paperclip-managed skills", "Paperclip skill", "Навык Paperclip",
@@ -75,9 +75,8 @@ const ALLOWLIST = [
   "рутина Paperclip", "рутине Paperclip", "за основу",
   "Base Paperclip version", "base Paperclip version", "базового Paperclip",
   "**База:** Paperclip", "Paperclip (MIT)»",
-  "PaperclipIcon", "PaperclipLockup.tsx", "Paperclip»-строки",
-  "`Paperclip`", "Paperclip, взятого",
-  "Paperclip**", "«Paperclip»", "stays Paperclip", "остаётся Paperclip",
+  "PaperclipIcon", "PaperclipLockup.tsx",
+  "`Paperclip`", "«Paperclip»", "stays Paperclip", "остаётся Paperclip",
   "Paperclip-managed", // managed-by-vendor flows named in prose; kept one release
   "управляемые навыки Paperclip",
   "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",

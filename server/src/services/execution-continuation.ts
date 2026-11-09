@@ -400,9 +400,16 @@ export async function buildExecutionContinuation(input: {
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
+  // myrmidon(WAKE-HISTORY): the run this wake continues and how it ended — the
+  // handoff/retry source, else the agent's latest finished run on the task. A
+  // fresh-session agent gets this reference and the completed-work summary in
+  // place of the previous run's messages.
+  const previousRunRow =
+    (sourceRunId ? priorRuns.find((run) => run.id === sourceRunId) : undefined) ?? lastTerminal;
   // myrmidon(P3): bound the returned history; checks above ran on the full history
   return limitExecutionContinuationHistory({
     ...(interruptedRunId ? { interruptedRunId } : {}),
+    ...(previousRunRow ? { previousRun: { runId: previousRunRow.id, status: previousRunRow.status } } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
     recoveryOutcomes: reconciliations
       .filter((row) => row.evidence.executionReconciliation)

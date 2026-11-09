@@ -16,7 +16,7 @@ export async function initializeIdleStopService(driver: BotContainerDriver, db: 
     ? true
     : ['true', '1', 'yes', 'on'].includes(rawEnabled);
   const afterSec = parseInt(process.env.MYRMIDON_IDLE_STOP_AFTER_SEC || '1800', 10);
-  const healthTimeoutMs = parseInt(process.env.MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS || '30000', 10);
+  const healthTimeoutMs = parseInt(process.env.MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS || '420000', 10);
 
   let settings: { enabled?: boolean; afterSec?: number; healthTimeoutMs?: number } | undefined;
   try {
@@ -39,6 +39,10 @@ export async function initializeIdleStopService(driver: BotContainerDriver, db: 
 
 export function getIdleStopService(): IdleStopService | undefined {
   return idleStopService;
+}
+
+export function setIdleStopServiceForTest(service: IdleStopService | undefined): void {
+  idleStopService = service;
 }
 
 export function shutdownIdleStopService(): void {

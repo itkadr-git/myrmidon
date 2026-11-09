@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 2,
+  "owner": "adm",
+  "delivery": {
+    "mode": "adm_only",
+    "target": "adm",
+    "rollout": "operator_applies_in_zabbix",
+    "liveActions": false
+  },
+  "hostGroups": [
+    "myrmidon-engineers",
+    "vm-core",
+    "Linux servers"
+  ],
+  "items": [
+    {
+      "id": "eng-idle",
+      "name": "Myrmidon engineers idle count",
+      "key": "myrmidon.eng.idle.count",
+      "type": "zabbix-agent",
+      "valueType": "numeric-unsigned",
+      "interval": "60s",
+      "description": "Number of engineer agents that have been idle long enough for the ADM guard (OPE-9868)."
+    },
+    {
+      "id": "myrmidon-xfs-free",
+      "name": "Myrmidon XFS free percentage",
+      "key": "vfs.fs.size[/srv/myrmidon-xfs,pfree]",
+      "type": "zabbix-agent",
+      "valueType": "numeric-float",
+      "interval": "60s",
+      "description": "Free percentage of the /srv/myrmidon-xfs filesystem (OPE-9868 / OPE-11780)."
+    },
+    {
+      "id": "root-free",
+      "name": "Root filesystem free percentage",
+      "key": "vfs.fs.size[/,pfree]",
+      "type": "zabbix-agent",
+      "valueType": "numeric-float",
+      "interval": "60s",
+      "description": "Free percentage of the root (/) filesystem (OPE-11780 replaces disk-watch-board)."
+    },
+    {
+      "id": "kernel-oom",
+      "name": "Kernel OOM killer log monitor",
+      "key": "log[/var/log/kern.log,\"oom-killer|Out of memory|Killed process\",,,skip]",
+      "type": "zabbix-agent-active",
+      "valueType": "log",
+      "interval": "30s",
+      "description": "Detects cgroup and kernel OOM-killer invocations in kernel log (OPE-11780 replaces oom-watch)."
+    },
+    {
+      "id": "vmcore-buildcache-size",
+      "name": "vm-core build cache directory size",
+      "key": "vfs.dir.size[/root/.cache]",
+      "type": "zabbix-agent",
+      "valueType": "numeric-unsigned",
+      "interval": "300s",
+      "description": "Monitors build cache accumulation on vm-core where builds are forbidden (OPE-11780 replaces vmcore-buildcache-guard)."
+    },
+    {
+      "id": "systemd-failed-units",
+      "name": "Systemd failed units count",
+      "key": "systemd.failed.count",
+      "type": "zabbix-agent",
+      "valueType": "numeric-unsigned",
+      "interval": "60s",
+      "description": "Monitors failed systemd service and timer units (OPE-11780 replaces vmcore-timers-watch)."
+    },
+    {
+      "id": "agent-availability",
+      "name": "Zabbix agent availability ping",
+      "key": "agent.ping",
+      "type": "zabbix-agent",
+      "valueType": "numeric-unsigned",
+      "interval": "60s",
+      "description": "Native agent ping replacing watchdog of watchdogs (OPE-11780 replaces vmcore-stub-watch)."
+    }
+  ],
+  "triggers": [
+    {
+      "id": "eng-idle-high",
+      "name": "Myrmidon: at least 3 engineers idle",
+      "expression": "last(/myrmidon.eng.idle.count)>=3",
+      "severity": "warning",
+      "operatorAction": "ADM reviews the idle queue; no host script or automatic remediation is invoked.",
+      "description": "Raised when the idle engineer count is greater than or equal to 3."
+    },
+    {
+      "id": "myrmidon-xfs-low",
+      "name": "Myrmidon: /srv/myrmidon-xfs free space below 15%",
+      "expression": "last(/vfs.fs.size[/srv/myrmidon-xfs,pfree])<15",
+      "severity": "high",
+      "operatorAction": "ADM investigates capacity and schedules remediation; no deletion or host script is invoked.",
+      "description": "Raised when /srv/myrmidon-xfs has less than 15 percent free space (OPE-9868)."
+    },
+    {
+      "id": "myrmidon-xfs-critical",
+      "name": "Myrmidon: /srv/myrmidon-xfs free space below 10%",
+      "expression": "last(/vfs.fs.size[/srv/myrmidon-xfs,pfree])<10",
+      "severity": "disaster",
+      "operatorAction": "ADM immediate capacity remediation; replaces disk-watch-board.sh per Alex 10% threshold rule.",
+      "description": "Raised when /srv/myrmidon-xfs free space falls below 10 percent (OPE-11780)."
+    },
+    {
+      "id": "root-low-critical",
+      "name": "Myrmidon: root (/) free space below 10%",
+      "expression": "last(/vfs.fs.size[/,pfree])<10",
+      "severity": "disaster",
+      "operatorAction": "ADM immediate root capacity remediation; replaces disk-watch-board.sh per Alex 10% threshold rule.",
+      "description": "Raised when root filesystem free space falls below 10 percent (OPE-11780)."
+    },
+    {
+      "id": "kernel-oom-detected",
+      "name": "Myrmidon vm-core: kernel OOM-killer invoked",
+      "expression": "find(/kernel-oom,,\"like\",\"oom-killer\")=1 or find(/kernel-oom,,\"like\",\"Out of memory\")=1",
+      "severity": "high",
+      "operatorAction": "ADM investigates which process or cgroup was terminated by kernel OOM; replaces oom-watch.sh.",
+      "description": "Raised when kernel log records an OOM-killer event (OPE-11780)."
+    },
+    {
+      "id": "vmcore-buildcache-detected",
+      "name": "Myrmidon vm-core: build cache detected on host (builds forbidden on vm-core)",
+      "expression": "last(/vfs.dir.size[/root/.cache])>1073741824",
+      "severity": "high",
+      "operatorAction": "ADM checks for unauthorized build execution on vm-core and stops build tasks (builds belong exclusively on build-vps); replaces vmcore-buildcache-guard.sh.",
+      "description": "Raised when build cache directory exceeds 1GB on vm-core (OPE-11780)."
+    },
+    {
+      "id": "systemd-timers-failed",
+      "name": "Myrmidon vm-core: systemd unit or timer failure detected",
+      "expression": "last(/systemd.failed.count)>0",
+      "severity": "warning",
+      "operatorAction": "ADM checks failed systemd units on vm-core via systemctl --failed; replaces vmcore-timers-watch.sh.",
+      "description": "Raised when systemd has one or more failed units (OPE-11780)."
+    },
+    {
+      "id": "agent-unavailable",
+      "name": "Myrmidon vm-core: Zabbix agent unreachable (monitoring watchdog)",
+      "expression": "nodata(/agent.ping,3m)=1",
+      "severity": "high",
+      "operatorAction": "ADM verifies zabbix-agent service on vm-core; replaces vmcore-stub-watch.sh.",
+      "description": "Raised when Zabbix agent fails to report for 3 minutes (OPE-11780)."
+    }
+  ],
+  "decommissionTargets": [
+    {
+      "id": "oom-watch",
+      "service": "oom-watch.service",
+      "timer": "oom-watch.timer",
+      "scriptPath": "/usr/local/sbin/oom-watch.sh",
+      "function": "cgroup OOM-killer detection",
+      "replacementTriggerId": "kernel-oom-detected",
+      "decommissionCommand": "systemctl disable --now oom-watch.timer oom-watch.service"
+    },
+    {
+      "id": "disk-watch-board",
+      "service": "disk-watch-board.service",
+      "timer": "disk-watch-board.timer",
+      "scriptPath": "/usr/local/bin/disk-watch-board.sh",
+      "function": "Disk pressure monitoring with board notification",
+      "replacementTriggerId": "myrmidon-xfs-critical",
+      "decommissionCommand": "systemctl disable --now disk-watch-board.timer disk-watch-board.service"
+    },
+    {
+      "id": "vmcore-buildcache-guard",
+      "service": "vmcore-buildcache-guard.service",
+      "timer": "vmcore-buildcache-guard.timer",
+      "scriptPath": "/usr/local/sbin/vmcore-buildcache-guard.sh",
+      "function": "Prunes build cache on vm-core (builds forbidden on host)",
+      "replacementTriggerId": "vmcore-buildcache-detected",
+      "decommissionCommand": "systemctl disable --now vmcore-buildcache-guard.timer vmcore-buildcache-guard.service"
+    },
+    {
+      "id": "vmcore-timers-watch",
+      "service": "vmcore-timers-watch.service",
+      "timer": "vmcore-timers-watch.timer",
+      "scriptPath": "/usr/local/sbin/vmcore-timers-watch.sh",
+      "function": "Monitors systemd timers and drift",
+      "replacementTriggerId": "systemd-timers-failed",
+      "decommissionCommand": "systemctl disable --now vmcore-timers-watch.timer vmcore-timers-watch.service"
+    },
+    {
+      "id": "vmcore-stub-watch",
+      "service": "vmcore-stub-watch.service",
+      "timer": "vmcore-stub-watch.timer",
+      "scriptPath": "/usr/local/sbin/vmcore-stub-watch.sh",
+      "function": "Watchdog of watchdogs (removed alongside timers)",
+      "replacementTriggerId": "agent-unavailable",
+      "decommissionCommand": "systemctl disable --now vmcore-stub-watch.timer vmcore-stub-watch.service"
+    }
+  ]
+}

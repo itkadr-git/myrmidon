@@ -124,6 +124,8 @@ describe("bridge seam: theme selection", () => {
 // seam, and none of them is left on the bridge module directly. The list is the
 // call map of the task: batch 1 covers points 1-8 (addressing aliases), 41-45
 // (forum topics), 46-49 (voice intake) and 55-63 (conversation identity); batch
+// 2 (OPE-6975) adds the DM progress/status track and the draft/video transport
+// (map points 27-40, 50-52); batch
 // 3 (OPE-6976) adds points 53-54 (media intake and the rich tree's own binding
 // call), 64-69 (the notify track), 71-72 (DM command menus) and 73-77 (the
 // Telegram helper modules). The shared re-export of point 70 stays in
@@ -222,10 +224,80 @@ const CONVERTED: {
     symbols: ["forcedBridgeLocale"],
   },
   {
-    file: "app.ts",
+    file: "myrmidon/app-plugin.ts",
     legacy: "myrmidon/telegram-voice-stt-intake/wiring.js",
     seam: "channel-connectors/bridge/voice-stt.js",
     symbols: ["createTelegramVoiceSttWiring"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-status-settings.js",
+    seam: "channel-connectors/bridge/dm-status-settings.js",
+    symbols: ["telegramDmStatusEnabled"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-status-progress.js",
+    seam: "channel-connectors/bridge/dm-status-progress.js",
+    symbols: ["composeDmStatusText", "readDmStatusSteps"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: ["readDmProgressRuntimeSteps"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/sweep.js",
+    seam: "channel-connectors/bridge/dm-progress-sweep.js",
+    symbols: ["readTelegramDmProgressForSweep"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/throttle.js",
+    seam: "channel-connectors/bridge/dm-progress-throttle.js",
+    symbols: ["decideDmStatusPublish"],
+  },
+  {
+    file: "services/chat-channels.ts",
+    legacy: "./chat-telegram-draft-stop.js",
+    seam: "channel-connectors/bridge/telegram-draft-stop.js",
+    symbols: ["isTelegramDraftStopped", "parseTelegramDraftBinding"],
+  },
+  {
+    file: "services/chat-sdk-runtime.ts",
+    legacy: "./chat-telegram-draft-stop.js",
+    seam: "channel-connectors/bridge/telegram-draft-stop.js",
+    symbols: ["captureTelegramGenerationStopped", "telegramPrivateDraftDestination"],
+  },
+  {
+    file: "services/chat-sdk-runtime.ts",
+    legacy: "./chat-telegram-video-note.js",
+    seam: "channel-connectors/bridge/telegram-video-note.js",
+    symbols: ["normalizeTelegramVideoNoteAttachments"],
+  },
+  {
+    file: "services/heartbeat.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: ["recordDmProgressLogChunk"],
+  },
+  {
+    file: "services/heartbeat-run-runtime-status.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: [
+      "recordDmProgressRuntimeStatus",
+      "clearDmProgressRuntimeSteps",
+      "clearAllDmProgressRuntimeSteps",
+    ],
+  },
+  {
+    file: "services/instance-settings.ts",
+    legacy: "myrmidon/telegram-dm-progress/settings.js",
+    seam: "channel-connectors/bridge/dm-progress-settings.js",
+    symbols: ["preserveTelegramDmProgressGeneralKey"],
   },
   // myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976), the map points 53-77.
   {
@@ -303,13 +375,13 @@ const CONVERTED: {
     symbols: ["bindTelegramRichAttachment"],
   },
   {
-    file: "app.ts",
+    file: "myrmidon/app-plugin.ts",
     legacy: "myrmidon/telegram-notify/index.js",
     seam: "channel-connectors/bridge/notify.js",
     symbols: ["myrmidonTelegramNotifyRoutes"],
   },
   {
-    file: "app.ts",
+    file: "myrmidon/app-plugin.ts",
     legacy: "myrmidon/telegram-notify/sweep.js",
     seam: "channel-connectors/bridge/notify-sweep.js",
     symbols: ["sweepTelegramNotifyProactivity"],
@@ -358,7 +430,7 @@ const SRC_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "
 /** The named bindings of every `import { … } from "…"` statement of a source. */
 function importPairs(source: string): { names: string[]; specifier: string }[] {
   const pairs: { names: string[]; specifier: string }[] = [];
-  const pattern = /import\s+(?:type\s+)?\{([\s\S]*?)\}\s*from\s*"([^"]+)"/g;
+  const pattern = /(?:import|export)\s+(?:type\s+)?\{([\s\S]*?)\}\s*from\s*"([^"]+)"/g;
   for (const match of source.matchAll(pattern)) {
     const names = match[1]
       .replace(/\/\*[\s\S]*?\*\//g, "")

@@ -27,6 +27,12 @@ describe("pluginLabel", () => {
     expect(pluginLabel(t, "myrmidon.personal-bot", null, "Personal bot")).toBe("Персональный бот");
     expect(pluginLabel(t, "myrmidon.license-issuer", "license-issuer-sidebar", "License issuing")).toBe("Выпуск лицензий");
     expect(pluginLabel(t, "myrmidon.chatgpt-pool", "chatgpt-pool-page", "ChatGPT subscriptions")).toBe("Подписки ChatGPT");
+    expect(pluginLabel(t, "myrmidon.google-ai", null, "Google AI Pro")).toBe("Google AI Pro");
+    expect(pluginLabel(t, "myrmidon.google-ai", "google-ai-sidebar", "Google AI Pro")).toBe("Google AI Pro");
+    expect(pluginLabel(t, "myrmidon.google-ai", "google-ai-page", "Google AI Pro")).toBe("Google AI Pro");
+    expect(pluginLabel(t, "myrmidon.antigravity", null, "Antigravity")).toBe("Antigravity");
+    expect(pluginLabel(t, "myrmidon.antigravity", "antigravity-sidebar", "Antigravity")).toBe("Antigravity");
+    expect(pluginLabel(t, "myrmidon.antigravity", "antigravity-page", "Antigravity")).toBe("Antigravity");
   });
 
   it("returns the English name in en", () => {

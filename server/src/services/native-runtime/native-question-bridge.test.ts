@@ -508,4 +508,71 @@ describeEmbeddedPostgres("native question bridge", () => {
       `question_${interaction!.id}`,
     );
   });
+
+  it("does not duplicate the task card when the runner replays a request", async () => {
+    await seed();
+    const event = runtimeRequestEvent();
+    const first = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    const second = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second?.id).toBe(first?.id);
+
+    const rows = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("deduplicates different runtime events independently", async () => {
+    await seed();
+    const event1 = runtimeRequestEvent();
+    const event2: PrpEvent = {
+      ...runtimeRequestEvent(),
+      sourceEventId: "runtime-question-2",
+      payload: {
+        request: {
+          ...(runtimeRequestEvent().payload.request as Record<string, unknown>),
+          requestId: "request-2",
+        },
+      },
+    };
+
+    const first = await projectNativeRuntimeRequest({ db, binding: binding(), event: event1 });
+    const second = await projectNativeRuntimeRequest({ db, binding: binding(), event: event2 });
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second?.id).not.toBe(first?.id);
+
+    const rows = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("preserves an explicit runner idempotency key", async () => {
+    await seed();
+    const explicitKey = `custom-runner-key-${randomUUID()}`;
+    const event = {
+      ...runtimeRequestEvent(),
+      idempotencyKey: explicitKey,
+    };
+
+    const first = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    expect(first?.idempotencyKey).toBe(explicitKey);
+
+    const second = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    expect(second?.id).toBe(first?.id);
+
+    const rows = await db
+      .select({ id: issueThreadInteractions.id, idempotencyKey: issueThreadInteractions.idempotencyKey })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.idempotencyKey).toBe(explicitKey);
+  });
 });
