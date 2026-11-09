@@ -419,6 +419,7 @@ async function main() {
       uvCacheTtlHours: pick(g.uvCacheTtlHours, Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS)) ?? 168,
       terminalOutputTtlHours: pick(g.terminalOutputTtlHours, Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS)) ?? 24,
       npmCacheCapBytes: pick(g.npmCacheCapBytes, Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES)) ?? 1024 * 1024 * 1024,
+      npmCacacheQuotaBytes: pick(g.npmCacacheQuotaBytes, Number(process.env.MYRMIDON_BOTD_NPM_CACACHE_QUOTA_BYTES)) ?? 512 * 1024 * 1024,
     };
     // The npm size ceiling is skipped while a run is live: an npx install the run
     // has not touched yet can still be in use.
@@ -456,6 +457,7 @@ async function main() {
         uvCacheTtlHours: Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS) || 168,
         terminalOutputTtlHours: Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS) || 24,
         npmCacheCapBytes: Number(process.env.MYRMIDON_BOTD_NPM_CACHE_CAP_BYTES) || 1024 * 1024 * 1024,
+        npmCacacheQuotaBytes: Number(process.env.MYRMIDON_BOTD_NPM_CACACHE_QUOTA_BYTES) || 512 * 1024 * 1024,
       };
       const result = await hygieneMod.cleanCaches({
         now: startedAt.getTime(),
