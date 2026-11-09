@@ -113,7 +113,7 @@ export function RunsQueueSettingsPanel() {
 
   if (query.isLoading) {
     return (
-      <section className="space-y-4" data-testid="myrmidon-runs-queue-settings">
+      <section className="space-y-4">
         <h2 className="text-sm font-semibold">Runs &amp; Queue</h2>
         <p className="text-sm text-muted-foreground">Loading settings...</p>
       </section>
@@ -122,7 +122,7 @@ export function RunsQueueSettingsPanel() {
 
   if (query.error || !query.data) {
     return (
-      <section className="space-y-4" data-testid="myrmidon-runs-queue-settings">
+      <section className="space-y-4">
         <h2 className="text-sm font-semibold">Runs &amp; Queue</h2>
         <p role="alert" className="text-sm text-destructive">Failed to load settings.</p>
       </section>
@@ -189,10 +189,11 @@ export function RunsQueueSettingsPanel() {
               const next = Number(e.target.value);
               setLocalValues((prev) => ({ ...prev, [key]: next }));
             }}
-            onBlur={() => {
-              if (numVal !== settings[key]) {
+            onBlur={(e) => {
+              const val = Number(e.currentTarget.value);
+              if (val !== settings[key]) {
                 setSavingKey(key);
-                updateMutation.mutate({ [key]: numVal }, {
+                updateMutation.mutate({ [key]: val }, {
                   onSettled: () => setSavingKey(null),
                 });
               }
@@ -220,12 +221,19 @@ export function RunsQueueSettingsPanel() {
           onChange={(e) => {
             setLocalValues((prev) => ({ ...prev, [key]: e.target.value }));
           }}
-          onBlur={() => {
-            if (rawVal !== settings[key]) {
-              const next: BehaviorSettingValue = key === "runsQueue.infraInterrupt.codes" ||
-                           key === "runsQueue.autoResume.backoffMs"
-                ? String(rawVal).split(",").map((s) => s.trim()).filter(Boolean)
-                : (rawVal as BehaviorSettingValue);
+          onBlur={(e) => {
+            const currentStr = e.currentTarget.value;
+            const isArrayKey =
+              key === "runsQueue.infraInterrupt.codes" ||
+              key === "runsQueue.autoResume.backoffMs";
+            const next: BehaviorSettingValue = isArrayKey
+              ? currentStr.split(",").map((s) => s.trim()).filter(Boolean)
+              : currentStr;
+            const orig = settings[key];
+            const changed = Array.isArray(orig) && Array.isArray(next)
+              ? JSON.stringify(orig) !== JSON.stringify(next)
+              : String(orig ?? "") !== currentStr;
+            if (changed) {
               setSavingKey(key);
               updateMutation.mutate({ [key]: next }, {
                 onSettled: () => setSavingKey(null),

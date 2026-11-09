@@ -91,9 +91,19 @@ function getElementById<T extends HTMLElement>(id: string): T | null {
 
 function setInputValue(input: HTMLInputElement, value: string) {
   act(() => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
-    setter.call(input, value);
+    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    const previous = input.value;
+    valueSetter?.call(input, value);
+    const tracker = (input as HTMLInputElement & { _valueTracker?: { setValue: (v: string) => void } })._valueTracker;
+    tracker?.setValue(previous);
     input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+function blurInput(element: HTMLElement) {
+  act(() => {
+    element.dispatchEvent(new Event("blur", { bubbles: true }));
   });
 }
 
@@ -140,7 +150,7 @@ describe("RunsQueueSettingsPanel", () => {
     vi.spyOn(behaviorSettingsApi, "get").mockResolvedValue(mockView);
     renderPanel();
 
-    await waitFor(() => Boolean(container.querySelector('[data-testid="myrmidon-runs-queue-settings"]')));
+    await waitFor(() => Boolean(getElementById("runsQueue.idlePickup.enabled")));
     expect(container.textContent).toContain("Core switches");
     expect(container.textContent).toContain("Advanced tuning");
 
@@ -213,10 +223,7 @@ describe("RunsQueueSettingsPanel", () => {
     const stallThreshold = getElementById<HTMLInputElement>("runsQueue.runStall.thresholdSec")!;
 
     setInputValue(stallThreshold, "120");
-
-    act(() => {
-      stallThreshold.dispatchEvent(new Event("blur", { bubbles: true }));
-    });
+    blurInput(stallThreshold);
 
     await waitFor(() => updateSpy.mock.calls.length > 0);
     expect(updateSpy).toHaveBeenCalledWith({
@@ -233,10 +240,7 @@ describe("RunsQueueSettingsPanel", () => {
     const infraCodes = getElementById<HTMLInputElement>("runsQueue.infraInterrupt.codes")!;
 
     setInputValue(infraCodes, "SIGUSR1, SIGUSR2");
-
-    act(() => {
-      infraCodes.dispatchEvent(new Event("blur", { bubbles: true }));
-    });
+    blurInput(infraCodes);
 
     await waitFor(() => updateSpy.mock.calls.length > 0);
     expect(updateSpy).toHaveBeenCalledWith({
@@ -253,10 +257,7 @@ describe("RunsQueueSettingsPanel", () => {
     const pilotDoc = getElementById<HTMLInputElement>("runsQueue.swarm.pilotBaselineDoc")!;
 
     setInputValue(pilotDoc, "baseline-doc-v2");
-
-    act(() => {
-      pilotDoc.dispatchEvent(new Event("blur", { bubbles: true }));
-    });
+    blurInput(pilotDoc);
 
     await waitFor(() => updateSpy.mock.calls.length > 0);
     expect(updateSpy).toHaveBeenCalledWith({
@@ -272,9 +273,7 @@ describe("RunsQueueSettingsPanel", () => {
     await waitFor(() => Boolean(getElementById("runsQueue.runStall.thresholdSec")));
     const stallThreshold = getElementById<HTMLInputElement>("runsQueue.runStall.thresholdSec")!;
 
-    act(() => {
-      stallThreshold.dispatchEvent(new Event("blur", { bubbles: true }));
-    });
+    blurInput(stallThreshold);
 
     expect(updateSpy).not.toHaveBeenCalled();
   });
