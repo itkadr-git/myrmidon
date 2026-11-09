@@ -27,7 +27,7 @@ import {
   type VendorOnlyIndex,
   type VendorRelease,
 } from "../commands/myrmidon-migrate-vendor-chain.js";
-import { tableDigest, type ColumnInfo, type TableInfo } from "../commands/myrmidon-migrate-db.js";
+import { introspectTables, tableDigest, type ColumnInfo, type TableInfo } from "../commands/myrmidon-migrate-db.js";
 import {
   copyManifest,
   inventoryDirectory,
@@ -844,7 +844,9 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.5'::numeric where id = '${COMPANY_A}'`);
 
     await expect(runMigration(f.options)).rejects.toThrow(/value-not-integer-in-target:companies\.spent_monthly_cents/);
-    await expectZeroWrites(f);
+    // The schema is applied before the narrowing check; no data may be copied.
+    expect(await scalar(f.targetUrl, "select count(*) from companies")).toBe("0");
+    expect(existsSync(f.targetDir)).toBe(false);
   }, T * 2);
 
   it("catches differing values in digest comparison for narrowed columns", async () => {
@@ -859,8 +861,8 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     const srcDb = createDb(f.sourceUrl);
     const tgtDb = createDb(f.targetUrl);
     try {
-      const srcTables = await loadMigrationTargetSchema(srcDb);
-      const tgtTables = await loadMigrationTargetSchema(tgtDb);
+      const srcTables = await introspectTables(srcDb);
+      const tgtTables = await introspectTables(tgtDb);
       const compSrc = srcTables.get("companies")!;
       const compTgt = tgtTables.get("companies")!;
 
