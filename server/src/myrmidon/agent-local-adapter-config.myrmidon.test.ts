@@ -64,6 +64,20 @@ describe("localAdapterSecurityConfigChanged", () => {
   it("ignores other adapters", () => {
     expect(localAdapterSecurityConfigChanged("hermes_local", {}, { networkScope: "deny" }, {})).toBe(false);
   });
+
+  // myrmidon(1.6.7 OMP-HARDEN, OPE-12266): omp_local's declared create default is
+  // filesystemScope=workspace (the gate treats it as the baseline via
+  // `previousAdapterConfig == null ? { filesystemScope: "workspace" } : {}` in the
+  // agents route), while edits compare every explicit sandbox key directly with no
+  // defaults — removing an existing workspace scope stays an instance-admin change.
+  it("treats omp_local sandbox keys as direct comparisons without defaults", () => {
+    expect(localAdapterSecurityConfigChanged("omp_local", null, { model: "x" }, {})).toBe(false);
+    expect(localAdapterSecurityConfigChanged("omp_local", null, { filesystemScope: "workspace" }, {})).toBe(true);
+    expect(localAdapterSecurityConfigChanged("omp_local", null, { filesystemScope: "workspace" }, { filesystemScope: "workspace" })).toBe(false);
+    expect(localAdapterSecurityConfigChanged("omp_local", { filesystemScope: "workspace" }, { filesystemScope: "workspace" }, {})).toBe(false);
+    expect(localAdapterSecurityConfigChanged("omp_local", { filesystemScope: "workspace" }, {}, {})).toBe(true);
+    expect(localAdapterSecurityConfigChanged("omp_local", {}, { networkScope: "deny" }, {})).toBe(true);
+  });
 });
 
 describe("hermesGatewayConfigProblem", () => {

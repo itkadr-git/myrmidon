@@ -111,7 +111,8 @@ describe("countStalledReviewDeferrals", () => {
 });
 
 describe("pullRequestHeadCiStateFromChecks", () => {
-  const done = (conclusion: string) => ({ name: "CI result", status: "completed", conclusion });
+  const HEAD = "abc123";
+  const done = (conclusion: string) => ({ name: "CI result", status: "completed", conclusion, head_sha: HEAD });
 
   it("is pending while the final CI result check is missing, however many other checks failed", () => {
     // OPE-8077: `checks` failed, typecheck and tests are still queued.
@@ -122,44 +123,83 @@ describe("pullRequestHeadCiStateFromChecks", () => {
           { name: "typecheck + build", status: "queued" },
           { name: "tests (server 1/3)", status: "queued" },
         ],
+        headSha: HEAD,
       }),
     ).toBe("pending");
     // The release freeze gate is red on every PR while the tag CI runs.
     expect(
       pullRequestHeadCiStateFromChecks({
         checkRuns: [{ name: "freeze", status: "completed", conclusion: "failure" }],
+        headSha: HEAD,
       }),
     ).toBe("pending");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [] })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [], headSha: HEAD })).toBe("pending");
   });
 
   it("is pending while the final check is queued or in progress", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "queued" }] })).toBe("pending");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "in_progress" }] })).toBe(
-      "pending",
-    );
+    expect(
+      pullRequestHeadCiStateFromChecks({
+        checkRuns: [{ name: "CI result", status: "queued", head_sha: HEAD }],
+        headSha: HEAD,
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromChecks({
+        checkRuns: [{ name: "CI result", status: "in_progress", head_sha: HEAD }],
+        headSha: HEAD,
+      }),
+    ).toBe("pending");
   });
 
   it("is complete when the final check is completed, whatever the other checks do", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")] })).toBe("complete");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")], headSha: HEAD })).toBe("complete");
     expect(
       pullRequestHeadCiStateFromChecks({
         checkRuns: [done("failure"), { name: "tests (other + runner)", status: "queued" }],
+        headSha: HEAD,
       }),
     ).toBe("complete");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "completed" }] })).toBe(
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")], headSha: HEAD })).toBe("complete");
+  });
+
+  it("does not take the leftovers of a superseded workflow run for a verdict", () => {
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled")], headSha: HEAD })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("skipped")], headSha: HEAD })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled"), done("success")], headSha: HEAD })).toBe(
       "complete",
     );
   });
 
-  it("does not take the leftovers of a superseded workflow run for a verdict", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled")] })).toBe("pending");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("skipped")] })).toBe("pending");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled"), done("success")] })).toBe("complete");
+  it("is unknown when the read failed", () => {
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: null, headSha: HEAD })).toBe("unknown");
   });
 
-  it("is unknown when the read failed", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: null })).toBe("unknown");
+  // OPE-12175: the review gate and the dedup key both work on the exact head
+  // SHA, so a completed `CI result` of a different head must never open the
+  // review.
+  describe("head_sha filtering (OPE-12175)", () => {
+    it("is complete when head_sha matches and the check is completed", () => {
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")], headSha: HEAD })).toBe("complete");
+    });
+
+    it("is pending when the record has a different head_sha", () => {
+      const stale = { name: "CI result", status: "completed", conclusion: "success", head_sha: "deadbeef" };
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [stale], headSha: HEAD })).toBe("pending");
+    });
+
+    it("is pending when the record has no head_sha", () => {
+      const noSha = { name: "CI result", status: "completed", conclusion: "success" };
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [noSha], headSha: HEAD })).toBe("pending");
+    });
+
+    it("in a mixed list only the matching record decides", () => {
+      const stale = { name: "CI result", status: "completed", conclusion: "success", head_sha: "deadbeef" };
+      const matching = { name: "CI result", status: "completed", conclusion: "success", head_sha: HEAD };
+      const noSha = { name: "CI result", status: "completed", conclusion: "success" };
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [stale, noSha], headSha: HEAD })).toBe("pending");
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [stale, matching], headSha: HEAD })).toBe("complete");
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [noSha, matching], headSha: HEAD })).toBe("complete");
+    });
   });
 });
 
@@ -281,6 +321,13 @@ describe("pullRequestHeadFinalCheckConclusion", () => {
     expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [{ name: "CI result", status: "completed" }] })).toBeNull();
     expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [] })).toBeNull();
     expect(pullRequestHeadFinalCheckConclusion({ checkRuns: null })).toBeNull();
+  });
+
+  it("filters by headSha when provided", () => {
+    const stale = { name: "CI result", status: "completed", conclusion: "failure", head_sha: "deadbeef" };
+    const matching = { name: "CI result", status: "completed", conclusion: "success", head_sha: "abc123" };
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [stale], headSha: "abc123" })).toBeNull();
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [stale, matching], headSha: "abc123" })).toBe("success");
   });
 });
 

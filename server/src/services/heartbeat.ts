@@ -33624,6 +33624,7 @@ export function heartbeatService(
               .select({
                 id: heartbeatRuns.id,
                 status: heartbeatRuns.status,
+                errorCode: heartbeatRuns.errorCode,
                 finishedAt: heartbeatRuns.finishedAt,
                 contextSnapshot: heartbeatRuns.contextSnapshot,
                 stdoutExcerpt: heartbeatRuns.stdoutExcerpt,

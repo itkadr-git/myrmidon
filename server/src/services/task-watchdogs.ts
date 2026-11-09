@@ -506,6 +506,14 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestDocumentAt: optionalIso(issue.latestDocumentAt),
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
     }));
+  if (hasLegitimateIdleDisposition(leaves)) {
+    return {
+      state: "live",
+      reason: "All leaf issues have a legitimate idle disposition (todo + assignee + clean lease + empty blockers/interactions).",
+      includedIssueIds: includedIds,
+      liveIssueIds: leaves.map((leaf) => leaf.issueId),
+    };
+  }
   const materialLeaves = leaves.map(materialLeaf);
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
@@ -614,6 +622,16 @@ function stopFingerprintFromText(value: string | null | undefined) {
 
 function reviewedFingerprintForWatchdogIssue(issue: Pick<IssueRow, "originFingerprint" | "description">) {
   return normalizeStopFingerprint(issue.originFingerprint) ?? stopFingerprintFromText(issue.description);
+}
+
+function hasLegitimateIdleDisposition(leaves: TaskWatchdogStoppedLeaf[]) {
+  return leaves.length > 0 && leaves.every((leaf) =>
+    leaf.status === "todo" &&
+    Boolean(leaf.assigneeAgentId || leaf.assigneeUserId) &&
+    leaf.blockerIssueIds.length === 0 &&
+    leaf.pendingInteractionIds.length === 0 &&
+    leaf.pendingApprovalIds.length === 0
+  );
 }
 
 function taskWatchdogWakeIdempotencyKey(watchdogId: string, stopFingerprint: string) {

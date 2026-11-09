@@ -88,7 +88,13 @@ const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const REAL_GIT = process.env.MYRMIDON_GIT_REAL || "/opt/paperclip/libexec/git";
+// myrmidon(1.6.7): a MYRMIDON_GIT_REAL that runs `git` from PATH again (a test's logging fake that execs
+// `command -v git`, which inside the image IS this wrapper) lands back here, and the wrapper would start
+// MYRMIDON_GIT_REAL once more: a fork loop up to the container's pids limit (09.11: a dev bot sat at 1024
+// processes and could not start its runs). Every child the wrapper starts carries MYRMIDON_GIT_WRAPPED=1;
+// a wrapper started under that mark runs the image's own git instead of MYRMIDON_GIT_REAL.
+const IMAGE_GIT = process.env.MYRMIDON_GIT_IMAGE || "/opt/paperclip/libexec/git";
+const REAL_GIT = (process.env.MYRMIDON_GIT_WRAPPED !== "1" && process.env.MYRMIDON_GIT_REAL) || IMAGE_GIT;
 const MIRROR_ROOT = process.env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git";
 const HERMES_HOME = process.env.HERMES_HOME || "/data/hermes";
 
@@ -323,9 +329,9 @@ function childEnv() {
   const entries = current.split(":");
   const extra = "/opt/node24/bin";
   if (entries[0] !== extra && !entries.includes(extra)) {
-    return { ...process.env, GIT_TERMINAL_PROMPT: "0", [pathKey]: `${extra}:${current}` };
+    return { ...process.env, GIT_TERMINAL_PROMPT: "0", MYRMIDON_GIT_WRAPPED: "1", [pathKey]: `${extra}:${current}` };
   }
-  return { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  return { ...process.env, GIT_TERMINAL_PROMPT: "0", MYRMIDON_GIT_WRAPPED: "1" };
 }
 
 /**
