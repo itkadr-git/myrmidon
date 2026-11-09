@@ -45,7 +45,7 @@ async function realGitExecutable() {
       const probeEnv = { ...process.env, PAPERCLIP_GIT_PROBE_ACTIVE: '1', PAPERCLIP_GITHUB_OPERATION_ACTIVE: '1' };
       const probe = spawn(candidate, ['config', '--get', 'remote.origin.url'], {
         cwd: process.cwd(), env: probeEnv, stdio: ['ignore', 'ignore', 'ignore'],
-        // No spawn `timeout` here: it would signal only the direct child and
+        // No spawn timeout here: it would signal only the direct child and
         // orphan a looping candidate's descendants. The group kill below is
         // the single owner of the probe deadline.
         detached: true,

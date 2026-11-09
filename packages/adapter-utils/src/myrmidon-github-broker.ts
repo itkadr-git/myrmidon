@@ -207,7 +207,7 @@ function paperclipRepositoryFromGitArgs(args) {
 // (its own git binary is the launcher), the image wrapper and its
 // /usr/local/bin shadow. The launcher resolves the real git once — with the
 // re-entry probe for unknown PATH entries — and stashes the answer in
-// `resolvedRealGit`; this lookup reuses exactly that binary. The variable
+// 'resolvedRealGit'; this lookup reuses exactly that binary. The variable
 // 'directory' below is the launcher script's staged directory, set by the
 // surrounding launcher script.
 function paperclipRealGitExecutable(env) {
