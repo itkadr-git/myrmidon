@@ -193,6 +193,9 @@ export const CI_WORKFLOW_PREDECESSORS = {
     'tests (other + runner)',
     'checks',
     'go tools (dockergate + fleetd)',
+    'plugin readiness timing',
+    'Deployed migration numbers',
+    'migration guard',
   ],
   tag: [
     'typecheck',
