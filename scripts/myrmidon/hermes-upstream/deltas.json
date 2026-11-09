@@ -563,6 +563,23 @@
         "path": "tests/tools/test_process_heartbeat.py",
         "upstreamMarker": "heartbeat-regression"
       }
+    },
+    {
+      "id": "32-compaction-summary-9-sections",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/32-compaction-summary-9-sections.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "Unifies context compaction summary structure across fresh, iterative-update, and deterministic fallback summaries into 9 standardized sections: USER_CONTEXT, TASK_TRACKING, COMPLETED, PENDING, CURRENT_STATE, CODE_STATE, TESTS, CHANGES, VERSION_CONTROL_STATUS, with verbatim task/ticket IDs and PR numbers, while preserving legacy task snapshot heading parsers.",
+      "dropCondition": "Upstream adopts a 9-section structured compaction summary with verbatim task and ticket ID tracking.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "TASK_TRACKING|VERSION_CONTROL_STATUS"
+      }
     }
   ]
 }
