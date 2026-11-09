@@ -457,6 +457,46 @@ async function loadIssuePullRequestTarget(
   return { kind: "ok", pullRequestUrl: effectiveUrl, reference };
 }
 
+/**
+ * myrmidon(OPE-12177): the head SHA of the issue's open pull request as the
+ * stored work-product metadata holds it (kept fresh by the PR sync sweep and
+ * the GitHub webhook). No GitHub read and no token; the review-admission
+ * dedup key uses it so the same head dedups and a moved head wakes again.
+ */
+export async function readReviewPullRequestHeadSha(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+}): Promise<string | null> {
+  try {
+    const products = await input.db
+      .select({
+        id: issueWorkProducts.id,
+        type: issueWorkProducts.type,
+        status: issueWorkProducts.status,
+        isPrimary: issueWorkProducts.isPrimary,
+        updatedAt: issueWorkProducts.updatedAt,
+        metadata: issueWorkProducts.metadata,
+      })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, input.companyId),
+          eq(issueWorkProducts.issueId, input.issueId),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      );
+    const product = selectOpenPullRequestWorkProduct(products);
+    const metadata = asRecord(product?.metadata);
+    const headSha = metadata?.headSha;
+    return typeof headSha === "string" && headSha.trim() !== "" ? headSha.trim() : null;
+  } catch {
+    // An unreadable store must not fail the wake path: the key falls back to
+    // the legacy agent-keyed format.
+    return null;
+  }
+}
+
 export function createReviewPullRequestCiResolver(input: {
   db: Db;
   fetch?: FetchLike;

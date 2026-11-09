@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  REVIEW_ADMISSION_KEY_PREFIX,
   REVIEW_CI_WAIT_MAX_ATTEMPTS,
   REVIEW_DECISION_MAX_REWAKES,
   REVIEW_DECISION_RECOVERY_INSTRUCTION,
@@ -10,6 +11,7 @@ import {
   pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
   pullRequestHeadFinalCheckConclusion,
+  reviewAdmissionDedupKey,
   selectOpenPullRequestWorkProduct,
 } from "./policy.js";
 import {
@@ -353,5 +355,39 @@ describe("decideReviewAdmission (OPE-12176)", () => {
 
   it("admits a critical issue's reviewer even when the exact head CI is red", () => {
     expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "red", critical: true })).toBe("admit");
+  });
+});
+
+// myrmidon(OPE-12177): the dedup key of a review-admission wake is keyed on the
+// exact PR head; without a head it falls back to the legacy agent-keyed format.
+describe("reviewAdmissionDedupKey", () => {
+  it("keys on the exact PR head SHA", () => {
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:abc123`,
+    );
+  });
+
+  it("keeps the same key for the same issue + head regardless of the reviewer", () => {
+    const first = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" });
+    const second = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-2" });
+    expect(second).toBe(first);
+  });
+
+  it("produces a new key when the head moves", () => {
+    const before = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" });
+    const after = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "def456", agentId: "agent-1" });
+    expect(after).not.toBe(before);
+  });
+
+  it("falls back to the legacy agent-keyed format without a head", () => {
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: null, agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: undefined, agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "   ", agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
   });
 });
