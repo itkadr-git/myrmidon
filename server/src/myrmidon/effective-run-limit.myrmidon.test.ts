@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RUN_MEMORY_MB,
   effectiveAgentRunLimit,
+  effectiveAgentRunLimitSource,
   savedAgentRunLimits,
 } from "./effective-run-limit.js";
 
@@ -71,5 +72,41 @@ describe("savedAgentRunLimits", () => {
     const limits = savedAgentRunLimits({ boardLimit: 10, adapterConfig });
     expect(effectiveAgentRunLimit(limits)).toBe(1);
     expect(effectiveAgentRunLimit(limits)).toBeLessThan(limits.boardLimit);
+  });
+});
+
+describe("effectiveAgentRunLimitSource", () => {
+  it("names the gateway when it binds below the board and the memory ceiling", () => {
+    expect(effectiveAgentRunLimitSource({ boardLimit: 10, gatewayLimit: 4, memoryMb: 4096 })).toBe("gateway");
+  });
+
+  it("names memory when the per-run estimate binds tighter than the gateway", () => {
+    expect(effectiveAgentRunLimitSource({ boardLimit: 10, gatewayLimit: 4, memoryMb: 1024 })).toBe("memory");
+  });
+
+  it("names the board when nothing binds below it", () => {
+    expect(effectiveAgentRunLimitSource({ boardLimit: 10 })).toBe("board");
+    expect(effectiveAgentRunLimitSource({ boardLimit: 10, gatewayLimit: 10, memoryMb: 6000 })).toBe("board");
+  });
+
+  it("agrees with the computed effective limit across the ceiling combinations", () => {
+    // The card renders the source next to the effective value, so a disagreeing
+    // source would explain a number the scheduler does not use.
+    for (const limits of [
+      { boardLimit: 3, gatewayLimit: 2, memoryMb: 1024 },
+      { boardLimit: 10, gatewayLimit: null, memoryMb: 1024 },
+      { boardLimit: 10, gatewayLimit: 8, memoryMb: null },
+      { boardLimit: 2, gatewayLimit: 5, memoryMb: 4096 },
+    ]) {
+      const source = effectiveAgentRunLimitSource(limits);
+      const ceiling = Math.min(
+        limits.boardLimit,
+        limits.gatewayLimit ?? Number.POSITIVE_INFINITY,
+        limits.memoryMb == null ? Number.POSITIVE_INFINITY : Math.floor(limits.memoryMb / DEFAULT_RUN_MEMORY_MB),
+      );
+      if (source === "gateway") expect(limits.gatewayLimit).toBe(ceiling);
+      if (source === "memory") expect(Math.floor((limits.memoryMb ?? 0) / DEFAULT_RUN_MEMORY_MB)).toBe(ceiling);
+      if (source === "board") expect(limits.boardLimit).toBe(ceiling);
+    }
   });
 });

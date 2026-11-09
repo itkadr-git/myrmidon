@@ -55,7 +55,12 @@ import {
   type GatewayConcurrencyStatus,
 } from "./concurrency-sync.js";
 import { readMaxConcurrentRuns } from "./profile-input.js";
-import { effectiveAgentRunLimit, savedAgentRunLimits, DEFAULT_RUN_MEMORY_MB } from "../effective-run-limit.js";
+import {
+  effectiveAgentRunLimit,
+  effectiveAgentRunLimitSource,
+  savedAgentRunLimits,
+  type EffectiveAgentRunLimitSource,
+} from "../effective-run-limit.js";
 import { hasReleaseBotImage, resolveBotImageRolloutStatus, type BotImageRolloutStatus } from "@myrmidon/shared";
 import {
   parseCloneReport,
@@ -281,23 +286,16 @@ export function effectiveConcurrencyFields(agent: {
   runtimeConfig: Record<string, unknown>;
 }): {
   effectiveMaxConcurrentRuns: number;
-  effectiveMaxConcurrentRunsSource: "board" | "gateway" | "memory";
+  effectiveMaxConcurrentRunsSource: EffectiveAgentRunLimitSource;
 } {
   const limits = savedAgentRunLimits({
     boardLimit: readMaxConcurrentRuns(agent.runtimeConfig),
     adapterConfig: agent.adapterConfig,
   });
-  const effective = effectiveAgentRunLimit(limits);
-  const memoryCeiling = limits.memoryMb == null
-    ? Number.POSITIVE_INFINITY
-    : Math.floor(limits.memoryMb / (limits.runMemoryMb ?? DEFAULT_RUN_MEMORY_MB));
-  const source: "board" | "gateway" | "memory" =
-    limits.gatewayLimit != null && limits.gatewayLimit <= Math.min(limits.boardLimit, memoryCeiling)
-      ? "gateway"
-      : memoryCeiling < limits.boardLimit
-        ? "memory"
-        : "board";
-  return { effectiveMaxConcurrentRuns: effective, effectiveMaxConcurrentRunsSource: source };
+  return {
+    effectiveMaxConcurrentRuns: effectiveAgentRunLimit(limits),
+    effectiveMaxConcurrentRunsSource: effectiveAgentRunLimitSource(limits),
+  };
 }
 
 function clip(message: string): string {

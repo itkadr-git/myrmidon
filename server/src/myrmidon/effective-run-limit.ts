@@ -37,6 +37,17 @@ function asRecord(value: unknown): Record<string, unknown> {
  * Return the cap an agent may actually consume. A missing gateway or memory
  * limit means that ceiling is not known and is not applied.
  */
+export type EffectiveAgentRunLimitSource = "board" | "gateway" | "memory";
+
+export function effectiveAgentRunLimitSource(input: EffectiveAgentRunLimitInput): EffectiveAgentRunLimitSource {
+  const memoryCeiling = input.memoryMb == null || (input.runMemoryMb ?? DEFAULT_RUN_MEMORY_MB) <= 0
+    ? Number.POSITIVE_INFINITY
+    : Math.floor(input.memoryMb / (input.runMemoryMb ?? DEFAULT_RUN_MEMORY_MB));
+  if (input.gatewayLimit != null && input.gatewayLimit <= Math.min(input.boardLimit, memoryCeiling)) return "gateway";
+  if (memoryCeiling < input.boardLimit) return "memory";
+  return "board";
+}
+
 export function effectiveAgentRunLimit(input: EffectiveAgentRunLimitInput): number {
   const ceilings = [input.boardLimit];
   if (input.gatewayLimit != null && Number.isFinite(input.gatewayLimit)) ceilings.push(input.gatewayLimit);

@@ -1516,6 +1516,7 @@ function readHeartbeatRunErrorFamily(
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
     run.errorCode === "hermes_transient_upstream" ||
+    run.errorCode === "hermes_gateway_rate_limited" ||
     run.errorCode === "codex_harness_crash" ||
     run.errorCode === "continuation_source_context_missing" ||
     run.errorCode === "controller_lease_lost" ||
