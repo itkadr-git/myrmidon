@@ -152,7 +152,18 @@ function mirrorStampMs(mirrorDir) {
 function fetchRefsFromMirror(env, dir, mirrorDir, now = Date.now()) {
   const stamp = mirrorStampMs(mirrorDir);
   if (stamp <= 0 || now - stamp > MIRROR_MAX_STALE_MS) return false;
-  const r = runGit(env, dir, ["fetch", "--prune", "--no-tags", mirrorDir]);
+  // Explicit refspec: a bare repo's fetch without one also resolves the
+  // remote's HEAD symref, which can dangle on a mirror whose default branch
+  // differs from the repo's initial branch ("fatal: couldn't find remote
+  // ref HEAD", exit 128) and would silently degrade every refresh to an
+  // origin fetch.
+  const r = runGit(env, dir, [
+    "fetch",
+    "--prune",
+    "--no-tags",
+    mirrorDir,
+    `${L.WS_GIT_BASE_REFSPEC}`,
+  ]);
   if (r.error || r.status !== 0) {
     const why = (r.error && r.error.message) || String(r.stderr || "").trim().split("\n").slice(-3).join(" | ");
     throw new MyrWsError(EXIT.network, `mirror fetch failed: ${why}`);
