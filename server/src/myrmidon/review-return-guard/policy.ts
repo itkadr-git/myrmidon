@@ -129,11 +129,12 @@ export function isCiOnlyReviewComment(body: string | null | undefined): boolean 
   return !CODE_FINDING_MARKERS.some((marker) => marker.test(text));
 }
 
-/** Whether the review comment references code (path:line, file name, or code fence). */
+/** Whether the review comment contains a concrete code location (`path:line`). */
+const CODE_LOCATION_MARKER = /(?:^|[\s`'"(])(?:[\w.-]+\/)*[\w.-]+:\d+\b/;
+
 export function reviewCommentReferencesCode(body: string | null | undefined): boolean {
   const text = typeof body === "string" ? body.trim() : "";
-  if (!text) return false;
-  return CODE_FINDING_MARKERS.some((marker) => marker.test(text));
+  return Boolean(text && CODE_LOCATION_MARKER.test(text));
 }
 
 /** Every failed check is on the infrastructure list, and there is at least one failed check. */

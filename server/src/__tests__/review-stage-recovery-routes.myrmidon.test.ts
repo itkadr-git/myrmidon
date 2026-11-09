@@ -254,7 +254,12 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       const issue = await readIssue(s.issueId);
       expect(issue.status).toBe("in_progress");
-      expect(issue.executionState).toMatchObject({ status: "changes_requested", lastDecisionOutcome: "changes_requested" });
+      expect(issue.assigneeAgentId).toBe(s.engineerAgentId);
+      expect(issue.executionState).toMatchObject({
+        status: "changes_requested",
+        lastDecisionOutcome: "changes_requested",
+        returnAssignee: { type: "agent", agentId: s.engineerAgentId },
+      });
     }
   });
 
