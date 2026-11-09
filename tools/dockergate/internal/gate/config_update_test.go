@@ -144,11 +144,14 @@ func TestAllow_A21_GetBotLimits(t *testing.T) {
 		}
 	}
 
-	// Ceiling fields are present even when unset (zero values).
+	// Ceiling and effective fields are present even when unset (zero values).
 	var resp struct {
-		CeilingMemory int64   `json:"ceilingMemoryMb"`
-		CeilingCPUs   float64 `json:"ceilingCpus"`
-		CeilingPids   int64   `json:"ceilingPids"`
+		CeilingMemory   int64   `json:"ceilingMemoryMb"`
+		CeilingCPUs     float64 `json:"ceilingCpus"`
+		CeilingPids     int64   `json:"ceilingPids"`
+		EffectiveMemory int64   `json:"effectiveMemoryMb"`
+		EffectiveCPUs   float64 `json:"effectiveCpus"`
+		EffectivePids   int64   `json:"effectivePidsLimit"`
 	}
 	res := r.send("GET", "/myrmidon/bots/"+r.key()+"/limits", nil, nil)
 	if err := json.Unmarshal(res.Body, &resp); err != nil {
@@ -156,6 +159,57 @@ func TestAllow_A21_GetBotLimits(t *testing.T) {
 	}
 	if resp.CeilingMemory < 0 || resp.CeilingCPUs < 0 || resp.CeilingPids < 0 {
 		t.Errorf("negative ceilings: %+v", resp)
+	}
+	if resp.EffectiveMemory < 0 || resp.EffectiveCPUs < 0 || resp.EffectivePids < 0 {
+		t.Errorf("negative effective limits: %+v", resp)
+	}
+}
+
+// A21 (OPE-12337): PlatformLimits lower than bot limits cap the effective limits.
+func TestAllow_A21_CeilingsBelowBotLimits(t *testing.T) {
+	r := newA20Rig(t, withConfig(func(c *config.Config) {
+		c.VolumeRoot = "/srv/test-bots"
+		c.PlatformLimits = &config.PlatformLimits{
+			MaxMemoryMB: 1024,
+			MaxCPUs:     2.0,
+			MaxPids:     500,
+		}
+	}))
+	r.seedMain("running")
+
+	res := r.send("GET", "/myrmidon/bots/"+r.key()+"/limits", nil, nil)
+	wantStatus(t, res, 200)
+
+	var resp struct {
+		OK              bool    `json:"ok"`
+		BotKey          string  `json:"botKey"`
+		Memory          int64   `json:"memoryMb"`
+		CPUs            float64 `json:"cpus"`
+		Pids            int64   `json:"pidsLimit"`
+		CeilingMemory   int64   `json:"ceilingMemoryMb"`
+		CeilingCPUs     float64 `json:"ceilingCpus"`
+		CeilingPids     int64   `json:"ceilingPids"`
+		EffectiveMemory int64   `json:"effectiveMemoryMb"`
+		EffectiveCPUs   float64 `json:"effectiveCpus"`
+		EffectivePids   int64   `json:"effectivePidsLimit"`
+	}
+	if err := json.Unmarshal(res.Body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.OK || resp.BotKey != r.key() {
+		t.Fatalf("unexpected bot: %+v", resp)
+	}
+	// Enrolled bot-level limits remain unchanged
+	if resp.Memory != 2048 || resp.CPUs != 4 || resp.Pids != 2048 {
+		t.Errorf("expected bot limits (2048, 4, 2048), got (%d, %g, %d)", resp.Memory, resp.CPUs, resp.Pids)
+	}
+	// Ceilings match platformLimits
+	if resp.CeilingMemory != 1024 || resp.CeilingCPUs != 2.0 || resp.CeilingPids != 500 {
+		t.Errorf("expected ceilings (1024, 2.0, 500), got (%d, %g, %d)", resp.CeilingMemory, resp.CeilingCPUs, resp.CeilingPids)
+	}
+	// Effective limits are min(bot, ceiling)
+	if resp.EffectiveMemory != 1024 || resp.EffectiveCPUs != 2.0 || resp.EffectivePids != 500 {
+		t.Errorf("expected effective limits (1024, 2.0, 500), got (%d, %g, %d)", resp.EffectiveMemory, resp.EffectiveCPUs, resp.EffectivePids)
 	}
 }
 
