@@ -11,7 +11,7 @@ import { createTaskPrSyncSweep } from "./sweep.js";
 import { readTaskPrSyncSettings } from "./settings.js";
 
 export { shouldSuppressRunForIssue } from "./guard.js";
-export { createTaskPrSyncSweep, reconcileClosedIssuePullRequests } from "./sweep.js";
+export { createTaskPrSyncSweep, reconcileClosedIssuePullRequests, backfillPullRequestWorkProducts } from "./sweep.js";
 export { decideTaskPrSync, effectivePullRequestState, settlePendingForProducts } from "./policy.js";
 export { readTaskPrSyncSettings } from "./settings.js";
 
