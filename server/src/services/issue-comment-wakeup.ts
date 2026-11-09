@@ -1,3 +1,5 @@
+import { isValidWakeCommentId } from "../modules/run-dispatch/domain/wake-context.js";
+
 /**
  * Whether a comment on an issue wakes the assignee.
  *
@@ -19,9 +21,13 @@ export function shouldWakeAssigneeForIssueComment(input: {
   };
   reopened: boolean;
   currentStatus: string | null | undefined;
+  commentId?: string | null;
   suppressesWake?: boolean;
 }) {
   if (input.suppressesWake) {
+    return false;
+  }
+  if (input.commentId !== undefined && input.commentId !== null && !isValidWakeCommentId(input.commentId)) {
     return false;
   }
   const sourceRunId = input.commentCreatedByRunId;

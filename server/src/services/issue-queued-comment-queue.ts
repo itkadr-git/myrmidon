@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IssueComment, IssueQueuedCommentQueue } from "@myrmidon/shared";
+import { isValidWakeCommentId } from "../modules/run-dispatch/domain/wake-context.js";
 
 const QUEUE_CONTEXT_KEY = "_paperclipWakeContext";
 const QUEUE_IDS_KEY = "wakeCommentIds";
@@ -14,7 +15,7 @@ function uniqueIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   return value.flatMap((candidate) => {
-    if (typeof candidate !== "string" || !candidate || seen.has(candidate)) return [];
+    if (!isValidWakeCommentId(candidate) || seen.has(candidate)) return [];
     seen.add(candidate);
     return [candidate];
   });
