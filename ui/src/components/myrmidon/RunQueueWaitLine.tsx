@@ -34,18 +34,23 @@ export function runQueuePositionFromMetadata(
   // effective limit, which ceiling binds it (board/gateway/memory) and how many
   // runs are already consuming it. Absent on older servers.
   const waitDetailRaw = custom.waitDetail;
+  const isObject =
+    waitDetailRaw && typeof waitDetailRaw === "object" && !Array.isArray(waitDetailRaw);
   const waitDetail =
-    waitDetailRaw && typeof waitDetailRaw === "object" && !Array.isArray(waitDetailRaw)
+    waitDetailRaw !== undefined && waitDetailRaw !== null
       ? {
-          limit: typeof (waitDetailRaw as Record<string, unknown>).limit === "number"
-            ? ((waitDetailRaw as Record<string, unknown>).limit as number)
-            : null,
-          limitSource: typeof (waitDetailRaw as Record<string, unknown>).limitSource === "string"
-            ? ((waitDetailRaw as Record<string, unknown>).limitSource as string)
-            : null,
-          running: typeof (waitDetailRaw as Record<string, unknown>).running === "number"
-            ? ((waitDetailRaw as Record<string, unknown>).running as number)
-            : null,
+          limit:
+            isObject && typeof (waitDetailRaw as Record<string, unknown>).limit === "number"
+              ? ((waitDetailRaw as Record<string, unknown>).limit as number)
+              : null,
+          limitSource:
+            isObject && typeof (waitDetailRaw as Record<string, unknown>).limitSource === "string"
+              ? ((waitDetailRaw as Record<string, unknown>).limitSource as string)
+              : null,
+          running:
+            isObject && typeof (waitDetailRaw as Record<string, unknown>).running === "number"
+              ? ((waitDetailRaw as Record<string, unknown>).running as number)
+              : null,
         }
       : null;
   if (

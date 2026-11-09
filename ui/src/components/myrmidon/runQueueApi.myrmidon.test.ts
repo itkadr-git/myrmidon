@@ -135,6 +135,7 @@ describe("describeRunQueuePosition — 'position N of M, waiting: <reason>'", ()
     "runQueue.waitReason.agent_concurrency": "the agent's own concurrency limit is full",
     "runQueue.waitReason.priority": "higher-priority runs are ahead",
     "runQueue.waitDetailLimit": "limit {{limit}}{{source}}",
+    "runQueue.waitDetailRunning": "{{running}} running",
     "runQueue.limitSource.gateway": " (gateway)",
     "runQueue.limitSource.memory": " (memory)",
     "runQueue.limitSource.board": " (board)",
