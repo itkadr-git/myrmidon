@@ -887,10 +887,10 @@ describe("stack lag escalation (STACK-WATCH-LIVE)", () => {
     };
     const task = buildStackLagTask(card, new Date("2026-11-08T12:00:00.000Z"));
     expect(task.status).toBe("backlog");
-    expect((task as Record<string, unknown>).assigneeAgentId).toBeUndefined();
-    expect((task as Record<string, unknown>).assigneeId).toBeUndefined();
-    expect((task as Record<string, unknown>).assigneeUserId).toBeUndefined();
-    expect((task as Record<string, unknown>).projectId).toBeUndefined();
+    expect((task as unknown as Record<string, unknown>).assigneeAgentId).toBeUndefined();
+    expect((task as unknown as Record<string, unknown>).assigneeId).toBeUndefined();
+    expect((task as unknown as Record<string, unknown>).assigneeUserId).toBeUndefined();
+    expect((task as unknown as Record<string, unknown>).projectId).toBeUndefined();
 
     let createdPayload: Record<string, unknown> | null = null;
     const doc = documentWithLocal({
