@@ -25,6 +25,15 @@ export const REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK = 1;
  */
 export interface ReviewWakesQuota {
   remaining: number;
+  /**
+   * Admission keys already admitted in this tick. One reviewer handoff is
+   * checked against the quota twice (the transactional receipt site and the
+   * post-update wake site in `routes/issues.ts` build the same
+   * `issue-review-admission:{issueId}:{agentId}` key); the key makes the
+   * second check of the SAME admission free instead of a second spend, so
+   * one handoff costs exactly one slot.
+   */
+  admittedKeys?: Set<string>;
 }
 
 /**
@@ -44,17 +53,25 @@ export type ReviewWakesQuotaDecision = "admit" | "quota_reached";
 export function admitReviewerUnderWakesQuota(
   quota: ReviewWakesQuota | null | undefined,
   critical: boolean,
+  admissionKey?: string,
 ): ReviewWakesQuotaDecision {
   if (critical) return "admit";
+  // The same admission (same issue + reviewer) is evaluated at both admission
+  // sites of one handoff; the second evaluation must observe the first one's
+  // decision instead of spending a second slot.
+  if (admissionKey && quota?.admittedKeys?.has(admissionKey)) return "admit";
   const remaining = Math.max(0, Math.floor(quota?.remaining ?? 0));
   if (remaining < 1) return "quota_reached";
   quota!.remaining = remaining - 1;
+  if (admissionKey) {
+    (quota!.admittedKeys ??= new Set()).add(admissionKey);
+  }
   return "admit";
 }
 
 /** A fresh budget for one tick: `REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK` wakes per company. */
 export function freshReviewWakesQuota(): ReviewWakesQuota {
-  return { remaining: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK };
+  return { remaining: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK, admittedKeys: new Set() };
 }
 
 /** Clears every company's budget for the new tick (missing entries start fresh on demand). */

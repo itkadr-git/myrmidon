@@ -16136,12 +16136,15 @@ export function issueRoutes(
                 // admitted immediately and never spend it. A wake the quota cannot
                 // admit is deferred without loss: the same "Review CI wait" monitor
                 // the green-CI gate arms wakes the reviewer on a later tick.
+                // The admission key makes the shared post-update quota re-check of
+                // THIS handoff free (one handoff spends exactly one slot).
                 if (
                   admitReviewer &&
                   !reviewerAdmissionDeferred &&
                   admitReviewerUnderWakesQuota(
                     reviewWakesQuotaForCompany(updated.companyId),
                     admissionCritical,
+                    stageWake.wakeup.idempotencyKey,
                   ) === "quota_reached"
                 ) {
                   admitReviewer = false;
@@ -17246,6 +17249,10 @@ export function issueRoutes(
       // the quota cannot admit is deferred without loss: the stage keeps its
       // pending state and the stranded-stage recovery plus the tick quota
       // budget bring the reviewer wake on a later tick, same as the CI deferral.
+      // The admission key (`issue-review-admission:{issueId}:{agentId}`, built
+      // by buildExecutionStageWakeup) is the one the transactional path of the
+      // SAME handoff already spent, so this re-check of the same admission is
+      // free and only a genuinely new admission pays a second slot.
       if (isReviewCiWakeCandidate && !deferExecutionReviewWakeForCi) {
         const admissionCritical = issue.priority === "critical";
         if (
@@ -17253,6 +17260,7 @@ export function issueRoutes(
           admitReviewerUnderWakesQuota(
             reviewWakesQuotaForCompany(issue.companyId),
             admissionCritical,
+            executionStageWakeup?.wakeup.idempotencyKey,
           ) === "quota_reached"
         ) {
           deferExecutionReviewWakeForCi = true;

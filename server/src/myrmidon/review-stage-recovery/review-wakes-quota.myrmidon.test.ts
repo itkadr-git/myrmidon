@@ -30,6 +30,19 @@ describe("admitReviewerUnderWakesQuota", () => {
     expect(quota.remaining).toBe(0);
   });
 
+  it("the same admission key is admitted once and re-checked free", () => {
+    const quota = freshReviewWakesQuota();
+    const key = "issue-review-admission:issue-1:reviewer-1";
+    expect(admitReviewerUnderWakesQuota(quota, false, key)).toBe("admit");
+    // The post-update wake site re-checks the SAME handoff: free, no second spend.
+    expect(admitReviewerUnderWakesQuota(quota, false, key)).toBe("admit");
+    expect(quota.remaining).toBe(0);
+    // A different admission (second handoff) still defers on the spent budget.
+    expect(admitReviewerUnderWakesQuota(quota, false, "issue-review-admission:issue-2:reviewer-2")).toBe(
+      "quota_reached",
+    );
+  });
+
   it("a critical issue goes outside the quota and never spends it", () => {
     const quota = freshReviewWakesQuota();
     expect(admitReviewerUnderWakesQuota(quota, true)).toBe("admit");
