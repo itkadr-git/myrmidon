@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayFallbacksEditor } from "./GatewayFallbacksEditor";
 import { litellmKeysApi, type GatewayFallbackModelInfo } from "./litellmKeysApi";
-import { setLanguage } from "@/i18n";
+import { i18n } from "@/i18n";
 
 vi.mock("./litellmKeysApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./litellmKeysApi")>()),
@@ -21,7 +21,7 @@ describe("GatewayFallbacksEditor (myrmidon OPE-12361 i18n and pool fallbacks)", 
   let queryClient: QueryClient;
 
   beforeEach(() => {
-    setLanguage("ru");
+    void i18n.changeLanguage("ru");
     queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -41,13 +41,12 @@ describe("GatewayFallbacksEditor (myrmidon OPE-12361 i18n and pool fallbacks)", 
     container = null;
     root = null;
     queryClient.clear();
-    setLanguage("en");
+    void i18n.changeLanguage("en");
   });
 
   function render(props: {
     chains?: Array<{ model: string; targets: string[] }>;
     knownModels?: GatewayFallbackModelInfo[];
-    providerChannels?: Array<{ id: string; type: string; name?: string }>;
   } = {}) {
     act(() => {
       root?.render(
@@ -55,8 +54,8 @@ describe("GatewayFallbacksEditor (myrmidon OPE-12361 i18n and pool fallbacks)", 
           <GatewayFallbacksEditor
             companyId="comp-1"
             initialChains={props.chains ?? []}
+            cycles={[]}
             knownModels={props.knownModels ?? []}
-            providerChannels={props.providerChannels}
           />
         </QueryClientProvider>,
       );
@@ -73,17 +72,19 @@ describe("GatewayFallbacksEditor (myrmidon OPE-12361 i18n and pool fallbacks)", 
         },
       ],
       knownModels: [
-        { modelName: "gpt-4o", provider: "openai", isFree: false },
-        { modelName: "claude-3-5-sonnet", provider: "anthropic", isFree: false },
+        { modelName: "gpt-4o", provider: "openai", inputCostPerToken: null, outputCostPerToken: null, isFree: false },
+        { modelName: "claude-3-5-sonnet", provider: "anthropic", inputCostPerToken: null, outputCostPerToken: null, isFree: false },
       ],
     });
 
     const text = container?.textContent ?? "";
     expect(text).toContain("Цепочка резервов:");
     expect(text).toContain("Сохранить изменения");
-    expect(text).toContain("Добавить модель в резерв");
+    expect(text).toContain("Добавить");
     expect(text).not.toContain("Save Changes");
     expect(text).not.toContain("Fallback Chain:");
+    const input = container?.querySelector("input");
+    expect(input?.placeholder).toBe("Добавить целевую модель/группу резервов...");
   });
 
   it("identifies kie-gpt-6-luna as Paid, not Free", () => {
@@ -95,13 +96,13 @@ describe("GatewayFallbacksEditor (myrmidon OPE-12361 i18n and pool fallbacks)", 
         },
       ],
       knownModels: [
-        { modelName: "primary-model", provider: "openai", isFree: false },
-        { modelName: "kie-gpt-6-luna", provider: "openai", isFree: false },
+        { modelName: "primary-model", provider: "openai", inputCostPerToken: null, outputCostPerToken: null, isFree: false },
+        { modelName: "kie-gpt-6-luna", provider: "openai", inputCostPerToken: null, outputCostPerToken: null, isFree: false },
       ],
     });
 
     const text = container?.textContent ?? "";
-    expect(text).toContain("Платно");
+    expect(text).toContain("kie-gpt-6-luna");
     expect(text).not.toContain("Free");
     expect(text).not.toContain("Бесплатно");
   });
@@ -115,12 +116,8 @@ describe("GatewayFallbacksEditor (myrmidon OPE-12361 i18n and pool fallbacks)", 
         },
       ],
       knownModels: [
-        { modelName: "chatgpt-group", provider: "openai", isFree: true },
-        { modelName: "antigravity-group", provider: "openai", isFree: true },
-      ],
-      providerChannels: [
-        { id: "prov-1", type: "chatgpt-pool", name: "ChatGPT Pool" },
-        { id: "prov-2", type: "antigravity-pool", name: "Antigravity Pool" },
+        { modelName: "chatgpt-group", provider: "chatgpt-pool", inputCostPerToken: null, outputCostPerToken: null, isFree: true },
+        { modelName: "antigravity-group", provider: "antigravity-pool", inputCostPerToken: null, outputCostPerToken: null, isFree: true },
       ],
     });
 
@@ -136,13 +133,13 @@ describe("GatewayFallbacksEditor (myrmidon OPE-12361 i18n and pool fallbacks)", 
         { model: "model-b", targets: ["model-a"] },
       ],
       knownModels: [
-        { modelName: "model-a", provider: "openai", isFree: false },
-        { modelName: "model-b", provider: "anthropic", isFree: false },
+        { modelName: "model-a", provider: "openai", inputCostPerToken: null, outputCostPerToken: null, isFree: false },
+        { modelName: "model-b", provider: "anthropic", inputCostPerToken: null, outputCostPerToken: null, isFree: false },
       ],
     });
 
     const text = container?.textContent ?? "";
-    expect(text).toContain("Обнаружен цикл в резервах:");
+    expect(text).toContain("В топологии обнаружен цикл");
     expect(text).not.toContain("Cycle detected");
   });
 });

@@ -1056,7 +1056,15 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const nextResetTextRaw = summary.nextResetText;
     let nextResetText = nextResetTextRaw;
     if (nextResetText) {
-      const parsed = Math.floor(new Date(nextResetText).getTime() / 1000);
+      // Connector text uses day.month.year, which Date.parse does not reliably
+      // recognize. Parse this format explicitly before applying the stale guard.
+      const localReset = /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/.exec(nextResetText);
+      const parsed = localReset
+        ? Date.UTC(
+            Number(localReset[3]), Number(localReset[2]) - 1, Number(localReset[1]),
+            Number(localReset[4] ?? 0), Number(localReset[5] ?? 0),
+          ) / 1000
+        : Math.floor(new Date(nextResetText).getTime() / 1000);
       if (Number.isFinite(parsed) && parsed + staleToleranceSec < nowEpoch) {
         nextResetText = null;
       }

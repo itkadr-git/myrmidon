@@ -12,12 +12,13 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setLanguage } from "@/i18n";
+import { i18n } from "@/i18n";
 import { ModelProvidersScreenView } from "./ModelProvidersScreen";
 import {
   modelProvidersApi,
   sortModels,
   type ModelProviderModelView,
+  type ModelProviderChannelsView,
   type ModelProvidersView,
 } from "./modelProvidersApi";
 
@@ -759,11 +760,11 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
 
   describe("myrmidon(OPE-12361): Russian locale strings and pool counters", () => {
     beforeEach(() => {
-      setLanguage("ru");
+      void i18n.changeLanguage("ru");
     });
 
     afterEach(() => {
-      setLanguage("en");
+      void i18n.changeLanguage("en");
     });
 
     it("renders table headers, pool status badges, counters, and no OAuth button on antigravity pool in Russian", async () => {
@@ -783,48 +784,39 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
         changeLog: [],
       };
 
-      const channelsData = {
+      const channelsData: ModelProviderChannelsView = {
         providerId: "prov-antigravity",
         providerType: "antigravity-pool",
         channels: [
           {
-            n: 1,
-            label: "Acc 1",
-            state: "active" as const,
-            stateRu: "Активен",
-            windows: { primary: { usedPct: 10 } },
+            n: 1, label: "Acc 1", state: "active", stateRu: "Активен",
+            limitedUntil: null, lastOk: null, windows: { primary: null, secondary: null },
+            isBanned: false, isExhausted: false,
           },
           {
-            n: 2,
-            label: "Acc 2",
-            state: "error" as const,
-            stateRu: "Ошибка",
-            error: "TOS violation",
-            windows: { primary: { usedPct: 0 } },
+            n: 2, label: "Acc 2", state: "error", stateRu: "Ошибка",
+            error: "TOS violation", limitedUntil: null, lastOk: null,
+            windows: { primary: null, secondary: null },
+            isBanned: false, isExhausted: false,
           },
         ],
         summary: {
-          total: 2,
-          live: 1,
-          exhausted: 0,
-          disabled: 0,
-          error: 1,
-          nextResetAt: null,
-          nextResetText: null,
+          total: 2, live: 1, exhausted: 0, banned: 0, disabled: 0,
+          error: 1, nextResetAt: null, nextResetText: null,
         },
         signals: [
           {
-            role: "editor",
-            level: "warn" as const,
-            reason: "low_live_ratio",
-            message: "Only 1 live account remaining",
+            dedupKey: "banned:2", accountNumber: 2, label: "Acc 2",
+            kind: "banned", severity: "high", title: "Account banned",
+            whyNow: "TOS violation", summaryExcerpt: "TOS violation",
+            resetsAt: null, activityAt: "2026-11-08T00:00:00Z",
           },
         ],
       };
 
+      vi.mocked(modelProvidersApi.channels).mockResolvedValue(channelsData);
       const { root: r } = render({
         view: antiView,
-        channelsData,
       });
       root = r;
       await flushReact();
@@ -833,13 +825,13 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
       // Russian headers and pool badges
       expect(text).toContain("Тариф");
       expect(text).toContain("Действия");
-      expect(text).toContain("1 активно / 2 всего");
+      expect(text).toContain("1 живых / 2 всего");
       expect(text).toContain("1 в ошибке");
       // Antigravity pool MUST NOT show Codex OAuth Login button
       expect(text).not.toContain("Codex OAuth Login");
       expect(text).not.toContain("Войти через Codex OAuth");
       // Signals should be rendered in Russian
-      expect(text).toContain("Мало активных учёток в пуле");
+      expect(text).toContain("заблокирована / токен истёк");
       // No raw unparsed keys
       expect(text).not.toContain("modelProviders.channels.plan");
       expect(text).not.toContain("modelProviders.channels.actions");
