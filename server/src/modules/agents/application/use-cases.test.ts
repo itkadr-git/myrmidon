@@ -133,4 +133,41 @@ describe("createAssertCompanyAgentQuota", () => {
 
     await expect(assertQuota("company-123")).rejects.toThrow(AgentQuotaExceededError);
   });
+
+  // myrmidon(1.7 TIER-QUOTA-CHECK OPE-12092, PR #2712 changes-requested): a
+  // database READ FAILURE must never be readable as "0 active agents" or "no
+  // tier row" — either would silently allow creation beyond the quota
+  // (fail-open). None of the three reader methods may return a permissive
+  // value from a catch block; failures propagate and the middleware forwards
+  // them to next(err) (500), which is louder and safer than a silent bypass.
+  it("propagates countActiveAgents read failures instead of allowing creation with a fake 0 count", async () => {
+    const reader = createFakeReader({ tierInfo: { tier: "pro", agentQuota: 10 } });
+    vi.mocked(reader.countActiveAgents).mockRejectedValue(new Error("count query failed"));
+    const assertQuota = createAssertCompanyAgentQuota({ reader });
+
+    await expect(assertQuota("company-123")).rejects.toThrow("count query failed");
+    // No quota decision was made on fabricated data.
+    await expect(assertQuota("company-123")).rejects.not.toBeInstanceOf(AgentQuotaExceededError);
+  });
+
+  it("propagates getCompanyTier read failures instead of silently applying the free-tier default", async () => {
+    const reader = createFakeReader({ tierInfo: { tier: "pro", agentQuota: 10 } });
+    vi.mocked(reader.getCompanyTier).mockRejectedValue(new Error("tier lookup failed"));
+    const assertQuota = createAssertCompanyAgentQuota({ reader });
+
+    await expect(assertQuota("company-123")).rejects.toThrow("tier lookup failed");
+    await expect(assertQuota("company-123")).rejects.not.toBeInstanceOf(AgentQuotaExceededError);
+  });
+
+  it("propagates isSchemaDeployed probe failures instead of treating them as 'schema not deployed'", async () => {
+    const reader = createFakeReader({ tierInfo: null, activeCount: 50 });
+    vi.mocked(reader.isSchemaDeployed).mockRejectedValue(new Error("probe failed"));
+    const assertQuota = createAssertCompanyAgentQuota({ reader });
+
+    await expect(assertQuota("company-123")).rejects.toThrow("probe failed");
+    // Dormancy (the not_deployed allow-all) must not be reachable through a
+    // failing probe: enforcement stays on when enforcement cannot read.
+    await expect(assertQuota("company-123")).rejects.not.toBeInstanceOf(AgentQuotaExceededError);
+    expect(reader.getCompanyTier).not.toHaveBeenCalled();
+  });
 });
