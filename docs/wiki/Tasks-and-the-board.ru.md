@@ -123,7 +123,9 @@ pull-запросы вливаются, задача движется дальш
 оператор может явно выбрать `warning` или `enforce` через
 `MYRMIDON_KNOWLEDGE_GATE_MODE`, а дату начала rollout переопределить через
 `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Несистемные изменения гейт не затрагивает.
-См. [запись об изменении гейта](../myrmidon/changes/knowledge-gate-system-changes.md)
+Настройки гейта знаний `MYRMIDON_KNOWLEDGE_GATE_MODE` и
+`MYRMIDON_KNOWLEDGE_GATE_START_DATE` описаны в
+[`docs/myrmidon/SETTINGS.md`](../myrmidon/SETTINGS.md)
 с описанием rollout и настроек.
 
 ## Удержание задачи после возврата в очередь

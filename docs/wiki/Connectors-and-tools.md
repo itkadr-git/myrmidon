@@ -74,8 +74,7 @@ to board admin keys or database storage.
 
 The UI2 shell also exposes installed plugin sidebar contributions and launchers
 in its desktop rail and mobile navigation. Plugin pages load their UI
-contribution on direct navigation. See the [UI2 shell guide](../myrmidon/guides/ui2-shell.md)
-and [1.6.6 change note](../myrmidon/changes/1-6-6-ui2-plugin-nav.md).
+contribution on direct navigation. See the [UI2 shell guide](../myrmidon/guides/ui2-shell.md).
 
 ## In detail
 

@@ -122,7 +122,9 @@ service updates cannot bypass it. During the first three days after
 `2026-10-31`, the default is warning-only; operators can explicitly select
 `warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
 rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
-are unaffected. See the [knowledge gate change record](../myrmidon/changes/knowledge-gate-system-changes.md)
+are unaffected. See the knowledge gate settings
+`MYRMIDON_KNOWLEDGE_GATE_MODE` and `MYRMIDON_KNOWLEDGE_GATE_START_DATE` in
+[`docs/myrmidon/SETTINGS.md`](../myrmidon/SETTINGS.md)
 for the rollout and settings reference.
 
 ## Recovery and requeue holds
