@@ -53,10 +53,6 @@ export interface ReviewReworkPrFact {
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | null;
   /** The PR `updated_at` the resolver reported (ISO); the native-decision timestamp. */
   updatedAt: string | null;
-  /** Unified diff of the pull request, when available. */
-  diff?: string | null;
-  /** Authoritative test / CI output, when available. */
-  ciOutput?: string | null;
 }
 
 export interface ReviewReworkTaskFacts {

@@ -801,13 +801,17 @@ describe("review rework sweep", () => {
     const task = reviewTask();
     task.status = "in_review";
     store.rows = [candidateRow(task)];
-    store.comments = [{ id: "c1", body: "Initial comment", createdAt: "2026-10-04T12:00:00Z" }];
+    store.comments = [{ id: "c1", body: "Initial comment", createdAt: new Date("2026-10-04T12:00:00Z") }];
 
     let judgedFacts: any = null;
     const fakeJudge = {
       judge: async (facts: any) => {
         judgedFacts = facts;
-        return { kind: "pass" as const, roundsUsed: 1 };
+        return {
+          kind: "pass" as const,
+          verdict: { score: 1.0, complete: true, missing: [] },
+          roundsUsed: 1,
+        };
       },
     };
 

@@ -32,10 +32,6 @@ export interface ReviewReworkPrSnapshot {
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | null;
   /** The PR's remote `updated_at` (ISO), when the provider reported it. */
   updatedAt: string | null;
-  /** Unified diff of the pull request, when resolved. */
-  diff?: string | null;
-  /** Authoritative test / CI output, when resolved. */
-  ciOutput?: string | null;
 }
 
 export type ReviewReworkPrResolver = (
@@ -48,8 +44,6 @@ const UNKNOWN: ReviewReworkPrSnapshot = {
   headSha: null,
   reviewDecision: null,
   updatedAt: null,
-  diff: null,
-  ciOutput: null,
 };
 
 function readRecord(value: unknown): Record<string, unknown> | null {
