@@ -201,7 +201,10 @@ import {
   type IssueGraphLivenessInput,
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
-import { visibleIssueCondition } from "./issue-visibility.js";
+import {
+  maskPrivateNeighbour,
+  visibleIssueCondition,
+} from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
@@ -1832,6 +1835,8 @@ export interface IssueFilters {
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
   excludePrivate?: boolean;
+  /** 1.7 PRIVATE-TASKS F4: stub private neighbours in relation/diagnostic rows. */
+  maskPrivate?: boolean;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -1969,6 +1974,8 @@ type IssueBlockerDiagnosticsIssueRow = {
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  /** Present on freshly selected rows for 1.7 PRIVATE-TASKS F4 masking. */
+  isPrivate?: boolean | null;
 };
 type IssueWakeDiagnosticsWakeRequestRow = {
   agentId: string;
@@ -3696,6 +3703,7 @@ async function terminalExplicitBlockersByRoot(
   companyId: string,
   roots: IssueRelationIssueSummary[],
   dbOrTx: DbReader,
+  opts?: { maskPrivate?: boolean },
 ): Promise<Map<string, IssueRelationIssueSummary[]>> {
   const rootIds = [...new Set(roots.map((root) => root.id))];
   const terminalByRoot = new Map<string, IssueRelationIssueSummary[]>();
@@ -3727,6 +3735,7 @@ async function terminalExplicitBlockersByRoot(
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           blockerMetadata: issues.blockerMetadata,
+          isPrivate: issues.isPrivate,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -3747,7 +3756,13 @@ async function terminalExplicitBlockersByRoot(
           edgesByIssueId.set(row.currentIssueId, existingEdges);
         }
         if (!nodesById.has(row.relatedId)) {
-          nodesById.set(row.relatedId, summarizeIssueRelationRow(row));
+          const node = summarizeIssueRelationRow(row);
+          nodesById.set(
+            row.relatedId,
+            opts?.maskPrivate
+              ? maskPrivateNeighbour({ ...node, isPrivate: row.isPrivate })
+              : node,
+          );
           nextFrontier.add(row.relatedId);
         }
       }
@@ -5174,6 +5189,7 @@ async function blockedByMapForIssues(
   dbOrTx: any,
   companyId: string,
   issueIds: string[],
+  opts?: { maskPrivate?: boolean },
 ): Promise<Map<string, IssueRelationIssueSummary[]>> {
   const map = new Map<string, IssueRelationIssueSummary[]>();
   const uniqueIssueIds = [...new Set(issueIds)];
@@ -5197,6 +5213,7 @@ async function blockedByMapForIssues(
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
+        isPrivate: issues.isPrivate,
       })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -5211,15 +5228,28 @@ async function blockedByMapForIssues(
     for (const row of rows) {
       const blockedBy = map.get(row.currentIssueId);
       if (!blockedBy) continue;
-      blockedBy.push({
-        id: row.relatedId,
-        identifier: row.identifier,
-        title: row.title,
-        status: row.status as IssueRelationIssueSummary["status"],
-        priority: row.priority as IssueRelationIssueSummary["priority"],
-        assigneeAgentId: row.assigneeAgentId,
-        assigneeUserId: row.assigneeUserId,
-      });
+      blockedBy.push(
+        opts?.maskPrivate
+          ? maskPrivateNeighbour({
+              id: row.relatedId,
+              identifier: row.identifier,
+              title: row.title,
+              status: row.status as IssueRelationIssueSummary["status"],
+              priority: row.priority as IssueRelationIssueSummary["priority"],
+              assigneeAgentId: row.assigneeAgentId,
+              assigneeUserId: row.assigneeUserId,
+              isPrivate: row.isPrivate,
+            })
+          : {
+              id: row.relatedId,
+              identifier: row.identifier,
+              title: row.title,
+              status: row.status as IssueRelationIssueSummary["status"],
+              priority: row.priority as IssueRelationIssueSummary["priority"],
+              assigneeAgentId: row.assigneeAgentId,
+              assigneeUserId: row.assigneeUserId,
+            },
+      );
     }
   }
 
@@ -6624,7 +6654,9 @@ async function listBlockedInboxIssues(
     contextUserId
       ? userReadStatsForIssues(dbOrTx, companyId, contextUserId, issueIds)
       : Promise.resolve([]),
-    blockedByMapForIssues(dbOrTx, companyId, issueIds),
+    blockedByMapForIssues(dbOrTx, companyId, issueIds, {
+      maskPrivate: filters?.maskPrivate,
+    }),
     listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
     listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
     listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns),
@@ -7476,6 +7508,7 @@ export function issueService(db: Db) {
     companyId: string,
     issueIds: string[],
     dbOrTx: DbReader = db,
+    opts?: { maskPrivate?: boolean },
   ): Promise<Map<string, IssueRelationSummaryMap>> {
     const uniqueIssueIds = [...new Set(issueIds)];
     const empty = new Map<string, IssueRelationSummaryMap>();
@@ -7496,6 +7529,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           blockerMetadata: issues.blockerMetadata,
+          isPrivate: issues.isPrivate,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -7517,6 +7551,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           blockerMetadata: issues.blockerMetadata,
+          isPrivate: issues.isPrivate,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -7530,20 +7565,31 @@ export function issueService(db: Db) {
     ]);
 
     for (const row of blockedByRows) {
+      const summary = summarizeIssueRelationRow(row);
       empty
         .get(row.currentIssueId)
-        ?.blockedBy.push(summarizeIssueRelationRow(row));
+        ?.blockedBy.push(
+          opts?.maskPrivate
+            ? maskPrivateNeighbour({ ...summary, isPrivate: row.isPrivate })
+            : summary,
+        );
     }
     for (const row of blockingRows) {
+      const summary = summarizeIssueRelationRow(row);
       empty
         .get(row.currentIssueId)
-        ?.blocks.push(summarizeIssueRelationRow(row));
+        ?.blocks.push(
+          opts?.maskPrivate
+            ? maskPrivateNeighbour({ ...summary, isPrivate: row.isPrivate })
+            : summary,
+        );
     }
 
     const terminalByRoot = await terminalExplicitBlockersByRoot(
       companyId,
       [...empty.values()].flatMap((relations) => relations.blockedBy),
       dbOrTx,
+      opts,
     );
 
     for (const relations of empty.values()) {
@@ -7574,6 +7620,7 @@ export function issueService(db: Db) {
       dbOrTx,
     );
     for (const summary of relationSummaries) {
+      // Keyed by id only — scheduledRetry carries no issue title/identifier.
       summary.scheduledRetry = scheduledRetryByIssueId.get(summary.id) ?? null;
     }
 
@@ -8338,7 +8385,9 @@ export function issueService(db: Db) {
           ? inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
         includeBlockedBy
-          ? blockedByMapForIssues(db, companyId, issueIds)
+          ? blockedByMapForIssues(db, companyId, issueIds, {
+              maskPrivate: filters?.maskPrivate,
+            })
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
         includeLiveDescendantSummary
           ? liveDescendantCountMapForIssues(db, companyId, issueIds)
@@ -8729,7 +8778,10 @@ export function issueService(db: Db) {
       return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
 
-    getRelationSummaries: async (issueId: string) => {
+    getRelationSummaries: async (
+      issueId: string,
+      opts?: { maskPrivate?: boolean },
+    ) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
@@ -8740,6 +8792,7 @@ export function issueService(db: Db) {
         issue.companyId,
         [issueId],
         db,
+        opts,
       );
       return relations.get(issueId) ?? { blockedBy: [], blocks: [] };
     },
@@ -8747,6 +8800,7 @@ export function issueService(db: Db) {
     getBlockerDiagnostics: async (
       issueId: string,
       maxBlockers = ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+      opts?: { maskPrivate?: boolean },
     ) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
@@ -8772,6 +8826,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           blockerMetadata: issues.blockerMetadata,
+          isPrivate: issues.isPrivate,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -8793,10 +8848,17 @@ export function issueService(db: Db) {
       );
 
       return {
-        blockers: blockerRows.slice(
-          0,
-          cappedMax,
-        ) as IssueBlockerDiagnosticsIssueRow[],
+        blockers: blockerRows
+          .slice(0, cappedMax)
+          .map((row) =>
+            opts?.maskPrivate
+              ? maskPrivateNeighbour(
+                  row as IssueBlockerDiagnosticsIssueRow & {
+                    isPrivate: boolean;
+                  },
+                )
+              : (row as IssueBlockerDiagnosticsIssueRow),
+          ),
         readiness:
           readiness.get(issue.id) ?? createIssueDependencyReadiness(issue.id),
         truncated: blockerRows.length > cappedMax,
@@ -8921,6 +8983,8 @@ export function issueService(db: Db) {
         maxWakeRequestsPerNode?: number;
         maxActivityRecordsPerNode?: number;
         lookbackDays?: number;
+        /** 1.7 PRIVATE-TASKS F4: stub private neighbours for agent reads. */
+        maskPrivate?: boolean;
       },
     ) => {
       const issue = await db
@@ -8995,6 +9059,7 @@ export function issueService(db: Db) {
             created_at,
             updated_at,
             0 AS depth,
+            is_private,
             ARRAY[id] AS path
           FROM issues
           WHERE company_id = ${issue.companyId}
@@ -9015,6 +9080,7 @@ export function issueService(db: Db) {
             child.assignee_user_id,
             child.created_at,
             child.updated_at,
+            child.is_private,
             issue_tree.depth + 1,
             issue_tree.path || child.id
           FROM issues child
@@ -9038,7 +9104,8 @@ export function issueService(db: Db) {
           assignee_user_id AS "assigneeUserId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
-          depth::int AS depth
+          depth::int AS depth,
+          is_private AS "isPrivate"
         FROM issue_tree
         ORDER BY depth ASC, created_at ASC, id ASC
         LIMIT ${maxNodes + 1}
@@ -9050,9 +9117,15 @@ export function issueService(db: Db) {
       const rowsWithinDepth = subtreeRows.filter(
         (row) => row.depth <= maxDepth,
       );
-      const nodes = rowsWithinDepth.slice(
-        0,
-        maxNodes,
+      const nodes = (
+        opts?.maskPrivate
+          ? rowsWithinDepth
+              .slice(0, maxNodes)
+              .map((row) => maskPrivateNeighbour(row))
+          : (rowsWithinDepth.slice(
+              0,
+              maxNodes,
+            ) as IssueSubtreeDiagnosticsIssueRow[])
       ) as IssueSubtreeDiagnosticsIssueRow[];
       const truncatedNodes = rowsWithinDepth.length > maxNodes;
       const truncatedDepth =
@@ -9098,6 +9171,7 @@ export function issueService(db: Db) {
               blocker.priority,
               blocker.assignee_agent_id AS "assigneeAgentId",
               blocker.assignee_user_id AS "assigneeUserId",
+              blocker.is_private AS "isPrivate",
               relation.related_issue_id AS "blockedIssueId",
               relation.created_at AS "relationCreatedAt",
               row_number() OVER (
@@ -9126,7 +9200,9 @@ export function issueService(db: Db) {
             continue;
           }
           const rows = blockersByIssueId.get(normalized.blockedIssueId) ?? [];
-          rows.push(normalized);
+          rows.push(
+            opts?.maskPrivate ? maskPrivateNeighbour(normalized) : normalized,
+          );
           blockersByIssueId.set(normalized.blockedIssueId, rows);
         }
 
@@ -13921,7 +13997,10 @@ export function issueService(db: Db) {
       return [...mentionedIds].filter((projectId) => valid.has(projectId));
     },
 
-    getAncestors: async (issueId: string) => {
+    getAncestors: async (
+      issueId: string,
+      opts?: { maskPrivate?: boolean },
+    ) => {
       const raw: Array<{
         id: string;
         identifier: string | null;
@@ -13954,22 +14033,38 @@ export function issueService(db: Db) {
             projectId: issues.projectId,
             goalId: issues.goalId,
             parentId: issues.parentId,
+            isPrivate: issues.isPrivate,
           })
           .from(issues)
           .where(eq(issues.id, currentId))
           .then((r) => r[0] ?? null);
         if (!parent) break;
-        raw.push({
-          id: parent.id,
-          identifier: parent.identifier ?? null,
-          title: parent.title,
-          description: parent.description ?? null,
-          status: parent.status,
-          priority: parent.priority,
-          assigneeAgentId: parent.assigneeAgentId ?? null,
-          projectId: parent.projectId ?? null,
-          goalId: parent.goalId ?? null,
-        });
+        raw.push(
+          opts?.maskPrivate
+            ? maskPrivateNeighbour({
+                id: parent.id,
+                identifier: parent.identifier ?? null,
+                title: parent.title,
+                description: parent.description ?? null,
+                status: parent.status,
+                priority: parent.priority,
+                assigneeAgentId: parent.assigneeAgentId ?? null,
+                projectId: parent.projectId ?? null,
+                goalId: parent.goalId ?? null,
+                isPrivate: parent.isPrivate,
+              })
+            : {
+                id: parent.id,
+                identifier: parent.identifier ?? null,
+                title: parent.title,
+                description: parent.description ?? null,
+                status: parent.status,
+                priority: parent.priority,
+                assigneeAgentId: parent.assigneeAgentId ?? null,
+                projectId: parent.projectId ?? null,
+                goalId: parent.goalId ?? null,
+              },
+        );
         currentId = parent.parentId ?? null;
       }
 

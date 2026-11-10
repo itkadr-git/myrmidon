@@ -8862,6 +8862,7 @@ export function issueRoutes(
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       excludePrivate: req.actor.type === "agent",
+      maskPrivate: req.actor.type === "agent",
       updatedSince: rawUpdatedSince,
     };
     const requestKey = issueListRequestKey({
@@ -9095,6 +9096,7 @@ export function issueRoutes(
       hasPlanDocument,
       q: req.query.q as string | undefined,
       excludePrivate: req.actor.type === "agent",
+      maskPrivate: req.actor.type === "agent",
     } as const;
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
@@ -9410,10 +9412,12 @@ export function issueRoutes(
       activeRecoveryAction,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
+      svc.getAncestors(issue.id, { maskPrivate: req.actor.type === "agent" }),
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
-      svc.getRelationSummaries(issue.id),
+      svc.getRelationSummaries(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       svc
         .listBlockerAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null),
@@ -9606,7 +9610,9 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
-    const diagnostic = await svc.getBlockerDiagnostics(issue.id);
+    const diagnostic = await svc.getBlockerDiagnostics(issue.id, undefined, {
+      maskPrivate: req.actor.type === "agent",
+    });
     const visibleBlockers = await filterIssuesForActor(
       req,
       diagnostic.blockers,
@@ -9649,7 +9655,9 @@ export function issueRoutes(
     const [wakeDiagnostic, blockerDiagnostic, includeInternalIds] =
       await Promise.all([
         svc.getWakeDiagnostics(issue.id),
-        svc.getBlockerDiagnostics(issue.id),
+        svc.getBlockerDiagnostics(issue.id, undefined, {
+          maskPrivate: req.actor.type === "agent",
+        }),
         actorCanReadCompanyScope(req, issue.companyId),
       ]);
     const visibleBlockers = await filterIssuesForActor(
@@ -9701,7 +9709,9 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const [diagnostic, includeInternalIds] = await Promise.all([
-      svc.getSubtreeDiagnostics(issue.id),
+      svc.getSubtreeDiagnostics(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       actorCanReadCompanyScope(req, issue.companyId),
     ]);
     const allBlockers = [...diagnostic.blockersByIssueId.values()].flat();
@@ -9776,10 +9786,12 @@ export function issueRoutes(
       externalChannelBinding,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
+      svc.getAncestors(issue.id, { maskPrivate: req.actor.type === "agent" }),
       svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
       documentsSvc.getIssueDocumentPayload(issue),
-      svc.getRelationSummaries(issue.id),
+      svc.getRelationSummaries(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       svc
         .listBlockerAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null),
