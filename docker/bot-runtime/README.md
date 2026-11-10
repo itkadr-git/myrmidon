@@ -202,9 +202,11 @@ directories are exactly its single `/bot` mount (BOT-DISK-D), so:
   points of one filesystem — the shared store and the bot volumes share the host partition.
   When the shared store mount is absent the entrypoint falls back to `/workspace/.pnpm-store`
   inside the /bot mount (BOT-DISK-D), the legacy per-bot store. pnpm 10 still copies silently
-  when the kernel refuses the clone, so `pnpm-reflink-check.sh` proves the reflink from
-  `/data/hermes`, `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the
-  check at every start (`/data/hermes/.myrmidon/reflink-check.json`, shown on the board).
+  when the kernel refuses the clone, so at build time `pnpm-reflink-check.sh` proves the
+  offline install from the shared store works in every root (`install-failed` = failure),
+  while the real reflink proof — comparing physical extents via filefrag — runs in
+  `entrypoint.sh` at every start
+  (`/data/hermes/.myrmidon/reflink-check.json`, shown on the board).
   `/cache/pnpm` is a download cache only, never the store; the paths and the method are the
   `pnpmStoreDir` and `pnpmImportMethod` settings, see
   [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);

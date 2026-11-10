@@ -201,11 +201,13 @@ Docker: dockergate намеренно отказывает в произволь
   `package-import-method=clone` (cp --reflink, FICLONE), а рефлинки работают между
   точками монтирования одной файловой системы — общий склад и тома бота разделяют
   раздел хоста. Когда общий склад не смонтирован, entrypoint откатывается на
-  `/workspace/.pnpm-store` внутри тома /bot (BOT-DISK-D), старый склад бота. pnpm 10
-  всё ещё молча копирует, когда ядро отказывает в clone, поэтому
-  `pnpm-reflink-check.sh` проверяет рефлинк из `/data/hermes`, `/workspace` и
-  `/scratch` при сборке, а `entrypoint.sh` повторяет проверку на каждом старте
-  (`/data/hermes/.myrmidon/reflink-check.json`, показывается на доске). Склад можно
+ `/workspace/.pnpm-store` внутри тома /bot (BOT-DISK-D), старый склад бота. pnpm 10
+ всё ещё молча копирует, когда ядро отказывает в clone, поэтому
+ `pnpm-reflink-check.sh` при сборке проверяет, что offline-установка из общего
+ склада проходит в каждом корне (`install-failed` = провал), а реальный reflink
+ доказывает сравнение физических extents через filefrag в
+ `entrypoint.sh` на каждом старте
+ (`/data/hermes/.myrmidon/reflink-check.json`, показывается на доске). Склад можно
   вынести в общий кэш пакетов экземпляра (`pnpmStore: "shared"`), см.
   [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
 - `RUSTUP_HOME`/`CARGO_HOME` остаются запечатанными под `/opt`, а `CARGO_TARGET_DIR` направляет

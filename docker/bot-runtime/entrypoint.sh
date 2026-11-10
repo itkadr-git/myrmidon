@@ -283,17 +283,28 @@ physical_path() {
 # read-only rootfs and mkdir fails — then the store falls back to the
 # per-bot /workspace/.pnpm-store inside the /bot mount (BOT-DISK-D), which is
 # always writable. The resolution order is: the profile's .env, then the
-# image ENV, then the fallback chain.
+# image ENV, then the fallback chain. A store from .env or ENV that is not
+# writable (the shared mount is absent, the path is on a read-only rootfs)
+# also falls back, so the ENV default never leaves pnpm without a usable
+# store. The two fallback candidates are MYRMIDON_PNPM_SHARED_STORE and
+# MYRMIDON_PNPM_FALLBACK_STORE, both overridable for tests and stands.
 resolve_pnpm_store() {
-  local store
+  local store shared_store fallback_store
+  shared_store="${MYRMIDON_PNPM_SHARED_STORE:-/cache/pnpm-store}"
+  fallback_store="${MYRMIDON_PNPM_FALLBACK_STORE:-/workspace/.pnpm-store}"
   store="$(dotenv_value npm_config_store_dir)"
   store="${store:-${npm_config_store_dir:-}}"
-  if [ -z "${store}" ]; then
-    if mkdir -p /cache/pnpm-store 2>/dev/null && [ -w /cache/pnpm-store ]; then
-      store="/cache/pnpm-store"
-    else
-      store="/workspace/.pnpm-store"
+  if [ -n "${store}" ]; then
+    if mkdir -p "${store}" 2>/dev/null && [ -w "${store}" ]; then
+      printf '%s' "${store}"
+      return
     fi
+    log "WARN: pnpm store ${store} is not writable, falling back to ${fallback_store}"
+  fi
+  if mkdir -p "${shared_store}" 2>/dev/null && [ -w "${shared_store}" ]; then
+    store="${shared_store}"
+  else
+    store="${fallback_store}"
   fi
   printf '%s' "${store}"
 }
@@ -900,6 +911,16 @@ run_startup_diagnostics() {
 # Session retention runs after the gateway is healthy. Do not put database
 # maintenance on the startup critical path: large state.db files can take
 # minutes to rewrite and can exceed the bot memory limit.
+
+# --- pnpm store resolution (BOT-DISK-H8a / BOT-DISK-D) ------------------------
+# Resolve the store early so the gateway and every child process inherit the
+# final value. The image ENV defaults to /cache/pnpm-store (the shared mount);
+# when that mount is absent or read-only the resolver falls back to the
+# per-bot /workspace/.pnpm-store inside the /bot mount. Exporting it here
+# overrides the image ENV for the whole session, so pnpm never tries to write
+# to a missing shared store.
+export npm_config_store_dir="$(resolve_pnpm_store)"
+log "pnpm store: ${npm_config_store_dir}"
 
 # --replace: a previous instance's lock (from a hard container restart) does
 # not block this one — the fleet manager, not hermes, decides whether two
