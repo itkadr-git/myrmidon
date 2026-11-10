@@ -9,6 +9,10 @@
 // with only the changed key, a server 400 shows the error in the row and
 // keeps the previous value, json rows stay read-only, and a non-admin never
 // sees inputs or buttons.
+// myrmidon(OPE-12677): SETTINGS-HONESTY — the four keys without a code
+// consumer (`debug_mode`, `max_concurrent_agents`, `default_timeout_seconds`,
+// `autonomy_level`) are removed from FINE_SETTINGS_KEYS and must never render
+// as rows or become editable, even though the API still resolves them.
 
 // @vitest-environment jsdom
 
@@ -41,15 +45,25 @@ const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
 
-vi.mock("@/api/client", () => {
-  class ApiError extends Error {
-    status: number;
-    constructor(message: string, status: number) {
-      super(message);
-      this.status = status;
-    }
-  }
-  return { ApiError };
+// myrmidon(OPE-12677): the mock keeps the real module (spread of actual) and
+// only replaces the `api` object: the shell Ui2I18nProvider now loads the
+// server language preference through `api.get` on mount (ui2 wave A part 2),
+// so a partial mock without the `api` export crashes the provider and blanks
+// the whole tree (CI on 8b0985bf19: "No \"api\" export is defined on the
+// \"@/api/client\" mock"). The stub resolves null, so the provider stays
+// localStorage-only and no request is made.
+vi.mock("@/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client")>();
+  return {
+    ...actual,
+    api: {
+      get: vi.fn().mockResolvedValue(null),
+      put: vi.fn().mockResolvedValue(null),
+      post: vi.fn().mockResolvedValue(null),
+      patch: vi.fn().mockResolvedValue(null),
+      delete: vi.fn().mockResolvedValue(null),
+    },
+  };
 });
 
 vi.mock("@/components/myrmidon/licensingApi", async (importOriginal) => {
@@ -70,7 +84,12 @@ function setAdmin(admin: boolean | null) {
   mockAccess.mockReturnValue(admin);
 }
 
-/** The resolved view the server answers with for the first wave. */
+/** The resolved view the server answers with for the first wave.
+ *  myrmidon(OPE-12677): the server still resolves every registered key (the
+ *  registry is untouched) — the screen just no longer shows the four keys
+ *  without a consumer (`debug_mode`, `max_concurrent_agents`,
+ *  `default_timeout_seconds`, `autonomy_level`), which must not appear as
+ *  editable rows even though the API answers with them. */
 function apiView() {
   return {
     settings: {
@@ -93,7 +112,7 @@ function apiView() {
       default_timeout_seconds: "env",
       autonomy_level: "default",
       bot_egress_mode: "default",
-      tool_breaker_failures: "default",
+      tool_breaker_failures: "ui",
       tool_breaker_cooldown_ms: "default",
       tool_breaker_window_ms: "default",
       tool_timeout_max_ms: "env",
@@ -103,6 +122,15 @@ function apiView() {
     },
   };
 }
+
+/** The four keys without a code consumer (OPE-12677): never rendered, never
+ *  editable on the Fine settings screen. */
+const UNWIRED_KEYS = [
+  "debug_mode",
+  "max_concurrent_agents",
+  "default_timeout_seconds",
+  "autonomy_level",
+] as const;
 
 function apiDefinitions() {
   const valueTypes: Record<string, string> = {
@@ -191,14 +219,36 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
     }
   });
 
+  it("never renders the four keys without a code consumer (OPE-12677)", async () => {
+    // The API still resolves them — the screen must not show them.
+    setAdmin(true);
+    await renderBlock();
+
+    expect(FINE_SETTINGS_KEYS.some((key) => (UNWIRED_KEYS as readonly string[]).includes(key))).toBe(
+      false,
+    );
+    const rows = container.querySelectorAll(".ui2-fine-row");
+    expect(rows).toHaveLength(FINE_SETTINGS_KEYS.length);
+    for (const key of UNWIRED_KEYS) {
+      const row = container.querySelector(`[data-testid="ui2-fine-row-${key}"]`);
+      expect(row, `unwired key ${key} must not render as a row`).toBeNull();
+      expect(
+        container.querySelector(`input[aria-label="${key}"]`),
+        `unwired key ${key} must not be editable`,
+      ).toBeNull();
+    }
+    // The table shows only the eight wired keys.
+    expect(container.textContent).not.toContain("autonomy_level");
+  });
+
   it("shows where each value came from (saved / environment / default)", async () => {
     await renderBlock();
 
-    const savedRow = container.querySelector('[data-testid="ui2-fine-row-max_concurrent_agents"]');
+    const savedRow = container.querySelector('[data-testid="ui2-fine-row-tool_breaker_failures"]');
     expect(savedRow?.textContent).toContain("Saved");
-    const envRow = container.querySelector('[data-testid="ui2-fine-row-default_timeout_seconds"]');
+    const envRow = container.querySelector('[data-testid="ui2-fine-row-tool_timeout_max_ms"]');
     expect(envRow?.textContent).toContain("Environment");
-    const defaultRow = container.querySelector('[data-testid="ui2-fine-row-debug_mode"]');
+    const defaultRow = container.querySelector('[data-testid="ui2-fine-row-bot_egress_mode"]');
     expect(defaultRow?.textContent).toContain("Default");
   });
 
@@ -217,16 +267,16 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
     await renderBlock();
 
     const checkbox = container.querySelector(
-      '[data-testid="ui2-fine-row-debug_mode"] input[type="checkbox"]',
+      '[data-testid="ui2-fine-row-input_limit_precheck"] input[type="checkbox"]',
     ) as HTMLInputElement | null;
     expect(checkbox).not.toBeNull();
-    expect(checkbox!.checked).toBe(false);
+    expect(checkbox!.checked).toBe(true);
 
     checkbox!.click();
     await flushReact();
 
     const button = container.querySelector(
-      '[data-testid="ui2-fine-row-debug_mode"] button',
+      '[data-testid="ui2-fine-row-input_limit_precheck"] button',
     ) as HTMLButtonElement | null;
     expect(button).not.toBeNull();
     expect(button!.textContent).toBe("Save");
@@ -234,8 +284,8 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
     await flushReact();
 
     expect(mockUpdate).toHaveBeenCalledTimes(1);
-    expect(mockUpdate).toHaveBeenCalledWith({ debug_mode: true });
-    expect(container.querySelector('[data-testid="ui2-fine-row-debug_mode"] button')).toBeNull();
+    expect(mockUpdate).toHaveBeenCalledWith({ input_limit_precheck: false });
+    expect(container.querySelector('[data-testid="ui2-fine-row-input_limit_precheck"] button')).toBeNull();
   });
 
   it("non-admin sees no inputs and no buttons", async () => {
@@ -243,8 +293,8 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
     await renderBlock();
 
     expect(container.querySelector("input, textarea, select, button")).toBeNull();
-    const row = container.querySelector('[data-testid="ui2-fine-row-debug_mode"]');
-    expect(row?.textContent).toContain("false");
+    const row = container.querySelector('[data-testid="ui2-fine-row-input_limit_precheck"]');
+    expect(row?.textContent).toContain("true");
   });
 
   it("unknown admin state (null) renders skeleton and no table content", async () => {
@@ -257,14 +307,14 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
 
   it("a 400 answer shows the error in the row and keeps the previous value", async () => {
     setAdmin(true);
-    mockUpdate.mockRejectedValue(new Error("Invalid value for setting 'max_concurrent_agents'"));
+    mockUpdate.mockRejectedValue(new Error("Invalid value for setting 'tool_breaker_failures'"));
     await renderBlock();
 
     const numberInput = container.querySelector(
-      '[data-testid="ui2-fine-row-max_concurrent_agents"] input[type="number"]',
+      '[data-testid="ui2-fine-row-tool_breaker_failures"] input[type="number"]',
     ) as HTMLInputElement | null;
     expect(numberInput).not.toBeNull();
-    expect(numberInput!.value).toBe("5");
+    expect(numberInput!.value).toBe("3");
 
     const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
     setValue.call(numberInput!, "0");
@@ -272,23 +322,23 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
     await flushReact();
 
     const button = container.querySelector(
-      '[data-testid="ui2-fine-row-max_concurrent_agents"] button',
+      '[data-testid="ui2-fine-row-tool_breaker_failures"] button',
     ) as HTMLButtonElement | null;
     expect(button).not.toBeNull();
     button!.click();
     await flushReact();
 
     expect(mockUpdate).toHaveBeenCalledTimes(1);
-    expect(mockUpdate).toHaveBeenCalledWith({ max_concurrent_agents: 0 });
+    expect(mockUpdate).toHaveBeenCalledWith({ tool_breaker_failures: 0 });
 
-    const row = container.querySelector('[data-testid="ui2-fine-row-max_concurrent_agents"]');
+    const row = container.querySelector('[data-testid="ui2-fine-row-tool_breaker_failures"]');
     expect(row?.querySelector('[role="alert"]')?.textContent).toContain(
-      "Invalid value for setting 'max_concurrent_agents'",
+      "Invalid value for setting 'tool_breaker_failures'",
     );
-    // The previous value is kept on screen (5).
+    // The previous value is kept on screen (3).
     const rowInput = row?.querySelector('input[type="number"]') as HTMLInputElement | null;
-    expect(rowInput?.value).toBe("5");
-    const sources = container.querySelector('[data-testid="ui2-fine-row-max_concurrent_agents"] .ui2-fine-src');
+    expect(rowInput?.value).toBe("3");
+    const sources = container.querySelector('[data-testid="ui2-fine-row-tool_breaker_failures"] .ui2-fine-src');
     expect(sources?.textContent).toContain("Saved");
   });
 
@@ -305,7 +355,7 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
     expect(row?.textContent).toContain("off");
     // Other rows stay editable.
     expect(
-      container.querySelector('[data-testid="ui2-fine-row-debug_mode"] input[type="checkbox"]'),
+      container.querySelector('[data-testid="ui2-fine-row-input_limit_precheck"] input[type="checkbox"]'),
     ).not.toBeNull();
   });
 
@@ -327,16 +377,16 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
 
   it("buildFineSettingsRows skips keys the API did not resolve", () => {
     const rows = buildFineSettingsRows({
-      settings: { debug_mode: true },
-      sources: { debug_mode: "ui" },
-      definitions: [{ key: "debug_mode", envName: "MYRMIDON_DEBUG_MODE" }],
+      settings: { input_limit_precheck: true },
+      sources: { input_limit_precheck: "ui" },
+      definitions: [{ key: "input_limit_precheck", envName: "MYRMIDON_INPUT_LIMIT_PRECHECK" }],
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      key: "debug_mode",
+      key: "input_limit_precheck",
       value: "true",
       source: "ui",
-      envName: "MYRMIDON_DEBUG_MODE",
+      envName: "MYRMIDON_INPUT_LIMIT_PRECHECK",
     });
   });
 
