@@ -895,6 +895,9 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
         const res = await heartbeat();
         if (!res.ok) throw new Error(`round ${round}: warmup heartbeat ${i} failed: ${res.error}`);
       }
+      // Count from before the kill: the restart fork (backoff ~1-2 s) lands
+      // inside the 5 s load window, so a post-load count would miss it.
+      const forkedBeforeRound = forkedPids.length;
       const loadStartedAtRound = Date.now();
       const loadPromiseRound = runHeartbeatLoad({ rps: 10, durationMs: 5_000 });
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -908,7 +911,6 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
       measurements.push(`round ${round}: killed at t+${killedAtRound}ms, losses [${offsetsRel.join(", ")}] of ${loadRound.total}`);
       process.stderr.write(`[OPE-12692] round ${round}/10: killed at t+${killedAtRound}ms, losses [${offsetsRel.join(", ")}] of ${loadRound.total} requests\n`);
       // Wait for the restart so the next round has two ready slots again.
-      const forkedBeforeRound = forkedPids.length;
       await waitFor(
         () => {
           const slots = supervisor!.children();
@@ -933,7 +935,7 @@ describe("classifyKillWindowFailures (kill -9 loss window, OPE-12692)", () => {
     });
     expect(result.inTolerance).toBe(true);
     expect(result.violations).toEqual([]);
-    expect(result.expectedLosses).toBe(6);
+    expect(result.expectedLosses).toBe(7);
   });
 
   it("rejects a failure that started after the window's end — the post-window port belongs to the survivor", () => {
