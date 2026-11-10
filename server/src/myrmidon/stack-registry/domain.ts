@@ -64,7 +64,7 @@ export interface StackSeedComponent {
    * For http-version probes: the HTTP endpoint to GET. Read from the
    * environment / bound secret at probe time (the address never ships in the
    * seed, only the env var name / secret ref name). The endpoint answers a
-   * JSON body with a `version` field (hindsight /version, LiteLLM /version,
+   * JSON body with a `version` or `api_version` field (hindsight /version, LiteLLM /version,
    * Langfuse /api/public/health among them).
    */
   httpEndpointEnv?: string;
