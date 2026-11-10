@@ -14,7 +14,10 @@ import type { DatastoreCareRetentionPatch } from "@myrmidon/shared";
 import type { DatastoreCareRetentionLastRun } from "@myrmidon/shared";
 import { api } from "./client";
 
-/** The GET answer: resolved retention values with sources + the last pass. */
+/** The GET answer: resolved retention values with sources + the last pass.
+ * The source of `externalMachineBackup` is derived client-side by the panel
+ * (see Ui2DatastoreRetentionSettings) — the endpoint carries no env override
+ * for this knob, only the resolved value. */
 export interface DatastoreCareRetentionView {
   retention: {
     heartbeatRunContextDays: number;

@@ -23,6 +23,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DatastoreCareRetentionPatch } from "@myrmidon/shared";
 import { accessApi } from "@/api/access";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatBytes } from "@/lib/issue-output";
 import { formatDateTime } from "@/lib/utils";
@@ -67,6 +68,21 @@ export function Ui2DatastoreRetentionSettings() {
     staleTime: 30_000,
   });
 
+  // myrmidon(OPE-12613 review): the source of the "machine is copied
+  // outside" mode. The retention endpoint does not echo a source for this
+  // knob and it has no environment override, so the panel derives it from
+  // the stored settings block (GET /instance/settings/general — readable by
+  // any board member): stored true/false → "settings", absent → the
+  // built-in default (false).
+  const generalQuery = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    staleTime: 30_000,
+  });
+  const externalMachineBackupSource: RetentionSource = generalQuery.data?.datastoreCare
+    ?.retention?.externalMachineBackup === undefined
+    ? "default"
+    : "settings";
   // The same gate the server applies (assertInstanceAdmin): an instance admin
   // or the local implicit actor may PATCH; everyone else gets read-only rows.
   const boardAccessQuery = useQuery({
@@ -124,7 +140,11 @@ export function Ui2DatastoreRetentionSettings() {
     mutationFn: (patch: DatastoreCareRetentionPatch) => datastoreCareApi.update(patch),
     onSuccess: () => {
       clearDraft();
+      // The PATCH may have created or cleared the stored retention block,
+      // which is also what the derived backup-gate source reads — refetch
+      // both views so the source pills follow the save immediately.
       void queryClient.invalidateQueries({ queryKey: datastoreCareQueryKey });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {
       setSaveError(error instanceof Error ? error.message : String(error));
@@ -247,6 +267,7 @@ export function Ui2DatastoreRetentionSettings() {
               disabled={!canEdit}
               onChange={(event) => setExternalDraft(event.target.checked)}
             />
+            {sourcePill(externalMachineBackupSource)}
           </span>
         </label>
       </div>

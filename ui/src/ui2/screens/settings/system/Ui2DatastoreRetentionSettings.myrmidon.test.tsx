@@ -24,6 +24,10 @@ const mockDatastoreCareApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+}));
+
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
@@ -33,6 +37,10 @@ vi.mock("@/api/myrmidonDatastoreCare", () => ({
   datastoreCareQueryKey: ["myrmidon", "datastore-care"] as const,
 }));
 
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
 }));
@@ -40,6 +48,7 @@ vi.mock("@/api/access", () => ({
 const mockGet = mockDatastoreCareApi.get;
 const mockUpdate = mockDatastoreCareApi.update;
 const mockGetAccess = mockAccessApi.getCurrentBoardAccess;
+const mockGetGeneral = mockInstanceSettingsApi.getGeneral;
 
 function defaultView(): DatastoreCareRetentionView {
   return {
@@ -102,6 +111,9 @@ describe("myrmidon(UI2) Ui2DatastoreRetentionSettings panel", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     mockGet.mockResolvedValue(defaultView());
     mockUpdate.mockReset();
+    mockGetGeneral.mockReset();
+    // No stored retention block: the backup-gate mode sits at its default.
+    mockGetGeneral.mockResolvedValue({});
     // Default user is instance admin
     mockGetAccess.mockResolvedValue({
       user: { id: "user-1", email: "admin@example.com", name: "Admin", image: null },
@@ -136,11 +148,13 @@ describe("myrmidon(UI2) Ui2DatastoreRetentionSettings panel", () => {
     const externalCheck = container.querySelector<HTMLInputElement>("#ui2-retention-external");
     expect(externalCheck?.checked).toBe(false);
 
-    // Sources
+    // Sources: days, batches, and the backup-gate checkbox (derived
+    // client-side from the stored settings block).
     const sources = container.querySelectorAll(".ui2-retention-source");
-    expect(sources.length).toBe(2);
+    expect(sources.length).toBe(3);
     expect(sources[0]?.textContent).toContain("Default");
     expect(sources[1]?.textContent).toContain("Default");
+    expect(sources[2]?.textContent).toContain("Default");
 
     // Last run facts
     const facts = container.querySelector(".ui2-retention-lastrun-facts");
@@ -232,6 +246,57 @@ describe("myrmidon(UI2) Ui2DatastoreRetentionSettings panel", () => {
       externalMachineBackup: null,
     });
     expect(container.querySelectorAll(".ui2-retention-source")[0]?.textContent).toContain("Default");
+  });
+
+  it("shows the backup-gate source: stored flag reads as settings, absent as default", async () => {
+    // Stored true in the settings block → source "settings" even though the
+    // resolved value the retention endpoint echoes is true.
+    mockGetGeneral.mockResolvedValue({
+      datastoreCare: { retention: { externalMachineBackup: true } },
+    });
+    // The retention endpoint itself resolves the stored flag to true.
+    const settingsView = defaultView();
+    settingsView.retention.externalMachineBackup = true;
+    mockGet.mockResolvedValue(settingsView);
+
+    await renderPanel();
+
+    const externalCheck = container.querySelector<HTMLInputElement>("#ui2-retention-external");
+    expect(externalCheck?.checked).toBe(true);
+    const sources = container.querySelectorAll(".ui2-retention-source");
+    expect(sources.length).toBe(3);
+    expect(sources[2]?.getAttribute("data-retention-source")).toBe("settings");
+    expect(sources[2]?.textContent).toContain("Saved");
+  });
+
+  it("keeps the backup-gate source in sync after the admin saves a new value", async () => {
+    mockGetGeneral.mockResolvedValue({});
+
+    await renderPanel();
+
+    const externalCheck = container.querySelector<HTMLInputElement>("#ui2-retention-external")!;
+    expect(container.querySelectorAll(".ui2-retention-source")[2]?.getAttribute("data-retention-source")).toBe("default");
+
+    flushSync(() => {
+      externalCheck.click();
+    });
+    await flushReact();
+
+    // Refetch: the stored block now carries the flag → the pill reads
+    // "settings", and the derived source of the resolved value follows it.
+    mockGetGeneral.mockResolvedValue({
+      datastoreCare: { retention: { externalMachineBackup: true } },
+    });
+    mockUpdate.mockResolvedValue({ externalMachineBackup: true });
+    container.querySelector<HTMLButtonElement>(".ui2-retention-save")!.click();
+    await flushReact();
+    await flushReact();
+
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(mockUpdate).toHaveBeenCalledWith({ externalMachineBackup: true });
+    expect(
+      container.querySelectorAll(".ui2-retention-source")[2]?.getAttribute("data-retention-source"),
+    ).toBe("settings");
   });
 
   it("renders denied state on 403 GET error", async () => {
