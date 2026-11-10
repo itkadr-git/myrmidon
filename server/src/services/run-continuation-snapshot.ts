@@ -114,6 +114,35 @@ export interface RunContinuationPersistInput {
   wakeLinks?: ExecutionContinuationWakeLinks | null;
 }
 
+export function compactContinuationEnvelopeForStorage(
+  envelope: ExecutionContinuationEnvelope,
+): ExecutionContinuationEnvelope {
+  return {
+    version: envelope.version,
+    companyId: envelope.companyId,
+    issueId: envelope.issueId,
+    trigger: envelope.trigger,
+    originCommentIds: envelope.originCommentIds,
+    objective: envelope.objective,
+    messages: envelope.messages.map((message) => ({
+      id: message.id,
+      authorType: message.authorType,
+      authorId: message.authorId,
+      ...(message.createdByRunId ? { createdByRunId: message.createdByRunId } : {}),
+      body: "",
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+      deleted: message.deleted,
+      sourceTrust: message.sourceTrust,
+      bodyOmitted: true,
+    })),
+    interactionOutcomes: [],
+    completedWork: null,
+    unresolvedInteractionIds: [],
+    coverage: envelope.coverage,
+  };
+}
+
 /**
  * Stores the envelope of a run, one row per run (upsert on `run_id`).
  *
@@ -127,14 +156,15 @@ export async function persistRunContinuation(
   db: Db,
   input: RunContinuationPersistInput,
 ): Promise<boolean> {
-  const chars = JSON.stringify(input.envelope).length;
+  const compacted = compactContinuationEnvelopeForStorage(input.envelope);
+  const chars = JSON.stringify(compacted).length;
   const values = {
     companyId: input.companyId,
     agentId: input.agentId,
     issueId: input.issueId,
     runId: input.runId,
     previousContextRunId: input.previousContextRunId,
-    envelope: input.envelope,
+    envelope: compacted,
     envelopeChars: chars,
     wakeLinks: input.wakeLinks ?? null,
   };
