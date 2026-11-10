@@ -189,4 +189,21 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "bridge.thisAgent": "этим агентом",
   "bridge.refusalUnlinked":
     "Этот бот доступен только участникам рабочего пространства. Попросите администратора привязать ваш аккаунт Telegram.",
+
+  // myrmidon(1.7-TG-LOCALE / OPE-12689): уведомления владельцу о жизненном
+  // цикле обновления — побайтно прежние русские литералы
+  // update-notify.ts; условные куски («версии …», «Причина: …») тоже в
+  // каталоге, чтобы код остался без русской прозы.
+  "update.canary_started": "🐤 Начало канареечного обновления: {version}{detail}",
+  "update.rollout_succeeded": "✅ Успешный выкат обновления: {version}{commit}",
+  "update.rollback_started": "⚠️ Начало автоматического отката{version}{reason}",
+  "update.rollback_completed": "🚨 Автооткат завершён{version}{reason}",
+  "update.waiting_window": "⏳ Ожидание окна обслуживания для {version}{window}",
+  "update.defaultVersion": "новая версия",
+  "update.defaultTarget": "обновления",
+  "update.rollbackVersionClause": " версии {version}",
+  "update.rollbackTargetClause": " на версию {version}",
+  "update.reasonLine": ": {reason}",
+  "update.reasonSentence": ". Причина: {reason}",
+  "update.windowSuffix": " (окно: {window})",
 };
