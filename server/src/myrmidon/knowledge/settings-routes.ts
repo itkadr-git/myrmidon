@@ -14,15 +14,21 @@
 
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
+import { patchKnowledgeSettingsSchema } from "@myrmidon/shared";
 import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
-import { createKnowledgeSettingsService, type KnowledgeSettingsActor } from "./settings.js";
+import {
+  createKnowledgeSettingsService,
+  type KnowledgeSettingsActor,
+  type KnowledgeSettingsService,
+} from "./settings.js";
 
 export function myrmidonKnowledgeSettingsRoutes(
   db: Db,
   env: NodeJS.ProcessEnv = process.env,
+  serviceOverride?: KnowledgeSettingsService,
 ): Router {
   const router = Router();
-  const service = createKnowledgeSettingsService(db, env);
+  const service = serviceOverride ?? createKnowledgeSettingsService(db, env);
 
   router.get(
     "/myrmidon/companies/:companyId/knowledge/settings",
@@ -54,7 +60,8 @@ export function myrmidonKnowledgeSettingsRoutes(
           runId: info.actorType === "agent" ? info.runId : null,
         };
 
-        const view = await service.update(companyId, req.body ?? {}, actor);
+        const patch = patchKnowledgeSettingsSchema.parse(req.body ?? {});
+        const view = await service.update(companyId, patch, actor);
         res.json(view);
       } catch (err) {
         next(err);
