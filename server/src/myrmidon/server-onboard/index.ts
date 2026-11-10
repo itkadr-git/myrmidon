@@ -36,3 +36,5 @@ export function myrmidonOnboardRoutes(db: Db) {
   });
   return onboardRoutes({ service });
 }
+
+export * from "./executor.js";

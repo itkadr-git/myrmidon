@@ -4,12 +4,22 @@ settings-section: Track 5 — operations
 
 ## changelog-en
 
+### Fleet executor SSH hardening flow (SERVER-ONBOARD B)
+
+- Add standalone fleet-onboard executor without host mounts to execute versioned SSH hardening and bootstrap.
+- Implement preflight checks, TOFU host key pinning, verified key access, optional password disable, allow-before-deny firewall with rollback timer, and decommission cleanup.
+
 ### Server onboarding registry and job lifecycle (SERVER-ONBOARD A)
 
 - Add a company-scoped server registry and onboarding job API, gated off by default.
 - Store bootstrap credentials and generated access keys through the board secret store; expose only the executor claim/report contract.
 
 ## changelog-ru
+
+### Исполнитель онбординга и SSH-харденинг парка (SERVER-ONBOARD B)
+
+- Добавлен отдельный исполнитель fleet-onboard без host mount для выполнения версионированного сценария SSH-харденинга и бутстрапа.
+- Реализованы preflight-проверки, TOFU фиксация отпечатка ключа хоста, верификация входа по ключу, опциональное отключение пароля, firewall allow-before-deny с таймером отката и очистка при выводе из эксплуатации.
 
 ### Реестр серверов и жизненный цикл онбординга (SERVER-ONBOARD A)
 
