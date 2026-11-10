@@ -35,6 +35,7 @@ type Db = ReturnType<typeof createDb>;
 
 async function createApp(db: Db, actor: Express.Request["actor"]) {
   const { issueRoutes } = await import("../routes/issues.js");
+  const { agentRoutes } = await import("../routes/agents.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -42,6 +43,7 @@ async function createApp(db: Db, actor: Express.Request["actor"]) {
     next();
   });
   app.use("/api", issueRoutes(db, {} as never));
+  app.use("/api", agentRoutes(db));
   app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error.status ?? 500).json({ error: error.message ?? "Internal server error" });
   });
@@ -270,7 +272,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     expect(res.body.error).toContain("Only board actors can set isPrivate");
   });
 
-  it("private issue is hidden from agent reads (list, direct get, heartbeat-context, comments) but visible to board", async () => {
+  it("private issue is hidden from agent reads (list, search, inbox-lite, heartbeat-context, direct get, comments) but visible to board", async () => {
     const fixture = await seed();
     const boardApp = await createApp(db, boardActor(fixture));
     const agentApp = await createApp(db, agentActor(fixture));
@@ -286,6 +288,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
     const privateIssueId = createRes.body.id;
 
+    // 1. List
     const boardListRes = await request(boardApp)
       .get(`/api/companies/${fixture.company.id}/issues`);
     expect(boardListRes.status).toBe(200);
@@ -296,6 +299,18 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     expect(agentListRes.status).toBe(200);
     expect(agentListRes.body.some((i: any) => i.id === privateIssueId)).toBe(false);
 
+    // 2. Search (q=)
+    const boardSearchRes = await request(boardApp)
+      .get(`/api/companies/${fixture.company.id}/issues?q=Secret`);
+    expect(boardSearchRes.status).toBe(200);
+    expect(boardSearchRes.body.some((i: any) => i.id === privateIssueId)).toBe(true);
+
+    const agentSearchRes = await request(agentApp)
+      .get(`/api/companies/${fixture.company.id}/issues?q=Secret`);
+    expect(agentSearchRes.status).toBe(200);
+    expect(agentSearchRes.body.some((i: any) => i.id === privateIssueId)).toBe(false);
+
+    // 3. Direct GET -> 404 for agent, 200 for board
     const agentGetRes = await request(agentApp)
       .get(`/api/issues/${privateIssueId}`);
     expect(agentGetRes.status).toBe(404);
@@ -305,12 +320,49 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     expect(boardGetRes.status).toBe(200);
     expect(boardGetRes.body.isPrivate).toBe(true);
 
+    // 4. Heartbeat context -> 404 for agent
     const agentHbRes = await request(agentApp)
       .get(`/api/issues/${privateIssueId}/heartbeat-context`);
     expect(agentHbRes.status).toBe(404);
 
+    // 5. Comments -> 404 for agent
     const agentCommentsRes = await request(agentApp)
       .get(`/api/issues/${privateIssueId}/comments`);
     expect(agentCommentsRes.status).toBe(404);
+
+    // 6. Inbox-lite -> hidden from agent even when assigned to the agent
+    const assignRes = await request(boardApp)
+      .patch(`/api/issues/${privateIssueId}`)
+      .send({ assigneeAgentId: fixture.actorAgent.id });
+    expect(assignRes.status).toBe(200);
+
+    const agentInboxRes = await request(agentApp)
+      .get("/api/agents/me/inbox-lite");
+    expect(agentInboxRes.status).toBe(200);
+    expect(agentInboxRes.body.some((i: any) => i.id === privateIssueId)).toBe(false);
+
+    // 7. Company search (/companies/:companyId/search) -> hidden from agent, visible to board
+    const boardCompanySearchRes = await request(boardApp)
+      .get(`/api/companies/${fixture.company.id}/search?q=Secret`);
+    expect(boardCompanySearchRes.status).toBe(200);
+    expect(
+      boardCompanySearchRes.body.issues?.some((i: any) => i.id === privateIssueId),
+    ).toBe(true);
+
+    const agentCompanySearchRes = await request(agentApp)
+      .get(`/api/companies/${fixture.company.id}/search?q=Secret`);
+    expect(agentCompanySearchRes.status).toBe(200);
+    expect(
+      agentCompanySearchRes.body.issues?.some((i: any) => i.id === privateIssueId),
+    ).toBe(false);
+
+    // 8. Also hidden after re-assigning to agent (direct GET / heartbeat-context / comments)
+    expect((await request(agentApp).get(`/api/issues/${privateIssueId}`)).status).toBe(404);
+    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/heartbeat-context`)).status).toBe(404);
+    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/comments`)).status).toBe(404);
+    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/execution`)).status).toBe(404);
+    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/activity`)).status).toBe(404);
+    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/costs`)).status).toBe(404);
+    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/cases`)).status).toBe(404);
   });
 });

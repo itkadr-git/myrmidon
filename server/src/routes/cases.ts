@@ -1371,6 +1371,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
     const issueIdOrIdentifier = (req.params.issueId as string).trim();
     const issue = await loadIssueByIdOrIdentifier(db, issueIdOrIdentifier, caseLookupCompanyIds(req));
     if (!issue || !hasCompanyAccess(req, issue.companyId)) throw notFound("Issue not found");
+    if (issue.isPrivate && req.actor.type === "agent") throw notFound("Issue not found");
     assertCompanyAccess(req, issue.companyId);
     const rows = await db
       .select({ link: caseIssueLinks, caseRow: cases })

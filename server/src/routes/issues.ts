@@ -5783,12 +5783,16 @@ export function issueRoutes(
   }
 
   async function filterIssuesForActor<
-    T extends Parameters<typeof decideIssueAccess>[1],
+    T extends Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
   >(req: Request, rows: T[]) {
+    const visibleRows =
+      req.actor.type === "agent"
+        ? rows.filter((issue) => !issue.isPrivate)
+        : rows;
     const decisions = await Promise.all(
-      rows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
+      visibleRows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
     );
-    return rows.filter((_, index) => decisions[index]?.allowed);
+    return visibleRows.filter((_, index) => decisions[index]?.allowed);
   }
 
   async function actorCanReadCompanyScope(req: Request, companyId: string) {
@@ -9070,6 +9074,7 @@ export function issueRoutes(
       includeBlockedInboxAttention: true,
       hasPlanDocument,
       q: req.query.q as string | undefined,
+      excludePrivate: req.actor.type === "agent",
     } as const;
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
@@ -10805,6 +10810,7 @@ export function issueRoutes(
                 assigneeAgentId: issueRows.assigneeAgentId,
                 assigneeUserId: issueRows.assigneeUserId,
                 status: issueRows.status,
+                isPrivate: issueRows.isPrivate,
               })
               .from(issueRows)
               .where(
@@ -13540,6 +13546,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!sourceIssue) return;
+    if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(
       sourceIssue.id,
     );

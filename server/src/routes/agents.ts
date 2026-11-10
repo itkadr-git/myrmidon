@@ -8174,6 +8174,10 @@ function getActorIdentityPart(req: Request): string {
       "Issue not found",
     );
     if (!issue) return;
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
 
     const liveRuns = await db
       .select({
