@@ -50,8 +50,8 @@ them: `POST /api/myrmidon/guardrails/redact` accepts `reversible`
 comes back), `irreversible` (tokens only, nothing persisted) and `flag`
 (text unchanged, detected spans returned) modes, and
 `POST /api/myrmidon/guardrails/restore` puts the originals back until they
-expire. See the [redaction modes guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.md)
-([Russian](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.ru.md)).
+expire. See the [redaction modes guide](Redaction-modes)
+([Russian](Redaction-modes.ru)).
 
 ## Emergency stop
 
@@ -77,13 +77,13 @@ Starting with Myrmidon 1.7, execution safety guardrails and container fleet boun
 - **Precedence and UI Confirmation**:
   - Precedence: `ui` (saved setting) > `env` (environment variable) > `default` (built-in default).
   - Updating allowlists or enabling YOLO mode requires explicit confirmation in the UI modal dialog to protect against accidental security degradation.
-  - Full details: [Settings in the interface](Settings-in-the-interface.md#guardrails-panel-instance--general).
+  - Full details: [Settings in the interface](Settings-in-the-interface#guardrails-panel-instance--general).
 
 ## In detail
 
-- [Autonomy matrix: instructions change control](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-matrix-instructions.md)
-- [Autonomy matrix: pause, resume, wake enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-pause-wake-enforcement.md)
-- [Autonomy matrix: delete enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-delete-enforcement.md)
-- [Emergency stop for drained-pause runs](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/emergency-stop.md)
-- [Redaction modes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.md)
+- [Autonomy matrix: instructions change control](Autonomy-matrix-instructions)
+- [Autonomy matrix: pause, resume, wake enforcement](Autonomy-pause-wake-enforcement)
+- [Autonomy matrix: delete enforcement](Autonomy-delete-enforcement)
+- [Emergency stop for drained-pause runs](Emergency-stop)
+- [Redaction modes](Redaction-modes)
 - Matrix storage and API: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), sections «AUTONOMY-MATRIX» and «GUARDRAILS»

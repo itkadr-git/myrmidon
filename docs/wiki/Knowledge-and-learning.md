@@ -88,13 +88,13 @@ admin, and every successful write is journaled as `knowledge.settings_updated`.
 
 ## ADM archive migration
 
-The opt-in ADM migration command produces a deterministic dry-run before any import. It requires explicit policy summaries and fails closed on scanner errors. Import creates drafts and submits rules for review; it never publishes them. The REST hook delivers bounded summaries with session dedup and byte metrics. It is not installed in production by the migration command. See the [EN/RU operator guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/adm-knowledge-migration.md) for environment variables, apply and rollback.
+The opt-in ADM migration command produces a deterministic dry-run before any import. It requires explicit policy summaries and fails closed on scanner errors. Import creates drafts and submits rules for review; it never publishes them. The REST hook delivers bounded summaries with session dedup and byte metrics. It is not installed in production by the migration command. See the [EN/RU operator guide](Adm-knowledge-migration) for environment variables, apply and rollback.
 
 ## In detail
 
 - [Knowledge seed corpus: decisions and product reference](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/knowledge-seed.md)
-- [Foraging: knowledge gathering from approved sources](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/foraging.md)
-- [Reference-task evals and the LLM judge](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/reference-task-evals.md)
-- [Evals: cross-family judge selection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/evals-judge-family-selection.md)
-- [Baseline comparison on the Quality screen](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/baseline-comparison.md)
+- [Foraging: knowledge gathering from approved sources](Foraging)
+- [Reference-task evals and the LLM judge](Reference-task-evals)
+- [Evals: cross-family judge selection](Evals-judge-family-selection)
+- [Baseline comparison on the Quality screen](Baseline-comparison)
 - Regulations store: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «AUTONOMY-MATRIX»
