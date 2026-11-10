@@ -148,6 +148,49 @@ function countTimers(repoRoot: string): Record<string, FileCounts> {
 //   → repo root is 6 levels up.
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..", "..", "..");
 
+// Runs the exact comparison the ratchet test asserts on: returns the list of
+// errors for a given per-file counter inventory vs the baseline map.  Shared
+// by the "counters match baseline" test and the synthetic-probe test, so the
+// probe exercises the real failure path, not a parallel copy of it.
+function diffAgainstBaseline(actual: Record<string, FileCounts>): string[] {
+  const errors: string[] = [];
+
+  // Files in baseline but not on disk (deleted loops).
+  for (const [rel, expected] of Object.entries(BASELINE)) {
+    if (!(rel in actual)) {
+      // The path-existence test already covers this; only report a counter
+      // mismatch when the file exists but has zero timers.
+      if (fs.existsSync(path.join(REPO_ROOT, rel))) {
+        const total = expected.setInterval + expected.laneInterval + expected.backgroundInterval;
+        if (total > 0) {
+          errors.push(`${rel}: file exists but counters are zero (expected ${JSON.stringify(expected)})`);
+        }
+      }
+      continue;
+    }
+    const got = actual[rel];
+    for (const key of ["setInterval", "laneInterval", "backgroundInterval"] as const) {
+      if (got[key] !== expected[key]) {
+        errors.push(`${rel}: ${key} expected ${expected[key]}, got ${got[key]}`);
+      }
+    }
+  }
+
+  // Files on disk but not in baseline (new timers without a record).
+  for (const [rel, got] of Object.entries(actual)) {
+    if (!(rel in BASELINE)) {
+      errors.push(
+        `${rel}: new timers without a baseline record ` +
+          `(setInterval=${got.setInterval}, laneInterval=${got.laneInterval}, backgroundInterval=${got.backgroundInterval}). ` +
+          `Add a row to docs/myrmidon/background-loops.md and docs/myrmidon/background-loops.ru.md, ` +
+          `then add this file's counters to BASELINE in loops-ratchet.myrmidon.test.ts.`,
+      );
+    }
+  }
+
+  return errors;
+}
+
 describe("background-loops ratchet", () => {
   it("every path in the baseline map exists", () => {
     for (const rel of Object.keys(BASELINE)) {
@@ -156,56 +199,23 @@ describe("background-loops ratchet", () => {
   });
 
   it("per-file timer counters match the baseline map", () => {
-    const actual = countTimers(REPO_ROOT);
-    const errors: string[] = [];
-
-    // Files in baseline but not on disk (deleted loops).
-    for (const [rel, expected] of Object.entries(BASELINE)) {
-      if (!(rel in actual)) {
-        // The path-existence test already covers this; only report a counter
-        // mismatch when the file exists but has zero timers.
-        if (fs.existsSync(path.join(REPO_ROOT, rel))) {
-          const total = expected.setInterval + expected.laneInterval + expected.backgroundInterval;
-          if (total > 0) {
-            errors.push(`${rel}: file exists but counters are zero (expected ${JSON.stringify(expected)})`);
-          }
-        }
-        continue;
-      }
-      const got = actual[rel];
-      for (const key of ["setInterval", "laneInterval", "backgroundInterval"] as const) {
-        if (got[key] !== expected[key]) {
-          errors.push(`${rel}: ${key} expected ${expected[key]}, got ${got[key]}`);
-        }
-      }
-    }
-
-    // Files on disk but not in baseline (new timers without a record).
-    for (const [rel, got] of Object.entries(actual)) {
-      if (!(rel in BASELINE)) {
-        errors.push(
-          `${rel}: new timers without a baseline record ` +
-            `(setInterval=${got.setInterval}, laneInterval=${got.laneInterval}, backgroundInterval=${got.backgroundInterval}). ` +
-            `Add a row to docs/myrmidon/background-loops.md and docs/myrmidon/background-loops.ru.md, ` +
-            `then add this file's counters to BASELINE in loops-ratchet.myrmidon.test.ts.`,
-        );
-      }
-    }
-
+    const errors = diffAgainstBaseline(countTimers(REPO_ROOT));
     expect(errors, errors.join("\n")).toEqual([]);
   });
 
   it("a synthetic file with setInterval( makes the ratchet fail", () => {
-    // Write a synthetic file, re-run the counter, then clean up.  This proves
-    // the test is not vacuously green: an unrecorded timer is caught.
+    // Write a synthetic file, re-run the real comparison, and assert that it
+    // reports the file with the "add a record" hint.  This proves the test is
+    // not vacuously green: an unrecorded timer makes the ratchet test fail.
     const syntheticRel = "server/src/myrmidon/monitoring/board-load/__ratchet_probe__.ts";
     const syntheticAbs = path.join(REPO_ROOT, syntheticRel);
     fs.writeFileSync(syntheticAbs, "export const probe = setInterval(() => {}, 60_000);\n");
     try {
-      const actual = countTimers(REPO_ROOT);
-      expect(actual[syntheticRel]?.setInterval).toBe(1);
-      // The file must NOT be in the baseline — the counter test would fail.
-      expect(BASELINE[syntheticRel]).toBeUndefined();
+      const errors = diffAgainstBaseline(countTimers(REPO_ROOT));
+      const probeErrors = errors.filter((e) => e.startsWith(`${syntheticRel}:`));
+      expect(probeErrors.length, `expected a ratchet error for ${syntheticRel}, got:\n${errors.join("\n")}`).toBeGreaterThan(0);
+      expect(probeErrors[0]).toContain("new timers without a baseline record");
+      expect(probeErrors[0]).toContain("docs/myrmidon/background-loops.md");
     } finally {
       fs.unlinkSync(syntheticAbs);
     }
