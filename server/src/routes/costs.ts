@@ -115,7 +115,12 @@ export function costRoutes(
     assigneeAgentId: string | null;
     assigneeUserId: string | null;
     status: string;
+    isPrivate?: boolean | null;
   }) {
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     const decision = await access.decide({
       actor: req.actor,
       action: "issue:read",

@@ -858,6 +858,10 @@ const createIssueBaseSchema = z.object({
     .optional()
     .nullable(),
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
+  // 1.7 (PRIVATE-TASKS): privacy flag. The schema accepts it; the route
+  // rejects it with 403 unless the actor is a board actor. Agents can never
+  // set or clear it.
+  isPrivate: z.boolean().optional(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
