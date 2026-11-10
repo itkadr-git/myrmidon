@@ -6129,7 +6129,7 @@ function getActorIdentityPart(req: Request): string {
           // can never be reported as a successful compliant mutation.
           const postCommitPublications: ActivityPublication[] = [];
           const transaction = (db as unknown as {
-            transaction?: (callback: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+            transaction?: <T>(callback: (tx: unknown) => Promise<T>) => Promise<T>;
           }).transaction;
           const agent = typeof transaction === "function"
             ? await transaction.call(db, async (tx) => {
