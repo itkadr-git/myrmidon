@@ -395,6 +395,32 @@ func TestTemplateDriftRefusesMismatchedKey(t *testing.T) {
 	}
 }
 
+func TestDriftFieldsIgnoresMissingUlimits(t *testing.T) {
+	s := &server{cfg: testConfig()}
+	sp := spec{
+		BotKey:    "bot-example-one",
+		Image:     "example.com/bot@sha256:aa",
+		MemoryMb:  1024,
+		Cpus:      1,
+		PidsLimit: 256,
+		Network:   "net-a",
+	}
+	var x dockerInspect
+	x.Config.Image = sp.Image
+	x.Config.User = "10001"
+	x.HostConfig.NetworkMode = s.cfg.Network
+	x.HostConfig.ReadonlyRootfs = true
+	x.HostConfig.Memory = sp.MemoryMb * 1024 * 1024
+	x.HostConfig.NanoCPUs = int64(sp.Cpus * 1e9)
+	x.HostConfig.PidsLimit = sp.PidsLimit
+	x.HostConfig.ShmSize = 64 * 1024 * 1024
+
+	fields := s.driftFields(sp, &x)
+	if len(fields) != 0 {
+		t.Fatalf("expected no drift fields for inspect without Ulimits, got %v", fields)
+	}
+}
+
 func TestUnknownActionIsRefused(t *testing.T) {
 	s, _ := newServer(t)
 	key := s.cfg.Bots[0].BotKey
@@ -765,6 +791,14 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	}
 	if opt, _ := host["SecurityOpt"].([]any); len(opt) != 1 || opt[0] != "no-new-privileges:true" {
 		t.Fatalf("SecurityOpt is %v", host["SecurityOpt"])
+	}
+	ulimits, _ := host["Ulimits"].([]any)
+	if len(ulimits) != 1 {
+		t.Fatalf("Ulimits is %v", host["Ulimits"])
+	}
+	u, _ := ulimits[0].(map[string]any)
+	if len(u) != 3 || u["Name"] != "core" || u["Soft"] != float64(0) || u["Hard"] != float64(0) {
+		t.Fatalf("Ulimits[0] is %v", ulimits[0])
 	}
 	if host["Memory"] != float64(1024*1024*1024) || host["NanoCpus"] != float64(1e9) || host["PidsLimit"] != float64(256) {
 		t.Fatalf("limits wrong: %v %v %v", host["Memory"], host["NanoCpus"], host["PidsLimit"])
