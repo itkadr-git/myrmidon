@@ -145,6 +145,15 @@ const dSettings: Array<{
   { key: "lessonDistillWindowHours", envName: "MYRMIDON_LESSON_DISTILL_WINDOW_HOURS", default: 24, section: "system", validate: positiveInteger() },
   { key: "lessonDistillRepeatThreshold", envName: "MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD", default: 2, section: "system", validate: positiveInteger() },
   { key: "lessonDistillPeriodMinutes", envName: "MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES", default: 60, section: "system", validate: positiveInteger() },
+  // myrmidon(1.7 SWEEP-2, OPE-12629): watchdog thresholds of the sweeps —
+  // GitHub event silence and guard-return interval — movable from env to
+  // "Тонкие настройки". An explicit env stays the forced override (for the
+  // GitHub threshold the legacy PAPERCLIP_… alias is honored too), then the
+  // saved UI value, then (guard-return only) the deps.intervalSec, then the
+  // built-in default. Both are re-read on every sweep pass, so a saved value
+  // applies without a restart.
+  { key: "githubEventsMaxSilenceMin", envName: "MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN", default: 15, section: "system", validate: positiveInteger() },
+  { key: "guardReturnIntervalSec", envName: "MYRMIDON_GUARD_RETURN_INTERVAL_SEC", default: 300, section: "system", validate: positiveInteger() },
 ];
 for (const setting of dSettings) {
   behaviorSettingRegistry.register({

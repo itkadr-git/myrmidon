@@ -16,6 +16,7 @@ import {
   type Db,
 } from "@myrmidon/db";
 import { logger as rootLogger } from "../../middleware/logger.js";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 import {
   DEFAULT_GUARD_RETURN_SWEEP_INTERVAL_SEC,
   GUARD_RETURN_ACTIVITY_ACTION,
@@ -47,11 +48,17 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
   let lastSweepAtMs = 0;
 
   function configuredIntervalMs(): number {
+    // myrmidon(1.7 SWEEP-2, OPE-12629): an explicit env stays the forced
+    // override, then the value saved from the UI ("Тонкие настройки"), then
+    // deps.intervalSec, then the built-in default. Re-read on every sweep
+    // pass, so a saved value applies without a restart.
     const raw = process.env.MYRMIDON_GUARD_RETURN_INTERVAL_SEC;
-    if (raw) {
+    if (raw !== undefined && raw !== "") {
       const parsed = parseInt(raw, 10);
       if (Number.isFinite(parsed) && parsed > 0) return parsed * 1000;
     }
+    const saved = liveSavedSetting<number>("guardReturnIntervalSec");
+    if (saved !== undefined && Number.isFinite(saved) && saved > 0) return saved * 1000;
     return (deps.intervalSec ?? DEFAULT_GUARD_RETURN_SWEEP_INTERVAL_SEC) * 1000;
   }
 
