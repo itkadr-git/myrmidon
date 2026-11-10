@@ -95,7 +95,8 @@ describe("pull request facts", () => {
           { filename: "docs/readme.md" },
         ]),
       );
-    const result = await client(fetchMock).readPullFiles!({ companyId: "c", repository: REPO, number: 7 });
+    const board = createGitHubBoardMergeClient({ fetch: fetchMock as never, tokenProvider: async () => TOKEN });
+    const result = await board.readPullFiles!({ companyId: "c", repository: REPO, number: 7 });
     expect(result).toEqual({
       ok: true,
       files: ["server/src/index.ts", "docs/readme.md"],
