@@ -133,9 +133,9 @@ services:
       DATABASE_URL: "${HARNESS_DB_DSN}"
       PORT: "3200"
       SERVE_UI: "true"
-      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
-      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
-      PAPERCLIP_PUBLIC_URL: "http://127.0.0.1:3200"
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated"
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "private"
+      MYRMIDON_PUBLIC_URL: "http://127.0.0.1:3200"
       # Instance auth signing key. The server reads the container variable by
       # its exact configured name (BETTER_AUTH_SECRET — see server/src/auth/
       # better-auth.ts and .env.example); the value comes from harness.env via
