@@ -8,6 +8,10 @@
 #   OMP_RUNNER_IMAGE            ghcr.io/itkadr-git/agent-runtime-omp-ssh@sha256:<digest>
 #   OMP_RUNNER_AUTHORIZED_KEYS  host path of the board's public key (read-only mount)
 #   OMP_RUNNER_NETWORK          docker network shared with the board container
+#   OMP_RUNNER_DATA_DIR         host directory for the runner's workspace, home and host key, on
+#                               the bot data disk (XFS), not the root disk: agents clone and build
+#                               repositories there, gigabytes per agent. It must hold the
+#                               subdirectories workspace/ (owned by 1000:1000), home/ and hostkeys/.
 # Optional limits: OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS, OMP_RUNNER_PIDS. The
 # defaults (4g, 1 CPU, 1024 processes) are those of an engineer bot container.
 #
@@ -41,7 +45,14 @@ networks:
     external: true
     name: ${OMP_RUNNER_NETWORK:?set OMP_RUNNER_NETWORK}
 
+# Bind volumes: the data lives under OMP_RUNNER_DATA_DIR, never in /var/lib/docker on the root disk.
 volumes:
   workspace:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/workspace" }
   home:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/home" }
   hostkeys:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/hostkeys" }
