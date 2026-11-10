@@ -12107,6 +12107,9 @@ registerCurrentRoute({
 // event, responds 202 with the intake id and enqueues the payload for parsing.
 // Per-source rate limits apply (429 with Retry-After); an optional per-source
 // token (configured via env refs) is verified by the route handler itself.
+// myrmidon(1.6.8 INTAKE-AUTH): source names are case-normalized; an unknown
+// source (absent from config.sources) answers 404, and a configured tokenRef
+// whose secret did not resolve answers 503 without enqueueing.
 registerCurrentRoute({
   method: "post",
   path: "/api/intake/{source}",
@@ -12124,7 +12127,9 @@ registerCurrentRoute({
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
+    404: r.notFound,
     429: r.tooManyRequests,
+    503: r.serverError,
   },
 });
 
