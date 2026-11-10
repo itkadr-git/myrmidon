@@ -21,99 +21,105 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-// ---- Mock node:dns/promises before any module under test loads ----
+// ---- Mock node:dns/promises and ssh2 before any module under test loads ----
 
-const lookupMock = vi.fn();
+const { lookupMock, FakeSshClient, FakeStream, hooks } = vi.hoisted(() => {
+  const lookupMock = vi.fn();
+
+  class FakeStream {
+    private dataListeners: Array<(data: Buffer | string) => void> = [];
+    private closeListeners: Array<() => void> = [];
+    readonly stderr = {
+      on: () => undefined,
+    };
+
+    on(event: string, listener: (...args: unknown[]) => void) {
+      if (event === "data") this.dataListeners.push(listener as (d: Buffer | string) => void);
+      if (event === "close") this.closeListeners.push(listener as () => void);
+    }
+
+    once(event: string, listener: (...args: unknown[]) => void) {
+      this.on(event, listener);
+    }
+
+    write(data: string) {
+      for (const l of this.dataListeners) l(Buffer.from(data));
+    }
+
+    close() {
+      for (const l of this.closeListeners) l();
+    }
+  }
+
+  type HookMap = {
+    onConnect?: (client: FakeSshClient) => void;
+    onExec?: (client: FakeSshClient, command: string, cb: (error: Error | undefined, stream?: FakeStream) => void) => void;
+    onEnd?: (client: FakeSshClient) => void;
+  };
+
+  const hooks: HookMap = {};
+
+  class FakeSshClient {
+    static instances: FakeSshClient[] = [];
+    static onConnect: ((client: FakeSshClient) => void) | undefined;
+    static onExec: ((client: FakeSshClient, command: string, cb: (error: Error | undefined, stream?: FakeStream) => void) => void) | undefined;
+    static onEnd: ((client: FakeSshClient) => void) | undefined;
+    private listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+    private execCommands: Array<{
+      command: string;
+      cb: (error: Error | undefined, stream?: FakeStream) => void;
+    }> = [];
+
+    constructor() {
+      FakeSshClient.instances.push(this);
+    }
+
+    readonly connectConfigs: Record<string, unknown>[] = [];
+
+    on(event: string, listener: (...args: unknown[]) => void) {
+      (this.listeners[event] ??= []).push(listener);
+    }
+
+    once(event: string, listener: (...args: unknown[]) => void) {
+      (this.listeners[event] ??= []).push(listener);
+    }
+
+    connect(config: Record<string, unknown>) {
+      this.connectConfigs.push(config);
+      hooks.onConnect?.(this);
+    }
+
+    exec(
+      command: string,
+      cb: (error: Error | undefined, stream?: FakeStream) => void,
+    ) {
+      this.execCommands.push({ command, cb });
+      hooks.onExec?.(this, command, cb);
+    }
+
+    end() {
+      hooks.onEnd?.(this);
+    }
+
+    emit(event: string, ...args: unknown[]) {
+      const list = this.listeners[event] ? [...this.listeners[event]] : [];
+      for (const l of list) l(...args);
+    }
+
+    get lastCommand(): string | undefined {
+      return this.execCommands.at(-1)?.command;
+    }
+  }
+
+  return { lookupMock, FakeSshClient, FakeStream, hooks };
+});
+
+type FakeStream = InstanceType<typeof FakeStream>;
+type FakeSshClient = InstanceType<typeof FakeSshClient>;
 
 vi.mock("node:dns/promises", () => ({
   lookup: (...args: unknown[]) => lookupMock(...args),
 }));
-
-// ---- Mock ssh2 before any module under test loads ----
-
-class FakeSshClient {
-  static instances: FakeSshClient[] = [];
-  static onConnect: ((client: FakeSshClient) => void) | undefined;
-  static onExec: ((client: FakeSshClient, command: string, cb: (error: Error | undefined, stream?: FakeStream) => void) => void) | undefined;
-  static onEnd: ((client: FakeSshClient) => void) | undefined;
-  private listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
-  private execCommands: Array<{
-    command: string;
-    cb: (error: Error | undefined, stream?: FakeStream) => void;
-  }> = [];
-
-  constructor() {
-    FakeSshClient.instances.push(this);
-  }
-
-  readonly connectConfigs: Record<string, unknown>[] = [];
-
-  on(event: string, listener: (...args: unknown[]) => void) {
-    (this.listeners[event] ??= []).push(listener);
-  }
-
-  once(event: string, listener: (...args: unknown[]) => void) {
-    (this.listeners[event] ??= []).push(listener);
-  }
-
-  connect(config: Record<string, unknown>) {
-    this.connectConfigs.push(config);
-    hooks.onConnect?.(this);
-  }
-
-  exec(
-    command: string,
-    cb: (error: Error | undefined, stream?: FakeStream) => void,
-  ) {
-    this.execCommands.push({ command, cb });
-    hooks.onExec?.(this, command, cb);
-  }
-
-  end() {
-    hooks.onEnd?.(this);
-  }
-
-  emit(event: string, ...args: unknown[]) {
-    const list = this.listeners[event] ? [...this.listeners[event]] : [];
-    for (const l of list) l(...args);
-  }
-
-  get lastCommand(): string | undefined {
-    return this.execCommands.at(-1)?.command;
-  }
-}
-
-export class FakeStream {
-  private dataListeners: Array<(data: Buffer | string) => void> = [];
-  private closeListeners: Array<() => void> = [];
-  readonly stderr = {
-    on: () => undefined,
-  };
-
-  on(event: string, listener: (...args: unknown[]) => void) {
-    if (event === "data") this.dataListeners.push(listener as (d: Buffer | string) => void);
-    if (event === "close") this.closeListeners.push(listener as () => void);
-  }
-
-  once(event: string, listener: (...args: unknown[]) => void) {
-    this.on(event, listener);
-  }
-
-  write(data: string) {
-    for (const l of this.dataListeners) l(Buffer.from(data));
-  }
-
-  close() {
-    for (const l of this.closeListeners) l();
-  }
-}
-
-// Static hooks the individual tests install.
-const hooks: {
-  onConnect?: (client: FakeSshClient) => void;
-  onExec?: (client: FakeSshClient, command: string, cb: (error: Error | undefined, stream?: FakeStream) => void) => void;
-  onEnd?: (client: FakeSshClient) => void;
-} = {};
 
 vi.mock("ssh2", () => ({
   Client: FakeSshClient,
