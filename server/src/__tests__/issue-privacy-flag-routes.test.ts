@@ -253,7 +253,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     expect(res.body.details?.code).toBe("issue_write_private_flag_rejected");
   });
 
-  it("agent actor receives 403 when clearing isPrivate on an existing private issue", async () => {
+  it("agent actor receives 404 when clearing isPrivate on an existing private issue", async () => {
     const fixture = await seed();
     await db.update(issues)
       .set({ isPrivate: true })
@@ -263,8 +263,10 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
       .patch(`/api/issues/${fixture.issue.id}`)
       .set("Authorization", `Bearer ${fixture.agentToken}`)
       .send({ isPrivate: false });
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.details?.code).toBe("issue_write_private_flag_rejected");
+    // 1.7 PRIVATE-TASKS E2: getAccessibleIssue hides the private issue from
+    // the agent before the private-flag rejection in the PATCH body fires.
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
   });
 
   it("agent actor receives 403 when creating a child issue with isPrivate=true", async () => {

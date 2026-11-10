@@ -5694,6 +5694,30 @@ export function issueRoutes(
     return false;
   }
 
+  /**
+   * Load an issue for any route handler with the private-task wall applied
+   * (1.7 PRIVATE-TASKS E2). Wraps `getAccessibleResource` so 401 /
+   * cross-tenant / company-scope semantics stay in one place, then hides
+   * `isPrivate` issues from agent actors with the same 404 body the board
+   * guard above (`assertIssueReadAllowed`) returns. Board actors keep their
+   * existing behavior unchanged.
+   */
+  async function getAccessibleIssue<
+    T extends { companyId: string; isPrivate?: boolean | null },
+  >(
+    req: Request,
+    res: Response,
+    issue: T | null | undefined | Promise<T | null | undefined>,
+  ): Promise<T | null> {
+    const loaded = await getAccessibleResource(req, res, issue, "Issue not found");
+    if (!loaded) return null;
+    if (loaded.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return null;
+    }
+    return loaded;
+  }
+
   async function assertIssueWriteInfluenceAllowed(
     req: Request,
     res: Response,
@@ -9294,7 +9318,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/runner-goal", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9323,7 +9347,7 @@ export function issueRoutes(
     validate(runnerGoalActionRequestSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         getIssueById(req, id),
@@ -9377,7 +9401,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9568,7 +9592,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/ci-status", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9597,7 +9621,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/blockers", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9637,7 +9661,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/wakes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9691,7 +9715,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/subtree", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9747,7 +9771,7 @@ export function issueRoutes(
   router.get("/issues/:id", async (req, res) => {
     const requestStartedAt = performance.now();
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9854,7 +9878,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9872,7 +9896,7 @@ export function issueRoutes(
     validate(upsertIssueWatchdogSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         getIssueById(req, id),
@@ -9931,7 +9955,7 @@ export function issueRoutes(
 
   router.delete("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -9981,7 +10005,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -10005,7 +10029,7 @@ export function issueRoutes(
     validate(resolveIssueRecoveryActionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -10606,7 +10630,7 @@ export function issueRoutes(
     "/issues/:id/execution-hold/confirm-continue",
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -10770,7 +10794,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -10786,7 +10810,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/external-objects", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -10800,7 +10824,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/external-object-summary", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -10856,7 +10880,7 @@ export function issueRoutes(
     validate(refreshExternalObjectsSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -10891,7 +10915,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -10907,7 +10931,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -10953,7 +10977,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/annotations", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -10993,7 +11017,7 @@ export function issueRoutes(
     validate(createDocumentAnnotationThreadSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -11078,7 +11102,7 @@ export function issueRoutes(
     "/issues/:id/documents/:key/annotations/:threadId",
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         getIssueById(req, id),
@@ -11116,7 +11140,7 @@ export function issueRoutes(
     validate(createDocumentAnnotationCommentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -11194,7 +11218,7 @@ export function issueRoutes(
     validate(updateDocumentAnnotationThreadSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -11252,7 +11276,7 @@ export function issueRoutes(
     validate(upsertIssueDocumentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -11419,7 +11443,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/documents/:key/lock", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -11476,7 +11500,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/documents/:key/unlock", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -11530,7 +11554,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -11563,7 +11587,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const revisionId = req.params.revisionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -11712,7 +11736,7 @@ export function issueRoutes(
 
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -11822,7 +11846,7 @@ export function issueRoutes(
     validate(createIssueWorkProductSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -12038,7 +12062,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const workProductId = req.params.workProductId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -12074,7 +12098,7 @@ export function issueRoutes(
     validate(promoteLowTrustOutputSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -12388,7 +12412,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -12427,7 +12451,7 @@ export function issueRoutes(
 
   router.delete("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -12532,7 +12556,7 @@ export function issueRoutes(
     validate(inboxArchiveBodySchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -12578,7 +12602,7 @@ export function issueRoutes(
     validate(inboxArchiveBodySchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -12614,7 +12638,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/approvals", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -12635,7 +12659,7 @@ export function issueRoutes(
     validate(linkIssueApprovalSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -12675,7 +12699,7 @@ export function issueRoutes(
   router.delete("/issues/:id/approvals/:approvalId", async (req, res) => {
     const id = req.params.id as string;
     const approvalId = req.params.approvalId as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -13300,7 +13324,7 @@ export function issueRoutes(
     validateIssueMutationBody(createChildIssueSchema),
     async (req, res) => {
       const parentId = req.params.id as string;
-      const parent = await getAccessibleResource(
+      const parent = await getAccessibleIssue(
         req,
         res,
         svc.getById(parentId),
@@ -13559,7 +13583,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
     const sourceIssueId = req.params.id as string;
-    const sourceIssue = await getAccessibleResource(
+    const sourceIssue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, sourceIssueId),
@@ -13578,7 +13602,7 @@ export function issueRoutes(
     validateIssueMutationBody(createAcceptedPlanDecompositionSchema),
     async (req, res) => {
       const sourceIssueId = req.params.id as string;
-      const sourceIssue = await getAccessibleResource(
+      const sourceIssue = await getAccessibleIssue(
         req,
         res,
         svc.getById(sourceIssueId),
@@ -13860,7 +13884,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -13889,7 +13913,7 @@ export function issueRoutes(
   router.post("/issues/:id/scheduled-retry/retry-now", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -13930,7 +13954,7 @@ export function issueRoutes(
     validate(stalledReviewDecisionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -14076,7 +14100,7 @@ export function issueRoutes(
     "/issues/:id/execution-participants",
     async (req, res) => {
       assertBoard(req);
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      const issue = await getAccessibleIssue(req, res, svc.getById(req.params.id as string));
       if (!issue) return;
       const body = req.body as { returnAssignee?: { type?: string; agentId?: string | null } | null; currentParticipant?: { type?: string; agentId?: string | null } | null };
       const currentState = parseIssueExecutionState(issue.executionState);
@@ -14116,7 +14140,7 @@ export function issueRoutes(
     validateIssueMutationBody(updateIssueRouteSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -18208,7 +18232,7 @@ export function issueRoutes(
 
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -18258,7 +18282,7 @@ export function issueRoutes(
     validate(checkoutIssueSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -18419,7 +18443,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/release", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -18466,7 +18490,7 @@ export function issueRoutes(
     }
 
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -18506,7 +18530,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -18581,7 +18605,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/queued-comments", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -18608,7 +18632,7 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -18639,7 +18663,7 @@ export function issueRoutes(
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -18668,7 +18692,7 @@ export function issueRoutes(
     async (req, res) => {
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      const issue = await getAccessibleIssue(req, res, svc.getById(req.params.id as string));
       if (!issue) return;
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -18741,7 +18765,7 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -19018,7 +19042,7 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -19049,7 +19073,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/interactions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -19067,7 +19091,7 @@ export function issueRoutes(
     validate(createIssueThreadInteractionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -19267,7 +19291,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -19608,7 +19632,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -19718,7 +19742,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -19803,7 +19827,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -19897,7 +19921,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -20004,7 +20028,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -20062,7 +20086,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -20163,7 +20187,7 @@ export function issueRoutes(
   router.get("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -20184,7 +20208,7 @@ export function issueRoutes(
   router.delete("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
@@ -20407,7 +20431,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -20430,7 +20454,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-traces", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
@@ -20540,7 +20564,7 @@ export function issueRoutes(
     validate(addIssueCommentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -21764,7 +21788,7 @@ export function issueRoutes(
     validate(upsertIssueFeedbackVoteSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
@@ -21873,7 +21897,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/attachments", async (req, res) => {
     const issueId = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, issueId),
