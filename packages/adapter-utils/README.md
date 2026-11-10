@@ -1,4 +1,4 @@
-# @paperclipai/adapter-utils
+# @myrmidon/adapter-utils
 
 Shared utilities for Paperclip adapters: process spawning, environment
 injection, sandbox/SSH transport, workspace sync, and the round-trip helpers

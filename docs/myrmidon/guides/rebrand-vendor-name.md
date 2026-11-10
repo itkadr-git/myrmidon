@@ -74,14 +74,14 @@ occurrence, or add a reasoned exception.
 
 ```sh
 # both targets, locally (the UI has to be built first)
-pnpm --filter @paperclipai/ui build
+pnpm --filter @myrmidon/ui build
 node scripts/myrmidon/vendor-name/check-vendor-name.mjs
 
 # one target, with a machine-readable report
 node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target bundle --json /tmp/vendor-name.json
 
 # the build lane of CI does exactly this, with freshly captured snapshots:
-pnpm --filter @paperclipai/server exec tsx \
+pnpm --filter @myrmidon/server exec tsx \
   ../scripts/myrmidon/vendor-name/capture-snapshots.ts --out "$RUNNER_TEMP/vendor-name-snapshots"
 node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots \
   --snapshots "$RUNNER_TEMP/vendor-name-snapshots"
@@ -99,7 +99,7 @@ same ones that serve the endpoints — so the snapshot is the real body and not 
 copy of it:
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx \
+pnpm --filter @myrmidon/server exec tsx \
   ../scripts/myrmidon/vendor-name/capture-snapshots.ts
 ```
 
@@ -161,9 +161,9 @@ Like the other instance settings it applies without a restart.
 ```sh
 node --test scripts/myrmidon/vendor-name/check-vendor-name.test.mjs
 node --test scripts/myrmidon/ci/select.test.mjs
-pnpm --filter @paperclipai/shared exec vitest run src/myrmidon-vendor-name.test.ts
-pnpm --filter @paperclipai/server exec vitest run src/myrmidon/vendor-name
-pnpm --filter @paperclipai/ui exec vitest run src/components/myrmidon/VendorNameCheckSettingsPanel.myrmidon.test.tsx
+pnpm --filter @myrmidon/shared exec vitest run src/myrmidon-vendor-name.test.ts
+pnpm --filter @myrmidon/server exec vitest run src/myrmidon/vendor-name
+pnpm --filter @myrmidon/ui exec vitest run src/components/myrmidon/VendorNameCheckSettingsPanel.myrmidon.test.tsx
 ```
 
 The first suite carries the acceptance criterion of the gate: one added line

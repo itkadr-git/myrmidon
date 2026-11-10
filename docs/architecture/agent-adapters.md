@@ -11,7 +11,7 @@ Myrmidon keeps execution behind an adapter boundary. The server selects an adapt
 
 The built-in families are `claude_local`, `codex_local`, `process`, and `http`. The Hermes integration adds `hermes_local` for a child process and `hermes_gateway` for an already-running Hermes API server. The gateway adapter does not start a local CLI: it creates a remote run, consumes its event stream, and maps its terminal state into the Myrmidon run contract.
 
-The deprecated `@paperclipai/adapter-hermes-gateway` package is a compatibility shim. New installs use `@paperclipai/hermes-paperclip-adapter`; the adapter type remains `hermes_gateway`.
+The deprecated `@myrmidon/adapter-hermes-gateway` package is a compatibility shim. New installs use `@myrmidon/hermes-paperclip-adapter`; the adapter type remains `hermes_gateway`.
 
 ## Gateway lifecycle
 

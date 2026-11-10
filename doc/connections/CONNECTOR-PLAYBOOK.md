@@ -849,9 +849,9 @@ without a test-name filter before handoff.
 Targeted type checks:
 
 ```sh
-pnpm --filter @paperclipai/shared typecheck
-pnpm --filter @paperclipai/server typecheck
-pnpm --filter @paperclipai/ui typecheck
+pnpm --filter @myrmidon/shared typecheck
+pnpm --filter @myrmidon/server typecheck
+pnpm --filter @myrmidon/ui typecheck
 ```
 
 If UI code changed, also run:

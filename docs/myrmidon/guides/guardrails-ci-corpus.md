@@ -52,7 +52,7 @@ Target: 0. The test asserts:
 After any change to a detector or to the corpus, regenerate deliberately:
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx \
+pnpm --filter @myrmidon/server exec tsx \
   ../scripts/myrmidon/guardrails-eval/refresh.ts
 ```
 
