@@ -8506,6 +8506,7 @@ export function issueRoutes(
     const result = await getSearchService().extract(
       companyId,
       parsedQuery.data,
+      { excludePrivate: req.actor.type === "agent" },
     );
     res.json(result);
   });

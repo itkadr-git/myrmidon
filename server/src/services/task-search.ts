@@ -173,6 +173,7 @@ export function taskSearchCtes(companyId: string, search: TaskSearch, includeCon
     ), search_flags AS MATERIALIZED (
       ${flags(sql`false`)}
       WHERE issues.company_id = ${companyId} AND ${visibleIssueCondition()}
+        ${fallbackFilters ? sql`AND ${fallbackFilters}` : sql``}
         AND issues.id IN (SELECT id FROM literal_candidates)
     ), literal_matches AS MATERIALIZED (
       SELECT * FROM search_flags
@@ -185,6 +186,7 @@ export function taskSearchCtes(companyId: string, search: TaskSearch, includeCon
         ${fallbackFilters ? sql`WHERE ${fallbackFilters}` : sql``}
       )
         AND issues.company_id = ${companyId} AND ${visibleIssueCondition()}
+        ${fallbackFilters ? sql`AND ${fallbackFilters}` : sql``}
         AND ${fuzzy}
     ), matched AS MATERIALIZED (
       SELECT * FROM literal_matches

@@ -1,18 +1,23 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   activityLog,
+  agentApiKeys,
   agents,
+  agentWakeupRequests,
   authUsers,
+  boardApiKeys,
   companies,
   companyMemberships,
   createDb,
   heartbeatRuns,
   issues,
 } from "@myrmidon/db";
+import { actorMiddleware } from "../middleware/auth.js";
+import { errorHandler } from "../middleware/error-handler.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -33,20 +38,24 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 type Db = ReturnType<typeof createDb>;
 
-async function createApp(db: Db, actor: Express.Request["actor"]) {
+function hashToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+async function createApp(db: Db) {
   const { issueRoutes } = await import("../routes/issues.js");
   const { agentRoutes } = await import("../routes/agents.js");
   const app = express();
   app.use(express.json());
-  app.use((req, _res, next) => {
-    req.actor = actor;
-    next();
-  });
+  app.use(
+    actorMiddleware(db, {
+      deploymentMode: "authenticated",
+      resolveSession: async () => null,
+    }),
+  );
   app.use("/api", issueRoutes(db, {} as never));
   app.use("/api", agentRoutes(db));
-  app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(error.status ?? 500).json({ error: error.message ?? "Internal server error" });
-  });
+  app.use(errorHandler);
   return app;
 }
 
@@ -61,8 +70,11 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(agentApiKeys);
+    await db.delete(boardApiKeys);
     await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
@@ -106,13 +118,22 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
         updatedAt: now,
       },
     ]);
-    await db.insert(companyMemberships).values({
-      companyId: company.id,
-      principalType: "user",
-      principalId: responsibleUserId,
-      status: "active",
-      membershipRole: "member",
-    });
+    await db.insert(companyMemberships).values([
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: responsibleUserId,
+        status: "active",
+        membershipRole: "member",
+      },
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: boardUserId,
+        status: "active",
+        membershipRole: "admin",
+      },
+    ]);
     const issue = await db.insert(issues).values({
       companyId: company.id,
       issueNumber: 1,
@@ -130,40 +151,43 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
       contextSnapshot: { issueId: issue.id },
     }).returning().then((rows) => rows[0]!);
 
-    return { company, actorAgent, targetAgent, responsibleUserId, boardUserId, run, issue };
-  }
+    // Real credentials, as production issues them. Requests authenticate through
+    // actorMiddleware rather than constructing req.actor in the test app.
+    const boardToken = `board-test-token-${randomUUID()}`;
+    await db.insert(boardApiKeys).values({
+      userId: boardUserId,
+      name: "Board Key",
+      keyHash: hashToken(boardToken),
+    });
 
-  function agentActor(input: Awaited<ReturnType<typeof seed>>): Express.Request["actor"] {
-    return {
-      type: "agent",
-      agentId: input.actorAgent.id,
-      companyId: input.company.id,
-      runId: input.run.id,
-      onBehalfOfUserId: input.responsibleUserId,
-      onBehalfOfMemberships: [{
-        companyId: input.company.id,
-        membershipRole: "member",
-        status: "active",
-      }],
-      source: "agent_jwt",
-    };
-  }
+    const agentToken = `agent-test-token-${randomUUID()}`;
+    await db.insert(agentApiKeys).values({
+      agentId: actorAgent.id,
+      companyId: company.id,
+      name: "Actor Agent Key",
+      keyHash: hashToken(agentToken),
+      responsibleUserId,
+    });
 
-  function boardActor(input: Awaited<ReturnType<typeof seed>>): Express.Request["actor"] {
     return {
-      type: "board",
-      userId: input.boardUserId,
-      companyIds: [input.company.id],
-      source: "local_implicit",
-      isInstanceAdmin: false,
+      company,
+      actorAgent,
+      targetAgent,
+      responsibleUserId,
+      boardUserId,
+      run,
+      issue,
+      boardToken,
+      agentToken,
     };
   }
 
   it("board actor can create a private issue (isPrivate=true)", async () => {
     const fixture = await seed();
-    const boardApp = await createApp(db, boardActor(fixture));
-    const res = await request(boardApp)
+    const app = await createApp(db);
+    const res = await request(app)
       .post(`/api/companies/${fixture.company.id}/issues`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`)
       .send({
         title: "Board private task",
         status: "todo",
@@ -176,9 +200,10 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   it("agent actor receives 403 when creating a private issue", async () => {
     const fixture = await seed();
-    const agentApp = await createApp(db, agentActor(fixture));
-    const res = await request(agentApp)
+    const app = await createApp(db);
+    const res = await request(app)
       .post(`/api/companies/${fixture.company.id}/issues`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`)
       .send({
         title: "Agent private task",
         status: "todo",
@@ -191,9 +216,10 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   it("board actor can toggle isPrivate on an existing issue", async () => {
     const fixture = await seed();
-    const boardApp = await createApp(db, boardActor(fixture));
-    const res = await request(boardApp)
+    const app = await createApp(db);
+    const res = await request(app)
       .patch(`/api/issues/${fixture.issue.id}`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`)
       .send({ isPrivate: true });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.isPrivate).toBe(true);
@@ -201,9 +227,10 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   it("agent actor receives 403 when toggling isPrivate on an existing issue", async () => {
     const fixture = await seed();
-    const agentApp = await createApp(db, agentActor(fixture));
-    const res = await request(agentApp)
+    const app = await createApp(db);
+    const res = await request(app)
       .patch(`/api/issues/${fixture.issue.id}`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`)
       .send({ isPrivate: true });
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.details?.code).toBe("issue_write_private_flag_rejected");
@@ -214,9 +241,10 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     await db.update(issues)
       .set({ isPrivate: true })
       .where(eq(issues.id, fixture.issue.id));
-    const agentApp = await createApp(db, agentActor(fixture));
-    const res = await request(agentApp)
+    const app = await createApp(db);
+    const res = await request(app)
       .patch(`/api/issues/${fixture.issue.id}`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`)
       .send({ isPrivate: false });
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.details?.code).toBe("issue_write_private_flag_rejected");
@@ -224,9 +252,10 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   it("agent actor receives 403 when creating a child issue with isPrivate=true", async () => {
     const fixture = await seed();
-    const agentApp = await createApp(db, agentActor(fixture));
-    const res = await request(agentApp)
+    const app = await createApp(db);
+    const res = await request(app)
       .post(`/api/issues/${fixture.issue.id}/children`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`)
       .send({
         title: "Agent private child",
         status: "todo",
@@ -239,9 +268,10 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   it("board actor can create a child issue with isPrivate=true", async () => {
     const fixture = await seed();
-    const boardApp = await createApp(db, boardActor(fixture));
-    const res = await request(boardApp)
+    const app = await createApp(db);
+    const res = await request(app)
       .post(`/api/issues/${fixture.issue.id}/children`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`)
       .send({
         title: "Board private child",
         status: "todo",
@@ -254,9 +284,10 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   it("agent actor receives 403 when decomposing a plan with a private child", async () => {
     const fixture = await seed();
-    const agentApp = await createApp(db, agentActor(fixture));
-    const res = await request(agentApp)
+    const app = await createApp(db);
+    const res = await request(app)
       .post(`/api/issues/${fixture.issue.id}/accepted-plan-decompositions`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`)
       .send({
         acceptedPlanRevisionId: randomUUID(),
         children: [
@@ -274,11 +305,11 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   it("private issue is hidden from agent reads (list, search, inbox-lite, heartbeat-context, direct get, comments) but visible to board", async () => {
     const fixture = await seed();
-    const boardApp = await createApp(db, boardActor(fixture));
-    const agentApp = await createApp(db, agentActor(fixture));
+    const app = await createApp(db);
 
-    const createRes = await request(boardApp)
+    const createRes = await request(app)
       .post(`/api/companies/${fixture.company.id}/issues`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`)
       .send({
         title: "Secret super secret private task",
         status: "todo",
@@ -288,81 +319,96 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
     const privateIssueId = createRes.body.id;
 
-    // 1. List
-    const boardListRes = await request(boardApp)
-      .get(`/api/companies/${fixture.company.id}/issues`);
+    // 1. Company issue list
+    const boardListRes = await request(app)
+      .get(`/api/companies/${fixture.company.id}/issues`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`);
     expect(boardListRes.status).toBe(200);
     expect(boardListRes.body.some((i: any) => i.id === privateIssueId)).toBe(true);
 
-    const agentListRes = await request(agentApp)
-      .get(`/api/companies/${fixture.company.id}/issues`);
+    const agentListRes = await request(app)
+      .get(`/api/companies/${fixture.company.id}/issues`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`);
     expect(agentListRes.status).toBe(200);
     expect(agentListRes.body.some((i: any) => i.id === privateIssueId)).toBe(false);
+    expect(JSON.stringify(agentListRes.body)).not.toContain("Secret super secret private task");
 
-    // 2. Search (q=)
-    const boardSearchRes = await request(boardApp)
-      .get(`/api/companies/${fixture.company.id}/issues?q=Secret`);
+    // 2. Issue q= search
+    const boardSearchRes = await request(app)
+      .get(`/api/companies/${fixture.company.id}/issues?q=Secret`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`);
     expect(boardSearchRes.status).toBe(200);
     expect(boardSearchRes.body.some((i: any) => i.id === privateIssueId)).toBe(true);
 
-    const agentSearchRes = await request(agentApp)
-      .get(`/api/companies/${fixture.company.id}/issues?q=Secret`);
+    const agentSearchRes = await request(app)
+      .get(`/api/companies/${fixture.company.id}/issues?q=Secret`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`);
     expect(agentSearchRes.status).toBe(200);
     expect(agentSearchRes.body.some((i: any) => i.id === privateIssueId)).toBe(false);
+    expect(JSON.stringify(agentSearchRes.body)).not.toContain("Secret super secret private task");
 
     // 3. Direct GET -> 404 for agent, 200 for board
-    const agentGetRes = await request(agentApp)
-      .get(`/api/issues/${privateIssueId}`);
+    const agentGetRes = await request(app)
+      .get(`/api/issues/${privateIssueId}`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`);
     expect(agentGetRes.status).toBe(404);
 
-    const boardGetRes = await request(boardApp)
-      .get(`/api/issues/${privateIssueId}`);
+    const boardGetRes = await request(app)
+      .get(`/api/issues/${privateIssueId}`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`);
     expect(boardGetRes.status).toBe(200);
     expect(boardGetRes.body.isPrivate).toBe(true);
 
     // 4. Heartbeat context -> 404 for agent
-    const agentHbRes = await request(agentApp)
-      .get(`/api/issues/${privateIssueId}/heartbeat-context`);
+    const agentHbRes = await request(app)
+      .get(`/api/issues/${privateIssueId}/heartbeat-context`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`);
     expect(agentHbRes.status).toBe(404);
 
     // 5. Comments -> 404 for agent
-    const agentCommentsRes = await request(agentApp)
-      .get(`/api/issues/${privateIssueId}/comments`);
+    const agentCommentsRes = await request(app)
+      .get(`/api/issues/${privateIssueId}/comments`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`);
     expect(agentCommentsRes.status).toBe(404);
 
     // 6. Inbox-lite -> hidden from agent even when assigned to the agent
-    const assignRes = await request(boardApp)
+    const assignRes = await request(app)
       .patch(`/api/issues/${privateIssueId}`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`)
       .send({ assigneeAgentId: fixture.actorAgent.id });
     expect(assignRes.status).toBe(200);
 
-    const agentInboxRes = await request(agentApp)
-      .get("/api/agents/me/inbox-lite");
+    const agentInboxRes = await request(app)
+      .get("/api/agents/me/inbox-lite")
+      .set("Authorization", `Bearer ${fixture.agentToken}`);
     expect(agentInboxRes.status).toBe(200);
     expect(agentInboxRes.body.some((i: any) => i.id === privateIssueId)).toBe(false);
+    expect(JSON.stringify(agentInboxRes.body)).not.toContain("Secret super secret private task");
 
-    // 7. Company search (/companies/:companyId/search) -> hidden from agent, visible to board
-    const boardCompanySearchRes = await request(boardApp)
-      .get(`/api/companies/${fixture.company.id}/search?q=Secret`);
+    // 7. Company search; verify that the private issue is absent from every result
+    // field (including snippets), not only from the direct issue-list endpoint.
+    const boardCompanySearchRes = await request(app)
+      .get(`/api/companies/${fixture.company.id}/search?q=Secret`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`);
     expect(boardCompanySearchRes.status).toBe(200);
     expect(
       boardCompanySearchRes.body.results?.some((r: any) => r.id === privateIssueId),
     ).toBe(true);
 
-    const agentCompanySearchRes = await request(agentApp)
-      .get(`/api/companies/${fixture.company.id}/search?q=Secret`);
+    const agentCompanySearchRes = await request(app)
+      .get(`/api/companies/${fixture.company.id}/search?q=Secret`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`);
     expect(agentCompanySearchRes.status).toBe(200);
-    expect(
-      agentCompanySearchRes.body.results?.some((r: any) => r.id === privateIssueId),
-    ).toBe(false);
+    expect(JSON.stringify(agentCompanySearchRes.body)).not.toContain(privateIssueId);
+    expect(JSON.stringify(agentCompanySearchRes.body)).not.toContain("Secret super secret private task");
 
-    // 8. Also hidden after re-assigning to agent (direct GET / heartbeat-context / comments)
-    expect((await request(agentApp).get(`/api/issues/${privateIssueId}`)).status).toBe(404);
-    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/heartbeat-context`)).status).toBe(404);
-    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/comments`)).status).toBe(404);
-    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/execution`)).status).toBe(404);
-    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/activity`)).status).toBe(404);
-    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/costs`)).status).toBe(404);
-    expect((await request(agentApp).get(`/api/issues/${privateIssueId}/cases`)).status).toBe(404);
+    // Assignment must not change the agent's access to the issue or related reads.
+    expect((await request(app).get(`/api/issues/${privateIssueId}`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
+    expect((await request(app).get(`/api/issues/${privateIssueId}/heartbeat-context`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
+    expect((await request(app).get(`/api/issues/${privateIssueId}/comments`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
+    expect((await request(app).get(`/api/issues/${privateIssueId}/execution`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
+    expect((await request(app).get(`/api/issues/${privateIssueId}/activity`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
+    expect((await request(app).get(`/api/issues/${privateIssueId}/costs`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
+    expect((await request(app).get(`/api/issues/${privateIssueId}/cases`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
   });
 });
