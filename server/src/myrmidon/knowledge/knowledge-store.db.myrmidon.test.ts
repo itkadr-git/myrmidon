@@ -638,6 +638,25 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(events.some((event) => event.event === "knowledge.suggested")).toBe(true);
   });
 
+  it("1.7 L-12: a debate source is persisted (source_kind='debate') and read back", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    await store.create({ companyId, nestId: companyId, slug: "debate-slug", title: "T", content: "c" }, AGENT);
+    const debateId = "55555555-5555-4555-8555-555555555555";
+    const suggestion = await store.suggest(companyId, BOT, {
+      companyId,
+      body: "The debate concluded: pin provider versions in the lockfile.",
+      rationale: "debate outcome",
+      targetSlug: "debate-slug",
+      sourceKind: "debate",
+      sourceRef: debateId,
+    });
+    expect(suggestion.status).toBe("pending");
+    const [row] = await db.select().from(knowledgeSuggestions).where(eq(knowledgeSuggestions.id, suggestion.id)).limit(1);
+    expect(row!.sourceKind).toBe("debate");
+    expect(row!.sourceRef).toBe(debateId);
+  });
+
   it("suggest with same idempotencyKey returns existing suggestion without creating duplicate (S8 idempotency)", async () => {
     companyId = await makeCompany();
     const store = makeStore();
@@ -1133,8 +1152,14 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     });
   }
 
-  it("domain.ts imports nothing from the database layer", () => {
+  it("domain.ts stays comment-free of database-layer references (imports and mention-gate)", () => {
     const text = readFileSync(join(moduleDir, "domain.ts"), "utf8");
-    expect(text).not.toMatch(/@myrmidon\/db|drizzle/);
+    // The import gate: domain.ts must not import @myrmidon/db or drizzle.
+    expect(text).not.toMatch(/^import\s.*(@myrmidon\/db|drizzle)/m);
+    expect(text).not.toMatch(/from\s+"(@myrmidon\/db|drizzle)/);
+    // The mention gate applies to code only: strip comments so the doc comment
+    // naming @myrmidon/db (1.7 L-12 source-kind parity) doesn't trip it.
+    const codeOnly = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(codeOnly).not.toMatch(/@myrmidon\/db|drizzle/);
   });
 });
