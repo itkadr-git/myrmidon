@@ -13,7 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import * as vendorI18n from "@/i18n";
-import { UI2_LANGUAGES as SHARED_UI2_LANGUAGES, type Ui2Language } from "@myrmidon/shared";
+import { UI2_LANGUAGES as SHARED_UI2_LANGUAGES, flattenCatalog, type Ui2Language } from "@myrmidon/shared";
 // (the vendor instance is read through readVendorI18nInstance below, never by
 // destructuring the namespace — see the comment on that helper)
 import { ui2LanguageApi } from "./api";
@@ -87,12 +87,12 @@ export function readVendorI18nInstance(): Ui2VendorI18n | null {
   return Object.hasOwn(vendorI18n, "i18n") && vendorI18n.i18n ? (vendorI18n.i18n as Ui2VendorI18n) : null;
 }
 
-export function registerUi2Catalogs(custom: Partial<Record<Ui2Language, Record<string, unknown>>> = {}): void {
+export function registerUi2Catalogs(custom: Partial<Record<string, Record<string, unknown>>> = {}): void {
   const i18nInstance = readVendorI18nInstance();
   if (!i18nInstance) return;
   if (typeof i18nInstance.hasResourceBundle !== "function") return;
   for (const [locale, baseCatalog] of Object.entries(ui2Catalogs)) {
-    const customBundle = custom[locale as Ui2Language];
+    const customBundle = custom[locale];
     const catalog = customBundle
       ? mergeCatalog(baseCatalog as unknown as CatalogObject, customBundle as CatalogObject)
       : baseCatalog;
@@ -105,6 +105,14 @@ export function registerUi2Catalogs(custom: Partial<Record<Ui2Language, Record<s
     }
     if (typeof client.addResourceBundle === "function") {
       i18nInstance.addResourceBundle?.(locale, UI2_NAMESPACE, catalog, true, true);
+    }
+  }
+  for (const [locale, customBundle] of Object.entries(custom)) {
+    if (locale in ui2Catalogs) continue;
+    if (!customBundle) continue;
+    const client = i18nInstance as unknown as Record<string, unknown>;
+    if (typeof client.addResourceBundle === "function") {
+      i18nInstance.addResourceBundle?.(locale, UI2_NAMESPACE, customBundle, true, true);
     }
   }
 }
@@ -226,9 +234,43 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
-  const applyCustomCatalog = useCallback((_targetLocale: string, _catalog: Record<string, unknown>, _merge?: boolean) => {
-    // stub
-  }, []);
+  const applyCustomCatalog = useCallback(
+    (targetLocale: string, catalog: Record<string, unknown>, andSwitch?: boolean) => {
+      const shouldSwitch = andSwitch !== false;
+      const normalized = targetLocale.trim().toLowerCase() as Ui2Language;
+      if (!normalized || !catalog || typeof catalog !== "object") return;
+
+      const { entries } = flattenCatalog(catalog);
+      const flat: Record<string, string> = {};
+      for (const [key, entryValue] of entries) {
+        flat[key] = entryValue;
+      }
+      if (!ui2Messages[normalized]) {
+        (ui2Messages as unknown as Record<string, Record<string, string>>)[normalized] = {
+          ...ui2Messages["en"],
+          ...flat,
+        };
+      } else {
+        Object.assign(ui2Messages[normalized], flat);
+      }
+      setCustomCatalogs((current) => ({ ...current, [normalized]: { ...(current[normalized] ?? {}), ...flat } }));
+
+      registerUi2Catalogs({ [normalized]: catalog });
+
+      if (shouldSwitch) {
+        userSwitched.current = true;
+        applyUi2Language(normalized);
+        setLanguageState(normalized);
+      }
+
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("myrmidon:locale-applied", { detail: { locale: normalized, andSwitch: shouldSwitch } }),
+        );
+      }
+    },
+    [],
+  );
 
   const value = useMemo<Ui2LanguageContextValue>(
     () => ({
@@ -237,10 +279,10 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
       setLanguage,
       setLocale: setLanguage,
       t: (key, values) => {
-        const template = ui2Messages[language][key] ?? ui2Messages["en"][key] ?? key;
+        const template = (ui2Messages[language]?.[key] ?? ui2Messages["en"][key] ?? key);
         return formatUi2Message(template, values);
       },
-      availableLocales: UI2_LANGUAGES,
+      availableLocales: Array.from(new Set([...UI2_LANGUAGES, ...Object.keys(customCatalogs)])) as readonly Ui2Language[],
       applyCustomCatalog,
       customCatalogs,
       setCatalogs: setCustomCatalogs,
