@@ -241,8 +241,19 @@ export async function mintGitHubAppInstallationToken(input: {
   const requestedPermissions = githubAppTokenPermissionsFor(input.permissions);
   const permissionsKey = GITHUB_APP_TOKEN_PERMISSION_KEYS.map((key) => `${key}=${requestedPermissions[key] ?? "none"}`).join(",");
 
-  const resolvePem = async (): Promise<string> => {
-    return typeof input.privateKeyPem === "function" ? await input.privateKeyPem() : input.privateKeyPem;
+  // One lazy read per mint call: the installation lookup and the mint flight
+  // share the same promise, so a cold mint resolves the secret exactly once
+  // (previously twice when the installation id had to be discovered) and warm
+  // paths — token cache hit or joining an in-flight mint — resolve it zero
+  // times. Every avoided read is one fewer row in secret_access_events.
+  let pemPromise: Promise<string> | null = null;
+  const resolvePem = (): Promise<string> => {
+    if (!pemPromise) {
+      pemPromise = (async () => {
+        return typeof input.privateKeyPem === "function" ? await input.privateKeyPem() : input.privateKeyPem;
+      })();
+    }
+    return pemPromise;
   };
 
   // Check cache early if installationId is explicitly known or cached
@@ -262,7 +273,7 @@ export async function mintGitHubAppInstallationToken(input: {
 
   const installationId = await resolveInstallationId({
     appId: input.appId,
-    privateKeyPem: input.privateKeyPem,
+    privateKeyPem: resolvePem,
     repository: input.repository,
     explicitInstallationId: input.installationId,
     fetchImpl,
