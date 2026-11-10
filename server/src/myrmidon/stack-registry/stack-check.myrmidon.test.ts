@@ -29,8 +29,10 @@ import {
 } from "./escalation.js";
 import {
   compareContainsFix,
+  compareVersionTags,
   countBehind,
   extractReleaseNotes,
+  findMaxTagIndex,
   githubJsonPort,
   normaliseVersion,
   readReleaseList,
@@ -179,6 +181,51 @@ describe("stack release check helpers", () => {
     // If local version is unknown, only the latest release is scanned for security to avoid perpetual flags.
     const notesForUnknown = extractReleaseNotes(records);
     expect(notesForUnknown?.hasSecurity).toBe(false);
+  });
+
+  it("detects security releases when local version is older than the fetched release window", () => {
+    // Reviewer-reproduced defect: the release window is bounded (e.g. per_page=30,
+    // or limit-capped in tests). When local version is 1.0.0 and older than every
+    // entry in the fetched feed window [4.0.0, 3.0.0, 2.0.0], the local version is
+    // still behind, so security releases between 1.0.0 and upstream.latest (3.0.0)
+    // MUST still flag hasSecurity.
+    const releases = [
+      {
+        tag_name: "4.0.0",
+        published_at: "2026-10-01T00:00:00Z",
+        body: "### Changes\n* Routine improvements",
+      },
+      {
+        tag_name: "3.0.0",
+        published_at: "2026-09-01T00:00:00Z",
+        body: "### Security\n* Fix CVE-2026-54321 arbitrary code execution",
+      },
+      {
+        tag_name: "2.0.0",
+        published_at: "2026-08-01T00:00:00Z",
+        body: "### Changes\n* Refactoring",
+      },
+    ];
+    const records = readReleaseList("github-releases", releases);
+
+    // Local 1.0.0 is not in the list, but it is strictly older than all entries.
+    // The security note in 3.0.0 must be detected.
+    const notes = extractReleaseNotes(records, { limit: 1, localVersion: "1.0.0" });
+    expect(notes?.hasSecurity).toBe(true);
+
+    // If local version is already 3.0.0 (addressed), only 4.0.0 is in range -> false.
+    const notesForCurrent = extractReleaseNotes(records, { limit: 1, localVersion: "3.0.0" });
+    expect(notesForCurrent?.hasSecurity).toBe(false);
+  });
+
+  it("compares version tags numerically and handles suffixes", () => {
+    expect(compareVersionTags("2.10.0", "2.9.0")).toBe(1);
+    expect(compareVersionTags("2.9.0", "2.10.0")).toBe(-1);
+    expect(compareVersionTags("1.0.0", "1.0.0")).toBe(0);
+    expect(compareVersionTags("3.2.0-beta", "3.2.0")).toBe(-1);
+    expect(compareVersionTags("3.2.0", "3.2.0-beta")).toBe(1);
+    expect(compareVersionTags("v2026.1106.0", "v2026.1001.0")).toBe(1);
+    expect(compareVersionTags("main", "1.0.0")).toBeNull();
   });
 
   it("detects a known fix commit inside the compare range", () => {
