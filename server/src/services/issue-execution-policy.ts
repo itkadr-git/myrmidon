@@ -924,10 +924,20 @@ function executorPrincipals(input: {
   add(input.existingState?.returnAssignee ?? null);
   if (input.issue.status !== "in_review" && input.issue.status !== "blocked") {
     // A reviewer/lead-role assignee is not an executor merely because the issue
-    // still points at them; the submitting actor is the executor here.
+    // still points at them; the submitting actor is the executor here. The same
+    // holds when the assignee sits in the review roster itself: the route
+    // exposes the roster as executionReviewParticipantAgentIds and
+    // safeReturnAssignee already treats roster membership as reviewer status
+    // (OPE-9487). The executor exclusion must use the same reviewer definition,
+    // otherwise a single-roster-member review stage empties out and a legal
+    // submission dies with "No eligible review participant" (OPE-12231).
+    const assigneeInReviewRoster =
+      input.issue.assigneeAgentId != null &&
+      (input.issue.executionReviewParticipantAgentIds ?? []).includes(input.issue.assigneeAgentId);
     const assigneeIsReviewerRole =
       input.issue.assigneeAgentRole === "reviewer" ||
-      input.issue.assigneeAgentRole === "lead";
+      input.issue.assigneeAgentRole === "lead" ||
+      assigneeInReviewRoster;
     if (!assigneeIsReviewerRole) add(assigneePrincipal(input.issue));
     if (!input.allowBoardOverride) add(input.actor);
   }
