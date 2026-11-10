@@ -1,8 +1,9 @@
 import { Router } from "express";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { Db } from "@myrmidon/db";
 import { blockUserSchema, patchUserBlockSchema, updateCompanyMemberSchema } from "@myrmidon/shared";
-import { companies } from "@myrmidon/db";
+import { companies, invites } from "@myrmidon/db";
 import { accessService } from "../services/access.js";
 import { assertCompanyAccess } from "./authz.js";
 import { validate } from "../middleware/validate.js";
@@ -67,6 +68,31 @@ const listUsersQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(20),
   role: z.enum(["admin", "instance_admin", "member"]).optional(),
 });
+
+/**
+ * myrmidon 1.7 USERS-ADMIN-INVITE (OPE-12090): DTO for POST /api/users/invite.
+ * The role vocabulary matches the instance-admin user management surface
+ * (`instance_admin` | `member`); anything else is rejected with 400 by zod.
+ */
+const inviteUserSchema = z
+  .object({
+    email: z.string().trim().email().max(320),
+    role: z.enum(["member", "instance_admin"]).default("member"),
+  })
+  .strict();
+
+const INVITE_TOKEN_PREFIX = "pcp_invite_";
+const INVITE_TOKEN_ENTROPY_BYTES = 32;
+const USER_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
+
+function newInviteToken(): string {
+  const suffix = randomBytes(INVITE_TOKEN_ENTROPY_BYTES).toString("base64url");
+  return `${INVITE_TOKEN_PREFIX}${suffix}`;
+}
+
+function hashInviteToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 /**
  * myrmidon(OPE-10179): PATCH /api/companies/:companyId/users/:userId — a thin
@@ -267,6 +293,71 @@ export function usersRoutes(db: Db): Router {
       } catch (err) {
         handleUsersAdminError(err, res);
       }
+    },
+  );
+
+  /**
+   * POST /api/users/invite
+   * Instance administrator route to invite a user by email without SMTP.
+   * Creates an invite token and returns it in the response; no email is sent.
+   * (myrmidon 1.7 USERS-ADMIN-INVITE, OPE-12090)
+   */
+  router.post(
+    "/users/invite",
+    validate(inviteUserSchema),
+    async (req, res) => {
+      assertAdmin(req);
+      const actorUserId = getAdminActorId(req);
+      const { email, role } = req.body as z.infer<typeof inviteUserSchema>;
+
+      const token = newInviteToken();
+      const expiresAt = new Date(Date.now() + USER_INVITE_TTL_MS);
+      const defaultsPayload: Record<string, unknown> = {
+        invitedEmail: email,
+        invitedRole: role,
+      };
+
+      const created = await db
+        .insert(invites)
+        .values({
+          companyId: null,
+          inviteType: "user_invite",
+          tokenHash: hashInviteToken(token),
+          allowedJoinTypes: "human",
+          defaultsPayload,
+          expiresAt,
+          invitedByUserId: actorUserId,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!created) {
+        res.status(500).json({ error: "Failed to create invite", code: "INTERNAL_ERROR" });
+        return;
+      }
+
+      await auditUserBlock(db, {
+        actorId: actorUserId,
+        targetUserId: created.id,
+        action: "user.invited",
+        details: {
+          actor: actorUserId,
+          inviteId: created.id,
+          email,
+          role,
+          expiresAt: expiresAt.toISOString(),
+        },
+      });
+
+      res.status(201).json({
+        ok: true,
+        inviteId: created.id,
+        email,
+        role,
+        token,
+        inviteUrl: `/invite/${token}`,
+        expiresAt: expiresAt.toISOString(),
+      });
     },
   );
 
