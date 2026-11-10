@@ -246,7 +246,7 @@ reach any other company or instance:
    ```sh
    # /srv/harness-lab/harness-runner.env  (chmod 600)
    HARNESS_LAB_BOARD_URL=http://127.0.0.1:3200/api
-   HARNESS_LAB_BOARD_TOKEN=<the agent API key value>
+   # read HARNESS_LAB_BOARD_TOKEN from the runner agent API key (never inline it)
    HARNESS_LAB_RUBRIC_PATH=/srv/harness-lab/private/acceptance.json
    ```
 
