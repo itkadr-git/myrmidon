@@ -268,8 +268,11 @@ function queryWithoutIssueFilters(query: CompanySearchQuery): CompanySearchQuery
   };
 }
 
-function issueFilterConditions(companyId: string, query: CompanySearchQuery, omit?: CompanySearchIssueFilterKey): SQL[] {
+function issueFilterConditions(companyId: string, query: CompanySearchQuery, omit?: CompanySearchIssueFilterKey, excludePrivate?: boolean): SQL[] {
   const conditions: SQL[] = [];
+  if (excludePrivate) {
+    conditions.push(eq(issues.isPrivate, false));
+  }
   if (omit !== "status" && query.status.length > 0) {
     conditions.push(query.status.length === 1 ? eq(issues.status, query.status[0]!) : inArray(issues.status, query.status));
   }
@@ -538,7 +541,11 @@ export function companySearchService(db: Db) {
   const extractService = companySearchExtractService(db);
   return {
     extract: extractService.extract,
-    search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
+    search: async (
+      companyId: string,
+      query: CompanySearchQuery,
+      options?: { excludePrivate?: boolean },
+    ): Promise<CompanySearchResponse> => {
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
       const hasSearchText = normalizedQuery.length > 0;
@@ -568,7 +575,7 @@ export function companySearchService(db: Db) {
       const containsPattern = hasSearchText && tokens.length > 0 ? taskSearch.containsPattern : "__paperclip_no_match__";
       const tokenCount = tokens.length;
 
-      const issueFilters = issueFilterConditions(companyId, query);
+      const issueFilters = issueFilterConditions(companyId, query, undefined, options?.excludePrivate);
       const hasIssueOnlyFilters = issueOnlyFiltersActive(query);
 
       // Scope conditions over precomputed flag columns (alias-qualified).
@@ -903,7 +910,7 @@ export function companySearchService(db: Db) {
 
       async function countArtifacts(filters: CompanySearchQuery = query) {
         if (!hasSearchText) return 0;
-        const artifactIssueFilters = issueFilterConditions(companyId, filters);
+        const artifactIssueFilters = issueFilterConditions(companyId, filters, undefined, options?.excludePrivate);
         const artifactIssueConditions = [
           eq(issues.companyId, companyId),
           visibleIssueCondition(),
