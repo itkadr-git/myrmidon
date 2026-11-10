@@ -243,7 +243,7 @@ describe("Codex security configuration", () => {
     resetUserNamespaceProbeForTests();
     const environment = {
       PATH: `${workspace}:/usr/bin:/bin`,
-      PAPERCLIP_RUNNER_SANDBOX_COMMAND: bwrap,
+      MYRMIDON_RUNNER_SANDBOX_COMMAND: bwrap,
     };
     expect(checkUserNamespacesAvailable(environment)).toBe(false);
     expect(codexSandboxUnavailableError().message).toMatch(/codex_sandbox_unavailable/);
