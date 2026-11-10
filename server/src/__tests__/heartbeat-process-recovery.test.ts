@@ -562,7 +562,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
     await waitForHeartbeatIdle(db, 5_000);
-    await heartbeat.drainActiveRunExecutions();
+    await heartbeatService(db).drainActiveRunExecutions();
     resetSharedRunAdmissionForTests();
     await new Promise((resolve) => setTimeout(resolve, 100));
     await db.delete(activityLog);
