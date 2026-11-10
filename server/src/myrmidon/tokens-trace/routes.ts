@@ -25,13 +25,12 @@ export function buildTokensTraceRoutes(deps: { db: Db }): Router {
   // GET /myrmidon/companies/:companyId/tokens-trace/agents?from&to&agentId
   // Acceptance #1: per-agent section shares + cache share over a window.
   router.get(`${TOKENS_TRACE_API_BASE}/agents`, async (req, res) => {
-    // Company access first: assertCompanyAccess runs assertAuthenticated, so a
-    // credential-less caller gets 401 before the board-only 403, and an agent
-    // key is denied by assertBoard below (OPE-12675).
+    // Board-first, like bot-containers: assertBoard rejects any non-board
+    // actor — including credential-less ({type:"none"}, 403) and agent keys —
+    // before company scoping runs (OPE-12675).
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
     assertBoard(req);
-
+    assertCompanyAccess(req, companyId);
     const parsed = windowSchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: "invalid_window", detail: parsed.error.issues });
@@ -56,9 +55,8 @@ export function buildTokensTraceRoutes(deps: { db: Db }): Router {
   // per-call reconciliation the acceptance criterion requires.
   router.get(`${TOKENS_TRACE_API_BASE}/reconcile`, async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
     assertBoard(req);
-
+    assertCompanyAccess(req, companyId);
     const parsed = windowSchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: "invalid_window", detail: parsed.error.issues });
