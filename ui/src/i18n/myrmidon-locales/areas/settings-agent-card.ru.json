@@ -73,7 +73,9 @@
           "board": "лимит карточки",
           "gateway": "лимит шлюза",
           "memory": "память контейнера"
-        }
+        },
+        "limitsDivergedTitle": "Лимиты ресурсов контейнера расходятся с карточкой",
+        "limitsDivergedDetail": "Запрошено в карточке: {{requestedMem}} МБ / {{requestedCpus}} CPU / {{requestedPids}} PID, фактически в контейнере: {{actualMem}} МБ / {{actualCpus}} CPU / {{actualPids}} PID"
       },
       "agent-card-egress-fields": {
         "title": "Исходящие соединения",

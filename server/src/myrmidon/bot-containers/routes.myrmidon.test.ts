@@ -264,9 +264,67 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       idleStopMode: "on_demand",
       idleStopRuntime: { idleStopped: false, lastStoppedAt: null, lastStartedAt: null },
       profileUpdatePendingSince: null,
+      limits: {
+        requested: { memoryMb: 2048, cpus: 1, pidsLimit: 512 },
+        actual: null,
+        diverged: false,
+        reason: null,
+      },
     });
     // No profile hashes leave the server.
     expect(JSON.stringify(res.body)).not.toContain("restartHash");
+  });
+
+  it("reports actual limits and divergence reason when running container limits differ from card (OPE-12337)", async () => {
+    // Card requests 3072 MB, but live container is running at 2048 MB due to platform ceiling
+    const cardWithHighMem = card({ ...ENABLED_CARD, memoryMb: 3072 });
+    const driverWithActualLimits = fakeDriver({
+      status: async (botKey) => ({
+        botKey,
+        state: "running",
+        image: "bot-image:1.1.0",
+        memoryMb: 2048,
+        cpus: 1,
+        pidsLimit: 512,
+        lastDenial: "dockergate: denied (limit_exceeds_enrollment): memoryMb 3072 exceeds platform ceiling 2048",
+      }),
+    });
+
+    const res = await request(app(member, { agent: cardWithHighMem, getRuntime: () => runtime(driverWithActualLimits) }))
+      .get(statusUrl)
+      .expect(200);
+
+    expect(res.body.limits).toEqual({
+      requested: { memoryMb: 3072, cpus: 1, pidsLimit: 512 },
+      actual: { memoryMb: 2048, cpus: 1, pidsLimit: 512 },
+      diverged: true,
+      reason: "dockergate: denied (limit_exceeds_enrollment): memoryMb 3072 exceeds platform ceiling 2048",
+    });
+  });
+
+  it("reports matched limits with diverged: false when container conforms to card (OPE-12337)", async () => {
+    const cardConforming = card(ENABLED_CARD);
+    const driverWithMatchingLimits = fakeDriver({
+      status: async (botKey) => ({
+        botKey,
+        state: "running",
+        image: "bot-image:1.1.0",
+        memoryMb: 2048,
+        cpus: 1,
+        pidsLimit: 512,
+      }),
+    });
+
+    const res = await request(app(member, { agent: cardConforming, getRuntime: () => runtime(driverWithMatchingLimits) }))
+      .get(statusUrl)
+      .expect(200);
+
+    expect(res.body.limits).toEqual({
+      requested: { memoryMb: 2048, cpus: 1, pidsLimit: 512 },
+      actual: { memoryMb: 2048, cpus: 1, pidsLimit: 512 },
+      diverged: false,
+      reason: null,
+    });
   });
 
   it("says whether the release rollout follows, skips or cannot apply to the bot", async () => {

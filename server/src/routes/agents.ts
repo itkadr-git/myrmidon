@@ -304,6 +304,11 @@ import {
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 // myrmidon(1.6.4-BOT-CONTAINER-CARD): a container block without enabled/limits is refused on save
 import { botContainerCardSaveProblem } from "../myrmidon/bot-containers/agent-config.js";
+import {
+  botResourceCeilingProblem,
+  readBotResourceCeilings,
+  type BotResourceCeilings,
+} from "../myrmidon/bot-containers/resource-ceilings.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
@@ -2545,6 +2550,7 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    agentId?: string;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2560,6 +2566,7 @@ export function agentRoutes(
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
+      input.agentId,
     );
     return normalizePaperclipRunnerAdapterConfig(
       input.adapterType ?? "",
@@ -2775,9 +2782,24 @@ export function agentRoutes(
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    agentId?: string,
   ) {
-    // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
-    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
+    // myrmidon(OPE-12337): refuse limits exceeding enrolled dockergate ceilings.
+    let ceilings: BotResourceCeilings | null = null;
+    if (
+      adapterType === "hermes_gateway" &&
+      agentId &&
+      typeof adapterConfig?.container === "object" &&
+      adapterConfig.container !== null &&
+      (adapterConfig.container as Record<string, unknown>).enabled === true
+    ) {
+      const botKey = botKeyForAgent(agentId);
+      if (botKey) {
+        ceilings = await readBotResourceCeilings(botKey);
+      }
+    }
+    // myrmidon(1.6.4-BOT-CONTAINER-CARD, OPE-12337): refuse a container block the reconciler could never apply or exceeding ceilings.
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
     if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
@@ -5865,6 +5887,7 @@ function getActorIdentityPart(req: Request): string {
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        agentId: existing.id,
       });
       assertLocalAdapterSecurityChangeAllowed(
         req,

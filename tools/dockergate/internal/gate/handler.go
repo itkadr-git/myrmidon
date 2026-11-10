@@ -122,7 +122,7 @@ func (rs *reqState) handle() *deny.Error {
 		rs.target = route.DiskTarget
 	} else if rt.ID == route.A19 {
 		rs.target = route.EventsOomTarget
-	} else if rt.ID == route.A20 {
+	} else if rt.ID == route.A20 || rt.ID == route.A21 {
 		rs.target = rt.ConfigBotKey
 	} else {
 		rs.target = rt.Name
@@ -195,6 +195,8 @@ func (rs *reqState) handle() *deny.Error {
 		return rs.a19(ctx, st)
 	case route.A20:
 		return rs.a20(st, rt)
+	case route.A21:
+		return rs.a21(st, rt)
 	}
 	return deny.New(deny.RouteNotAllowed)
 }
