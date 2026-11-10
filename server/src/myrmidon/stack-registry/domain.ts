@@ -370,10 +370,9 @@ export function patchEntryFromDelta(delta: StackDeltaSeed): StackPatchEntry {
   };
 }
 
-/**
- * Pinned Paperclip vendor release supported by the migration schema
- * (schema-paperclip-v2026.1106.0.sql).
- */
+//
+// Pinned Paperclip vendor release supported by the migration schema
+// (schema-paperclip-v2026.1106.0.sql).
 export const PAPERCLIP_MIGRATION_SUPPORTED_VERSION = "v2026.1106.0";
 
 /**
