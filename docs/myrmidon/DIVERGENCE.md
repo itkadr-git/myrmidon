@@ -1250,6 +1250,7 @@
 | ID | Что изменено | Файлы | Зачем | Тесты | Когда снимать | Ссылка |
 |---|---|---|---|---|---|---|
 | 1.7-UI2-SETTINGS-SECTIONS | Маршрут `company/settings/guards` в `boardRoutes` для предотвращения «Page not found» (OPE-9379) и регрессионный тест 11 путей настроек UI-2.0 | `ui/src/App.tsx` (импорт `Ui2PlaceholderScreen` и маршрут `company/settings/guards`), `ui/src/ui2/routes.tsx` (экспорт `Ui2PlaceholderScreen`) | Предотвратить 404 на `guards` и регрессии рендеринга настроек UI-2.0 (OPE-10138) | `ui/src/ui2/tests/ui2SettingsSections.myrmidon.test.tsx`, `ui/src/ui2/tests/ui2Screens.myrmidon.test.ts` | Никогда, штатный маршрут настроек | (этот PR) |
+| 1.7-UI-VITE-CONFIG-LOADER | Файл `ui/vite.config.ts` загружается любым загрузчиком Vite (включая будущий `native` по умолчанию): три относительных импорта получили `.ts` расширение, `__dirname` заменён на `import.meta.dirname` с fallback через `fileURLToPath(import.meta.url)` | `ui/vite.config.ts` | Устранение предупреждения Vite о неподдерживаемых возможностях в `configLoader: 'native'` (OPE-12644) | `ui/src/lib/vite-config-paths.myrmidon.test.ts` | Никогда, наше поведение (поддержка `configLoader: 'native'`) | (этот PR) |
 
 ## 1.6.6 — EXECUTION-RECOVERY: ошибки среды адаптера освобождают задачу
 
