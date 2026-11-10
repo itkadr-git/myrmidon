@@ -280,9 +280,10 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
 
       // Server state follows the job.
       if (input.status === "succeeded") {
+        const nextState = job.kind === "decommission" ? "decommissioned" : "ready";
         await deps.store.updateServerOnboard(job.companyId, job.serverId, {
-          onboardState: "ready",
-          lastCheckOk: true,
+          onboardState: nextState,
+          lastCheckOk: job.kind !== "decommission",
           ...(input.hostKeyFingerprint ? { hostKeyFingerprint: input.hostKeyFingerprint } : {}),
         });
       } else if (input.status === "failed") {
