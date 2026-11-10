@@ -65,17 +65,22 @@ function sendPlannerError(res: Response, error: unknown) {
 
 export function myrmidonCtoChatRoutes(
   db: Db,
-  settings: CtoChatSettings = readCtoChatSettings(),
+  settings?: CtoChatSettings,
   deps: CtoChatRouteDeps = {},
 ) {
   const router = Router();
+  // myrmidon(OPE-12124): the settings are re-read on every request unless a
+  // static object is injected (tests), so a master switch saved in "Тонкие
+  // настройки" applies without a restart (the same live-read contract the
+  // foraging sweep follows).
+  const readSettings = (): CtoChatSettings => settings ?? readCtoChatSettings();
   // Built lazily so a planner that is not configured never touches the secrets
   // service at route-construction time (the module is mounted for every start).
   let runtime: CtoChatRuntime | null = deps.runtime ?? null;
   const resolveRuntime = async (): Promise<CtoChatRuntime> => {
     if (runtime) return runtime;
     const { createCtoChatRuntimeForDb } = await import("./runtime.js");
-    runtime = createCtoChatRuntimeForDb(db, settings);
+    runtime = createCtoChatRuntimeForDb(db, readSettings());
     return runtime;
   };
 
@@ -85,7 +90,7 @@ export function myrmidonCtoChatRoutes(
     async (req: Request, res: Response) => {
       const companyId = planRouteCompanyId(req);
       assertCompanyAccess(req, companyId);
-      const problem = ctoChatSettingsProblem(settings);
+      const problem = ctoChatSettingsProblem(readSettings());
       if (problem) {
         res.status(503).json({ error: problem, code: "planner_disabled" });
         return;

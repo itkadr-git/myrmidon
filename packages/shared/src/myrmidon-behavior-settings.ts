@@ -91,7 +91,7 @@ const dSettings: Array<{
   key: string;
   envName: string;
   default: unknown;
-  section: "channels" | "models";
+  section: "channels" | "models" | "foraging" | "system";
   validate: (value: unknown) => unknown | null;
 }> = [
   { key: "telegramDmConversations", envName: "MYRMIDON_TELEGRAM_DM_CONVERSATIONS", default: "", section: "channels", validate: (value) => typeof value === "string" ? value : null },
@@ -113,6 +113,16 @@ const dSettings: Array<{
   { key: "ctoChatModel", envName: "MYRMIDON_CTO_CHAT_MODEL", default: "dashscope-qwen-flash", section: "models", validate: nonEmptyString },
   { key: "ctoChatTimeoutSec", envName: "MYRMIDON_CTO_CHAT_TIMEOUT_SEC", default: 90, section: "models", validate: positiveInteger() },
   { key: "ctoChatMaxTasks", envName: "MYRMIDON_CTO_CHAT_MAX_TASKS", default: 8, section: "models", validate: positiveInteger() },
+  // myrmidon(OPE-12124): master switches of the 1.6 features, movable from
+  // env to "Тонкие настройки". Kill-switch semantics: the default is ON so an
+  // instance that never declares anything keeps its current behaviour (the
+  // feature's own contour settings decide), while a saved UI value turns the
+  // feature off without a restart and the env variable stays the forced
+  // override (the contract of resolveSetting: ui → env → default).
+  { key: "foragingEnabled", envName: "MYRMIDON_FORAGING_ENABLED", default: true, section: "foraging", validate: booleanSetting },
+  { key: "baselineEnabled", envName: "MYRMIDON_BASELINE_ENABLED", default: true, section: "system", validate: booleanSetting },
+  { key: "ctoChatEnabled", envName: "MYRMIDON_CTO_CHAT_ENABLED", default: true, section: "models", validate: booleanSetting },
+  { key: "evalsEnabled", envName: "MYRMIDON_EVALS_ENABLED", default: true, section: "models", validate: booleanSetting },
   { key: "evalsModel", envName: "MYRMIDON_EVALS_MODEL", default: "", section: "models", validate: nonEmptyString },
   { key: "evalsTimeoutSec", envName: "MYRMIDON_EVALS_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
   { key: "evalsLangfuseExport", envName: "MYRMIDON_EVALS_LANGFUSE", default: false, section: "models", validate: booleanSetting },

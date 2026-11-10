@@ -281,6 +281,16 @@ general). Сохранение — частичная запись: пишетс
 
 Строго соблюдается изоляция scope: маршруты инстанса отклоняют ключи компании, а маршруты компании отклоняют ключи инстанса с ошибкой HTTP 400. Полная спецификация API и каталог настроек: [SETTINGS.ru.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.ru.md#17--api-runtime-настроек-behavior-settings-settings-to-ui).
 
+### Панель «Система» (Instance → General)
+
+Панель **Система** (`SystemSettingsPanel.tsx`) изменяет системные настройки и настройки мониторинга (SETTINGS-TO-UI E) на лету, без перезапуска:
+- **Deploy** (`system.deploy.enabled`, `autoRollback`, `autoUpdate`, `verifyTimeoutSec`, `tickSec`, `stepTimeoutSec`, `healthPollSec`, `healthTimeoutSec`) — переключатели самообновления доски и параметры deploy-smoke (переменные `MYRMIDON_DEPLOY_*`).
+- **Tracing** (`system.tracing.windowSec`, `healthTtlSec`, `signalIntervalSec`) — окно проверки здоровья LLM-трейсинга, TTL кеша отчёта и период прохода сигнала оператору (переменные `MYRMIDON_TRACING_*`).
+- **Monitoring (Zabbix)** (`system.zabbix.hostGroups`, `maxWindowSec`) — группы хостов, переводимые в обслуживание вместе с окном инстанса, и длина окна (переменные `MYRMIDON_ZABBIX_*`).
+- **Deployment (только чтение)** — `GET /api/myrmidon/system/deployment` сообщает, какие инфраструктурные интеграции настроены (LLM-шлюз, hindsight, Zabbix, tracing ClickHouse, OCR, Docker-сокет, fleetd, Langfuse, egress-прокси): для ссылок на секреты сам факт, для URL хост, никогда сами значения.
+
+Заданная переменная окружения остаётся принудительным переопределением; иначе действует сохранённое значение, иначе умолчание — каждое поле показывает действующий источник. Настройки hindsight остаются в карточке памяти агента, а не в этой панели.
+
 ### Панель «Ограждения» (Instance → General)
 
 Панель **Ограждения** на странице общих настроек инстанса (`InstanceGeneralSettings.tsx`) позволяет администраторам настраивать параметры безопасности выполнения и лимиты инструментов на лету без перезапуска сервера:

@@ -281,6 +281,30 @@ Starting with Myrmidon 1.7 (SETTINGS-TO-UI), runtime behavior settings can be re
 
 Scope isolation is strictly enforced: instance endpoints reject company-scoped keys, and company endpoints reject instance-scoped keys with HTTP 400. Full API specification and setting catalog: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#17--behavior-settings-api-runtime-settings-settings-to-ui).
 
+### System settings panel (Instance → General)
+
+The **System** panel (`SystemSettingsPanel.tsx`) edits the system and
+monitoring behavior settings (SETTINGS-TO-UI E) live, without a restart:
+- **Deploy** (`system.deploy.enabled`, `autoRollback`, `autoUpdate`,
+  `verifyTimeoutSec`, `tickSec`, `stepTimeoutSec`, `healthPollSec`,
+  `healthTimeoutSec`) — the board self-deploy switches and smoke parameters
+  (the `MYRMIDON_DEPLOY_*` variables).
+- **Tracing** (`system.tracing.windowSec`, `healthTtlSec`,
+  `signalIntervalSec`) — the LLM tracing health window, report cache TTL and
+  the operator-signal sweep period (the `MYRMIDON_TRACING_*` variables).
+- **Monitoring (Zabbix)** (`system.zabbix.hostGroups`, `maxWindowSec`) — the
+  host groups put into maintenance with the instance window and the window
+  length (the `MYRMIDON_ZABBIX_*` variables).
+- **Deployment (read-only)** — `GET /api/myrmidon/system/deployment` reports
+  which infrastructure integrations are configured (LLM gateway, hindsight,
+  Zabbix, tracing ClickHouse, OCR, Docker socket, fleetd, Langfuse, egress
+  proxy): presence for secret references, the host for URLs, never the values.
+
+A set environment variable stays the forced override; otherwise the saved
+value applies, otherwise the default — each field shows which source is in
+force. The hindsight settings stay on the agent memory card, not in this
+panel.
+
 ### Guardrails panel (Instance → General)
 
 The **Guardrails** panel on the general instance settings page (`InstanceGeneralSettings.tsx`) allows administrators to configure execution safety parameters and limits live without restarting the server:

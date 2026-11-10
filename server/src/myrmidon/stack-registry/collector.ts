@@ -196,6 +196,11 @@ async function httpJsonRequest(url: URL): Promise<HttpJsonResponse> {
   }
 }
 
+/**
+ * Parse an HTTP version response body: JSON with a `version` or `api_version`
+ * field (non-empty string). Any other shape answers null (an honest unknown
+ * instead of crashing).
+ */
 function extractVersionField(body: string): string | null {
   let parsed: unknown;
   try {
@@ -204,8 +209,13 @@ function extractVersionField(body: string): string | null {
     return null;
   }
   if (!parsed || typeof parsed !== "object") return null;
-  const version = (parsed as { version?: unknown }).version;
-  return typeof version === "string" && version.trim().length > 0 ? version.trim() : null;
+  const obj = parsed as Record<string, unknown>;
+  for (const raw of [obj.version, obj.api_version]) {
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      return raw.trim();
+    }
+  }
+  return null;
 }
 
 /**

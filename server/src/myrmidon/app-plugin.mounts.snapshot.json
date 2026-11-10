@@ -182,6 +182,7 @@
   "api.use(myrmidonForagingRoutes(db))",
   "api.use(myrmidonMonitoringAlertsRoutes(db))",
   "api.use(myrmidonZabbixSinkRoutes(db))",
+  "api.use(myrmidonWebhookIntakeRoutes(db))",
   "api.use(myrmidonMonitoringDashboardRoutes(db))",
   "api.use(myrmidonForagingIdleGateRoutes(db))",
   "api.use(myrmidonForagingPassRoutes(db))",
