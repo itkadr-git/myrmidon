@@ -228,6 +228,53 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     expect(logActivityMock).not.toHaveBeenCalled();
   });
 
+  it("partial success: 2 valid agents updated, 1 invalid model reported in failed[]", async () => {
+    agentSvcMock.getById.mockImplementation(async (id: string) => {
+      if (id === AGENT_1) return makeAgent(AGENT_1);
+      if (id === AGENT_2) return makeAgent(AGENT_2);
+      // AGENT_3 runs on codex_local, whose model catalog does not include
+      // "claude-opus-4-6" — the real production validation rejects the model
+      // for this agent only, yielding partial success.
+      if (id === AGENT_3) return makeAgent(AGENT_3, { adapterType: "codex_local" });
+      return null;
+    });
+    agentSvcMock.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
+      const current = await agentSvcMock.getById(id);
+      return {
+        ...current,
+        adapterConfig: { ...current.adapterConfig, ...(patch.adapterConfig as Record<string, unknown> ?? {}) },
+        runtimeConfig: { ...current.runtimeConfig, ...(patch.runtimeConfig as Record<string, unknown> ?? {}) },
+      };
+    });
+
+    const res = await request(boardApp())
+      .post(`/api/companies/${COMPANY_ID}/agents/bulk-update-model`)
+      .send({
+        agentIds: [AGENT_1, AGENT_2, AGENT_3],
+        model: "claude-opus-4-6",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toHaveLength(2);
+    expect(res.body.updated).toContain(AGENT_1);
+    expect(res.body.updated).toContain(AGENT_2);
+    expect(res.body.failed).toHaveLength(1);
+    expect(res.body.failed[0].id).toBe(AGENT_3);
+    expect(res.body.failed[0].reason).toBeTruthy();
+    expect(res.body.failed[0].reason).toContain("Unknown model");
+
+    // Activity log written only for the two successful mutations.
+    expect(logActivityMock).toHaveBeenCalledTimes(2);
+    expect(logActivityMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "agent.updated", entityId: AGENT_1 }),
+    );
+    expect(logActivityMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "agent.updated", entityId: AGENT_2 }),
+    );
+  });
+
   it("updates agents with a valid model and writes activity log per mutation", async () => {
     agentSvcMock.getById.mockImplementation(async (id: string) => {
       if (id === AGENT_1) return makeAgent(AGENT_1);
@@ -389,16 +436,26 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
   });
 
   it("rolls back the mutation when activity-log write fails and reports agent in failed[]", async () => {
+    // Stateful in-memory store so we can verify the mutation was rolled back:
+    // svc.update writes into the store, but logActivity throws inside the
+    // transaction, so after the request the store must still hold the
+    // original model.
+    const store = new Map<string, Record<string, unknown>>();
+    store.set(AGENT_1, makeAgent(AGENT_1) as unknown as Record<string, unknown>);
+
     agentSvcMock.getById.mockImplementation(async (id: string) => {
-      if (id === AGENT_1) return makeAgent(AGENT_1);
-      return null;
+      const row = store.get(id);
+      return row ? { ...row } : null;
     });
     agentSvcMock.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
-      const current = await agentSvcMock.getById(id);
-      return {
+      const current = store.get(id);
+      if (!current) return null;
+      const updated = {
         ...current,
-        adapterConfig: { ...current.adapterConfig, ...(patch.adapterConfig as Record<string, unknown> ?? {}) },
+        adapterConfig: { ...current.adapterConfig as Record<string, unknown>, ...(patch.adapterConfig as Record<string, unknown> ?? {}) },
       };
+      store.set(id, updated);
+      return { ...updated };
     });
     // Activity-log persistence failure must roll back the agent mutation and
     // surface the agent in failed[] — a failed audit can never be reported
@@ -417,8 +474,11 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     expect(res.body.failed).toHaveLength(1);
     expect(res.body.failed[0].id).toBe(AGENT_1);
     expect(res.body.failed[0].reason).toContain("activity log unavailable");
-    // svc.update was attempted but the transaction rolled it back.
+    // svc.update was attempted but the transaction rolled it back: the
+    // store still holds the original model, not VALID_MODEL.
     expect(agentSvcMock.update).toHaveBeenCalledTimes(1);
+    const storedAfter = store.get(AGENT_1) as { adapterConfig: { model?: string } };
+    expect(storedAfter.adapterConfig.model).not.toBe(VALID_MODEL);
   });
 
   it("returns 400 when neither model nor connectionId is provided", async () => {

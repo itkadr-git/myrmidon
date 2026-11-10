@@ -154,6 +154,11 @@ interface UpdateAgentOptions {
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
   claudeLogin?: ClaudeLoginContext;
+  /** External transaction/db handle (e.g. bulk-update-model route). When set,
+   * updateAgent runs its mutations on this handle instead of the service-level
+   * db, so the caller's transaction can roll back the mutation + audit row
+   * atomically. */
+  db?: Db;
 }
 
 interface CreateAgentOptions {
@@ -931,6 +936,12 @@ export function agentService(
     data: Partial<typeof agents.$inferInsert>,
     options?: UpdateAgentOptions,
   ) {
+    // When the caller passes an external db/tx handle (bulk-update-model route
+    // wrapping mutation + audit in one transaction), run reads and writes on
+    // that handle so the caller's transaction can roll back atomically.
+    // `db` is captured from the enclosing agentService(...) factory closure;
+    // resolve the handle here instead of relying on closure hoisting.
+    const dbHandle: Db = options?.db ?? db;
     const existing = await getById(id);
     if (!existing) return null;
 
@@ -1098,11 +1109,11 @@ export function agentService(
       return normalizedUpdated;
     };
 
-    const transaction = (db as unknown as {
+    const transaction = (dbHandle as unknown as {
       transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
     }).transaction;
-    if (typeof transaction !== "function") return applyUpdate(db);
-    return transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
+    if (typeof transaction !== "function") return applyUpdate(dbHandle);
+    return transaction.call(dbHandle, async (tx) => applyUpdate(tx as unknown as Db));
   }
 
   return {

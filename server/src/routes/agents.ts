@@ -6139,6 +6139,9 @@ function getActorIdentityPart(req: Request): string {
                     createdByUserId: actor.actorType === "user" ? actor.actorId : null,
                     source: "bulk-update-model",
                   },
+                  // Run the mutation on the caller's tx so a logActivity
+                  // failure rolls back the agent update atomically.
+                  db: tx as unknown as Db,
                 });
                 if (!updated) return null;
                 await logActivity(tx as unknown as Db, {
