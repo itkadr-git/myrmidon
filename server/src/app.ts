@@ -178,6 +178,7 @@ import {
   myrmidonPromptBudgetRoutes,
   modelFallbackSignalRoutes,
   myrmidonOwnerDeliveryRoutes,
+  toolComplaintRoutes,
   reviewRoutingRoutes,
   reviewReworkRoutes,
   goalJudgeRoutes,
@@ -1336,6 +1337,7 @@ export async function createApp(
   api.use(projectTokenQuotaRoutes(db)); // myrmidon(1.6.6 QUOTA-V2): project token quota read/write
   api.use(modelFallbackSignalRoutes(db)); // myrmidon(BOT-RUNTIME-TUNING D2): fallback-signal settings and the live per-agent fallback share
   api.use(myrmidonOwnerDeliveryRoutes(db)); // myrmidon(1.6.5-OWNER-DM-FILTER): GET/PATCH /api/myrmidon/owner-delivery
+  api.use(toolComplaintRoutes(db)); // myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228): POST/GET /api/myrmidon/tool-complaints
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
   api.use(goalJudgeRoutes(db)); // myrmidon(1.7 GOAL-JUDGE): GET/PATCH /api/myrmidon/goal-judge
