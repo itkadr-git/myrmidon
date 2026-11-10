@@ -6134,21 +6134,33 @@ function getActorIdentityPart(req: Request): string {
             continue;
           }
 
-          await logActivity(db, {
-            companyId: agent.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            agentApiKeyId: actor.agentApiKeyId,
-            action: "agent.updated",
-            entityType: "agent",
-            entityId: agent.id,
-            details: {
-              ...summarizeAgentUpdateDetails(patchData),
-              bulkUpdate: true,
-            },
-          });
+          // The mutation is already persisted at this point (svc.update above).
+          // A failure to write the activity log must NOT roll back the agent
+          // update or report the agent as failed: the mutation is real, only
+          // the audit trail is missing.  Log the discrepancy server-side so an
+          // operator can reconcile, and still count the agent as updated.
+          try {
+            await logActivity(db, {
+              companyId: agent.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
+              action: "agent.updated",
+              entityType: "agent",
+              entityId: agent.id,
+              details: {
+                ...summarizeAgentUpdateDetails(patchData),
+                bulkUpdate: true,
+              },
+            });
+          } catch (activityErr) {
+            console.error(
+              `[bulk-update-model] agent ${agent.id} mutated but activity log write failed:`,
+              activityErr,
+            );
+          }
 
           updated.push(agent.id);
         } catch (err) {

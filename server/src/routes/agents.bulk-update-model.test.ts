@@ -384,6 +384,36 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     expect(second.body.failed).toHaveLength(0);
   });
 
+  it("counts the agent as updated even when activity-log write fails", async () => {
+    agentSvcMock.getById.mockImplementation(async (id: string) => {
+      if (id === AGENT_1) return makeAgent(AGENT_1);
+      return null;
+    });
+    agentSvcMock.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
+      const current = await agentSvcMock.getById(id);
+      return {
+        ...current,
+        adapterConfig: { ...current.adapterConfig, ...(patch.adapterConfig as Record<string, unknown> ?? {}) },
+      };
+    });
+    // Activity-log persistence failure must not roll back the mutation nor
+    // report the agent as failed: the agent update is already committed.
+    logActivityMock.mockRejectedValueOnce(new Error("activity log unavailable"));
+
+    const res = await request(boardApp())
+      .post(`/api/companies/${COMPANY_ID}/agents/bulk-update-model`)
+      .send({
+        agentIds: [AGENT_1],
+        model: VALID_MODEL,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toEqual([AGENT_1]);
+    expect(res.body.failed).toHaveLength(0);
+    // The mutation still happened — svc.update was called.
+    expect(agentSvcMock.update).toHaveBeenCalledTimes(1);
+  });
+
   it("returns 400 when neither model nor connectionId is provided", async () => {
     const res = await request(boardApp())
       .post(`/api/companies/${COMPANY_ID}/agents/bulk-update-model`)
