@@ -83,10 +83,12 @@ function apiView() {
   };
 }
 
-/** The view the server answers after a reset of bot_egress_mode. */
+/** The view the server answers after a reset of bot_egress_mode:
+ * the key stays present with its resolved value, the source falls back. */
 function resetView() {
   return {
     settings: {
+      bot_egress_mode: "direct",
       tool_breaker_failures: 4,
       tool_breaker_cooldown_ms: 60000,
     },
@@ -189,7 +191,7 @@ describe("myrmidon(UI2) Ui2FineSettings reset (OPE-12695)", () => {
     expect(mockUpdate).toHaveBeenCalledWith({ bot_egress_mode: null });
 
     // The row renders the value and source of the server answer.
-    expect(row("bot_egress_mode")?.querySelector(".ui2-fine-val")?.textContent).toContain("—");
+    expect(row("bot_egress_mode")?.querySelector(".ui2-fine-val")?.textContent).toContain("direct");
     expect(row("bot_egress_mode")?.querySelector(".ui2-fine-src")?.textContent).toContain("Default");
     // The confirm step is gone after success.
     expect(

@@ -135,6 +135,7 @@ export function Ui2FineSettings() {
         delete next[key];
         return next;
       });
+      setResetArmKey((current) => (current === key ? null : current));
       setErrors((current) => ({ ...current, [key]: errorText(error) }));
       setSavingKey(null);
     },
