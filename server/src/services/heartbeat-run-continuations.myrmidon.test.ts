@@ -217,7 +217,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await loadRunContinuationEnvelope(db, { companyId, runId: emptyRunId })).toBeNull();
   });
 
-  it("applies the compact migration 0475 to historical full-envelope rows", async () => {
+  it("applies the compact migration 0476 to historical full-envelope rows", async () => {
     const runId = await createRun({ issueId: randomUUID() });
     const now = new Date().toISOString();
     const historicalEnvelope: ExecutionContinuationEnvelope = {
@@ -265,7 +265,7 @@ const support = await getEmbeddedPostgresTestSupport();
     });
 
     const migrationSql = readFileSync(
-      new URL("../../../packages/db/src/migrations/0475_compact_heartbeat_run_continuations.sql", import.meta.url),
+      new URL("../../../packages/db/src/migrations/0476_compact_heartbeat_run_continuations.sql", import.meta.url),
       "utf8",
     );
     // Execute migration

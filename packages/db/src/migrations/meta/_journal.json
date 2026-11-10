@@ -2757,8 +2757,15 @@
     {
       "idx": 475,
       "version": "7",
-      "when": 1794248347752,
-      "tag": "0475_compact_heartbeat_run_continuations",
+      "when": 1794249000000,
+      "tag": "0475_knowledge_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 476,
+      "version": "7",
+      "when": 1794249000001,
+      "tag": "0476_compact_heartbeat_run_continuations",
       "breakpoints": true
     }
   ]

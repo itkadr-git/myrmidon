@@ -61,6 +61,7 @@ export * from "../myrmidon-host-disk.js";
 export * from "../myrmidon-idle-stop.js";
 export * from "../myrmidon-isolation-scope.js";
 export * from "../myrmidon-issue-list-agent-defaults.js";
+export * from "../myrmidon-knowledge-settings.js";
 export * from "../myrmidon-knowledge-tools.js";
 export * from "../myrmidon-litellm-sync.js";
 export * from "../myrmidon-litellm-workers.js";
