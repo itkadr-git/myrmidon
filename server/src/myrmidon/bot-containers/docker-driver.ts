@@ -1716,6 +1716,11 @@ export function dockerBotContainerDriver(
     if (!info) return { botKey, state: "missing" };
     const marker = await readAppliedMarker(botKey, info);
     const idleStopped = await readIdleStopped(botKey);
+    const memoryBytes = info.HostConfig?.Memory;
+    const memoryMb = typeof memoryBytes === "number" && memoryBytes > 0 ? Math.round(memoryBytes / (1024 * 1024)) : undefined;
+    const nanoCpus = info.HostConfig?.NanoCpus;
+    const cpus = typeof nanoCpus === "number" && nanoCpus > 0 ? nanoCpus / 1e9 : undefined;
+    const pidsLimit = typeof info.HostConfig?.PidsLimit === "number" && info.HostConfig.PidsLimit > 0 ? info.HostConfig.PidsLimit : undefined;
     return {
       botKey,
       state: botStateFromInspect(info),
@@ -1723,6 +1728,9 @@ export function dockerBotContainerDriver(
       restartHash: marker?.restartHash,
       filesHash: marker?.filesHash,
       maxConcurrentRuns: marker?.maxConcurrentRuns,
+      memoryMb,
+      cpus,
+      pidsLimit,
       // myrmidon(OPE-4789): the raw inspect rides along, so a caller that
       // already asked for the status (the reconciler, once per bot per pass)
       // can hand it to templateDrift instead of paying a second inspect.

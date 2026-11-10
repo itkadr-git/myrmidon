@@ -73,7 +73,9 @@
           "board": "the board limit",
           "gateway": "the gateway limit",
           "memory": "the container memory"
-        }
+        },
+        "limitsDivergedTitle": "Container resource limits differ from card",
+        "limitsDivergedDetail": "Card requested {{requestedMem}} MB / {{requestedCpus}} CPUs / {{requestedPids}} PIDs, container running with {{actualMem}} MB / {{actualCpus}} CPUs / {{actualPids}} PIDs"
       },
       "agent-card-egress-fields": {
         "title": "Egress",

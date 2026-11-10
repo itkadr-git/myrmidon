@@ -151,3 +151,39 @@ func (rs *reqState) a20(st *runtime, rt *route.Route) *deny.Error {
 	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: resp})
 	return nil
 }
+
+// a21 answers route A21 (GET one bot's limits) with the bot's dockergate-side
+// resource limits AND the platform ceilings that bound them. The board uses it
+// (OPE-12337) to validate an agent card's container.memoryMb/cpus/pidsLimit
+// against the same ceilings dockergate enforces on HostConfig, so a card that
+// the gate would reject at reconcile time is rejected at save time with 422.
+// Read-only: no daemon call, no config write.
+func (rs *reqState) a21(st *runtime, rt *route.Route) *deny.Error {
+	if rt.ConfigBotKey == "" {
+		return deny.New(deny.RouteNotAllowed).WithDetail("target_bot_required")
+	}
+	bot, found := st.cfg.Bot(rt.ConfigBotKey)
+	if !found {
+		return deny.New(deny.BotNotEnrolled)
+	}
+	ceilMem, ceilCPUs, ceilPids, _ := st.cfg.CeilingsFor(rt.ConfigBotKey)
+	resp, err := json.Marshal(struct {
+		OK              bool    `json:"ok"`
+		BotKey          string  `json:"botKey"`
+		Memory          int64   `json:"memoryMb"`
+		CPUs            float64 `json:"cpus"`
+		Pids            int64   `json:"pidsLimit"`
+		CeilingMemory   int64   `json:"ceilingMemoryMb"`
+		CeilingCPUs     float64 `json:"ceilingCpus"`
+		CeilingPids     int64   `json:"ceilingPids"`
+		EffectiveMemory int64   `json:"effectiveMemoryMb"`
+		EffectiveCPUs   float64 `json:"effectiveCpus"`
+		EffectivePids   int64   `json:"effectivePidsLimit"`
+	}{true, bot.BotKey, bot.MaxMemoryMB, bot.MaxCPUs, bot.MaxPids, ceilMem, ceilCPUs, ceilPids,
+		min(bot.MaxMemoryMB, ceilMem), min(bot.MaxCPUs, ceilCPUs), min(bot.MaxPids, ceilPids)})
+	if err != nil {
+		return deny.New(deny.UpstreamError).WithDetail("bot_limits_json")
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: resp})
+	return nil
+}
