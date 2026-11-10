@@ -241,7 +241,7 @@ export function dmProgressToolLabel(input: {
   if (THINK_TOOLS.has(name)) return { kind: "think", label: texts.verbs.think };
   if (PLAN_TOOLS.has(name)) return { kind: "plan", label: texts.verbs.plan };
   if (MEMORY_TOOLS.has(name)) return { kind: "memory", label: texts.verbs.memory };
-  if (name === "clarify") return { kind: "tool", label: texts.events.toolStartedFallback };
+  if (name === "clarify") return { kind: "tool", label: texts.clarify };
   return { kind: "tool", label: texts.toolPrefix(safeToolName(input.toolName)) };
 }
 

@@ -66,11 +66,21 @@ describe("step labels", () => {
       [{ toolName: "reasoning" }, { kind: "think", label: "thinking" }],
       [{ toolName: "update_plan" }, { kind: "plan", label: "planning" }],
       [{ toolName: "recall" }, { kind: "memory", label: "recalling context" }],
+      [{ toolName: "clarify" }, { kind: "tool", label: "clarifying the task" }],
       [{ toolName: "mcp__crm__get_lead" }, { kind: "tool", label: "tool: mcp__crm__get_lead" }],
     ];
     for (const [input, expected] of cases) {
       expect(dmProgressToolLabel({ ...input, locale: "en" })).toEqual(expected);
     }
+  });
+
+  // myrmidon(1.7-TG-LOCALE): the clarify tool keeps the pre-catalog ru literal
+  // byte-for-byte (review fix: it had fallen back to "запускаю инструмент…").
+  it("keeps the ru clarify wording byte-identical to the pre-catalog label (TG-LOCALE)", () => {
+    expect(dmProgressToolLabel({ toolName: "clarify" })).toEqual({
+      kind: "tool",
+      label: "уточняю задачу",
+    });
   });
 });
 

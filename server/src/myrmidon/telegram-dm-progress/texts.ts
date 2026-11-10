@@ -83,6 +83,8 @@ export interface DmProgressTexts {
     planUpdatedFallback: string;
     itemCompleted: (message: string) => string;
   };
+  /** The clarifying-question tool step ("уточняю задачу" / "clarifying the task"). */
+  clarify: string;
   /** The prefix of the unknown-tool fallback, with the name appended. */
   toolPrefix: (name: string) => string;
   /** "Говорящий N" is the voice-stt contract — NOT localized here. */
@@ -116,6 +118,8 @@ export const DM_PROGRESS_TEXTS: Record<DmProgressTextLocale, DmProgressTexts> = 
       answer: "пишу ответ",
       tool: "инструмент",
     },
+    /** The ru clarify wording is the pre-catalog literal, byte-for-byte. */
+    clarify: "уточняю задачу",
     documentNouns: {
       pptx: "презентацию",
       ppt: "презентацию",
@@ -181,6 +185,7 @@ export const DM_PROGRESS_TEXTS: Record<DmProgressTextLocale, DmProgressTexts> = 
       answer: "writing the answer",
       tool: "tool",
     },
+    clarify: "clarifying the task",
     documentNouns: {
       pptx: "presentation",
       ppt: "presentation",
