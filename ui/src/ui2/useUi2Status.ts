@@ -131,5 +131,5 @@ export function useUi2AttentionCount(): number | null {
     refetchInterval: UI2_CHIP_REFETCH_INTERVAL_MS,
     refetchOnWindowFocus: true,
   });
-  return badges.data ? badges.data.approvals : null;
+  return ui2ApprovalsPendingFromBadges(badges.isError ? undefined : badges.data);
 }

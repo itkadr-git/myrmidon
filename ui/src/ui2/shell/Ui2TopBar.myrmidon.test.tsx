@@ -200,4 +200,18 @@ describe("myrmidon(UI2 Wave A part 2) top bar chips", () => {
     expect(text).not.toContain("$42");
     expect(container.querySelector('[aria-label="Waiting count unavailable"]')?.textContent).toBe("—");
   });
+
+  it("ignores invalid or non-finite legacy scalar fields and renders empty states", async () => {
+    const text = await renderWith({
+      colonyActive: Number.NaN,
+      colonyTotal: 10,
+      monthSpendCents: -100,
+      monthBudgetCents: 10_000,
+      attentionCount: -3,
+    });
+    expect(text.match(/—/g)?.length).toBe(4);
+    expect(text).not.toContain("NaN");
+    expect(text).not.toContain("-3");
+    expect(container.querySelector('[aria-label="Waiting count unavailable"]')?.textContent).toBe("—");
+  });
 });

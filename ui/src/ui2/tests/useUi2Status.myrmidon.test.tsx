@@ -9,7 +9,7 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 import { useQuery } from "@tanstack/react-query";
-import { useUi2StatusStrip, type Ui2StatusStrip } from "../useUi2Status";
+import { useUi2StatusStrip, useUi2AttentionCount, type Ui2StatusStrip } from "../useUi2Status";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => vi.clearAllMocks());
@@ -54,5 +54,36 @@ describe("UI2 status source availability", () => {
     const strip = readStrip(source);
     expect(strip?.[source === 0 ? "colony" : source === 2 ? "runs" : "spend"]).toBeNull();
     expect(strip?.waiting?.count).toBe(6);
+  });
+
+  it("extracts attention approvals count safely and suppresses on query error or invalid data", () => {
+    queries.results = [{ data: { approvals: 5 }, isError: false }];
+    let count: number | null = null;
+    function ProbeSuccess() {
+      count = useUi2AttentionCount();
+      return null;
+    }
+    const root1 = createRoot(document.createElement("div"));
+    act(() => root1.render(<ProbeSuccess />));
+    act(() => root1.unmount());
+    expect(count).toBe(5);
+
+    // Stale cached data on query error must NOT leak
+    queries.results = [{ data: { approvals: 5 }, isError: true }];
+    function ProbeError() {
+      count = useUi2AttentionCount();
+      return null;
+    }
+    const root2 = createRoot(document.createElement("div"));
+    act(() => root2.render(<ProbeError />));
+    act(() => root2.unmount());
+    expect(count).toBeNull();
+
+    // Invalid/negative numbers must return null
+    queries.results = [{ data: { approvals: -2 }, isError: false }];
+    const root3 = createRoot(document.createElement("div"));
+    act(() => root3.render(<ProbeError />));
+    act(() => root3.unmount());
+    expect(count).toBeNull();
   });
 });

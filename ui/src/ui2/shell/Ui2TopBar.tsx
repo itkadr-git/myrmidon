@@ -75,7 +75,20 @@ export function Ui2TopBar() {
     strip?.colony !== undefined
       ? strip.colony
       : strip?.colonyActive != null
-        ? { running: strip.colonyActive, total: strip.colonyTotal ?? 0, attention: !!strip.fleetAttention }
+        ? typeof strip.colonyActive === "number" &&
+          Number.isFinite(strip.colonyActive) &&
+          strip.colonyActive >= 0 &&
+          (strip.colonyTotal == null ||
+            (typeof strip.colonyTotal === "number" && Number.isFinite(strip.colonyTotal) && strip.colonyTotal >= 0))
+          ? {
+              running: strip.colonyActive,
+              total:
+                typeof strip.colonyTotal === "number" && Number.isFinite(strip.colonyTotal) && strip.colonyTotal >= 0
+                  ? strip.colonyTotal
+                  : 0,
+              attention: !!strip.fleetAttention,
+            }
+          : null
         : null;
   const runs = strip?.runs ?? null;
   const spend =
@@ -88,7 +101,9 @@ export function Ui2TopBar() {
     strip?.waiting !== undefined
       ? strip.waiting
       : strip?.attentionCount != null
-        ? { count: strip.attentionCount, approvals: strip.attentionCount, decisions: 0, interactions: 0 }
+        ? typeof strip.attentionCount === "number" && Number.isFinite(strip.attentionCount) && strip.attentionCount >= 0
+          ? { count: strip.attentionCount, approvals: strip.attentionCount, decisions: 0, interactions: 0 }
+          : null
         : null;
 
   return (
