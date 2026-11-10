@@ -136,10 +136,11 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "http://127.0.0.1:3200"
-      # Instance auth signing key. The server reads the variable by its exact
-      # name (BETTER_AUTH_*); the value comes from harness.env via compose
-      # interpolation and is unique to this instance.
-      BETTER_AUTH_KEY: "${HARNESS_BETTER_AUTH_SECRET}"
+      # Instance auth signing key. The server reads the container variable by
+      # its exact configured name (BETTER_AUTH_SECRET — see server/src/auth/
+      # better-auth.ts and .env.example); the value comes from harness.env via
+      # compose interpolation and is unique to this instance.
+      BETTER_AUTH_SECRET: "${HARNESS_BETTER_AUTH_SECRET}"
     volumes:
       - harness-board-data:/paperclip
     depends_on:
@@ -178,7 +179,8 @@ operator account, never committed anywhere):
 # The DSN is composed from the parts (user, credential from the secrets file,
 # db name); paste the assembled value here:
 # HARNESS_DB_DSN=postgres://<user>@harness-db:5432/<db>
-# HARNESS_BETTER_AUTH_VALUE=$(openssl rand -base64 48)   # unique to this instance
+# HARNESS_BETTER_AUTH_SECRET=$(openssl rand -base64 48)   # unique to this instance;
+# this exact name is what the compose file interpolates into BETTER_AUTH_SECRET.
 ```
 
 Bring the stack up and prove it is the new instance, not production:
