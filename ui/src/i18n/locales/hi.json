@@ -280,7 +280,8 @@
       "container-labels": "Container labels",
       "env": "Environment override",
       "manual": "Operator set",
-      "none": "Not visible from the board"
+      "none": "Not visible from the board",
+      "http-version": "HTTP version endpoint"
     },
     "schedule": "Schedule update",
     "dialog": {
@@ -293,7 +294,8 @@
       "cancel": "Cancel",
       "created": "Draft task created: {{identifier}}",
       "failed": "The task could not be created: {{message}}"
-    }
+    },
+    "stale": "पुराना {{hours}}घं"
   },
   "autonomy": {
     "title": "Autonomy matrix",

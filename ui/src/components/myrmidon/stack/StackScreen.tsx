@@ -55,6 +55,14 @@ function formatTime(value: string | null): string | null {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
+function staleHoursSince(staleSince: string | null, checkedAt: string | null): number | null {
+  if (!staleSince) return null;
+  const end = checkedAt ? Date.parse(checkedAt) : Date.now();
+  const start = Date.parse(staleSince);
+  if (Number.isNaN(end) || Number.isNaN(start)) return null;
+  return Math.max(0, Math.round((end - start) / 3_600_000));
+}
+
 const PATCH_STATES: Record<StackPatchClosedState, string> = {
   closed: "stack.patches.closed",
   open: "stack.patches.open",
@@ -336,6 +344,17 @@ function StackRow({
       </td>
       <td className="px-3 py-2" data-testid={`myrmidon-stack-latest-${component.name}`}>
         {upstream?.latest ?? t("stack.unknown")}
+        {(() => {
+          const stale = staleHoursSince(upstream?.staleSince ?? null, upstream?.checkedAt ?? null);
+          return stale != null ? (
+            <span
+              className="ml-1 inline-block rounded bg-amber-100 px-1 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+              data-testid={`myrmidon-stack-stale-${component.name}`}
+            >
+              {t("stack.stale", { hours: stale })}
+            </span>
+          ) : null;
+        })()}
       </td>
       <td className="px-3 py-2" data-testid={`myrmidon-stack-behind-${component.name}`}>
         {typeof upstream?.behindBy === "number"
