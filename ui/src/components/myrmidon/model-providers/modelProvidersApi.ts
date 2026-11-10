@@ -60,7 +60,8 @@ export interface ModelProviderModelsView {
 export interface ModelProviderChangeLogEntry {
   id: string;
   at: string;
-  actor: { type: "board" | "agent" | "system" | string; id: string };
+  // myrmidon(OPE-12361): the server carries the author display name when known.
+  actor: { type: "board" | "agent" | "system" | string; id: string; name?: string | null };
   action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated" | string;
   summary: string;
   category?: "models" | "fallbacks" | "keys" | string;
@@ -140,13 +141,17 @@ export interface ModelProviderChannelsView {
   providerType: ModelProviderType;
   channels: PoolAccountChannelView[];
   signals: PoolAccountRoleSignal[];
+  // myrmidon(OPE-12361): keep in sync with ModelProviderChannelsView in
+  // @myrmidon/shared (error-account counter and pool reset passthrough).
   summary?: {
     total: number;
     live: number;
     exhausted: number;
     banned: number;
+    error: number;
     disabled?: number;
     nextResetAt: number | null;
+    nextResetText: string | null;
   };
 }
 

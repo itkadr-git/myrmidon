@@ -291,8 +291,12 @@ export interface ModelProviderChannelsView {
     live: number;
     exhausted: number;
     banned: number;
+    error: number;
     disabled?: number;
+    /** Reset timestamp of the pool itself when the connector reports one. */
     nextResetAt: number | null;
+    /** Pool-reported reset info: ISO string from the connector, passthrough. */
+    nextResetText: string | null;
   };
 }
 

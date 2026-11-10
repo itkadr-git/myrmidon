@@ -32,6 +32,11 @@ function createApp(initialSettings: Record<string, unknown> = {}, isInstanceAdmi
   });
 
   app.use("/api/myrmidon/hindsight/model-groups", hindsightModelsRoutes(adapter));
+  // myrmidon(OPE-12361): company-scoped alias mounted in server/src/app.ts
+  app.use(
+    "/api/myrmidon/companies/:companyId/hindsight/model-groups",
+    hindsightModelsRoutes(adapter),
+  );
 
   return { app, getGeneral: () => general };
 }
@@ -102,5 +107,16 @@ describe("hindsight-models-routes", () => {
       .send({});
 
     expect(res.status).toBe(400);
+  });
+
+  it("GET /api/myrmidon/companies/:companyId/hindsight/model-groups answers 200 without 404 (OPE-12361)", async () => {
+    const { app } = createApp();
+
+    const res = await request(app).get("/api/myrmidon/companies/comp-test-123/hindsight/model-groups");
+
+    expect(res.status).toBe(200);
+    expect(res.body.groups).toHaveLength(3);
+    const roles = res.body.groups.map((g: any) => g.role);
+    expect(roles).toEqual(["write", "summarize", "search"]);
   });
 });

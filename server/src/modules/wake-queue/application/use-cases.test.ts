@@ -871,12 +871,12 @@ describe("releaseIssueExecution", () => {
         wakeCandidate({
           deferredContextSeed: {
             issueId: ISSUE.id,
-            wakeCommentIds: ["comment-1"],
+            wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
             // A queue-time render from a prior coalesced run. Promotion must
             // not persist this alongside the current (unrelated) comment id.
             paperclipTaskMarkdown: "queue-time markdown",
             paperclipTaskMarkdownCompact: "queue-time compact markdown",
-            paperclipWake: { commentId: "comment-1" },
+            paperclipWake: { commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d" },
             executionStage: { stage: "review" },
             planReviewInteraction: { acceptedTargetRevision: { revisionId: "revision-1" } },
             acceptedPlanWakeRouting: { targetAgentId: "agent-1" },

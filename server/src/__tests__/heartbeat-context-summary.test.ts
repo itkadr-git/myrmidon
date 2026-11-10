@@ -67,13 +67,13 @@ describe("buildPaperclipTaskMarkdown", () => {
         description: "Original request",
       },
       wakeComment: {
-        id: "comment-3",
+        id: "3bb03c29-17c7-4d42-b3b6-c8e89052829f",
         body: "burst-four",
       },
       wakeComments: [
-        { id: "comment-1", body: "burst-two" },
-        { id: "comment-2", body: "burst-three" },
-        { id: "comment-3", body: "burst-four" },
+        { id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d", body: "burst-two" },
+        { id: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e", body: "burst-three" },
+        { id: "3bb03c29-17c7-4d42-b3b6-c8e89052829f", body: "burst-four" },
       ],
     });
 
@@ -299,7 +299,7 @@ describe("buildPaperclipTaskMarkdown", () => {
         description: null,
       },
       wakeComment: {
-        id: "comment-1",
+        id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         body: "Please revise the plan.",
       },
     });
@@ -390,7 +390,7 @@ describe("buildPaperclipTaskMarkdown", () => {
         description: "Full multi-paragraph brief that the session already received.",
       },
       wakeComment: {
-        id: "comment-1",
+        id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         body: "Please also update the changelog.",
       },
     };
@@ -436,7 +436,7 @@ describe("buildPaperclipTaskMarkdown", () => {
         description: null,
       },
       wakeComment: {
-        id: "comment-1",
+        id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         body: "Please revise the plan.",
       },
       interaction: {
@@ -468,8 +468,8 @@ describe("mergeCoalescedContextSnapshot", () => {
       },
       {
         issueId: "issue-1",
-        commentId: "comment-1",
-        wakeCommentId: "comment-1",
+        commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         wakeReason: "issue_commented",
       },
     );
@@ -479,8 +479,8 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionStatus).toBeUndefined();
     expect(merged.continuationPolicy).toBeUndefined();
     expect(merged.checkboxSelection).toBeUndefined();
-    expect(merged.commentId).toBe("comment-1");
-    expect(merged.wakeCommentId).toBe("comment-1");
+    expect(merged.commentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(merged.wakeCommentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
   });
 
   it("preserves resolved interaction state for the interaction wake itself", () => {
@@ -526,8 +526,8 @@ describe("mergeCoalescedContextSnapshot", () => {
       },
       {
         issueId: "issue-1",
-        commentId: "comment-1",
-        wakeCommentId: "comment-1",
+        commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         wakeReason: "issue_commented",
       },
       { preserveExistingInteractionContinuation: true },
@@ -537,17 +537,17 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionKind).toBe("request_confirmation");
     expect(merged.interactionStatus).toBe("accepted");
     expect(merged.continuationPolicy).toBe("wake_assignee_on_accept");
-    expect(merged.commentId).toBe("comment-1");
-    expect(merged.wakeCommentId).toBe("comment-1");
+    expect(merged.commentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(merged.wakeCommentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
   });
 
   it("keeps a queued comment when an interaction joins its successor wake", () => {
     const merged = mergeCoalescedContextSnapshot(
       {
         issueId: "issue-1",
-        commentId: "comment-1",
-        wakeCommentId: "comment-1",
-        wakeCommentIds: ["comment-1"],
+        commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
         wakeReason: "issue_commented",
       },
       {
@@ -564,9 +564,9 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionId).toBe("interaction-1");
     expect(merged.interactionKind).toBe("ask_user_questions");
     expect(merged.interactionStatus).toBe("answered");
-    expect(merged.commentId).toBe("comment-1");
-    expect(merged.wakeCommentId).toBe("comment-1");
-    expect(merged.wakeCommentIds).toEqual(["comment-1"]);
+    expect(merged.commentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(merged.wakeCommentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(merged.wakeCommentIds).toEqual(["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"]);
   });
 });
 
@@ -576,8 +576,8 @@ describe("summarizeHeartbeatRunContextSnapshot", () => {
       issueId: "issue-1",
       taskId: "task-1",
       taskKey: "PAP-1",
-      commentId: "comment-1",
-      wakeCommentId: "comment-2",
+      commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+      wakeCommentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e",
       wakeReason: "retry_failed_run",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
@@ -597,8 +597,8 @@ describe("summarizeHeartbeatRunContextSnapshot", () => {
       issueId: "issue-1",
       taskId: "task-1",
       taskKey: "PAP-1",
-      commentId: "comment-1",
-      wakeCommentId: "comment-2",
+      commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+      wakeCommentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e",
       wakeReason: "retry_failed_run",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",

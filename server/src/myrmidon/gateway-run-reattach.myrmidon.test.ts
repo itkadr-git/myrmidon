@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   companies,
   companySecretBindings,
@@ -115,6 +116,9 @@ describeEmbeddedPostgres("myrmidon(HERMES-RUN-REATTACH) gateway run reattach swe
   }, 30_000);
 
   afterEach(async () => {
+    // The cancellation of an orphaned gateway run writes heartbeat_run.cancelled
+    // to activity_log (OPE-12484); it references the company, so it goes first.
+    await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(companySecretBindings);
