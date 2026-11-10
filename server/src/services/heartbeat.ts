@@ -3971,6 +3971,14 @@ const heartbeatRunListResultColumns = {
   resultCostUsdCamel: sql<
     string | null
   >`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
+  // myrmidon(OPE-12316): outcome/stopKind codes ride next to the summary so
+  // the run list can badge "blocked (budget_limit)" without a detoast.
+  resultOutcome: sql<
+    string | null
+  >`${heartbeatRuns.resultJson} ->> 'outcome'`.as("resultOutcome"),
+  resultStopKind: sql<
+    string | null
+  >`${heartbeatRuns.resultJson} ->> 'stopKind'`.as("resultStopKind"),
 } as const;
 
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
@@ -3984,6 +3992,8 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         'result', left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
         'message', left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
         'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'outcome', ${heartbeatRuns.resultJson} -> 'outcome',
+        'stopKind', ${heartbeatRuns.resultJson} -> 'stopKind',
         'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
         'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
         'stdoutTruncated', case
@@ -5419,6 +5429,8 @@ export function summarizeHeartbeatRunListResultJson(input: {
   totalCostUsd?: string | null;
   costUsd?: string | null;
   costUsdCamel?: string | null;
+  outcome?: string | null;
+  stopKind?: string | null;
 }): Record<string, unknown> | null {
   const summary: Record<string, unknown> = {};
   for (const [key, value] of [
@@ -5426,6 +5438,10 @@ export function summarizeHeartbeatRunListResultJson(input: {
     ["result", input.result],
     ["message", input.message],
     ["error", input.error],
+    // myrmidon(OPE-12316): outcome/stopKind travel with the legacy summary
+    // projection for consumers that read only resultJson.
+    ["outcome", input.outcome],
+    ["stopKind", input.stopKind],
   ] as const) {
     const normalized = readNonEmptyString(value);
     if (normalized) summary[key] = normalized;
@@ -13149,6 +13165,8 @@ export function heartbeatService(
       totalCostUsd: latestRun?.resultTotalCostUsd,
       costUsd: latestRun?.resultCostUsd,
       costUsdCamel: latestRun?.resultCostUsdCamel,
+      outcome: latestRun?.resultOutcome,
+      stopKind: latestRun?.resultStopKind,
     });
     const latestTextSummary =
       readNonEmptyString(latestSummary?.summary) ??
@@ -36183,6 +36201,8 @@ export function heartbeatService(
           resultTotalCostUsd,
           resultCostUsd,
           resultCostUsdCamel,
+          resultOutcome,
+          resultStopKind,
           ...rest
         } = row as typeof row & {
           resultSummary?: string | null;
@@ -36192,6 +36212,8 @@ export function heartbeatService(
           resultTotalCostUsd?: string | null;
           resultCostUsd?: string | null;
           resultCostUsdCamel?: string | null;
+          resultOutcome?: string | null;
+          resultStopKind?: string | null;
         };
 
         return {
@@ -36208,6 +36230,8 @@ export function heartbeatService(
           resultTotalCostUsd: resultTotalCostUsd ?? null,
           resultCostUsd: resultCostUsd ?? null,
           resultCostUsdCamel: resultCostUsdCamel ?? null,
+          resultOutcome: resultOutcome ?? null,
+          resultStopKind: resultStopKind ?? null,
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,
@@ -36229,6 +36253,8 @@ export function heartbeatService(
                   totalCostUsd: resultTotalCostUsd,
                   costUsd: resultCostUsd,
                   costUsdCamel: resultCostUsdCamel,
+                  outcome: resultOutcome,
+                  stopKind: resultStopKind,
                 }),
         };
       });
