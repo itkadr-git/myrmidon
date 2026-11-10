@@ -13862,7 +13862,8 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/scheduled-retry/retry-now", async (req, res) => {
-    assertBoard(req);
+    // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+    // private issue gets the flat 404 wall, not a 403 gate reveal.
     const id = req.params.id as string;
     const issue = await getAccessibleIssue(
       req,
@@ -13870,6 +13871,7 @@ export function issueRoutes(
       svc.getById(id),
     );
     if (!issue) return;
+    assertBoard(req);
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
@@ -14048,9 +14050,11 @@ export function issueRoutes(
   router.patch(
     "/issues/:id/execution-participants",
     async (req, res) => {
-      assertBoard(req);
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const issue = await getAccessibleIssue(req, res, svc.getById(req.params.id as string));
       if (!issue) return;
+      assertBoard(req);
       const body = req.body as { returnAssignee?: { type?: string; agentId?: string | null } | null; currentParticipant?: { type?: string; agentId?: string | null } | null };
       const currentState = parseIssueExecutionState(issue.executionState);
       if (!currentState) {
@@ -18570,8 +18574,8 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId",
     validate(editQueuedCommentSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
       const issue = await getAccessibleIssue(
@@ -18580,6 +18584,8 @@ export function issueRoutes(
         svc.getById(id),
       );
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       const actor = getActorInfo(req);
       const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.editQueuedComment({
@@ -18601,8 +18607,8 @@ export function issueRoutes(
     "/issues/:id/queued-comments/order",
     validate(reorderQueuedCommentsSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const id = req.params.id as string;
       const issue = await getAccessibleIssue(
         req,
@@ -18610,6 +18616,8 @@ export function issueRoutes(
         svc.getById(id),
       );
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       const actor = getActorInfo(req);
       const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.reorderQueuedComments({
@@ -18630,10 +18638,12 @@ export function issueRoutes(
     "/issues/:id/queued-comments/interrupt",
     validate(queuedCommentInterruptTargetSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const issue = await getAccessibleIssue(req, res, svc.getById(req.params.id as string));
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
@@ -18701,8 +18711,8 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId/steer",
     validate(queuedCommentSteeringTargetSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
       const issue = await getAccessibleIssue(
@@ -18711,6 +18721,8 @@ export function issueRoutes(
         svc.getById(id),
       );
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
       // myrmidon(UPSTREAM-13539): steer of an interaction response requires comment rights on the issue.
       const decision = await decideIssueAccess(req, issue, "issue:comment");
@@ -18977,8 +18989,8 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId",
     validate(queuedCommentMutationTargetSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
       const issue = await getAccessibleIssue(
@@ -18987,6 +18999,8 @@ export function issueRoutes(
         svc.getById(id),
       );
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       const actor = getActorInfo(req);
       const result = await runQueuedCommentMutation(() =>
         queuedCommentQueue.discardQueuedComment({

@@ -383,21 +383,203 @@ describeEmbeddedPostgres("issue private write paths (1.7 PRIVATE-TASKS E2)", () 
     expect(releaseRes.status, JSON.stringify(releaseRes.body)).toBe(200);
   }, 60_000);
 
-  it("board-keyed queued-comment edit keeps working on a private issue", async () => {
-    // The queued-comments routes gate on assertBoard before the loader, so an
-    // agent structurally gets 403 there. The private wall for this family is
-    // therefore exercised at the loader with the board key (must NOT 404).
+  it("agent cannot PATCH a queued comment on a private issue (404, no rows)", async () => {
+    const fixture = await seed();
+    await makePrivate(fixture.issue.id);
+    const app = await createApp(db);
+    await expectAgentPrivate404(
+      app,
+      fixture,
+      (r) => r
+        .patch(`/api/issues/${fixture.issue.id}/queued-comments/${randomUUID()}`)
+        .set(agentAuth(fixture))
+        .send({ body: "sneaky edit", queueId: randomUUID(), revision: "1" }),
+      [issueComments],
+    );
+  }, 60_000);
+
+  it("agent cannot DELETE a queued comment on a private issue (404, no rows)", async () => {
+    const fixture = await seed();
+    await makePrivate(fixture.issue.id);
+    const app = await createApp(db);
+    await expectAgentPrivate404(
+      app,
+      fixture,
+      (r) => r
+        .delete(`/api/issues/${fixture.issue.id}/queued-comments/${randomUUID()}`)
+        .set(agentAuth(fixture))
+        .send({ queueId: randomUUID(), revision: "1" }),
+      [issueComments],
+    );
+  }, 60_000);
+
+  it("agent cannot reorder queued comments on a private issue (404)", async () => {
+    const fixture = await seed();
+    await makePrivate(fixture.issue.id);
+    const app = await createApp(db);
+    await expectAgentPrivate404(
+      app,
+      fixture,
+      (r) => r
+        .put(`/api/issues/${fixture.issue.id}/queued-comments/order`)
+        .set(agentAuth(fixture))
+        .send({ queueId: randomUUID(), revision: "1", orderedCommentIds: [randomUUID()] }),
+      [],
+    );
+  }, 60_000);
+
+  it("agent cannot interrupt queued comments on a private issue (404)", async () => {
+    const fixture = await seed();
+    await makePrivate(fixture.issue.id);
+    const app = await createApp(db);
+    await expectAgentPrivate404(
+      app,
+      fixture,
+      (r) => r
+        .post(`/api/issues/${fixture.issue.id}/queued-comments/interrupt`)
+        .set(agentAuth(fixture))
+        .send({ queueId: randomUUID(), revision: "1", targetRunId: null }),
+      [],
+    );
+  }, 60_000);
+
+  it("agent cannot steer a queued comment on a private issue (404)", async () => {
+    const fixture = await seed();
+    await makePrivate(fixture.issue.id);
+    const app = await createApp(db);
+    await expectAgentPrivate404(
+      app,
+      fixture,
+      (r) => r
+        .post(`/api/issues/${fixture.issue.id}/queued-comments/${randomUUID()}/steer`)
+        .set(agentAuth(fixture))
+        .send({ queueId: randomUUID(), revision: "1", targetRunId: randomUUID() }),
+      [],
+    );
+  }, 60_000);
+
+  it("agent cannot PATCH execution participants on a private issue (404)", async () => {
+    const fixture = await seed();
+    await makePrivate(fixture.issue.id);
+    const app = await createApp(db);
+    await expectAgentPrivate404(
+      app,
+      fixture,
+      (r) => r
+        .patch(`/api/issues/${fixture.issue.id}/execution-participants`)
+        .set(agentAuth(fixture))
+        .send({ currentParticipant: null }),
+      [],
+    );
+  }, 60_000);
+
+  it("agent cannot trigger scheduled retry now on a private issue (404)", async () => {
+    const fixture = await seed();
+    await makePrivate(fixture.issue.id);
+    const app = await createApp(db);
+    await expectAgentPrivate404(
+      app,
+      fixture,
+      (r) => r
+        .post(`/api/issues/${fixture.issue.id}/scheduled-retry/retry-now`)
+        .set(agentAuth(fixture))
+        .send({}),
+      [],
+    );
+  }, 60_000);
+
+  it("agent PATCH on a public queued comment still needs board access (control)", async () => {
+    // Reordering the gate behind the loader must not open queued-comment
+    // mutation to agents on PUBLIC issues either: assertBoard still fires.
+    const fixture = await seed();
+    const app = await createApp(db);
+    const res = await request(app)
+      .patch(`/api/issues/${fixture.issue.id}/queued-comments/${randomUUID()}`)
+      .set(agentAuth(fixture))
+      .send({ body: "agent edit", queueId: randomUUID(), revision: "1" });
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(await countRows(issueComments, fixture.issue.id)).toBe(0);
+  }, 60_000);
+
+  it("board actor keeps every private-issue write path (controls)", async () => {
+    const fixture = await seed();
+    await makePrivate(fixture.issue.id);
+    const app = await createApp(db);
+    const auth = { Authorization: `Bearer ${fixture.boardToken}` };
+
+    const commentRes = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/comments`)
+      .set(auth)
+      .send({ body: "board sees everything" });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+    expect(await countRows(issueComments, fixture.issue.id)).toBe(1);
+
+    const docRes = await request(app)
+      .put(`/api/issues/${fixture.issue.id}/documents/plan`)
+      .set(auth)
+      .send({ format: "markdown", body: "# plan", changeSummary: "board plan" });
+    expect(docRes.status, JSON.stringify(docRes.body)).toBe(201);
+    expect(await countRows(issueDocuments, fixture.issue.id)).toBe(1);
+
+    const interactionRes = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/interactions`)
+      .set(auth)
+      .send({
+        kind: "ask_user_questions",
+        payload: {
+          version: 1,
+          questions: [
+            {
+              id: "q1",
+              prompt: "Board question?",
+              selectionMode: "single",
+              options: [{ id: "a", label: "Yes" }],
+            },
+          ],
+        },
+      });
+    expect(interactionRes.status, JSON.stringify(interactionRes.body)).toBe(201);
+    expect(await countRows(issueThreadInteractions, fixture.issue.id)).toBe(1);
+
+    const workProductRes = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/work-products`)
+      .set(auth)
+      .send({ type: "preview_url", provider: "test", title: "Board preview" });
+    expect(workProductRes.status, JSON.stringify(workProductRes.body)).toBe(201);
+    expect(await countRows(issueWorkProducts, fixture.issue.id)).toBe(1);
+
+    const releaseRes = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/release`)
+      .set(auth);
+    expect(releaseRes.status, JSON.stringify(releaseRes.body)).toBe(200);
+
+    const queuedRes = await request(app)
+      .patch(`/api/issues/${fixture.issue.id}/queued-comments/${randomUUID()}`)
+      .set(auth)
+      .send({ body: "edit", queueId: randomUUID(), revision: "1" });
+    // Missing wake queue for the id → deterministic queue-service conflict;
+    // the point is that the loader did not flat-404 the board key.
+    expect(queuedRes.status, JSON.stringify(queuedRes.body)).toBe(409);
+    expect(queuedRes.body.error).not.toBe("Issue not found");
+
+    const queuedDeleteRes = await request(app)
+      .delete(`/api/issues/${fixture.issue.id}/queued-comments/${randomUUID()}`)
+      .set(auth)
+      .send({ queueId: randomUUID(), revision: "1" });
+    expect(queuedDeleteRes.status, JSON.stringify(queuedDeleteRes.body)).toBe(409);
+    expect(queuedDeleteRes.body.error).not.toBe("Issue not found");
+  }, 60_000);
+
+  it("board actor can delete a private issue (control)", async () => {
     const fixture = await seed();
     await makePrivate(fixture.issue.id);
     const app = await createApp(db);
     const res = await request(app)
-      .patch(`/api/issues/${fixture.issue.id}/queued-comments/${randomUUID()}`)
-      .set("Authorization", `Bearer ${fixture.boardToken}`)
-      .send({ body: "edit", queueId: "default", revision: "1" });
-    // A missing comment id surfaces as 404/409 from the queue service — the
-    // point of this assertion is that the private-issue loader did not 404
-    // with the flat agent wall before the board gate.
-    expect(res.status).not.toBe(401);
-    expect(res.body.error).not.toBe("Issue not found");
+      .delete(`/api/issues/${fixture.issue.id}`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const [after] = await db.select().from(issues).where(eq(issues.id, fixture.issue.id));
+    expect(after).toBeUndefined();
   }, 60_000);
 });
