@@ -4,12 +4,16 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import {
   activityLog,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
+  companySkills,
+  costEvents,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueThreadInteractions,
   issues,
 } from "@myrmidon/db";
@@ -17,6 +21,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 // 1.7 PRIVATE-TASKS C (OPE-12197): a private task (any status) never becomes a
 // heartbeat run candidate and is never picked up by an agent. A control public
@@ -62,12 +67,17 @@ describeEmbeddedPostgres("heartbeat private-task suppression (1.7 PRIVATE-TASKS 
   });
 
   afterEach(async () => {
-    await heartbeat.drainActiveRunExecutions();
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-      if (!runs.some((run) => run.status === "queued" || run.status === "running")) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    // A heartbeat run dispatch lists runtime skills (listRuntimeSkillEntries →
+    // listFull → ensureSkillInventoryCurrent), which provisions bundled
+    // company_skills rows for the seeded company in the background, and the
+    // run path can also upsert agent_task_sessions rows. Both tables reference
+    // companies/agents without ON DELETE CASCADE, so they must be deleted
+    // before issues/agents/companies or the companies delete fails with 23503.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    await db.delete(companySkills);
+    await db.delete(agentTaskSessions);
+    await db.delete(costEvents);
+    await db.delete(issueComments);
     await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
