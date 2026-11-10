@@ -12448,7 +12448,17 @@ export function heartbeatService(
                     wakeReason:
                       EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
                   }
-                : {}),
+                : monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+                  ? {
+                      retryReason: "provider_quota_recovery",
+                      // Provider outages are an external wait, so this wake
+                      // starts a fresh bounded attempt instead of inheriting
+                      // the exhausted provider-failure counter.
+                      attempt: 1,
+                      maxAttempts: 1,
+                      delayMs: 0,
+                    }
+                  : {}),
             },
           );
           if (scheduled.outcome === "not_scheduled")
@@ -16760,6 +16770,11 @@ export function heartbeatService(
       wakeReason?: string;
       maxAttempts?: number;
       delayMs?: number;
+      // myrmidon(PROVIDER-OUTAGE-RECOVERY): the quota recovery monitor restarts
+      // the attempt budget for an exhausted provider-outage chain, so it passes
+      // the attempt explicitly instead of deriving it from the source run's
+      // raw scheduledRetryAttempt column.
+      attempt?: number;
       // myrmidon(RUN-GUARD-CONTINUE): set by continueRunStoppedAtCallLimit only.
       runGuardContinuation?: boolean;
       livenessContinuationInstruction?: string;
@@ -16859,7 +16874,9 @@ export function heartbeatService(
     const nextAttempt =
       retryReason === MAINTENANCE_RETRY_REASON
         ? 1
-        : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
+        : opts?.attempt != null
+          ? Math.max(1, Math.floor(opts.attempt))
+          : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
             retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
             retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
             retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON
