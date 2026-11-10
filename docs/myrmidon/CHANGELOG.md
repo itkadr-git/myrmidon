@@ -10,7 +10,19 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-## 1.6.7
+### IDLE-STOP works for fleetd bots: stopIdle route, idle-stopped mark, one warning per process (OPE-12663)
+
+- fleetd gains `POST /v1/bots/<key>/stopIdle`: it stops the container and records an
+  `hermes/.myrmidon/idle-stopped.json` mark in the bot's volume root, the same contract the
+  local docker driver has. The status and list answers carry `idleStopped: true` while the
+  mark stands; a wake (`start`) or an operator stop clears it. A docker container in any
+  non-running state (e.g. `exited`) now reads as `stopped`, so the reconciler honors the
+  mark and leaves the container down until the next run wakes it.
+- The fleetd driver client (`fleetd-driver.ts`) gained `stopIdle`, so IDLE-STOP stops bots
+  on a fleetd host instead of logging the unsupported-driver error.
+- The sweeper logs "driver cannot idle-stop" as a single warning per process instead of an
+  error on every sweep (the condition is permanent; a real stop failure still logs an error
+  per occurrence).
 
 ### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)
 
