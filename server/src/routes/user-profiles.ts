@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, notExists, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   activityLog,
@@ -91,7 +91,14 @@ async function resolveCompanyUser(db: Db, companyId: string, rawSlug: string): P
   return rows.find((row) => userSlugCandidates(row).includes(slug)) ?? null;
 }
 
-function userIssueInvolvementSql(companyId: string, userId: string) {
+type UserIssueInvolvementOptions = { excludePrivate?: boolean };
+
+function userIssueInvolvementSql(
+  companyId: string,
+  userId: string,
+  options: UserIssueInvolvementOptions = {},
+) {
+  const privateGuard = options.excludePrivate ? sql` AND ${issues.isPrivate} = false` : sql``;
   return sql<boolean>`
     (
       ${issues.createdByUserId} = ${userId}
@@ -103,7 +110,7 @@ function userIssueInvolvementSql(companyId: string, userId: string) {
           AND ${issueComments.issueId} = ${issues.id}
           AND ${issueComments.authorUserId} = ${userId}
       )
-    )
+    )${privateGuard}
   `;
 }
 
@@ -135,8 +142,9 @@ async function loadWindowStats(
   key: UserProfileWindowStats["key"],
   label: string,
   from: Date | null,
+  options: UserIssueInvolvementOptions = {},
 ): Promise<UserProfileWindowStats> {
-  const involvement = userIssueInvolvementSql(companyId, userId);
+  const involvement = userIssueInvolvementSql(companyId, userId, options);
   const openStatuses = ["backlog", "todo", "in_progress", "in_review", "blocked"];
   const fromIso = from?.toISOString();
 
@@ -145,7 +153,7 @@ async function loadWindowStats(
       touchedIssues: sql<number>`count(distinct case when ${involvement} ${fromIso ? sql`and ${issues.updatedAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
       createdIssues: sql<number>`count(distinct case when ${issues.createdByUserId} = ${userId} ${fromIso ? sql`and ${issues.createdAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
       completedIssues: sql<number>`count(distinct case when ${involvement} and ${issues.status} = 'done' ${fromIso ? sql`and ${issues.completedAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
-      assignedOpenIssues: sql<number>`count(distinct case when ${issues.assigneeUserId} = ${userId} and ${issues.status} in (${sql.join(openStatuses.map((status) => sql`${status}`), sql`, `)}) then ${issues.id} end)::int`,
+      assignedOpenIssues: sql<number>`count(distinct case when ${issues.assigneeUserId} = ${userId} and ${issues.status} in (${sql.join(openStatuses.map((status) => sql`${status}`), sql`, `)}) ${options.excludePrivate ? sql`and ${issues.isPrivate} = false` : sql``} then ${issues.id} end)::int`,
     })
     .from(issues)
     .where(and(eq(issues.companyId, companyId), visibleIssueCondition()));
@@ -154,17 +162,34 @@ async function loadWindowStats(
     eq(issueComments.companyId, companyId),
     eq(issueComments.authorUserId, userId),
   ];
+  if (options.excludePrivate) {
+    // The comment count covers issues the user can see, so private-issue comments drop out too.
+    commentConditions.push(notExists(
+      db.select({ one: sql`1` }).from(issues).where(and(
+        eq(issues.id, issueComments.issueId),
+        eq(issues.companyId, issueComments.companyId),
+        eq(issues.isPrivate, true),
+      )),
+    ));
+  }
   if (from) commentConditions.push(gte(issueComments.createdAt, from));
-  const [commentStats] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(issueComments)
-    .where(and(...commentConditions));
 
   const activityConditions = [
     eq(activityLog.companyId, companyId),
     eq(activityLog.actorType, "user"),
     eq(activityLog.actorId, userId),
   ];
+  if (options.excludePrivate) {
+    // activity_log.entity_id is text and may hold non-UUID values, so compare as text instead of casting to uuid.
+    activityConditions.push(notExists(
+      db.select({ one: sql`1` }).from(issues).where(and(
+        sql`${issues.id}::text = ${activityLog.entityId}`,
+        eq(issues.companyId, activityLog.companyId),
+        eq(issues.isPrivate, true),
+        inArray(activityLog.entityType, ["issue", "issue_comment", "issue_document"]),
+      )),
+    ));
+  }
   if (from) activityConditions.push(gte(activityLog.createdAt, from));
   const [activityStats] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -205,7 +230,12 @@ async function loadWindowStats(
   };
 }
 
-async function loadDailyStats(db: Db, companyId: string, userId: string): Promise<UserProfileDailyPoint[]> {
+async function loadDailyStats(
+  db: Db,
+  companyId: string,
+  userId: string,
+  options: UserIssueInvolvementOptions = {},
+): Promise<UserProfileDailyPoint[]> {
   const firstDay = startOfUtcDay(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
   const points = new Map<string, UserProfileDailyPoint>();
   for (let index = 0; index < 14; index += 1) {
@@ -221,6 +251,22 @@ async function loadDailyStats(db: Db, companyId: string, userId: string): Promis
     });
   }
 
+  const activityConditions = [
+    eq(activityLog.companyId, companyId),
+    eq(activityLog.actorType, "user"),
+    eq(activityLog.actorId, userId),
+    gte(activityLog.createdAt, firstDay),
+  ];
+  if (options.excludePrivate) {
+    activityConditions.push(notExists(
+      db.select({ one: sql`1` }).from(issues).where(and(
+        sql`${issues.id}::text = ${activityLog.entityId}`,
+        eq(issues.companyId, activityLog.companyId),
+        eq(issues.isPrivate, true),
+        inArray(activityLog.entityType, ["issue", "issue_comment", "issue_document"]),
+      )),
+    ));
+  }
   const activityDay = dayKeyExpr(sql`${activityLog.createdAt}`);
   const activityRows = await db
     .select({
@@ -228,14 +274,7 @@ async function loadDailyStats(db: Db, companyId: string, userId: string): Promis
       count: sql<number>`count(*)::int`,
     })
     .from(activityLog)
-    .where(
-      and(
-        eq(activityLog.companyId, companyId),
-        eq(activityLog.actorType, "user"),
-        eq(activityLog.actorId, userId),
-        gte(activityLog.createdAt, firstDay),
-      ),
-    )
+    .where(and(...activityConditions))
     .groupBy(activityDay);
 
   for (const row of activityRows) {
@@ -256,7 +295,7 @@ async function loadDailyStats(db: Db, companyId: string, userId: string): Promis
         visibleIssueCondition(),
         eq(issues.status, "done"),
         gte(issues.completedAt, firstDay),
-        userIssueInvolvementSql(companyId, userId),
+        userIssueInvolvementSql(companyId, userId, options),
       ),
     )
     .groupBy(completedDay);
@@ -281,7 +320,7 @@ async function loadDailyStats(db: Db, companyId: string, userId: string): Promis
       and(
         eq(costEvents.companyId, companyId),
         gte(costEvents.occurredAt, firstDay),
-        userIssueInvolvementSql(companyId, userId),
+        userIssueInvolvementSql(companyId, userId, options),
       ),
     )
     .groupBy(costDay);
@@ -310,14 +349,17 @@ export function userProfileRoutes(db: Db) {
     if (!row) throw notFound("User not found");
     const canonicalSlug = userSlugCandidates(row)[0] ?? row.principalId;
     const userId = row.userId ?? row.principalId;
+    const excludePrivate = req.actor?.type === "agent";
 
     const [stats, daily, recentIssues, recentActivity, topAgents, topProviders] = await Promise.all([
       Promise.all(
         PROFILE_WINDOWS.map((entry) =>
-          loadWindowStats(db, companyId, userId, entry.key, entry.label, windowStart(entry.days)),
+          loadWindowStats(db, companyId, userId, entry.key, entry.label, windowStart(entry.days), {
+            excludePrivate,
+          }),
         ),
       ),
-      loadDailyStats(db, companyId, userId),
+      loadDailyStats(db, companyId, userId, { excludePrivate }),
       db
         .select({
           id: issues.id,
@@ -335,7 +377,7 @@ export function userProfileRoutes(db: Db) {
           and(
             eq(issues.companyId, companyId),
             visibleIssueCondition(),
-            userIssueInvolvementSql(companyId, userId),
+            userIssueInvolvementSql(companyId, userId, { excludePrivate }),
           ),
         )
         .orderBy(desc(issues.updatedAt))
@@ -355,10 +397,18 @@ export function userProfileRoutes(db: Db) {
             eq(activityLog.companyId, companyId),
             eq(activityLog.actorType, "user"),
             eq(activityLog.actorId, userId),
+            ...(excludePrivate ? [notExists(
+              db.select({ one: sql`1` }).from(issues).where(and(
+                sql`${issues.id}::text = ${activityLog.entityId}`,
+                eq(issues.companyId, activityLog.companyId),
+                eq(issues.isPrivate, true),
+                inArray(activityLog.entityType, ["issue", "issue_comment", "issue_document"]),
+              )),
+            )] : []),
           ),
         )
         .orderBy(desc(activityLog.createdAt))
-        .limit(12),
+        .limit(excludePrivate ? 48 : 12),
       db
         .select({
           agentId: costEvents.agentId,
@@ -371,7 +421,7 @@ export function userProfileRoutes(db: Db) {
         .from(costEvents)
         .innerJoin(issues, and(eq(issues.id, costEvents.issueId), eq(issues.companyId, costEvents.companyId)))
         .leftJoin(agents, eq(agents.id, costEvents.agentId))
-        .where(and(eq(costEvents.companyId, companyId), userIssueInvolvementSql(companyId, userId)))
+        .where(and(eq(costEvents.companyId, companyId), userIssueInvolvementSql(companyId, userId, { excludePrivate })))
         .groupBy(costEvents.agentId, agents.name)
         .orderBy(desc(sumNumber(costEvents.costCents)))
         .limit(5),
@@ -387,7 +437,7 @@ export function userProfileRoutes(db: Db) {
         })
         .from(costEvents)
         .innerJoin(issues, and(eq(issues.id, costEvents.issueId), eq(issues.companyId, costEvents.companyId)))
-        .where(and(eq(costEvents.companyId, companyId), userIssueInvolvementSql(companyId, userId)))
+        .where(and(eq(costEvents.companyId, companyId), userIssueInvolvementSql(companyId, userId, { excludePrivate })))
         .groupBy(costEvents.provider, costEvents.biller, costEvents.model)
         .orderBy(desc(sumNumber(costEvents.costCents)))
         .limit(5),
