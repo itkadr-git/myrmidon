@@ -32,29 +32,83 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const CLONE_TTL_HOURS = 24;
 const CACHE_TTL_HOURS = 72;
+const SCRATCH_TTL_HOURS = 12;
+const DEFAULT_ENV_PATH = "/etc/myrmidon-host-gc.env";
+
+// --- Env Config -------------------------------------------------------------
+
+export function loadEnvConfig(envPath = DEFAULT_ENV_PATH) {
+  if (!envPath || !fs.existsSync(envPath)) return {};
+  try {
+    const content = fs.readFileSync(envPath, "utf8");
+    const result = {};
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const idx = trimmed.indexOf("=");
+      if (idx === -1) continue;
+      const key = trimmed.slice(0, idx).trim();
+      let val = trimmed.slice(idx + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      result[key] = val;
+      if (process.env[key] === undefined) {
+        process.env[key] = val;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
 
 // --- Args -------------------------------------------------------------------
 
 export function parseArgs(argv) {
+  let envPath = DEFAULT_ENV_PATH;
+  for (let i = 2; i < argv.length; i++) {
+    if (argv[i] === "--env" && argv[i + 1]) {
+      envPath = argv[++i];
+    }
+  }
+  loadEnvConfig(envPath);
+
+  const envTtl = process.env.SCRATCH_TTL_HOURS ||
+    process.env.SCRATCH_TTL ||
+    process.env.BOT_SCRATCH_TTL_HOURS ||
+    process.env.HOST_GC_SCRATCH_TTL_HOURS ||
+    process.env.MYRMIDON_HOST_GC_SCRATCH_TTL_HOURS;
+  const defaultScratchTtl = envTtl !== undefined && !isNaN(Number(envTtl))
+    ? Number(envTtl)
+    : SCRATCH_TTL_HOURS;
+
   const args = {
     dryRun: true,
     root: null,
+    scratchRoots: [],
     journal: "/var/log/myrmidon-host-gc.jsonl",
     lock: "/var/run/myrmidon-host-gc.lock",
     cloneTtlHours: CLONE_TTL_HOURS,
     cacheTtlHours: CACHE_TTL_HOURS,
+    scratchTtlHours: defaultScratchTtl,
+    procDir: process.env.PROC_DIR || "/proc",
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--apply") args.dryRun = false;
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--root") args.root = argv[++i];
+    else if (a === "--scratch-root") args.scratchRoots.push(argv[++i]);
     else if (a === "--journal") args.journal = argv[++i];
     else if (a === "--lock") args.lock = argv[++i];
     else if (a === "--clone-ttl") args.cloneTtlHours = Number(argv[++i]);
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
+    else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
+    else if (a === "--proc-dir") args.procDir = argv[++i];
+    else if (a === "--env") i++;
     else if (a === "--help") {
-      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h]");
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--env path]");
       process.exit(0);
     }
   }
@@ -217,6 +271,155 @@ function scanBuildCaches(root, now, ttlHours) {
   return results;
 }
 
+// --- Scratch GC (BOT-DISK-SCRATCH) -------------------------------------------
+
+export function collectOpenProcInfo(procDir = "/proc") {
+  const openPaths = new Set();
+  const openInodes = new Set();
+  if (!fs.existsSync(procDir)) return { openPaths, openInodes };
+  let pids = [];
+  try {
+    pids = fs.readdirSync(procDir).filter((name) => /^\d+$/.test(name));
+  } catch {
+    return { openPaths, openInodes };
+  }
+  for (const pid of pids) {
+    const fdDir = path.join(procDir, pid, "fd");
+    let fds = [];
+    try {
+      fds = fs.readdirSync(fdDir);
+    } catch {
+      continue;
+    }
+    for (const fd of fds) {
+      const fdPath = path.join(fdDir, fd);
+      try {
+        const link = fs.readlinkSync(fdPath);
+        if (link.startsWith("/")) {
+          openPaths.add(link);
+          try { openPaths.add(fs.realpathSync(link)); } catch {}
+        }
+      } catch {}
+      try {
+        const st = fs.statSync(fdPath);
+        openInodes.add(`${st.dev}:${st.ino}`);
+      } catch {}
+    }
+    const cwdPath = path.join(procDir, pid, "cwd");
+    try {
+      const cwd = fs.readlinkSync(cwdPath);
+      if (cwd.startsWith("/")) {
+        openPaths.add(cwd);
+        try { openPaths.add(fs.realpathSync(cwd)); } catch {}
+      }
+    } catch {}
+    try {
+      const st = fs.statSync(cwdPath);
+      openInodes.add(`${st.dev}:${st.ino}`);
+    } catch {}
+  }
+  return { openPaths, openInodes };
+}
+
+export function inspectPathTree(targetPath) {
+  let maxMtimeMs = 0;
+  let totalSizeBytes = 0;
+  const inodes = new Set();
+
+  function walk(current) {
+    let st;
+    try {
+      st = fs.lstatSync(current);
+    } catch {
+      return;
+    }
+    if (st.mtimeMs > maxMtimeMs) maxMtimeMs = st.mtimeMs;
+    totalSizeBytes += st.size || 0;
+    inodes.add(`${st.dev}:${st.ino}`);
+
+    if (st.isDirectory() && !st.isSymbolicLink()) {
+      let entries = [];
+      try {
+        entries = fs.readdirSync(current);
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        walk(path.join(current, entry));
+      }
+    }
+  }
+
+  walk(targetPath);
+  return { maxMtimeMs, totalSizeBytes, inodes };
+}
+
+export function isTreeOpen(targetPath, inodes, openPaths, openInodes) {
+  const normTarget = path.resolve(targetPath);
+  for (const ino of inodes) {
+    if (openInodes.has(ino)) return true;
+  }
+  for (const p of openPaths) {
+    if (p === normTarget || p.startsWith(normTarget + path.sep)) return true;
+  }
+  return false;
+}
+
+export function scanScratchDirectory(scratchDir, now, ttlHours, openInfo = { openPaths: new Set(), openInodes: new Set() }) {
+  const ttlMs = ttlHours * HOUR_MS;
+  const results = [];
+  if (!fs.existsSync(scratchDir)) return results;
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(scratchDir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(scratchDir, entry.name);
+    if (entry.name === "gh-cli-cache") {
+      results.push({ name: entry.name, path: fullPath, reason: "protected-gh-cli-cache", sizeBytes: 0, ageMs: 0 });
+      continue;
+    }
+    const { maxMtimeMs, totalSizeBytes, inodes } = inspectPathTree(fullPath);
+    const ageMs = now - maxMtimeMs;
+
+    if (isTreeOpen(fullPath, inodes, openInfo.openPaths, openInfo.openInodes)) {
+      results.push({ name: entry.name, path: fullPath, reason: "open-by-process", sizeBytes: totalSizeBytes, ageMs });
+      continue;
+    }
+
+    if (ageMs >= ttlMs) {
+      results.push({ name: entry.name, path: fullPath, reason: "ttl", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
+    } else {
+      results.push({ name: entry.name, path: fullPath, reason: "fresh", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
+    }
+  }
+
+  return results;
+}
+
+export function discoverBotScratchDirs(botsRoot) {
+  const dirs = [];
+  if (!fs.existsSync(botsRoot)) return dirs;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(botsRoot, { withFileTypes: true });
+  } catch {
+    return dirs;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const scratchDir = path.join(botsRoot, entry.name, "hermes/cache/scratch");
+    if (fs.existsSync(scratchDir)) {
+      dirs.push(scratchDir);
+    }
+  }
+  return dirs;
+}
+
 function issueIdentifierFromCloneName(name) {
   return name.split("@")[0];
 }
@@ -344,7 +547,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -383,9 +586,33 @@ async function main() {
       }
     }
 
-    // 3. Execute or report
+    // 3. Scan bot scratch directories (BOT-DISK-SCRATCH)
+    const scratchDirs = [...args.scratchRoots];
+    if (scratchDirs.length === 0) {
+      scratchDirs.push(...discoverBotScratchDirs(root));
+    }
+    const openInfo = collectOpenProcInfo(args.procDir);
+    for (const sDir of scratchDirs) {
+      if (!fs.existsSync(sDir)) continue;
+      const scratchEntries = scanScratchDirectory(sDir, now, args.scratchTtlHours, openInfo);
+      for (const item of scratchEntries) {
+        if (item.reason === "ttl") {
+          plan.scratch.push({ ...item, action: "remove" });
+        } else {
+          plan.kept.push({ ...item, action: "keep", reason: item.reason });
+        }
+      }
+    }
+
+    // 4. Execute or report
     if (args.dryRun) {
-      journalRecord(args.journal, { event: "dry-run", clones: plan.clones.length, caches: plan.caches.length, kept: plan.kept.length });
+      journalRecord(args.journal, {
+        event: "dry-run",
+        clones: plan.clones.length,
+        caches: plan.caches.length,
+        scratch: plan.scratch.length,
+        kept: plan.kept.length,
+      });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
       // Apply: process archives first, then removals
@@ -419,8 +646,30 @@ async function main() {
           journalRecord(args.journal, { event: "cache-remove-failed", path: c.path, error: err.message });
         }
       }
-      journalRecord(args.journal, { event: "apply-complete", removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length });
-      console.log(JSON.stringify({ ok: true, dryRun: false, removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length }, null, 2));
+      for (const s of plan.scratch.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(s.path, path.dirname(s.path));
+          plan.removed.push({ path: s.path });
+          journalRecord(args.journal, { event: "scratch-pruned", path: s.path, sizeBytes: s.sizeBytes });
+        } catch (err) {
+          journalRecord(args.journal, { event: "scratch-prune-failed", path: s.path, error: err.message });
+        }
+      }
+      journalRecord(args.journal, {
+        event: "apply-complete",
+        removed: plan.removed.length,
+        archived: plan.archived.length,
+        scratchPruned: plan.scratch.length,
+        kept: plan.kept.length,
+      });
+      console.log(JSON.stringify({
+        ok: true,
+        dryRun: false,
+        removed: plan.removed.length,
+        archived: plan.archived.length,
+        scratchPruned: plan.scratch.length,
+        kept: plan.kept.length,
+      }, null, 2));
     }
   } finally {
     lock.release();
