@@ -92,9 +92,53 @@ docker run --rm --user 1000:1000 \
   ghcr.io/itkadr-git/agent-runtime-omp:<verified-tag-or-digest> --help
 ```
 
+## OMP SSH Runner
+
+`docker/agent-runtime/Dockerfile.omp-ssh` (bake target `omp-ssh`, image
+`agent-runtime-omp-ssh`) is the execution target for `omp_local` agents. The
+agent is attached to a board **SSH environment** that points at a container from
+this image. The omp CLI, its tool calls and the builds they start run in that
+container, under its own memory, CPU and process limits. The board container
+only syncs the workspace and the runtime assets over SSH and streams the output.
+
+The image adds Bun and omp (pinned exactly like the board image), pnpm (the
+repository's `packageManager`), the GitHub CLI, a C toolchain and
+`openssh-server` to `agent-runtime-base`. sshd listens on port 2222. It accepts
+only key authentication, for the user `paperclip`. The board's public key is
+mounted read-only at `/etc/ssh/omp-runner/authorized_keys`. The host key is
+generated on the first start into the `hostkeys` volume and survives a
+recreate.
+
+One runner per agent:
+
+1. Make a key pair for the runner. Keep the private key out of the logs and the
+   shell history.
+2. Start the container from `docker/agent-runtime/omp-ssh/compose.yml`. Use an
+   env file with `OMP_RUNNER_NAME`, `OMP_RUNNER_IMAGE` (a digest from a
+   successful signed workflow run), `OMP_RUNNER_AUTHORIZED_KEYS` (the public
+   key file) and `OMP_RUNNER_NETWORK` (the board container's network). The
+   limits default to 4 GB, 1 CPU and 1024 processes, as for an engineer bot
+   container. Run
+   `docker compose -p <runner-name> --env-file <file> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
+3. Read the host key from the container log line `omp-runner: generated host key`,
+   or with `ssh-keyscan -p 2222 <runner-name>` from the board network.
+4. On the board, create an environment with driver `ssh`:
+   - host `<runner-name>`, port `2222`, user `paperclip`;
+   - remote workspace path `/workspace`;
+   - the private key (the board stores it as a company secret);
+   - known hosts `[<runner-name>]:2222 <host key>`, strict host key checking on.
+
+   Run the environment probe.
+5. Set the agent's default environment to that environment.
+
+Check after the first run: `docker top <board container>` shows no `omp`
+process during the run, and `docker top <runner-name>` shows it. The run log
+names the SSH environment in its `Syncing workspace and OMP runtime assets to`
+line.
+
 ## Publishing and Signing
 
-`.github/workflows/agent-runtime-images.yml` runs for pushes to `main` and release tags `myr-v*` that touch configured paths, or manually through `workflow_dispatch`. A manual run accepts a version; otherwise the tag is `git-<commit-sha>`. The bake publish scope explicitly includes `base`, `opencode`, `pi`, `codex`, `gemini`, `claude`, and `omp` (`linux/amd64`; `hermes` is not included). The workflow retrieves each pushed image digest and signs it with cosign keyless OIDC using its GitHub Actions identity.
+`.github/workflows/agent-runtime-images.yml` runs for pushes to `main` and release tags `myr-v*` that touch configured paths, or manually through `workflow_dispatch`. A manual run accepts a version; otherwise the tag is `git-<commit-sha>`. The bake publish scope explicitly includes `base`, `opencode`, `pi`, `codex`, `gemini`, `claude`, `omp`, and `omp-ssh` (`linux/amd64`; `hermes` is not included). The workflow retrieves each pushed image digest and signs it with cosign keyless OIDC using its GitHub Actions identity.
 
 No successful workflow run or published OMP tag/digest has been verified for this change. Before using a published image, verify the successful workflow run, its GHCR digest, and the signature.
 
