@@ -1,14 +1,14 @@
 # 1.7 REBRAND: Plan of Phases, Implementation Traceability & Compatibility Strategy
 
 This document serves as the formal deliverable and traceability plan for Epic **OPE-3540**:
-"1.7: REBRAND — remove 'Paperclip' everywhere except the license notice".
+"1.7: REBRAND — remove "Paperclip" everywhere except the license notice".
 
 ---
 
 ## 1. Executive Summary & Mandate
 
 Per the Owner Decision of 02.10:
-> "In release 1.7, remove 'Paperclip' from everything **except the MIT license notice** (LICENSE plus a third-party notices file; a 'Based on Paperclip (MIT)' line in About Myrmidon is fine)."
+> "In release 1.7, remove "Paperclip" from everything **except the MIT license notice** (LICENSE plus a third-party notices file; a 'Based on Paperclip (MIT)' line in About Myrmidon is fine)."
 
 All phases of this epic were partitioned into 17 focused subtasks (OPE-4154 through OPE-12083), implemented in code, documented, verified via automated CI test suites, and merged into `main`.
 
