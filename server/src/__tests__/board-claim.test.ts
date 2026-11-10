@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   authUsers,
   companies,
@@ -124,5 +124,66 @@ describeEmbeddedPostgres("board claim", () => {
       status: "claimed",
       claimedByUserId: userId,
     });
+  });
+
+  it("always evaluates both token and code comparisons (constant-time)", async () => {
+    await db.insert(instanceUserRoles).values({
+      userId: "local-board",
+      role: "instance_admin",
+    });
+    await initializeBoardClaimChallenge(db, { deploymentMode: "authenticated" });
+    const warningUrl = getBoardClaimWarningUrl("127.0.0.1", 3197);
+    expect(warningUrl).toBeTruthy();
+    const parsed = new URL(warningUrl!);
+    const token = parsed.pathname.split("/").pop()!;
+    const code = parsed.searchParams.get("code")!;
+
+    // Spy on timingSafeEqual to count invocations. Both token and code must be
+    // compared even when the token is wrong (no early return).
+    let tseCount = 0;
+    const originalTse = timingSafeEqual;
+    vi.spyOn(await import("node:crypto"), "timingSafeEqual").mockImplementation(((a: Buffer, b: Buffer) => {
+      tseCount += 1;
+      return originalTse(a, b);
+    }) as typeof timingSafeEqual);
+
+    try {
+      // Wrong token, correct code -> invalid, but BOTH comparisons ran.
+      tseCount = 0;
+      expect(inspectBoardClaimChallenge("wrong-token", code).status).toBe("invalid");
+      expect(tseCount).toBe(2);
+
+      // Correct token, wrong code -> invalid, both comparisons ran.
+      tseCount = 0;
+      expect(inspectBoardClaimChallenge(token, "wrong-code").status).toBe("invalid");
+      expect(tseCount).toBe(2);
+
+      // Both wrong -> still exactly 2 comparisons.
+      tseCount = 0;
+      expect(inspectBoardClaimChallenge("wrong-token", "wrong-code").status).toBe("invalid");
+      expect(tseCount).toBe(2);
+
+      // Both correct -> 2 comparisons, available.
+      tseCount = 0;
+      expect(inspectBoardClaimChallenge(token, code).status).toBe("available");
+      expect(tseCount).toBe(2);
+
+      // Different-length token must not throw.
+      tseCount = 0;
+      expect(inspectBoardClaimChallenge("x", code).status).toBe("invalid");
+      expect(tseCount).toBe(2);
+
+      // Empty code must not throw.
+      tseCount = 0;
+      expect(inspectBoardClaimChallenge(token, "").status).toBe("invalid");
+      expect(tseCount).toBe(2);
+
+      // Undefined code must not throw.
+      tseCount = 0;
+      expect(inspectBoardClaimChallenge(token, undefined).status).toBe("invalid");
+      expect(tseCount).toBe(2);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
