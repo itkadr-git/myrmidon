@@ -5,7 +5,14 @@ scripts/myrmidon/ci/check-workflow-concurrency.py
 Verifies that every GitHub Actions workflow in .github/workflows that runs on push to main
 or on workflow_run of main workflows defines a concurrency group with cancel-in-progress: true
 for main runs, while preserving release branches (rel/*) and release tags (myr-v*) without cancellation (OPE-12103).
+
+10.11: Myrmidon CI (myrmidon-ci.yml) is the run main-green-gate reads, so its main
+runs must complete: it needs a concurrency group (one running and one pending
+main run, a newer push replaces the pending one) but does not cancel on main.
 """
+
+# Workflows whose main runs must run to completion (a group is still required).
+NO_CANCEL_ON_MAIN = {"myrmidon-ci.yml"}
 
 import os
 import sys
@@ -76,6 +83,9 @@ def check_workflows(workflows_dir):
 
         if not group:
             failures.append(f"{fname}: Concurrency block missing 'group'")
+            continue
+
+        if fname in NO_CANCEL_ON_MAIN:
             continue
 
         # Check cancel-in-progress on main

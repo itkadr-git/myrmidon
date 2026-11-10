@@ -131,15 +131,16 @@ test('computeConcurrencyGroup assigns isolated release- prefix to release PRs', 
   assert.equal(noopLabel, 'myrmidon-ci-2063-label-noop');
 });
 
-test('computeCancelInProgress cancels main runs on new push to prevent queue accumulation (OPE-12103)', () => {
-  // Push to main cancels obsolete previous main runs
+test('computeCancelInProgress lets main runs complete; the concurrency group bounds the queue (OPE-12103, 10.11)', () => {
+  // Push to main does not cancel the running main run: with cancelling, merges
+  // more frequent than a full run left main without a completed run for hours.
   assert.equal(
     computeCancelInProgress({
       eventName: 'push',
       ref: 'refs/heads/main',
       runAttempt: 1,
     }),
-    true,
+    false,
   );
 
   // Merge group candidates must NOT be cancelled
